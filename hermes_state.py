@@ -6541,6 +6541,364 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    # ------------------------------------------------------------------
+    # Telegram Business Mode (Secretary Bots)
+    # ------------------------------------------------------------------
+    # Business Mode lets the owner of a Telegram Business account connect
+    # this bot to their personal account so it can observe customer
+    # conversations and draft replies for owner approval. Two tables:
+    #
+    #   telegram_business_connections — one row per account that linked
+    #     this bot via BotFather Business Mode. Updated by
+    #     BusinessConnection updates (established / edited / ended).
+    #
+    #   telegram_business_drafts — pending owner-approval drafts. A
+    #     draft is created when a customer messages a connected chat
+    #     and the manager produces a candidate reply; it's deleted when
+    #     the owner taps Send / Edit / Discard or when it expires.
+    #
+    # Like the topic-mode tables, this migration is lazy: it runs only
+    # when business mode is actually enabled, keeping the core schema
+    # clean for users who never use the feature.
+    # ------------------------------------------------------------------
+
+    def apply_telegram_business_migration(self) -> None:
+        """Create Telegram Business Mode tables on first use.
+
+        Idempotent — safe to call from every business handler.
+        """
+        def _do(conn):
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS telegram_business_connections (
+                    connection_id TEXT PRIMARY KEY,
+                    owner_user_id TEXT NOT NULL,
+                    owner_chat_id TEXT NOT NULL,
+                    can_reply INTEGER NOT NULL DEFAULT 0,
+                    is_enabled INTEGER NOT NULL DEFAULT 1,
+                    auto_draft INTEGER NOT NULL DEFAULT 1,
+                    paused_chats TEXT NOT NULL DEFAULT '[]',
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_tg_biz_conn_owner
+                    ON telegram_business_connections(owner_user_id);
+
+                CREATE TABLE IF NOT EXISTS telegram_business_drafts (
+                    draft_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    connection_id TEXT NOT NULL,
+                    owner_chat_id TEXT NOT NULL,
+                    customer_chat_id TEXT NOT NULL,
+                    customer_msg_id TEXT,
+                    customer_text TEXT NOT NULL,
+                    draft_text TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    owner_message_id TEXT,
+                    final_sent_text TEXT,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    expires_at REAL NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_tg_biz_drafts_conn_customer
+                    ON telegram_business_drafts(connection_id, customer_chat_id, status);
+
+                CREATE INDEX IF NOT EXISTS idx_tg_biz_drafts_owner_msg
+                    ON telegram_business_drafts(owner_chat_id, owner_message_id)
+                    WHERE owner_message_id IS NOT NULL;
+                """
+            )
+
+            conn.execute(
+                "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                ("telegram_business_schema_version", "1"),
+            )
+        self._execute_write(_do)
+
+    def upsert_telegram_business_connection(
+        self,
+        *,
+        connection_id: str,
+        owner_user_id: str,
+        owner_chat_id: str,
+        can_reply: bool,
+        is_enabled: bool,
+    ) -> None:
+        """Insert or update a business connection row.
+
+        Called from BusinessConnection update handlers. Preserves
+        ``auto_draft`` and ``paused_chats`` across updates so the owner's
+        preferences survive Telegram re-issuing the connection.
+        """
+        self.apply_telegram_business_migration()
+        now = time.time()
+
+        def _do(conn):
+            conn.execute(
+                """
+                INSERT INTO telegram_business_connections (
+                    connection_id, owner_user_id, owner_chat_id,
+                    can_reply, is_enabled, auto_draft, paused_chats,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 1, '[]', ?, ?)
+                ON CONFLICT(connection_id) DO UPDATE SET
+                    owner_user_id = excluded.owner_user_id,
+                    owner_chat_id = excluded.owner_chat_id,
+                    can_reply = excluded.can_reply,
+                    is_enabled = excluded.is_enabled,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    str(connection_id),
+                    str(owner_user_id),
+                    str(owner_chat_id),
+                    1 if can_reply else 0,
+                    1 if is_enabled else 0,
+                    now,
+                    now,
+                ),
+            )
+        self._execute_write(_do)
+
+    def get_telegram_business_connection(
+        self, connection_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Return the connection row as a dict, or None."""
+        with self._lock:
+            try:
+                row = self._conn.execute(
+                    "SELECT * FROM telegram_business_connections WHERE connection_id = ?",
+                    (str(connection_id),),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return None
+        if row is None:
+            return None
+        d = dict(row) if isinstance(row, sqlite3.Row) else dict(zip(
+            ["connection_id", "owner_user_id", "owner_chat_id", "can_reply",
+             "is_enabled", "auto_draft", "paused_chats", "created_at",
+             "updated_at"],
+            row,
+        ))
+        try:
+            d["paused_chats"] = json.loads(d.get("paused_chats") or "[]")
+        except (TypeError, ValueError):
+            d["paused_chats"] = []
+        d["can_reply"] = bool(d.get("can_reply"))
+        d["is_enabled"] = bool(d.get("is_enabled"))
+        d["auto_draft"] = bool(d.get("auto_draft", 1))
+        return d
+
+    def list_telegram_business_connections(
+        self, *, owner_user_id: Optional[str] = None, enabled_only: bool = True
+    ) -> List[Dict[str, Any]]:
+        """List connections, optionally filtered by owner_user_id."""
+        sql = "SELECT * FROM telegram_business_connections"
+        clauses: List[str] = []
+        params: List[Any] = []
+        if owner_user_id is not None:
+            clauses.append("owner_user_id = ?")
+            params.append(str(owner_user_id))
+        if enabled_only:
+            clauses.append("is_enabled = 1")
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY updated_at DESC"
+        with self._lock:
+            try:
+                rows = self._conn.execute(sql, params).fetchall()
+            except sqlite3.OperationalError:
+                return []
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            d = dict(row) if isinstance(row, sqlite3.Row) else dict(zip(
+                ["connection_id", "owner_user_id", "owner_chat_id", "can_reply",
+                 "is_enabled", "auto_draft", "paused_chats", "created_at",
+                 "updated_at"],
+                row,
+            ))
+            try:
+                d["paused_chats"] = json.loads(d.get("paused_chats") or "[]")
+            except (TypeError, ValueError):
+                d["paused_chats"] = []
+            d["can_reply"] = bool(d.get("can_reply"))
+            d["is_enabled"] = bool(d.get("is_enabled"))
+            d["auto_draft"] = bool(d.get("auto_draft", 1))
+            out.append(d)
+        return out
+
+    def set_telegram_business_auto_draft(
+        self, connection_id: str, *, auto_draft: bool
+    ) -> None:
+        """Toggle auto-drafting globally for one connection (the /biz pause switch)."""
+        self.apply_telegram_business_migration()
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE telegram_business_connections SET auto_draft = ?, "
+                "updated_at = ? WHERE connection_id = ?",
+                (1 if auto_draft else 0, time.time(), str(connection_id)),
+            )
+        self._execute_write(_do)
+
+    def set_telegram_business_paused_chats(
+        self, connection_id: str, paused_chats: List[str]
+    ) -> None:
+        """Replace the per-chat pause list for one connection."""
+        self.apply_telegram_business_migration()
+        payload = json.dumps([str(c) for c in (paused_chats or [])])
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE telegram_business_connections SET paused_chats = ?, "
+                "updated_at = ? WHERE connection_id = ?",
+                (payload, time.time(), str(connection_id)),
+            )
+        self._execute_write(_do)
+
+    def create_telegram_business_draft(
+        self,
+        *,
+        connection_id: str,
+        owner_chat_id: str,
+        customer_chat_id: str,
+        customer_msg_id: Optional[str],
+        customer_text: str,
+        draft_text: str,
+        ttl_seconds: float = 86400.0,
+    ) -> int:
+        """Insert a pending draft row and return its draft_id.
+
+        Any prior pending drafts for the same (connection, customer_chat)
+        are marked superseded so only one Send button is ever live per
+        conversation.
+        """
+        self.apply_telegram_business_migration()
+        now = time.time()
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE telegram_business_drafts SET status = 'superseded', "
+                "updated_at = ? WHERE connection_id = ? AND customer_chat_id = ? "
+                "AND status = 'pending'",
+                (now, str(connection_id), str(customer_chat_id)),
+            )
+            cur = conn.execute(
+                """
+                INSERT INTO telegram_business_drafts (
+                    connection_id, owner_chat_id, customer_chat_id,
+                    customer_msg_id, customer_text, draft_text,
+                    status, created_at, updated_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+                """,
+                (
+                    str(connection_id),
+                    str(owner_chat_id),
+                    str(customer_chat_id),
+                    str(customer_msg_id) if customer_msg_id is not None else None,
+                    customer_text,
+                    draft_text,
+                    now, now, now + max(60.0, float(ttl_seconds)),
+                ),
+            )
+            return cur.lastrowid
+
+        return self._execute_write(_do)
+
+    def get_telegram_business_draft(self, draft_id: int) -> Optional[Dict[str, Any]]:
+        """Fetch one draft row by id."""
+        with self._lock:
+            try:
+                row = self._conn.execute(
+                    "SELECT * FROM telegram_business_drafts WHERE draft_id = ?",
+                    (int(draft_id),),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return None
+        if row is None:
+            return None
+        return dict(row) if isinstance(row, sqlite3.Row) else None
+
+    def set_telegram_business_draft_owner_message(
+        self, draft_id: int, owner_message_id: str
+    ) -> None:
+        """Record the Telegram message_id of the owner-DM that carries the draft."""
+        self.apply_telegram_business_migration()
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE telegram_business_drafts SET owner_message_id = ?, "
+                "updated_at = ? WHERE draft_id = ?",
+                (str(owner_message_id), time.time(), int(draft_id)),
+            )
+        self._execute_write(_do)
+
+    def resolve_telegram_business_draft(
+        self,
+        draft_id: int,
+        *,
+        status: str,
+        final_sent_text: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Atomically mark a draft sent / edited / discarded and return its prior row.
+
+        Returns None if the draft no longer exists or was already resolved
+        (so callbacks for stale buttons no-op safely).
+        """
+        self.apply_telegram_business_migration()
+        if status not in {"sent", "edited", "discarded", "expired"}:
+            raise ValueError(f"invalid business draft status: {status}")
+        now = time.time()
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT * FROM telegram_business_drafts WHERE draft_id = ? AND status = 'pending'",
+                (int(draft_id),),
+            ).fetchone()
+            if row is None:
+                return None
+            conn.execute(
+                "UPDATE telegram_business_drafts SET status = ?, "
+                "final_sent_text = COALESCE(?, final_sent_text), "
+                "updated_at = ? WHERE draft_id = ?",
+                (status, final_sent_text, now, int(draft_id)),
+            )
+            return dict(row) if isinstance(row, sqlite3.Row) else None
+
+        return self._execute_write(_do)
+
+    def get_pending_telegram_business_drafts_for_owner(
+        self, owner_chat_id: str
+    ) -> List[Dict[str, Any]]:
+        """List all pending drafts addressed to one owner DM (for /biz status)."""
+        with self._lock:
+            try:
+                rows = self._conn.execute(
+                    "SELECT * FROM telegram_business_drafts WHERE owner_chat_id = ? "
+                    "AND status = 'pending' ORDER BY created_at ASC",
+                    (str(owner_chat_id),),
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return []
+        return [dict(r) if isinstance(r, sqlite3.Row) else r for r in rows]
+
+    def expire_telegram_business_drafts(self, *, now: Optional[float] = None) -> int:
+        """Mark drafts past their expiry as expired. Returns count affected."""
+        self.apply_telegram_business_migration()
+        cutoff = now if now is not None else time.time()
+
+        def _do(conn):
+            cur = conn.execute(
+                "UPDATE telegram_business_drafts SET status = 'expired', "
+                "updated_at = ? WHERE status = 'pending' AND expires_at < ?",
+                (cutoff, cutoff),
+            )
+            return cur.rowcount
+
+        return self._execute_write(_do)
+
     def enable_telegram_topic_mode(
         self,
         *,

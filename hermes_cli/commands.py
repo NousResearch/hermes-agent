@@ -69,6 +69,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("reset",), args_hint="[name]"),
     CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",
                gateway_only=True, args_hint="[off|help|session-id]"),
+    CommandDef("biz", "Manage Telegram Business Mode (Secretary Bots) drafting", "Session",
+               gateway_only=True, args_hint="[pause|resume|off <chat>|on <chat>]"),
     CommandDef("clear", "Clear screen and start a new session", "Session",
                cli_only=True),
     CommandDef("redraw", "Force a full UI repaint (recovers from terminal drift)", "Session",
@@ -1164,7 +1166,10 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - moa: high-cost slash mode, available through /hermes moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug"})
+#   - biz: Telegram Business Mode management — the feature itself is
+#     Telegram-only (Business connections don't exist on Slack), so it must
+#     not displace a native Slack slash at the 50-command cap.
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug", "biz"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

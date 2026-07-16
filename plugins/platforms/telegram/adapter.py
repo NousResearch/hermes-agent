@@ -766,6 +766,16 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return bool(getattr(self, "_drop_delayed_deliveries", False))
 
+        # Business Mode (Secretary Bots) — owner-approved drafting against
+        # incoming customer messages.  Initialized lazily in ``connect()``
+        # once the bot is available, only when the feature is enabled.
+        # See ``telegram_business.py`` for the manager + state machine.
+        self._business_manager: Optional[Any] = None
+        self._business_mode_enabled: bool = bool(
+            self.config.extra.get("business_mode", {}).get("enabled", False)
+            if isinstance(self.config.extra.get("business_mode"), dict) else False
+        )
+
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
     ) -> Dict[str, Any]:
@@ -3456,6 +3466,43 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+
+            # Telegram Business Mode (Secretary Bots) handlers — gated on
+            # the ``telegram.business_mode.enabled`` config key.  Registers
+            # three update types: connection lifecycle, customer messages,
+            # and edits to customer messages.  Deletes are ignored for v1.
+            if getattr(self, "_business_mode_enabled", False):
+                try:
+                    self._init_business_manager()
+                    # Connection lifecycle (established / edited / ended)
+                    try:
+                        from telegram.ext import BusinessConnectionHandler
+                        self._app.add_handler(
+                            BusinessConnectionHandler(self._handle_business_connection)
+                        )
+                    except ImportError:
+                        logger.warning(
+                            "[%s] BusinessConnectionHandler unavailable — Business Mode requires python-telegram-bot >= 21.1",
+                            self.name,
+                        )
+                        raise
+                    # Incoming customer messages (TEXT only for v1)
+                    self._app.add_handler(TelegramMessageHandler(
+                        filters.UpdateType.BUSINESS_MESSAGE & filters.TEXT,
+                        self._handle_business_message,
+                    ))
+                    # Edited customer messages — informational; treated like a fresh draft.
+                    self._app.add_handler(TelegramMessageHandler(
+                        filters.UpdateType.EDITED_BUSINESS_MESSAGE & filters.TEXT,
+                        self._handle_business_message,
+                    ))
+                    logger.info("[%s] Telegram Business Mode handlers registered", self.name)
+                except Exception as biz_err:
+                    logger.warning(
+                        "[%s] Could not initialize Business Mode (%s) — feature disabled",
+                        self.name, biz_err,
+                    )
+                    self._business_manager = None
             
             # Start polling — retry initialize() for transient TLS resets.
             # Each attempt is capped by _init_timeout so a single unreachable
@@ -5940,6 +5987,26 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
             return
 
+        # --- Business Mode draft callbacks (bd:choice:draft_id) ---
+        if data.startswith("bd:") and getattr(self, "_business_manager", None) is not None:
+            caller_id = str(getattr(query.from_user, "id", ""))
+            try:
+                await self._business_manager.handle_callback(
+                    data=data,
+                    caller_user_id=caller_id or None,
+                    answer=query.answer,
+                    edit_message_text=query.edit_message_text,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "[%s] Business draft callback failed: %s", self.name, exc,
+                )
+                try:
+                    await query.answer(text="⚠️ Action failed.")
+                except Exception:
+                    pass
+            return
+
         # --- Update prompt callbacks ---
         if not data.startswith("update_prompt:"):
             return
@@ -7806,6 +7873,146 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
 
+    # ------------------------------------------------------------------
+    # Telegram Business Mode (Secretary Bots)
+    # ------------------------------------------------------------------
+    # Only wired when ``telegram.business_mode.enabled`` is True in
+    # config.yaml.  See ``telegram_business.py`` for the manager and
+    # state machine; the methods below are just thin PTB-update glue.
+    # ------------------------------------------------------------------
+
+    def _init_business_manager(self) -> None:
+        """Construct the BusinessModeManager lazily, once the bot is up."""
+        if self._business_manager is not None:
+            return
+        from plugins.platforms.telegram.telegram_business import BusinessModeManager
+
+        biz_cfg = self.config.extra.get("business_mode", {}) or {}
+        debounce = float(biz_cfg.get("debounce_seconds", 8.0))
+        draft_ttl_hours = float(biz_cfg.get("draft_ttl_hours", 24.0))
+        max_chars = int(biz_cfg.get("max_customer_text_chars", 4000))
+
+        async def _send(**kwargs):
+            # Strip Markdown formatting from owner DMs — the draft body has
+            # raw customer text that could contain Telegram-special chars.
+            # The business-mode renderer emits plain text only.
+            kwargs.setdefault("parse_mode", None)
+            kwargs.setdefault("disable_web_page_preview", True)
+            if self._bot is None:
+                raise RuntimeError("Telegram bot is not connected")
+            return await self._bot.send_message(**kwargs)
+
+        async def _draft(customer_text: str, customer_chat_id: str) -> str:
+            return await self._business_draft_via_auxiliary(customer_text, customer_chat_id)
+
+        from hermes_state import SessionDB
+        from hermes_constants import get_hermes_home
+        from pathlib import Path
+
+        # Lazily acquire the shared state DB.  ``hermes_state`` singleton
+        # is created elsewhere in the gateway runner; if we can't grab
+        # it from there, fall back to opening our own handle against the
+        # canonical state.db path.
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        db = getattr(runner, "_session_db", None) if runner else None
+        if db is None:
+            try:
+                db = SessionDB(Path(get_hermes_home()) / "state.db")
+            except Exception as exc:
+                raise RuntimeError(f"Failed to open state.db for Business Mode: {exc}")
+
+        self._business_manager = BusinessModeManager(
+            session_db=db,
+            send_message=_send,
+            draft_generator=_draft,
+            debounce_seconds=debounce,
+            draft_ttl_hours=draft_ttl_hours,
+            max_customer_text_chars=max_chars,
+        )
+
+    async def _business_draft_via_auxiliary(
+        self, customer_text: str, customer_chat_id: str
+    ) -> str:
+        """Generate a draft reply via the auxiliary LLM client.
+
+        Synchronous ``call_llm`` is offloaded to a thread so it doesn't
+        block the asyncio loop.  System prompt is plain — v1 doesn't
+        carry any prior history; v2 will plumb a per-customer session.
+        """
+        from agent.auxiliary_client import call_llm
+
+        biz_cfg = self.config.extra.get("business_mode", {}) or {}
+        owner_persona = (
+            biz_cfg.get("owner_persona")
+            or "You are drafting a short, friendly reply on behalf of the "
+               "account owner.  Match the tone of a personal message — "
+               "warm, direct, and concise.  Do not introduce yourself as "
+               "an assistant or AI.  Reply in the same language the "
+               "customer used."
+        )
+        system_prompt = (
+            f"{owner_persona}\n\n"
+            "Output only the message text.  No preamble, no quotes, no "
+            "markdown headers.  Keep it under 4 sentences unless the "
+            "customer asked something that genuinely needs a longer reply."
+        )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": customer_text},
+        ]
+
+        loop = asyncio.get_running_loop()
+        response = await loop.run_in_executor(
+            None,
+            lambda: call_llm(
+                task="title_generation",  # reuse light auxiliary task slot
+                messages=messages,
+                temperature=0.7,
+                max_tokens=500,
+                timeout=60.0,
+            ),
+        )
+        try:
+            content = response.choices[0].message.content or ""
+        except (AttributeError, IndexError, TypeError):
+            content = ""
+        return str(content).strip()
+
+    async def _handle_business_connection(
+        self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
+    ) -> None:
+        """PTB callback: BusinessConnection updates."""
+        if self._business_manager is None:
+            return
+        conn = getattr(update, "business_connection", None)
+        if conn is None:
+            return
+        try:
+            await self._business_manager.handle_connection_update(conn)
+        except Exception as exc:
+            logger.exception(
+                "[%s] Business connection handler failed: %s", self.name, exc,
+            )
+
+    async def _handle_business_message(
+        self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
+    ) -> None:
+        """PTB callback: business_message and edited_business_message updates."""
+        if self._business_manager is None:
+            return
+        message = (
+            getattr(update, "business_message", None)
+            or getattr(update, "edited_business_message", None)
+        )
+        if message is None:
+            return
+        try:
+            await self._business_manager.handle_business_message(message)
+        except Exception as exc:
+            logger.exception(
+                "[%s] Business message handler failed: %s", self.name, exc,
+            )
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -7827,6 +8034,25 @@ class TelegramAdapter(BasePlatformAdapter):
                 getattr(getattr(msg, "chat", None), "id", None),
             )
             return
+
+        # Business Mode: if this text DM is the owner replying after they
+        # tapped Edit on a draft, consume it as the edit override and stop.
+        if getattr(self, "_business_manager", None) is not None and getattr(msg, "chat", None) is not None:
+            chat = msg.chat
+            if getattr(chat, "type", None) == ChatType.PRIVATE:
+                try:
+                    consumed = await self._business_manager.maybe_handle_edit_capture(
+                        owner_chat_id=str(chat.id),
+                        text=msg.text or "",
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "[%s] Business edit-capture failed: %s", self.name, exc,
+                    )
+                    consumed = False
+                if consumed:
+                    return
+
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
@@ -7844,6 +8070,40 @@ class TelegramAdapter(BasePlatformAdapter):
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
+        # Business Mode: /biz is handled entirely at the adapter layer
+        # since it manipulates per-owner business state with no agent loop
+        # involvement.  Routed before _should_process_message so it works
+        # in private DMs regardless of mention requirements.
+        if getattr(self, "_business_manager", None) is not None and getattr(msg, "chat", None) is not None:
+            text = (msg.text or "").strip()
+            parts = text.split()
+            head = parts[0] if parts else ""
+            if head.startswith("/"):
+                cmd = head[1:].split("@", 1)[0].lower()
+                if cmd == "biz":
+                    args = parts[1:]
+                    user = msg.from_user
+                    chat = msg.chat
+                    try:
+                        reply = await self._business_manager.handle_biz_command(
+                            owner_user_id=str(getattr(user, "id", "")),
+                            owner_chat_id=str(chat.id),
+                            args=args,
+                        )
+                    except Exception as exc:
+                        logger.exception("[%s] /biz handler failed: %s", self.name, exc)
+                        reply = f"⚠️ /biz failed: {exc}"
+                    try:
+                        if self._bot is not None:
+                            await self._bot.send_message(
+                                chat_id=chat.id,
+                                text=reply,
+                                disable_web_page_preview=True,
+                            )
+                    except Exception:
+                        logger.debug("Failed to deliver /biz reply", exc_info=True)
+                    return
+
         if not self._should_process_message(msg, is_command=True):
             return
         if not self._is_user_authorized_from_message(msg):
@@ -9064,7 +9324,7 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         if isinstance(group_allowed_chats, list):
             group_allowed_chats = ",".join(str(v) for v in group_allowed_chats)
         os.environ["TELEGRAM_GROUP_ALLOWED_CHATS"] = str(group_allowed_chats)
-    for _key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages"):
+    for _key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages", "business_mode"):
         if _key in telegram_cfg:
             extras.setdefault(_key, telegram_cfg[_key])
     # Pass through telegram-specific extra keys (e.g. base_url proxy override),

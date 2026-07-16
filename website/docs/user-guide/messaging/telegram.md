@@ -1311,6 +1311,84 @@ The Telegram adapter routes recurring agent status callbacks (e.g. "Compressing 
 ## Pin incoming user message during agent turn
 
 When a user sends a message that triggers an agent turn, the Telegram adapter pins that incoming message for the duration of the turn and unpins it when the response is finished — a lightweight visual indicator that the bot is actively working on the message rather than ignoring it. The pin uses `disable_notification=true` to avoid extra pings. No config required.
+## Business Mode (Secretary Bots)
+
+Telegram Business Mode lets a Telegram Business account owner connect this bot to their personal account so it can **draft replies** to incoming customer messages. Replies are **never sent automatically** — every draft is delivered to the owner's DM with a [✓ Send] [✎ Edit] [✕ Discard] inline keyboard, and nothing reaches the customer until the owner taps Send.
+
+### How the flow works
+
+1. The owner connects the bot via Telegram → Settings → Business → Chatbots.
+2. A customer messages the owner in a chat covered by the connection.
+3. The bot debounces typing bursts (default 8s) and produces a single draft.
+4. The bot DMs the draft to the **owner's own chat** with this bot:
+
+   ```
+   💬 Carol wrote:
+     > Hey, are you free Friday afternoon?
+
+   📝 Suggested reply:
+   Friday afternoon works — anywhere between 2 and 5pm?
+
+   [✓ Send]   [✎ Edit]   [✕ Discard]
+   ```
+
+5. The owner taps:
+   - **Send** — the draft is delivered to the customer using the connection's `business_connection_id`, appearing as if the owner sent it.
+   - **Edit** — the bot replies "send me the text you want delivered" and uses the owner's next DM as the final message.
+   - **Discard** — the draft is dropped, the customer sees nothing.
+
+### Requirements
+
+- A **Telegram Business** subscription on the owner's personal account.
+- The bot's **Business Mode** toggle enabled in [@BotFather](https://t.me/botfather): `/mybots` → pick your bot → Bot Settings → Business Mode.
+- For the **Send** button to be active, the owner must grant `Reply to Messages` permission when configuring the bot in their Telegram Business chatbot settings. Without it, the bot can still draft replies but the Send button is hidden — the owner has to copy and send manually.
+
+### Configuration
+
+In `~/.hermes/config.yaml`:
+
+```yaml
+telegram:
+  business_mode:
+    enabled: true            # off by default
+    debounce_seconds: 8      # coalesce typing-burst messages into one draft
+    draft_ttl_hours: 24      # pending drafts older than this expire
+    max_customer_text_chars: 4000
+    owner_persona: ""        # optional system-prompt override
+```
+
+The `owner_persona` field lets you customize the voice of drafts — for example, `"You are drafting on behalf of a freelance illustrator. Sound friendly and professional; never quote prices without consulting me first."` When empty, a sensible default persona is used (warm, direct, concise; matches the customer's language).
+
+Restart the gateway after changing these.
+
+### `/biz` slash command
+
+The owner can manage drafting via `/biz` in their DM with the bot:
+
+| Command | Effect |
+|---|---|
+| `/biz` | Show status of all connections and active customer chats |
+| `/biz pause` | Globally stop producing drafts (customers' messages still arrive — owner just sees them, no drafts) |
+| `/biz resume` | Resume drafting |
+| `/biz off <chat_id>` | Mute drafting for one customer chat |
+| `/biz on <chat_id>` | Re-enable drafting for one customer chat |
+
+### What stays on by default
+
+- **Drafting is always observe-with-approval.** There is no auto-send setting in v1. Even with `can_reply` enabled, every reply requires an explicit owner tap.
+- **Only the connected owner can use the inline buttons.** Telegram callback queries are user-scoped — if someone else taps Send (e.g. another user with bot DM access), the bot rejects with `⛔ Only the connected account owner can use these buttons.`
+- **Drafts expire after 24h** (configurable). Stale buttons become no-ops with `That draft has expired.`
+- **Telegram never sees a draft.** Drafts live in `~/.hermes/state.db` under `telegram_business_drafts`; only the owner's DM ever sees the suggested text.
+
+### Limits in v1
+
+- **Text only.** Customer media (photos, voice, documents) is skipped — only text messages and captions trigger drafts. v2 will add media context via vision.
+- **No conversation history.** Each customer message is drafted in isolation; the bot doesn't remember the previous exchange. If your customer is mid-conversation, the draft may need editing — that's what the Edit button is for.
+- **No per-customer persona learning.** Owner edits override the draft for that one reply but don't train future drafts.
+
+### Disabling
+
+To turn the feature off entirely, set `enabled: false` and restart the gateway. To revoke individual connections, the owner can disconnect this bot from their Telegram Business settings — the bot will receive a `BusinessConnection` "ended" update and stop drafting for that account immediately.
 
 ## Security
 

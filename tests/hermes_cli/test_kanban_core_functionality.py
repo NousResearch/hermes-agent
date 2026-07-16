@@ -2765,6 +2765,29 @@ def test_build_worker_context_caps_huge_summary(kanban_home):
         conn.close()
 
 
+def _capture_supervised_worker_launch(monkeypatch, captured, *, pid):
+    class FakeSupervisor:
+        returncode = None
+
+        def __init__(self):
+            self.pid = pid
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            return None
+
+    def fake_popen(cmd, **kwargs):
+        spec = json.loads(Path(cmd[-1]).read_text(encoding="utf-8"))
+        captured["cmd"] = spec["command"]
+        captured["env"] = kwargs.get("env", {})
+        Path(spec["handshake_path"]).write_text(str(pid), encoding="utf-8")
+        return FakeSupervisor()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+
 def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
     """The dispatcher no longer auto-loads a bundled kanban skill.
 
@@ -2778,22 +2801,14 @@ def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
     """
     captured = {}
 
-    class FakeProc:
-        def __init__(self):
-            self.pid = 99999
-
-    def fake_popen(cmd, **kwargs):
-        captured["cmd"] = cmd
-        captured["env"] = kwargs.get("env", {})
-        return FakeProc()
-
-    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    _capture_supervised_worker_launch(monkeypatch, captured, pid=99999)
 
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="skill-loading test",
                              assignee="some-profile")
-        task = kb.get_task(conn, tid)
+        task = kb.claim_task(conn, tid)
+        assert task is not None
         workspace = kb.resolve_workspace(task)
         pid = kb._default_spawn(task, str(workspace))
         assert pid == 99999
@@ -2824,14 +2839,7 @@ def test_default_spawn_raises_terminal_timeout_to_task_runtime(kanban_home, monk
     """
     captured = {}
 
-    class FakeProc:
-        pid = 123
-
-    def fake_popen(cmd, **kwargs):
-        captured["env"] = kwargs.get("env", {})
-        return FakeProc()
-
-    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    _capture_supervised_worker_launch(monkeypatch, captured, pid=123)
     monkeypatch.setenv("TERMINAL_TIMEOUT", "180")
     monkeypatch.delenv("TERMINAL_MAX_FOREGROUND_TIMEOUT", raising=False)
 
@@ -2843,7 +2851,8 @@ def test_default_spawn_raises_terminal_timeout_to_task_runtime(kanban_home, monk
             assignee="ops",
             max_runtime_seconds=3600,
         )
-        task = kb.get_task(conn, tid)
+        task = kb.claim_task(conn, tid)
+        assert task is not None
         workspace = kb.resolve_workspace(task)
         kb._default_spawn(task, str(workspace))
     finally:
@@ -2858,14 +2867,7 @@ def test_default_spawn_preserves_longer_terminal_timeout(kanban_home, monkeypatc
     """Kanban should never lower an explicitly larger terminal timeout."""
     captured = {}
 
-    class FakeProc:
-        pid = 124
-
-    def fake_popen(cmd, **kwargs):
-        captured["env"] = kwargs.get("env", {})
-        return FakeProc()
-
-    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    _capture_supervised_worker_launch(monkeypatch, captured, pid=124)
     monkeypatch.setenv("TERMINAL_TIMEOUT", "7200")
     monkeypatch.setenv("TERMINAL_MAX_FOREGROUND_TIMEOUT", "7200")
 
@@ -2877,7 +2879,8 @@ def test_default_spawn_preserves_longer_terminal_timeout(kanban_home, monkeypatc
             assignee="ops",
             max_runtime_seconds=3600,
         )
-        task = kb.get_task(conn, tid)
+        task = kb.claim_task(conn, tid)
+        assert task is not None
         workspace = kb.resolve_workspace(task)
         kb._default_spawn(task, str(workspace))
     finally:
@@ -2891,21 +2894,15 @@ def test_default_spawn_leaves_terminal_timeout_without_runtime_cap(kanban_home, 
     """Uncapped tasks keep the existing terminal timeout behavior."""
     captured = {}
 
-    class FakeProc:
-        pid = 125
-
-    def fake_popen(cmd, **kwargs):
-        captured["env"] = kwargs.get("env", {})
-        return FakeProc()
-
-    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    _capture_supervised_worker_launch(monkeypatch, captured, pid=125)
     monkeypatch.setenv("TERMINAL_TIMEOUT", "180")
     monkeypatch.delenv("TERMINAL_MAX_FOREGROUND_TIMEOUT", raising=False)
 
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="uncapped", assignee="ops")
-        task = kb.get_task(conn, tid)
+        task = kb.claim_task(conn, tid)
+        assert task is not None
         workspace = kb.resolve_workspace(task)
         kb._default_spawn(task, str(workspace))
     finally:
@@ -3045,15 +3042,7 @@ def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
     in declared order. No skill is auto-loaded anymore."""
     captured = {}
 
-    class FakeProc:
-        def __init__(self):
-            self.pid = 42
-
-    def fake_popen(cmd, **kwargs):
-        captured["cmd"] = cmd
-        return FakeProc()
-
-    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    _capture_supervised_worker_launch(monkeypatch, captured, pid=42)
 
     conn = kb.connect()
     try:
@@ -3063,7 +3052,8 @@ def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
             assignee="linguist",
             skills=["translation", "github-code-review"],
         )
-        task = kb.get_task(conn, tid)
+        task = kb.claim_task(conn, tid)
+        assert task is not None
         workspace = kb.resolve_workspace(task)
         kb._default_spawn(task, str(workspace))
     finally:
@@ -3093,14 +3083,7 @@ def test_default_spawn_passes_task_skills_verbatim(kanban_home, monkeypatch):
     kanban skill to dedupe against anymore."""
     captured = {}
 
-    class FakeProc:
-        pid = 1
-
-    def fake_popen(cmd, **kwargs):
-        captured["cmd"] = cmd
-        return FakeProc()
-
-    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    _capture_supervised_worker_launch(monkeypatch, captured, pid=1)
 
     conn = kb.connect()
     try:
@@ -3108,7 +3091,8 @@ def test_default_spawn_passes_task_skills_verbatim(kanban_home, monkeypatch):
             conn, title="dup", assignee="x",
             skills=["translation", "github-code-review"],
         )
-        task = kb.get_task(conn, tid)
+        task = kb.claim_task(conn, tid)
+        assert task is not None
         workspace = kb.resolve_workspace(task)
         kb._default_spawn(task, str(workspace))
     finally:

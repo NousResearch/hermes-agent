@@ -391,10 +391,16 @@ class TestWorkerSpawnEnv:
 
         class FakeProc:
             pid = 12345
+            returncode = None
+
+            def poll(self):
+                return self.returncode
 
         def fake_popen(cmd, *args, **kwargs):
-            captured["cmd"] = cmd
+            spec = json.loads(Path(cmd[-1]).read_text(encoding="utf-8"))
+            captured["cmd"] = spec["command"]
             captured["env"] = kwargs.get("env", {})
+            Path(spec["handshake_path"]).write_text("12345", encoding="utf-8")
             return FakeProc()
 
         monkeypatch.setattr(subprocess, "Popen", fake_popen)
@@ -405,7 +411,7 @@ class TestWorkerSpawnEnv:
             title="worker test",
             body=None,
             assignee="teknium",
-            status="ready",
+            status="running",
             priority=0,
             created_by="user",
             created_at=0,
@@ -413,9 +419,10 @@ class TestWorkerSpawnEnv:
             completed_at=None,
             workspace_kind="scratch",
             workspace_path=None,
-            claim_lock=None,
+            claim_lock="test-host:claim",
             claim_expires=None,
             tenant=None,
+            current_run_id=1,
         )
 
         kb._default_spawn(task, str(fresh_home / "ws"), board="spawntest")
@@ -434,9 +441,15 @@ class TestWorkerSpawnEnv:
 
         class FakeProc:
             pid = 1
+            returncode = None
+
+            def poll(self):
+                return self.returncode
 
         def fake_popen(cmd, *args, **kwargs):
+            spec = json.loads(Path(cmd[-1]).read_text(encoding="utf-8"))
             captured["env"] = kwargs.get("env", {})
+            Path(spec["handshake_path"]).write_text("1", encoding="utf-8")
             return FakeProc()
 
         monkeypatch.setattr(subprocess, "Popen", fake_popen)
@@ -445,7 +458,7 @@ class TestWorkerSpawnEnv:
             title="",
             body=None,
             assignee="teknium",
-            status="ready",
+            status="running",
             priority=0,
             created_by=None,
             created_at=0,
@@ -453,9 +466,10 @@ class TestWorkerSpawnEnv:
             completed_at=None,
             workspace_kind="scratch",
             workspace_path=None,
-            claim_lock=None,
+            claim_lock="test-host:claim",
             claim_expires=None,
             tenant=None,
+            current_run_id=1,
         )
         kb._default_spawn(task, str(fresh_home / "ws"), board=None)
         env = captured["env"]

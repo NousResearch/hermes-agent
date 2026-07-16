@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import subprocess
@@ -450,6 +451,8 @@ def test_stale_claim_reclaimed(kanban_home, monkeypatch):
         reclaimed = kb.release_stale_claims(conn, signal_fn=_signal)
         assert reclaimed == 1
         assert kb.get_task(conn, t).status == "ready"
+        # Legacy injected signal hooks preserve their synthetic direct-PID
+        # contract; production never supplies this hook and is tree-safe.
         assert killed == [signal.SIGTERM]
 
 
@@ -876,6 +879,206 @@ def _exited_status(code: int) -> int:
     return code << 8
 
 
+def test_spawned_worker_nonzero_exit_finalizes_without_another_dispatch_tick(
+    kanban_home, tmp_path, monkeypatch,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(
+        kb,
+        "_resolve_hermes_argv",
+        lambda: [sys.executable, "-c", "import sys; sys.exit(17)", "--"],
+    )
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="fail once", assignee="worker")
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None
+
+        worker_pid = kb._default_spawn(claimed, str(workspace))
+        assert worker_pid is not None
+        kb._set_worker_pid(conn, task_id, worker_pid)
+
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            with kb.connect_closing() as observer:
+                task = kb.get_task(observer, task_id)
+            if task is not None and task.status != "running":
+                break
+            time.sleep(0.02)
+
+        with kb.connect_closing() as observer:
+            task = kb.get_task(observer, task_id)
+            run = kb.latest_run(observer, task_id)
+        assert task is not None
+        assert task.status == "ready"
+        assert task.claim_lock is None
+        assert task.worker_pid is None
+        assert task.consecutive_failures == 1
+
+        assert run is not None
+        assert run.outcome == "crashed"
+        assert run.ended_at is not None
+
+
+def test_supervisor_exit_binds_missing_pid_after_dispatcher_dies_before_registration(
+    kanban_home, monkeypatch,
+):
+    """A supervisor must finalize even when dispatch died before PID registration."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="lost dispatcher", assignee="worker")
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None
+        assert claimed.current_run_id is not None
+        assert claimed.claim_lock is not None
+
+    def fail_if_finalizer_waits(_seconds):
+        raise AssertionError("finalizer waited for a dispatcher that already died")
+
+    monkeypatch.setattr(kb.time, "sleep", fail_if_finalizer_waits)
+    observation = kb.WorkerExitObservation(
+        task_id=task_id,
+        run_id=claimed.current_run_id,
+        claim_lock=claimed.claim_lock,
+        pid=91003,
+        returncode=17,
+    )
+
+    assert kb.finalize_worker_exit(observation)
+
+    with kb.connect_closing() as observer:
+        task = kb.get_task(observer, task_id)
+        run = kb.latest_run(observer, task_id)
+        events = kb.list_events(observer, task_id)
+    assert task is not None
+    assert task.status == "ready"
+    assert task.worker_pid is None
+    assert run is not None
+    assert run.outcome == "crashed"
+    assert [event.kind for event in events].count("spawned") == 0
+    crashed = [event for event in events if event.kind == "crashed"]
+    assert len(crashed) == 1
+    assert crashed[0].payload is not None
+    assert crashed[0].payload["pid"] == observation.pid
+
+
+def test_supervisor_exit_cannot_finalize_a_newer_run(
+    kanban_home, monkeypatch,
+):
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="retry", assignee="worker")
+        host = kb._claimer_id().split(":", 1)[0]
+        first = kb.claim_task(conn, task_id, claimer=f"{host}:first")
+        assert first is not None
+        first_pid = 91001
+        kb._set_worker_pid(conn, task_id, first_pid)
+        kb._record_worker_exit(first_pid, _exited_status(17))
+        assert task_id in kb.detect_crashed_workers(conn)
+
+        second = kb.claim_task(conn, task_id, claimer=f"{host}:second")
+        assert second is not None
+        second_pid = 91002
+        kb._set_worker_pid(conn, task_id, second_pid)
+
+        assert not kb.finalize_worker_exit(
+            kb.WorkerExitObservation(
+                task_id=task_id,
+                run_id=first.current_run_id,
+                claim_lock=first.claim_lock,
+                pid=first_pid,
+                returncode=17,
+            )
+        )
+
+        with kb.connect_closing() as observer:
+            task = kb.get_task(observer, task_id)
+        assert task is not None
+        assert task.status == "running"
+        assert task.current_run_id == second.current_run_id
+        assert task.claim_lock == second.claim_lock
+        assert task.worker_pid == second_pid
+
+
+@pytest.mark.parametrize(
+    ("returncode", "event_kind", "outcome", "failure_count"),
+    [
+        (kb.KANBAN_RATE_LIMIT_EXIT_CODE, "rate_limited", "rate_limited", 0),
+        (0, "protocol_violation", "crashed", 0),
+    ],
+)
+def test_generic_detector_defers_to_live_supervisor_finalizer(
+    kanban_home, monkeypatch, returncode, event_kind, outcome, failure_count,
+):
+    """A dispatch tick before finalization cannot erase the worker exit receipt."""
+    supervisor_pid = 91011
+    monkeypatch.setattr(kb, "_pid_alive", lambda pid: pid == supervisor_pid)
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="authoritative exit", assignee="worker")
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None
+        assert claimed.current_run_id is not None
+        assert claimed.claim_lock is not None
+        assert kb._set_worker_pid(
+            conn,
+            task_id,
+            supervisor_pid,
+            claim_lock=claimed.claim_lock,
+            run_id=claimed.current_run_id,
+        )
+
+        assert kb.detect_crashed_workers(conn) == []
+        assert kb.get_task(conn, task_id).status == "running"
+
+    assert kb.finalize_worker_exit(
+        kb.WorkerExitObservation(
+            task_id=task_id,
+            run_id=claimed.current_run_id,
+            claim_lock=claimed.claim_lock,
+            pid=supervisor_pid,
+            returncode=returncode,
+        )
+    )
+    with kb.connect_closing() as conn:
+        task = kb.get_task(conn, task_id)
+        run = kb.latest_run(conn, task_id)
+        events = kb.list_events(conn, task_id)
+    assert task is not None
+    assert task.status == "ready"
+    assert task.consecutive_failures == failure_count
+    assert run is not None
+    assert run.outcome == outcome
+    assert [event.kind for event in events].count(event_kind) == 1
+    assert [event.kind for event in events].count("crashed") == 0
+
+
+def test_pid_registration_cas_rejects_terminal_run_without_late_spawn_event(kanban_home):
+    """A fast terminal transition cannot resurrect a PID or append `spawned`."""
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="fast terminal", assignee="worker")
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None
+        assert claimed.claim_lock is not None
+        assert claimed.current_run_id is not None
+        assert kb.complete_task(conn, task_id, expected_run_id=claimed.current_run_id)
+
+        assert not kb._set_worker_pid(
+            conn,
+            task_id,
+            91012,
+            claim_lock=claimed.claim_lock,
+            run_id=claimed.current_run_id,
+        )
+        task = kb.get_task(conn, task_id)
+        events = kb.list_events(conn, task_id)
+    assert task is not None
+    assert task.status == "done"
+    assert task.worker_pid is None
+    assert [event.kind for event in events].count("spawned") == 0
+
+
 def test_classify_worker_exit_recognizes_rate_limit_sentinel(kanban_home):
     import hermes_cli.kanban_db as _kb
 
@@ -1109,6 +1312,50 @@ def test_max_runtime_uses_current_run_start_after_retry(kanban_home, monkeypatch
         timed_out = kb.enforce_max_runtime(conn, signal_fn=lambda _pid, _sig: None)
         assert timed_out == []
         assert kb.get_task(conn, t).status == "running"
+
+
+def test_max_runtime_defers_when_supervisor_tree_may_survive(kanban_home, monkeypatch):
+    """An unverified/surviving timeout tree must not release or tick failure."""
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        task_id = kb.create_task(
+            conn, title="timeout tree", assignee="worker", max_runtime_seconds=1,
+        )
+        claimed = kb.claim_task(conn, task_id, claimer=f"{host}:tree")
+        assert claimed is not None
+        assert claimed.current_run_id is not None
+        assert kb._set_worker_pid(conn, task_id, 91919)
+        old = int(time.time()) - 10
+        conn.execute("UPDATE tasks SET started_at = ? WHERE id = ?", (old, task_id))
+        conn.execute(
+            "UPDATE task_runs SET started_at = ? WHERE id = ?",
+            (old, claimed.current_run_id),
+        )
+        monkeypatch.setattr(
+            _kb,
+            "_terminate_reclaimed_worker",
+            lambda *_args, **_kwargs: {
+                "host_local": True,
+                "termination_attempted": True,
+                "terminated": False,
+                "identity": "process_group_mismatch",
+            },
+        )
+
+        assert kb.enforce_max_runtime(conn) == []
+        task = kb.get_task(conn, task_id)
+        events = kb.list_events(conn, task_id)
+    assert task is not None
+    assert task.status == "running"
+    assert task.worker_pid == 91919
+    assert task.consecutive_failures in (0, None)
+    assert [event.kind for event in events].count("timed_out") == 0
+    deferred = [event for event in events if event.kind == "reclaim_deferred"]
+    assert len(deferred) == 1
+    assert deferred[0].payload is not None
+    assert deferred[0].payload["reason"] == "max_runtime_worker_alive"
 
 
 def test_heartbeat_extends_claim(kanban_home):
@@ -3113,7 +3360,13 @@ class TestSharedBoardPaths:
             def __init__(self, cmd, **kwargs):
                 captured["cmd"] = cmd
                 captured["env"] = kwargs.get("env", {})
+                spec = json.loads(Path(cmd[-1]).read_text(encoding="utf-8"))
+                Path(spec["handshake_path"]).write_text("4242", encoding="utf-8")
                 self.pid = 4242
+                self.returncode = None
+
+            def poll(self):
+                return self.returncode
 
         monkeypatch.setattr("subprocess.Popen", _FakePopen)
 
@@ -3130,10 +3383,11 @@ class TestSharedBoardPaths:
             completed_at=None,
             workspace_kind="worktree",
             workspace_path=str(tmp_path / "ws"),
-            claim_lock=None,
+            claim_lock="test-host:claim",
             claim_expires=None,
             tenant=None,
             branch_name="wt/t_dispatch_env",
+            current_run_id=1,
         )
         kb._default_spawn(task, str(tmp_path / "ws"))
 

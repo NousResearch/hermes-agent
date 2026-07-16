@@ -8,6 +8,7 @@ Branch 3 — deliver_<token> with invalid/expired token: answerGuestQuery with
            "something went wrong", no stub.
 """
 
+import os
 import sys
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -510,3 +511,70 @@ async def test_guest_media_send_allows_path_inside_staging_root(tmp_path, monkey
     assert result.success is True
     adapter._bot.send_video.assert_awaited_once()
     assert adapter._guest_turn_media["42"]["file_id"] == "fid_ok"
+
+
+@pytest.mark.asyncio
+async def test_guest_media_send_null_byte_path_fails_cleanly(tmp_path, monkeypatch):
+    """A path resolve() itself chokes on (embedded null byte) returns a clean
+    failure SendResult instead of raising out of the adapter.
+
+    Regression: resolution and containment used to share one try block, so a
+    null-byte path entered the ValueError ("outside staging root") handler
+    with _abs_resolved unbound — the rejection log line itself then raised
+    UnboundLocalError, escaping the SendResult contract entirely.
+    """
+    import hermes_constants
+
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-100999")
+
+    adapter = _make_adapter()
+    adapter._bot.send_document = AsyncMock()
+
+    result = await adapter._guest_media_send(
+        "42", "document", str(tmp_path / "cache") + "/evil\x00.pdf"
+    )
+
+    assert result.success is False
+    assert "path validation failed" in result.error
+    adapter._bot.send_document.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_guest_media_send_restages_when_file_content_changes(tmp_path, monkeypatch):
+    """Re-generating a file at the same path (new mtime) re-stages and mints a
+    fresh file_id instead of serving the stale cached one."""
+    import hermes_constants
+
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-100999")
+
+    cache_dir = tmp_path / "cache"
+    cache_dir.mkdir(parents=True)
+    photo = cache_dir / "chart.png"
+    photo.write_bytes(b"v1")
+    os.utime(photo, (1000, 1000))
+
+    adapter = _make_adapter()
+    fids = iter(["fid_v1", "fid_v2"])
+
+    def _mint(*a, **kw):
+        sent = MagicMock()
+        sent.photo = [MagicMock(file_id=next(fids))]
+        return sent
+
+    adapter._bot.send_photo = AsyncMock(side_effect=_mint)
+
+    await adapter._guest_media_send("42", "photo", str(photo))
+    assert adapter._guest_turn_media["42"]["file_id"] == "fid_v1"
+
+    # Same path, same mtime -> served from cache, no second upload.
+    await adapter._guest_media_send("42", "photo", str(photo))
+    assert adapter._bot.send_photo.await_count == 1
+
+    # Same path, new content/mtime -> re-staged, fresh file_id.
+    photo.write_bytes(b"v2 -- regenerated")
+    os.utime(photo, (2000, 2000))
+    await adapter._guest_media_send("42", "photo", str(photo))
+    assert adapter._bot.send_photo.await_count == 2
+    assert adapter._guest_turn_media["42"]["file_id"] == "fid_v2"

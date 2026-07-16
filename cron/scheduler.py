@@ -3235,9 +3235,27 @@ def run_job(
         # ticks short-circuit on already-connected servers inside
         # register_mcp_servers(). Non-fatal on failure: a broken MCP server
         # shouldn't kill an otherwise-working cron job. See #4219.
+        #
+        # suppress_interactive_oauth mirrors the desktop/gateway startup path
+        # (hermes_cli.mcp_startup._discover_mcp_tools_without_interactive_oauth).
+        # Without it, a gateway process launched from a terminal reports a live
+        # TTY — so _is_interactive() returns True in the cron thread pool. When
+        # an HTTP/OAuth MCP server's cached token is expired or unusable, the
+        # SDK enters the authorization-code (browser-redirect) flow instead of
+        # failing fast. The callback listener binds a port and waits for a
+        # browser redirect that never arrives (no interactive user), hanging
+        # until connect_timeout expires, then the server silently fails to
+        # register. Stdio MCP servers are unaffected — they don't use OAuth.
+        # See #65889.
         try:
-            from tools.mcp_tool import discover_mcp_tools
-            _mcp_tools = discover_mcp_tools()
+            from contextlib import nullcontext as _nullctx
+            try:
+                from tools.mcp_oauth import suppress_interactive_oauth as _suppress_oauth
+            except Exception:
+                _suppress_oauth = _nullctx
+            with _suppress_oauth():
+                from tools.mcp_tool import discover_mcp_tools
+                _mcp_tools = discover_mcp_tools()
             if _mcp_tools:
                 logger.info(
                     "Job '%s': %d MCP tool(s) available",

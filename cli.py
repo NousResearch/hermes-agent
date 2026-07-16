@@ -12658,12 +12658,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # in the [OUT-OF-BAND USER MESSAGE] marker — like the mid-batch and
             # pre-API drain paths — so the model reads it as a genuine user
             # instruction rather than raw /steer command text (#60543).
-            _leftover_steer = result.get("pending_steer") if result else None
-            if _leftover_steer and hasattr(self, '_pending_input'):
-                from agent.agent_runtime_helpers import format_leftover_steer_for_delivery
-                preview = _leftover_steer[:60] + ("..." if len(_leftover_steer) > 60 else "")
-                print(f"\n⏩ Delivering leftover /steer as next turn: '{preview}'")
-                self._pending_input.put(format_leftover_steer_for_delivery(_leftover_steer))
+            if hasattr(self, '_pending_input'):
+                from agent.agent_runtime_helpers import queue_cli_leftover_steer
+                _delivered = queue_cli_leftover_steer(self._pending_input, result)
+                if _delivered:
+                    _raw = (result or {}).get("pending_steer") or ""
+                    preview = _raw[:60] + ("..." if len(_raw) > 60 else "")
+                    print(f"\n⏩ Delivering leftover /steer as next turn: '{preview}'")
 
             return response
             

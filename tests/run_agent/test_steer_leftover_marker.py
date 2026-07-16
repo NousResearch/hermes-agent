@@ -5,38 +5,43 @@
 instruction rather than treating it as tool output / prompt injection:
 
   * mid-batch drain  -> agent_runtime_helpers.apply_pending_steer_to_tool_results
-                        (agent_runtime_helpers.py:3109, calls format_steer_marker)
-  * pre-API drain    -> conversation_loop.py:718 (calls format_steer_marker)
+  * pre-API drain    -> conversation_loop.py (calls format_steer_marker)
 
 The THIRD path — the "leftover" path, taken when a steer lands *after* the
-final assistant turn (no more tool batches to drain into) — does NOT:
+final assistant turn (no more tool batches to drain into) — is handed back as
+raw ``result["pending_steer"]`` by turn_finalizer. Delivery consumers must wrap
+it before queuing the next turn:
 
-  * turn_finalizer.py:439-441 stashes the RAW steer text into
-    result["pending_steer"] (via _drain_pending_steer(), unmarked — correct,
-    marking is the delivery layer's job), and then
-  * cli.py:12658-12662 delivers it with `self._pending_input.put(_leftover_steer)`
-    — the raw text, WITHOUT format_steer_marker().
+  * CLI          -> agent_runtime_helpers.queue_cli_leftover_steer
+  * gateway      -> resolve_gateway_leftover_steer (+ discard_pending_slash_command)
+  * Ink TUI      -> tui_gateway.server._deliver_leftover_steer
 
-Net effect: a steer that arrives in that timing window reaches the model as
-bare `/steer` command text on the next turn instead of an out-of-band user
-message — the bug reported in #60543.
-
-These tests reproduce the divergence.  `test_leftover_delivery_carries_oob_marker`
-is expected to FAIL until the leftover handler wraps the text with
-format_steer_marker().
+These tests exercise the production delivery seams (helpers actually called by
+cli.py / gateway/run.py / tui_gateway/server.py), not mirrored copies of the
+call-site statements.
 """
 from __future__ import annotations
 
+import inspect
+import queue
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from agent.prompt_builder import STEER_MARKER_OPEN, format_steer_marker
+from agent.agent_runtime_helpers import (
+    discard_pending_slash_command,
+    format_leftover_steer_for_delivery,
+    queue_cli_leftover_steer,
+    resolve_gateway_leftover_steer,
+)
+from agent.prompt_builder import STEER_MARKER_CLOSE, STEER_MARKER_OPEN, format_steer_marker
 from agent.turn_finalizer import finalize_turn
 from run_agent import AIAgent
 
 STEER_TEXT = "actually, stop and summarize what you have so far"
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _bare_agent() -> AIAgent:
@@ -167,58 +172,34 @@ def test_sibling_drain_path_marks_the_steer():
 
 def test_finalize_turn_hands_back_raw_unmarked_steer():
     """finalize_turn stashes the RAW steer (marking is the delivery layer's
-    job). This is the value cli.py's leftover handler receives."""
+    job). This is the value delivery seams receive."""
     agent = _FinalizeAgent(STEER_TEXT)
     result = _run_finalize(agent)
     assert result.get("pending_steer") == STEER_TEXT
     assert STEER_MARKER_OPEN not in result["pending_steer"]
 
 
-def test_leftover_delivery_carries_oob_marker():
-    """#60543: the leftover steer, once DELIVERED to the input queue (and thus
-    to the model on the next turn), must carry the [OUT-OF-BAND USER MESSAGE]
-    marker — exactly like the other two delivery paths.
-
-    Mirrors the real CLI handler at cli.py:12658-12662, which delivers the
-    leftover steer via the shared ``format_leftover_steer_for_delivery`` seam:
-
-        _leftover_steer = result.get("pending_steer") if result else None
-        if _leftover_steer and hasattr(self, '_pending_input'):
-            from agent.agent_runtime_helpers import format_leftover_steer_for_delivery
-            ...
-            self._pending_input.put(format_leftover_steer_for_delivery(_leftover_steer))
-    """
-    import queue
-
-    from agent.agent_runtime_helpers import format_leftover_steer_for_delivery
-
+def test_cli_delivery_seam_queues_marked_steer():
+    """CLI seam: queue_cli_leftover_steer (called by cli.py) must mark the leftover."""
     agent = _FinalizeAgent(STEER_TEXT)
     result = _run_finalize(agent)
+    pending_input: queue.Queue[str] = queue.Queue()
 
-    # --- mirror of the real cli.py leftover-steer delivery block ---
-    pending_input: "queue.Queue[str]" = queue.Queue()
-    _leftover_steer = result.get("pending_steer") if result else None
-    if _leftover_steer:
-        pending_input.put(format_leftover_steer_for_delivery(_leftover_steer))
-    # ---------------------------------------------------------------
+    delivered = queue_cli_leftover_steer(pending_input, result)
 
-    delivered = pending_input.get_nowait()
+    assert delivered is not None
+    assert delivered == pending_input.get_nowait()
     assert STEER_TEXT in delivered
     assert STEER_MARKER_OPEN in delivered, (
         "leftover /steer reached the model as raw command text, not as an "
         "out-of-band user message (#60543)"
     )
-    # Clean standalone turn — no leading blank lines from the append-oriented
-    # marker helper.
     assert not delivered.startswith("\n")
 
 
 def test_delivery_helper_matches_marker_contract():
     """The leftover-delivery helper must emit the same open/close marker the
     system prompt tells the model to trust (see STEER_CHANNEL_NOTE)."""
-    from agent.agent_runtime_helpers import format_leftover_steer_for_delivery
-    from agent.prompt_builder import STEER_MARKER_CLOSE
-
     out = format_leftover_steer_for_delivery(STEER_TEXT)
     assert STEER_MARKER_OPEN in out
     assert STEER_MARKER_CLOSE in out
@@ -226,38 +207,12 @@ def test_delivery_helper_matches_marker_contract():
     assert out == format_steer_marker(STEER_TEXT).strip()
 
 
-def _gateway_deliver_leftover(result):
-    """Mirror of the gateway leftover-steer handler (gateway/run.py:19419-19449):
-    the delivery line followed by the slash-command discard safety net. Returns
-    the ``pending`` value the gateway would hand to the agent as the next turn.
-    """
-    from agent.agent_runtime_helpers import format_leftover_steer_for_delivery
-    from hermes_cli.commands import resolve_command
-
-    pending = None
-    pending_event = None
-    if result and not pending and not pending_event:
-        _leftover_steer = result.get("pending_steer")
-        if _leftover_steer:
-            pending = format_leftover_steer_for_delivery(_leftover_steer)
-
-    # Safety net: gateway discards pending text that is a slash command.
-    if pending and pending.strip().startswith("/"):
-        parts = pending.strip().split(None, 1)
-        cmd_word = parts[0][1:].lower() if parts else ""
-        if cmd_word and resolve_command(cmd_word):
-            pending = None
-    return pending
-
-
-def test_gateway_leftover_delivery_carries_oob_marker():
-    """#60543 (TUI/gateway surface): the gateway serves the TUI, Telegram,
-    Slack and WhatsApp. Its leftover-steer handler must also deliver the steer
-    wrapped in the [OUT-OF-BAND USER MESSAGE] marker, not raw text."""
+def test_gateway_delivery_seam_returns_marked_steer():
+    """Gateway seam: resolve_gateway_leftover_steer (called by gateway/run.py)."""
     agent = _FinalizeAgent(STEER_TEXT)
     result = _run_finalize(agent)
 
-    pending = _gateway_deliver_leftover(result)
+    pending = resolve_gateway_leftover_steer(result)
 
     assert pending is not None
     assert STEER_TEXT in pending
@@ -268,18 +223,100 @@ def test_gateway_leftover_delivery_carries_oob_marker():
 
 
 def test_gateway_marked_steer_survives_slash_command_net():
-    """The marker must keep the steer from being swallowed by the gateway's
-    slash-command discard net — even when the steer text itself looks like a
-    command (e.g. a user steering with '/stop the search'). Wrapped, it no
-    longer starts with '/', so it is delivered rather than silently dropped."""
+    """Marked leftover must survive discard_pending_slash_command (gateway net).
+
+    Exercises the real safety-net helper with a /stop … leftover — the bug
+    where raw pending_steer beginning with '/' was silently dropped.
+    """
     agent = _FinalizeAgent("/stop the search and summarize")
     result = _run_finalize(agent)
 
-    pending = _gateway_deliver_leftover(result)
+    pending = resolve_gateway_leftover_steer(result)
+    assert pending is not None
+    pending = discard_pending_slash_command(pending)
 
     assert pending is not None, "marked steer was wrongly discarded by the slash-command net"
     assert STEER_MARKER_OPEN in pending
     assert "/stop the search and summarize" in pending
+
+
+def test_gateway_slash_net_still_drops_raw_commands():
+    """Safety net must still discard unmarked slash-command pending text."""
+    assert discard_pending_slash_command("/stop the search") is None
+    assert discard_pending_slash_command("keep going") == "keep going"
+
+
+def test_gateway_leftover_yields_to_existing_pending():
+    """Queued gateway messages retain priority over leftover /steer."""
+    result = {"pending_steer": STEER_TEXT}
+    assert resolve_gateway_leftover_steer(result, pending="user already queued") is None
+    assert resolve_gateway_leftover_steer(result, pending_event=object()) is None
+
+
+def test_tui_delivery_seam_dispatches_marked_steer(monkeypatch):
+    """TUI seam: _deliver_leftover_steer (called by _run_prompt_submit)."""
+    from tui_gateway import server
+
+    submitted: list[str] = []
+
+    def _capture_submit(rid, sid, session, text):
+        submitted.append(text)
+        with session["history_lock"]:
+            session["running"] = False
+
+    monkeypatch.setattr(server, "_run_prompt_submit", _capture_submit)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+
+    session = {
+        "running": False,
+        "history_lock": threading.Lock(),
+    }
+    result = {"pending_steer": STEER_TEXT}
+
+    assert server._deliver_leftover_steer("r1", "sid", session, result) is True
+    assert len(submitted) == 1
+    assert STEER_MARKER_OPEN in submitted[0]
+    assert STEER_TEXT in submitted[0]
+
+
+def test_tui_delivery_seam_skips_when_queued_prompt_would_win():
+    """_deliver_leftover_steer must not fire when the session is already running
+    (e.g. after _drain_queued_prompt claimed the next turn)."""
+    from tui_gateway import server
+
+    session = {
+        "running": True,
+        "history_lock": threading.Lock(),
+    }
+    assert (
+        server._deliver_leftover_steer(
+            "r1", "sid", session, {"pending_steer": STEER_TEXT}
+        )
+        is False
+    )
+
+
+def test_production_call_sites_wire_delivery_seams():
+    """Call-site wiring check: consumers must invoke the shared seams.
+
+    Fails if cli.py / gateway/run.py / tui_gateway revert to raw pending_steer
+    passthrough while these unit tests still pass against the helpers alone.
+    """
+    cli_src = (REPO_ROOT / "cli.py").read_text(encoding="utf-8")
+    assert "queue_cli_leftover_steer" in cli_src
+
+    gateway_src = (REPO_ROOT / "gateway" / "run.py").read_text(encoding="utf-8")
+    assert "resolve_gateway_leftover_steer" in gateway_src
+    assert "discard_pending_slash_command" in gateway_src
+
+    from tui_gateway import server
+
+    submit_src = inspect.getsource(server._run_prompt_submit)
+    assert "_drain_queued_prompt" in submit_src
+    assert "_deliver_leftover_steer" in submit_src
+    assert submit_src.index("_drain_queued_prompt") < submit_src.index(
+        "_deliver_leftover_steer"
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover

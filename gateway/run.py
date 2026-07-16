@@ -19419,34 +19419,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # [OUT-OF-BAND USER MESSAGE] marker — like the mid-batch and pre-API
             # drain paths — so the model reads it as a genuine user instruction
             # rather than raw /steer command text (#60543).
-            if result and not pending and not pending_event:
-                _leftover_steer = result.get("pending_steer")
-                if _leftover_steer:
-                    from agent.agent_runtime_helpers import format_leftover_steer_for_delivery
-                    pending = format_leftover_steer_for_delivery(_leftover_steer)
-                    logger.debug("Delivering leftover /steer as next turn: '%s...'", _leftover_steer[:40])
+            from agent.agent_runtime_helpers import (
+                discard_pending_slash_command,
+                resolve_gateway_leftover_steer,
+            )
+            _steer_pending = resolve_gateway_leftover_steer(result, pending, pending_event)
+            if _steer_pending:
+                pending = _steer_pending
+                logger.debug(
+                    "Delivering leftover /steer as next turn: '%s...'",
+                    ((result or {}).get("pending_steer") or "")[:40],
+                )
 
             # Safety net: if the pending text is a slash command (e.g. "/stop",
             # "/new"), discard it — commands should never be passed to the agent
             # as user input.  The primary fix is in base.py (commands bypass the
             # active-session guard), but this catches edge cases where command
-            # text leaks through the interrupt_message fallback.
-            if pending and pending.strip().startswith("/"):
-                _pending_parts = pending.strip().split(None, 1)
+            # text leaks through the interrupt_message fallback. Marked leftover
+            # steers no longer start with "/" so they survive this net.
+            _before_slash_net = pending
+            pending = discard_pending_slash_command(pending)
+            if _before_slash_net and pending is None:
+                _pending_parts = _before_slash_net.strip().split(None, 1)
                 _pending_cmd_word = _pending_parts[0][1:].lower() if _pending_parts else ""
-                if _pending_cmd_word:
-                    try:
-                        from hermes_cli.commands import resolve_command as _rc_pending
-                        if _rc_pending(_pending_cmd_word):
-                            logger.info(
-                                "Discarding command '/%s' from pending queue — "
-                                "commands must not be passed as agent input",
-                                _pending_cmd_word,
-                            )
-                            pending_event = None
-                            pending = None
-                    except Exception:
-                        pass
+                logger.info(
+                    "Discarding command '/%s' from pending queue — "
+                    "commands must not be passed as agent input",
+                    _pending_cmd_word,
+                )
+                pending_event = None
 
             if self._draining and (pending_event or pending):
                 logger.info(

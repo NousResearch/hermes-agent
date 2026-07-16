@@ -4969,6 +4969,39 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     return True
 
 
+def _deliver_leftover_steer(rid, sid: str, session: dict, result) -> bool:
+    """Re-fire a leftover /steer as the next user turn (#60543).
+
+    Called after :func:`_drain_queued_prompt` so an explicit queued prompt keeps
+    priority. Returns True when a leftover steer was dispatched (caller should
+    skip lower-priority follow-ups this cycle).
+    """
+    if not isinstance(result, dict):
+        return False
+    leftover = result.get("pending_steer")
+    if not leftover:
+        return False
+    from agent.agent_runtime_helpers import format_leftover_steer_for_delivery
+
+    marked = format_leftover_steer_for_delivery(leftover)
+    with session["history_lock"]:
+        if session.get("running"):
+            return False
+        session["running"] = True
+    try:
+        _emit("message.start", sid)
+        _run_prompt_submit(rid, sid, session, marked)
+    except Exception as exc:
+        print(
+            f"[tui_gateway] leftover /steer dispatch failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        with session["history_lock"]:
+            session["running"] = False
+    return True
+
+
 def _inflight_snapshot(session: dict) -> dict | None:
     turn = session.get("inflight_turn")
     if not isinstance(turn, dict):
@@ -8575,6 +8608,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         session_tokens = []
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
         goal_followup = None  # set by the post-turn goal hook below
+        result = None
         try:
             from tools.approval import (
                 reset_current_session_key,
@@ -8982,6 +9016,12 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         # every auto follow-up below — drain it first and skip them this cycle;
         # the goal judge / notifications re-evaluate at the end of that turn.
         if _drain_queued_prompt(rid, sid, session):
+            return
+
+        # Leftover /steer (lands after the final tool batch): deliver as the
+        # next user turn with the OOB marker. Queued prompts retain priority
+        # via the drain above (#60543).
+        if _deliver_leftover_steer(rid, sid, session, result):
             return
 
         # Chain a goal-continuation turn if the judge said so. We do

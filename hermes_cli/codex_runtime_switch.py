@@ -239,7 +239,7 @@ def apply(
             if mig_report.wrote_permissions_default:
                 msg_lines.append(
                     f"Default sandbox: {mig_report.wrote_permissions_default} "
-                    f"(no approval prompt on every write)"
+                    f"(Codex sandbox_mode; workspace writes stay in-sandbox)"
                 )
             if "hermes-tools" in mig_report.migrated:
                 msg_lines.append(

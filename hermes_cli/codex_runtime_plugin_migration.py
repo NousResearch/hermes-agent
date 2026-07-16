@@ -15,8 +15,8 @@ module:
      OpenClaw calls "migrate native codex plugins" — the YouTube-video-
      worthy bit Pash highlighted: Canva, GitHub, Calendar, Gmail
      pre-configured.)
-  3. Writes a [permissions] default profile so users on this runtime
-     don't get an approval prompt on every write attempt.
+  3. Writes Codex's current top-level ``sandbox_mode`` setting so users on
+     this runtime don't get an approval prompt on every workspace write.
 
 What translates (MCP servers):
   Hermes mcp_servers.<n>.command/args/env  → codex stdio transport
@@ -95,7 +95,7 @@ class MigrationReport:
             lines.append(f"Codex plugin discovery skipped: {self.plugin_query_error}")
         if self.wrote_permissions_default:
             lines.append(
-                f"Wrote default_permissions = "
+                f"Wrote sandbox_mode = "
                 f"{self.wrote_permissions_default!r}"
             )
         for err in self.errors:
@@ -243,12 +243,43 @@ def _quote_key(key: str) -> str:
     escaped = key.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
 
+
+_PERMISSION_PROFILE_TO_SANDBOX_MODE = {
+    "workspace": "workspace-write",
+    "workspace-write": "workspace-write",
+    "read-only": "read-only",
+    "read-only-with-approval": "read-only",
+    "full-access": "danger-full-access",
+    "danger-no-sandbox": "danger-full-access",
+    "danger-full-access": "danger-full-access",
+    "unrestricted": "danger-full-access",
+    "yolo": "danger-full-access",
+}
+
+
+def _sandbox_mode_for_permission_profile(profile: str) -> str:
+    """Translate legacy Hermes/Codex profile names to current Codex config.
+
+    ``default_permissions`` profiles were accepted by early app-server builds
+    but are no longer part of Codex's config schema. Unknown legacy/custom
+    names fail closed to ``read-only`` instead of silently granting writes.
+    """
+    normalized = str(profile or "").strip().lstrip(":").lower()
+    mode = _PERMISSION_PROFILE_TO_SANDBOX_MODE.get(normalized)
+    if mode is None:
+        logger.warning(
+            "Unknown Codex permission profile %r; using sandbox_mode=read-only",
+            profile,
+        )
+        return "read-only"
+    return mode
+
 def render_codex_toml_section(
     servers: dict[str, dict],
     plugins: Optional[list[dict]] = None,
     default_permission_profile: Optional[str] = None,
 ) -> str:
-    """Render the managed [mcp_servers.<n>] / [plugins.<id>] / [permissions]
+    """Render the managed [mcp_servers.<n>] / [plugins.<id>] / sandbox block
     block for ~/.codex/config.toml.
 
     Args:
@@ -256,10 +287,9 @@ def render_codex_toml_section(
         plugins: optional list of {name, marketplace, enabled} for native
             Codex plugins to enable. (E.g. the Linear / Atlassian / Asana
             curated plugins, or per-account ChatGPT apps.)
-        default_permission_profile: when set, write `[permissions] default`
-            so the user doesn't get an approval prompt on every write
-            attempt. Common values: "workspace-write", "read-only",
-            "full-access".
+        default_permission_profile: legacy profile name mapped to Codex's
+            current top-level ``sandbox_mode``. Common values:
+            "workspace-write", "read-only", "full-access".
     """
     out = [MIGRATION_MARKER]
     if not servers and not plugins and not default_permission_profile:
@@ -268,18 +298,11 @@ def render_codex_toml_section(
         return "\n".join(out) + "\n"
 
     if default_permission_profile:
-        # Codex's config schema: `default_permissions` is a top-level
-        # string referencing a profile name. Built-in profile names start
-        # with ":" (":workspace-write", ":read-only", ":full-access"). The
-        # [permissions] table is for *user-defined* named profiles with
-        # structured fields — not what we want.
-        normalized = (
+        sandbox_mode = _sandbox_mode_for_permission_profile(
             default_permission_profile
-            if default_permission_profile.startswith(":")
-            else f":{default_permission_profile}"
         )
         out.append("")
-        out.append(f"default_permissions = {_format_toml_value(normalized)}")
+        out.append(f"sandbox_mode = {_format_toml_value(sandbox_mode)}")
 
     if servers:
         for name in sorted(servers.keys()):
@@ -317,12 +340,10 @@ def _insert_managed_block_at_top_level(user_text: str, managed_block: str) -> st
         return managed_block
 
     lines = user_text.splitlines(keepends=True)
-    first_table_idx: Optional[int] = None
-    for idx, line in enumerate(lines):
-        stripped = line.lstrip()
-        if stripped.startswith("["):
-            first_table_idx = idx
-            break
+    # Fence-aware: a "[header]"-shaped line inside a multiline string is
+    # string content — inserting there would inject the managed block into
+    # the middle of the user's value.
+    first_table_idx = _first_table_header_index(lines)
 
     if first_table_idx is None:
         prefix = user_text.rstrip("\n")
@@ -333,6 +354,196 @@ def _insert_managed_block_at_top_level(user_text: str, managed_block: str) -> st
     if prefix:
         return f"{prefix}\n\n{managed_block}\n{suffix}"
     return f"{managed_block}\n{suffix}"
+
+
+def _match_top_level_toml_key(stripped_line: str, key: str) -> Optional[str]:
+    """Return the raw right-hand side if ``stripped_line`` assigns ``key``.
+
+    TOML allows the same root key to be written bare (``sandbox_mode``) or
+    quoted (``"sandbox_mode"`` / ``'sandbox_mode'``); all three spellings are
+    the same key, so missing the quoted forms here would make migration emit
+    a duplicate bare key and break the whole config with a TOML parse error.
+    """
+    for candidate in (key, f'"{key}"', f"'{key}'"):
+        if stripped_line.startswith(candidate):
+            remainder = stripped_line[len(candidate):].lstrip()
+            if remainder.startswith("="):
+                return remainder[1:].strip()
+    return None
+
+
+def _skip_singleline_string(line: str, i: int, quote: str) -> int:
+    """Return the index just past the single-line string opening at
+    ``line[i] == quote``. Basic strings honor backslash escapes; literal
+    strings don't. Unterminated (invalid TOML) consumes the rest."""
+    i += 1
+    n = len(line)
+    while i < n:
+        ch = line[i]
+        if quote == '"' and ch == "\\":
+            i += 2
+            continue
+        if ch == quote:
+            return i + 1
+        i += 1
+    return n
+
+
+def _find_unescaped_fence(line: str, fence: str, start: int = 0) -> int:
+    """Index where the CLOSING delimiter of ``fence`` starts, or -1.
+
+    TOML allows 1-2 adjacent quotes as string content right before the
+    closing delimiter (``closes\"\"\"\"`` is one content quote + the
+    delimiter), so within a run of quotes the delimiter is the LAST three.
+    Basic-string fences honor backslash-escape parity (``\\\"\"\"`` is an
+    escaped quote + two content quotes; ``\\\\\"\"\"`` is an escaped
+    backslash + a real fence). Literal fences (``'''``) have no escapes.
+    """
+    quote = fence[0]
+    idx = line.find(fence, start)
+    while idx != -1:
+        if fence == '"""':
+            backslashes = 0
+            j = idx - 1
+            while j >= 0 and line[j] == "\\":
+                backslashes += 1
+                j -= 1
+            if backslashes % 2 == 1:
+                idx = line.find(fence, idx + 1)
+                continue
+        run_end = idx
+        n = len(line)
+        while run_end < n and line[run_end] == quote:
+            run_end += 1
+        return run_end - 3
+    return -1
+
+
+def _line_leaves_multiline_open(line: str) -> Optional[str]:
+    """Return the fence (``\"\"\"`` or ``'''``) when the line opens a
+    multiline string that doesn't close on the same line, else ``None``.
+
+    Comments and single-line strings are skipped first — a triple-quote
+    sequence inside ``# a comment`` or ``"a 'value'"`` is plain text, and
+    counting it would leave the fence state wrongly open for the rest of
+    the document.
+    """
+    i = 0
+    n = len(line)
+    while i < n:
+        ch = line[i]
+        if ch == "#":
+            return None
+        if ch not in ('"', "'"):
+            i += 1
+            continue
+        fence = ch * 3
+        if line.startswith(fence, i):
+            end = _find_unescaped_fence(line, fence, i + 3)
+            if end == -1:
+                return fence
+            i = end + 3
+            continue
+        i = _skip_singleline_string(line, i, ch)
+    return None
+
+
+def _scan_line_fence_state(line: str, fence: Optional[str]) -> Optional[str]:
+    """Consume one physical line and return the multiline-string fence left
+    open after it (``None`` when the line ends outside any multiline string).
+
+    Closing a fence does NOT end the scan: in arrays one line may validly
+    close one multiline string and open another (``closes\"\"\", \"\"\"next``),
+    so the remainder after a close is re-scanned for further openers.
+    """
+    if fence is not None:
+        close = _find_unescaped_fence(line, fence)
+        if close == -1:
+            return fence
+        line = line[close + 3:]
+    return _line_leaves_multiline_open(line)
+
+
+def _first_table_header_index(lines: list[str]) -> Optional[int]:
+    """Index of the first REAL table-header line.
+
+    Lines inside multiline TOML strings (``\"\"\"`` / ``'''``) are string
+    content, not headers — treating them as headers would cut a multiline
+    value in half here and, in the insertion helper, inject the managed
+    block into the middle of a user's string value.
+    """
+    fence: Optional[str] = None
+    for idx, line in enumerate(lines):
+        if fence is None and _looks_like_table_header(line.strip()):
+            return idx
+        fence = _scan_line_fence_state(line, fence)
+    return None
+
+
+def _parse_toml_root_keys(toml_text: str) -> Optional[dict]:
+    """Best-effort dict of the document's root-level entries.
+
+    Tier 1 parses the whole document — spec-accurate for escaped quoted
+    keys (``"sandbox\\u005fmode"`` is the same root key as ``sandbox_mode``)
+    and immune to header-shaped lines inside multiline strings. Tier 2
+    (document uses extensions tomllib rejects) parses only the prefix
+    before the first real table header. Returns ``None`` when neither
+    parses, so callers fall back to the literal line scan.
+    """
+    try:
+        import tomllib
+    except Exception:  # pragma: no cover - py3.11+ always has tomllib
+        return None
+    try:
+        return tomllib.loads(toml_text)
+    except Exception:
+        pass
+    lines = toml_text.splitlines()
+    header_idx = _first_table_header_index(lines)
+    prefix = "\n".join(lines if header_idx is None else lines[:header_idx])
+    try:
+        return tomllib.loads(prefix)
+    except Exception:
+        return None
+
+
+def _read_top_level_toml_key(toml_text: str, key: str) -> Optional[str]:
+    """Return the scalar value of ``key`` if set before the first TOML table.
+
+    Returns ``None`` when the key is absent. Prefers a spec-accurate tomllib
+    parse of the root prefix (handles escaped quoted keys); falls back to a
+    lightweight literal scan when the prefix doesn't parse as valid TOML.
+    """
+    parsed = _parse_toml_root_keys(toml_text)
+    if parsed is not None:
+        if key not in parsed:
+            return None
+        value = parsed[key]
+        return value if isinstance(value, str) else str(value)
+    for line in toml_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if _looks_like_table_header(stripped):
+            return None
+        raw = _match_top_level_toml_key(stripped, key)
+        if raw is None:
+            continue
+        if raw[:1] in {'"', "'"}:
+            closing = raw.find(raw[0], 1)
+            return raw[1:closing] if closing != -1 else raw[1:]
+        return raw.split("#", 1)[0].strip()
+    return None
+
+
+def _has_top_level_toml_key(toml_text: str, key: str) -> bool:
+    """Return whether ``key`` is explicitly set before the first TOML table.
+
+    Root keys cannot resume after a table header in TOML. This lightweight
+    scan is therefore sufficient and avoids rejecting otherwise-valid Codex
+    config extensions that an older Python ``tomllib`` may not understand.
+    """
+    return _read_top_level_toml_key(toml_text, key) is not None
 
 
 def _strip_unmanaged_plugin_tables(toml_text: str) -> str:
@@ -362,23 +573,113 @@ def _strip_unmanaged_plugin_tables(toml_text: str) -> str:
     lines = toml_text.splitlines(keepends=True)
     out: list[str] = []
     in_plugin_table = False
+    fence: Optional[str] = None
     for line in lines:
         stripped = line.lstrip()
         # Only treat a line as a table header when it has the shape
-        # ``[...]`` (optionally followed by a comment). Multi-line array
-        # continuations like ``["nested"],`` also start with ``[`` after
-        # lstrip but are not headers — without this guard they would
-        # falsely flip ``in_plugin_table`` to False mid-table and leak
-        # array fragments into the output.
-        if _looks_like_table_header(stripped):
+        # ``[...]`` (optionally followed by a comment) AND we are not inside
+        # a multiline string. Multi-line array continuations like
+        # ``["nested"],`` also start with ``[`` after lstrip but are not
+        # headers — without these guards they would falsely flip
+        # ``in_plugin_table`` mid-table, and a ``[plugins.…]``-shaped line
+        # inside a user's multiline string value would start a swallow
+        # region that eats real user content.
+        if fence is None and _looks_like_table_header(stripped):
             in_plugin_table = stripped.startswith("[plugins.")
-            if in_plugin_table:
-                continue
+        fence = _scan_line_fence_state(line, fence)
         if in_plugin_table:
-            # Swallow keys/comments/blanks until the next table header.
+            # Swallow the header and keys/comments/blanks (including
+            # multiline values) until the next real table header.
             continue
         out.append(line)
     return "".join(out)
+
+
+def _lost_or_changed_entry(
+    original: dict,
+    migrated: dict,
+    path: str = "",
+    ignore_roots: frozenset = frozenset(),
+) -> Optional[str]:
+    """First ``original`` entry that ``migrated`` lost or changed.
+
+    Subset semantics: the migrated document may ADD root keys and merge new
+    subtables (e.g. ``[mcp_servers.<n>]``), but every entry in ``original``
+    must survive with an equal value. Root keys in ``ignore_roots`` are
+    exempt (used for ``plugins`` tables that migration intentionally
+    replaces from the authoritative ``plugin/list``).
+    """
+    for key, value in original.items():
+        if not path and key in ignore_roots:
+            continue
+        if key not in migrated:
+            return f"{path}{key} (lost)"
+        migrated_value = migrated[key]
+        if isinstance(value, dict) and isinstance(migrated_value, dict):
+            nested = _lost_or_changed_entry(
+                value, migrated_value, f"{path}{key}."
+            )
+            if nested is not None:
+                return nested
+        elif migrated_value != value:
+            return f"{path}{key} (changed)"
+    return None
+
+
+def _validate_migrated_config(
+    user_text: str,
+    migrated_text: str,
+    managed_text: Optional[str] = None,
+    ignore_user_roots: frozenset = frozenset(),
+) -> Optional[str]:
+    """Return an error string when writing ``migrated_text`` would corrupt
+    the user's configuration; ``None`` when it is safe.
+
+    Two independent checks against the tomllib parse of the migrated text:
+
+    1. Every root entry of ``user_text`` (the user's config BEFORE any
+       lossy textual processing) survives unchanged, except roots in
+       ``ignore_user_roots``.
+    2. Every entry of ``managed_text`` (the rendered managed block, which
+       is valid TOML by construction) exists at its intended root path —
+       this catches placement errors where the block was inserted under an
+       existing table (``features.sandbox_mode``) even though no user entry
+       changed.
+
+    When the user's text itself doesn't parse, check 1 is skipped — codex
+    couldn't have loaded that config either way.
+    """
+    try:
+        import tomllib
+    except Exception:  # pragma: no cover - py3.11+ always has tomllib
+        return None
+    try:
+        migrated = tomllib.loads(migrated_text)
+    except Exception as exc:
+        return f"migrated config would not parse ({exc})"
+    try:
+        original = tomllib.loads(user_text)
+    except Exception:
+        original = None
+    if original is not None:
+        problem = _lost_or_changed_entry(
+            original, migrated, ignore_roots=ignore_user_roots
+        )
+        if problem is not None:
+            return f"migration would corrupt user entry {problem}"
+    if managed_text:
+        try:
+            managed = tomllib.loads(managed_text)
+        except Exception:
+            managed = None
+        if managed:
+            problem = _lost_or_changed_entry(managed, migrated)
+            if problem is not None:
+                return (
+                    f"managed entry {problem} did not land at the "
+                    "document root"
+                )
+    return None
 
 
 def _looks_like_table_header(stripped_line: str) -> bool:
@@ -411,7 +712,7 @@ def _strip_existing_managed_block(toml_text: str) -> str:
     Backward compatibility: if the start marker is found but no end marker
     follows, we fall back to the heuristic that swallows lines until we
     hit a section that's not [mcp_servers.*]/[plugins.*]/[permissions]/
-    a `default_permissions =` key. This matches what older versions of
+    a `default_permissions =` / `sandbox_mode =` key. This matches what older versions of
     this code wrote so re-runs don't break configs from prior Hermes
     versions."""
     lines = toml_text.splitlines(keepends=True)
@@ -626,15 +927,12 @@ def migrate(
             the live codex CLI to migrate any installed curated plugins
             into [plugins."<name>@<marketplace>"] entries. Set False to
             skip the subprocess spawn (for tests or restricted environments).
-        default_permission_profile: when set (default ":workspace"), write
-            top-level `default_permissions = "<name>"` so users on this
-            runtime don't get an approval prompt on every write attempt.
-            Built-in codex profile names are ":workspace", ":read-only",
-            ":danger-no-sandbox" (note the leading ":"). Also accepts a
-            user-defined profile name (no leading ":") that the user has
-            configured in their own [permissions.<name>] table. Set None
-            to leave permissions unset and let codex use its compiled-in
-            default (which is read-only).
+        default_permission_profile: legacy profile name mapped to the current
+            top-level ``sandbox_mode`` key. The default ``:workspace`` maps
+            to ``workspace-write``; ``:read-only`` maps to ``read-only`` and
+            full-access aliases map to ``danger-full-access``. Unknown names
+            fail closed to ``read-only``. Set None to leave Codex's existing
+            policy untouched.
         expose_hermes_tools: when True (default), register Hermes' own
             tool surface (web_search, browser_*, delegate_task, vision,
             memory, skills, etc.) as an MCP server in ~/.codex/config.toml
@@ -645,6 +943,16 @@ def migrate(
     codex_home = codex_home or Path.home() / ".codex"
     target = codex_home / "config.toml"
     report.target_path = target
+
+    existing: Optional[str] = None
+    without_managed = ""
+    if target.exists():
+        try:
+            existing = target.read_text(encoding="utf-8")
+        except Exception as exc:
+            report.errors.append(f"could not read {target}: {exc}")
+            return report
+        without_managed = _strip_existing_managed_block(existing)
 
     hermes_servers = (hermes_config or {}).get("mcp_servers") or {}
     if not isinstance(hermes_servers, dict):
@@ -682,10 +990,32 @@ def migrate(
         for p in plugins:
             report.migrated_plugins.append(f"{p['name']}@{p['marketplace']}")
 
-    # Track whether we wrote a default permission profile so the report
-    # surfaces it to the user.
-    if default_permission_profile:
-        report.wrote_permissions_default = default_permission_profile
+    # Respect an explicit user-owned sandbox policy. Hermes only supplies a
+    # workspace-write default when no top-level sandbox_mode exists outside
+    # its managed block; emitting the key twice would make config.toml invalid.
+    effective_permission_profile = default_permission_profile
+    if _has_top_level_toml_key(without_managed, "sandbox_mode"):
+        effective_permission_profile = None
+    else:
+        legacy_profile = _read_top_level_toml_key(
+            without_managed, "default_permissions"
+        )
+        if legacy_profile is not None:
+            # Early app-server builds accepted a top-level
+            # ``default_permissions`` profile, and the previous runtime docs
+            # told users to keep it outside the managed block. Current Codex
+            # ignores that key entirely, so honoring only ``sandbox_mode``
+            # here would silently upgrade an explicitly read-only user to
+            # the workspace-write default. Translate the user's profile
+            # instead; unknown names fail closed to read-only in
+            # _sandbox_mode_for_permission_profile.
+            effective_permission_profile = legacy_profile
+
+    # Track whether we wrote a sandbox default so the report surfaces it.
+    if effective_permission_profile:
+        report.wrote_permissions_default = _sandbox_mode_for_permission_profile(
+            effective_permission_profile
+        )
 
     # Inject Hermes' own tool surface as an MCP server so the spawned
     # codex subprocess can call back into Hermes for the tools codex
@@ -701,27 +1031,45 @@ def migrate(
     # Build the new managed block
     managed_block = render_codex_toml_section(
         translated, plugins=plugins,
-        default_permission_profile=default_permission_profile,
+        default_permission_profile=effective_permission_profile,
     )
 
     # Read existing codex config if any, strip the prior managed block,
     # append the new one.
-    if target.exists():
-        try:
-            existing = target.read_text(encoding="utf-8")
-        except Exception as exc:
-            report.errors.append(f"could not read {target}: {exc}")
-            return report
-        without_managed = _strip_existing_managed_block(existing)
+    if existing is not None:
         # Bug B: when plugin/list ran authoritatively, codex's own
         # [plugins."<name>@<marketplace>"] tables outside our managed block
         # would survive _strip_existing_managed_block and then collide with
         # the entries we re-emit inside the managed block — producing
         # duplicate-table-header parse errors on codex's next startup. Drop
         # those pre-existing tables since plugin/list is the source of truth.
+        # Keep the pre-strip text as the validation baseline: the plugin
+        # stripper is itself line-based, so validating against its OUTPUT
+        # would blind the backstop to anything the stripper ate by mistake.
+        pre_plugin_strip = without_managed
         if plugin_query_succeeded:
             without_managed = _strip_unmanaged_plugin_tables(without_managed)
         new_text = _insert_managed_block_at_top_level(without_managed, managed_block)
+        # Fail-closed backstop: block placement relies on a line scanner
+        # that approximates TOML; if any corner of it misjudged where the
+        # first real table starts, refuse to write rather than silently
+        # corrupt the user's values or bury the managed settings.
+        validation_error = _validate_migrated_config(
+            pre_plugin_strip,
+            new_text,
+            managed_text=managed_block,
+            ignore_user_roots=(
+                frozenset({"plugins"})
+                if plugin_query_succeeded
+                else frozenset()
+            ),
+        )
+        if validation_error is not None:
+            report.errors.append(
+                f"refusing to write {target}: {validation_error} "
+                "(config.toml left untouched)"
+            )
+            return report
     else:
         new_text = managed_block
 

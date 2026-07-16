@@ -386,7 +386,6 @@ class TestRunTurn:
 
     def test_interrupt_during_turn_issues_turn_interrupt(self):
         client = FakeClient()
-        # Don't queue turn/completed — the loop has to interrupt out
         client.queue_notification(
             "item/completed",
             item={"type": "commandExecution", "id": "x", "command": "sleep 60",
@@ -394,6 +393,13 @@ class TestRunTurn:
                   "aggregatedOutput": None, "exitCode": None,
                   "commandActions": []},
             threadId="t", turnId="tu1",
+        )
+        # The interrupted turn's terminal event — codex emits it after
+        # turn/interrupt; the drain must consume it before session reuse.
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "turn-fake-001", "status": "interrupted", "error": None},
         )
         s = make_session(client)
         s.ensure_started()
@@ -407,6 +413,10 @@ class TestRunTurn:
             method == "turn/interrupt" and params.get("turnId") == "turn-fake-001"
             for (method, params) in client.requests
         )
+        # Tail fully drained — session stays reusable, nothing left queued.
+        assert r.should_retire is False
+        assert client._notifications == []
+        assert s._stale_turn_ids == set()
 
     def test_deadline_exceeded_records_error(self):
         client = FakeClient()
@@ -479,6 +489,330 @@ class TestRunTurn:
         r = make_session(client).run_turn("x", turn_timeout=1.0)
 
         assert r.compacted is True
+
+
+class TestInterruptedTurnDrain:
+    """A user interrupt must not leave the interrupted turn's notification
+    tail queued for the next turn (stale turn/completed would terminate the
+    replacement turn instantly; stale items would leak into its transcript)."""
+
+    def test_interrupt_folds_tail_into_interrupted_result(self):
+        client = FakeClient()
+        client.queue_notification(
+            "item/completed",
+            item={"type": "agentMessage", "id": "m1", "text": "partial answer"},
+            threadId="t", turnId="turn-fake-001",
+        )
+        client.queue_notification(
+            "thread/tokenUsage/updated",
+            threadId="t", turnId="turn-fake-001",
+            tokenUsage={
+                "last": {"totalTokens": 42, "inputTokens": 30,
+                         "cachedInputTokens": 0, "outputTokens": 12,
+                         "reasoningOutputTokens": 0},
+                "total": {"totalTokens": 42, "inputTokens": 30,
+                          "cachedInputTokens": 0, "outputTokens": 12,
+                          "reasoningOutputTokens": 0},
+            },
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "turn-fake-001", "status": "interrupted", "error": None},
+        )
+        s = make_session(client)
+        s.ensure_started()
+        s.request_interrupt()
+        r = s.run_turn("x", turn_timeout=2.0)
+        assert r.interrupted is True
+        assert r.should_retire is False
+        # The tail belongs to the interrupted turn — folded in, not dropped.
+        assert r.final_text == "partial answer"
+        assert r.token_usage_last["totalTokens"] == 42
+        assert client._notifications == []
+
+        # The next turn on the same session completes normally.
+        s.clear_interrupt()
+        client.queue_notification(
+            "item/completed",
+            item={"type": "agentMessage", "id": "m2", "text": "second answer"},
+            threadId="t", turnId="turn-fake-001",
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        r2 = s.run_turn("y", turn_timeout=2.0)
+        assert r2.interrupted is False
+        assert r2.final_text == "second answer"
+
+    def test_interrupt_drain_timeout_retires_session(self):
+        client = FakeClient()
+        # No terminal event ever arrives for the interrupted turn.
+        s = make_session(client)
+        s.ensure_started()
+        s.request_interrupt()
+        with patch.object(session_mod, "_INTERRUPT_DRAIN_GRACE_SECONDS", 0.05):
+            r = s.run_turn("x", turn_timeout=2.0)
+        assert r.interrupted is True
+        # Queue state unknown — the session must not be reused.
+        assert r.should_retire is True
+        # The interrupted turn stays marked stale in case the session
+        # object is reused anyway.
+        assert "turn-fake-001" in s._stale_turn_ids
+
+    def test_client_death_during_drain_retires_session(self):
+        client = FakeClient()
+        s = make_session(client)
+        s.ensure_started()
+        s.request_interrupt()
+        # Codex dies right after turn/interrupt, before emitting the
+        # terminal event — the drain must retire, not return a session
+        # whose next turn/start would fail on a dead client.
+        client._closed = True
+        r = s.run_turn("x", turn_timeout=2.0)
+        assert r.interrupted is True
+        assert r.should_retire is True
+
+    def test_client_death_after_terminal_event_retires_session(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "turn-fake-001", "status": "interrupted", "error": None},
+        )
+        s = make_session(client)
+        s.ensure_started()
+        s.request_interrupt()
+        # Codex queues its terminal event and then exits: the tail is
+        # clean, but the session must still not be declared reusable.
+        client._closed = True
+        r = s.run_turn("x", turn_timeout=2.0)
+        assert r.interrupted is True
+        assert r.should_retire is True
+
+    def test_interrupt_drain_declines_stale_approvals(self):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/commandExecution/requestApproval",
+            request_id="stale-approval-1",
+            command="rm -rf /scratch", cwd="/",
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "turn-fake-001", "status": "interrupted", "error": None},
+        )
+        s = make_session(client)
+        s.ensure_started()
+        s.request_interrupt()
+        r = s.run_turn("x", turn_timeout=2.0)
+        assert r.interrupted is True
+        assert r.should_retire is False
+        # The canceled turn's approval was declined, not left queued for
+        # (or auto-accepted by) the next turn.
+        assert ("stale-approval-1", {"decision": "decline"}) in client.responses
+        assert client._server_requests == []
+
+        s.clear_interrupt()
+        client.queue_notification(
+            "item/completed",
+            item={"type": "agentMessage", "id": "m2", "text": "clean turn"},
+            threadId="t", turnId="turn-fake-001",
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        r2 = s.run_turn("y", turn_timeout=2.0)
+        assert r2.interrupted is False
+        assert r2.final_text == "clean turn"
+
+    def test_drain_recognizes_turn_aborted_marker_as_terminal(self):
+        client = FakeClient()
+        # Marker-only codex builds terminate without turn/completed.
+        client.queue_notification(
+            "item/completed",
+            item={"type": "agentMessage", "id": "m", "text": "<turn_aborted>"},
+            threadId="t", turnId="turn-fake-001",
+        )
+        s = make_session(client)
+        s.ensure_started()
+        s.request_interrupt()
+        r = s.run_turn("x", turn_timeout=2.0)
+        assert r.interrupted is True
+        # The marker is terminal: no grace-window burn, no retirement of a
+        # healthy context-bearing thread.
+        assert r.should_retire is False
+        assert "turn_aborted" in (r.error or "")
+
+    @staticmethod
+    def _distinct_turn_id_handler(ids):
+        id_iter = iter(ids)
+
+        def handler(method, params):
+            if method == "thread/start":
+                return {"thread": {"id": "t"},
+                        "activePermissionProfile": {"id": "workspace-write"}}
+            if method == "turn/start":
+                return {"turn": {"id": next(id_iter)}}
+            return {}
+
+        return handler
+
+    def test_late_completion_after_abort_marker_is_filtered(self):
+        """A marker-ended turn's real turn/completed can arrive during the
+        NEXT turn. Its id must stay tracked as stale until that completion
+        is consumed — discarding it at drain end let the late completion
+        terminate the next turn empty."""
+        client = FakeClient()
+        client._request_handler = self._distinct_turn_id_handler(
+            ["turn-A", "turn-B"]
+        )
+        client.queue_notification(
+            "item/completed",
+            item={"type": "agentMessage", "id": "m", "text": "<turn_aborted>"},
+            threadId="t", turnId="turn-A",
+        )
+        s = make_session(client)
+        s.ensure_started()
+        s.request_interrupt()
+        r1 = s.run_turn("x", turn_timeout=2.0)
+        assert r1.interrupted is True
+        assert r1.should_retire is False
+        # Kept stale: the matching completion has not been seen yet.
+        assert "turn-A" in s._stale_turn_ids
+
+        s.clear_interrupt()
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "turn-A", "status": "interrupted", "error": None},
+        )
+        client.queue_notification(
+            "item/completed",
+            item={"type": "agentMessage", "id": "m2", "text": "real answer"},
+            threadId="t", turnId="turn-B",
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "turn-B", "status": "completed", "error": None},
+        )
+        r2 = s.run_turn("y", turn_timeout=2.0)
+        assert r2.interrupted is False
+        assert r2.final_text == "real answer"
+        assert "turn-A" not in s._stale_turn_ids
+
+    def test_marker_ended_turn_without_interrupt_filters_late_completion(self):
+        """Same race via the MAIN wait loop's marker branch (no user
+        interrupt involved)."""
+        client = FakeClient()
+        client._request_handler = self._distinct_turn_id_handler(
+            ["turn-A", "turn-B"]
+        )
+        client.queue_notification(
+            "item/completed",
+            item={"type": "agentMessage", "id": "m", "text": "<turn_aborted>"},
+            threadId="t", turnId="turn-A",
+        )
+        s = make_session(client)
+        s.ensure_started()
+        r1 = s.run_turn("x", turn_timeout=2.0)
+        assert r1.interrupted is True
+        assert "turn-A" in s._stale_turn_ids
+
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "turn-A", "status": "interrupted", "error": None},
+        )
+        client.queue_notification(
+            "item/completed",
+            item={"type": "agentMessage", "id": "m2", "text": "real answer"},
+            threadId="t", turnId="turn-B",
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "turn-B", "status": "completed", "error": None},
+        )
+        r2 = s.run_turn("y", turn_timeout=2.0)
+        assert r2.interrupted is False
+        assert r2.final_text == "real answer"
+
+    def test_compaction_marker_keeps_late_completion_filtered(self):
+        """The compaction wait loop has the same marker branch — its turn id
+        must also stay tracked for late-completion filtering."""
+        client = FakeClient()
+        client.queue_notification(
+            "turn/started", threadId="t", turn={"id": "turn-C"}
+        )
+        client.queue_notification(
+            "item/completed",
+            item={"type": "agentMessage", "id": "m", "text": "<turn_aborted>"},
+            threadId="t", turnId="turn-C",
+        )
+        s = make_session(client)
+        s.ensure_started()
+        rc = s.compact_thread(turn_timeout=2.0)
+        assert rc.interrupted is True
+        assert "turn-C" in s._stale_turn_ids
+
+    def test_drain_folds_failed_terminal_error(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "turn-fake-001", "status": "failed",
+                  "error": {"message": "boom from codex"}},
+        )
+        s = make_session(client)
+        s.ensure_started()
+        s.request_interrupt()
+        r = s.run_turn("x", turn_timeout=2.0)
+        assert r.interrupted is True
+        assert r.error and "boom from codex" in r.error
+
+    def test_stale_notifications_are_dropped_by_next_turn(self):
+        client = FakeClient()
+        s = make_session(client)
+        s.ensure_started()
+        # Simulate a tail that outlived the drain window: the id is known
+        # stale, and its notifications arrive during the NEXT turn.
+        s._stale_turn_ids.add("turn-old")
+        client.queue_notification(
+            "item/completed",
+            item={"type": "agentMessage", "id": "old", "text": "stale text"},
+            threadId="t", turnId="turn-old",
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "turn-old", "status": "interrupted", "error": None},
+        )
+        client.queue_notification(
+            "item/completed",
+            item={"type": "agentMessage", "id": "new", "text": "fresh text"},
+            threadId="t", turnId="turn-fake-001",
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        r = s.run_turn("x", turn_timeout=2.0)
+        # The stale turn's completion did not terminate this turn, and its
+        # item never reached the transcript.
+        assert r.interrupted is False
+        assert r.final_text == "fresh text"
+        assert all(
+            m.get("content") != "stale text" for m in r.projected_messages
+        )
+        # Consumed stale id is forgotten.
+        assert "turn-old" not in s._stale_turn_ids
 
 
 class TestCompactThread:

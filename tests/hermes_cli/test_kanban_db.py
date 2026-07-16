@@ -4357,7 +4357,9 @@ def test_repeated_corrupt_open_reuses_single_backup(tmp_path):
     assert backup.exists()
     assert backup.read_bytes() == original
 
-    # Mutate the corrupt bytes — fingerprint changes, separate backup preserved.
+    # In-place mutation is not a recovery boundary: the persisted incident stays
+    # open and all callers keep reusing its original evidence. Only atomic DB
+    # replacement clears the circuit.
     with db_path.open("r+b") as f:
         f.seek(4096)
         f.write(b"\xAB" * 64)
@@ -4366,7 +4368,7 @@ def test_repeated_corrupt_open_reuses_single_backup(tmp_path):
         kb.connect(db_path=db_path)
     second_backup = excinfo2.value.backup_path
     assert second_backup is not None
-    assert second_backup != backup
+    assert second_backup == backup
     assert second_backup.exists()
 
 

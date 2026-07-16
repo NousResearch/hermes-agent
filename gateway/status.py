@@ -136,6 +136,36 @@ def _get_scope_lock_path(scope: str, identity: str) -> Path:
     return _get_lock_dir() / f"{scope}-{_scope_hash(identity)}.lock"
 
 
+def _parse_linux_proc_stat_suffix(raw: str) -> list[str]:
+    """Return fields 3 onward from a Linux ``/proc/<pid>/stat`` row.
+
+    Field 2 is a parenthesized process name that may contain spaces and right
+    parentheses, so fixed-position whitespace splitting is unsafe. Kernel
+    fields resume after the final ``)`` delimiter.
+    """
+    open_paren = raw.find("(")
+    close_paren = raw.rfind(")")
+    if open_paren <= 0 or close_paren <= open_paren:
+        raise ValueError("malformed /proc stat comm field")
+
+    suffix_fields = raw[close_paren + 1:].split()
+    if not suffix_fields:
+        raise ValueError("truncated /proc stat row")
+
+    state = suffix_fields[0]
+    if len(state) != 1 or not state.isascii() or not state.isalpha():
+        raise ValueError("invalid /proc stat state field")
+    return suffix_fields
+
+
+def _parse_linux_proc_stat_start_time(raw: str) -> int:
+    """Parse field 22 (``starttime``) from a Linux proc stat row."""
+    suffix_fields = _parse_linux_proc_stat_suffix(raw)
+    if len(suffix_fields) <= 19:
+        raise ValueError("truncated /proc stat row")
+    return int(suffix_fields[19])
+
+
 def _get_process_start_time(pid: int) -> Optional[int]:
     """Return a stable per-process start-time fingerprint, or None.
 
@@ -157,7 +187,9 @@ def _get_process_start_time(pid: int) -> Optional[int]:
     stat_path = Path(f"/proc/{pid}/stat")
     try:
         # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
-        return int(stat_path.read_text(encoding="utf-8").split()[21])
+        return _parse_linux_proc_stat_start_time(
+            stat_path.read_text(encoding="utf-8")
+        )
     except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
         pass
 
@@ -664,10 +696,10 @@ def _pid_exists(pid: int) -> bool:
         # answers os.kill(pid, 0) successfully, so without this check
         # ``--replace`` would wait on a dead PID and abort with exit 1.
         try:
-            stat_fields = (
-                Path(f"/proc/{int(pid)}/stat").read_text(encoding="utf-8").split()
+            stat_suffix = _parse_linux_proc_stat_suffix(
+                Path(f"/proc/{int(pid)}/stat").read_text(encoding="utf-8")
             )
-            if len(stat_fields) > 2 and stat_fields[2] == "Z":
+            if stat_suffix[0] == "Z":
                 return False
         except FileNotFoundError:
             # No /proc (macOS/BSD) — fall back to ps state.
@@ -682,7 +714,7 @@ def _pid_exists(pid: int) -> bool:
                     return False
             except Exception:
                 pass
-        except (IndexError, PermissionError, OSError):
+        except (IndexError, PermissionError, ValueError, OSError):
             pass
         try:
             os.kill(int(pid), 0)  # windows-footgun: ok — POSIX-only branch (the whole point of _pid_exists)

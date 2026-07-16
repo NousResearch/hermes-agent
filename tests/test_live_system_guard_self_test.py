@@ -19,9 +19,15 @@ from __future__ import annotations
 
 import os
 import signal
+import shutil
 import subprocess
 
 import pytest
+
+_NEEDS_SYSTEMCTL = pytest.mark.skipif(
+    shutil.which("systemctl") is None,
+    reason="requires a real systemctl binary (absent on macOS / non-systemd hosts); these assert the guard PASSES THROUGH read-only systemctl subcommands, which cannot run without the binary",
+)
 
 # A guaranteed-foreign PID: PID 1 (init).  Owned by root, not us, and
 # always exists. A sane guard refuses to signal it.
@@ -204,6 +210,7 @@ def test_subprocess_killall_hermes_blocked():
 # ──────────────────── pass-through cases (must NOT raise) ──────
 
 
+@_NEEDS_SYSTEMCTL
 def test_systemctl_status_passes_through():
     """Read-only systemctl probes (status/show/list-units) are fine."""
     # Run with check=False so we don't fail on the gateway's exit code.
@@ -216,6 +223,7 @@ def test_systemctl_status_passes_through():
     assert r is not None  # Did not raise — the guard let it through.
 
 
+@_NEEDS_SYSTEMCTL
 def test_systemctl_show_passes_through():
     r = subprocess.run(
         ["systemctl", "--user", "show", "hermes-gateway", "--no-pager"],
@@ -226,6 +234,7 @@ def test_systemctl_show_passes_through():
     assert r is not None
 
 
+@_NEEDS_SYSTEMCTL
 def test_systemctl_list_units_passes_through():
     r = subprocess.run(
         ["systemctl", "--user", "list-units", "fake-not-real-unit*", "--no-pager"],
@@ -236,6 +245,7 @@ def test_systemctl_list_units_passes_through():
     assert r is not None
 
 
+@_NEEDS_SYSTEMCTL
 def test_systemctl_unrelated_unit_passes_through():
     """systemctl restart of a non-hermes unit is allowed (we only protect hermes)."""
     # Use --dry-run so we don't actually try to restart anything; just

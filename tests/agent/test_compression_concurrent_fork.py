@@ -127,8 +127,11 @@ def test_concurrent_compression_does_not_fork_session(tmp_path: Path) -> None:
     t_b = threading.Thread(target=run, args=(agent_b,), name="review_fork")
     t_a.start()
     t_b.start()
-    t_a.join(timeout=10)
-    t_b.join(timeout=10)
+    t_a.join(timeout=30)
+    t_b.join(timeout=30)
+    assert not t_a.is_alive() and not t_b.is_alive(), (
+        "compression thread did not finish within 30s under contention"
+    )
 
     # The invariant Damien's incident is about: the parent must NEVER end up
     # with two (or more) children — that is the transcript fork. The lock
@@ -168,7 +171,13 @@ def test_concurrent_compression_does_not_fork_session(tmp_path: Path) -> None:
     )
 
     # The lock must be released after both paths finished, regardless of
-    # whether the winner committed a child or rolled back.
+    # whether the winner committed a child or rolled back. Poll briefly: the
+    # release happens in the worker's finally, which can trail the join by a
+    # few ms on a loaded runner.
+    import time as _time
+    _deadline = _time.monotonic() + 5.0
+    while db.get_compression_lock_holder(parent_sid) is not None and _time.monotonic() < _deadline:
+        _time.sleep(0.02)
     assert db.get_compression_lock_holder(parent_sid) is None, (
         "Compression lock leaked: still held after both paths completed."
     )

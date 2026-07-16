@@ -120,9 +120,16 @@ class TestDetectDangerousRm:
         assert "delete" in desc.lower()
 
     def test_nonrecursive_verification_artifact_cleanup_is_not_dangerous(self):
-        with mock_patch("tempfile.gettempdir", return_value="/tmp"):
+        # Use a realpath'd temp dir: the exemption compares the operand against
+        # the REALPATH of gettempdir() (see test_symlinked_temp_dir_* for why
+        # that's intentional), so on macOS a raw "/tmp/..." operand -- where
+        # gettempdir()="/tmp" but realpath="/private/tmp" -- would not qualify.
+        # The canonical spelling is what a real caller passes.
+        import os as _os
+        tmp = _os.path.realpath("/tmp")
+        with mock_patch("tempfile.gettempdir", return_value=tmp):
             for prefix in ("hermes-verify-", "hermes-ad-hoc-"):
-                assert detect_dangerous_command(f"rm -f /tmp/{prefix}example.py") == (
+                assert detect_dangerous_command(f"rm -f {tmp}/{prefix}example.py") == (
                     False,
                     None,
                     None,

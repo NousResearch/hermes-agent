@@ -816,9 +816,14 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
 
 
-def build_api_kwargs(agent, api_messages: list) -> dict:
-    """Build the keyword arguments dict for the active API mode."""
-    tools_for_api = agent.tools
+def build_api_kwargs(
+    agent,
+    api_messages: list,
+    *,
+    tool_policy: Optional[str] = None,
+) -> dict:
+    """Build request kwargs, applying an optional policy for this call only."""
+    tools_for_api = [] if tool_policy == "none" else agent.tools
 
     if agent.api_mode == "anthropic_messages":
         _transport = agent._get_transport()

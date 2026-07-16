@@ -613,11 +613,13 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
                 return {"action": "continue", "message": message.strip()}
         return None
 
+    result: dict[str, Any] = {}
     context = data.get("context")
     if isinstance(context, str) and context.strip():
-        return {"context": context}
-
-    return None
+        result["context"] = context
+    if event == "pre_llm_call" and str(data.get("tool_policy") or "").strip().lower() == "none":
+        result["tool_policy"] = "none"
+    return result or None
 
 
 # ---------------------------------------------------------------------------

@@ -112,6 +112,9 @@ class TurnContext:
     should_review_memory: bool = False
     # Context contributed by ``pre_llm_call`` plugins (appended to user message).
     plugin_user_context: str = ""
+    # Optional policy contributed by ``pre_llm_call`` plugins for this turn only.
+    # ``none`` means the provider request must not expose any tool schemas.
+    tool_policy: Optional[str] = None
     # External-memory prefetch result, reused across loop iterations.
     ext_prefetch_cache: str = ""
 
@@ -521,6 +524,7 @@ def build_turn_context(
 
     # Plugin hook: pre_llm_call (context injected into user message, not system prompt).
     plugin_user_context = ""
+    tool_policy: Optional[str] = None
     try:
         from hermes_cli.plugins import invoke_hook as _invoke_hook
         _pre_results = _invoke_hook(
@@ -550,11 +554,22 @@ def build_turn_context(
             _spill_config_cached = None
         for r in _pre_results:
             _piece: str = ""
-            if isinstance(r, dict) and r.get("context"):
-                _piece = str(r["context"])
+            if isinstance(r, dict):
+                if r.get("context"):
+                    _piece = str(r["context"])
+                _requested_tool_policy = str(r.get("tool_policy") or "").strip().lower()
+                if _requested_tool_policy == "none":
+                    tool_policy = "none"
+                elif _requested_tool_policy:
+                    logger.warning(
+                        "Ignoring unsupported pre_llm_call tool_policy: %s",
+                        _requested_tool_policy,
+                    )
             elif isinstance(r, str) and r.strip():
                 _piece = r
             else:
+                continue
+            if not _piece:
                 continue
             if _spill_if_oversized is not None:
                 try:
@@ -619,5 +634,6 @@ def build_turn_context(
         current_turn_user_idx=current_turn_user_idx,
         should_review_memory=should_review_memory,
         plugin_user_context=plugin_user_context,
+        tool_policy=tool_policy,
         ext_prefetch_cache=ext_prefetch_cache,
     )

@@ -5417,10 +5417,15 @@ class AIAgent:
                     content[-1]["cache_control"] = {"type": "ephemeral"}
                 break
 
-    def _build_api_kwargs(self, api_messages: list) -> dict:
+    def _build_api_kwargs(
+        self,
+        api_messages: list,
+        *,
+        tool_policy: Optional[str] = None,
+    ) -> dict:
         """Forwarder — see ``agent.chat_completion_helpers.build_api_kwargs``."""
         from agent.chat_completion_helpers import build_api_kwargs
-        return build_api_kwargs(self, api_messages)
+        return build_api_kwargs(self, api_messages, tool_policy=tool_policy)
 
     def _supports_reasoning_extra_body(self) -> bool:
         """Return True when reasoning extra_body is safe to send for this route/model.

@@ -614,6 +614,7 @@ def run_conversation(
     current_turn_user_idx = _ctx.current_turn_user_idx
     _should_review_memory = _ctx.should_review_memory
     _plugin_user_context = _ctx.plugin_user_context
+    _tool_policy = _ctx.tool_policy
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
 
     # Main conversation loop counters (pure locals consumed by the loop below).
@@ -1194,7 +1195,13 @@ def run_conversation(
                 # unless the active provider needs it) so the fallback request
                 # isn't sent with stale, primary-shaped reasoning fields.
                 agent._reapply_reasoning_echo_for_provider(api_messages)
-                api_kwargs = agent._build_api_kwargs(api_messages)
+                if _tool_policy is None:
+                    api_kwargs = agent._build_api_kwargs(api_messages)
+                else:
+                    api_kwargs = agent._build_api_kwargs(
+                        api_messages,
+                        tool_policy=_tool_policy,
+                    )
                 if agent._force_ascii_payload:
                     _sanitize_structure_non_ascii(api_kwargs)
                 if agent.api_mode == "codex_responses":
@@ -1280,7 +1287,8 @@ def run_conversation(
                             if isinstance(request_messages, list)
                             else [],
                             message_count=len(api_messages),
-                            tool_count=len(agent.tools or []),
+                            tool_count=len(api_kwargs.get("tools") or []),
+                            tool_policy=_tool_policy,
                             approx_input_tokens=approx_tokens,
                             request_char_count=total_chars,
                             max_tokens=agent.max_tokens,
@@ -4582,6 +4590,30 @@ def run_conversation(
             elif hasattr(agent, "_codex_incomplete_retries"):
                 agent._codex_incomplete_retries = 0
             
+            # A no-tools turn is enforced twice: request construction removes
+            # every schema, and this guard prevents a malformed/provider-replayed
+            # tool call from ever reaching a handler.
+            if _tool_policy == "none" and assistant_message.tool_calls:
+                _turn_exit_reason = "tool_policy_violation"
+                logger.error(
+                    "Provider returned %s tool call(s) while tool_policy=none; rejecting turn",
+                    len(assistant_message.tool_calls),
+                )
+                agent._cleanup_task_resources(effective_task_id)
+                agent._persist_session(messages, conversation_history)
+                return {
+                    "final_response": (
+                        "The model returned an unexpected tool call while tools "
+                        "were disabled for this turn."
+                    ),
+                    "messages": messages,
+                    "api_calls": api_call_count,
+                    "completed": False,
+                    "partial": True,
+                    "error": "tool_call_rejected_by_policy",
+                    "turn_exit_reason": _turn_exit_reason,
+                }
+
             # Check for tool calls
             if assistant_message.tool_calls:
                 if not agent.quiet_mode:

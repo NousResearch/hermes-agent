@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import glob
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -60,8 +61,12 @@ def lint_nodeids(repo: Path, nodeids: Sequence[str]) -> list[str]:
         python = repo / "venv" / "bin" / "python"
     if not python.exists():
         python = Path.home() / ".hermes" / "hermes-agent" / "venv" / "bin" / "python"
+    # Last-resort fallback to the running interpreter — the fleet dev venvs
+    # above are absent on a CI shard's clean checkout, and a nonexistent path
+    # makes subprocess.run raise FileNotFoundError (the test-isolation red).
+    python_exe = str(python) if python.exists() else sys.executable
     proc = subprocess.run(
-        [str(python), "-m", "pytest", "--collect-only", "-q", "-o", "addopts=", "-p", "no:randomly", *nodeids],
+        [python_exe, "-m", "pytest", "--collect-only", "-q", "-o", "addopts=", "-p", "no:randomly", *nodeids],
         cwd=repo,
         text=True,
         stdout=subprocess.PIPE,

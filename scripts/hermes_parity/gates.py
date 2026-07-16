@@ -150,9 +150,12 @@ def gate_manifest_forkdelta(repo: Path, *, base: str | None, fork_ref: str) -> G
                 venv_python = (
                     Path.home() / ".hermes" / "hermes-agent" / "venv" / "bin" / "python"
                 )
+            # Fall back to the running interpreter when neither dev venv exists
+            # (a CI clean checkout) — a nonexistent path raises FileNotFoundError.
+            python_exe = str(venv_python) if venv_python.exists() else sys.executable
             test_proc = subprocess.run(
                 [
-                    str(venv_python), "-m", "pytest", *tests,
+                    python_exe, "-m", "pytest", *tests,
                     "-q", "-o", "addopts=", "-p", "no:randomly",
                 ],
                 cwd=repo,

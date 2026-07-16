@@ -89,8 +89,12 @@ def build_multi_agent_home(root: Path, agents: dict, *, default_agent="main",
 def make_app(adapter: APIServerAdapter) -> web.Application:
     app = web.Application()
     app["api_server_adapter"] = adapter
-    app.router.add_get("/v1/models", adapter._handle_models)
-    app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
+    # Register the REAL route table the adapter exposes in production
+    # (``connect()`` uses the same ``_http_route_table()``), not just the two
+    # chat endpoints — the session-identity tests need the /api/sessions
+    # create/fork/get/chat routes wired exactly as the live server wires them.
+    for method, path, handler in adapter._http_route_table():
+        app.router.add_route(method, path, handler)
     return app
 
 
@@ -152,6 +156,7 @@ async def integ(tmp_path, monkeypatch):
     class _Env:
         def __init__(self, agents, *, default_agent="main", multiplex=True):
             self.captures: list = []
+            self.home = tmp_path  # root HERMES_HOME; state.db lives here
             self.config = build_multi_agent_home(
                 tmp_path, agents, default_agent=default_agent, multiplex=multiplex)
             monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -209,6 +214,69 @@ async def integ(tmp_path, monkeypatch):
                 return json.loads(content)
             except Exception:
                 return {"raw": body, "status": r.status}
+
+        # --- Session resource API helpers (D — session identity) -----------
+        # These drive the REAL /api/sessions/* routes wired in make_app so the
+        # persisted-agent invariant can be exercised end-to-end.
+        async def _session_request(self, method, path, *, chat_id=None,
+                                   extra_headers=None, json_body=None):
+            headers = {"Authorization": f"Bearer {API_KEY}",
+                       "Content-Type": "application/json"}
+            if chat_id is not None:
+                headers["X-Hermes-Chat-Id"] = chat_id
+            if extra_headers:
+                headers.update(extra_headers)
+            cli = await self._cli()
+            r = await cli.request(method, path, headers=headers,
+                                  json=json_body if json_body is not None else {})
+            return r, await r.json()
+
+        async def create_session(self, chat_id, *, session_id=None,
+                                 extra_headers=None):
+            """POST /api/sessions with an optional routing header. Returns the
+            client-safe session dict (agent_id is NOT exposed there — read it
+            with ``persisted_agent_id``)."""
+            body = {"id": session_id} if session_id else {}
+            r, data = await self._session_request(
+                "POST", "/api/sessions", chat_id=chat_id,
+                extra_headers=extra_headers, json_body=body)
+            return (data.get("session") or {}), r.status
+
+        async def get_session(self, session_id):
+            r, data = await self._session_request(
+                "GET", f"/api/sessions/{session_id}")
+            return (data.get("session") or {}), r.status
+
+        async def fork_session(self, session_id, *, new_id=None):
+            body = {"id": new_id} if new_id else {}
+            r, data = await self._session_request(
+                "POST", f"/api/sessions/{session_id}/fork", json_body=body)
+            return (data.get("session") or {}), r.status
+
+        async def session_chat(self, session_id, message, *,
+                               chat_id_header=None, extra_headers=None):
+            """POST /api/sessions/{id}/chat. ``chat_id_header`` lets a caller
+            send a CONFLICTING X-Hermes-Chat-Id to prove it cannot hijack the
+            session's persisted agent. Returns the spy's captured run context."""
+            r, data = await self._session_request(
+                "POST", f"/api/sessions/{session_id}/chat",
+                chat_id=chat_id_header, extra_headers=extra_headers,
+                json_body={"message": message})
+            content = ((data.get("message") or {}).get("content", "")
+                       if isinstance(data, dict) else "")
+            try:
+                return json.loads(content)
+            except Exception:
+                return {"raw": data, "status": r.status}
+
+        def persisted_agent_id(self, session_id):
+            """Read the agent_id persisted on the session row directly from the
+            real SessionDB (state.db under HERMES_HOME) — the ground truth the
+            client-safe session view intentionally does not expose."""
+            from hermes_state import SessionDB
+            db = SessionDB(db_path=Path(self.home) / "state.db")
+            row = db.get_session(session_id) or {}
+            return row.get("agent_id")
 
         async def aclose(self):
             if self._client is not None:

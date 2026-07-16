@@ -105,6 +105,7 @@ describe('chatPartsEquivalent', () => {
       args: {} as never,
       argsText: '{}'
     }
+
     const partB = {
       type: 'tool-call' as const,
       toolCallId: 'tc-1',
@@ -126,6 +127,7 @@ describe('chatPartsEquivalent', () => {
       result: { content: 'file data' },
       isError: false
     }
+
     const partB = {
       type: 'tool-call' as const,
       toolCallId: 'tc-1',
@@ -147,6 +149,7 @@ describe('chatPartsEquivalent', () => {
       args: {} as never,
       argsText: '{}'
     }
+
     const partB = {
       type: 'tool-call' as const,
       toolCallId: 'tc-1',

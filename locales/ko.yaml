@@ -124,6 +124,9 @@ gateway:
     label_normal:          "NORMAL"
     status_fast:           "fast"
     status_normal:         "normal"
+    picker_title:          "⚡ **Priority Processing**\\n\\n현재 모드: `{mode}`\\n\\n옵션을 선택하세요:"
+    choice_fast:           "fast — Priority Processing 켜기"
+    choice_normal:         "normal — 표준 처리"
 
   footer:
     status:                "📎 런타임 푸터: **{state}**\n필드: `{fields}`\n플랫폼: `{platform}`"
@@ -194,6 +197,11 @@ gateway:
     reset_global_unsupported:  "⚠️ `/reasoning reset --global`은 지원되지 않습니다. 전역 기본값을 변경하려면 `/reasoning <level> --global`을 사용하세요."
     reset_done:                "🧠 ✓ 세션 추론 재정의가 해제되었습니다. 전역 설정으로 돌아갑니다."
     unknown_arg:               "⚠️ 알 수 없는 인수: `{arg}`\n\n**유효한 수준:** none, minimal, low, medium, high, xhigh, max, ultra\n**표시:** show, hide\n**영구화:** 이 세션을 넘어 저장하려면 `--global`을 추가하세요"
+    picker_title:              "🧠 **추론 설정**\\n\\n**노력:** `{level}`\\n**범위:** {scope}\\n**표시:** {display}\\n\\n옵션을 선택하세요:"
+    choice_none:               "none — 추론 비활성화"
+    choice_reset:              "reset — 세션 재정의 초기화"
+    choice_show:               "응답에 추론 표시"
+    choice_hide:               "응답에서 추론 숨기기"
     set_global:                "🧠 ✓ 추론 노력이 `{effort}`(으)로 설정되었습니다 (설정에 저장됨)\n_(다음 메시지부터 적용됩니다)_"
     set_global_save_failed:    "🧠 ✓ 추론 노력이 `{effort}`(으)로 설정되었습니다 (세션 한정 — 설정 저장 실패)\n_(다음 메시지부터 적용됩니다)_"
     set_session:               "🧠 ✓ 추론 노력이 `{effort}`(으)로 설정되었습니다 (세션 한정 — 영구 저장하려면 `--global` 추가)\n_(다음 메시지부터 적용됩니다)_"

@@ -124,6 +124,9 @@ gateway:
     label_normal:          "NORMAL"
     status_fast:           "fast"
     status_normal:         "normal"
+    picker_title:          "⚡ **Priority Processing**\\n\\nMode actuel : `{mode}`\\n\\nChoisissez une option :"
+    choice_fast:           "fast — Priority Processing activé"
+    choice_normal:         "normal — traitement standard"
 
   footer:
     status:                "📎 Pied de page d'exécution : **{state}**\nChamps : `{fields}`\nPlateforme : `{platform}`"
@@ -194,6 +197,11 @@ gateway:
     reset_global_unsupported:  "⚠️ `/reasoning reset --global` n'est pas pris en charge. Utilisez `/reasoning <level> --global` pour modifier la valeur globale par défaut."
     reset_done:                "🧠 ✓ Remplacement de raisonnement de la session effacé ; retour à la configuration globale."
     unknown_arg:               "⚠️ Argument inconnu : `{arg}`\n\n**Niveaux valides :** none, minimal, low, medium, high, xhigh, max, ultra\n**Affichage :** show, hide\n**Persister :** ajoutez `--global` pour enregistrer au-delà de cette session"
+    picker_title:              "🧠 **Paramètres de raisonnement**\\n\\n**Effort :** `{level}`\\n**Portée :** {scope}\\n**Affichage :** {display}\\n\\nChoisissez une option :"
+    choice_none:               "none — désactiver le raisonnement"
+    choice_reset:              "reset — effacer le réglage de session"
+    choice_show:               "afficher le raisonnement dans les réponses"
+    choice_hide:               "masquer le raisonnement dans les réponses"
     set_global:                "🧠 ✓ Effort de raisonnement défini sur `{effort}` (enregistré dans la configuration)\n_(prend effet au prochain message)_"
     set_global_save_failed:    "🧠 ✓ Effort de raisonnement défini sur `{effort}` (session uniquement — échec de l'enregistrement de la configuration)\n_(prend effet au prochain message)_"
     set_session:               "🧠 ✓ Effort de raisonnement défini sur `{effort}` (session uniquement — ajoutez `--global` pour persister)\n_(prend effet au prochain message)_"

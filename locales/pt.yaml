@@ -124,6 +124,9 @@ gateway:
     label_normal:          "NORMAL"
     status_fast:           "fast"
     status_normal:         "normal"
+    picker_title:          "⚡ **Priority Processing**\\n\\nModo atual: `{mode}`\\n\\nEscolha uma opção:"
+    choice_fast:           "fast — Priority Processing ativado"
+    choice_normal:         "normal — processamento padrão"
 
   footer:
     status:                "📎 Rodapé de execução: **{state}**\nCampos: `{fields}`\nPlataforma: `{platform}`"
@@ -194,6 +197,11 @@ gateway:
     reset_global_unsupported:  "⚠️ `/reasoning reset --global` não é suportado. Usa `/reasoning <level> --global` para alterar o predefinido global."
     reset_done:                "🧠 ✓ Substituição de raciocínio da sessão removida; a regressar à configuração global."
     unknown_arg:               "⚠️ Argumento desconhecido: `{arg}`\n\n**Níveis válidos:** none, minimal, low, medium, high, xhigh, max, ultra\n**Visualização:** show, hide\n**Persistir:** adiciona `--global` para guardar para além desta sessão"
+    picker_title:              "🧠 **Definições de raciocínio**\\n\\n**Esforço:** `{level}`\\n**Âmbito:** {scope}\\n**Visualização:** {display}\\n\\nEscolha uma opção:"
+    choice_none:               "none — desativar raciocínio"
+    choice_reset:              "reset — limpar o override de sessão"
+    choice_show:               "mostrar raciocínio nas respostas"
+    choice_hide:               "ocultar raciocínio das respostas"
     set_global:                "🧠 ✓ Esforço de raciocínio definido como `{effort}` (guardado na configuração)\n_(produz efeito na próxima mensagem)_"
     set_global_save_failed:    "🧠 ✓ Esforço de raciocínio definido como `{effort}` (apenas sessão — falha ao guardar a configuração)\n_(produz efeito na próxima mensagem)_"
     set_session:               "🧠 ✓ Esforço de raciocínio definido como `{effort}` (apenas sessão — adiciona `--global` para persistir)\n_(produz efeito na próxima mensagem)_"

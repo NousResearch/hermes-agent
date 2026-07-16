@@ -789,11 +789,14 @@ class CLICommandsMixin:
         # leave a trailing orphaned ``tool`` message or an
         # ``assistant(tool_calls)`` pair with no following tool results. The
         # next user turn would then land as ``...tool, user`` — a
-        # protocol-invalid sequence most providers reject. Repair the tail
-        # before the first API call. See issue #33693.
+        # protocol-invalid sequence most providers reject. Use the shared
+        # ``sanitize_replay_history`` entry point so the CLI, gateway, and
+        # TUI all get the same cleanup. See issue #33693.
         try:
-            from agent.agent_runtime_helpers import prepare_messages_for_resume
-            _dropped = prepare_messages_for_resume(getattr(self, "agent", None), self.conversation_history)
+            from agent.replay_cleanup import sanitize_replay_history
+            _original_len = len(self.conversation_history)
+            self.conversation_history = sanitize_replay_history(self.conversation_history)
+            _dropped = _original_len - len(self.conversation_history)
             if _dropped:
                 from cli import _cprint
                 _cprint(f"  ↻ Dropped {_dropped} unfinished tool message(s) from the resumed session.")

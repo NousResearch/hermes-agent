@@ -319,8 +319,10 @@ class TestPrepareForResume:
 
     def test_assistant_with_tool_calls_and_content(self):
         """An assistant message with BOTH content and tool_calls at the tail
-        should be stripped (the tool results never arrived, so the turn is
-        incomplete even though the assistant said something)."""
+        should have its tool_calls stripped but content preserved — the
+        user may have seen the partial streamed text before the session
+        died, so we keep the visible output and drop only the unanswered
+        tool_calls."""
         agent = self._make_agent()
         messages = [
             {"role": "user", "content": "hello"},
@@ -328,7 +330,11 @@ class TestPrepareForResume:
         ]
         dropped = agent.prepare_for_resume(messages)
         assert dropped == 1
-        assert messages[-1]["role"] == "user"
+        # The assistant message stays (content preserved) but tool_calls
+        # are stripped.
+        assert messages[-1]["role"] == "assistant"
+        assert messages[-1]["content"] == "Let me check..."
+        assert "tool_calls" not in messages[-1]
 
     def test_large_message_list_with_trailing_orphan(self):
         """A realistic 200-message conversation with a trailing orphan should
@@ -396,6 +402,78 @@ class TestPrepareForResume:
         assert dropped_a == dropped_b
         assert len(msgs_a) == len(msgs_b)
         assert msgs_a[-1]["role"] == msgs_b[-1]["role"]
+
+    def test_preserves_content_when_assistant_has_content_and_tool_calls(self):
+        """When the trailing assistant message has BOTH content and
+        tool_calls, the content is preserved and only the tool_calls are
+        stripped — the user may have seen the partial streamed text before
+        the session died."""
+        agent = self._make_agent()
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "partial text", "tool_calls": [
+                {"id": "tc1", "function": {"name": "terminal", "arguments": "{}"}}]},
+        ]
+        dropped = agent.prepare_for_resume(messages)
+        assert dropped == 1  # tool_calls stripped (counted as 1 "drop")
+        assert messages[-1]["role"] == "assistant"
+        assert messages[-1]["content"] == "partial text"
+        assert "tool_calls" not in messages[-1]
+
+    def test_standalone_preserves_content_when_assistant_has_content_and_tool_calls(self):
+        """The standalone helper must also preserve content when the
+        trailing assistant has both content and tool_calls."""
+        from agent.agent_runtime_helpers import prepare_messages_for_resume
+        messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "partial output", "tool_calls": [
+                {"id": "tc1", "function": {"name": "terminal", "arguments": "{}"}}]},
+        ]
+        dropped = prepare_messages_for_resume(None, messages)
+        assert dropped == 1
+        assert messages[-1]["role"] == "assistant"
+        assert messages[-1]["content"] == "partial output"
+        assert "tool_calls" not in messages[-1]
+
+    def test_does_not_pop_when_tail_is_user(self):
+        """When the session dies after ``assistant(tool_calls) → tool → user``
+        (user sent a message, session died before the assistant responded),
+        ``prepare_messages_for_resume`` must NOT pop anything — the tail is
+        ``user``, not ``tool``, so there's nothing to clean up. This is the
+        valid mid-dialog pattern that ``repair_message_sequence`` also
+        preserves (see ``test_repair_does_not_rewind_ongoing_dialog_tool_pair``).
+        ``prepare_messages_for_resume`` runs on RESUME (session died, no
+        trailing user message exists) while ``repair_message_sequence`` runs
+        pre-API-call (live dialog). They serve different contexts."""
+        agent = self._make_agent()
+        messages = [
+            {"role": "user", "content": "Q1"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "tc1", "function": {"name": "terminal", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "tc1", "content": "result"},
+            {"role": "user", "content": "Q2"},
+        ]
+        original_len = len(messages)
+        dropped = agent.prepare_for_resume(messages)
+        assert dropped == 0
+        assert len(messages) == original_len
+        assert messages[-1]["role"] == "user"
+        assert messages[-1]["content"] == "Q2"
+
+    def test_standalone_does_not_pop_when_tail_is_user(self):
+        """The standalone helper must also not pop when the tail is user."""
+        from agent.agent_runtime_helpers import prepare_messages_for_resume
+        messages = [
+            {"role": "user", "content": "Q1"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "tc1", "function": {"name": "terminal", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "tc1", "content": "result"},
+            {"role": "user", "content": "Q2"},
+        ]
+        original_len = len(messages)
+        dropped = prepare_messages_for_resume(None, messages)
+        assert dropped == 0
+        assert len(messages) == original_len
 
 
 # ── E2E: Error classifier integration ─────────────────────────────────────

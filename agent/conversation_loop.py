@@ -1283,10 +1283,11 @@ def run_conversation(
                             # ``system`` field (anthropic_adapter.py sets
                             # api_kwargs["system"]). Same precedent as
                             # request_messages above: intentionally NOT
-                            # sanitised. mnemosya's debug tap reads it because
-                            # ``request["body"]`` is sanitised to a truncated
-                            # stub on real requests (no ``body`` key), so
-                            # system/model/max_tokens are unrecoverable there.
+                            # sanitised. Observers read it because the sanitised
+                            # ``request`` payload bounds/omits the body on real
+                            # requests, so the system prompt is otherwise
+                            # unrecoverable there. ``None`` on routes without a
+                            # top-level system field. See docs/observability.
                             request_system=api_kwargs.get("system"),
                             message_count=len(api_messages),
                             tool_count=len(agent.tools or []),

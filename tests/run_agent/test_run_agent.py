@@ -4315,6 +4315,91 @@ class TestRunConversation:
         assert all("usage" in c and "response" in c for c in post_request_calls)
         assert all("assistant_message" in c["response"] for c in post_request_calls)
 
+    def test_pre_api_request_forwards_raw_system(self, agent):
+        """``pre_api_request`` forwards the raw Anthropic ``system`` field.
+
+        On the Messages endpoint the system prompt lives in
+        ``api_kwargs["system"]`` (set by ``anthropic_adapter``), not in
+        ``messages[0]``. This drives ``run_conversation`` for real, seeds a
+        known ``system`` into the built ``api_kwargs``, and asserts the hook
+        receives it verbatim as ``request_system`` — a runtime delivery check,
+        not a source-shape assertion.
+        """
+        self._setup_agent(agent)
+        _SYSTEM = "ANTHROPIC-SYSTEM-SENTINEL-42"
+
+        # Seed a known ``system`` the way the Anthropic path would, on top of
+        # the real kwargs the agent builds for this request.
+        _orig_build = agent._build_api_kwargs
+
+        def _build_with_system(api_messages):
+            kw = _orig_build(api_messages)
+            kw["system"] = _SYSTEM
+            return kw
+
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="ok", finish_reason="stop"
+        )
+
+        hook_calls = []
+
+        def _record_hook(name, **kwargs):
+            hook_calls.append((name, kwargs))
+            return []
+
+        with (
+            patch.object(agent, "_build_api_kwargs", side_effect=_build_with_system),
+            patch(
+                "hermes_cli.plugins.has_hook",
+                side_effect=lambda name: name == "pre_api_request",
+            ),
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_record_hook),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "ok"
+        pre = [kw for name, kw in hook_calls if name == "pre_api_request"]
+        assert len(pre) == 1
+        # The raw system reached the hook verbatim, on the same call as the
+        # existing request_messages passthrough.
+        assert pre[0]["request_system"] == _SYSTEM
+        assert isinstance(pre[0]["request_messages"], list)
+
+    def test_pre_api_request_system_is_none_when_absent(self, agent):
+        """Raw passthrough of ``api_kwargs.get("system")``: when the built
+        kwargs carry no ``system`` (e.g. the chat-completions path, where the
+        prompt is ``messages[0]``), the hook sees ``request_system=None`` rather
+        than a fabricated value."""
+        self._setup_agent(agent)
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="ok", finish_reason="stop"
+        )
+
+        hook_calls = []
+
+        def _record_hook(name, **kwargs):
+            hook_calls.append((name, kwargs))
+            return []
+
+        with (
+            patch(
+                "hermes_cli.plugins.has_hook",
+                side_effect=lambda name: name == "pre_api_request",
+            ),
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_record_hook),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.run_conversation("hello")
+
+        pre = [kw for name, kw in hook_calls if name == "pre_api_request"]
+        assert len(pre) == 1
+        assert pre[0]["request_system"] is None
+
     def test_api_request_error_hook_skips_payload_work_without_listener(self, agent, monkeypatch):
         payload_built = False
         hook_called = False

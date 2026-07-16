@@ -6,10 +6,12 @@ import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { setMutableRef } from '@/lib/mutable-ref'
 import {
+  $activeSessionId,
   $busy,
   $messages,
   noteSessionActivity,
   onSessionWatchdogClear,
+  setActiveSessionStoredId,
   setCurrentFastMode,
   setCurrentModel,
   setCurrentPersonality,
@@ -115,6 +117,15 @@ export function useSessionStateCache({
 
         if (previousStoredSessionId && previousStoredSessionId !== storedSessionId) {
           setSessionWorking(previousStoredSessionId, false)
+
+          // Auto-compression rotated the stored id on the active session. Signal
+          // the route-following effect in use-session-actions so the URL + selection
+          // re-anchor to the continuation id — otherwise the next send hits a stale
+          // stored→runtime mapping (getRuntimeIdForStoredSession returns null) and
+          // triggers a full thread reload via resumeStoredSession.
+          if (sessionId === $activeSessionId.get()) {
+            setActiveSessionStoredId(storedSessionId)
+          }
         }
       }
 

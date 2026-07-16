@@ -4368,6 +4368,78 @@ class TestRunConversation:
         assert all("usage" in c and "response" in c for c in post_request_calls)
         assert all("assistant_message" in c["response"] for c in post_request_calls)
 
+    def test_live_execution_provenance_reaches_finalize_hooks(self, agent):
+        """P2.1: `post_llm_call` and `on_session_end` (the finalize-path hooks)
+        must carry the same execution provenance as the other per-turn hooks.
+
+        Drives `run_conversation` for real, captures `invoke_hook`, and asserts
+        both hooks receive `execution_kind="live"` and a non-None
+        `execution_id` (the id `build_turn_context` mints for a live turn) —
+        a runtime delivery check, not a source-shape assertion.
+        """
+        self._setup_agent(agent)
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="done", finish_reason="stop"
+        )
+
+        hook_calls = []
+
+        def _record_hook(name, **kwargs):
+            hook_calls.append((name, kwargs))
+            return []
+
+        with (
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_record_hook),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "done"
+        post_llm = [kw for name, kw in hook_calls if name == "post_llm_call"]
+        on_end = [kw for name, kw in hook_calls if name == "on_session_end"]
+        assert len(post_llm) == 1, "post_llm_call fires once per completed turn"
+        assert len(on_end) == 1, "on_session_end fires once per run_conversation"
+        for kw in (post_llm[0], on_end[0]):
+            assert kw["execution_kind"] == "live"
+            assert kw["execution_id"] is not None
+        # Same turn → both finalize hooks carry the same live execution id.
+        assert post_llm[0]["execution_id"] == on_end[0]["execution_id"]
+
+    def test_fork_execution_provenance_reaches_finalize_hooks(self, agent):
+        """A background-review fork seeds `_execution_kind`/`_execution_id`
+        before `run_conversation`; `build_turn_context` preserves a non-"live"
+        kind, so the finalize-path hooks must report the fork's provenance
+        verbatim (this is how a plugin distinguishes a fork's firings)."""
+        self._setup_agent(agent)
+        agent._execution_kind = "background_review"
+        agent._execution_id = "FORK-EXEC-ID-123"
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="done", finish_reason="stop"
+        )
+
+        hook_calls = []
+
+        def _record_hook(name, **kwargs):
+            hook_calls.append((name, kwargs))
+            return []
+
+        with (
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_record_hook),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.run_conversation("hello")
+
+        post_llm = [kw for name, kw in hook_calls if name == "post_llm_call"]
+        on_end = [kw for name, kw in hook_calls if name == "on_session_end"]
+        assert len(post_llm) == 1 and len(on_end) == 1
+        for kw in (post_llm[0], on_end[0]):
+            assert kw["execution_kind"] == "background_review"
+            assert kw["execution_id"] == "FORK-EXEC-ID-123"
+
     def test_api_request_error_hook_skips_payload_work_without_listener(self, agent, monkeypatch):
         payload_built = False
         hook_called = False

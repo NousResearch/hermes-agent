@@ -8319,8 +8319,18 @@ class TelegramAdapter(BasePlatformAdapter):
             # LLM turn was coerced into requesting. Not a soft/advisory check --
             # this is the only thing standing between a guest chat and reading
             # an arbitrary file the hermes process can access.
+            #
+            # Resolution and containment are separate try blocks so each
+            # handler's assumption holds: resolve() can itself raise
+            # ValueError (e.g. an embedded null byte in a model-emitted
+            # path), and inside a single try that would enter the
+            # "outside staging root" handler with _abs_resolved unbound --
+            # killing the one log line meant to record the rejection.
             try:
                 _abs_resolved = _Path(_resolved_path).resolve()
+            except Exception as _path_err:
+                return SendResult(success=False, error=f"guest_media: path validation failed: {_path_err}")
+            try:
                 _abs_resolved.relative_to(self._guest_media_root())
             except ValueError:
                 logger.warning(
@@ -8336,7 +8346,15 @@ class TelegramAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=f"guest_media: path validation failed: {_path_err}")
             _resolved_path = str(_abs_resolved)
 
-        _cache_key = (_resolved_path, tg_type)
+        # Cache key includes mtime for local files so a re-generated file at
+        # the same path (same name, new content) re-stages and mints a fresh
+        # file_id instead of serving the stale cached one. URLs have no mtime.
+        _cache_key: tuple = (_resolved_path, tg_type)
+        if not _is_url:
+            try:
+                _cache_key = (_resolved_path, tg_type, os.path.getmtime(_resolved_path))
+            except OSError:
+                pass  # missing file -- the existence check below reports it
         _file_id = self._guest_file_id_cache.get(_cache_key)
 
         if not _file_id:

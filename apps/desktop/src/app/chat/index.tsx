@@ -50,7 +50,7 @@ import { useComposerScope } from './composer/scope'
 import type { ChatBarState } from './composer/types'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { type DragKind, useFileDropZone } from './hooks/use-file-drop-zone'
-import { useRuntimeMessageRepository } from './runtime-repository'
+import { stripRuntimeIdSuffix, stripRuntimeIdSuffixNullable, useRuntimeMessageRepository } from './runtime-repository'
 import { ScrollToBottomButton } from './scroll-to-bottom-button'
 import { useSessionView } from './session-view'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
@@ -196,9 +196,14 @@ function ChatRuntimeBoundary({
       // Submission is handled explicitly by ChatBar.
       // Keeping this no-op avoids duplicate prompt.submit calls.
     },
-    onEdit,
+    onEdit: async message =>
+      onEdit({
+        ...message,
+        parentId: stripRuntimeIdSuffixNullable(message.parentId),
+        sourceId: stripRuntimeIdSuffixNullable(message.sourceId)
+      }),
     onCancel: async () => onCancel(),
-    onReload
+    onReload: async parentId => onReload(stripRuntimeIdSuffixNullable(parentId))
   })
 
   return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
@@ -449,10 +454,14 @@ export function ChatView({
             gateway={gateway}
             intro={showIntro ? { personality: introPersonality, seed: introSeed } : undefined}
             loading={threadLoading}
-            onBranchInNewChat={onBranchInNewChat}
+            onBranchInNewChat={messageId => onBranchInNewChat(stripRuntimeIdSuffix(messageId))}
             onCancel={onCancel}
             onDismissError={onDismissError}
-            onRestoreToMessage={onRestoreToMessage}
+            onRestoreToMessage={
+              onRestoreToMessage
+                ? (messageId, target) => onRestoreToMessage(stripRuntimeIdSuffix(messageId), target)
+                : undefined
+            }
             sessionId={activeSessionId}
             sessionKey={threadKey}
           />

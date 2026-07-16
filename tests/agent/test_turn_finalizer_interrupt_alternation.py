@@ -142,6 +142,7 @@ def test_interrupt_after_tool_keeps_transcript_clean_and_closes_api_copy():
     _finalize(agent, messages, interrupted=True, final_response="")
 
     assert messages[-1]["role"] == "tool"
+    assert messages[-1]["_interrupted_tool_tail"] is True
     assert agent.persisted_messages == messages
     assert not any(
         message.get("role") == "assistant"
@@ -186,6 +187,7 @@ def test_non_interrupted_tool_tail_is_left_untouched():
     messages = _interrupted_tool_tail()
     _finalize(agent, messages, interrupted=False, final_response=None)
     assert messages[-1]["role"] == "tool"
+    assert "_interrupted_tool_tail" not in messages[-1]
 
 
 def test_interrupt_without_tool_tail_adds_nothing():

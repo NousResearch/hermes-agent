@@ -49,6 +49,8 @@ from agent.turn_context import (
 )
 from agent.turn_retry_state import TurnRetryState
 from agent.message_sanitization import (
+    close_interrupted_tool_sequence,
+    mark_interrupted_tool_tail,
     _repair_tool_call_arguments,
     _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates,
@@ -2063,6 +2065,7 @@ def run_conversation(
                     while time.time() < sleep_end:
                         if agent._interrupt_requested:
                             agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
+                            mark_interrupted_tool_tail(messages)
                             agent._persist_session(messages, conversation_history)
                             agent.clear_interrupt()
                             return {
@@ -3549,6 +3552,7 @@ def run_conversation(
                 # Check for interrupt before deciding to retry
                 if agent._interrupt_requested:
                     agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during error handling, aborting retries.", force=True)
+                    mark_interrupted_tool_tail(messages)
                     agent._persist_session(messages, conversation_history)
                     agent.clear_interrupt()
                     return {
@@ -4783,6 +4787,7 @@ def run_conversation(
                 while time.time() < sleep_end:
                     if agent._interrupt_requested:
                         agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
+                        mark_interrupted_tool_tail(messages)
                         agent._persist_session(messages, conversation_history)
                         agent.clear_interrupt()
                         return {

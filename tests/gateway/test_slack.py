@@ -72,6 +72,7 @@ _slack_mod.SLACK_AVAILABLE = True
 from plugins.platforms.slack.adapter import (  # noqa: E402
     SlackAdapter,
     SlackHistoryAccessError,
+    _parse_bot_tokens,
 )
 
 
@@ -123,6 +124,15 @@ class TestAgentHistoryCrossChannelAuthorization:
     @pytest.mark.asyncio
     async def test_explicit_history_owner_can_read_another_channel(self, adapter):
         client = AsyncMock()
+        client.conversations_info.return_value = {
+            "ok": True,
+            "channel": {
+                "id": "C999999999",
+                "is_member": True,
+                "is_im": False,
+                "is_mpim": False,
+            },
+        }
         client.conversations_history.return_value = {"ok": True, "messages": []}
         adapter._team_clients = {"T1": client}
         adapter._configured_workspace_count = 1
@@ -136,6 +146,7 @@ class TestAgentHistoryCrossChannelAuthorization:
         )
 
         assert result == {"ok": True, "messages": []}
+        client.conversations_info.assert_awaited_once_with(channel="C999999999")
         client.conversations_history.assert_awaited_once_with(
             channel="C999999999", limit=20
         )
@@ -155,6 +166,7 @@ class TestAgentHistoryCrossChannelAuthorization:
                 requester_user_id="U87654321",
             )
 
+        client.conversations_info.assert_not_awaited()
         client.conversations_history.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -172,7 +184,118 @@ class TestAgentHistoryCrossChannelAuthorization:
                 requester_user_id="U12345678",
             )
 
+        client.conversations_info.assert_not_awaited()
         client.conversations_history.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_configured_owner_cannot_read_another_mpim(self, adapter):
+        client = AsyncMock()
+        client.conversations_info.return_value = {
+            "ok": True,
+            "channel": {
+                "id": "G999999999",
+                "is_member": True,
+                "is_im": False,
+                "is_mpim": True,
+            },
+        }
+        adapter._team_clients = {"T1": client}
+        adapter._configured_workspace_count = 1
+        adapter.config.extra["history_cross_channel_user_ids"] = ["U12345678"]
+
+        with pytest.raises(SlackHistoryAccessError, match="cross_channel_not_allowed"):
+            await adapter.read_history_for_agent(
+                channel_id="G999999999",
+                expected_team_id="T1",
+                active_channel_id="C123456789",
+                requester_user_id="U12345678",
+            )
+
+        client.conversations_info.assert_awaited_once_with(channel="G999999999")
+        client.conversations_history.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_configured_owner_can_read_member_private_channel(self, adapter):
+        client = AsyncMock()
+        client.conversations_info.return_value = {
+            "ok": True,
+            "channel": {
+                "id": "G123456789",
+                "is_member": True,
+                "is_im": False,
+                "is_mpim": False,
+                "is_private": True,
+            },
+        }
+        client.conversations_history.return_value = {"ok": True, "messages": []}
+        adapter._team_clients = {"T1": client}
+        adapter._configured_workspace_count = 1
+        adapter.config.extra["history_cross_channel_user_ids"] = ["U12345678"]
+
+        result = await adapter.read_history_for_agent(
+            channel_id="G123456789",
+            expected_team_id="T1",
+            active_channel_id="C123456789",
+            requester_user_id="U12345678",
+        )
+
+        assert result == {"ok": True, "messages": []}
+        client.conversations_history.assert_awaited_once_with(
+            channel="G123456789", limit=20
+        )
+
+    @pytest.mark.asyncio
+    async def test_current_mpim_remains_readable(self, adapter):
+        client = AsyncMock()
+        client.conversations_history.return_value = {"ok": True, "messages": []}
+        adapter._team_clients = {"T1": client}
+        adapter._configured_workspace_count = 1
+
+        result = await adapter.read_history_for_agent(
+            channel_id="G123456789",
+            expected_team_id="T1",
+            active_channel_id="G123456789",
+        )
+
+        assert result == {"ok": True, "messages": []}
+        client.conversations_info.assert_not_awaited()
+        client.conversations_history.assert_awaited_once_with(
+            channel="G123456789", limit=20
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "info_response",
+        [
+            {"ok": False, "channel": {"is_member": True}},
+            {"ok": True},
+            {"ok": True, "channel": {"is_member": False}},
+            {"ok": True, "channel": {}},
+        ],
+    )
+    async def test_cross_channel_lookup_fails_closed(self, adapter, info_response):
+        client = AsyncMock()
+        client.conversations_info.return_value = info_response
+        adapter._team_clients = {"T1": client}
+        adapter._configured_workspace_count = 1
+        adapter.config.extra["history_cross_channel_user_ids"] = ["U12345678"]
+
+        with pytest.raises(SlackHistoryAccessError, match="cross_channel_not_allowed"):
+            await adapter.read_history_for_agent(
+                channel_id="C999999999",
+                expected_team_id="T1",
+                active_channel_id="C123456789",
+                requester_user_id="U12345678",
+            )
+
+        client.conversations_history.assert_not_awaited()
+
+
+def test_parse_bot_tokens_stably_deduplicates_exact_values():
+    assert _parse_bot_tokens(" xoxb-a, xoxb-a, xoxb-b ,, xoxb-a ") == [
+        "xoxb-a",
+        "xoxb-b",
+    ]
 
 
 @pytest.fixture(autouse=True)

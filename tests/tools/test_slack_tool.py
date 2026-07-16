@@ -585,6 +585,53 @@ def test_serialized_result_has_strict_aggregate_budget(monkeypatch):
     )
 
 
+def test_list_channels_local_truncation_suppresses_next_cursor(monkeypatch):
+    mapping = {
+        "HERMES_SESSION_PLATFORM": "slack",
+        "HERMES_SESSION_CHAT_ID": CHANNEL_ID,
+        "HERMES_SESSION_SCOPE_ID": "T1",
+        "HERMES_SESSION_USER_ID": "U_OWNER",
+    }
+    monkeypatch.setattr(
+        slack_tool,
+        "get_session_env",
+        lambda name, default="": mapping.get(name, default),
+    )
+    runner = _install_live_gateway_runner(monkeypatch)
+    adapter = next(iter(runner.adapters.values()))
+    adapter.allows_agent_cross_channel_history = lambda user_id: user_id == "U_OWNER"
+    monkeypatch.setattr(
+        slack_tool,
+        "_list_channels_from_live_adapter",
+        lambda **_kwargs: {
+            "ok": True,
+            "channels": [
+                {
+                    "id": f"C{index:09d}",
+                    "name": "n" * slack_tool._MAX_ID_CHARS,
+                    "is_member": True,
+                    "is_private": False,
+                }
+                for index in range(50)
+            ],
+            "response_metadata": {"next_cursor": "cursor-next-page"},
+        },
+        raising=False,
+    )
+
+    raw_result = slack_tool.slack(action="list_channels")
+    result = json.loads(raw_result)
+
+    assert len(raw_result) <= slack_tool._MAX_SERIALIZED_RESULT_CHARS
+    assert result["ok"] is True
+    assert result["result_truncated"] is True
+    assert result["has_more"] is True
+    assert result["retry_same_page_with_smaller_limit"] is True
+    assert "next_cursor" not in result
+    assert result["omitted_count"] > 0
+    assert result["count"] == len(result["channels"])
+
+
 def test_adapter_bridge_requires_task_local_workspace_stamp(monkeypatch):
     mapping = {
         "HERMES_SESSION_PLATFORM": "slack",

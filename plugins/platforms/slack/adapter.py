@@ -78,6 +78,11 @@ _slash_user_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
 _SLACK_MEMBER_ID_RE = re.compile(r"^[UW][A-Z0-9]{8,}$")
 
 
+def _parse_bot_tokens(raw_token: str) -> list[str]:
+    """Return stable, exact-deduplicated Slack bot tokens."""
+    return list(dict.fromkeys(token.strip() for token in raw_token.split(",") if token.strip()))
+
+
 @dataclass
 class _ThreadContextCache:
     """Cache entry for fetched thread context."""
@@ -1008,8 +1013,10 @@ class SlackAdapter(BasePlatformAdapter):
                 safe_url_for_log(proxy_url),
             )
 
-        # Support comma-separated bot tokens for multi-workspace
-        bot_tokens = [t.strip() for t in raw_token.split(",") if t.strip()]
+        # Support comma-separated bot tokens for multi-workspace. Exact duplicate
+        # tokens must not inflate the configured-workspace count.
+        bot_tokens = _parse_bot_tokens(raw_token)
+        seen_bot_tokens = set(bot_tokens)
 
         # Also load tokens from OAuth token file
         from hermes_constants import get_hermes_home
@@ -1020,7 +1027,8 @@ class SlackAdapter(BasePlatformAdapter):
                 saved = json.loads(tokens_file.read_text(encoding="utf-8"))
                 for team_id, entry in saved.items():
                     tok = entry.get("token", "") if isinstance(entry, dict) else ""
-                    if tok and tok not in bot_tokens:
+                    if tok and tok not in seen_bot_tokens:
+                        seen_bot_tokens.add(tok)
                         bot_tokens.append(tok)
                         team_label = (
                             entry.get("team_name", team_id)
@@ -1524,11 +1532,25 @@ class SlackAdapter(BasePlatformAdapter):
             raise SlackHistoryAccessError("workspace_mismatch")
         client = self._team_clients[team_id]
 
-        if active_channel_id and channel_id != active_channel_id and (
-            channel_id.startswith("D")
-            or not self.allows_agent_cross_channel_history(requester_user_id)
-        ):
-            raise SlackHistoryAccessError("cross_channel_not_allowed")
+        if active_channel_id and channel_id != active_channel_id:
+            if channel_id.startswith("D") or not self.allows_agent_cross_channel_history(
+                requester_user_id
+            ):
+                raise SlackHistoryAccessError("cross_channel_not_allowed")
+            # MPIM/group-DM IDs share the G... namespace with legacy private
+            # channels. Resolve conversation type before any history call so a
+            # configured owner cannot read another group DM.
+            info_response = await client.conversations_info(channel=channel_id)
+            info_data = getattr(info_response, "data", info_response)
+            if not isinstance(info_data, dict) or info_data.get("ok") is not True:
+                raise SlackHistoryAccessError("cross_channel_not_allowed")
+            channel_info = info_data.get("channel")
+            if not isinstance(channel_info, dict):
+                raise SlackHistoryAccessError("cross_channel_not_allowed")
+            if bool(channel_info.get("is_im")) or bool(channel_info.get("is_mpim")):
+                raise SlackHistoryAccessError("cross_channel_not_allowed")
+            if channel_info.get("is_member") is not True:
+                raise SlackHistoryAccessError("cross_channel_not_allowed")
 
         allowed_channels = self._slack_allowed_channels()
         if (

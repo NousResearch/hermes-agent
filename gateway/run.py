@@ -8631,11 +8631,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return 0
 
         try:
-            from hermes_cli.profiles import profiles_to_serve
+            from hermes_cli.profiles import get_active_profile_name, profiles_to_serve
         except Exception:
             return 0
 
-        active = self._primary_profile_name
+        active = getattr(self, "_primary_profile_name", None) or get_active_profile_name()
         connected = 0
         # (platform, token-fingerprint) -> profile that claimed it. Detects two
         # profiles trying to poll the same bot credential (impossible to do

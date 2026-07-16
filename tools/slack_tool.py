@@ -642,8 +642,8 @@ def _success_payload(**values: Any) -> str:
         collection = payload[collection_key]
         original_count = len(collection)
         payload["result_truncated"] = True
-        if payload.get("action") in {"fetch_history", "fetch_thread"}:
-            # Advancing Slack's cursor would skip messages removed locally from
+        if payload.get("action") in {"fetch_history", "fetch_thread", "list_channels"}:
+            # Advancing Slack's cursor would skip items removed locally from
             # this page. Suppress it and tell the caller to retry the same page
             # with a smaller limit before continuing remote pagination.
             payload.pop("next_cursor", None)
@@ -1054,7 +1054,7 @@ _SLACK_SCHEMA = {
             "permalink": {
                 "type": "string",
                 "description": (
-                    "HTTPS workspace Slack permalink for fetch_thread. The channel must match the active conversation."
+                    "HTTPS workspace Slack permalink for fetch_thread. The channel must match the active conversation unless an explicitly configured profile owner is reading another same-workspace non-DM channel."
                 ),
             },
             "query": {

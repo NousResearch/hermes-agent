@@ -299,13 +299,39 @@ def is_table_row(line: str) -> bool:
 
 
 def split_markdown_table_row(line: str) -> list[str]:
-    """Split a GFM table row into stripped cell values."""
+    """Split a GFM table row without treating escaped pipes as delimiters."""
     stripped = line.strip()
+    cells: list[str] = []
+    cell: list[str] = []
+    ended_with_delimiter = False
+
+    for char in stripped:
+        if char != "|":
+            cell.append(char)
+            ended_with_delimiter = False
+            continue
+
+        backslashes = 0
+        for previous in reversed(cell):
+            if previous != "\\":
+                break
+            backslashes += 1
+        if backslashes % 2:
+            cell.pop()  # consume the backslash that escapes this literal pipe
+            cell.append("|")
+            ended_with_delimiter = False
+            continue
+
+        cells.append("".join(cell).strip())
+        cell = []
+        ended_with_delimiter = True
+
+    cells.append("".join(cell).strip())
     if stripped.startswith("|"):
-        stripped = stripped[1:]
-    if stripped.endswith("|"):
-        stripped = stripped[:-1]
-    return [cell.strip() for cell in stripped.split("|")]
+        cells.pop(0)
+    if ended_with_delimiter:
+        cells.pop()
+    return cells
 
 
 def _render_table_block(table_block: list[str]) -> str:

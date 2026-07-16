@@ -479,7 +479,190 @@ def _separate_chunk_indicator_from_fence(text: str) -> str:
 from gateway.platforms.helpers import (
     TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE,
     convert_table_to_bullets as _wrap_markdown_tables,
+    split_markdown_table_row as _split_markdown_table_row,
 )
+
+
+# A run of >= 2 GFM separator cells (``|:---|:---|``) — the fingerprint of a
+# pipe table whose rows the model collapsed onto a single physical line.
+_TABLE_SEP_RUN_RE = re.compile(r'\|(?:\s*:?-+:?\s*\|){2,}')
+_MARKDOWN_FENCE_RE = re.compile(r'^( {0,3})(`{3,}|~{3,})(.*)$')
+_INDENTED_CODE_RE = re.compile(r'^(?: {4}| {0,3}\t)')
+
+
+def _is_bounded_table_row_candidate(line: str) -> bool:
+    """Return whether a line has outer pipes, optionally escaped."""
+    stripped = line.strip()
+    first_pipe = stripped.find('|')
+    return (
+        first_pipe >= 0
+        and all(char == '\\' for char in stripped[:first_pipe])
+        and stripped.endswith('|')
+    )
+
+
+def _is_fully_preescaped_table_row(line: str) -> bool:
+    """Return whether every pipe in a bounded row has one escape."""
+    if not _is_bounded_table_row_candidate(line):
+        return False
+
+    for index, char in enumerate(line):
+        if char != '|':
+            continue
+        backslashes = 0
+        cursor = index - 1
+        while cursor >= 0 and line[cursor] == '\\':
+            backslashes += 1
+            cursor -= 1
+        # Only a single ``\|`` is unambiguously the model's pre-escaped
+        # structural delimiter. Longer runs can encode a literal backslash or
+        # an escaped pipe inside a cell, so normalizing them would guess at the
+        # row's column boundaries.
+        if backslashes != 1:
+            return False
+    return True
+
+
+def _split_collapsed_table(clean: str, n_cols: int) -> Optional[List[str]]:
+    """Re-split a single-line GFM table into ``n_cols``-wide rows.
+
+    ``clean`` is one physical line holding a whole table whose row breaks were
+    lost (``| h | h | |:--|:--| | a | b |``). Outer pipes give a leading and
+    trailing empty token and a single empty token between rows, so the cells
+    regroup deterministically even when a real cell is empty. Returns ``None``
+    (caller leaves the line alone) if the shape doesn't line up exactly.
+    """
+    parts = clean.split('|')
+    if not (parts and parts[0].strip() == '' and parts[-1].strip() == ''):
+        return None  # require outer pipes on the collapsed run
+    parts = parts[1:-1]
+    rows: List[List[str]] = []
+    i = 0
+    while i < len(parts):
+        row = parts[i:i + n_cols]
+        if len(row) != n_cols:
+            return None
+        rows.append([cell.strip() for cell in row])
+        i += n_cols
+        if i < len(parts):  # the empty token separating two rows
+            if parts[i].strip() != '':
+                return None
+            i += 1
+    if len(rows) < 3:  # header + separator + at least one data row
+        return None
+    rendered = ['| ' + ' | '.join(row) + ' |' for row in rows]
+    separators = [
+        index for index, row in enumerate(rendered)
+        if _TABLE_SEPARATOR_RE.match(row.strip())
+    ]
+    if separators != [1]:
+        return None
+    return rendered
+
+
+def _normalize_pipe_table_markdown(text: str) -> str:
+    r"""Repair pipe tables an LLM mangled before they reach Telegram.
+
+    Two model-side defects defeat GFM table detection downstream (#53632):
+
+    * **Pre-escaped bars** — a prompt that says "use Telegram MarkdownV2"
+      makes the model emit ``\| Date \| Event \|``. ``format_message`` then
+      escapes again, so Telegram shows the literal ``\|`` instead of a table.
+    * **Collapsed rows** — the model emits the whole table on one physical
+      line, so the GFM separator never sits on its own line and neither the
+      rich-render router nor the table→bullets helper recognises it.
+
+    A pre-escaped table is repaired only when every pipe is escaped exactly
+    once and its rows agree with the separator's column count. Ambiguous shapes,
+    valid GFM literal-pipe cells, prose, and code fences stay untouched.
+    Collapsed tables are additionally re-split into proper rows. The repaired
+    text then feeds the existing rich or legacy table machinery.
+    """
+    if '|' not in text:
+        return text
+
+    lines = text.split('\n')
+    out: List[str] = []
+    fence_char: Optional[str] = None
+    fence_width = 0
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        fence = _MARKDOWN_FENCE_RE.match(line)
+        if fence_char is not None:
+            out.append(line)
+            marker = fence.group(2) if fence else ''
+            if (
+                marker.startswith(fence_char)
+                and len(marker) >= fence_width
+                and not fence.group(3).strip()
+            ):
+                fence_char = None
+                fence_width = 0
+            i += 1
+            continue
+        if fence:
+            marker = fence.group(2)
+            fence_char = marker[0]
+            fence_width = len(marker)
+            out.append(line)
+            i += 1
+            continue
+        if (
+            _INDENTED_CODE_RE.match(line)
+            or not _is_bounded_table_row_candidate(line)
+        ):
+            out.append(line)
+            i += 1
+            continue
+
+        end = i + 1
+        while (
+            end < len(lines)
+            and not _INDENTED_CODE_RE.match(lines[end])
+            and _is_bounded_table_row_candidate(lines[end])
+        ):
+            end += 1
+
+        raw_candidate = lines[i:end]
+        if not all(_is_fully_preescaped_table_row(row) for row in raw_candidate):
+            out.extend(raw_candidate)
+            i = end
+            continue
+
+        if end == i + 1:
+            clean = line.replace(r'\|', '|')
+            stripped = clean.strip()
+            sep = _TABLE_SEP_RUN_RE.search(clean)
+            if sep and not _TABLE_SEPARATOR_RE.match(stripped):
+                # A separator run sharing its line with header/data cells means
+                # the rows were collapsed; re-split using its column count.
+                n_cols = len([c for c in sep.group(0).split('|') if c.strip()])
+                rows = _split_collapsed_table(clean, n_cols)
+                if rows:
+                    out.extend(rows)
+                    i = end
+                    continue
+
+        candidate = [row.replace(r'\|', '|') for row in raw_candidate]
+        separators = [
+            index for index, row in enumerate(candidate)
+            if _TABLE_SEPARATOR_RE.match(row.strip())
+        ]
+        if len(candidate) >= 3 and separators == [1]:
+            n_cols = len(_split_markdown_table_row(candidate[1]))
+            if n_cols >= 2 and all(
+                len(_split_markdown_table_row(row)) == n_cols
+                for row in candidate
+            ):
+                out.extend(candidate)
+                i = end
+                continue
+
+        out.extend(raw_candidate)
+        i = end
+
+    return '\n'.join(out)
 
 
 # ---------------------------------------------------------------------------
@@ -3949,7 +4132,12 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
-        
+
+        # Repair pipe tables the model pre-escaped (``\|``) or collapsed onto a
+        # single line before the rich/legacy split, so both paths detect the
+        # table instead of emitting literal backslash-pipes (#53632).
+        content = _normalize_pipe_table_markdown(content)
+
         try:
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
             # sendRichMessage so tables/task lists/etc. render natively. Falls
@@ -4313,6 +4501,9 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+
+        if finalize:
+            content = _normalize_pipe_table_markdown(content)
 
         # Rich finalize (Bot API 10.1): when the completed content has
         # constructs the legacy MarkdownV2 edit degrades (tables → bullet

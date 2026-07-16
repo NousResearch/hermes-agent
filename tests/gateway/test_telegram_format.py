@@ -37,7 +37,9 @@ _ensure_telegram_mock()
 
 from plugins.platforms.telegram.adapter import (  # noqa: E402
     TelegramAdapter,
+    _TABLE_SEPARATOR_RE,
     _escape_mdv2,
+    _normalize_pipe_table_markdown,
     _strip_mdv2,
     _wrap_markdown_tables,
 )
@@ -1217,3 +1219,343 @@ class TestTelegramGuestMentionGating:
         message.caption_entities = [_guest_mention_entity(text)]
 
         assert adapter._should_process_message(message) is True
+
+
+# =========================================================================
+# _normalize_pipe_table_markdown — repair model-mangled pipe tables (#53632)
+# =========================================================================
+
+# The reporter's canonical payload: heading + a pipe table whose rows the model
+# both pre-escaped (``\|``) and collapsed onto a single physical line.
+_BROKEN_REPORTER_TABLE = (
+    "**\U0001f4c5 2-Week Forward Calendar (key dates only)**\n"
+    "\\| Date \\| Event \\| Category \\| Expected Impact \\| "
+    "\\|:-----\\|:------\\|:---------\\|:----------------\\| "
+    "\\| 2026-07-15 \\| Fed Beige Book \\| Macro \\| Regional growth signals \\| "
+    "\\| 2026-07-30 \\| ECB Meeting \\| Policy \\| Rate path clarification \\|"
+)
+
+_LITERAL_PIPE_TABLE = (
+    "| Expression | Result |\n"
+    "|------------|--------|\n"
+    "| a \\| b    | true   |"
+)
+
+
+class TestNormalizePipeTableMarkdown:
+    def test_collapsed_preescaped_table_is_relined(self):
+        """The reporter's single-line escaped table becomes proper GFM rows."""
+        out = _normalize_pipe_table_markdown(_BROKEN_REPORTER_TABLE)
+        lines = out.splitlines()
+        # Heading preserved verbatim.
+        assert lines[0] == "**\U0001f4c5 2-Week Forward Calendar (key dates only)**"
+        # No backslash-escaped bars survive.
+        assert "\\|" not in out
+        # Header, separator and both data rows now sit on their own lines.
+        assert "| Date | Event | Category | Expected Impact |" in lines
+        assert any(_TABLE_SEPARATOR_RE.match(line) for line in lines)
+        assert "| 2026-07-15 | Fed Beige Book | Macro | Regional growth signals |" in lines
+        assert "| 2026-07-30 | ECB Meeting | Policy | Rate path clarification |" in lines
+
+    def test_relined_table_routes_to_rich_renderer(self, adapter):
+        """Before: rich router can't see the table; after: it can."""
+        assert adapter._needs_rich_rendering(_BROKEN_REPORTER_TABLE) is False
+        repaired = _normalize_pipe_table_markdown(_BROKEN_REPORTER_TABLE)
+        assert adapter._needs_rich_rendering(repaired) is True
+
+    def test_relined_table_converts_to_bullets_on_legacy_path(self):
+        """The repaired table feeds the existing table→bullets helper cleanly."""
+        bullets = _wrap_markdown_tables(_normalize_pipe_table_markdown(_BROKEN_REPORTER_TABLE))
+        assert "\\|" not in bullets
+        assert "• Event: Fed Beige Book" in bullets
+        assert "• Category: Macro" in bullets
+
+    def test_multiline_preescaped_table_is_unescaped(self):
+        """A pre-escaped table that kept its newlines just loses the backslashes."""
+        src = (
+            "\\| Date \\| Event \\| Category \\|\n"
+            "\\|:-----\\|:------\\|:---------\\|\n"
+            "\\| 2026-07-15 \\| Fed \\| Macro \\|\n"
+            "\\| 2026-07-30 \\| ECB \\| Policy \\|"
+        )
+        out = _normalize_pipe_table_markdown(src)
+        assert "\\|" not in out
+        assert any(_TABLE_SEPARATOR_RE.match(line) for line in out.splitlines())
+
+    def test_well_formed_table_preserves_literal_pipe_escape(self):
+        assert _normalize_pipe_table_markdown(_LITERAL_PIPE_TABLE) == _LITERAL_PIPE_TABLE
+
+    def test_ambiguous_preescaped_table_is_left_untouched(self):
+        src = (
+            "\\| Expression \\| Result \\|\n"
+            "\\|------------\\|--------\\|\n"
+            "\\| a \\| b \\| true \\|"
+        )
+        assert _normalize_pipe_table_markdown(src) == src
+
+    def test_multiply_escaped_pipes_are_not_treated_as_structural(self):
+        literal_pipe = "\\" * 3 + "|"
+        src = (
+            "\\| A \\| B \\| C \\|\n"
+            "\\|---\\|---\\|---\\|\n"
+            f"\\| a {literal_pipe} b \\| true \\|"
+        )
+        assert _normalize_pipe_table_markdown(src) == src
+
+    @pytest.mark.parametrize("escape_count", [0, 2, 3, 4])
+    @pytest.mark.parametrize("ambiguous_first", [False, True])
+    def test_ambiguous_row_preserves_entire_contiguous_candidate(
+        self, ambiguous_first, escape_count
+    ):
+        literal_pipe = "\\" * escape_count + "|"
+        valid_rows = [
+            r"\| A \| B \| C \|",
+            r"\|---\|---\|---\|",
+            r"\| x \| y \| z \|",
+        ]
+        ambiguous = f"\\| a {literal_pipe} b \\| true \\|"
+        rows = [ambiguous, *valid_rows] if ambiguous_first else [*valid_rows, ambiguous]
+        src = "\n".join(rows)
+        assert _normalize_pipe_table_markdown(src) == src
+
+    @pytest.mark.parametrize("boundary_escape_count", [0, 2, 3])
+    @pytest.mark.parametrize("ambiguous_first", [False, True])
+    def test_ambiguous_outer_pipe_preserves_entire_contiguous_candidate(
+        self, ambiguous_first, boundary_escape_count
+    ):
+        boundary = "\\" * boundary_escape_count + "|"
+        valid_rows = [
+            r"\| A \| B \| C \|",
+            r"\|---\|---\|---\|",
+            r"\| x \| y \| z \|",
+        ]
+        ambiguous = f"{boundary} a \\| b \\| true {boundary}"
+        rows = [ambiguous, *valid_rows] if ambiguous_first else [*valid_rows, ambiguous]
+        src = "\n".join(rows)
+        assert _normalize_pipe_table_markdown(src) == src
+
+    @pytest.mark.parametrize(
+        ("rows", "should_normalize"),
+        [
+            (("header", "separator", "data"), True),
+            (("header", "data", "separator"), False),
+            (("separator", "header", "data"), False),
+            (("separator", "data", "header"), False),
+            (("data", "header", "separator"), False),
+            (("data", "separator", "header"), True),
+        ],
+    )
+    def test_multiline_separator_position_contract(self, rows, should_normalize):
+        escaped = {
+            "header": r"\| A \| B \|",
+            "separator": r"\|---\|---\|",
+            "data": r"\| x \| y \|",
+        }
+        src = "\n".join(escaped[row] for row in rows)
+        out = _normalize_pipe_table_markdown(src)
+
+        if should_normalize:
+            assert out == src.replace(r"\|", "|")
+        else:
+            assert out == src
+
+    def test_valid_table_shape_matrix(self):
+        for column_count in range(2, 6):
+            header = [f"H{index}" for index in range(column_count)]
+            separator = ["---"] * column_count
+            data = ["value", *([""] * (column_count - 1))]
+            clean_rows = [
+                "| " + " | ".join(row) + " |"
+                for row in (header, separator, data)
+            ]
+            escaped_rows = [row.replace("|", r"\|") for row in clean_rows]
+
+            multiline = "\n".join(escaped_rows)
+            collapsed = " ".join(escaped_rows)
+            expected = "\n".join(clean_rows)
+
+            assert _normalize_pipe_table_markdown(multiline) == expected
+            assert _normalize_pipe_table_markdown(collapsed) == expected
+            assert _normalize_pipe_table_markdown(expected) == expected
+
+    def test_invalid_row_width_preserves_entire_candidate(self):
+        valid_rows = [
+            r"\| A \| B \| C \|",
+            r"\|---\|---\|---\|",
+            r"\| x \| y \| z \|",
+        ]
+        for index, invalid_row in (
+            (0, r"\| A \| B \|"),
+            (2, r"\| x \| y \|"),
+        ):
+            rows = valid_rows.copy()
+            rows[index] = invalid_row
+            src = "\n".join(rows)
+            assert _normalize_pipe_table_markdown(src) == src
+
+    @pytest.mark.parametrize(
+        "src",
+        [
+            (
+                "~~~text\n"
+                "\\| A \\| B \\|\n"
+                "\\|---\\|---\\|\n"
+                "\\| x \\| y \\|\n"
+                "~~~"
+            ),
+            (
+                "    \\| A \\| B \\|\n"
+                "    \\|---\\|---\\|\n"
+                "    \\| x \\| y \\|"
+            ),
+            (
+                "\t\\| A \\| B \\|\n"
+                "\t\\|---\\|---\\|\n"
+                "\t\\| x \\| y \\|"
+            ),
+        ],
+    )
+    def test_preescaped_table_in_code_block_is_left_untouched(self, src):
+        assert _normalize_pipe_table_markdown(src) == src
+
+    @pytest.mark.parametrize(
+        ("opening", "closing"),
+        [
+            ("```python", "```"),
+            ("````", "`````"),
+            ("~~~text", "~~~"),
+            ("~~~~", "~~~~~   "),
+            ("````", "```"),
+            ("~~~", "```"),
+            ("```", None),
+        ],
+    )
+    def test_fence_boundaries_protect_preescaped_rows(self, opening, closing):
+        table = "\\| A \\| B \\|\n\\|---\\|---\\|\n\\| x \\| y \\|"
+        src = f"{opening}\n{table}"
+        if closing is not None:
+            src += f"\n{closing}"
+        assert _normalize_pipe_table_markdown(src) == src
+
+    @pytest.mark.parametrize(
+        "src",
+        [
+            r"\| A \| B \| \| x \| y \| \|---\|---\|",
+            r"\|---\|---\| \| A \| B \| \| x \| y \|",
+        ],
+    )
+    def test_collapsed_separator_must_be_second_row(self, src):
+        assert _normalize_pipe_table_markdown(src) == src
+
+    @pytest.mark.parametrize(
+        "src",
+        [
+            (
+                "\\| A \\| B \\|\n"
+                "\\| x \\| y \\|\n"
+                "\\|---\\|---\\|\n"
+                "\\| z \\| w \\|"
+            ),
+            (
+                "\\| A \\| B \\|\n"
+                "\\|---\\|---\\|\n"
+                "\\| x \\| y \\|\n"
+                "\\| C \\| D \\|\n"
+                "\\|---\\|---\\|\n"
+                "\\| z \\| w \\|"
+            ),
+        ],
+    )
+    def test_invalid_multiline_candidate_is_preserved_as_a_whole(self, src):
+        assert _normalize_pipe_table_markdown(src) == src
+
+    @pytest.mark.parametrize(
+        "src",
+        [
+            (
+                "\\| A \\| B \\|\n"
+                "    \\|---\\|---\\|\n"
+                "    \\| x \\| y \\|"
+            ),
+            (
+                "\\| A \\| B \\|\n"
+                "\\|---\\|---\\|\n"
+                "    \\| x \\| y \\|"
+            ),
+        ],
+    )
+    def test_candidate_scan_does_not_cross_into_indented_code(self, src):
+        assert _normalize_pipe_table_markdown(src) == src
+
+    @pytest.mark.parametrize(
+        "src",
+        [
+            (
+                "\\| A \\| B \\| \\|---\\|---\\| \\| x \\| y \\|\n"
+                "\\| C \\| D \\|\n"
+                "\\| z \\| w \\|\n"
+                "\\|---\\|---\\|"
+            ),
+            (
+                "\\| C \\| D \\|\n"
+                "\\| z \\| w \\|\n"
+                "\\|---\\|---\\|\n"
+                "\\| A \\| B \\| \\|---\\|---\\| \\| x \\| y \\|"
+            ),
+        ],
+    )
+    def test_mixed_collapsed_multiline_candidate_is_preserved_as_a_whole(self, src):
+        assert _normalize_pipe_table_markdown(src) == src
+
+    def test_idempotent(self):
+        once = _normalize_pipe_table_markdown(_BROKEN_REPORTER_TABLE)
+        twice = _normalize_pipe_table_markdown(once)
+        assert once == twice
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Today's news digest. No tables in here at all.",
+            "Compute a \\| b \\| c then compare the totals.",  # arithmetic, not a row
+            "Use the A \\| B fallback operator when needed.",  # lone inline pipe
+            "| A | B |\n|:--|:--|\n| 1 | 2 |",  # already-clean table
+            "```\n| a \\| b |\n```",  # escaped pipe inside a code fence
+            "- first\n- second\n- third",  # bullet list
+        ],
+    )
+    def test_non_table_content_is_left_untouched(self, text):
+        assert _normalize_pipe_table_markdown(text) == text
+
+
+@pytest.mark.asyncio
+async def test_legacy_send_repairs_collapsed_escaped_table(adapter):
+    """End-to-end: a cron-style broken table no longer reaches Telegram as
+    literal ``\\|`` text; the legacy path renders it as bullet groups (#53632)."""
+    adapter._bot = MagicMock()
+    adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+    adapter._bot.send_chat_action = AsyncMock()
+    adapter._rich_send_disabled = True  # force the legacy MarkdownV2 path
+
+    result = await adapter.send("12345", _BROKEN_REPORTER_TABLE, metadata={"job_id": "daily-news"})
+
+    assert result.success is True
+    sent = "".join(call.kwargs["text"] for call in adapter._bot.send_message.await_args_list)
+    # The user-visible symptom (escaped bars) is gone; bullets render instead.
+    assert "\\|" not in _strip_mdv2(sent)
+    assert "Fed Beige Book" in _strip_mdv2(sent)
+
+
+@pytest.mark.asyncio
+async def test_legacy_send_preserves_literal_pipe_cell(adapter):
+    adapter._bot = MagicMock()
+    adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+    adapter._bot.send_chat_action = AsyncMock()
+    adapter._rich_send_disabled = True
+
+    result = await adapter.send("12345", _LITERAL_PIPE_TABLE)
+
+    assert result.success is True
+    sent = "".join(call.kwargs["text"] for call in adapter._bot.send_message.await_args_list)
+    rendered = _strip_mdv2(sent)
+    assert "a | b" in rendered
+    assert "• Result: true" in rendered

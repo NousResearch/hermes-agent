@@ -31,6 +31,24 @@ class TestTablePrimitives:
     def test_split_row_no_outer_pipes(self):
         assert split_markdown_table_row("a | b | c") == ["a", "b", "c"]
 
+    def test_split_row_preserves_escaped_pipe_in_cell(self):
+        assert split_markdown_table_row(r"| a \| b | true |") == ["a | b", "true"]
+
+    def test_split_row_even_backslashes_do_not_escape_separator(self):
+        assert split_markdown_table_row(r"| path \\| result |") == ["path \\\\", "result"]
+
+    def test_split_row_uses_backslash_parity_for_pipes(self):
+        for count in range(1, 7):
+            backslashes = "\\" * count
+            row = f"| left {backslashes}| right |"
+            cells = split_markdown_table_row(row)
+
+            if count % 2:
+                expected = "left " + ("\\" * (count - 1)) + "| right"
+                assert cells == [expected]
+            else:
+                assert cells == ["left " + backslashes, "right"]
+
 
 class TestConvertTableToBullets:
 
@@ -135,3 +153,13 @@ class TestConvertTableToBullets:
         out = convert_table_to_bullets(text)
         assert "• B: 1\n\n**y**" in out
         assert "\n\n• " not in out
+
+    def test_escaped_pipe_stays_in_one_cell(self):
+        text = (
+            "| Expression | Result |\n"
+            "|------------|--------|\n"
+            "| a \\| b    | true   |"
+        )
+        out = convert_table_to_bullets(text)
+        assert "**a | b**" in out
+        assert "• Result: true" in out

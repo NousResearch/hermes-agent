@@ -1271,6 +1271,25 @@ def _resolve_anthropic_pool_token() -> Optional[str]:
     return None
 
 
+def _spend_guard_api_key_swap_active() -> bool:
+    """True when the spend guard has failed api-key billing over to OAuth.
+
+    The spend poller writes ``swapped: {api_key: {to: personal_oauth}}`` into
+    ``~/.hermes/data/spend_throttle.json`` when the shared API key exhausts
+    its daily budget. While active, the resolver demotes API-key-shaped
+    tokens below the OAuth sources so freshly spawned sessions bill the
+    personal account instead. Fully fault-isolated: any failure here means
+    "no swap" — billing behavior must never break on spend-guard problems.
+    """
+    try:
+        from agent import spend_meter
+
+        state = spend_meter.read_throttle()
+        return "api_key" in (state.swapped_lanes or {})
+    except Exception:
+        return False
+
+
 def resolve_anthropic_token() -> Optional[str]:
     """Resolve an Anthropic token from all available sources.
 
@@ -1282,17 +1301,29 @@ def resolve_anthropic_token() -> Optional[str]:
       4. Anthropic credential_pool OAuth entry (~/.hermes/auth.json)
       5. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
 
+    Spend-guard billing swap: while the spend guard reports the api_key lane
+    swapped (daily budget exhausted), API-key-shaped tokens from steps 1/5
+    are demoted to a last-resort fallback so the OAuth sources (2-4) win —
+    the session then bills the personal account. If no OAuth source
+    resolves, the held API key is still returned: the swap must degrade to
+    normal billing, never to a broken worker.
+
     Returns the token string or None.
     """
     creds = read_claude_code_credentials()
+    swap_active = _spend_guard_api_key_swap_active()
+    demoted_api_key: Optional[str] = None
 
     # 1. Hermes-managed OAuth/setup token env var
     token = os.getenv("ANTHROPIC_TOKEN", "").strip()
     if token:
-        preferred = _prefer_refreshable_claude_code_token(token, creds)
-        if preferred:
-            return preferred
-        return token
+        if swap_active and not _is_oauth_token(token):
+            demoted_api_key = token
+        else:
+            preferred = _prefer_refreshable_claude_code_token(token, creds)
+            if preferred:
+                return preferred
+            return token
 
     # 2. CLAUDE_CODE_OAUTH_TOKEN (used by Claude Code for setup-tokens)
     cc_token = os.getenv("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
@@ -1314,9 +1345,19 @@ def resolve_anthropic_token() -> Optional[str]:
 
     # 5. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
     # This remains as a compatibility fallback for pre-migration Hermes configs.
+    # Under an active billing swap, API-key-shaped values are demoted here
+    # too (worker .envs carry the same shared key in ANTHROPIC_API_KEY as a
+    # fallback); an OAuth-shaped legacy value still wins.
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     if api_key:
-        return api_key
+        if _is_oauth_token(api_key) or not swap_active:
+            return api_key
+        demoted_api_key = demoted_api_key or api_key
+
+    # Billing-swap fallback: no OAuth source resolved, so return the demoted
+    # API key rather than failing auth entirely.
+    if demoted_api_key:
+        return demoted_api_key
 
     return None
 

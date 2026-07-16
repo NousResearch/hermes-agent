@@ -289,3 +289,99 @@ def test_manual_pause_override(tmp_path):
     compute_and_write_throttle(ledger, cfg, path=path, now=NOON)
     state = read_throttle(path)
     assert is_profile_paused("workerA", state, cfg, now=NOON) == "profile workerA manually paused"
+
+
+# ─── Billing swap (api_key cap → personal_oauth failover) ────────────────────
+
+
+def swap_cfg(**kwargs):
+    cfg = make_cfg(**kwargs)
+    cfg.lanes["api_key"]["swap_to"] = "personal_oauth"
+    return cfg
+
+
+def test_over_cap_swaps_instead_of_pausing(tmp_path):
+    cfg = swap_cfg()
+    cfg.lanes["api_key"]["daily_cap_usd"] = 1.0
+    ledger = spend_meter.empty_ledger("2026-07-16", TZ)
+    ledger["lanes"] = {"api_key": {"usd": 1.5}}
+    path = tmp_path / "throttle.json"
+    state = compute_and_write_throttle(ledger, cfg, path=path, now=NOON)
+    assert state.paused_lanes == {}
+    assert state.swapped_lanes["api_key"]["to"] == "personal_oauth"
+    # Swapped lane's profiles keep dispatching.
+    assert is_profile_paused("workerA", read_throttle(path), cfg, now=NOON) is None
+
+
+def test_swap_falls_back_to_pause_when_target_exhausted(tmp_path):
+    cfg = swap_cfg()
+    cfg.lanes["api_key"]["daily_cap_usd"] = 1.0
+    cfg.lanes["personal_oauth"]["daily_cap_usd"] = 2.0
+    ledger = spend_meter.empty_ledger("2026-07-16", TZ)
+    ledger["lanes"] = {"api_key": {"usd": 1.5}, "personal_oauth": {"usd": 2.5}}
+    path = tmp_path / "throttle.json"
+    state = compute_and_write_throttle(ledger, cfg, path=path, now=NOON)
+    assert state.swapped_lanes == {}
+    assert "api_key" in state.paused_lanes
+    assert "personal_oauth" in state.paused_lanes
+
+
+def test_swapped_profiles_pause_when_target_lane_pauses(tmp_path):
+    """Escalation ladder: api_key swapped, then personal_oauth hits its cap
+    → api_key profiles (billing through personal) pause too."""
+    cfg = swap_cfg()
+    path = tmp_path / "throttle.json"
+    spend_meter._save_throttle_raw(
+        {
+            "swapped": {"api_key": {"to": "personal_oauth", "usd": 200.0, "cap": 200.0}},
+            "paused": {"personal_oauth": {"usd": 25.0, "cap": 25.0}},
+            "paused_profiles": {},
+            "overrides": {},
+        },
+        path,
+    )
+    state = read_throttle(path)
+    reason = is_profile_paused("workerA", state, cfg, now=NOON)
+    assert reason is not None and "swapped to personal_oauth" in reason
+    assert is_profile_paused("workerB", state, cfg, now=NOON) is not None  # native lane paused
+
+
+def test_swap_accrual_attributes_to_target_lane(tmp_path):
+    cfg = swap_cfg()
+    window_start, _, _ = day_window(NOON, TZ)
+    db = make_db(
+        tmp_path / "a.db",
+        [
+            {
+                "id": "s1",
+                "model": "claude-sonnet-5",
+                "input_tokens": 1_000_000,
+                "output_tokens": 0,
+                "started_at": window_start + 60,
+            }
+        ],
+    )
+    dbs = [("workerA", db)]
+    throttle_path = tmp_path / "throttle.json"
+    spend_meter._save_throttle_raw(
+        {"swapped": {"api_key": {"to": "personal_oauth"}}, "paused": {}, "overrides": {}},
+        throttle_path,
+    )
+    ledger = accrue(None, NOON, cfg, dbs=dbs, throttle_path=throttle_path)
+    assert "api_key" not in ledger["lanes"]
+    assert ledger["lanes"]["personal_oauth"]["usd"] == pytest.approx(2.0)
+    assert ledger["profiles"]["workerA"]["lane"] == "personal_oauth"
+
+
+def test_resume_override_clears_swap(tmp_path):
+    cfg = swap_cfg()
+    cfg.lanes["api_key"]["daily_cap_usd"] = 1.0
+    ledger = spend_meter.empty_ledger("2026-07-16", TZ)
+    ledger["lanes"] = {"api_key": {"usd": 1.5}}
+    path = tmp_path / "throttle.json"
+    compute_and_write_throttle(ledger, cfg, path=path, now=NOON)
+    assert "api_key" in read_throttle(path).swapped_lanes
+    set_override("api_key", "resume", NOON + 3600, path=path)
+    assert "api_key" not in read_throttle(path).swapped_lanes
+    state = compute_and_write_throttle(ledger, cfg, path=path, now=NOON + 60)
+    assert state.swapped_lanes == {}  # override honored on recompute

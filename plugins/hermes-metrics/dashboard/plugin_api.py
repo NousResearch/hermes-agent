@@ -158,6 +158,7 @@ def compute_spend() -> Dict[str, Any]:
             "enabled": throttle_enabled,
             "paused_lanes": throttle.get("paused") or {},
             "paused_profiles": throttle.get("paused_profiles") or {},
+            "swapped_lanes": throttle.get("swapped") or {},
             "overrides": throttle.get("overrides") or {},
         },
     }

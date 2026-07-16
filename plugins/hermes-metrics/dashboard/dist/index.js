@@ -66,7 +66,7 @@
   }
 
   // ── budget meter card (status color + text label, never color alone) ──
-  function MeterCard({ lane, label, usd, cap, paused }) {
+  function MeterCard({ lane, label, usd, cap, paused, swappedTo }) {
     const pct = cap ? usd / cap : null;
     let status = "good", statusText = "under budget";
     if (pct != null && pct >= 1) { status = "critical"; statusText = "over budget"; }
@@ -76,7 +76,8 @@
       { className: "hm-card hm-meter" },
       h("div", { className: "hm-meter-head" },
         h("span", { className: "hm-label" }, label || lane),
-        paused && h("span", { className: "hm-badge hm-badge-critical" }, "dispatch paused")
+        paused && h("span", { className: "hm-badge hm-badge-critical" }, "dispatch paused"),
+        !paused && swappedTo && h("span", { className: "hm-badge hm-badge-warning" }, "billing → " + swappedTo)
       ),
       h("div", { className: "hm-meter-value" },
         h("span", { className: "hm-hero" }, fmtUSD(usd)),
@@ -327,12 +328,14 @@
       h("h2", { className: "hm-section" }, "Spend"),
       h("div", { className: "hm-row" },
         laneNames.map(function (lane) {
+          const swap = ((spend.throttle && spend.throttle.swapped_lanes) || {})[lane];
           return h(MeterCard, {
             key: lane, lane: lane,
             label: (spend.labels || {})[lane],
             usd: (lanes[lane] || {}).usd || 0,
             cap: caps[lane],
             paused: !!pausedLanes[lane],
+            swappedTo: swap && swap.to,
           });
         }),
         h("div", { className: "hm-card hm-grow" },

@@ -47,6 +47,7 @@
 .hm-status-critical { color: var(--hm-critical); font-weight: 650; }
 .hm-badge { font-size: .66rem; text-transform: uppercase; letter-spacing: .08em; padding: .15rem .45rem; border-radius: .35rem; }
 .hm-badge-critical { background: color-mix(in srgb, var(--hm-critical) 18%, transparent); color: var(--hm-critical); border: 1px solid var(--hm-critical); }
+.hm-badge-warning { background: color-mix(in srgb, var(--hm-warning) 18%, transparent); color: color-mix(in srgb, var(--hm-warning) 60%, var(--color-foreground)); border: 1px solid var(--hm-warning); }
 
 /* stat tiles */
 .hm-stat { min-width: 120px; flex: 1 1 130px; }

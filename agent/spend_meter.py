@@ -78,6 +78,19 @@ class SpendConfig:
     def lane_label(self, lane: str) -> str:
         return (self.lanes.get(lane) or {}).get("label") or lane
 
+    def lane_swap_target(self, lane: str) -> Optional[str]:
+        """Failover lane when *lane* exhausts its daily cap (``swap_to``).
+
+        When set, hitting 100% swaps billing to the target lane (the auth
+        resolver skips the pinned API key and falls through to keychain
+        OAuth) instead of pausing dispatch. Dispatch pauses only when the
+        target lane is itself exhausted.
+        """
+        target = (self.lanes.get(lane) or {}).get("swap_to")
+        if target and target != lane and target in self.lanes:
+            return str(target)
+        return None
+
 
 _config_cache: Dict[str, Any] = {}
 
@@ -336,6 +349,7 @@ def accrue(
     now: float,
     cfg: SpendConfig,
     dbs: Optional[List[Tuple[str, Path]]] = None,
+    throttle_path: Optional[Path] = None,
 ) -> dict:
     """Poll all session DBs and accrue watermark deltas into today's totals."""
     window_start, _, date_str = day_window(now, cfg.timezone)
@@ -349,9 +363,19 @@ def accrue(
     profiles: Dict[str, dict] = ledger.setdefault("profiles", {})
     gaps = set(ledger.get("pricing_gaps") or [])
     query_floor = window_start - WATERMARK_RETENTION_SECONDS
+    # Billing-swap attribution: deltas observed while a lane is swapped were
+    # (approximately) billed through the failover lane, so accrue them there.
+    # read_throttle() here reflects the PREVIOUS poll's decision, which is
+    # exactly the regime the newly observed tokens ran under.
+    active_swaps = {
+        lane: info.get("to")
+        for lane, info in read_throttle(throttle_path).swapped_lanes.items()
+        if info.get("to")
+    }
 
     for profile, db_path in dbs if dbs is not None else iter_session_dbs():
         lane = resolve_profile_lane(profile, cfg)
+        lane = active_swaps.get(lane) or lane
         try:
             conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
             conn.row_factory = sqlite3.Row
@@ -450,6 +474,9 @@ class ThrottleState:
     paused_lanes: Dict[str, dict] = field(default_factory=dict)
     paused_profiles: Dict[str, dict] = field(default_factory=dict)
     overrides: Dict[str, dict] = field(default_factory=dict)
+    swapped_lanes: Dict[str, dict] = field(default_factory=dict)
+    """Lanes billing through their ``swap_to`` target (over cap, target has
+    headroom). Entry: ``{"to": lane, "usd": .., "cap": .., "since": ..}``."""
 
 
 def _load_throttle_raw(path: Path) -> dict:
@@ -493,11 +520,33 @@ def compute_and_write_throttle(
     }
     paused: Dict[str, dict] = {}
     paused_profiles: Dict[str, dict] = {}
+    swapped: Dict[str, dict] = {}
     if cfg.enabled and cfg.throttle_enabled:
-        for lane, entry in (ledger.get("lanes") or {}).items():
+
+        def _lane_over_cap(lane: str) -> Optional[Tuple[Decimal, Decimal]]:
             cap = cfg.lane_cap(lane)
-            usd = Decimal(str(entry.get("usd", 0)))
-            if cap and cap > 0 and usd >= cap and not _override_active(overrides, lane, "resume", now):
+            usd = Decimal(str(((ledger.get("lanes") or {}).get(lane) or {}).get("usd", 0)))
+            if cap and cap > 0 and usd >= cap:
+                return usd, cap
+            return None
+
+        for lane in cfg.lanes:
+            over = _lane_over_cap(lane)
+            if not over or _override_active(overrides, lane, "resume", now):
+                continue
+            usd, cap = over
+            target = cfg.lane_swap_target(lane)
+            # Swap only while the failover lane still has headroom;
+            # otherwise fall back to pausing dispatch (the escalation
+            # ladder: cap → swap billing → target cap → pause).
+            if target and not _lane_over_cap(target):
+                swapped[lane] = {
+                    "to": target,
+                    "usd": float(usd),
+                    "cap": float(cap),
+                    "since": now,
+                }
+            else:
                 paused[lane] = {"usd": float(usd), "cap": float(cap), "since": now}
         for profile, cap in cfg.profile_caps.items():
             entry = (ledger.get("profiles") or {}).get(profile) or {}
@@ -512,11 +561,17 @@ def compute_and_write_throttle(
         ):
             bucket = paused if target in cfg.lanes else paused_profiles
             bucket.setdefault(target, {"since": now, "manual": True})
+            swapped.pop(target, None)
     _save_throttle_raw(
-        {"paused": paused, "paused_profiles": paused_profiles, "overrides": overrides},
+        {
+            "paused": paused,
+            "paused_profiles": paused_profiles,
+            "overrides": overrides,
+            "swapped": swapped,
+        },
         path,
     )
-    return ThrottleState(paused, paused_profiles, overrides)
+    return ThrottleState(paused, paused_profiles, overrides, swapped)
 
 
 _throttle_cache: Dict[str, Tuple[float, ThrottleState]] = {}
@@ -537,6 +592,7 @@ def read_throttle(path: Optional[Path] = None) -> ThrottleState:
         paused_lanes=raw.get("paused") or {},
         paused_profiles=raw.get("paused_profiles") or {},
         overrides=raw.get("overrides") or {},
+        swapped_lanes=raw.get("swapped") or {},
     )
     _throttle_cache[str(path)] = (mtime, state)
     return state
@@ -558,9 +614,20 @@ def is_profile_paused(
         info = throttle.paused_profiles[profile]
         return _pause_reason(f"profile {profile}", info)
     lane = resolve_profile_lane(profile, cfg)
-    if _override_active(throttle.overrides, lane, "resume", now):
+    # While a lane is swapped, its profiles bill through the failover lane —
+    # so the failover lane's pause state is what gates them.
+    swap = throttle.swapped_lanes.get(lane)
+    effective_lane = (swap or {}).get("to") or lane
+    if _override_active(throttle.overrides, effective_lane, "resume", now):
         return None
-    if lane in throttle.paused_lanes:
+    if effective_lane in throttle.paused_lanes:
+        reason = _pause_reason(
+            f"lane {effective_lane}", throttle.paused_lanes[effective_lane]
+        )
+        if swap:
+            reason = f"{lane} swapped to {effective_lane}; {reason}"
+        return reason
+    if effective_lane != lane and lane in throttle.paused_lanes:
         return _pause_reason(f"lane {lane}", throttle.paused_lanes[lane])
     return None
 
@@ -586,6 +653,7 @@ def set_override(
     if action == "resume":
         (raw.get("paused") or {}).pop(target, None)
         (raw.get("paused_profiles") or {}).pop(target, None)
+        (raw.get("swapped") or {}).pop(target, None)
     _save_throttle_raw(raw, path)
     _throttle_cache.clear()
 
@@ -630,11 +698,24 @@ def format_alert(alerts: List[Alert], ledger: dict, cfg: SpendConfig) -> str:
             lines.append(f"Top: {top}")
         if alert.threshold >= 1.0 and cfg.throttle_enabled:
             target = alert.target.split(":", 1)[-1]
-            lines.append(
-                "Dispatch PAUSED for this "
-                + ("profile" if alert.target.startswith("profile:") else "lane's profiles")
-                + " — queued kanban tasks kept, Slack chat unaffected."
+            swap_to = (
+                cfg.lane_swap_target(alert.target)
+                if not alert.target.startswith("profile:")
+                else None
             )
+            if swap_to:
+                lines.append(
+                    f"Billing SWAPPED to the {swap_to} lane "
+                    f"({cfg.lane_label(swap_to)}) — dispatch continues; new worker"
+                    " sessions bill the personal account until the window resets"
+                    f" or the {swap_to} cap is reached (then dispatch pauses)."
+                )
+            else:
+                lines.append(
+                    "Dispatch PAUSED for this "
+                    + ("profile" if alert.target.startswith("profile:") else "lane's profiles")
+                    + " — queued kanban tasks kept, Slack chat unaffected."
+                )
             lines.append(f"Override: ~/.hermes/scripts/spend.sh resume {target} --for 4h")
         elif alert.threshold >= 1.0:
             lines.append("Throttle disabled (measurement mode) — dispatch continues.")
@@ -661,6 +742,9 @@ def format_status(ledger: dict, cfg: SpendConfig, throttle: Optional[ThrottleSta
         ))
     if ledger.get("pricing_gaps"):
         lines.append(f"  Pricing gaps (unpriced models): {', '.join(ledger['pricing_gaps'])}")
+    if throttle and throttle.swapped_lanes:
+        swaps = [f"{lane}→{info.get('to')}" for lane, info in throttle.swapped_lanes.items()]
+        lines.append(f"  BILLING SWAPPED: {', '.join(swaps)}")
     if throttle and (throttle.paused_lanes or throttle.paused_profiles):
         paused = list(throttle.paused_lanes) + list(throttle.paused_profiles)
         lines.append(f"  THROTTLED: {', '.join(paused)}")

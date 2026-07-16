@@ -158,13 +158,19 @@ def test_rebuild_when_tui_source_newer_than_bundle(tmp_path: Path, main_mod) -> 
     assert main_mod._tui_need_rebuild(tmp_path) is True
 
 
-def test_make_tui_argv_skips_build_only_on_termux_when_fresh(
+def test_make_tui_argv_skips_build_on_termux_when_fresh(
     tmp_path: Path, main_mod, monkeypatch
 ) -> None:
     _touch_tui_entry(tmp_path)
     monkeypatch.setenv("TERMUX_VERSION", "1")
     monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: False)
-    monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: False)
+    rebuild_calls = []
+
+    def need_rebuild(root: Path) -> bool:
+        rebuild_calls.append(root)
+        return False
+
+    monkeypatch.setattr(main_mod, "_tui_need_rebuild", need_rebuild)
     monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
 
     def fail_run(*_args, **_kwargs):
@@ -176,6 +182,7 @@ def test_make_tui_argv_skips_build_only_on_termux_when_fresh(
 
     assert argv == ["/bin/node", "--expose-gc", str(tmp_path / "dist" / "entry.js")]
     assert cwd == tmp_path
+    assert rebuild_calls == [tmp_path]
 
 
 def test_make_tui_argv_skips_install_on_termux_when_bundle_fresh(
@@ -275,7 +282,7 @@ def test_make_tui_argv_keeps_desktop_workspace_install_behaviour(
     _assert_utf8_replace_capture(calls[1][1])
 
 
-def test_make_tui_argv_keeps_desktop_always_build_behaviour(
+def test_make_tui_argv_skips_desktop_build_when_bundle_is_fresh(
     tmp_path: Path, main_mod, monkeypatch
 ) -> None:
     _touch_tui_entry(tmp_path)
@@ -283,6 +290,27 @@ def test_make_tui_argv_keeps_desktop_always_build_behaviour(
     monkeypatch.setenv("PREFIX", "/usr")
     monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: False)
     monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: False)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+
+    def fail_run(*_args, **_kwargs):
+        raise AssertionError("fresh desktop TUI launch must not rebuild")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fail_run)
+
+    argv, cwd = main_mod._make_tui_argv(tmp_path, tui_dev=False)
+
+    assert argv == ["/bin/node", "--expose-gc", str(tmp_path / "dist" / "entry.js")]
+    assert cwd == tmp_path
+
+
+def test_make_tui_argv_force_builds_fresh_desktop_bundle(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    _touch_tui_entry(tmp_path)
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setenv("HERMES_TUI_FORCE_BUILD", "1")
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: False)
     monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
     calls = []
 
@@ -294,7 +322,30 @@ def test_make_tui_argv_keeps_desktop_always_build_behaviour(
 
     main_mod._make_tui_argv(tmp_path, tui_dev=False)
 
-    assert calls
+    assert len(calls) == 1
+    assert calls[0][0][0] == ["/bin/npm", "run", "build"]
+    _assert_utf8_replace_capture(calls[0][1])
+
+
+def test_make_tui_argv_builds_desktop_bundle_when_stale(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    _touch_tui_entry(tmp_path)
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: False)
+    monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: True)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    main_mod._make_tui_argv(tmp_path, tui_dev=False)
+
     assert calls[0][0][0] == ["/bin/npm", "run", "build"]
     _assert_utf8_replace_capture(calls[0][1])
 

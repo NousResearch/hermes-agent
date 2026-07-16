@@ -3546,6 +3546,15 @@ def ensure_hub_dirs() -> None:
 
 def quarantine_bundle(bundle: SkillBundle) -> Path:
     """Write a skill bundle to the quarantine directory for scanning."""
+    try:
+        from tools.skill_manager_tool import skills_read_only_enabled, _READ_ONLY_MESSAGE
+        if skills_read_only_enabled():
+            raise PermissionError(_READ_ONLY_MESSAGE)
+    except PermissionError:
+        raise
+    except Exception:
+        pass
+
     ensure_hub_dirs()
     skill_name = _validate_skill_name(bundle.name)
     validated_files: List[Tuple[str, Union[str, bytes]]] = []

@@ -1447,3 +1447,29 @@ class TestSkillsReadOnly:
             assert ok is False
             assert "read_only" in msg
             assert (skills / "to-archive" / "SKILL.md").exists()
+
+    def test_read_only_blocks_restore_skill(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        skills = hermes_home / "skills"
+        skills.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        _set_skills_read_only(False)
+
+        # skill_usage resolves by frontmatter name:, so keep dir name in sync.
+        content = VALID_SKILL_CONTENT.replace("name: test-skill", "name: to-restore")
+        with _skill_dir(skills):
+            assert _create_skill("to-restore", content)["success"] is True
+            from tools.skill_usage import mark_agent_created, archive_skill, restore_skill
+            mark_agent_created("to-restore")
+            ok, msg = archive_skill("to-restore")
+            assert ok is True, msg
+            assert not (skills / "to-restore").exists()
+            assert (skills / ".archive" / "to-restore" / "SKILL.md").exists()
+
+            _set_skills_read_only(True)
+            ok, msg = restore_skill("to-restore")
+            assert ok is False
+            assert "read_only" in msg
+            assert not (skills / "to-restore").exists()
+            assert (skills / ".archive" / "to-restore" / "SKILL.md").exists()

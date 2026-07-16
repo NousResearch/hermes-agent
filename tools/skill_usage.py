@@ -772,6 +772,13 @@ def restore_skill(skill_name: str) -> Tuple[bool, str]:
     way to lift a prune). Restoring clears any suppression entry so future
     updates may re-seed the built-in again.
     """
+    try:
+        from tools.skill_manager_tool import skills_read_only_enabled, _READ_ONLY_MESSAGE
+        if skills_read_only_enabled():
+            return False, _READ_ONLY_MESSAGE
+    except Exception:
+        pass
+
     # Hub skills always have an external upstream owner — never shadow them.
     if is_hub_installed(skill_name):
         return False, (

@@ -1967,6 +1967,38 @@ class TestQuarantineBundleBinaryAssets:
 
         assert not absolute_target.exists()
 
+    def test_quarantine_bundle_refuses_read_only(self, tmp_path, monkeypatch):
+        """skills.read_only must refuse before writing skills/.hub/quarantine."""
+        import tools.skills_hub as hub
+
+        monkeypatch.setattr(
+            "tools.skill_manager_tool.skills_read_only_enabled",
+            lambda: True,
+        )
+        skills_dir = tmp_path / "skills"
+        hub_dir = skills_dir / ".hub"
+        quarantine_dir = hub_dir / "quarantine"
+        with patch.object(hub, "SKILLS_DIR", skills_dir), \
+             patch.object(hub, "HUB_DIR", hub_dir), \
+             patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+             patch.object(hub, "QUARANTINE_DIR", quarantine_dir), \
+             patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"), \
+             patch.object(hub, "TAPS_FILE", hub_dir / "taps.json"), \
+             patch.object(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache"):
+            bundle = SkillBundle(
+                name="locked-skill",
+                files={"SKILL.md": "---\nname: locked-skill\n---\n"},
+                source="official",
+                identifier="official/locked-skill",
+                trust_level="builtin",
+            )
+
+            with pytest.raises(PermissionError, match="read_only"):
+                quarantine_bundle(bundle)
+
+        assert not quarantine_dir.exists()
+        assert not (skills_dir / ".hub").exists()
+
 
 # ---------------------------------------------------------------------------
 # GitHubSource._download_directory — tree API + fallback (#2940)

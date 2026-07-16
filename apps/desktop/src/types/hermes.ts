@@ -811,6 +811,8 @@ export interface ActionResponse {
   name: string
   ok: boolean
   pid: number
+  action_id?: string
+  already_running?: boolean
 }
 
 export interface ActionStatusResponse {

@@ -1976,11 +1976,12 @@ class TestWebServerEndpoints:
 
         calls = []
 
-        def fake_spawn(subcommand, name):
-            calls.append((subcommand, name))
+        def fake_spawn(subcommand, name, *, env_overrides=None):
+            calls.append((subcommand, name, env_overrides))
             return Proc()
 
         monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "git")
+        monkeypatch.setattr(web_server.secrets, "token_hex", lambda _size: "a" * 32)
         monkeypatch.setattr(web_server, "_spawn_hermes_action", fake_spawn)
         web_server._ACTION_PROCS.pop("hermes-update", None)
         web_server._ACTION_RESULTS.pop("hermes-update", None)
@@ -1988,8 +1989,48 @@ class TestWebServerEndpoints:
         resp = self.client.post("/api/hermes/update")
 
         assert resp.status_code == 200
-        assert resp.json() == {"ok": True, "pid": 12345, "name": "hermes-update"}
-        assert calls == [(["update"], "hermes-update")]
+        assert resp.json() == {
+            "ok": True,
+            "pid": 12345,
+            "name": "hermes-update",
+            "action_id": "a" * 32,
+        }
+        assert calls == [
+            (["update"], "hermes-update", {"HERMES_ACTION_ID": "a" * 32})
+        ]
+
+    def test_update_hermes_reuses_running_action(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        class Proc:
+            pid = 24680
+
+            def poll(self):
+                return None
+
+        monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "git")
+        monkeypatch.setattr(
+            web_server,
+            "_spawn_hermes_action",
+            lambda *_args: pytest.fail("must not spawn a duplicate update"),
+        )
+        web_server._ACTION_PROCS["hermes-update"] = Proc()
+        web_server._ACTION_IDS["hermes-update"] = "b" * 32
+
+        try:
+            resp = self.client.post("/api/hermes/update")
+        finally:
+            web_server._ACTION_PROCS.pop("hermes-update", None)
+            web_server._ACTION_IDS.pop("hermes-update", None)
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "ok": True,
+            "pid": 24680,
+            "name": "hermes-update",
+            "already_running": True,
+            "action_id": "b" * 32,
+        }
 
     def test_action_status_reaps_completed_process(self, monkeypatch):
         import hermes_cli.web_server as web_server

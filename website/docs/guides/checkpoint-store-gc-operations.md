@@ -21,17 +21,21 @@ The two-hour grace period protects fresh objects written by another session whil
 
 ## Logs and normal success
 
-Checkpoint-manager messages use the standard Hermes logs under the selected profile's Hermes home, not always the default `~/.hermes` directory. Pick one profile explicitly and reuse it for every command in the investigation; do not run a bare `python - <<'PY'` helper and assume it inherited `hermes -p`, because an arbitrary shell may have no `HERMES_HOME` set and will fall back to the default profile.
+Checkpoint-manager messages use the standard Hermes logs under the selected profile's Hermes home, not always the default `~/.hermes` directory. Pick one profile explicitly and reuse it for every command in the investigation. Resolve the profile home through the `hermes` launcher itself rather than an ambient `python` executable, because packaged Hermes installs can provide a working `hermes` command while no `python` command exists on `PATH`.
 
 ```bash
 PROFILE=default  # or the named profile that triggered the checkpoint operation
-HERMES_HOME_PATH=$(python - "$PROFILE" <<'PY'
-import sys
-from hermes_cli.profiles import get_profile_dir
-
-print(get_profile_dir(sys.argv[1]))
-PY
-)
+HERMES_HOME_PATH=$(
+  hermes -p "$PROFILE" profile show "$PROFILE" \
+    | awk -F': *' '/^Path:/ { print $2; found = 1 } END { exit found ? 0 : 1 }'
+) || {
+  echo "Could not resolve Hermes home for profile '$PROFILE'; aborting before export/fsck." >&2
+  exit 1
+}
+if [ -z "$HERMES_HOME_PATH" ]; then
+  echo "Resolved empty Hermes home for profile '$PROFILE'; aborting before export/fsck." >&2
+  exit 1
+fi
 export HERMES_HOME="$HERMES_HOME_PATH"
 printf 'Inspecting profile %s at %s\n' "$PROFILE" "$HERMES_HOME_PATH"
 ```

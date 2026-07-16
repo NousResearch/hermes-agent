@@ -22,6 +22,7 @@ Usage:
 from __future__ import annotations
 
 import importlib
+import importlib.machinery
 import importlib.util
 import logging
 import sys
@@ -32,6 +33,27 @@ from hermes_cli.config import cfg_get
 logger = logging.getLogger(__name__)
 
 _MEMORY_PLUGINS_DIR = Path(__file__).parent
+
+
+# Synthetic parent package for user-installed providers, so they don't
+# collide with bundled providers in sys.modules.
+_USER_NAMESPACE = "_hermes_user_memory"
+
+
+def _register_synthetic_package(name: str) -> None:
+    """Register an empty package shell in sys.modules.
+
+    User-installed providers import as ``_hermes_user_memory.<name>``, a
+    dotted name whose parents exist nowhere on disk.  Unless those parents
+    are present in ``sys.modules``, any relative import inside the plugin
+    (``from . import config``) fails with
+    ``ModuleNotFoundError: No module named '_hermes_user_memory'``.
+    """
+    if name in sys.modules:
+        return
+    spec = importlib.machinery.ModuleSpec(name, None, is_package=True)
+    spec.submodule_search_locations = []
+    sys.modules[name] = importlib.util.module_from_spec(spec)
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +260,11 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional["MemoryProvider"]:
                         except Exception:
                             pass
 
+        # User-installed plugins need their synthetic parent registered,
+        # or relative imports inside the plugin cannot resolve.
+        if not _is_bundled:
+            _register_synthetic_package(_USER_NAMESPACE)
+
         # Now load the provider module
         spec = importlib.util.spec_from_file_location(
             module_name, str(init_file),
@@ -375,6 +402,9 @@ def discover_plugin_cli_commands() -> List[dict]:
         if module_name in sys.modules:
             cli_mod = sys.modules[module_name]
         else:
+            if not _is_bundled:
+                _register_synthetic_package(_USER_NAMESPACE)
+
             spec = importlib.util.spec_from_file_location(
                 module_name, str(cli_file)
             )

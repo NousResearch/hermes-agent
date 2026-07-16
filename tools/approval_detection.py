@@ -103,8 +103,13 @@ _WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 # sudo/env/exec/nohup/setsid/time wrappers. Keeps shutdown/reboot rules from firing on "echo reboot" / "grep
 # 'shutdown' log". Real ;/&/| separators are converted to newlines by the quote-aware _mark_command_starts pass;
 # keeping them here mistakes quoted data (grep '(safe|rm -rf /)') for commands.
+# The verb is argv[1] for multi-call binaries. Options before it are not
+# applet selection (busybox --help reboot must remain harmless).
+_MULTI_CALL_PREFIX = r'(?:(?:/?(?:[^\s/]+/)*)?(?:busybox|toybox)\b\s+)?'
+
 _CMDPOS = (
     r'(?:^|[\n`]|\$\()' r'\s*'  # start position, optional whitespace
+    + _MULTI_CALL_PREFIX
 )
 _CMDPOS += r"(?:/?(?:[^\s/]+/)*)?"
 

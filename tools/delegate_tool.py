@@ -700,10 +700,30 @@ def _build_child_system_prompt(
     the LLM doesn't confabulate nesting capabilities that don't exist.
     """
     if prompt_level == "goal_only":
-        # Minimal prompt — just the task and context
+        # Minimal prompt: task + context + workspace + completion instructions
         parts = [f"YOUR TASK:\n{goal}"]
         if context and context.strip():
             parts.append(f"\nCONTEXT:\n{context}")
+        if workspace_path and str(workspace_path).strip():
+            parts.append(
+                "\nWORKSPACE PATH:\n"
+                f"{workspace_path}\n"
+                "Use this exact path for local repository/workdir operations unless the task explicitly says otherwise."
+            )
+        parts.append(
+            "\nComplete this task using the tools available to you. "
+            "When finished, provide a clear, concise summary of:\n"
+            "- What you did\n"
+            "- What you found or accomplished\n"
+            "- Any files you created or modified\n"
+            "- Any issues encountered\n\n"
+            "Important workspace rule: Never assume a repository lives at /workspace/... or any other container-style path unless the task/context explicitly gives that path. "
+            "If no exact local path is provided, discover it first before issuing git/workdir-specific commands.\n\n"
+            "Keep your final summary tight: lead with outcomes, prefer bullet "
+            "points over paragraphs, and don't replay your whole process. Your "
+            "response is returned to the parent agent as a summary, and overlong "
+            "summaries crowd out the parent's context window."
+        )
         return "\n".join(parts)
 
     parts = [

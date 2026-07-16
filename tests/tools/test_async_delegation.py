@@ -341,35 +341,71 @@ def test_submit_failure_removes_durable_running_record(tmp_path, monkeypatch):
         assert conn.execute("SELECT COUNT(*) FROM async_delegations").fetchone()[0] == 0
 
 
-def test_pending_retention_prunes_delivered_before_undelivered(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr(ad, "_MAX_RETAINED_COMPLETED", 2)
-    for index, delivery_state in enumerate(("pending", "delivered", "pending")):
-        delegation_id = f"deleg_{index}"
-        record = {
-            "delegation_id": delegation_id,
-            "session_key": "owner",
-            "origin_ui_session_id": "",
-            "parent_session_id": None,
-            "dispatched_at": float(index + 1),
-        }
-        ad._persist_dispatch(record)
-        ad._persist_completion(
-            {
-                "delegation_id": delegation_id,
-                "status": "completed",
-                "completed_at": float(index + 1),
-            },
-            {"status": "completed", "summary": delegation_id},
+def _seed_terminal_delegations(count, delivery_state):
+    base = time.time()
+    rows = [
+        (
+            f"deleg_{index:04d}",
+            "owner",
+            "completed",
+            base - count + index,
+            base - count + index,
+            base - count + index,
+            delivery_state,
         )
-        if delivery_state == "delivered":
-            ad.mark_completion_delivered(delegation_id)
+        for index in range(count)
+    ]
+    with ad._DB_LOCK, ad._connect() as conn:
+        conn.executemany(
+            """INSERT INTO async_delegations
+               (delegation_id, origin_session, state, dispatched_at,
+                completed_at, updated_at, delivery_state)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            rows,
+        )
+
+
+def _durable_ids():
+    with ad._DB_LOCK, ad._connect() as conn:
+        return [
+            row[0]
+            for row in conn.execute(
+                "SELECT delegation_id FROM async_delegations ORDER BY updated_at"
+            )
+        ]
+
+
+def test_completed_history_cap_does_not_prune_60_pending(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _seed_terminal_delegations(60, "pending")
 
     ad._prune_durable_records()
 
-    assert ad.get_durable_delegation("deleg_0") is not None
-    assert ad.get_durable_delegation("deleg_1") is None
-    assert ad.get_durable_delegation("deleg_2") is not None
+    assert _durable_ids() == [f"deleg_{index:04d}" for index in range(60)]
+
+
+def test_completed_history_cap_keeps_newest_50_of_60_delivered(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _seed_terminal_delegations(60, "delivered")
+
+    ad._prune_durable_records()
+
+    assert _durable_ids() == [f"deleg_{index:04d}" for index in range(10, 60)]
+
+
+def test_pending_cap_prunes_oldest_of_1001_pending(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _seed_terminal_delegations(1001, "pending")
+
+    ad._prune_durable_records()
+
+    ids = _durable_ids()
+    assert len(ids) == ad._MAX_DURABLE_PENDING
+    assert ids[0] == "deleg_0001"
+    assert ids[-1] == "deleg_1000"
+    assert "deleg_0000" not in ids
 
 
 def test_recover_marks_abandoned_running_record_unknown(tmp_path, monkeypatch):
@@ -871,5 +907,3 @@ def test_gateway_cli_origin_event_left_unrouted():
     evt = _make_async_evt(session_key="")
     runner._enrich_async_delegation_routing(evt)
     assert "platform" not in evt
-
-

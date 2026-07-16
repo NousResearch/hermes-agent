@@ -1050,14 +1050,17 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         # where api.telegram.org is blocked. The in-gateway adapter does the
         # same thing in gateway/platforms/telegram.py.
         try:
-            from gateway.platforms.base import resolve_proxy_url
+            from gateway.platforms.base import resolve_proxy_url, safe_url_for_log
             _tg_proxy = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
         except Exception:
             _tg_proxy = None
         if _tg_proxy:
             try:
                 from telegram.request import HTTPXRequest
-                logger.info("send_message: standalone Telegram send routed through proxy %s", _tg_proxy)
+                logger.info(
+                    "send_message: standalone Telegram send routed through proxy %s",
+                    safe_url_for_log(_tg_proxy),
+                )
                 bot = Bot(
                     token=token,
                     request=HTTPXRequest(proxy=_tg_proxy),

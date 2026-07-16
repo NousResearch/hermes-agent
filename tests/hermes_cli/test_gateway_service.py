@@ -67,6 +67,7 @@ class TestSystemdServiceRefresh:
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("old unit\n", encoding="utf-8")
 
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda *args, **kwargs: None)
         monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
         monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "new unit\n")
         # Bypass systemd availability checks — this test targets unit-file
@@ -94,6 +95,7 @@ class TestSystemdServiceRefresh:
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("old unit\n", encoding="utf-8")
 
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda *args, **kwargs: None)
         monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
         monkeypatch.setattr(gateway_cli, "generate_systemd_unit", lambda system=False, run_as_user=None: "new unit\n")
         # Bypass systemd availability checks — this test targets unit-file
@@ -787,6 +789,13 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "bootout", f"{domain}/{label}"],
             ["launchctl", "bootstrap", domain, str(plist_path)],
         ]
+
+    def test_generate_launchd_plist_includes_real_home_for_restart_helper(self):
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "<key>HERMES_HOME</key>" in plist
+        assert "<key>HOME</key>" in plist
+        assert f"<string>{gateway_cli._launchd_user_home()}</string>" in plist
 
     def test_launchd_start_reloads_unloaded_job_and_retries(self, tmp_path, monkeypatch):
         plist_path = tmp_path / "ai.hermes.gateway.plist"
@@ -1537,6 +1546,7 @@ class TestGatewaySystemServiceRouting:
     def test_systemd_restart_gracefully_restarts_running_service_and_waits(self, monkeypatch, capsys):
         calls = []
 
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda *args, **kwargs: None)
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: calls.append(("refresh", system)))
@@ -1582,6 +1592,7 @@ class TestGatewaySystemServiceRouting:
     def test_systemd_restart_uses_systemd_main_pid_when_pid_file_is_missing(self, monkeypatch, capsys):
         calls = []
 
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda *args, **kwargs: None)
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
@@ -1641,6 +1652,7 @@ class TestGatewaySystemServiceRouting:
     def test_systemd_restart_reports_start_limit_hit(self, monkeypatch, capsys):
         calls = []
 
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda *args, **kwargs: None)
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
@@ -1671,6 +1683,7 @@ class TestGatewaySystemServiceRouting:
         assert "reset-failed" in out
 
     def test_systemd_restart_recovers_failed_planned_restart(self, monkeypatch, capsys):
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda *args, **kwargs: None)
         monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
         monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
         monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)

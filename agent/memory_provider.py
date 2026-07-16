@@ -115,8 +115,8 @@ class MemoryProvider(ABC):
 
     def sync_turn(
         self,
-        user_content: str,
-        assistant_content: str,
+        user_content: Any,
+        assistant_content: Any,
         *,
         session_id: str = "",
         messages: Optional[List[Dict[str, Any]]] = None,

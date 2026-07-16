@@ -4,6 +4,7 @@ import time
 
 from datetime import datetime
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 from plugins.memory.honcho.session import (
@@ -588,10 +589,50 @@ class TestConcludeToolDispatch:
                 "Visible answer"
             ),
         )
+        assert provider._sync_thread is not None
         provider._sync_thread.join(timeout=1.0)
 
         assert session.add_message.call_args_list[0].args == ("user", "hello")
         assert session.add_message.call_args_list[1].args == ("assistant", "Visible answer")
+
+    def test_sync_turn_normalizes_content_parts_before_honcho_ingest(self):
+        provider = HonchoMemoryProvider()
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._cron_skipped = False
+        provider._config = cast(Any, SimpleNamespace(message_max_chars=25000))
+
+        session = MagicMock()
+        provider._manager.get_or_create.return_value = session
+
+        provider.sync_turn(
+            [
+                {"type": "text", "text": "First user line"},
+                {"type": "image_url", "image_url": {"url": "https://example.invalid/image.png"}},
+            ],
+            [
+                {
+                    "type": "text",
+                    "text": (
+                        "<memory-context>\n"
+                        "hidden context\n"
+                        "</memory-context>\n\n"
+                        "Visible assistant line"
+                    ),
+                }
+            ],
+        )
+        assert provider._sync_thread is not None
+        provider._sync_thread.join(timeout=1.0)
+
+        assert session.add_message.call_args_list[0].args == (
+            "user",
+            "First user line\n[image content omitted from memory sync]",
+        )
+        assert session.add_message.call_args_list[1].args == (
+            "assistant",
+            "Visible assistant line",
+        )
 
 
 # ---------------------------------------------------------------------------

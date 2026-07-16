@@ -596,22 +596,39 @@ def repair_message_sequence_with_cursor(agent, messages: List[Dict]) -> int:
     return repairs
 
 
-def find_last_user_idx(messages: List[Dict]) -> Optional[int]:
-    """Return the index of the last ``role == "user"`` message in *messages*.
+# Per-turn marker key stamped on the current turn's user message dict by
+# ``turn_context.build_turn_context`` and consumed by the request-assembly
+# glue step in ``conversation_loop``. Kept here (next to its only consumer)
+# so both sides share one definition.
+TURN_USER_MARKER_KEY = "_turn_user_marker"
 
-    Must be recomputed from the final message list at glue time (right
-    before the ``api_messages`` build), not cached from turn-start. A
-    turn-start snapshot (e.g. ``current_turn_user_idx``) goes stale when
-    preflight compression or ``repair_message_sequence_with_cursor`` replace
-    or compact ``messages`` afterwards — the stale index then matches
-    nothing, and ephemeral plugin/memory context silently never gets glued
-    onto the outgoing request.
 
-    Returns ``None`` if no ``user`` message is present.
+def select_turn_glue_idx(messages: List[Dict], marker: Optional[str]) -> Optional[int]:
+    """Return the index of the current turn's user message, found by *marker*.
+
+    Must be recomputed from the final message list at glue time (right before
+    the ``api_messages`` build), not cached from turn-start. A turn-start index
+    snapshot (e.g. ``current_turn_user_idx``) goes stale, and object identity
+    does not survive preflight compression (it ``.copy()``s the protected
+    tail into fresh dicts), when compression or
+    ``repair_message_sequence_with_cursor`` relocate/re-object ``messages``.
+    The marker key rides the shallow copy through, so it re-identifies THIS
+    turn's user message at its new position.
+
+    Crucially this targets the *current turn's* user message, never merely the
+    globally-last one: the loop appends synthetic continuation/recovery user
+    nudges (length-continue, codex-ack, verify-stop) which do NOT carry the
+    marker, so glue can't drift onto them.
+
+    Returns ``None`` when *marker* is falsy or no message carries it (e.g. the
+    turn's user message was compacted away entirely) — the caller then skips
+    glue and warns rather than silently retargeting onto a nudge.
     """
+    if not marker:
+        return None
     for idx in range(len(messages) - 1, -1, -1):
         msg = messages[idx]
-        if isinstance(msg, dict) and msg.get("role") == "user":
+        if isinstance(msg, dict) and msg.get(TURN_USER_MARKER_KEY) == marker:
             return idx
     return None
 

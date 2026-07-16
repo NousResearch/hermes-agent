@@ -50,6 +50,7 @@ AUTHOR_MAP = {
     "205466933+wesleion@users.noreply.github.com": "wesleion",  # PR #36049 salvage (telegram: per-topic free-response allowlist)
     "evefromwayback@gmail.com": "evefromwayback",  # PR #64611 salvage (agent: never load install-tree AGENTS.md as project context)
     "Regina@Andreys-Mini.true.true": "Rival",  # PR #64935/#64936 salvage (state: restore-boundary alternation repair; agent: turn-overlap tripwire)
+    "embwl0x@users.noreply.github.com": "embwl0x",  # PR #65105 salvage (gateway: preserve external supervisor ownership)
     "41409874+2751738943@users.noreply.github.com": "2751738943",  # PR #54785 salvage (tui: post-turn completion ownership routing)
     "Burgunthy@users.noreply.github.com": "Burgunthy",  # PR #20096 salvage (gateway: profile-based routing for inbound messages)
     "75556242+webtecnica@users.noreply.github.com": "webtecnica",  # PR #63360 salvage (nous: restore inference-api base_url)

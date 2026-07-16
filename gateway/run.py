@@ -9954,6 +9954,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 # Fail toward existing behavior: an unresolvable tier policy
                 # must not newly lock out an already-authorized approver.
+                # Never silently, though — an operator who configured
+                # allow_admin_from needs to know the tier wasn't applied.
+                logger.warning(
+                    "Admin-tier policy resolution failed for %s (profile_home=%s); "
+                    "treating caller as admin (pre-tier behavior)",
+                    source, profile_home, exc_info=True,
+                )
                 return True
         return check
 

@@ -9,7 +9,11 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, Iterable, List, Tuple
 
-logger = logging.getLogger(__name__)
+# Keep the ORIGINAL logger name: these records logged as "hermes_state" for
+# their whole life pre-extraction; renaming the logger would silently move them
+# out of any log-filter/handler configured on "hermes_state" (Greptile P2 —
+# logger name is an observable output the golden did not capture).
+logger = logging.getLogger("hermes_state")
 
 def _sql_placeholders(values) -> str:
     return ",".join("?" for _ in values)

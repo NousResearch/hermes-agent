@@ -47,12 +47,7 @@ class _InlineToolGateAdapter:
                         block_result = self.tool_scope_block_result(underlying)
         except Exception:
             pass
-        return SimpleNamespace(
-            function_name=out_name,
-            function_args=out_args,
-            scope_block_message=block_message,
-            scope_block_result=block_result,
-        )
+        return out_name, out_args, block_message, block_result
 
     def pre_tool_block_from_builtin_gate(self, agent, function_name, tool_scope_block):
         from agent.budget_grace_gate import grace_block_message, is_readonly_grace_tool
@@ -128,17 +123,17 @@ def run_case(case: dict):
     mod = _impl()
     kind = case["kind"]
     if kind == "unwrap":
-        result = mod.resolve_tool_search_unwrap(
+        out_name, out_args, block_message, block_result = mod.resolve_tool_search_unwrap(
             _agent(case.get("agent") or {}),
             case["function_name"],
             case.get("function_args") or {},
         )
         return {
             "return": {
-                "function_name": result.function_name,
-                "function_args": result.function_args,
-                "scope_block_message": result.scope_block_message,
-                "scope_block_result": result.scope_block_result,
+                "function_name": out_name,
+                "function_args": out_args,
+                "scope_block_message": block_message,
+                "scope_block_result": block_result,
             },
             "messages": [],
             "db": [],

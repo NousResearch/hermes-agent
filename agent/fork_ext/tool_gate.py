@@ -3,22 +3,12 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from typing import Any
 
 from agent.budget_grace_gate import grace_block_message, is_readonly_grace_tool
 
 
-@dataclass(frozen=True)
-class ToolSearchUnwrap:
-    function_name: str
-    function_args: dict[str, Any]
-    scope_block_message: str | None = None
-    scope_block_result: str | None = None
-
-
 def tool_search_scoped_names(agent) -> frozenset:
-    """Return the deferrable tool names the session may invoke via tool_call."""
     try:
         import model_tools
         from tools import tool_search as _ts
@@ -64,12 +54,7 @@ def tool_scope_block_result(tool_name: str) -> str:
     return json.dumps({"error": tool_scope_block_message(tool_name)}, ensure_ascii=False)
 
 
-def tool_scope_block_result_from_message(message: str) -> str:
-    return json.dumps({"error": message}, ensure_ascii=False)
-
-
-def resolve_tool_search_unwrap(agent, function_name: str, function_args: dict[str, Any]) -> ToolSearchUnwrap:
-    """Unwrap tool_search's tool_call bridge when the underlying tool is in scope."""
+def resolve_tool_search_unwrap(agent, function_name: str, function_args: dict[str, Any]):
     try:
         from tools import tool_search as _ts
 
@@ -77,21 +62,15 @@ def resolve_tool_search_unwrap(agent, function_name: str, function_args: dict[st
             underlying, underlying_args, err = _ts.resolve_underlying_call(function_args)
             if not err and underlying:
                 if underlying in tool_search_scoped_names(agent):
-                    return ToolSearchUnwrap(underlying, underlying_args)
+                    return underlying, underlying_args, None, None
                 block_message = tool_scope_block_message(underlying)
-                return ToolSearchUnwrap(
-                    function_name,
-                    function_args,
-                    block_message,
-                    tool_scope_block_result(underlying),
-                )
+                return function_name, function_args, block_message, tool_scope_block_result(underlying)
     except Exception:  # pragma: no cover - unwrap failures preserve the original call
         pass
-    return ToolSearchUnwrap(function_name, function_args)
+    return function_name, function_args, None, None
 
 
 def pre_tool_block_from_builtin_gate(agent, function_name: str, tool_scope_block: str | None) -> dict[str, str] | None:
-    """Return the built-in pre-tool block decision before plugin hooks run."""
     if getattr(agent, "_in_budget_grace", False) and not is_readonly_grace_tool(function_name):
         return {
             "message": grace_block_message(function_name),
@@ -105,14 +84,9 @@ def pre_tool_block_from_builtin_gate(agent, function_name: str, tool_scope_block
     return None
 
 
-_DEFAULT_DELEGATE_BLOCKED_TOOLS = frozenset({
-    "delegate_task",
-    "clarify",
-    "memory",
-    "send_message",
-    "execute_code",
-    "cronjob",
-})
+_DEFAULT_DELEGATE_BLOCKED_TOOLS = frozenset(
+    {"delegate_task", "clarify", "memory", "send_message", "execute_code", "cronjob"}
+)
 _TOOLSET_STRIP_EXEMPT = frozenset({"code_execution"})
 
 
@@ -122,7 +96,6 @@ def strip_blocked_delegate_toolsets(
     toolset_definitions: dict[str, dict[str, Any]] | None = None,
     delegate_blocked_tools=frozenset(_DEFAULT_DELEGATE_BLOCKED_TOOLS),
 ) -> list[str]:
-    """Remove default-inherited subagent toolsets that only contain blocked tools."""
     if toolset_definitions is None:
         from toolsets import TOOLSETS
 

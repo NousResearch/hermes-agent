@@ -459,28 +459,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         elif function_name == "skill_manage":
             agent._iters_since_skill = 0
 
-        # ── Tool Search unwrap ────────────────────────────────────────
-        # When the model invokes the tool_call bridge, peel it open so
-        # every downstream check (checkpointing, guardrails, plugin
-        # pre-tool-call hooks, the display/activity feed, the post-call
-        # callback) sees the underlying tool — not the bridge. This is
-        # the OpenClaw lesson: hooks must observe the real tool name.
-        #
-        # The original tool_call entry on ``tool_call.function`` is left
-        # untouched so the conversation transcript and the matching
-        # tool_call_id are preserved exactly as the model emitted them.
-        #
-        # Scope gate: the unwrap dispatches the underlying tool directly
-        # (bypassing the bridge branch in handle_function_call and its
-        # scope check), so we enforce session toolset scope HERE. A tool
-        # the session was not granted is rejected before any checkpoint,
-        # hook, or dispatch fires.
-        _unwrap = resolve_tool_search_unwrap(agent, function_name, function_args)
+        # Tool Search unwrap: expose the underlying tool to downstream hooks
+        # while preserving the original transcript tool_call_id.
         function_name, function_args, _ts_scope_block, _ts_scope_message = (
-            _unwrap.function_name,
-            _unwrap.function_args,
-            _unwrap.scope_block_result,
-            _unwrap.scope_block_message,
+            resolve_tool_search_unwrap(agent, function_name, function_args)
         )
 
         function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
@@ -1168,14 +1150,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             agent._apply_pending_steer_to_tool_results(messages, 1)
             continue
 
-        # Tool Search unwrap — see execute_tool_calls_concurrent for full
-        # rationale, including the scope gate (the unwrap dispatches the
-        # underlying tool directly, so session toolset scope is enforced here).
-        _unwrap = resolve_tool_search_unwrap(agent, function_name, function_args)
+        # Tool Search unwrap — see the concurrent path for the scope rationale.
         function_name, function_args, _ts_scope_block = (
-            _unwrap.function_name,
-            _unwrap.function_args,
-            _unwrap.scope_block_message,
+            resolve_tool_search_unwrap(agent, function_name, function_args)[:3]
         )
 
         function_args, middleware_trace = _apply_tool_request_middleware_for_agent(

@@ -778,13 +778,8 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     composite toolset ``delegation`` (which has no one-to-one tool). This keeps
     the blocklist and the strip set in lockstep and strips e.g. ``cronjob``.
 
-    EXEMPTION (fork intent, preserved across 2026-06-29 upstream merge):
-    ``code_execution`` is deliberately NOT stripped even though its only tool
-    ``execute_code`` is in DELEGATE_BLOCKED_TOOLS for the per-TOOL strip.
-    Subagents already receive ``terminal`` (a strictly larger capability), so
-    blocking the ``code_execution`` TOOLSET is asymmetric and breaks legitimate
-    uses ("compute SHA256 + sum of primes"). The per-tool block on raw
-    ``execute_code`` stands; only the toolset-level inheritance is allowed.
+    Fork exemption: ``code_execution`` inheritance is allowed even though the
+    raw ``execute_code`` tool remains blocked.
     """
     return strip_blocked_delegate_toolsets(
         toolsets,

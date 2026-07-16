@@ -6981,8 +6981,9 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
 
   if (zoom) {
     installZoomShortcuts(win)
-    // Re-apply persisted zoom on show/restore (Windows drops webContents zoom on
-    // minimize/restore) and on first load (reloads / crash recovery).
+    // Re-apply persisted zoom on show/restore/cross-display move (Windows can
+    // drop webContents zoom after minimize or a monitor-scale change) and on
+    // first load (reloads / crash recovery).
     installZoomReassertOnWindowEvents(win, () => restorePersistedZoomLevel(win))
     win.webContents.once('did-finish-load', () => restorePersistedZoomLevel(win))
   }

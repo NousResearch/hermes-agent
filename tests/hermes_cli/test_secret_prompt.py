@@ -141,6 +141,96 @@ def test_read_posix_raw_char_drains_arrow_key_escape_sequence():
 
 
 @_POSIX_ONLY
+def test_read_posix_raw_char_drains_ss3_escape_sequence():
+    # SS3 sequences (ESC O <final>) are emitted by some terminals for F1-F4
+    # and, in application cursor mode, for the arrow keys. Only the two-byte
+    # tail must be consumed — one introducer byte plus one final byte.
+    r, w = _pipe_pair()
+    try:
+        os.write(w, b"\x1bOP")   # F1 in xterm's SS3 form
+        first = _read_posix_raw_char(r)
+        time.sleep(0.02)
+        os.write(w, b"x")
+        second = _read_posix_raw_char(r)
+        assert first == "\x1b"
+        assert second == "x", (
+            f"SS3 tail leaked: expected 'x' after drain, got {second!r}"
+        )
+    finally:
+        os.close(r)
+        os.close(w)
+
+
+@_POSIX_ONLY
+def test_read_posix_raw_char_lone_escape_returns_escape():
+    # A lone Escape keypress (no follow-up bytes) must still surface as ESC
+    # so the collector can skip it. The short peek window is what
+    # distinguishes this from a sequence.
+    r, w = _pipe_pair()
+    try:
+        os.write(w, b"\x1b")
+        assert _read_posix_raw_char(r) == "\x1b"
+    finally:
+        os.close(r)
+        os.close(w)
+
+
+@_POSIX_ONLY
+def test_read_posix_raw_char_preserves_meta_alt_follow_up_char():
+    # Some terminals encode Meta/Alt-<char> as ESC + <char>. The follow-up
+    # byte is NOT part of a CSI/SS3 sequence and must not be silently
+    # swallowed alongside the ESC — otherwise we'd trade the arrow-key
+    # corruption bug for a Meta-key corruption bug.
+    r, w = _pipe_pair()
+    try:
+        os.write(w, b"\x1ba")   # Alt-a on many terminals
+        first = _read_posix_raw_char(r)
+        assert first == "a", (
+            f"Meta/Alt follow-up byte was dropped: expected 'a', got {first!r}"
+        )
+    finally:
+        os.close(r)
+        os.close(w)
+
+
+@_POSIX_ONLY
+def test_read_posix_raw_char_end_to_end_typed_secret_with_alt_key():
+    # End-to-end companion to the arrow-key test: if the user hits Alt-<char>
+    # mid-secret, the <char> must land in the captured value. Pre-fix
+    # (original drain-everything approach) this would produce "pasword"
+    # because the ESC drain swallowed the 's'.
+    r, w = _pipe_pair()
+    output: list[str] = []
+
+    def read_char():
+        return _read_posix_raw_char(r)
+
+    def write(text):
+        output.append(text)
+
+    import threading
+
+    def feed():
+        os.write(w, b"pa")
+        time.sleep(0.02)
+        os.write(w, b"\x1bs")   # Alt-s burst mid-secret
+        time.sleep(0.02)
+        os.write(w, b"sword\r")
+
+    writer = threading.Thread(target=feed)
+    writer.start()
+    try:
+        value = _collect_masked_input(read_char, write, "pw: ", mask="*")
+    finally:
+        writer.join(timeout=1.0)
+        os.close(r)
+        os.close(w)
+
+    assert value == "password", f"Alt-key follow-up byte lost: {value!r}"
+    assert "".join(c for c in output if c == "*") == "*" * 8
+
+
+@_POSIX_ONLY
 def test_read_posix_raw_char_end_to_end_typed_secret_with_arrow_key():
     # End-to-end: drive ``_collect_masked_input`` with the reader used by
     # ``_masked_secret_prompt_posix`` and prove that "pass<Up>word<Enter>"

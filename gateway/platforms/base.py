@@ -1504,12 +1504,16 @@ MEDIA_TAG_CLEANUP_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Extension-less absolute paths (e.g. Caddyfile, Dockerfile, Makefile) are
-# intentionally excluded from MEDIA_TAG_CLEANUP_RE — they are validated and
-# delivered via MEDIA_EXTENSIONLESS_TAG_RE so prompt-injection paths that do
-# not exist on disk are left visible instead of silently dropped. Paths with
-# an unknown but present extension (e.g. .weirdext) stay on the #34517
-# bare-path fallback and are not handled here.
+# Paths NOT covered by MEDIA_TAG_CLEANUP_RE's extension alternation — both
+# extension-less files (Caddyfile, Dockerfile, Makefile) and files with an
+# unknown extension (.py, .log, .weirdext, ...) — are validated and delivered
+# via MEDIA_EXTENSIONLESS_TAG_RE. Every ``MEDIA:`` path is therefore
+# deliverable regardless of file type (#36060): known extensions extract
+# unconditionally via the anchored pattern above, everything else extracts
+# only after ``validate_media_delivery_path`` accepts it (exists on disk, not
+# under the credential/system denylist, strict-mode rules honored), so
+# prompt-injection paths that do not validate are left visible instead of
+# silently dropped.
 MEDIA_EXTENSIONLESS_TAG_RE = re.compile(
     r'''[`"']?MEDIA:\s*'''
     r'''(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|'''
@@ -1527,8 +1531,16 @@ def _normalize_media_tag_path(raw: str) -> str:
 
 
 def _path_lacks_deliverable_extension(path: str) -> bool:
-    """True only when the basename has no extension (Caddyfile, Makefile, …)."""
-    return not Path(path).suffix
+    """True when MEDIA_TAG_CLEANUP_RE's extension alternation does not cover
+    ``path`` — either the basename has no extension at all (Caddyfile,
+    Makefile, …) or the extension is not in MEDIA_DELIVERY_EXTS (.py, .log,
+    .weirdext, …). Such paths route through the validated delivery pass
+    (``validate_media_delivery_path``) instead of the unconditional one, so
+    every file type is deliverable (#36060) while nonexistent / denylisted
+    paths stay visible in the text.
+    """
+    suffix = Path(path).suffix.lower()
+    return not suffix or suffix not in MEDIA_DELIVERY_EXTS
 
 
 def _strip_media_tag_directives(text: str) -> str:

@@ -378,11 +378,21 @@ async function listBaseBranches(repoPath, gitBin) {
   try {
     const out = await runGit(
       gitBin,
-      ['for-each-ref', '--format=%(refname:short)\t%(committerdate:iso)', '--sort=-committerdate', 'refs/heads', 'refs/remotes'],
+      [
+        'for-each-ref',
+        '--format=%(refname:short)\t%(committerdate:iso)',
+        '--sort=-committerdate',
+        'refs/heads',
+        'refs/remotes'
+      ],
       resolved
     )
 
-    const remoteDefault = await gitLine(gitBin, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], resolved)
+    const remoteDefault = await gitLine(
+      gitBin,
+      ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'],
+      resolved
+    )
     const localDefault = await defaultBranch(gitBin, resolved)
 
     return out

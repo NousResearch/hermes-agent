@@ -22,7 +22,7 @@ Guide PyTorch FSDP setup, sharding, and debugging.
 | Dependencies | `torch>=2.0,<3` |
 | Platforms | linux, macos |
 | Tags | `pytorch`, `fsdp`, `distributed-training`, `sharding`, `checkpointing` |
-| Related skills | `accelerate`, `torchtitan`, [`pytorch-lightning`](/docs/user-guide/skills/optional/mlops/mlops-pytorch-lightning) |
+| Related skills | [`huggingface-accelerate`](/docs/user-guide/skills/optional/mlops/mlops-accelerate), [`distributed-llm-pretraining-torchtitan`](/docs/user-guide/skills/optional/mlops/mlops-torchtitan), [`pytorch-lightning`](/docs/user-guide/skills/optional/mlops/mlops-pytorch-lightning) |
 
 ## Reference: full SKILL.md
 
@@ -50,7 +50,7 @@ DistributedDataParallel when each rank can hold the model and optimizer state.
 ## Prerequisites
 
 - A supported PyTorch 2.x installation on every rank.
-- A launch method such as `torchrun` and a working process-group backend.
+- `terminal` access to the configured launcher and a working process-group backend.
 - One process per accelerator for NCCL-based GPU training.
 - Shared, durable storage when checkpoints must survive node loss.
 - The same code, model structure, and collective order on every rank.
@@ -84,7 +84,7 @@ python -c "import torch; print(torch.__version__); print(torch.cuda.is_available
 | Reduced activation memory | activation checkpointing | recomputation cost and wrap order |
 | Lower communication cost | mixed precision | reduction dtype and numerically sensitive ops |
 | CPU memory tradeoff | CPU offload | transfer cost and optimizer behavior |
-| Launch and rendezvous | `torchrun` | rank, world size, address, and port |
+| Launch and rendezvous | `terminal` | rank, world size, address, port, and launcher |
 
 Official references:
 
@@ -104,10 +104,10 @@ loss values. A sharded run is not a useful diagnostic baseline by itself.
 Completion criterion: the baseline trains deterministically enough to compare
 loss and checkpoint behavior with the sharded run.
 
-### 2. Initialize one process per device
+### 2. Initialize one process per CUDA device
 
-Set the local device before constructing CUDA modules and initialize the
-process group exactly once:
+For a CUDA/NCCL job, set the local device before constructing CUDA modules and
+initialize the process group exactly once:
 
 ```python
 import os
@@ -119,8 +119,10 @@ torch.cuda.set_device(local_rank)
 dist.init_process_group(backend="nccl")
 ```
 
-Use a backend appropriate for the actual device. Do not silently switch
-backends to hide an NCCL or rendezvous failure.
+This example is CUDA-only. For another supported device type, use its
+documented device-selection API and process-group backend; do not call
+`torch.cuda.set_device()` on non-CUDA systems. Do not silently switch backends
+to hide an NCCL or rendezvous failure.
 
 Completion criterion: every rank reports the expected global rank, local
 device, backend, and world size, then exits cleanly.

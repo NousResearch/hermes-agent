@@ -23,6 +23,16 @@ Use `search_files` within `other.md` for the exact heading below, then use
 - `Generic Join Context Manager`
 - `Torch Distributed Elastic`
 
+Use `terminal` to invoke the launcher configured for the target environment.
+For a local two-rank smoke test with PyTorch's launcher, a typical command is:
+
+```bash
+torchrun --standalone --nproc-per-node=2 train.py
+```
+
+Adjust the launcher arguments for the installed PyTorch version, device count,
+and multi-node rendezvous configuration.
+
 ## Related parallelism
 
 - `DistributedDataParallel`

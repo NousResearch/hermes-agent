@@ -35,7 +35,7 @@ DistributedDataParallel when each rank can hold the model and optimizer state.
 ## Prerequisites
 
 - A supported PyTorch 2.x installation on every rank.
-- A launch method such as `torchrun` and a working process-group backend.
+- `terminal` access to the configured launcher and a working process-group backend.
 - One process per accelerator for NCCL-based GPU training.
 - Shared, durable storage when checkpoints must survive node loss.
 - The same code, model structure, and collective order on every rank.
@@ -69,7 +69,7 @@ python -c "import torch; print(torch.__version__); print(torch.cuda.is_available
 | Reduced activation memory | activation checkpointing | recomputation cost and wrap order |
 | Lower communication cost | mixed precision | reduction dtype and numerically sensitive ops |
 | CPU memory tradeoff | CPU offload | transfer cost and optimizer behavior |
-| Launch and rendezvous | `torchrun` | rank, world size, address, and port |
+| Launch and rendezvous | `terminal` | rank, world size, address, port, and launcher |
 
 Official references:
 

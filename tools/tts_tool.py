@@ -6,7 +6,7 @@ Built-in TTS providers:
 - Edge TTS (default, free, no API key): Microsoft Edge neural voices
 - ElevenLabs (premium): High-quality voices, needs ELEVENLABS_API_KEY
 - OpenAI TTS: Good quality, needs OPENAI_API_KEY
-- MiniMax TTS: High-quality with voice cloning, needs MINIMAX_API_KEY
+- MiniMax TTS: High-quality with voice cloning, needs the selected region's key
 - Mistral (Voxtral TTS): Multilingual, native Opus, needs MISTRAL_API_KEY
 - Google Gemini TTS: Controllable, 30 prebuilt voices, needs GEMINI_API_KEY
 - xAI TTS: Grok voices, uses xAI Grok OAuth credentials or XAI_API_KEY
@@ -48,6 +48,7 @@ import subprocess
 import tempfile
 import threading
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, Any, Optional
 from urllib.parse import urljoin, urlparse
@@ -185,6 +186,7 @@ DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MINIMAX_MODEL = "speech-02-hd"
 DEFAULT_MINIMAX_VOICE_ID = "English_expressive_narrator"
 DEFAULT_MINIMAX_BASE_URL = "https://api.minimax.io/v1/t2a_v2"
+DEFAULT_MINIMAX_CN_BASE_URL = "https://api.minimaxi.com/v1/t2a_v2"
 DEFAULT_MISTRAL_TTS_MODEL = "voxtral-mini-tts-2603"
 DEFAULT_MISTRAL_TTS_VOICE_ID = "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral
 DEFAULT_XAI_VOICE_ID = "eve"
@@ -360,6 +362,88 @@ def _get_provider(tts_config: Dict[str, Any]) -> str:
     ``hermes tools``); otherwise the historical Edge backend remains active.
     """
     return (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
+
+
+@dataclass(frozen=True)
+class _MiniMaxTTSRuntime:
+    """A region-bound MiniMax endpoint and credential.
+
+    The credential is excluded from ``repr`` so diagnostics cannot expose it
+    accidentally.
+    """
+
+    region: str
+    endpoint: str
+    credential_source: str
+    api_key: str = field(repr=False)
+
+
+def _resolve_minimax_tts_runtime(
+    tts_config: Dict[str, Any],
+) -> _MiniMaxTTSRuntime:
+    """Select MiniMax TTS region, endpoint, and credential atomically.
+
+    An explicit ``tts.minimax.region`` wins. Without one, the legacy global
+    credential wins when present; a China credential is selected only when it
+    is the sole configured MiniMax credential.
+    """
+    mm_config = tts_config.get("minimax", {})
+    if not isinstance(mm_config, dict):
+        mm_config = {}
+
+    credentials = {
+        "global": (
+            "MINIMAX_API_KEY",
+            str(get_env_value("MINIMAX_API_KEY") or "").strip(),
+        ),
+        "cn": (
+            "MINIMAX_CN_API_KEY",
+            str(get_env_value("MINIMAX_CN_API_KEY") or "").strip(),
+        ),
+    }
+    endpoints = {
+        "global": DEFAULT_MINIMAX_BASE_URL,
+        "cn": DEFAULT_MINIMAX_CN_BASE_URL,
+    }
+
+    configured_region = str(mm_config.get("region") or "").strip().lower()
+    if configured_region and configured_region not in endpoints:
+        raise ValueError("tts.minimax.region must be 'global' or 'cn'")
+
+    if configured_region:
+        region = configured_region
+    elif credentials["global"][1]:
+        region = "global"
+    elif credentials["cn"][1]:
+        region = "cn"
+    else:
+        region = "global"
+
+    credential_source, api_key = credentials[region]
+    if not api_key:
+        raise ValueError(
+            f"{credential_source} not set for MiniMax TTS region {region!r}"
+        )
+
+    endpoint = str(mm_config.get("base_url") or endpoints[region]).strip()
+    endpoint_host = (urlparse(endpoint).hostname or "").lower()
+    official_region_hosts = {
+        "global": frozenset({"api.minimax.io", "api.minimax.chat"}),
+        "cn": frozenset({"api.minimaxi.com"}),
+    }
+    other_region = "cn" if region == "global" else "global"
+    if endpoint_host in official_region_hosts[other_region]:
+        raise ValueError(
+            f"tts.minimax.base_url points to the {other_region!r} MiniMax endpoint "
+            f"but region is {region!r}"
+        )
+
+    return _MiniMaxTTSRuntime(
+        region=region,
+        endpoint=endpoint,
+        credential_source=credential_source,
+        api_key=api_key,
+    )
 
 
 # ===========================================================================
@@ -1436,14 +1520,14 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
     """
     import requests
 
-    api_key = (get_env_value("MINIMAX_API_KEY") or "")
-    if not api_key:
-        raise ValueError("MINIMAX_API_KEY not set. Get one at https://platform.minimax.io/")
+    runtime = _resolve_minimax_tts_runtime(tts_config)
 
     mm_config = tts_config.get("minimax", {})
+    if not isinstance(mm_config, dict):
+        mm_config = {}
     model = mm_config.get("model", DEFAULT_MINIMAX_MODEL)
     voice_id = mm_config.get("voice_id", DEFAULT_MINIMAX_VOICE_ID)
-    base_url = mm_config.get("base_url", DEFAULT_MINIMAX_BASE_URL)
+    base_url = runtime.endpoint
     speed = mm_config.get("speed", 1.0)
     vol = mm_config.get("vol", 1.0)
     pitch = mm_config.get("pitch", 0)
@@ -1465,7 +1549,7 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
 
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {runtime.api_key}",
     }
 
     # Detect endpoint from URL
@@ -2645,7 +2729,11 @@ def check_tts_requirements() -> bool:
             return False
         return bool(get_env_value("DEEPINFRA_API_KEY"))
     if provider == "minimax":
-        return bool(get_env_value("MINIMAX_API_KEY"))
+        try:
+            _resolve_minimax_tts_runtime(tts_config)
+        except ValueError:
+            return False
+        return True
     if provider == "xai":
         try:
             from tools.xai_http import resolve_xai_http_credentials
@@ -2981,12 +3069,20 @@ if __name__ == "__main__":
         "    API Key:  "
         f"{'set' if resolve_openai_audio_api_key() else 'not set (VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY)'}"
     )
-    print(f"  MiniMax:    {'API key set' if get_env_value('MINIMAX_API_KEY') else 'not set (MINIMAX_API_KEY)'}")
+    config = _load_tts_config()
+    try:
+        minimax_runtime = _resolve_minimax_tts_runtime(config)
+        minimax_status = (
+            f"API key set ({minimax_runtime.region}, "
+            f"{minimax_runtime.credential_source})"
+        )
+    except ValueError as exc:
+        minimax_status = f"unavailable ({exc})"
+    print(f"  MiniMax:    {minimax_status}")
     print(f"  Piper:      {'installed' if _check_piper_available() else 'not installed (pip install piper-tts)'}")
     print(f"  ffmpeg:     {'✅ found' if _has_ffmpeg() else '❌ not found (needed for Telegram Opus)'}")
     print(f"\n  Output dir: {DEFAULT_OUTPUT_DIR}")
 
-    config = _load_tts_config()
     provider = _get_provider(config)
     print(f"  Configured provider: {provider}")
 

@@ -1,5 +1,5 @@
 import { Box, NoSelect, Text } from '@hermes/ink'
-import { memo, type ReactNode, useEffect, useMemo, useState } from 'react'
+import { memo, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
 import { THINKING_COT_MAX } from '../config/limits.js'
@@ -751,7 +751,21 @@ export const ToolTrail = memo(function ToolTrail({
     return () => clearInterval(id)
   }, [openTools, tools.length, visible.tools])
 
+  // Effects run after the FIRST render too, not just on later updates — so
+  // this re-sync was clobbering the reasoningAlwaysVisible mount value above
+  // right after mount, collapsing a just-opened MoA reference panel under
+  // `thinking: hidden` before the user ever saw it (#64701). Skip only the
+  // very first run; every subsequent `visible` change (the case this effect
+  // exists for) still re-syncs without the override, so a manual collapse
+  // still sticks per the no-OR-at-effect-time rule above.
+  const skippedInitialSync = useRef(false)
   useEffect(() => {
+    if (!skippedInitialSync.current) {
+      skippedInitialSync.current = true
+
+      return
+    }
+
     setOpenThinking(visible.thinking === 'expanded')
     setOpenTools(visible.tools === 'expanded')
     setOpenSubagents(visible.subagents === 'expanded')

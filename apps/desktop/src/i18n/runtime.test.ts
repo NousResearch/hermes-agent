@@ -37,6 +37,10 @@ describe('desktop i18n runtime translator', () => {
   })
 
   it('translates settings copy for newly supported locales', () => {
+    setRuntimeI18nLocale('pl')
+    expect(translateNow('common.save')).toBe('Zapisz')
+    expect(translateNow('settings.nav.providers')).toBe('Dostawcy')
+
     setRuntimeI18nLocale('ja')
     expect(translateNow('settings.appearance.title')).toBe('外観')
     expect(translateNow('settings.nav.providers')).toBe('プロバイダー')

@@ -6626,7 +6626,12 @@ def _build_call_kwargs(
     return kwargs
 
 
-def _validate_llm_response(response: Any, task: str = None) -> Any:
+def _validate_llm_response(
+    response: Any,
+    task: Optional[str] = None,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> Any:
     """Validate that an LLM response has the expected .choices[0].message shape.
 
     Fails fast with a clear error instead of letting malformed payloads
@@ -6634,11 +6639,21 @@ def _validate_llm_response(response: Any, task: str = None) -> Any:
     AttributeError (e.g. "'str' object has no attribute 'choices'").
 
     See #7264.
+
+    Also the single accounting chokepoint for auxiliary usage: every
+    successful non-streaming aux response passes through here exactly once,
+    so token usage is recorded against the ambient session context published
+    by the agent loop (``agent.aux_accounting``, issue #23270). Recording is
+    best-effort and never affects validation. *provider*/*base_url* are
+    optional accounting hints — fallback-path calls omit them and the row
+    keeps the model (read from the response itself) with an empty route.
     """
     if response is None:
         raise RuntimeError(
             f"Auxiliary {task or 'call'}: LLM returned None response"
         )
+    from agent.aux_accounting import record_aux_usage
+    record_aux_usage(response, task, provider=provider, base_url=base_url)
     # Allow SimpleNamespace responses from adapters (CodexAuxiliaryClient,
     # AnthropicAuxiliaryClient) — they have .choices[0].message.
     try:
@@ -6905,7 +6920,8 @@ def call_llm(
         # for the transient retry every auxiliary task shares. (PR #16587)
         try:
             return _validate_llm_response(
-                client.chat.completions.create(**kwargs), task)
+                client.chat.completions.create(**kwargs), task,
+                provider=resolved_provider, base_url=_base_info)
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise
@@ -7484,7 +7500,8 @@ async def async_call_llm(
         # for the rationale. (PR #16587)
         try:
             return _validate_llm_response(
-                await client.chat.completions.create(**kwargs), task)
+                await client.chat.completions.create(**kwargs), task,
+                provider=resolved_provider, base_url=_client_base)
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise

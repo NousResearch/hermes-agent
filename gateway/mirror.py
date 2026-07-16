@@ -35,14 +35,14 @@ def mirror_to_session(
     Append a delivery-mirror message to the target session's transcript.
 
     Finds the gateway session that matches the given platform + chat_id,
-    then writes a mirror entry to both the JSONL transcript and SQLite DB.
+    then writes a mirror entry to both the JSONL transcript and durable state.
 
     ``role`` defaults to ``"assistant"`` — correct for the interactive
     ``send_message`` mirror, where the mirrored text is the agent's own
     outgoing reply (a genuine assistant turn). Callers mirroring text that is
     NOT the agent speaking — e.g. a cron brief delivered out-of-band — must
     pass ``role="user"``: the ``mirror``/``mirror_source`` metadata is dropped
-    at the SQLite boundary (only role+content persist), so on replay an
+    at the durable-state boundary (only role+content persist), so on replay an
     assistant-role mirror is indistinguishable from a real assistant turn and
     produces ``assistant → assistant`` pairs that break strict-alternation
     providers (issue #2221). A user-role mirror collapses safely via
@@ -76,7 +76,7 @@ def mirror_to_session(
             "mirror_source": source_label,
         }
 
-        _append_to_sqlite(session_id, mirror_msg)
+        _append_to_state_store(session_id, mirror_msg)
 
         logger.debug("Mirror: wrote to session %s (from %s)", session_id, source_label)
         return True
@@ -102,7 +102,7 @@ def _find_session_id(
     """
     Find the active session_id for a platform + chat_id pair.
 
-    Queries state.db gateway session rows (primary source since #9006);
+    Queries durable-state gateway session rows (primary source since #9006);
     falls back to scanning sessions.json for pre-migration databases.
     DM session keys don't embed the chat_id (e.g. "agent:main:telegram:dm"),
     so we match on the persisted chat origin, not the key.
@@ -111,10 +111,10 @@ def _find_session_id(
     same-chat candidates exist and none matches the user, return None instead
     of guessing and contaminating another participant's session.
     """
-    # Primary: state.db
+    # Primary: configured durable-state backend.
     try:
         from hermes_state import SessionDB
-        db = SessionDB()
+        db = SessionDB.for_home(get_hermes_home())
         try:
             finder = getattr(db, "find_session_by_origin", None)
             if callable(finder):
@@ -129,7 +129,7 @@ def _find_session_id(
         finally:
             db.close()
     except Exception as e:
-        logger.debug("Mirror state.db session lookup failed: %s", e)
+        logger.debug("Mirror durable-state session lookup failed: %s", e)
 
     # Fallback: sessions.json (pre-migration databases)
     if not _SESSIONS_INDEX.exists():
@@ -188,19 +188,19 @@ def _find_session_id(
 
 
 
-def _append_to_sqlite(session_id: str, message: dict) -> None:
-    """Append a message to the SQLite session database."""
+def _append_to_state_store(session_id: str, message: dict) -> None:
+    """Append a message to the configured durable-state backend."""
     db = None
     try:
         from hermes_state import SessionDB
-        db = SessionDB()
+        db = SessionDB.for_home(get_hermes_home())
         db.append_message(
             session_id=session_id,
             role=message.get("role", "assistant"),
             content=message.get("content"),
         )
     except Exception as e:
-        logger.debug("Mirror SQLite write failed: %s", e)
+        logger.debug("Mirror durable-state write failed: %s", e)
     finally:
         if db is not None:
             db.close()

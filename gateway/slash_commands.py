@@ -4378,17 +4378,21 @@ class GatewaySlashCommandsMixin:
             from hermes_state import SessionDB
             from agent.insights import InsightsEngine
 
-            loop = asyncio.get_running_loop()
+            from hermes_constants import get_hermes_home
+
+            state_home = get_hermes_home()
+            if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+                state_home = self._resolve_profile_home_for_source(event.source)
 
             def _run_insights():
-                db = SessionDB()
+                db = SessionDB.for_home(state_home)
                 engine = InsightsEngine(db)
                 report = engine.generate(days=days, source=source)
                 result = engine.format_gateway(report)
                 db.close()
                 return result
 
-            return await loop.run_in_executor(None, _run_insights)
+            return await asyncio.to_thread(_run_insights)
         except Exception as e:
             logger.error("Insights command error: %s", e, exc_info=True)
             return t("gateway.insights.error", error=e)

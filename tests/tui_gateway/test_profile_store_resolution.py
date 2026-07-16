@@ -70,7 +70,7 @@ def test_selected_profile_resume_store_failure_fails_closed(monkeypatch, tmp_pat
     })
 
     assert response["error"]["code"] == 5000
-    assert "state.db unavailable" in response["error"]["message"]
+    assert response["error"]["message"] == "session store unavailable"
     assert not launch_store_accessed
 
 

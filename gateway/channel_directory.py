@@ -279,7 +279,7 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
 def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
     """Pull known channels/contacts from gateway session origin data.
 
-    state.db is the primary source (#9006): gateway session rows persist
+    Durable state is the primary source (#9006): gateway session rows persist
     origin_json.  Falls back to sessions.json for pre-migration databases.
     """
     entries = _build_from_sessions_db(platform_name)
@@ -289,11 +289,11 @@ def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
 
 
 def _build_from_sessions_db(platform_name: str) -> List[Dict[str, str]]:
-    """Pull channels/contacts from state.db gateway session rows."""
+    """Pull channels/contacts from configured durable-state session rows."""
     entries: List[Dict[str, str]] = []
     try:
         from hermes_state import SessionDB
-        db = SessionDB()
+        db = SessionDB.for_home(get_hermes_home())
         try:
             lister = getattr(db, "list_gateway_sessions", None)
             if not callable(lister):
@@ -330,7 +330,7 @@ def _build_from_sessions_db(platform_name: str) -> List[Dict[str, str]]:
             })
     except Exception as e:
         logger.debug(
-            "Channel directory: state.db session read failed for %s: %s",
+            "Channel directory: durable-state session read failed for %s: %s",
             platform_name, e,
         )
     return entries

@@ -1008,14 +1008,16 @@ def _get_db():
 
 
 def _db_unavailable_error(rid, *, code: int):
-    detail = _db_error or "session store unavailable"
-    return _err(rid, code, f"session store unavailable: {detail}")
+    message = "session store unavailable"
+    if _db_error:
+        message = f"{message}: {_db_error}"
+    return _err(rid, code, message)
 
 
 # ── per-session profile scoping (global remote mode) ───────────────────────────
 # One dashboard normally serves its launch profile. But the desktop's app-global
 # remote mode points every profile at this single backend, so resume/prompt must
-# be able to act on ANOTHER local profile's state.db + home. The desktop passes
+# be able to act on ANOTHER local profile's state store + home. The desktop passes
 # ``profile`` on those calls; we open that profile's db and bind its HERMES_HOME
 # (a ContextVar override) for the duration of the call so config/skills/model and
 # message persistence all resolve to the right profile. Omitted/own profile → the

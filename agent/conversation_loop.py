@@ -16,6 +16,7 @@ resolved through :func:`_ra` so those patches keep working.
 
 from __future__ import annotations
 
+
 import json
 import logging
 import os
@@ -26,6 +27,14 @@ import threading
 import time
 import uuid
 from typing import Any, Dict, List, Optional
+
+
+def _affordable_clamp(cur_cap, affordable, attempts, max_attempts):
+    """Return whether one bounded affordable-token clamp retry is useful."""
+    safe_out = max(1, affordable - 64)
+    helps = cur_cap is None or safe_out < cur_cap
+    return attempts < max_attempts and helps, safe_out
+
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.conversation_compression import (
@@ -3622,11 +3631,10 @@ def run_conversation(
                     # standard rate-limit path below (fallback/backoff), bounded by
                     # max_retries.
                     _cur_cap = getattr(agent, "_ephemeral_max_output_tokens", None)
-                    _clamp_helps = _cur_cap is None or safe_out < _cur_cap
-                    if (
-                        affordable_clamp_attempts < max_affordable_clamp_attempts
-                        and _clamp_helps
-                    ):
+                    should_retry, safe_out = _affordable_clamp(
+                        _cur_cap, affordable_tokens, affordable_clamp_attempts, max_affordable_clamp_attempts
+                    )
+                    if should_retry:
                         affordable_clamp_attempts += 1
                         agent._ephemeral_max_output_tokens = safe_out
                         agent._buffer_vprint(

@@ -3,7 +3,9 @@
 ``projects.db``, the desktop sidebar's named workspaces). Creating/switching is an explicit
 tool call, never a side effect of ``cd``. GUI-only: the `project` toolset stays off
 ``_HERMES_CORE_TOOLS``; the desktop/TUI gateway folds it in and wires
-``set_project_workspace_callback`` so the live session's cwd and sidebar follow."""
+``set_project_workspace_callback`` so the live session's cwd and sidebar follow. A live
+session create/switch re-anchors only that session; it must not move the profile-global
+Desktop selection shared by concurrent chats."""
 
 import json
 import os
@@ -97,7 +99,11 @@ def project_create(name: str, path: Optional[str] = None, task_id: Optional[str]
                 proj = existing
             else:
                 pid = pdb.create_project(conn, name=name, folders=[folder] if folder else [], primary_path=folder or None)
-                pdb.set_active(conn, pid)
+                # A live agent session owns its workspace independently. Creating a
+                # project must not let a background chat redirect the profile-global
+                # Desktop selection used by unrelated and newly created sessions.
+                if not task_id:
+                    pdb.set_active(conn, pid)
                 proj = pdb.get_project(conn, pid)
     except ValueError as exc:
         return json.dumps({"success": False, "error": str(exc)})
@@ -112,7 +118,11 @@ def project_switch(project: str, task_id: Optional[str] = None) -> str:
         proj = _resolve(conn, project)
         if proj is None:
             return json.dumps({"success": False, "error": f"no project matching '{project}'"})
-        pdb.set_active(conn, proj.id)
+        # A live agent session owns its workspace independently. Mutating the
+        # profile-global pointer here lets a background chat redirect unrelated
+        # Desktop windows and newly created sessions into this project.
+        if not task_id:
+            pdb.set_active(conn, proj.id)
     return _activated(proj, task_id)
 
 

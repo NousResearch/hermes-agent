@@ -1,1 +1,0 @@
-print("Hermes memory sync test")

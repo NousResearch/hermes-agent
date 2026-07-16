@@ -194,7 +194,6 @@ def _is_nous_inference_route(provider: str, base_url: str) -> bool:
     base = str(base_url or "")
     return (
         base_url_host_matches(base, "inference-api.nousresearch.com")
-        or base_url_host_matches(base, "inference.nousresearch.com")
     )
 
 
@@ -456,6 +455,21 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List
             "length limit. Continue exactly where you left off. Do not "
             "restart or repeat prior text. Finish the answer directly.]"
         )
+
+
+# Continuation nudge for Codex/Responses turns that came back with only
+# internal reasoning (no visible content, no tool calls).  When the interim
+# assistant message also carries no encrypted reasoning items and no
+# replayable message items, _chat_messages_to_responses_input emits nothing
+# for it — a bare retry would be byte-identical to the request that just
+# failed, so the model (observed: grok-4.20 on xai-oauth) deterministically
+# repeats the reasoning-only response until the retry budget is exhausted.
+_CODEX_INCOMPLETE_NUDGE = (
+    "[System: Your previous response contained only internal reasoning and "
+    "never produced a visible answer or tool call. Do not keep thinking. "
+    "Produce your final answer as plain text now (or make the tool call "
+    "you were planning).]"
+)
 
 
 # Shared recovery hint appended to every content-policy refusal message. Both
@@ -1628,12 +1642,16 @@ def run_conversation(
                 # Check finish_reason before proceeding
                 if agent.api_mode == "codex_responses":
                     status = getattr(response, "status", None)
+                    if isinstance(status, str):
+                        status = status.strip().lower()
                     incomplete_details = getattr(response, "incomplete_details", None)
                     incomplete_reason = None
                     if isinstance(incomplete_details, dict):
                         incomplete_reason = incomplete_details.get("reason")
                     else:
                         incomplete_reason = getattr(incomplete_details, "reason", None)
+                    if incomplete_reason is not None:
+                        incomplete_reason = str(incomplete_reason).strip().lower()
                     if status == "incomplete" and incomplete_reason in {"max_output_tokens", "length"}:
                         # Responses API max-output exhaustion is a normal
                         # Codex incomplete turn.  Let the Codex-specific
@@ -1643,6 +1661,8 @@ def run_conversation(
                         # emits "Response truncated due to output length
                         # limit" and stops gateway turns.
                         finish_reason = "incomplete"
+                    elif status == "incomplete" and incomplete_reason == "content_filter":
+                        finish_reason = "content_filter"
                     else:
                         finish_reason = "stop"
                 elif agent.api_mode == "anthropic_messages":
@@ -2601,6 +2621,31 @@ def run_conversation(
                         f"{agent.log_prefix}⚠️  Server rejected image content — "
                         f"switching to text-only mode for this session"
                         + (". Stripped images from history and retrying." if _imgs_removed else "."),
+                        force=True,
+                    )
+                    continue
+
+                # ── Bedrock AnthropicBedrock SDK streaming failure ──
+                # The Anthropic SDK's stream accumulator raises RuntimeError
+                # "Unexpected event order" when Bedrock returns an error event
+                # before message_start (throttling, overload, validation).
+                # Fall back to the native Converse API path for the rest of
+                # this session — it handles these errors gracefully.  Ref: #28156.
+                if (
+                    isinstance(api_error, RuntimeError)
+                    and "unexpected event order" in str(api_error).lower()
+                    and getattr(agent, "provider", "") == "bedrock"
+                    and agent.api_mode == "anthropic_messages"
+                    and not getattr(agent, "_bedrock_converse_fallback_attempted", False)
+                ):
+                    agent._bedrock_converse_fallback_attempted = True
+                    agent.api_mode = "bedrock_converse"
+                    agent._bedrock_region = getattr(agent, "_bedrock_region", None) or "us-east-1"
+                    agent.client = None  # Drop the AnthropicBedrock client
+                    agent._client_kwargs = {}
+                    agent._vprint(
+                        f"{agent.log_prefix}⚠️  AnthropicBedrock SDK streaming failed — "
+                        f"falling back to native Converse API for this session.",
                         force=True,
                     )
                     continue
@@ -4445,33 +4490,82 @@ def run_conversation(
                     or interim_has_codex_message_items
                 ):
                     last_msg = messages[-1] if messages else None
-                    # Duplicate detection: two consecutive incomplete assistant
-                    # messages with identical content AND reasoning are collapsed.
-                    # For provider-state-only changes (encrypted reasoning
-                    # items or replayable message ids/phases/statuses differ
-                    # while visible content/reasoning are unchanged), compare
-                    # those opaque payloads too so we don't silently drop the
-                    # newer continuation state.
-                    last_codex_items = last_msg.get("codex_reasoning_items") if isinstance(last_msg, dict) else None
-                    interim_codex_items = interim_msg.get("codex_reasoning_items")
-                    last_codex_message_items = last_msg.get("codex_message_items") if isinstance(last_msg, dict) else None
-                    interim_codex_message_items = interim_msg.get("codex_message_items")
-                    duplicate_interim = (
+                    # Duplicate detection: compare only visible content
+                    # (content + reasoning).  Opaque provider state
+                    # (encrypted reasoning items, message item ids/phases)
+                    # drifts per continuation even when the visible output
+                    # is identical, so including it in the comparison defeats
+                    # dedup and causes message storms (#52711).
+                    visible_duplicate = (
                         isinstance(last_msg, dict)
                         and last_msg.get("role") == "assistant"
                         and last_msg.get("finish_reason") == "incomplete"
                         and (last_msg.get("content") or "") == (interim_msg.get("content") or "")
                         and (last_msg.get("reasoning") or "") == (interim_msg.get("reasoning") or "")
-                        and last_codex_items == interim_codex_items
-                        and last_codex_message_items == interim_codex_message_items
                     )
-                    if not duplicate_interim:
+                    if visible_duplicate:
+                        # Update opaque state in-place so the latest
+                        # provider payload is preserved without emitting
+                        # a duplicate visible message.
+                        for _key in ("codex_reasoning_items", "codex_message_items"):
+                            _new_val = interim_msg.get(_key)
+                            if _new_val is not None:
+                                last_msg[_key] = _new_val
+                    else:
                         messages.append(interim_msg)
                         agent._emit_interim_assistant_message(interim_msg)
 
                 if agent._codex_incomplete_retries < 3:
+                    # When the interim message has nothing the Responses
+                    # input converter will replay (no visible content, no
+                    # encrypted reasoning items, no replayable message
+                    # items — plain-text reasoning only), a bare retry is
+                    # byte-identical to the request that just came back
+                    # incomplete and fails the same way every time
+                    # (observed with grok-4.20 on xai-oauth, whose
+                    # reasoning items lack encrypted_content).  Append a
+                    # user-role nudge so the retry actually differs and
+                    # explicitly asks for the final answer.
+                    interim_replayable = (
+                        interim_has_content
+                        or interim_has_codex_reasoning
+                        or interim_has_codex_message_items
+                    )
+                    if not interim_replayable:
+                        _last_msg = messages[-1] if messages else None
+                        _already_nudged = (
+                            isinstance(_last_msg, dict)
+                            and _last_msg.get("role") == "user"
+                            and _last_msg.get("content") == _CODEX_INCOMPLETE_NUDGE
+                        )
+                        # Alternation guard: the nudge is a user-role message,
+                        # so it may only follow an assistant message. When the
+                        # interim was too empty to append (no content AND no
+                        # reasoning), the last message is still the prior
+                        # user/tool turn — appending the nudge there would
+                        # create a user→user / tool→user sequence that strict
+                        # providers reject.
+                        _last_is_assistant = (
+                            isinstance(_last_msg, dict)
+                            and _last_msg.get("role") == "assistant"
+                        )
+                        if not _already_nudged and _last_is_assistant:
+                            messages.append({
+                                "role": "user",
+                                "content": _CODEX_INCOMPLETE_NUDGE,
+                            })
                     if not agent.quiet_mode:
                         agent._vprint(f"{agent.log_prefix}↻ Codex response incomplete; continuing turn ({agent._codex_incomplete_retries}/3)")
+                    # Surface the continuation on the live spinner/status line
+                    # (CLI/TUI/Desktop) and gateway heartbeat: each of these
+                    # retries can spend minutes waiting on the provider, and
+                    # without a distinct notice the user only sees a generic
+                    # thinking spinner ("infinite thinking", #64434).
+                    agent._emit_wait_notice(
+                        f"↻ model returned reasoning with no final answer — "
+                        f"asking it to continue "
+                        f"({agent._codex_incomplete_retries}/3)"
+                    )
                     agent._session_messages = messages
                     continue
 
@@ -4495,7 +4589,9 @@ def run_conversation(
                 
                 if agent.verbose_logging:
                     for tc in assistant_message.tool_calls:
-                        logging.debug(f"Tool call: {tc.function.name} with args: {tc.function.arguments[:200]}...")
+                        raw_args = tc.function.arguments
+                        args_preview = raw_args[:200] if isinstance(raw_args, str) else repr(raw_args)[:200]
+                        logging.debug("Tool call: %s with args: %s...", tc.function.name, args_preview)
                 
                 # Validate tool call names - detect model hallucinations
                 # Repair mismatched tool names before validating

@@ -17,6 +17,7 @@ import {
   setSessions,
   setSessionsLoading,
   setSessionsTotal,
+  setUnreadFinishedSessionIds,
   setWorkingSessionIds
 } from '@/store/session'
 
@@ -47,6 +48,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   setMessagingTruncated(false)
   setWorkingSessionIds([])
   setAttentionSessionIds([])
+  setUnreadFinishedSessionIds([])
   setSessionsLoading(true)
   resetSessionsLimit()
 

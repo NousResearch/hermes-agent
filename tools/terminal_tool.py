@@ -2657,6 +2657,12 @@ def terminal_tool(
                     execute_kwargs = {
                         "timeout": effective_timeout,
                         "cwd": command_cwd,
+                        # Foreground model-facing output: cap retention while
+                        # streaming (head/tail window) so a verbose command
+                        # can't OOM the gateway before truncation (#64435).
+                        # Internal env.execute() consumers (file ops cat
+                        # reads, RPC reads) intentionally stay unbounded.
+                        "bounded_capture": True,
                     }
                     result = env.execute(command, **execute_kwargs)
                 except Exception as e:
@@ -2708,9 +2714,10 @@ def terminal_tool(
                         "command."
                     )
 
-            # Foreground terminal output canonicalization seam: plugins receive
-            # the full output string before default truncation and may only
-            # replace it by returning a string from transform_terminal_output.
+            # Foreground terminal output canonicalization seam: process capture
+            # is already bounded by BaseEnvironment before sudo checks and hooks
+            # run. Plugins may replace that bounded string; replacements are
+            # still subject to the final output limit below.
             # The hook is fail-open, and the first valid string return wins.
             try:
                 from hermes_cli.plugins import invoke_hook

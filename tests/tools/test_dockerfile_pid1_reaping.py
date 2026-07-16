@@ -140,6 +140,30 @@ def test_dockerfile_entrypoint_routes_through_the_init(dockerfile_text):
     )
 
 
+def test_s6_overlay_extract_avoids_preserving_archive_modes(dockerfile_text):
+    """s6-overlay extraction must not force chmod-heavy metadata restore.
+
+    QNAP Container Station can report EFAULT ("Bad address") when GNU tar,
+    running as root, restores modes from the s6-overlay archives. The image
+    only needs the files extracted with the normal build umask, which keeps
+    scripts executable without preserving symlink mode metadata.
+    """
+    s6_extract_steps = [
+        step
+        for step in _run_steps(dockerfile_text)
+        if "s6-overlay" in step and "tar -C /" in step
+    ]
+
+    assert s6_extract_steps, "Dockerfile must extract the s6-overlay archives"
+    for step in s6_extract_steps:
+        assert "--no-same-permissions" in step
+        assert "--no-same-owner" in step
+        assert "s6-overlay-suexec" in step
+        assert "chmod 4755" in step
+        assert "-Jxpf" not in step
+        assert "--same-permissions" not in step
+
+
 def test_dockerfile_installs_tui_dependencies(dockerfile_text):
     # The TUI workspace manifests must be present so ``npm install`` can
     # resolve dependencies. The bundled ``hermes-ink`` workspace package is

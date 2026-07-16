@@ -59,6 +59,9 @@ ARG S6_OVERLAY_AARCH64_SHA256=0952056ff913482163cc30e35b2e944b507ba1025d78f5becb
 ARG S6_OVERLAY_SYMLINKS_SHA256=a60dc5235de3ecbcf874b9c1f18d73263ab99b289b9329aa950e8729c4789f0e
 ADD https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-noarch.tar.xz /tmp/
 ADD https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-symlinks-noarch.tar.xz /tmp/
+# QNAP Container Station can fail chmod while tar restores archive metadata
+# for s6-overlay symlinks. Extract with the build umask, then restore the
+# one required setuid helper mode with a targeted chmod on a regular file.
 RUN set -eu; \
     case "${TARGETARCH:-amd64}" in \
         amd64) s6_arch="x86_64"; s6_arch_sha="${S6_OVERLAY_X86_64_SHA256}" ;; \
@@ -73,9 +76,12 @@ RUN set -eu; \
         printf '%s  %s\n' "${S6_OVERLAY_SYMLINKS_SHA256}" /tmp/s6-overlay-symlinks-noarch.tar.xz; \
     } > /tmp/s6-overlay.sha256; \
     sha256sum -c /tmp/s6-overlay.sha256; \
-    tar -C / -Jxpf /tmp/s6-overlay-noarch.tar.xz; \
-    tar -C / -Jxpf /tmp/s6-overlay-arch.tar.xz; \
-    tar -C / -Jxpf /tmp/s6-overlay-symlinks-noarch.tar.xz; \
+    tar -C / --no-same-owner --no-same-permissions -Jxf /tmp/s6-overlay-noarch.tar.xz; \
+    tar -C / --no-same-owner --no-same-permissions -Jxf /tmp/s6-overlay-arch.tar.xz; \
+    tar -C / --no-same-owner --no-same-permissions -Jxf /tmp/s6-overlay-symlinks-noarch.tar.xz; \
+    s6_suexec="$(find /package/admin -path '*/command/s6-overlay-suexec' -type f -print -quit)"; \
+    if [ -z "${s6_suexec}" ]; then echo "s6-overlay-suexec not found" >&2; exit 1; fi; \
+    chmod 4755 "${s6_suexec}"; \
     rm /tmp/s6-overlay-*.tar.xz /tmp/s6-overlay.sha256; \
     # #34192: backward-compat shim for orchestration templates that still\
     # reference the legacy /usr/bin/tini entrypoint (e.g. Hostinger's\

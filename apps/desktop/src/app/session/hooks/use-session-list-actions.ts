@@ -74,9 +74,12 @@ interface UseSessionListActionsArgs {
  *  and the per-platform messaging slices. Returns the callbacks the controller
  *  wires into the sidebar and refresh effects. */
 export function useSessionListActions({ profileScope }: UseSessionListActionsArgs) {
+  const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
+  const messagingProfileRef = useRef(sessionProfile)
   const refreshMessagingSessionsRequestRef = useRef(0)
   const refreshSessionsRequestRef = useRef(0)
-  const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
+
+  messagingProfileRef.current = sessionProfile
 
   // Cron-job sessions as their own list (latest N). Independent of the recents
   // page so the two never compete for slots. Cheap + bounded. Kept (even though
@@ -111,7 +114,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       // sources) — those stay in local recents, not a platform section.
       const rows = result.sessions.filter(s => isMessagingSource(s.source))
 
-      if (refreshMessagingSessionsRequestRef.current === requestId) {
+      if (messagingProfileRef.current === sessionProfile && refreshMessagingSessionsRequestRef.current === requestId) {
         setMessagingSessions(prev => (sameCronSignature(prev, rows) ? prev : rows))
         // Hit the cap → at least one platform may have more on disk than loaded,
         // so platform sections offer their own per-platform "load more".
@@ -138,6 +141,10 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         sessionProfile,
         { source: platform }
       )
+
+      if (messagingProfileRef.current !== sessionProfile) {
+        return
+      }
 
       const incoming = result.sessions.filter(s => normalizeSessionSource(s.source) === platform)
 

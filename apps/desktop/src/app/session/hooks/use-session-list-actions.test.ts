@@ -4,7 +4,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getCronJobs, listAllProfileSessions, type PaginatedSessions, type SessionInfo } from '@/hermes'
 import { ALL_PROFILES } from '@/store/profile'
-import { $messagingSessions, setMessagingSessions } from '@/store/session'
+import {
+  $messagingPlatformTotals,
+  $messagingSessions,
+  setMessagingPlatformTotals,
+  setMessagingSessions
+} from '@/store/session'
 
 import { useSessionListActions } from './use-session-list-actions'
 
@@ -54,6 +59,7 @@ function messagingSession(id: string, profile: string): SessionInfo {
 describe('useSessionListActions messaging scope', () => {
   beforeEach(() => {
     setMessagingSessions([])
+    setMessagingPlatformTotals({})
     vi.mocked(getCronJobs).mockResolvedValue([])
     vi.mocked(listAllProfileSessions).mockResolvedValue(emptyPage)
   })
@@ -118,10 +124,9 @@ describe('useSessionListActions messaging scope', () => {
       .mockImplementationOnce(() => first.promise)
       .mockImplementationOnce(() => second.promise)
 
-    const { rerender, result } = renderHook(
-      ({ profileScope }) => useSessionListActions({ profileScope }),
-      { initialProps: { profileScope: 'nolan' } }
-    )
+    const { rerender, result } = renderHook(({ profileScope }) => useSessionListActions({ profileScope }), {
+      initialProps: { profileScope: 'nolan' }
+    })
 
     let firstRequest!: Promise<void>
     act(() => {
@@ -146,5 +151,39 @@ describe('useSessionListActions messaging scope', () => {
     })
 
     expect($messagingSessions.get().map(session => session.id)).toEqual(['silas-session'])
+  })
+
+  it('ignores a load-more response after the active profile changes', async () => {
+    const page = deferred<typeof emptyPage>()
+
+    vi.mocked(listAllProfileSessions)
+      .mockReset()
+      .mockImplementationOnce(() => page.promise)
+    setMessagingSessions([messagingSession('nolan-seed', 'nolan')])
+    setMessagingPlatformTotals({ telegram: 1 })
+
+    const { rerender, result } = renderHook(({ profileScope }) => useSessionListActions({ profileScope }), {
+      initialProps: { profileScope: 'nolan' }
+    })
+
+    let loadMoreRequest!: Promise<void>
+    act(() => {
+      loadMoreRequest = result.current.loadMoreMessagingForPlatform('telegram')
+    })
+
+    rerender({ profileScope: 'silas' })
+    setMessagingSessions([messagingSession('silas-session', 'silas')])
+
+    await act(async () => {
+      page.resolve({
+        ...emptyPage,
+        sessions: [messagingSession('nolan-more', 'nolan')],
+        total: 2
+      })
+      await loadMoreRequest
+    })
+
+    expect($messagingSessions.get().map(session => session.id)).toEqual(['silas-session'])
+    expect($messagingPlatformTotals.get()).toEqual({ telegram: 1 })
   })
 })

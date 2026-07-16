@@ -116,6 +116,45 @@ class TestGetHermesHome:
         assert get_hermes_home() == local_appdata / "hermes"
 
 
+class TestContainerDetectionMountinfo:
+    def test_host_child_container_mount_does_not_mark_host_root(self):
+        mountinfo = "\n".join(
+            (
+                "35 2 8:2 / / rw,relatime - ext4 /dev/sda2 rw",
+                "104 35 0:52 / /var/lib/docker/containers/abc/mounts/shm "
+                "rw - tmpfs shm rw",
+                "105 35 0:53 / /run/containerd/io.containerd.runtime.v2.task/"
+                r"k8s.io/pod\040name rw - tmpfs tmpfs rw",
+            )
+        )
+
+        assert hermes_constants._root_mount_has_container_runtime(mountinfo) is False
+
+    @pytest.mark.parametrize(
+        "root_mount",
+        [
+            "35 2 0:52 / / rw - overlay overlay rw,lowerdir=/var/lib/docker/overlay2/l/fs",
+            "35 2 0:52 / / rw - overlay overlay rw,lowerdir=/var/lib/containerd/snapshots/1/fs",
+            "35 2 0:52 / / rw - overlay overlay rw,lowerdir=/var/lib/kubelet/pods/x/kubepods/fs",
+            "35 2 0:52 / / rw - overlay overlay rw,lowerdir=/var/lib/containers/storage/overlay/l/fs",
+        ],
+    )
+    def test_container_runtime_backed_root_is_detected(self, root_mount):
+        assert hermes_constants._root_mount_has_container_runtime(root_mount) is True
+
+    @pytest.mark.parametrize(
+        "mountinfo",
+        [
+            "",
+            "malformed",
+            "35 2 0:52 / / rw containerd",
+            "35 2 8:2 / / rw,relatime - ext4 /dev/sda2 rw",
+        ],
+    )
+    def test_non_container_or_malformed_root_is_not_detected(self, mountinfo):
+        assert hermes_constants._root_mount_has_container_runtime(mountinfo) is False
+
+
 class TestHermesManagedNode:
     def test_windows_node_dir_prefers_portable_root(self, tmp_path, monkeypatch):
         home = tmp_path / "hermes"

@@ -8,7 +8,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent.credential_pool import CredentialPool, PooledCredential
+from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner, rebind_gateway_session_credentials
+from gateway.session import AsyncSessionStore, SessionSource, SessionStore
 
 
 class _Store:
@@ -91,6 +94,114 @@ def _runtime(
         "api_mode": "chat_completions",
         "credential_pool": pool if pool is not None else _Pool(),
     }
+
+
+@pytest.mark.asyncio
+async def test_rebind_crosses_real_persistence_and_next_runtime_resolution(
+    tmp_path, monkeypatch
+):
+    import hermes_state
+
+    hermes_home = tmp_path / "hermes-home"
+    sessions_dir = hermes_home / "sessions"
+    state_db = hermes_home / "state.db"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", state_db)
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="chat-1",
+        user_id="user-1",
+        user_name="tester",
+        chat_type="dm",
+    )
+    store = SessionStore(sessions_dir=sessions_dir, config=GatewayConfig())
+    entry = store.get_or_create_session(source)
+    store.set_model_override(
+        entry.session_key,
+        {
+            "model": "model-a",
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+        },
+    )
+    store.append_to_transcript(entry.session_id, {"role": "user", "content": "keep me"})
+    store._db.close()
+
+    restarted_store = SessionStore(sessions_dir=sessions_dir, config=GatewayConfig())
+    restarted_entry = restarted_store.lookup_by_session_id(entry.session_id)
+    assert restarted_entry is not None
+    assert restarted_entry.model_override == {
+        "model": "model-a",
+        "provider": "openrouter",
+        "base_url": "https://openrouter.ai/api/v1",
+    }
+    transcript_before = restarted_store.load_transcript(entry.session_id)
+
+    runner = object.__new__(GatewayRunner)
+    runner.session_store = restarted_store
+    runner._async_session_store = AsyncSessionStore(restarted_store)
+    runner._running_agents = {}
+    runner._session_model_overrides = {}
+    runner._agent_cache = {}
+    runner._agent_cache_lock = threading.Lock()
+    runner._evict_cached_agent = MagicMock()
+
+    pool = CredentialPool(
+        "openrouter",
+        [
+            PooledCredential(
+                provider="openrouter",
+                id="cred-a",
+                label="A",
+                auth_type="api_key",
+                priority=0,
+                source="manual",
+                access_token="token-a",
+            ),
+            PooledCredential(
+                provider="openrouter",
+                id="cred-b",
+                label="B",
+                auth_type="api_key",
+                priority=1,
+                source="manual",
+                access_token="token-b",
+            ),
+        ],
+    )
+    assert pool.acquire_lease("cred-b") == "cred-b"
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kwargs: _runtime(pool=pool, token="token-b"),
+    )
+    monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda _config: "global")
+
+    result = await runner.rebind_session_credentials(
+        session_id=entry.session_id,
+        provider="openrouter",
+        credential_id="cred-b",
+    )
+    model, runtime = runner._resolve_session_agent_runtime(
+        session_key=entry.session_key,
+        user_config={},
+    )
+
+    assert result["ok"] is True
+    assert model == "model-a"
+    assert runtime["api_key"] == "token-b"
+    assert runtime["credential_pool"] is pool
+    assert restarted_store.load_transcript(entry.session_id) == transcript_before
+    assert restarted_store.get_model_override(entry.session_key) == {
+        "model": "model-a",
+        "provider": "openrouter",
+        "base_url": "https://openrouter.ai/api/v1",
+    }
+
+    restarted_store._db.close()
+    for persisted_file in hermes_home.rglob("*"):
+        if persisted_file.is_file():
+            assert b"token-b" not in persisted_file.read_bytes()
 
 
 @pytest.mark.asyncio

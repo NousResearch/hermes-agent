@@ -20614,6 +20614,46 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             session_key or "?", _edit_err,
                         )
 
+            elif not _is_empty_sentinel and not _transformed and _sc is not None:
+                # Streaming may have put a partial message on screen (e.g. Telegram
+                # flood control disabled progressive edits mid-answer) without ever
+                # confirming final delivery, so none of the flags above are set and
+                # the normal final send would duplicate that partial. Reconcile by
+                # editing the existing message to the final content (finalize=True
+                # splits on overflow). Fails safe: any error falls through to send.
+                from gateway.stream_reconcile import should_reconcile_partial
+                if should_reconcile_partial(
+                    _final,
+                    failed=bool(response.get("failed")),
+                    transformed=_transformed,
+                    streamed=_streamed,
+                    previewed=_previewed,
+                    content_delivered=_content_delivered,
+                    already_sent=bool(getattr(_sc, "already_sent", False)),
+                    message_id=getattr(_sc, "message_id", None),
+                ):
+                    _rec_msg_id = _sc.message_id
+                    try:
+                        await _sc.adapter.edit_message(
+                            chat_id=source.chat_id,
+                            message_id=_rec_msg_id,
+                            content=response["final_response"],
+                            finalize=True,
+                        )
+                        response["already_sent"] = True
+                        logger.info(
+                            "Reconciled partial streamed message %s for session %s "
+                            "(streaming left a partial without confirming final "
+                            "delivery) instead of sending a duplicate.",
+                            _rec_msg_id, session_key or "?",
+                        )
+                    except Exception as _rec_err:
+                        logger.warning(
+                            "Partial-stream reconcile failed for session %s: %s; "
+                            "falling through to normal send.",
+                            session_key or "?", _rec_err,
+                        )
+
         # Schedule deletion of tracked temporary progress bubbles after the
         # final response lands. Failed runs skip this so bubbles remain as
         # breadcrumbs for the user to see what work happened. Only fires on

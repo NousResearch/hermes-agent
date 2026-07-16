@@ -19324,11 +19324,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 progress_callback if (needs_progress_queue or log_mode_enabled) else None
             )
             # Slack native task cards: stream reasoning deltas into
-            # interleaved 💭 cards on the task stream. Only wired when cards
-            # are active for this turn — reasoning_callback is otherwise
-            # unused by the gateway, so this is strictly additive.
-            if _slack_native_cards and _slack_task_stream is not None:
-                agent.reasoning_callback = _slack_reasoning_event
+            # interleaved 💭 cards on the task stream. Assigned EVERY turn —
+            # None when cards are inactive — matching the per-turn reset
+            # pattern of every other callback in this block. Cached agents
+            # are reused across turns and _init_cached_agent_for_turn() does
+            # not clear callbacks, so a conditional assignment here would
+            # leave the PREVIOUS turn's closure active after the user
+            # toggles the feature off (or on a non-Slack turn for the same
+            # cached agent): reasoning deltas would then append to a
+            # stopped, stale task stream.
+            agent.reasoning_callback = (
+                _slack_reasoning_event
+                if (_slack_native_cards and _slack_task_stream is not None)
+                else None
+            )
             # Discord voice verbal-ack hook (fires once per turn on first tool
             # call; armed only when in a voice channel with the mixer running).
             agent.tool_start_callback = (

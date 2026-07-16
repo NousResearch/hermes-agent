@@ -41,7 +41,7 @@ specialists:
   - id: monitoring
     name: Monitoring
     description: Correlates metrics, logs, traces, alerts, and service health.
-    capabilities: [monitoring, metrics, logs, tracing, alerting, observability]
+    capabilities: [monitoring, metrics, logs, tracing, alerting, observability, performance]
     keywords: [metric, log, trace, alert, latency, throughput, dashboard]
     allowed_toolsets: [terminal, file, web]
     blocked_tools: [delegate_task, clarify, memory, send_message, execute_code]
@@ -102,4 +102,3 @@ specialists:
     memory_scope: specialist:qa-auditor
     max_concurrency: 2
     enabled: true
-

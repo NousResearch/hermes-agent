@@ -6534,11 +6534,27 @@ class SessionDB:
         user_id: str,
         has_topics_enabled: Optional[bool] = None,
         allows_users_to_create_topics: Optional[bool] = None,
-    ) -> None:
+    ) -> bool:
         """Enable Telegram DM topic mode for one private chat/user.
 
         This method intentionally owns the explicit topic migration. Ordinary
         SessionDB startup must not create these side tables.
+
+        Returns whether THIS call performed the disabled-to-enabled
+        transition (i.e., this is the first activation). The prior state is
+        read and the row is upserted inside the same ``_execute_write``
+        transaction (single ``BEGIN IMMEDIATE`` under ``self._lock``), so two
+        concurrent activations for the same chat (Telegram dispatches each
+        inbound message as its own background task — see
+        ``gateway/platforms/base.py``'s per-message task spawn) can never
+        both observe "not yet enabled": whichever caller's transaction
+        commits first sees the prior row as disabled and gets True; the
+        second sees it already enabled (by the first caller's own write, now
+        visible within its own subsequent transaction) and gets False. A
+        caller-side read-then-write across two separate lock acquisitions
+        (the previous shape here) left a real gap for both to observe
+        "disabled" and each trigger the non-idempotent System-topic creator
+        (#65216 review).
         """
         self.apply_telegram_topic_migration()
         now = time.time()
@@ -6548,7 +6564,13 @@ class SessionDB:
                 return None
             return 1 if value else 0
 
-        def _do(conn):
+        def _do(conn) -> bool:
+            row = conn.execute(
+                "SELECT enabled FROM telegram_dm_topic_mode WHERE chat_id = ?",
+                (str(chat_id),),
+            ).fetchone()
+            was_enabled = bool(row is not None and row[0])
+
             conn.execute(
                 """
                 INSERT INTO telegram_dm_topic_mode (
@@ -6574,7 +6596,9 @@ class SessionDB:
                     now,
                 ),
             )
-        self._execute_write(_do)
+            return not was_enabled
+
+        return self._execute_write(_do)
 
     def disable_telegram_topic_mode(
         self,

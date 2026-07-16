@@ -4,6 +4,7 @@ Topic mode makes the root Telegram DM a system lobby while user-created
 Telegram topics act as independent Hermes session lanes.
 """
 
+import asyncio
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -568,6 +569,43 @@ async def test_topic_root_command_explicitly_migrates_and_enables_topic_mode(tmp
 
     assert "main chat is reserved for system commands" in lobby_result
     runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_topic_activation_creates_system_topic_exactly_once(tmp_path, monkeypatch):
+    """Regression for the #65216 review: two /topic invocations for the same
+    chat racing concurrently must not both see "not yet enabled" and both
+    invoke the non-idempotent System-topic creator.
+
+    AsyncSessionDB offloads every SessionDB call via ``asyncio.to_thread``
+    (see hermes_state.py), so ``await`` on two concurrent
+    ``enable_telegram_topic_mode`` calls really does run them on separate
+    OS threads against the same SQLite connection -- this reproduces the
+    real race, not just an interleaving on a single thread.
+    """
+    import gateway.run as gateway_run
+
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    runner = _make_runner(session_db=session_db)
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("/topic activation must not enter the agent loop")
+    )
+    runner._ensure_telegram_system_topic = AsyncMock()
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    results = await asyncio.gather(
+        runner._handle_message(_make_event("/topic")),
+        runner._handle_message(_make_event("/topic")),
+    )
+
+    assert runner._ensure_telegram_system_topic.call_count == 1, (
+        "Two concurrent /topic activations for the same chat must create "
+        "the System topic exactly once, not once per racing caller."
+    )
+    assert any("enabled" in r for r in results)
 
 
 @pytest.mark.asyncio

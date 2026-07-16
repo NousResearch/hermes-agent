@@ -133,7 +133,52 @@ def auto_title_session(
     - session_db is None
     - session already has a title (user-set or previously auto-generated)
     - title generation fails
+
+    Never lets an exception escape: this is a daemon-thread target, and an
+    escaping exception would spray a raw traceback into the user's terminal
+    via the default threading excepthook. The canonical trigger is the
+    post-``hermes update`` stale-module window, where this function's lazy
+    imports read NEW source from disk while already-cached modules
+    (``agent.portal_tags`` etc.) are still the OLD version — the resulting
+    ImportError repeats on every auto-title attempt until the long-running
+    process restarts.
     """
+    try:
+        _auto_title_session(
+            session_db,
+            session_id,
+            user_message,
+            assistant_response,
+            failure_callback=failure_callback,
+            main_runtime=main_runtime,
+            title_callback=title_callback,
+        )
+    except Exception as e:
+        # WARNING (not debug) so operators see it in agent.log; the message
+        # names the likely cause so "restart the process" is discoverable.
+        logger.warning(
+            "Auto-title failed (harmless; if this started after an update, "
+            "restart the running Hermes process): %s",
+            e,
+        )
+        logger.debug("Auto-title traceback", exc_info=True)
+        if failure_callback is not None:
+            try:
+                failure_callback("title generation", e)
+            except Exception:
+                logger.debug("Auto-title failure_callback raised", exc_info=True)
+
+
+def _auto_title_session(
+    session_db,
+    session_id: str,
+    user_message: str,
+    assistant_response: str,
+    failure_callback: Optional[FailureCallback] = None,
+    main_runtime: dict = None,
+    title_callback: Optional[TitleCallback] = None,
+) -> None:
+    """Body of :func:`auto_title_session` — see its docstring."""
     if not session_db or not session_id:
         return
 
@@ -144,6 +189,25 @@ def auto_title_session(
             return
     except Exception:
         return
+
+    # This runs on a bare daemon thread spawned AFTER the turn's ambient
+    # conversation context was reset, so publish it here from the session id
+    # we already hold — the title-generation LLM call then carries the same
+    # ``conversation=`` Portal tag as the turn it titles. Root-of-lineage for
+    # consistency with the agent loop (a no-op on first exchange, where
+    # titling happens, but correct if this ever runs on a continuation).
+    from agent.aux_accounting import set_accounting_context
+    from agent.portal_tags import set_conversation_context
+
+    conversation_id = session_id
+    try:
+        conversation_id = session_db.get_conversation_root(session_id) or session_id
+    except Exception:
+        pass
+    set_conversation_context(conversation_id)
+    # Same for the accounting context, so the title call's token usage is
+    # recorded against this session (task='title_generation', #23270).
+    set_accounting_context(session_db, session_id)
 
     title = generate_title(
         user_message, assistant_response, failure_callback=failure_callback, main_runtime=main_runtime

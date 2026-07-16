@@ -42,10 +42,7 @@ export interface CronEditorSaveValues {
 }
 
 /** Build the API update payload, preserving an empty prompt on script-only jobs. */
-export function cronEditorUpdates(
-  values: CronEditorSaveValues,
-  options: { scriptOnlyJob: boolean }
-): CronJobUpdates {
+export function cronEditorUpdates(values: CronEditorSaveValues, options: { scriptOnlyJob: boolean }): CronJobUpdates {
   const updates: CronJobUpdates = {
     deliver: values.deliver,
     name: values.name,

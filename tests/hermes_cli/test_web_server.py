@@ -5327,6 +5327,20 @@ class TestModelContextLength:
         result = _normalize_config_for_web(cfg)
         assert result["model_context_length"] == 0
 
+    def test_normalize_stringifies_json_unsafe_integers(self):
+        """Desktop must not receive Discord snowflakes as JS-rounded numbers."""
+        from hermes_cli.web_server import _normalize_config_for_web
+
+        snowflake = 1495601377412513923
+        result = _normalize_config_for_web({
+            "discord": {
+                "free_response_channels": [snowflake],
+                "allowed_channels": [42],
+            }
+        })
+        assert result["discord"]["free_response_channels"] == [str(snowflake)]
+        assert result["discord"]["allowed_channels"] == [42]
+
     def test_denormalize_writes_context_length_into_model_dict(self):
         """denormalize should write model_context_length back into model dict."""
         from hermes_cli.web_server import _denormalize_config_from_web

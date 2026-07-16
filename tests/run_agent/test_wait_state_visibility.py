@@ -11,6 +11,7 @@ gateway's "⏳ Working — N min" heartbeat includes).
 from __future__ import annotations
 
 import sys
+import threading
 import time
 import types
 from types import SimpleNamespace
@@ -83,7 +84,7 @@ def test_nonstream_wait_loop_emits_explained_notice(tmp_path, monkeypatch):
 
     seen: list = []
     agent = _make_agent(tmp_path, monkeypatch, thinking_callback=seen.append)
-    agent.api_mode = "codex_responses"
+    setattr(agent, "api_mode", "codex_responses")
     monkeypatch.setattr(agent, "_compute_non_stream_stale_timeout", lambda *a, **k: 60.0)
 
     # Compress the 30s cadence: the loop fires the notice every 100 polls of
@@ -98,7 +99,12 @@ def test_nonstream_wait_loop_emits_explained_notice(tmp_path, monkeypatch):
 
     stop = {"flag": False}
 
-    def fake_hang(api_kwargs, client=None, on_first_delta=None):
+    def fake_hang(
+        api_kwargs,
+        client=None,
+        on_first_delta=None,
+        on_event_activity=None,
+    ):
         deadline = time.time() + 10
         while time.time() < deadline and not stop["flag"] and not agent._interrupt_requested:
             time.sleep(0.02)
@@ -121,3 +127,73 @@ def test_nonstream_wait_loop_emits_explained_notice(tmp_path, monkeypatch):
     reconnect_notices = [s for s in seen if "reconnecting" in s]
     assert reconnect_notices, f"expected a reconnect wait-notice, saw: {seen}"
     assert "no response from provider" in reconnect_notices[0]
+
+
+def test_active_codex_wait_notice_reports_stream_liveness(tmp_path, monkeypatch):
+    """After first byte, the periodic notice reports stream-aware limits."""
+    from agent import chat_completion_helpers as h
+
+    seen: list = []
+    agent = _make_agent(tmp_path, monkeypatch, thinking_callback=seen.append)
+    setattr(agent, "api_mode", "codex_responses")
+    monkeypatch.setattr(
+        agent, "_compute_non_stream_stale_timeout", lambda *a, **k: 60.0
+    )
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "10")
+    monkeypatch.setenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", "2")
+
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(
+        agent, "_abort_request_openai_client", lambda c, reason=None: None
+    )
+    monkeypatch.setattr(
+        agent, "_close_request_openai_client", lambda c, reason=None: None
+    )
+
+    stop = threading.Event()
+    worker_done = threading.Event()
+    sentinel = SimpleNamespace(ok=True)
+
+    def fake_active_stream(
+        api_kwargs,
+        client=None,
+        on_first_delta=None,
+        on_event_activity=None,
+    ):
+        try:
+            assert on_event_activity is not None
+            deadline = time.time() + 1.2
+            while time.time() < deadline and not stop.is_set():
+                event_ts = time.time()
+                setattr(agent, "_codex_stream_last_event_ts", event_ts)
+                on_event_activity(event_ts)
+                time.sleep(0.01)
+            return sentinel
+        finally:
+            worker_done.set()
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_active_stream)
+
+    original_join = threading.Thread.join
+
+    def fast_poll_join(thread, timeout=None):
+        effective_timeout = 0.005 if timeout == 0.3 else timeout
+        return original_join(thread, effective_timeout)
+
+    monkeypatch.setattr(threading.Thread, "join", fast_poll_join)
+
+    try:
+        response = h.interruptible_api_call(
+            agent, {"model": "gpt-5.5", "input": "long reasoning"}
+        )
+    finally:
+        stop.set()
+        assert worker_done.wait(1.0), "Codex worker did not exit after cleanup"
+
+    assert response is sentinel
+    active_notices = [s for s in seen if "response stream active" in s]
+    assert active_notices, f"expected an active-stream wait notice, saw: {seen}"
+    assert "without stream events" in active_notices[0]
+    assert "no response yet" not in active_notices[0]
+    assert "auto-reconnect at 60s" not in active_notices[0]

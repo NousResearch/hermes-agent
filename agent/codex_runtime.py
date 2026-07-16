@@ -838,7 +838,13 @@ def _consume_codex_event_stream(
     return final
 
 
-def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta=None):
+def run_codex_stream(
+    agent,
+    api_kwargs: dict,
+    client: Any = None,
+    on_first_delta=None,
+    on_event_activity=None,
+):
     """Execute one streaming Responses API request and return the final response.
 
     Uses ``responses.create(stream=True)`` (low-level raw event iteration)
@@ -846,6 +852,10 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     us structurally immune to backend drift in the ``response.completed``
     payload shape — we never let the SDK reconstruct a typed object from
     the terminal event's ``output`` field.
+
+    ``on_event_activity`` receives the timestamp of every SSE frame. The
+    interruptible caller binds it to request-local watchdog state; the agent
+    field remains a diagnostic/compatibility marker only.
     """
     import httpx as _httpx
 
@@ -863,7 +873,10 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
 
     def _on_event(event: Any) -> None:
         # TTFB watchdog and activity touch — runs once per SSE event.
-        agent._codex_stream_last_event_ts = time.time()
+        event_ts = time.time()
+        agent._codex_stream_last_event_ts = event_ts
+        if on_event_activity is not None:
+            on_event_activity(event_ts)
         agent._touch_activity("receiving stream response")
 
     def _interrupt_check() -> bool:

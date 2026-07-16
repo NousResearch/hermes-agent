@@ -1034,6 +1034,7 @@ class TestCodexStreamCallbacks:
         agent._interrupt_requested = False
 
         touch_calls = []
+        request_activity = []
         agent._touch_activity = lambda desc: touch_calls.append(desc)
 
         events = [
@@ -1054,9 +1055,13 @@ class TestCodexStreamCallbacks:
         mock_client = MagicMock()
         mock_client.responses.create.return_value = _FakeCreateStream()
 
-        agent._run_codex_stream({}, client=mock_client)
+        agent._run_codex_stream(
+            {}, client=mock_client, on_event_activity=request_activity.append
+        )
 
         assert touch_calls.count("receiving stream response") == 3
+        assert len(request_activity) == 3
+        assert request_activity == sorted(request_activity)
 
     def test_codex_remote_protocol_error_retries_then_raises(self):
         """Transport errors from ``responses.create`` retry once then re-raise.

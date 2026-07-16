@@ -3046,6 +3046,81 @@ class TestSessionTitle:
         assert session["ended_at"] is not None
 
 
+class TestSessionTitleIndexRepair:
+    @staticmethod
+    def _seed_legacy_database(tmp_path, *, duplicate_titles):
+        db_path = tmp_path / "legacy_titles.db"
+        session_db = SessionDB(db_path=db_path)
+        session_db.create_session("older", "cli")
+        session_db.append_message("older", role="user", content="keep older message")
+        session_db.create_session("newer", "cli")
+        session_db.append_message(
+            "newer", role="assistant", content="keep newer message"
+        )
+        session_db.create_session("unique", "cli")
+        session_db.set_session_title("unique", "unique-title")
+        session_db.close()
+
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("DROP INDEX idx_sessions_title_unique")
+            if duplicate_titles:
+                conn.execute(
+                    "UPDATE sessions SET title = 'shared-title' "
+                    "WHERE id IN ('older', 'newer')"
+                )
+
+        return db_path
+
+    def test_duplicate_titles_are_repaired_without_deleting_sessions(self, tmp_path):
+        db_path = self._seed_legacy_database(tmp_path, duplicate_titles=True)
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            conn = reopened._conn
+            assert conn is not None
+            rows = {
+                row["id"]: row
+                for row in conn.execute(
+                    "SELECT id, title FROM sessions ORDER BY rowid"
+                ).fetchall()
+            }
+            assert set(rows) == {"older", "newer", "unique"}
+            assert rows["older"]["title"] is None
+            assert rows["newer"]["title"] == "shared-title"
+            assert rows["unique"]["title"] == "unique-title"
+            assert reopened.get_messages("older")[0]["content"] == "keep older message"
+            assert reopened.get_messages("newer")[0]["content"] == "keep newer message"
+            index = conn.execute(
+                "SELECT sql FROM sqlite_master "
+                "WHERE type = 'index' AND name = 'idx_sessions_title_unique'"
+            ).fetchone()
+            assert index is not None
+        finally:
+            reopened.close()
+
+    def test_repaired_index_rejects_future_duplicate_title(self, tmp_path):
+        db_path = self._seed_legacy_database(tmp_path, duplicate_titles=True)
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            reopened.create_session("future", "cli")
+            with pytest.raises(ValueError, match="already in use"):
+                reopened.set_session_title("future", "shared-title")
+        finally:
+            reopened.close()
+
+    def test_clean_legacy_database_keeps_existing_titles(self, tmp_path):
+        db_path = self._seed_legacy_database(tmp_path, duplicate_titles=False)
+
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert reopened.get_session_title("unique") == "unique-title"
+            assert reopened.get_session_title("older") is None
+            assert reopened.get_session_title("newer") is None
+        finally:
+            reopened.close()
+
+
 class TestSessionTitleLineage:
     """Renaming a compression continuation back to its base title must succeed
     by transferring the title off the ended, hidden predecessor.

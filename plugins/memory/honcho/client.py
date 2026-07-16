@@ -145,6 +145,17 @@ def _parse_int_config(host_val, root_val, default: int) -> int:
     return default
 
 
+def _parse_float_config(host_val, root_val, default: float) -> float:
+    """Parse a float config: host wins, then root, then default. Clamped ≥ 0."""
+    for val in (host_val, root_val):
+        if val is not None:
+            try:
+                return max(0.0, float(val))
+            except (ValueError, TypeError):
+                pass
+    return default
+
+
 def _parse_string_map(host_obj: dict, root_obj: dict, key: str) -> dict[str, str]:
     """Parse a string-to-string map with host-level whole-map override."""
     source = host_obj[key] if key in host_obj else root_obj.get(key)
@@ -331,7 +342,7 @@ class HonchoClientConfig:
     # honcho_reasoning tool param (agentic). When false, always uses
     # dialecticReasoningLevel and ignores model-provided overrides.
     dialectic_dynamic: bool = True
-    # Max chars of dialectic result to inject into Hermes system prompt
+    # Automatic-injection cap; explicit honcho_reasoning calls bypass it.
     dialectic_max_chars: int = 600
     # Dialectic depth: how many .chat() calls per dialectic cycle (1-3).
     # Depth 1: single call. Depth 2: self-audit + targeted synthesis.
@@ -359,6 +370,20 @@ class HonchoClientConfig:
     # Eager init in tools mode — when true, initializes session during
     # initialize() instead of deferring to first tool call
     init_on_session_start: bool = False
+    # Injection frequency: "every-turn" (default) or "first-turn" (inject only on turn 1)
+    injection_frequency: str = "every-turn"
+    # Minimum turns between peer.context() API calls (base layer refresh cadence)
+    context_cadence: int = 1
+    # Minimum turns between dialectic prefetch fires (supplement layer cadence)
+    dialectic_cadence: int = 1
+    # Rewrite the latest user message into a retrieval query before dialectic.
+    # Off by default: adds one auxiliary LLM call per dialectic fire
+    # (model/timeout under auxiliary.memory_query_rewrite in config.yaml).
+    query_rewrite: bool = False
+    # Bounded synchronous waits on turn 1, in seconds. 0 disables the wait
+    # entirely (fully async first turn; context surfaces on later turns).
+    first_turn_base_wait: float = 3.0
+    first_turn_dialectic_wait: float = 2.0
     # Observation mode: legacy string shorthand ("directional" or "unified").
     # Kept for backward compat; granular per-peer booleans below are preferred.
     observation_mode: str = "directional"
@@ -457,7 +482,10 @@ class HonchoClientConfig:
             or os.environ.get("HONCHO_BASE_URL", "").strip()
             or None
         )
+        # Host config wins over flat/global config and environment.
         timeout = _resolve_optional_float(
+            host_block.get("timeout"),
+            host_block.get("requestTimeout"),
             raw.get("timeout"),
             raw.get("requestTimeout"),
             os.environ.get("HONCHO_TIMEOUT"),
@@ -593,6 +621,36 @@ class HonchoClientConfig:
                 host_block.get("initOnSessionStart"),
                 raw.get("initOnSessionStart"),
                 default=False,
+            ),
+            # Host cadence settings override flat/global values.
+            injection_frequency=(
+                host_block.get("injectionFrequency")
+                or raw.get("injectionFrequency", "every-turn")
+            ),
+            context_cadence=_parse_int_config(
+                host_block.get("contextCadence"),
+                raw.get("contextCadence"),
+                default=1,
+            ),
+            dialectic_cadence=_parse_int_config(
+                host_block.get("dialecticCadence"),
+                raw.get("dialecticCadence"),
+                default=1,
+            ),
+            query_rewrite=_resolve_bool(
+                host_block.get("queryRewrite"),
+                raw.get("queryRewrite"),
+                default=False,
+            ),
+            first_turn_base_wait=_parse_float_config(
+                host_block.get("firstTurnBaseWait"),
+                raw.get("firstTurnBaseWait"),
+                default=3.0,
+            ),
+            first_turn_dialectic_wait=_parse_float_config(
+                host_block.get("firstTurnDialecticWait"),
+                raw.get("firstTurnDialecticWait"),
+                default=2.0,
             ),
             # Migration guard: existing configs without an explicit
             # observationMode keep the old "unified" default so users
@@ -805,16 +863,9 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
             "For local instances, set HONCHO_BASE_URL instead."
         )
 
-    # Everything below is the expensive part the issue flags: lazy SDK
-    # install, config resolution, and client construction. Run it inside the
-    # slot's factory so it executes exactly once even when several threads
-    # race the first call — the slot's double-checked lock serializes them and
-    # the losers get the winner's client instead of building their own.
+    # Build inside the singleton factory so racing callers share one client.
     def _build() -> "Honcho":
-        # Lazy-install the honcho SDK on demand. ensure() honors
-        # security.allow_lazy_installs (default true). On failure we surface
-        # the original ImportError-shape message so existing callers still get
-        # the "go run hermes honcho setup" hint they used to.
+        # Lazy dependency failures fall through to the canonical import error.
         try:
             from tools.lazy_deps import FeatureUnavailable, ensure as _lazy_ensure
             _lazy_ensure("memory.honcho", prompt=False)

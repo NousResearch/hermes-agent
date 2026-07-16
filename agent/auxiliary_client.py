@@ -44,6 +44,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 from pathlib import Path  # noqa: F401 — used by test mocks
@@ -102,7 +103,6 @@ OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
 
 from agent.credential_pool import load_pool
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
-from agent.process_bootstrap import build_keepalive_http_client
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens, normalize_proxy_env_vars
@@ -156,21 +156,46 @@ def _resolve_aux_verify(base_url: Optional[str]) -> Any:
         return True
 
 
+_WARNED_KEEPALIVE_IMPORT_SKEW = False
+
+
 def _openai_http_client_kwargs(
     base_url: Optional[str],
     *,
     async_mode: bool = False,
 ) -> Dict[str, Any]:
     """Inject keepalive httpx client with env-only proxy (not macOS system proxy)."""
-    client = build_keepalive_http_client(
-        str(base_url or ""),
-        async_mode=async_mode,
-        verify=_resolve_aux_verify(base_url),
-    )
+    try:
+        from agent.process_bootstrap import build_keepalive_http_client
+        client = build_keepalive_http_client(
+            str(base_url or ""),
+            async_mode=async_mode,
+            verify=_resolve_aux_verify(base_url),
+        )
+    except (ImportError, AttributeError):
+        # Version-skewed installs (#64333): a process whose sys.path resolves
+        # an older agent/process_bootstrap.py without this helper — seen when
+        # the Desktop app's bundled runtime lags a git-installed source tree
+        # that newer callers (cron scheduler) were written against. Every cron
+        # job died on this ImportError before any agent logic ran. Degrade
+        # gracefully to the OpenAI SDK's default httpx client (respects macOS
+        # system proxy, no pool-level keepalive expiry) instead of failing the
+        # whole job, and say so once — silent version skew is how this bug
+        # went unnoticed until jobs were already dead on arrival.
+        global _WARNED_KEEPALIVE_IMPORT_SKEW
+        if not _WARNED_KEEPALIVE_IMPORT_SKEW:
+            _WARNED_KEEPALIVE_IMPORT_SKEW = True
+            logger.warning(
+                "agent.process_bootstrap.build_keepalive_http_client is "
+                "unavailable — mixed/stale install detected (#64333). Falling "
+                "back to the SDK default HTTP client. Run `hermes update` (or "
+                "reinstall the Desktop app) to resync the runtime."
+            )
+        client = None
+
     if client is None:
         return {}
     return {"http_client": client}
-
 
 def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
     kwargs = {**_openai_http_client_kwargs(base_url), **kwargs}
@@ -1336,6 +1361,31 @@ class _AnthropicCompletionsAdapter:
             from agent.anthropic_adapter import _forbids_sampling_params
             if not _forbids_sampling_params(model):
                 anthropic_kwargs["temperature"] = temperature
+
+        # Pass through caller-supplied extra_body so providers behind
+        # Anthropic-compatible gateways receive their per-vendor request
+        # fields (thinking control, metadata, portal tags, ...). The dict
+        # form is the documented Anthropic SDK passthrough for non-standard
+        # request body keys; merge on top of whatever build_anthropic_kwargs
+        # already produced (e.g. fast-mode ``speed``) so call-time settings
+        # survive. Two exclusions:
+        #   - ``reasoning``: the OpenAI-shaped config dict is TRANSLATED into
+        #     the native ``thinking`` field above (build_anthropic_kwargs);
+        #     forwarding the raw field alongside would double-specify
+        #     reasoning and 400 on strict gateways.
+        #   - ``_``-prefixed keys: private Hermes plumbing (_reasoning_config
+        #     et al.), never wire fields.
+        caller_extra_body = kwargs.get("extra_body")
+        if caller_extra_body and isinstance(caller_extra_body, dict):
+            passthrough = {
+                k: v for k, v in caller_extra_body.items()
+                if k != "reasoning" and not str(k).startswith("_")
+            }
+            if passthrough:
+                existing = anthropic_kwargs.get("extra_body") or {}
+                if not isinstance(existing, dict):
+                    existing = {}
+                anthropic_kwargs["extra_body"] = {**existing, **passthrough}
 
         response = create_anthropic_message(self._client, anthropic_kwargs)
         _transport = get_transport("anthropic_messages")
@@ -3644,6 +3694,40 @@ def _auth_refresh_provider_for_route(
     return normalized
 
 
+def _fallback_entry_timeout(task: Optional[str], fb_label: str) -> Optional[float]:
+    """Resolve a per-entry ``timeout`` for a configured fallback candidate.
+
+    A fallback candidate previously inherited the exact timeout the primary
+    provider was called with. When that deadline was tuned for the primary
+    (or the primary simply consumed its whole budget before failing over),
+    the fallback aborted on the same clock even when independently healthy —
+    a 163k-token compression that needs ~90s on the fallback died at the
+    primary's 30s deadline every turn (#62452).
+
+    Entries in ``auxiliary.<task>.fallback_chain`` may declare their own
+    ``timeout`` (seconds). This helper reads it by parsing the entry index
+    out of the label minted by :func:`_try_configured_fallback_chain`
+    (``fallback_chain[<i>](<provider>)`` — our own stable format). Returns
+    ``None`` when the label is not a configured-chain candidate, the entry
+    has no ``timeout``, or the value is invalid — callers then keep the
+    task-level timeout, preserving existing behavior.
+    """
+    if not task or not fb_label:
+        return None
+    m = re.match(r"fallback_chain\[(\d+)\]", fb_label)
+    if not m:
+        return None
+    try:
+        chain = _get_auxiliary_task_config(task).get("fallback_chain")
+        entry = chain[int(m.group(1))] if isinstance(chain, list) else None
+        raw = entry.get("timeout") if isinstance(entry, dict) else None
+    except Exception:
+        return None
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw > 0:
+        return float(raw)
+    return None
+
+
 def _call_fallback_candidate_sync(
     fb_client: Any,
     fb_model: Optional[str],
@@ -3672,7 +3756,20 @@ def _call_fallback_candidate_sync(
     once with a rebuilt client; if the retry also auth-fails (non-refreshable
     expired token), mark the provider unhealthy and return ``None`` so the
     caller can continue to the next fallback layer. Non-auth errors raise.
+
+    ``effective_timeout`` is the task-level deadline; a configured-chain
+    candidate with its own ``timeout`` entry gets that instead, so a
+    fallback tuned differently from the primary is allowed its own budget
+    (#62452).
     """
+    fb_timeout = _fallback_entry_timeout(task, fb_label)
+    if fb_timeout is not None and fb_timeout != effective_timeout:
+        logger.info(
+            "Auxiliary %s: %s using its configured timeout %.0fs "
+            "(task-level was %.0fs)",
+            task or "call", fb_label, fb_timeout, effective_timeout,
+        )
+        effective_timeout = fb_timeout
     fb_base = str(getattr(fb_client, "base_url", "") or "")
     fb_kwargs = _build_call_kwargs(
         fb_label, fb_model, messages,
@@ -3731,6 +3828,14 @@ async def _call_fallback_candidate_async(
     reasoning_config: Optional[dict],
 ) -> Optional[Any]:
     """Async mirror of :func:`_call_fallback_candidate_sync`."""
+    fb_timeout = _fallback_entry_timeout(task, fb_label)
+    if fb_timeout is not None and fb_timeout != effective_timeout:
+        logger.info(
+            "Auxiliary %s: %s using its configured timeout %.0fs "
+            "(task-level was %.0fs)",
+            task or "call", fb_label, fb_timeout, effective_timeout,
+        )
+        effective_timeout = fb_timeout
     fb_base = str(getattr(fb_client, "base_url", "") or "")
     fb_kwargs = _build_call_kwargs(
         fb_label, fb_model, messages,
@@ -4279,10 +4384,41 @@ def _resolve_auto(
         resolved_provider = main_provider
         explicit_base_url = runtime_base_url or None
         explicit_api_key = None
-        if runtime_base_url and (main_provider == "custom" or main_provider.startswith("custom:")):
+        if runtime_base_url and main_provider == "custom":
+            # Anonymous custom endpoint (OPENAI_BASE_URL / config.model.base_url)
+            # — pass through with explicit base_url + api_key.
             resolved_provider = "custom"
             explicit_base_url = runtime_base_url
             explicit_api_key = runtime_api_key or None
+        elif main_provider.startswith("custom:"):
+            # Named custom provider (custom_providers / providers dict entry).
+            _has_named_entry = False
+            try:
+                from hermes_cli.runtime_provider import _get_named_custom_provider
+                _has_named_entry = _get_named_custom_provider(main_provider) is not None
+            except ImportError:
+                pass
+            if _has_named_entry:
+                # KEEP the full ``custom:<name>`` so resolve_provider_client
+                # lands in the named-custom-provider arm — that arm honours the
+                # entry's api_mode (e.g. anthropic_messages →
+                # AnthropicAuxiliaryClient, avoiding the /anthropic→/v1 rewrite
+                # that 404s against proxies like Palantir Foundry's Anthropic
+                # surface).  Do NOT collapse to plain "custom"; that path
+                # strips /anthropic and routes through OpenAI chat.completions.
+                # base_url and api_key come from the named entry itself, so
+                # leave the explicit_* overrides unset.
+                resolved_provider = main_provider
+                explicit_base_url = None
+            elif runtime_base_url:
+                # Config-less named custom provider (#34777): the entry only
+                # exists in the live runtime, so collapse to the anonymous
+                # custom arm with the runtime endpoint + key.
+                resolved_provider = "custom"
+                explicit_base_url = runtime_base_url
+                explicit_api_key = runtime_api_key or None
+            elif runtime_api_key:
+                explicit_api_key = runtime_api_key
         elif runtime_api_key:
             # Pin auxiliary to the same api_key as the active main chat session
             # so that a working key is reused instead of re-selecting from the pool
@@ -6521,7 +6657,12 @@ def _build_call_kwargs(
     return kwargs
 
 
-def _validate_llm_response(response: Any, task: str = None) -> Any:
+def _validate_llm_response(
+    response: Any,
+    task: Optional[str] = None,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> Any:
     """Validate that an LLM response has the expected .choices[0].message shape.
 
     Fails fast with a clear error instead of letting malformed payloads
@@ -6529,11 +6670,21 @@ def _validate_llm_response(response: Any, task: str = None) -> Any:
     AttributeError (e.g. "'str' object has no attribute 'choices'").
 
     See #7264.
+
+    Also the single accounting chokepoint for auxiliary usage: every
+    successful non-streaming aux response passes through here exactly once,
+    so token usage is recorded against the ambient session context published
+    by the agent loop (``agent.aux_accounting``, issue #23270). Recording is
+    best-effort and never affects validation. *provider*/*base_url* are
+    optional accounting hints — fallback-path calls omit them and the row
+    keeps the model (read from the response itself) with an empty route.
     """
     if response is None:
         raise RuntimeError(
             f"Auxiliary {task or 'call'}: LLM returned None response"
         )
+    from agent.aux_accounting import record_aux_usage
+    record_aux_usage(response, task, provider=provider, base_url=base_url)
     # Allow SimpleNamespace responses from adapters (CodexAuxiliaryClient,
     # AnthropicAuxiliaryClient) — they have .choices[0].message.
     try:
@@ -6800,7 +6951,8 @@ def call_llm(
         # for the transient retry every auxiliary task shares. (PR #16587)
         try:
             return _validate_llm_response(
-                client.chat.completions.create(**kwargs), task)
+                client.chat.completions.create(**kwargs), task,
+                provider=resolved_provider, base_url=_base_info)
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise
@@ -7379,7 +7531,8 @@ async def async_call_llm(
         # for the rationale. (PR #16587)
         try:
             return _validate_llm_response(
-                await client.chat.completions.create(**kwargs), task)
+                await client.chat.completions.create(**kwargs), task,
+                provider=resolved_provider, base_url=_client_base)
         except Exception as transient_err:
             if not _is_transient_transport_error(transient_err):
                 raise

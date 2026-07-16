@@ -26,6 +26,7 @@ import { followActiveSessionCwd } from '@/store/projects'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import {
   $currentCwd,
+  sessionMatchesStoredId,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentFastMode,
@@ -135,11 +136,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       // model output or tool event proves summarization has finished and the
       // turn has resumed, so retire the phase label without waiting for the
       // whole turn to complete.
-      if (
-        sessionId &&
-        COMPACTION_RESUME_EVENT_TYPES.has(event.type) &&
-        compactedTurnRef.current.has(sessionId)
-      ) {
+      if (sessionId && COMPACTION_RESUME_EVENT_TYPES.has(event.type) && compactedTurnRef.current.has(sessionId)) {
         setSessionCompacting(sessionId, false)
       }
 
@@ -405,7 +402,17 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         if (payload?.usage) {
-          setCurrentUsage(current => ({ ...current, ...payload.usage }))
+          // Per-session twin FIRST (the statusbar reads it for focused tiles);
+          // the primary-only global mirrors the ACTIVE session — ungated it
+          // let a background tile's turn overwrite the primary's count.
+          updateSessionState(sessionId, state => ({
+            ...state,
+            usage: { calls: 0, input: 0, output: 0, total: 0, ...state.usage, ...payload.usage }
+          }))
+
+          if (isActiveEvent) {
+            setCurrentUsage(current => ({ ...current, ...payload.usage }))
+          }
         }
       } else if (event.type === 'session.title') {
         // Live auto-title push (titler runs async, after the turn's refresh).
@@ -413,9 +420,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         const nextTitle = typeof payload?.title === 'string' ? payload.title.trim() : ''
 
         if (storedId && nextTitle) {
-          setSessions(prev =>
-            prev.map(s => (s.id === storedId || s._lineage_root_id === storedId ? { ...s, title: nextTitle } : s))
-          )
+          setSessions(prev => prev.map(s => (sessionMatchesStoredId(s, storedId) ? { ...s, title: nextTitle } : s)))
         }
       } else if (event.type === 'tool.start' || event.type === 'tool.progress' || event.type === 'tool.generating') {
         if (!sessionId) {
@@ -525,7 +530,9 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         setApprovalRequest({
           // false only when a tirith warning forbids it; backend omits the field otherwise.
           allowPermanent: payload?.allow_permanent !== false,
-          choices: Array.isArray(payload?.choices) ? payload.choices.filter(choice => typeof choice === 'string') : undefined,
+          choices: Array.isArray(payload?.choices)
+            ? payload.choices.filter(choice => typeof choice === 'string')
+            : undefined,
           command,
           description,
           sessionId: sessionId ?? null,

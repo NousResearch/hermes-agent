@@ -465,7 +465,7 @@ def _is_real_user_message(message: Any) -> bool:
         return False
     from agent.context_compressor import ContextCompressor
 
-    return not ContextCompressor._is_context_summary_content(text)
+    return not ContextCompressor._is_synthetic_compression_user_turn(message)
 
 
 def _merge_anchor_into_user_message(target: dict, anchor: dict) -> None:
@@ -542,7 +542,10 @@ def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) 
     """Preserve human intent, not merely a synthetic user-role placeholder."""
     if any(_is_real_user_message(message) for message in compressed):
         return
-    from agent.context_compressor import _fresh_compaction_message_copy
+    from agent.context_compressor import (
+        COMPRESSION_CONTINUATION_USER_CONTENT,
+        _fresh_compaction_message_copy,
+    )
 
     for message in reversed(original_messages):
         if _is_real_user_message(message):
@@ -553,10 +556,7 @@ def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) 
             return
     compressed.append({
         "role": "user",
-        "content": (
-            "Continue from the compressed conversation context above. "
-            "This marker exists because no human user turn was available."
-        ),
+        "content": COMPRESSION_CONTINUATION_USER_CONTENT,
     })
 
 

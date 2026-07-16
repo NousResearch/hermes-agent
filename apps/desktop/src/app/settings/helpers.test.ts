@@ -177,7 +177,8 @@ describe('settings helpers', () => {
         'medium',
         'high',
         'xhigh',
-        'max'
+        'max',
+        'ultra'
       ])
       expect(enumOptionsFor('delegation.reasoning_effort', '', config)).not.toContain('none')
     })

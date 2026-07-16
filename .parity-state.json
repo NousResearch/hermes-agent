@@ -1204,21 +1204,21 @@
   ],
   "gates": {
     "imports": {
-      "at": "2026-07-16T09:01:38.491719+00:00",
+      "at": "2026-07-16T09:13:22.570412+00:00",
       "detail": "0 compile failure(s)",
       "ok": true,
       "repro": "python3.11 -m py_compile $(git ls-files '*.py')",
       "tree_sha": "c87e3478bc79066de5bdb3a41400233342de48e6"
     },
     "manifest+forkdelta": {
-      "at": "2026-07-16T09:12:35.549745+00:00",
+      "at": "2026-07-16T09:14:07.142105+00:00",
       "detail": "4 covered, 0 uncovered, 238 acknowledged path(s)",
       "ok": true,
       "repro": "python3.11 -m hermes_parity gates --stage manifest+forkdelta",
       "tree_sha": "c87e3478bc79066de5bdb3a41400233342de48e6"
     },
     "markers": {
-      "at": "2026-07-16T09:01:33.412770+00:00",
+      "at": "2026-07-16T09:13:17.699826+00:00",
       "detail": "0 marker line(s)",
       "ok": true,
       "repro": "git grep -nE '^(<<<<<<<|=======|>>>>>>>)' && git diff --diff-filter=U",
@@ -1232,7 +1232,7 @@
       "tree_sha": "c87e3478bc79066de5bdb3a41400233342de48e6"
     },
     "traps": {
-      "at": "2026-07-16T09:02:22.511090+00:00",
+      "at": "2026-07-16T09:14:05.216508+00:00",
       "detail": "3064 unbound + 28 merge-trap issue(s)",
       "ok": true,
       "repro": "python3.11 -m hermes_parity gates --stage traps --strict",

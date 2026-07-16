@@ -2460,7 +2460,7 @@ def try_activate_fallback(
         # doing so overwrites the entry override and can erase the current effort.
         logger.info(
             "Fallback %s: reasoning_config resolved: %s",
-            agent.model, agent.reasoning_config,
+            agent.model, getattr(agent, "reasoning_config", None),
         )
 
         # Keep the prompt's self-identity in sync with the model actually

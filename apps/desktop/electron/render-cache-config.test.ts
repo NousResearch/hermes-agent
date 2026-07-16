@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import test from 'node:test'
+import { test } from 'vitest'
 
 import { parseRenderCacheEnabled, readRenderCacheEnabled } from './render-cache-config.ts'
 

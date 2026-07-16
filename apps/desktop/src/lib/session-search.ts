@@ -14,6 +14,7 @@ function searchFields(session: SessionInfo) {
   return {
     channel: (session.display_name ?? '').toLowerCase(),
     cwd: (session.cwd ?? '').toLowerCase(),
+    gitBranch: (session.git_branch ?? '').toLowerCase(),
     id: `${session.id} ${session._lineage_root_id ?? ''}`.toLowerCase(),
     platformTerms: sessionSourceSearchTerms(session.source).map(t => t.toLowerCase()),
     preview: (session.preview ?? '').toLowerCase(),
@@ -42,7 +43,8 @@ export function sessionMatchesSearch(session: SessionInfo, query: string): boole
       f.platformTerms.some(term => term.includes(tok)) ||
       f.id.includes(tok) ||
       f.preview.includes(tok) ||
-      f.cwd.includes(tok)
+      f.cwd.includes(tok) ||
+      f.gitBranch.includes(tok)
   )
 }
 

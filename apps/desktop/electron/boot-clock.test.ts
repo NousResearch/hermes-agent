@@ -9,7 +9,7 @@
  */
 
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import { test } from 'vitest'
 
 import { createBootClock, formatCacheHit, formatCacheDivergence } from './boot-clock.ts'
 

@@ -1421,8 +1421,13 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         )
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
-    def test_base_url_with_provider_falls_back_to_parent_on_failure(self, mock_resolve):
-        """When provider resolution fails, api_key stays None (parent inherits)."""
+    def test_base_url_with_provider_failure_raises_not_parent_key(self, mock_resolve):
+        """When provider resolution fails for an explicitly configured
+        delegation provider, surface the failure (ValueError) rather than
+        silently inheriting the parent agent's key. Verifies a failed
+        resolution can never select the parent key (cross-provider 401s)."""
+        import unittest
+
         mock_resolve.side_effect = RuntimeError("no key")
         parent = _make_mock_parent(depth=0)
         cfg = {
@@ -1430,8 +1435,8 @@ class TestDelegationCredentialResolution(unittest.TestCase):
             "provider": "opencode-go",
             "base_url": "https://opencode.ai/zen/go/v1",
         }
-        creds = _resolve_delegation_credentials(cfg, parent)
-        self.assertIsNone(creds["api_key"])
+        with self.assertRaises(ValueError):
+            _resolve_delegation_credentials(cfg, parent)
 
 
 class TestDelegationProviderIntegration(unittest.TestCase):

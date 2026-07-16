@@ -3036,8 +3036,28 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
                     requested=configured_provider, target_model=configured_model,
                 )
                 api_key = _prov_runtime.get("api_key") or None
-            except Exception:
-                pass  # fall through to parent key inheritance
+            except Exception as exc:
+                raise ValueError(
+                    f"Cannot resolve API key for delegation provider '{configured_provider}': {exc}. "
+                    f"Check that the provider is configured (API key set, valid provider name), "
+                    f"or set delegation.api_key explicitly. "
+                    f"Refusing to inherit the parent agent's key to avoid cross-provider credential errors."
+                ) from exc
+
+        if not api_key:
+            if configured_provider:
+                # A provider was explicitly configured but no key resolved and
+                # none was set explicitly. Do NOT fall back to the parent
+                # agent's key — that silently produces cross-provider 401s
+                # (e.g. parent=DeepSeek, delegation=OpenCodeGo). Surface the
+                # failure instead.
+                raise ValueError(
+                    f"Delegation provider '{configured_provider}' has no API key. "
+                    f"Set delegation.api_key or the provider's environment variable "
+                    f"(e.g. OPENCODE_GO_API_KEY)."
+                )
+            # No provider configured: child inherits the parent agent's key,
+            # which is the intended direct-endpoint fallback path.
 
         # Use the shared URL-based api_mode detector (same path the main agent's
         # runtime resolver uses) so Anthropic-compatible direct endpoints with a

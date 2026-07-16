@@ -965,7 +965,10 @@ def _tool_result_observer_fields(result: Any) -> tuple[str, Optional[str], Optio
     try:
         parsed_result = json.loads(result) if isinstance(result, str) else result
         if isinstance(parsed_result, dict) and parsed_result.get("error"):
-            return "error", "tool_error", str(parsed_result.get("error"))
+            error_type = parsed_result.get("error_type")
+            if not isinstance(error_type, str) or not error_type:
+                error_type = "tool_error"
+            return "error", error_type, str(parsed_result.get("error"))
     except Exception:
         pass
     return "ok", None, None

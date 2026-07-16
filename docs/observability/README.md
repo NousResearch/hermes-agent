@@ -181,6 +181,11 @@ Tool hooks describe individual tool calls:
 | `blocked` | A `pre_tool_call` hook blocked execution. |
 | `cancelled` | Execution was cancelled before normal completion. |
 
+For a structured JSON tool error, `error_type` is forwarded to both tool-result
+hooks. Registry dispatch uses `unknown_tool` when the requested tool is absent
+and `execution_error` when a handler fails. Legacy or untyped error results use
+the fallback `tool_error`, so existing plugins remain compatible.
+
 `post_tool_call` is emitted for blocked and cancelled paths so telemetry
 plugins can close spans cleanly.
 

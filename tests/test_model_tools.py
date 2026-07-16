@@ -30,6 +30,24 @@ class TestHandleFunctionCall:
         assert "error" in result
         assert "totally_fake_tool_xyz" in result["error"]
 
+    def test_structured_tool_error_type_reaches_observer_hooks(self):
+        """Plugins can distinguish a bad tool name from an execution failure."""
+        result = '{"error":"Unknown tool: missing","error_type":"unknown_tool"}'
+        with (
+            patch("model_tools.registry.dispatch", return_value=result),
+            patch("hermes_cli.plugins.has_hook", return_value=True),
+            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+        ):
+            assert handle_function_call("missing", {}) == result
+
+        kwargs_by_hook = {
+            call.args[0]: call.kwargs for call in mock_invoke_hook.call_args_list
+        }
+        for hook_name in ("post_tool_call", "transform_tool_result"):
+            assert kwargs_by_hook[hook_name]["status"] == "error"
+            assert kwargs_by_hook[hook_name]["error_type"] == "unknown_tool"
+            assert kwargs_by_hook[hook_name]["error_message"] == "Unknown tool: missing"
+
     def test_exception_returns_json_error(self):
         # Even if something goes wrong, should return valid JSON
         result = handle_function_call("web_search", None)  # None args may cause issues

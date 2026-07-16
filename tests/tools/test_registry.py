@@ -182,6 +182,7 @@ class TestUnknownToolDispatch:
         result = json.loads(reg.dispatch("nonexistent", {}))
         assert "error" in result
         assert "Unknown tool" in result["error"]
+        assert result["error_type"] == "unknown_tool"
 
 
 class TestToolsetAvailability:
@@ -272,6 +273,7 @@ class TestToolsetAvailability:
         result = json.loads(reg.dispatch("bad", {}))
         assert "error" in result
         assert "RuntimeError" in result["error"]
+        assert result["error_type"] == "execution_error"
 
 
 class TestCheckFnExceptionHandling:

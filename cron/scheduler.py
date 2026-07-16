@@ -2111,7 +2111,10 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             # the whole process group, not just the direct child — a script
             # that spawns background work (watchdog patterns, `cmd &`) would
             # otherwise leave orphans running after the tick reports failure.
-            popen_kwargs["preexec_fn"] = os.setsid
+            # start_new_session (not preexec_fn=os.setsid): callers can hold a
+            # running claim-heartbeat thread, and preexec_fn is unsafe in a
+            # multithreaded process.
+            popen_kwargs["start_new_session"] = True
 
         proc = subprocess.Popen(
             argv,
@@ -2128,7 +2131,12 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         except subprocess.TimeoutExpired:
             if sys.platform != "win32":
                 try:
-                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                    # start_new_session makes the child the group leader, so
+                    # its pid is the PGID. Use it directly rather than
+                    # os.getpgid(proc.pid), which can raise if the leader
+                    # already exited while descendants are still running —
+                    # exactly the orphan case this cleanup exists for.
+                    os.killpg(proc.pid, signal.SIGKILL)
                 except OSError:
                     pass
             else:

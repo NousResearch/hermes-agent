@@ -2799,7 +2799,28 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     def _call():
         import httpx as _httpx
 
+        from agent.retry_utils import jittered_backoff as _jittered_backoff
+
         _max_stream_retries = env_int("HERMES_STREAM_RETRIES", 2)
+
+        def _backoff_before_retry(_attempt: int) -> None:
+            """Sleep with jittered exponential backoff between stream retries.
+
+            Back-to-back reconnects hammer a provider that is mid-outage and
+            compound rate-limit exposure.  Sleep in short slices so /stop
+            (interrupt) stays responsive during the backoff window.
+            """
+            _delay = _jittered_backoff(
+                _attempt + 1, base_delay=1.0, max_delay=15.0
+            )
+            _deadline = time.monotonic() + _delay
+            while True:
+                _remaining = _deadline - time.monotonic()
+                if _remaining <= 0:
+                    return
+                if agent._interrupt_requested or _request_cancelled["value"]:
+                    return
+                time.sleep(min(0.2, _remaining))
 
         try:
             for _stream_attempt in range(_max_stream_retries + 1):
@@ -2952,6 +2973,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                                 )
                             except Exception:
                                 pass
+                        _backoff_before_retry(_stream_attempt)
                         continue
 
                     # SSE error events from proxies (e.g. OpenRouter sends
@@ -3018,6 +3040,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                                     )
                                 except Exception:
                                     pass
+                            _backoff_before_retry(_stream_attempt)
                             continue
                         # Retries exhausted. Log the final failure with
                         # full diagnostic detail (chain, headers,

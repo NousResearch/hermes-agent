@@ -65,8 +65,9 @@ same `X-Hermes-Session-Id` / `X-Hermes-Session-Key`), so the system prompt
 and tool schemas stay byte-identical between requests — preserving provider
 prompt caches and skipping per-request agent construction. Reuse is
 transparent and invalidated automatically when the model, provider, toolsets
-or system prompt change; disable it with `API_SERVER_AGENT_CACHE=false` (or
-`agent_cache: false` in `platforms.api_server` extra config).
+or system prompt change; evicted or invalidated agents are soft-released
+(session tool state survives for a resumed conversation). Disable reuse with
+`agent_cache: false` in `platforms.api_server` extra config.
 
 **Request:**
 ```json

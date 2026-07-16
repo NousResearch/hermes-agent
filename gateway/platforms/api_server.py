@@ -931,11 +931,8 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         # Reuse AIAgent instances across /v1/chat/completions turns of the
         # same session (see "Agent cache" section below).  Opt-out via
-        # ``agent_cache: false`` in platforms.api_server extra config or
-        # API_SERVER_AGENT_CACHE=false.
-        _raw_agent_cache = extra.get(
-            "agent_cache", os.getenv("API_SERVER_AGENT_CACHE", "true")
-        )
+        # ``agent_cache: false`` in platforms.api_server extra config.
+        _raw_agent_cache = extra.get("agent_cache", True)
         self._agent_cache_enabled: bool = str(_raw_agent_cache).strip().lower() not in {
             "0", "false", "no", "off",
         }
@@ -1673,10 +1670,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 else:
                     stale_agent = cached_agent
         if stale_agent is not None:
-            # We are on the request's executor thread — blocking cleanup
+            # We are on the request's executor thread — a blocking release
             # here is fine and keeps the eviction ordered before the
-            # replacement agent builds.
-            self._cleanup_cached_agent(stale_agent)
+            # replacement agent builds.  Soft: an invalidated (stale
+            # signature / idle TTL) session may resume at any time, and its
+            # task-scoped tool state must outlive the Python instance.
+            self._soft_release_agent(stale_agent)
 
         if agent is not None:
             agent.stream_delta_callback = stream_delta_callback
@@ -1713,29 +1712,68 @@ class APIServerAdapter(BasePlatformAdapter):
         *,
         discard: bool = False,
     ) -> None:
-        """Return a checked-out agent to the cache (or clean it up)."""
+        """Return a checked-out agent to the cache (or release it).
+
+        All release paths here are SOFT (``_soft_release_agent``): whether the
+        agent is discarded after an error, keyless, displaced by a concurrent
+        release on the same key, or LRU-evicted, its session may resume at
+        any time — full teardown is reserved for server shutdown
+        (``disconnect``).
+        """
         if agent is None:
             return
         if discard or not self._agent_cache_enabled or not cache_key:
-            self._cleanup_cached_agent(agent)
+            self._soft_release_agent(agent)
             return
-        evicted = []
+        released = []
         with self._agent_cache_lock:
+            # A concurrent request on the same session may have released its
+            # (fresher or older) agent already — replacing the entry must not
+            # leak the displaced instance (its clients, memory-provider state
+            # and tool resources are still live).
+            displaced = self._agent_cache.pop(cache_key, None)
+            if displaced is not None and displaced[0] is not agent:
+                released.append(displaced[0])
             self._agent_cache[cache_key] = (agent, signature, time.time())
-            self._agent_cache.move_to_end(cache_key)
             while len(self._agent_cache) > self._AGENT_CACHE_MAX_SIZE:
                 _, old_entry = self._agent_cache.popitem(last=False)
-                evicted.append(old_entry[0])
-        for old_agent in evicted:
-            self._cleanup_cached_agent(old_agent)
+                released.append(old_entry[0])
+        for old_agent in released:
+            self._soft_release_agent(old_agent)
+
+    @staticmethod
+    def _soft_release_agent(agent: Any) -> None:
+        """Soft release for evicted/displaced/discarded cache agents.
+
+        Mirrors ``GatewayRunner._release_evicted_agent_soft``: frees client
+        connections via ``release_clients()`` while preserving the session's
+        task-scoped tool state (terminal sandbox, browser daemon, tracked
+        background processes) so the next agent built for the same session
+        inherits them.  ``AIAgent.close()`` would end the session outright —
+        that is only correct at server shutdown (see ``disconnect``).
+        """
+        if agent is None:
+            return
+        try:
+            if hasattr(agent, "release_clients"):
+                agent.release_clients()
+            else:
+                # Legacy agent instance without the soft path — fall back to
+                # the full teardown rather than leaking clients.
+                APIServerAdapter._cleanup_cached_agent(agent)
+        except Exception:
+            pass
 
     @staticmethod
     def _cleanup_cached_agent(agent: Any) -> None:
-        """Best-effort resource cleanup for evicted/discarded agents.
+        """FULL teardown for cached agents at server shutdown.
 
         Mirrors ``GatewayRunner._cleanup_agent_resources`` — memory provider
         shutdown with the real transcript (#15165) and ``close()`` for tool
-        resources — without requiring a runner backref.
+        resources — without requiring a runner backref.  Not used for cache
+        eviction/invalidation (see ``_soft_release_agent``): ``close()`` kills
+        task-scoped processes and ends the session, which is only correct
+        when the server itself is going away.
         """
         if agent is None:
             return

@@ -576,9 +576,11 @@ The API server platform applies the same pattern to `/v1/chat/completions`
 the duration of a run — concurrent requests on one session build a fresh
 instance instead of sharing one — and checked back *in* afterwards, validated
 by the same `_agent_config_signature`. Max 32 entries, 1h idle TTL, opt-out
-via `platforms.api_server` extra `agent_cache: false` or
-`API_SERVER_AGENT_CACHE=false`. The cache fails open: when config resolution
-errors, the request falls back to build-per-request.
+via `platforms.api_server` extra `agent_cache: false` (config.yaml). Eviction,
+invalidation and same-key displacement are soft (`release_clients()`, like
+`_release_evicted_agent_soft`); full teardown runs only at server shutdown.
+The cache fails open: when config resolution errors, the request falls back
+to build-per-request.
 
 ### Cache Properties
 

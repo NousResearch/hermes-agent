@@ -4110,6 +4110,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self.preloaded_skills: list[str] = []
         self._startup_skills_line_shown = False
         self._active_session_lease = None
+        # Background refresh for the on_status_bar_render plugin hook (see
+        # _refresh_status_bar_plugin_values). Kept off the repaint path so a
+        # slow callback (including shell hooks with a 60s default timeout)
+        # cannot stall rendering or input.
+        self._status_bar_plugin_refresh_lock = threading.Lock()
+        self._status_bar_plugin_refresh_executor = None
+        self._status_bar_plugin_refresh_running = False
+        self._status_bar_plugin_refresh_thread = None
 
         # Voice mode state (also reinitialized inside run() for interactive TUI).
         self._voice_lock = threading.Lock()
@@ -5061,58 +5069,143 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         return [("class:voice-status", f" 🎤 Voice mode{tts}{cont}  —  {label} to record ")]
 
     _STATUS_BAR_PLUGIN_CACHE_TTL = 1.0
+    _STATUS_BAR_PLUGIN_REFRESH_TIMEOUT = 3.0
 
-    def _get_status_bar_plugin_values(self, snapshot: Dict[str, Any]) -> List[str]:
-        """Return fail-closed, display-ready status-bar hook values.
+    def _get_status_bar_plugin_values(self) -> List[str]:
+        """Return the last background-refreshed status-bar hook values.
 
-        Results are cached briefly because this method runs on prompt_toolkit's
-        repaint path; plugin callbacks must not stall every frame. The hook is
-        still resolved for each cache refresh so plugin loading and tests can
-        replace the module-level dispatcher without leaving a stale reference.
-        Its aggregate contract is deliberately a list, not an arbitrary
-        iterable: accepting generators or strings here would make rendering
-        consume plugin-owned state or split a contribution into characters.
+        This runs on prompt_toolkit's synchronous repaint path (both the
+        live ``FormattedTextControl`` and the text-renderer fallback) and
+        must never block, so it only reads the cache populated by
+        ``_refresh_status_bar_plugin_values()`` on a background thread — it
+        never calls ``invoke_hook()`` itself. A slow or misbehaving
+        ``on_status_bar_render`` callback (including a configured shell
+        hook, which shells out via ``subprocess.run()`` with up to a 60s
+        default timeout) therefore cannot stall a frame or freeze input.
         """
-        now = time.monotonic()
-        cached_at = getattr(self, "_status_bar_plugin_values_cached_at", None)
-        if cached_at is not None and now - cached_at < self._STATUS_BAR_PLUGIN_CACHE_TTL:
-            return list(getattr(self, "_status_bar_plugin_values_cache", ()))
+        return list(getattr(self, "_status_bar_plugin_values_cache", ()))
 
-        normalized: List[str] = []
+    def _invoke_status_bar_plugin_hook(
+        self, snapshot: Dict[str, Any]
+    ) -> Optional[List[str]]:
+        """Call the on_status_bar_render hook and normalize its output.
+
+        Only ever called from the background refresh path
+        (``_refresh_status_bar_plugin_values``), never from rendering.
+        Returns ``None`` on any lookup/dispatch failure or malformed
+        return shape so the caller leaves the existing cache untouched
+        instead of blanking the footer. The aggregate contract is
+        deliberately a list, not an arbitrary iterable: accepting
+        generators or strings here would make rendering consume
+        plugin-owned state or split a contribution into characters.
+        """
         try:
             from hermes_cli.plugins import invoke_hook
 
             # Plugins receive an isolated mapping: the renderer continues to
             # read the authoritative snapshot after callbacks return.
             values = invoke_hook("on_status_bar_render", snapshot=dict(snapshot))
-            if isinstance(values, list):
-                for value in values:
-                    try:
-                        # Hook callbacks are allowed to expose compact scalar
-                        # state without formatting it themselves. Falsey
-                        # values are omissions; truthy values are stringified
-                        # independently so one malformed contribution cannot
-                        # discard healthy siblings.
-                        if not value:
-                            continue
-                        display_value = re.sub(
-                            r"[\x00-\x1f\x7f-\x9f]", " ", str(value)
-                        ).strip()
-                        if display_value:
-                            normalized.append(display_value)
-                    except Exception:
-                        # Keep healthy contributions if one plugin-owned value
-                        # behaves unexpectedly during normalization.
-                        continue
         except Exception:
-            # Rendering the footer must remain available even when plugin
-            # lookup or dispatch fails. Caching this empty result also backs
-            # off persistently failing hooks until the next refresh window.
-            normalized = []
+            return None
+
+        if not isinstance(values, list):
+            return None
+
+        normalized: List[str] = []
+        for value in values:
+            try:
+                # Hook callbacks are allowed to expose compact scalar
+                # state without formatting it themselves. Falsey
+                # values are omissions; truthy values are stringified
+                # independently so one malformed contribution cannot
+                # discard healthy siblings.
+                if not value:
+                    continue
+                display_value = re.sub(
+                    r"[\x00-\x1f\x7f-\x9f]", " ", str(value)
+                ).strip()
+                if display_value:
+                    normalized.append(display_value)
+            except Exception:
+                # Keep healthy contributions if one plugin-owned value
+                # behaves unexpectedly during normalization.
+                continue
+        return normalized
+
+    def _refresh_status_bar_plugin_values(self) -> None:
+        """Refresh the status-bar plugin cache off the render/repaint path.
+
+        Dispatches ``on_status_bar_render`` via ``invoke_hook()`` on a
+        dedicated worker thread. Only one refresh may be in flight at a
+        time: if a previous callback is still running (e.g. stuck in a
+        slow shell hook), this call is a no-op rather than piling up
+        concurrent runs of the same stuck callback. The calling thread
+        waits up to ``_STATUS_BAR_PLUGIN_REFRESH_TIMEOUT`` for a result;
+        past that it gives up and returns, but the lock is only released
+        once the underlying call actually finishes, so the in-flight
+        guard still holds even after this method has returned. Timeouts
+        and errors leave the existing cache untouched.
+        """
+        if not self._status_bar_plugin_refresh_lock.acquire(blocking=False):
+            return
+
+        def _invoke(snapshot: Dict[str, Any]) -> Optional[List[str]]:
+            try:
+                return self._invoke_status_bar_plugin_hook(snapshot)
+            finally:
+                self._status_bar_plugin_refresh_lock.release()
+
+        try:
+            snapshot = self._get_status_bar_snapshot()
+            executor = self._status_bar_plugin_refresh_executor
+            if executor is None:
+                executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="status-bar-plugin-refresh"
+                )
+                self._status_bar_plugin_refresh_executor = executor
+            future = executor.submit(_invoke, snapshot)
+        except Exception:
+            # Nothing was actually scheduled to release the lock, so this
+            # thread must release it itself or every future refresh would
+            # be permanently blocked by the in-flight guard.
+            self._status_bar_plugin_refresh_lock.release()
+            return
+
+        try:
+            normalized = future.result(timeout=self._STATUS_BAR_PLUGIN_REFRESH_TIMEOUT)
+        except Exception:
+            return
+        if normalized is None:
+            return
 
         self._status_bar_plugin_values_cache = tuple(normalized)
-        self._status_bar_plugin_values_cached_at = now
-        return normalized
+        self._status_bar_plugin_values_cached_at = time.monotonic()
+
+    def _status_bar_plugin_refresh_loop(self) -> None:
+        """Periodically refresh the status-bar plugin cache in the background."""
+        while self._status_bar_plugin_refresh_running:
+            self._refresh_status_bar_plugin_values()
+            time.sleep(self._STATUS_BAR_PLUGIN_CACHE_TTL)
+
+    def _status_bar_plugin_refresh_start(self) -> None:
+        """Start the background refresh loop (no-op if already running)."""
+        if self._status_bar_plugin_refresh_running:
+            return
+        self._status_bar_plugin_refresh_running = True
+        self._status_bar_plugin_refresh_thread = threading.Thread(
+            target=self._status_bar_plugin_refresh_loop,
+            daemon=True,
+            name="status-bar-plugin-refresh-loop",
+        )
+        self._status_bar_plugin_refresh_thread.start()
+
+    def _status_bar_plugin_refresh_stop(self) -> None:
+        """Stop the background refresh loop started by ``_status_bar_plugin_refresh_start``."""
+        self._status_bar_plugin_refresh_running = False
+        thread = self._status_bar_plugin_refresh_thread
+        if thread is not None:
+            thread.join(timeout=0.3)
+        self._status_bar_plugin_refresh_thread = None
 
     def _build_status_bar_text(self, width: Optional[int] = None) -> str:
         """Return a compact one-line session status string for the TUI footer."""
@@ -5120,7 +5213,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             snapshot = self._get_status_bar_snapshot()
             if width is None:
                 width = self._get_tui_terminal_width()
-            plugin_values = self._get_status_bar_plugin_values(snapshot)
+            plugin_values = self._get_status_bar_plugin_values()
             percent = snapshot["context_percent"]
             percent_label = f"{percent}%" if percent is not None else "--"
             duration_label = snapshot["duration"]
@@ -5205,7 +5298,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # the exception fallback must obey the same one-row bound.
             width = self._get_tui_terminal_width()
             snapshot = self._get_status_bar_snapshot()
-            plugin_values = self._get_status_bar_plugin_values(snapshot)
+            plugin_values = self._get_status_bar_plugin_values()
             duration_label = snapshot["duration"]
             yolo_active = self._is_session_yolo_active()
 
@@ -15641,6 +15734,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 _mark_tui_input_modes_active()
                 # Drive the petdex mascot animation (no-op when no pet enabled).
                 self._pet_start_anim()
+                # Keep the on_status_bar_render plugin cache warm off the
+                # repaint path (see _refresh_status_bar_plugin_values).
+                self._status_bar_plugin_refresh_start()
                 app.run()
         except (EOFError, KeyboardInterrupt, BrokenPipeError):
             pass
@@ -15668,6 +15764,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         finally:
             self._should_exit = True
             self._pet_stop_anim()
+            self._status_bar_plugin_refresh_stop()
             # Immediate feedback: prompt_toolkit has just torn down the input
             # box + status bar, so without a line here the terminal sits
             # silent for the whole cleanup window (session flush, memory

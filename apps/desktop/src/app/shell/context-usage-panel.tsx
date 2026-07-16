@@ -17,6 +17,8 @@ export function ContextUsagePanel({ currentUsage, requestGateway, sessionId }: C
   const [breakdown, setBreakdown] = useState<ContextBreakdown | null>(null)
   const [loading, setLoading] = useState(false)
 
+  const usageRevision = [currentUsage.context_used, currentUsage.context_max, currentUsage.context_percent].join(':')
+
   useEffect(() => {
     if (!sessionId) {
       setBreakdown(null)
@@ -26,6 +28,8 @@ export function ContextUsagePanel({ currentUsage, requestGateway, sessionId }: C
     }
 
     let cancelled = false
+
+    setBreakdown(null)
     setLoading(true)
 
     void requestGateway<ContextBreakdown>('session.context_breakdown', { session_id: sessionId })
@@ -48,7 +52,7 @@ export function ContextUsagePanel({ currentUsage, requestGateway, sessionId }: C
     return () => {
       cancelled = true
     }
-  }, [requestGateway, sessionId])
+  }, [requestGateway, sessionId, usageRevision])
 
   const contextMax = breakdown?.context_max ?? currentUsage.context_max ?? 0
   const contextUsed = breakdown?.context_used ?? currentUsage.context_used ?? 0

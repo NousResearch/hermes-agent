@@ -17,22 +17,38 @@ Only **one** context engine can be active at a time. Selection is config-driven:
 ```yaml
 # config.yaml
 context:
-  engine: "compressor"    # default built-in
-  engine: "lcm"           # activates a plugin engine named "lcm"
+  engine: "lcm"  # activates a plugin engine named "lcm"; default: "compressor"
 ```
 
-Plugin engines are **never auto-activated** — the user must explicitly set `context.engine` to the plugin's name.
+Plugin engines are **never auto-activated** — the user must explicitly set
+`context.engine` to the plugin's name.
 
-## Directory structure
+## Plugin structure
 
-Each context engine lives in `plugins/context_engine/<name>/`:
+Third-party context engines should be standalone Hermes plugins with the
+manifest and entry point at the repository root:
 
 ```
-plugins/context_engine/lcm/
-├── __init__.py      # exports the ContextEngine subclass
-├── plugin.yaml      # metadata (name, description, version)
-└── ...              # any other modules your engine needs
+hermes-context-lcm/
+├── __init__.py       # register(ctx) entry point
+├── plugin.yaml       # plugin metadata
+├── engine.py         # ContextEngine implementation
+└── after-install.md  # optional setup instructions
 ```
+
+For example:
+
+```yaml title="plugin.yaml"
+manifest_version: 1
+name: context-lcm
+version: "0.1.0"
+description: Lossless context management for Hermes Agent
+```
+
+The in-tree `plugins/context_engine/<name>/` layout is reserved for engines
+bundled with Hermes. It is useful when contributing to Hermes itself, but users
+should not have to modify a managed Hermes checkout to install a third-party
+engine.
 
 ## The ContextEngine ABC
 
@@ -69,6 +85,12 @@ class LCMEngine(ContextEngine):
         prioritise preserving information related to it, others may ignore it.
         """
 ```
+
+Hermes passes optional compression keywords only when the engine declares
+them. Engines using the current documented signature receive `focus_topic`;
+older engines without it remain compatible. A `TypeError` raised inside the
+engine is treated as an implementation error and is not retried with a
+different signature.
 
 ### Class attributes your engine must maintain
 
@@ -127,21 +149,68 @@ Engine tools are injected into the agent's tool list at startup and dispatched a
 
 ## Registration
 
-### Via directory (recommended)
+### Via a standalone plugin (recommended for third parties)
 
-Place your engine in `plugins/context_engine/<name>/`. The `__init__.py` must export a `ContextEngine` subclass. The discovery system finds and instantiates it automatically.
+Export a `register(ctx)` function from the repository's root `__init__.py` and
+register one engine instance:
 
-### Via general plugin system
+```python title="__init__.py"
+from .engine import LCMEngine
 
-A general plugin can also register a context engine:
-
-```python
 def register(ctx):
-    engine = LCMEngine(context_length=200000)
-    ctx.register_context_engine(engine)
+    ctx.register_context_engine(LCMEngine(context_length=200000))
 ```
 
-Only one engine can be registered. A second plugin attempting to register is rejected with a warning.
+Plugin loading and engine selection are separate. Enabling the plugin makes
+the implementation available; setting `context.engine` selects it.
+
+### Via the bundled-engine directory
+
+Place your engine in `plugins/context_engine/<name>/`. The `__init__.py` must
+export a `ContextEngine` subclass. The discovery system finds and instantiates
+it automatically.
+
+Use this layout only for an engine intended to ship as part of Hermes itself.
+
+Only one engine can be registered. A second plugin attempting to register one
+is rejected with a warning.
+
+## Install and activate a third-party engine
+
+Install from a Git repository and enable the plugin in the active Hermes
+profile:
+
+```bash
+hermes plugins install owner/hermes-context-lcm --enable
+hermes config set context.engine lcm
+hermes gateway restart
+```
+
+The config value must match the engine's `name` property, not necessarily the
+Git repository or manifest name. Start a new session after changing engines;
+existing sessions may retain the engine instance created at session startup.
+
+If the plugin provides its own setup command, run it after installation instead
+of setting its config by hand. Use `hermes plugins list` to confirm that the
+plugin is installed and enabled.
+
+Updates do not modify the selected engine, but a running gateway must reload
+the plugin code:
+
+```bash
+hermes plugins update context-lcm
+hermes gateway restart
+```
+
+Before disabling or removing an active context engine, select the built-in
+compressor so Hermes is never configured to use an unavailable engine:
+
+```bash
+hermes config set context.engine compressor
+hermes plugins disable context-lcm
+hermes plugins remove context-lcm
+hermes gateway restart
+```
 
 ## Lifecycle
 

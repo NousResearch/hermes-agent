@@ -1,42 +1,17 @@
-"""Regression test: _compress_context tolerates plugin engines with strict signatures.
+"""Regression tests for context-engine compression signature compatibility.
 
 Added to ``ContextEngine.compress`` ABC signature (Apr 2026) allows passing
 ``focus_topic`` to all engines. Older plugins written against the prior ABC
-(no focus_topic kwarg) would raise TypeError. _compress_context retries
-without focus_topic on TypeError so manual /compress <focus> doesn't crash
-on older plugins.
+(no focus_topic kwarg) must keep working, while current plugins must not lose
+their manual focus merely because they omit the built-in-only ``force`` kwarg.
 """
 
-from unittest.mock import MagicMock
+import pytest
+
+from agent.conversation_compression import _call_context_engine_compress
 
 
-from run_agent import AIAgent
-
-
-def _make_agent_with_engine(engine):
-    agent = object.__new__(AIAgent)
-    agent.context_compressor = engine
-    agent.session_id = "sess-1"
-    agent.model = "test-model"
-    agent.platform = "cli"
-    agent.logs_dir = MagicMock()
-    agent.quiet_mode = True
-    agent._todo_store = MagicMock()
-    agent._todo_store.format_for_injection.return_value = ""
-    agent._memory_manager = None
-    agent._session_db = None
-    agent._cached_system_prompt = None
-    agent.log_prefix = ""
-    agent._vprint = lambda *a, **kw: None
-    agent._last_flushed_db_idx = 0
-    # Stub the few AIAgent methods _compress_context uses.
-    agent._invalidate_system_prompt = lambda *a, **kw: None
-    agent._build_system_prompt = lambda *a, **kw: "new-system-prompt"
-    agent.commit_memory_session = lambda *a, **kw: None
-    return agent
-
-
-def test_compress_context_falls_back_when_engine_rejects_focus_topic():
+def test_compress_context_supports_engine_without_focus_topic():
     """Older plugins without focus_topic in compress() signature don't crash."""
     captured_kwargs = []
 
@@ -51,7 +26,6 @@ def test_compress_context_falls_back_when_engine_rejects_focus_topic():
             return [messages[0], messages[-1]]
 
     engine = _StrictOldPluginEngine()
-    agent = _make_agent_with_engine(engine)
 
     messages = [
         {"role": "user", "content": "one"},
@@ -60,15 +34,61 @@ def test_compress_context_falls_back_when_engine_rejects_focus_topic():
         {"role": "assistant", "content": "four"},
     ]
 
-    # Directly invoke the compression call site — this is the line that
-    # used to blow up with TypeError under focus_topic+strict plugin.
-    try:
-        compressed = engine.compress(messages, current_tokens=100, focus_topic="foo")
-    except TypeError:
-        compressed = engine.compress(messages, current_tokens=100)
+    compressed = _call_context_engine_compress(
+        engine,
+        messages,
+        current_tokens=100,
+        focus_topic="foo",
+        force=True,
+    )
 
-    # Fallback succeeded: engine was called once without focus_topic.
+    # The older engine is called once with only the keyword it declares.
     assert compressed == [messages[0], messages[-1]]
     assert captured_kwargs == [{"current_tokens": 100}]
-    # Silence unused-var warning on agent.
-    assert agent.context_compressor is engine
+
+
+def test_compress_context_preserves_focus_for_engine_without_force_keyword():
+    captured_kwargs = []
+
+    class _DocumentedPluginEngine:
+        def compress(self, messages, current_tokens=None, focus_topic=None):
+            captured_kwargs.append(
+                {"current_tokens": current_tokens, "focus_topic": focus_topic}
+            )
+            return messages
+
+    messages = [{"role": "user", "content": "keep the release decision"}]
+    compressed = _call_context_engine_compress(
+        _DocumentedPluginEngine(),
+        messages,
+        current_tokens=100,
+        focus_topic="release decision",
+        force=True,
+    )
+
+    assert compressed is messages
+    assert captured_kwargs == [
+        {"current_tokens": 100, "focus_topic": "release decision"}
+    ]
+
+
+def test_compress_context_does_not_mask_internal_type_error():
+    calls = 0
+
+    class _BrokenPluginEngine:
+        def compress(self, messages, current_tokens=None, focus_topic=None):
+            del messages, current_tokens, focus_topic
+            nonlocal calls
+            calls += 1
+            raise TypeError("engine implementation bug")
+
+    with pytest.raises(TypeError, match="implementation bug"):
+        _call_context_engine_compress(
+            _BrokenPluginEngine(),
+            [],
+            current_tokens=100,
+            focus_topic="release decision",
+            force=False,
+        )
+
+    assert calls == 1

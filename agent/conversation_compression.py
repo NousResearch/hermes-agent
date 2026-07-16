@@ -53,6 +53,42 @@ COMPACTION_STATUS = (
 )
 
 
+def _call_context_engine_compress(
+    engine: Any,
+    messages: list,
+    *,
+    current_tokens: Optional[int],
+    focus_topic: str | None,
+    force: bool,
+) -> list:
+    """Call a context engine with only the optional keywords it supports.
+
+    Signature inspection keeps pre-``focus_topic`` plugins compatible without
+    catching a ``TypeError`` raised *inside* an engine and misreporting it as a
+    signature mismatch. It also preserves manual compression focus for engines
+    that implement the documented ``focus_topic`` argument but not the
+    built-in compressor's private ``force`` extension.
+    """
+    compress = engine.compress
+    kwargs: dict[str, Any] = {"current_tokens": current_tokens}
+    try:
+        parameters = inspect.signature(compress).parameters.values()
+    except (TypeError, ValueError):
+        # Some extension callables do not expose a Python signature. Retain
+        # compatibility with the oldest ContextEngine contract in that case.
+        return compress(messages, **kwargs)
+
+    names = {parameter.name for parameter in parameters}
+    accepts_kwargs = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters
+    )
+    if accepts_kwargs or "focus_topic" in names:
+        kwargs["focus_topic"] = focus_topic
+    if accepts_kwargs or "force" in names:
+        kwargs["force"] = force
+    return compress(messages, **kwargs)
+
+
 def _lock_api_is_absent_on_session_db(lock_db: Any) -> bool:
     """Whether the live in-memory SessionDB class structurally predates locks.
 
@@ -718,15 +754,13 @@ def compress_context(
             pass
 
     try:
-        compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
-    except TypeError:
-        # Plugin context engine with strict signature that doesn't accept
-        # focus_topic / force — fall back to calling without them.
-        try:
-            compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens)
-        except BaseException:
-            _release_lock()
-            raise
+        compressed = _call_context_engine_compress(
+            agent.context_compressor,
+            messages,
+            current_tokens=approx_tokens,
+            focus_topic=focus_topic,
+            force=force,
+        )
     except BaseException:
         # ANY exception during compress() must release the lock so the
         # session isn't permanently blocked from future compression.

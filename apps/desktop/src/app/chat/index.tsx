@@ -439,7 +439,7 @@ export function ChatView({
         suppressMessages={routeSessionMismatch}
       >
         <div
-          className="relative min-h-0 max-w-full flex-1 overflow-hidden bg-(--ui-chat-surface-background) contain-[layout_paint]"
+          className="relative z-1 min-h-0 max-w-full flex-1 overflow-hidden bg-transparent contain-[layout_paint]"
           data-slot="composer-bounds"
           {...dropHandlers}
         >

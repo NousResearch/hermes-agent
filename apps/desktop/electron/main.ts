@@ -33,6 +33,14 @@ import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { buildDesktopBackendEnv, normalizeHermesHomeRoot } from './backend-env'
 import { canImportHermesCli, verifyHermesCli } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
+import {
+  BACKGROUND_IMAGE_EXTENSIONS,
+  BACKGROUND_MAX_FILE_BYTES,
+  BACKGROUND_PROTOCOL,
+  BackgroundImageRegistry,
+  backgroundTokenFromUrl,
+  resolveBackgroundImages
+} from './background-images'
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
 import { runBootstrap } from './bootstrap-runner'
 import {
@@ -749,6 +757,7 @@ app.setAboutPanelOptions({
 // handler removes the size cap and gives the <video> element seekable,
 // range-aware playback. Must be registered before the app is ready.
 const MEDIA_PROTOCOL = 'hermes-media'
+const backgroundImageRegistry = new BackgroundImageRegistry()
 
 // Only audio/video may be streamed. Without this the handler would read any
 // non-blocklisted local file (no size cap) for any `fetch(hermes-media://…)`.
@@ -769,6 +778,15 @@ const STREAMABLE_MEDIA_EXTS = new Set([
 protocol.registerSchemesAsPrivileged([
   {
     scheme: MEDIA_PROTOCOL,
+    privileges: {
+      secure: true,
+      standard: true,
+      stream: true,
+      supportFetchAPI: true
+    }
+  },
+  {
+    scheme: BACKGROUND_PROTOCOL,
     privileges: {
       secure: true,
       standard: true,
@@ -803,6 +821,32 @@ function registerMediaProtocol() {
       bypassCustomProtocolHandlers: true,
       headers: request.headers
     })
+  })
+}
+
+function registerBackgroundProtocol() {
+  protocol.handle(BACKGROUND_PROTOCOL, async request => {
+    const token = backgroundTokenFromUrl(request.url)
+    const filePath = token ? backgroundImageRegistry.resolve(token) : null
+
+    if (!filePath || !BACKGROUND_IMAGE_EXTENSIONS.has(path.extname(filePath).toLowerCase())) {
+      return new Response('Background image not found', { status: 404 })
+    }
+
+    try {
+      const stat = await fs.promises.stat(filePath)
+
+      if (!stat.isFile() || stat.size > BACKGROUND_MAX_FILE_BYTES) {
+        return new Response('Background image unavailable', { status: 415 })
+      }
+
+      return electronNet.fetch(pathToFileURL(filePath).toString(), {
+        bypassCustomProtocolHandlers: true,
+        headers: request.headers
+      })
+    } catch {
+      return new Response('Background image not found', { status: 404 })
+    }
   })
 }
 
@@ -8051,6 +8095,16 @@ ipcMain.handle('hermes:selectPaths', async (_event, options: any = {}) => {
   return result.filePaths
 })
 
+ipcMain.handle('hermes:background:resolve', async (_event, request) =>
+  resolveBackgroundImages(
+    {
+      kind: request?.kind,
+      sourcePath: typeof request?.sourcePath === 'string' ? request.sourcePath : ''
+    },
+    backgroundImageRegistry
+  )
+)
+
 ipcMain.handle('hermes:writeClipboard', (_event, text) => {
   clipboard.writeText(String(text || ''))
 
@@ -9092,6 +9146,7 @@ app.whenReady().then(() => {
 
   installMediaPermissions()
   registerMediaProtocol()
+  registerBackgroundProtocol()
   installEmbedReferer()
   registerDeepLinkProtocol()
   ensureWslWindowsFonts()

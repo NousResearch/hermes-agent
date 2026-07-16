@@ -411,8 +411,37 @@ export const en: Translations = {
         `Scales text and controls across the whole app. Cmd/Ctrl with +, - and 0 also works. Current: ${percent}%.`,
       translucencyTitle: 'Window Translucency',
       translucencyDesc: 'See your desktop through the whole window. macOS and Windows only.',
-      backdropTitle: 'Chat Backdrop',
-      backdropDesc: 'The faint statue image behind the conversation.',
+      backgroundTitle: 'Chat Background',
+      backgroundDesc: 'Use the Hermes artwork, one local image, or a shuffled folder carousel behind conversations.',
+      backgroundHermes: 'Hermes',
+      backgroundImage: 'Image',
+      backgroundFolder: 'Folder',
+      backgroundImages: 'Background images',
+      backgroundChooseImage: 'Choose a background image',
+      backgroundChooseFolder: 'Choose a background folder',
+      backgroundChoosing: 'Choosing…',
+      backgroundChange: 'Change',
+      backgroundRemove: 'Remove',
+      backgroundStrength: 'Background strength',
+      backgroundInterval: 'Change every',
+      backgroundIntervalLabel: minutes => {
+        if (minutes < 60) {
+          return `${minutes} minutes`
+        }
+
+        const hours = minutes / 60
+
+        return `${hours} ${hours === 1 ? 'hour' : 'hours'}`
+      },
+      backgroundTruncated: 'Using the first 1,000 supported images in this folder.',
+      backgroundProfileNote: profile => `Saved for the ${profile} profile — each profile keeps its own background.`,
+      backgroundErrors: {
+        empty: 'This folder does not contain any supported images.',
+        'invalid-source': 'That background source is not valid.',
+        missing: 'The selected background could not be found.',
+        unreadable: 'Hermes could not read the selected background.',
+        unsupported: 'Choose a PNG, JPEG, WebP, GIF, BMP, or AVIF image.'
+      },
       embedsTitle: 'Inline Embeds',
       embedsDesc:
         'Rich previews load from third-party sites (YouTube, X, …). Ask shows a placeholder until you allow each one; Always loads them automatically; Off keeps plain links.',

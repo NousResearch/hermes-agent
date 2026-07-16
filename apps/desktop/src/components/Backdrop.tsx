@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { Leva, useControls } from 'leva'
 import { type CSSProperties, useEffect, useState } from 'react'
 
-import { $backdrop } from '@/store/backdrop'
+import { $backgroundPreference, $backgroundRuntime } from '@/store/background'
 
 const BLEND_MODES = [
   'normal',
@@ -28,7 +28,8 @@ const assetPath = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/
 
 export function Backdrop() {
   const [controlsOpen, setControlsOpen] = useState(false)
-  const on = useStore($backdrop)
+  const preference = useStore($backgroundPreference)
+  const runtime = useStore($backgroundRuntime)
 
   useEffect(() => {
     if (!import.meta.env.DEV) {
@@ -91,7 +92,7 @@ export function Backdrop() {
     <>
       <Leva collapsed hidden={!import.meta.env.DEV || !controlsOpen} titleBar={{ title: 'backdrop', drag: true }} />
 
-      {on && statue.enabled && (
+      {preference.mode === 'hermes' && statue.enabled && (
         <div
           aria-hidden
           className="pointer-events-none absolute inset-0 z-2"
@@ -110,6 +111,25 @@ export function Backdrop() {
               objectPosition: statue.objectPosition,
               filter: `invert(calc(${statue.invert ? 1 : 0} * var(--backdrop-invert-mul, 1))) saturate(${statue.saturate}) brightness(${statue.brightness})`
             }}
+          />
+        </div>
+      )}
+
+      {(preference.mode === 'image' || preference.mode === 'folder') && runtime.current && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0 z-0 overflow-hidden"
+          data-chat-background
+          style={{ opacity: preference.strength / 100 }}
+        >
+          {runtime.previous && (
+            <img alt="" className="absolute inset-0 size-full object-cover object-center" src={runtime.previous.url} />
+          )}
+          <img
+            alt=""
+            className="hermes-custom-background-enter absolute inset-0 size-full object-cover object-center"
+            key={`${runtime.current.id}:${runtime.current.fingerprint}`}
+            src={runtime.current.url}
           />
         </div>
       )}

@@ -1,6 +1,8 @@
 import './styles.css'
 // Side-effect: applies the persisted window translucency on load.
 import './store/translucency'
+// Side-effect: resolves persisted custom backgrounds and owns carousel timing.
+import './store/background'
 
 import { QueryClientProvider } from '@tanstack/react-query'
 import { StrictMode } from 'react'

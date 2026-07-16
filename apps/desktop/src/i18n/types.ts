@@ -327,8 +327,23 @@ export interface Translations {
       uiScaleDesc: (percent: number) => string
       translucencyTitle: string
       translucencyDesc: string
-      backdropTitle: string
-      backdropDesc: string
+      backgroundTitle: string
+      backgroundDesc: string
+      backgroundHermes: string
+      backgroundImage: string
+      backgroundFolder: string
+      backgroundImages: string
+      backgroundChooseImage: string
+      backgroundChooseFolder: string
+      backgroundChoosing: string
+      backgroundChange: string
+      backgroundRemove: string
+      backgroundStrength: string
+      backgroundInterval: string
+      backgroundIntervalLabel: (minutes: number) => string
+      backgroundTruncated: string
+      backgroundProfileNote: (profile: string) => string
+      backgroundErrors: Record<'empty' | 'invalid-source' | 'missing' | 'unreadable' | 'unsupported', string>
       embedsTitle: string
       embedsDesc: string
       embedsAsk: string

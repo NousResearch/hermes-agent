@@ -77,6 +77,9 @@ declare global {
       readFileDataUrl: (filePath: string) => Promise<string>
       readFileText: (filePath: string) => Promise<HermesReadFileTextResult>
       selectPaths: (options?: HermesSelectPathsOptions) => Promise<string[]>
+      background: {
+        resolve: (request: HermesBackgroundResolveRequest) => Promise<HermesBackgroundResolveResult>
+      }
       writeClipboard: (text: string) => Promise<boolean>
       saveImageFromUrl: (url: string) => Promise<boolean>
       saveImageBuffer: (data: ArrayBuffer | Uint8Array, ext: string) => Promise<string>
@@ -781,6 +784,28 @@ export interface HermesSelectPathsOptions {
   directories?: boolean
   multiple?: boolean
   filters?: Array<{ name: string; extensions: string[] }>
+}
+
+export type HermesBackgroundSourceKind = 'folder' | 'image'
+export type HermesBackgroundResolveError = 'empty' | 'invalid-source' | 'missing' | 'unreadable' | 'unsupported'
+
+export interface HermesBackgroundResolveRequest {
+  kind: HermesBackgroundSourceKind
+  sourcePath: string
+}
+
+export interface HermesBackgroundImage {
+  fingerprint: string
+  id: string
+  name: string
+  url: string
+}
+
+export interface HermesBackgroundResolveResult {
+  error?: HermesBackgroundResolveError
+  images: HermesBackgroundImage[]
+  sourcePath: string
+  truncated: boolean
 }
 
 export interface BackendExit {

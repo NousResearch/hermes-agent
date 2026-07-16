@@ -316,6 +316,24 @@ def test_event_idle_kills_after_first_event_then_silence(tmp_path, monkeypatch):
         stop["flag"] = True
 
 
+def test_wait_notice_handles_infinite_local_stale_timeout():
+    """After the first SSE event, a local endpoint's infinite wall-clock
+    timeout must not reach ``int()``; report the finite idle watchdog instead."""
+    from agent import chat_completion_helpers as h
+
+    recovery = h._codex_wait_notice_recovery(
+        stale_timeout=float("inf"),
+        ttfb_enabled=True,
+        ttfb_timeout=120.0,
+        last_event_ts=130.0,
+        call_start=100.0,
+        idle_enabled=True,
+        idle_timeout=60.0,
+    )
+
+    assert recovery == "; auto-reconnect at 90s"
+
+
 def test_ttfb_disabled_via_env_zero(tmp_path, monkeypatch):
     """Setting HERMES_CODEX_TTFB_TIMEOUT_SECONDS=0 disables the TTFB watchdog;
     a no-event stall then falls through to the (here, 60s) stale timeout, so a

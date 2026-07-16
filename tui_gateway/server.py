@@ -4202,6 +4202,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "api_mode": getattr(agent, "api_mode", None) or None,
         "acp_command": getattr(agent, "acp_command", None) or None,
         "acp_args": getattr(agent, "acp_args", None) or None,
+        "acp_cwd": getattr(agent, "acp_cwd", None) or None,
         "model": getattr(agent, "model", None) or _resolve_model(),
         "max_iterations": _cfg_max_turns(cfg, 25),
         "enabled_toolsets": getattr(agent, "enabled_toolsets", None)
@@ -4640,6 +4641,7 @@ def _make_agent(
         api_mode=runtime.get("api_mode"),
         acp_command=runtime.get("command"),
         acp_args=runtime.get("args"),
+        acp_cwd=runtime.get("acp_cwd"),
         credential_pool=runtime.get("credential_pool"),
         quiet_mode=True,
         # verbose_logging controls DEBUG-level agent logging; it is intentionally

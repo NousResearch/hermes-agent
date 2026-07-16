@@ -197,6 +197,21 @@ hermes chat --provider copilot-acp --model copilot-acp
 # Requires the GitHub Copilot CLI in PATH and an existing `copilot login` session
 ```
 
+For ACP clients launched through SSH or another remote wrapper, set the working
+directory in `config.yaml` so the remote process does not receive a local-only
+path:
+
+```yaml
+model:
+  provider: "copilot-acp"
+  default: "copilot-acp"
+  acp_cwd: "/remote/workspace"
+```
+
+`model.acp_cwd` is passed through CLI, TUI, gateway, cron, and ACP adapter
+sessions. It intentionally has no environment-variable equivalent because it
+is non-secret configuration.
+
 **Permanent config:**
 ```yaml
 model:

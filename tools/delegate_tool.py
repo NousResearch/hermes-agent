@@ -1060,6 +1060,7 @@ def _build_child_agent(
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    override_acp_cwd: Optional[str] = None,
     # Per-call role controlling whether the child can further delegate.
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
@@ -1236,6 +1237,11 @@ def _build_child_agent(
         if override_acp_args is not None
         else (getattr(parent_agent, "acp_args", []) or [])
     )
+    effective_acp_cwd = (
+        override_acp_cwd
+        if override_acp_cwd is not None
+        else getattr(parent_agent, "acp_cwd", None)
+    )
 
     # When override_provider is set (e.g. delegation.provider: minimax-cn),
     # the subagent must use direct API calls — not the parent's ACP transport.
@@ -1244,6 +1250,7 @@ def _build_child_agent(
     if override_provider and not override_acp_command:
         effective_acp_command = None
         effective_acp_args = []
+        effective_acp_cwd = None
 
     if override_acp_command:
         # If explicitly forcing an ACP transport override, the provider MUST be copilot-acp
@@ -1325,6 +1332,7 @@ def _build_child_agent(
         api_mode=effective_api_mode,
         acp_command=effective_acp_command,
         acp_args=effective_acp_args,
+        acp_cwd=effective_acp_cwd,
         max_iterations=max_iterations,
 
         reasoning_config=child_reasoning,
@@ -2531,6 +2539,7 @@ def delegate_task(
                 override_max_tokens=creds.get("max_output_tokens"),
                 override_acp_command=creds.get("command"),
                 override_acp_args=creds.get("args"),
+                override_acp_cwd=creds.get("acp_cwd"),
                 role=effective_role,
             )
             # Override with correct parent tool names (before child construction mutated global)
@@ -3064,6 +3073,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_base_url = str(cfg.get("base_url") or "").strip() or None
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
     configured_api_mode = str(cfg.get("api_mode") or "").strip().lower() or None
+    configured_acp_cwd = str(cfg.get("acp_cwd") or "").strip() or None
 
     # Native-SDK providers (Bedrock, Vertex, Google GenAI) speak their own
     # wire protocol — they cannot be reached via OpenAI chat_completions against
@@ -3119,6 +3129,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "base_url": configured_base_url,
             "api_key": api_key,
             "api_mode": api_mode,
+            "acp_cwd": configured_acp_cwd,
         }
 
     if not configured_provider:
@@ -3131,6 +3142,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             "api_mode": None,
             "request_overrides": None,
             "max_output_tokens": None,
+            "acp_cwd": configured_acp_cwd,
         }
 
     # Provider is configured — resolve full credentials
@@ -3163,6 +3175,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "max_output_tokens": runtime.get("max_output_tokens"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
+        "acp_cwd": configured_acp_cwd or runtime.get("acp_cwd"),
     }
 
 

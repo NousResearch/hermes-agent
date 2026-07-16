@@ -413,6 +413,33 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
 
+    def test_child_inherits_acp_cwd(self):
+        parent = _make_mock_parent(depth=0)
+        parent.base_url = "acp://copilot"
+        parent.api_key = "copilot-acp"
+        parent.provider = "copilot-acp"
+        parent.api_mode = "chat_completions"
+        parent.acp_command = "ssh"
+        parent.acp_args = ["remote", "opencode", "acp"]
+        parent.acp_cwd = "/remote/workspace"
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+
+            _build_child_agent(
+                task_index=0,
+                goal="Keep remote ACP cwd",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["acp_cwd"], "/remote/workspace")
+
     def test_child_inherits_parent_print_fn(self):
         parent = _make_mock_parent(depth=0)
         sink = MagicMock()
@@ -1275,6 +1302,7 @@ class TestDelegationCredentialResolution(unittest.TestCase):
             "api_mode": "chat_completions",
             "request_overrides": {"extra_body": {"store": False}},
             "max_output_tokens": 3072,
+            "acp_cwd": "/remote/workspace",
         }
         creds = _resolve_delegation_credentials(
             {"model": "real-model", "provider": "gateway"},
@@ -1282,6 +1310,7 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         )
         self.assertEqual(creds["request_overrides"], {"extra_body": {"store": False}})
         self.assertEqual(creds["max_output_tokens"], 3072)
+        self.assertEqual(creds["acp_cwd"], "/remote/workspace")
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_standard_provider_not_overwritten_by_configured_name(self, mock_resolve):
@@ -1402,6 +1431,51 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             self.assertEqual(kwargs["base_url"], "https://openrouter.ai/api/v1")
             self.assertEqual(kwargs["api_key"], "sk-or-delegation-key")
             self.assertEqual(kwargs["api_mode"], "chat_completions")
+
+    @patch("tools.delegate_tool._load_config")
+    def test_config_acp_cwd_reaches_child_agent(self, mock_cfg):
+        """delegation.acp_cwd flows through real credential resolution to AIAgent."""
+        mock_cfg.return_value = {
+            "model": "copilot-acp",
+            "provider": "copilot-acp",
+            "acp_cwd": "/remote/workspace",
+        }
+        runtime = {
+            "model": "copilot-acp",
+            "provider": "copilot-acp",
+            "base_url": "acp://copilot",
+            "api_key": "copilot-acp",
+            "api_mode": "chat_completions",
+            "command": "/usr/bin/ssh",
+            "args": ["remote-host", "copilot", "--acp", "--stdio"],
+            "acp_cwd": "/model/default",
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=runtime,
+        ), patch("shutil.which", return_value="/usr/bin/ssh"), patch(
+            "run_agent.AIAgent"
+        ) as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Test remote ACP cwd", parent_agent=parent)
+
+        kwargs = MockAgent.call_args.kwargs
+        self.assertEqual(kwargs["provider"], "copilot-acp")
+        self.assertEqual(kwargs["acp_command"], "/usr/bin/ssh")
+        self.assertEqual(
+            kwargs["acp_args"],
+            ["remote-host", "copilot", "--acp", "--stdio"],
+        )
+        self.assertEqual(kwargs["acp_cwd"], "/remote/workspace")
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")

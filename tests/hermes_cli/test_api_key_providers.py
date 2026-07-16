@@ -704,6 +704,14 @@ class TestRuntimeProviderResolution:
     def test_runtime_copilot_acp_uses_process_runtime(self, monkeypatch):
         monkeypatch.setattr("hermes_cli.auth.shutil.which", lambda command: f"/usr/local/bin/{command}")
         monkeypatch.setenv("HERMES_COPILOT_ACP_ARGS", "--acp --stdio --debug")
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_model_config",
+            lambda: {
+                "provider": "copilot-acp",
+                "default": "copilot-acp",
+                "acp_cwd": "/remote/workspace",
+            },
+        )
 
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
@@ -715,6 +723,7 @@ class TestRuntimeProviderResolution:
         assert result["base_url"] == "acp://copilot"
         assert result["command"] == "/usr/local/bin/copilot"
         assert result["args"] == ["--acp", "--stdio", "--debug"]
+        assert result["acp_cwd"] == "/remote/workspace"
 
 
 # =============================================================================

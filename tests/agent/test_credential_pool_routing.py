@@ -28,6 +28,7 @@ class TestCliTurnRoutePool:
             api_mode="codex_responses",
             acp_command=None,
             acp_args=[],
+            acp_cwd="/remote/workspace",
             _credential_pool=fake_pool,
             service_tier=None,
         )
@@ -37,6 +38,7 @@ class TestCliTurnRoutePool:
         route = bound("test message")
 
         assert route["runtime"]["credential_pool"] is fake_pool
+        assert route["runtime"]["acp_cwd"] == "/remote/workspace"
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +59,7 @@ class TestGatewayTurnRoutePool:
             "api_mode": "codex_responses",
             "command": None,
             "args": [],
+            "acp_cwd": "/remote/workspace",
             "credential_pool": fake_pool,
         }
 
@@ -64,6 +67,7 @@ class TestGatewayTurnRoutePool:
         route = bound("test message", "gpt-5.4", runtime_kwargs)
 
         assert route["runtime"]["credential_pool"] is fake_pool
+        assert route["runtime"]["acp_cwd"] == "/remote/workspace"
 
 
 # ---------------------------------------------------------------------------

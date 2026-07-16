@@ -1853,6 +1853,7 @@ def resolve_runtime_provider(
 
     if provider == "copilot-acp":
         creds = resolve_external_process_provider_credentials(provider)
+        acp_cwd = str(model_cfg.get("acp_cwd") or "").strip() or None
         return {
             "provider": "copilot-acp",
             "api_mode": "chat_completions",
@@ -1860,6 +1861,7 @@ def resolve_runtime_provider(
             "api_key": creds.get("api_key", ""),
             "command": creds.get("command", ""),
             "args": list(creds.get("args") or []),
+            "acp_cwd": acp_cwd,
             "source": creds.get("source", "process"),
             "requested_provider": requested_provider,
         }

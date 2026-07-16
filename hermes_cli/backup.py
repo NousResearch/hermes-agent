@@ -259,12 +259,12 @@ def _safe_copy_db(src: Path, dst: Path) -> bool:
     Handles WAL mode — produces a consistent snapshot even while
     the DB is being written to.  Falls back to raw copy on failure.
     """
+    conn = None
+    backup_conn = None
     try:
         conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
         backup_conn = sqlite3.connect(str(dst))
         conn.backup(backup_conn)
-        backup_conn.close()
-        conn.close()
         return True
     except Exception as exc:
         logger.warning("SQLite safe copy failed for %s: %s", src, exc)
@@ -274,6 +274,11 @@ def _safe_copy_db(src: Path, dst: Path) -> bool:
         except Exception as exc2:
             logger.error("Raw copy also failed for %s: %s", src, exc2)
             return False
+    finally:
+        if backup_conn:
+            backup_conn.close()
+        if conn:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------

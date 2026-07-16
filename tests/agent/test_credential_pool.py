@@ -2832,6 +2832,22 @@ def test_codex_exhausted_entry_stays_stuck_without_auth_store_update(tmp_path, m
     assert available == []
 
 
+def test_codex_missing_access_token_needs_refresh():
+    """A pool entry with only refresh_token must refresh before selection."""
+    from agent.credential_pool import AUTH_TYPE_OAUTH, CredentialPool, PooledCredential
+
+    entry = PooledCredential.from_dict("openai-codex", {
+        "id": "codex-missing-access",
+        "source": "device_code",
+        "auth_type": AUTH_TYPE_OAUTH,
+        "access_token": "",
+        "refresh_token": "refresh-present",
+    })
+    pool = CredentialPool("openai-codex", [entry])
+
+    assert pool._entry_needs_refresh(entry) is True
+
+
 # ---------------------------------------------------------------------------
 # xAI OAuth terminal error quarantine
 # ---------------------------------------------------------------------------

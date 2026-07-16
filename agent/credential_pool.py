@@ -739,10 +739,12 @@ class CredentialPool:
             # another process means our entry's pair is consumed/stale.
             entry_access = entry.access_token or ""
             entry_refresh = entry.refresh_token or ""
-            if store_access and (
-                store_access != entry_access
-                or (store_refresh and store_refresh != entry_refresh)
-            ):
+            if (
+                store_access and (
+                    store_access != entry_access
+                    or (store_refresh and store_refresh != entry_refresh)
+                )
+            ) or (not store_access and store_refresh and store_refresh != entry_refresh):
                 logger.debug(
                     "Pool entry %s: syncing Codex tokens from auth.json "
                     "(refreshed by another process)",
@@ -1082,9 +1084,13 @@ class CredentialPool:
                 synced = self._sync_codex_entry_from_auth_store(entry)
                 if synced is not entry:
                     entry = synced
+                logger.info(
+                    "Codex OAuth pool entry %s access token missing/expiring; refreshing on demand",
+                    entry.id,
+                )
                 refreshed = auth_mod.refresh_codex_oauth_pure(
-                    entry.access_token,
-                    entry.refresh_token,
+                    str(entry.access_token or ""),
+                    str(entry.refresh_token or ""),
                 )
                 updated = replace(
                     entry,

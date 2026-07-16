@@ -16119,7 +16119,12 @@ def mount_spa(application: FastAPI):
             html = html.replace('href="/fonts/', f'href="{prefix}/fonts/')
             html = html.replace('href="/ds-assets/', f'href="{prefix}/ds-assets/')
             html = html.replace('src="/ds-assets/', f'src="{prefix}/ds-assets/')
-        html = html.replace("</head>", f"{bootstrap_script}</head>", 1)
+        theme_script = _dashboard_theme_bootstrap_script(_dashboard_theme_state())
+        html = html.replace(
+            "</head>",
+            f"{theme_script}{bootstrap_script}</head>",
+            1,
+        )
         return HTMLResponse(
             html,
             headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
@@ -16430,6 +16435,116 @@ def _discover_user_themes() -> list:
     return result
 
 
+def _dashboard_theme_state() -> Dict[str, Any]:
+    active = cfg_get(load_config(), "dashboard", "theme", default="default")
+    if not isinstance(active, str) or not active:
+        active = "default"
+    user_themes = _discover_user_themes()
+    seen = set()
+    themes = []
+    for theme in _BUILTIN_DASHBOARD_THEMES:
+        seen.add(theme["name"])
+        themes.append(theme)
+    for theme in user_themes:
+        if theme["name"] in seen:
+            continue
+        themes.append(
+            {
+                "name": theme["name"],
+                "label": theme["label"],
+                "description": theme["description"],
+                "definition": theme,
+            }
+        )
+        seen.add(theme["name"])
+    active_definition = next(
+        (theme for theme in user_themes if theme["name"] == active),
+        None,
+    )
+    return {
+        "themes": themes,
+        "active": active,
+        "definition": active_definition,
+    }
+
+
+def _theme_bootstrap_vars(theme: Dict[str, Any]) -> Dict[str, str]:
+    variables: Dict[str, str] = {}
+    for name in ("background", "midground", "foreground"):
+        layer = theme["palette"][name]
+        percent = round(float(layer["alpha"]) * 100)
+        variables[f"--{name}"] = (
+            f"color-mix(in srgb, {layer['hex']} {percent}%, transparent)"
+        )
+        variables[f"--{name}-base"] = layer["hex"]
+        variables[f"--{name}-alpha"] = str(layer["alpha"])
+
+    typography = theme["typography"]
+    variables.update(
+        {
+            "--theme-font-sans": typography["fontSans"],
+            "--theme-font-mono": typography["fontMono"],
+            "--theme-font-display": typography.get(
+                "fontDisplay", typography["fontSans"]
+            ),
+            "--theme-base-size": typography["baseSize"],
+            "--theme-line-height": typography["lineHeight"],
+            "--theme-letter-spacing": typography["letterSpacing"],
+        }
+    )
+    density = {"compact": "0.85", "comfortable": "1", "spacious": "1.2"}
+    layout = theme["layout"]
+    variables.update(
+        {
+            "--radius": layout["radius"],
+            "--theme-radius": layout["radius"],
+            "--theme-spacing-mul": density.get(layout["density"], "1"),
+            "--theme-density": layout["density"],
+        }
+    )
+    override_vars = {
+        key: f"--color-{re.sub(r'(?<!^)(?=[A-Z])', '-', key).lower()}"
+        for key in _THEME_OVERRIDE_KEYS
+    }
+    for key, value in theme.get("colorOverrides", {}).items():
+        if key in override_vars:
+            variables[override_vars[key]] = value
+    series_vars = {
+        "inputTokenAccent": "--series-input-token",
+        "outputTokenAccent": "--series-output-token",
+    }
+    for key, value in theme.get("seriesColors", {}).items():
+        if key in series_vars:
+            variables[series_vars[key]] = value
+    return variables
+
+
+def _dashboard_theme_bootstrap_script(state: Dict[str, Any]) -> str:
+    definition = state.get("definition")
+    payload = {
+        "active": state["active"],
+        "definition": definition,
+        "vars": _theme_bootstrap_vars(definition) if definition else {},
+        "customCSS": definition.get("customCSS", "") if definition else "",
+    }
+    encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
+    encoded = (
+        encoded.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+    )
+    return (
+        "<script>"
+        f"window.__HERMES_THEME_BOOTSTRAP__={encoded};"
+        "(function(b){var r=document.documentElement,k;"
+        "for(k in b.vars){r.style.setProperty(k,b.vars[k]);}"
+        "if(b.definition){r.dataset.layoutVariant=b.definition.layoutVariant||'standard';}"
+        "if(b.customCSS){var s=document.createElement('style');"
+        "s.id='hermes-theme-custom-css';s.dataset.hermesThemeCss='true';"
+        "s.textContent=b.customCSS;document.head.appendChild(s);}})"
+        "(window.__HERMES_THEME_BOOTSTRAP__);"
+        "</script>"
+    )
+
+
 @app.get("/api/dashboard/themes")
 async def get_dashboard_themes():
     """Return available themes and the currently active one.
@@ -16440,25 +16555,8 @@ async def get_dashboard_themes():
     normalised definition under `definition`, so the client can apply
     them without a stub.
     """
-    config = load_config()
-    active = cfg_get(config, "dashboard", "theme", default="default")
-    user_themes = _discover_user_themes()
-    seen = set()
-    themes = []
-    for t in _BUILTIN_DASHBOARD_THEMES:
-        seen.add(t["name"])
-        themes.append(t)
-    for t in user_themes:
-        if t["name"] in seen:
-            continue
-        themes.append({
-            "name": t["name"],
-            "label": t["label"],
-            "description": t["description"],
-            "definition": t,
-        })
-        seen.add(t["name"])
-    return {"themes": themes, "active": active}
+    state = _dashboard_theme_state()
+    return {"themes": state["themes"], "active": state["active"]}
 
 
 class ThemeSetBody(BaseModel):

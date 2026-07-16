@@ -138,8 +138,15 @@ async def login_page(request: Request) -> HTMLResponse:
     next_path = _validate_post_login_target(
         request.query_params.get("next", "")
     )
+    # Import at request time to avoid a module cycle: web_server mounts this
+    # router, while owning dashboard theme discovery/normalisation.
+    from hermes_cli.web_server import _dashboard_theme_state
+
     return HTMLResponse(
-        render_login_html(next_path=next_path),
+        render_login_html(
+            next_path=next_path,
+            theme=_dashboard_theme_state()["definition"],
+        ),
         headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
     )
 

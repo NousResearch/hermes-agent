@@ -418,6 +418,48 @@ class TestRateLimit:
 
 
 class TestLoginPageRender:
+    def test_active_custom_theme_styles_login_page(self):
+        clear_providers()
+        register_provider(PasswordProvider())
+        theme = {
+            "name": "hermes-cloud",
+            "label": "Hermes Cloud",
+            "palette": {
+                "background": {"hex": "#f8f8f8", "alpha": 1},
+                "midground": {"hex": "#18181b", "alpha": 1},
+                "foreground": {"hex": "#18181b", "alpha": 0},
+            },
+            "typography": {
+                "fontSans": "ui-sans-serif, system-ui, sans-serif",
+                "fontMono": "ui-monospace, monospace",
+                "baseSize": "16px",
+                "lineHeight": "1.5",
+                "letterSpacing": "0",
+            },
+            "layout": {"radius": "0.5rem", "density": "comfortable"},
+            "colorOverrides": {
+                "card": "#ffffff",
+                "cardForeground": "#18181b",
+                "primary": "#ff6700",
+                "primaryForeground": "#fff7ed",
+                "mutedForeground": "#71717a",
+                "border": "#e4e4e7",
+                "input": "#d4d4d8",
+                "ring": "#ff6700",
+            },
+        }
+        try:
+            page = render_login_html(theme=theme)
+            assert '<html lang="en" data-theme="hermes-cloud">' in page
+            assert "--background-base: #f8f8f8;" in page
+            assert "--primary: #ff6700;" in page
+            assert "--card: #ffffff;" in page
+            assert "--radius: 0.5rem;" in page
+            assert "--theme-font-sans: ui-sans-serif, system-ui, sans-serif;" in page
+            assert '<div class="brand">Hermes Cloud</div>' in page
+        finally:
+            clear_providers()
+
     def test_password_provider_renders_credential_form_and_script(self):
         clear_providers()
         register_provider(PasswordProvider())

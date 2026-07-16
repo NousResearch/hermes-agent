@@ -49,9 +49,12 @@ def _sanitized_git_environment() -> dict[str, str]:
 
 def _decode_git_utf8(data: bytes, label: str) -> str:
     try:
-        return data.decode("utf-8")
+        text = data.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise RuntimeError(f"{label} was not valid UTF-8") from exc
+    if "\x00" in text:
+        raise RuntimeError(f"{label} contained an invalid NUL byte")
+    return text
 
 
 def _run_git_bytes(args: list[str], *, cwd: Path, env: dict[str, str]) -> bytes:
@@ -70,9 +73,7 @@ def _run_git_bytes(args: list[str], *, cwd: Path, env: dict[str, str]) -> bytes:
     except OSError as exc:
         raise RuntimeError(f"unable to execute git while collecting changed paths: {exc}") from exc
     if proc.returncode != 0:
-        raw_detail = proc.stderr or proc.stdout
-        detail = raw_detail.decode("utf-8", errors="replace").strip() or "git command failed"
-        raise RuntimeError(detail)
+        raise RuntimeError(f"git command failed while collecting changed paths (exit {proc.returncode})")
     return proc.stdout
 
 
@@ -93,7 +94,7 @@ def _paths_from_git(base: str) -> list[str]:
     git_env = _sanitized_git_environment()
     raw_top = _run_git_bytes(["git", "rev-parse", "--show-toplevel"], cwd=start_dir, env=git_env)
     top_text = _decode_git_utf8(raw_top, "git repository root").strip()
-    if not top_text or "\x00" in top_text:
+    if not top_text:
         raise RuntimeError("git repository root was invalid")
     repo_root = Path(top_text).resolve()
     try:

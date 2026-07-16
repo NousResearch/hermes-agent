@@ -30,8 +30,11 @@ paths. Tracked scans disable external diff, textconv, color, and customized diff
 indicators before parsing Git output. The generated scanner binds sanitized Git
 discovery to the current repository root, while `--from-git` explicitly decodes
 Git path output as UTF-8 and ignores repository-selection environment overrides.
-Run generated commands from the repository root. Executing the suggested scan is
-a separate explicit verification step.
+Active Git filter attributes fail closed before any clean filter can execute, and
+every generated Git call has a bounded timeout. NUL-bearing path output and raw
+Git failure text are rejected behind stable sanitized errors. Run generated
+commands from the repository root. Executing the suggested scan is a separate
+explicit verification step.
 
 ## ULW evidence ledger scaffold
 

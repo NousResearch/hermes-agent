@@ -31,6 +31,15 @@ def _load_bundle():
     return module
 
 
+def _load_cli():
+    assert CLI_PATH.exists(), "scripts/suggest_verification_bundle.py should exist"
+    spec = importlib.util.spec_from_file_location("suggest_verification_bundle", CLI_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _ids(bundle) -> set[str]:
     return {cmd.id for cmd in bundle.commands}
 
@@ -828,6 +837,81 @@ def test_generated_security_scan_ignores_repository_selection_environment(tmp_pa
     assert marker not in scanned.stderr
 
 
+def test_generated_security_scan_rejects_active_clean_filter_without_executing_it(tmp_path):
+    mod = _load_bundle()
+    bash = _bash_or_skip()
+    command = mod._added_line_security_scan_command()
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    sample = repo / "sample.py"
+    sample.write_text("safe = True\n", encoding="utf-8")
+    (repo / ".gitattributes").write_text("sample.py filter=hide\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "--", ".gitattributes", sample.name],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "baseline"],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    (repo / "hide-filter.sh").write_text(
+        "#!/bin/sh\nprintf ran > filter-ran.txt\nprintf 'safe = True\\n'\n", encoding="utf-8"
+    )
+    subprocess.run(
+        ["git", "config", "filter.hide.clean", "sh hide-filter.sh"],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    term = "api" + "_key"
+    marker = "clean-filter-dummy-value"
+    sample.write_text(f'{term} = "{marker}"\n', encoding="utf-8")
+
+    scanned = subprocess.run(
+        [bash, "-lc", command],
+        cwd=repo,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+
+    assert scanned.returncode == 1
+    assert "redacted-hit" in scanned.stdout
+    assert marker not in scanned.stdout
+    assert marker not in scanned.stderr
+    assert not (repo / "filter-ran.txt").exists()
+
+
+def test_generated_security_scan_converts_git_timeout_to_redacted_exit(monkeypatch, capsys):
+    mod = _load_bundle()
+    command = mod._added_line_security_scan_command()
+    source = command.split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+
+    def timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(cmd=["git"], timeout=30)
+
+    monkeypatch.setattr(subprocess, "run", timeout)
+    with pytest.raises(SystemExit) as exc_info:
+        exec(compile(source, "<generated-security-scan>", "exec"), {})
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "redacted-hit" in captured.out
+    assert captured.err == ""
+
+
 def test_stdout_only_cli_does_not_write_import_bytecode(tmp_path):
     scripts_dir = tmp_path / "scripts"
     ci_dir = scripts_dir / "ci"
@@ -935,3 +1019,27 @@ def test_from_git_missing_executable_returns_clean_public_error():
     assert proc.stdout == ""
     assert "git" in proc.stderr.lower()
     assert "traceback" not in proc.stderr.lower()
+
+
+def test_from_git_rejects_nul_bearing_git_path_output(monkeypatch, tmp_path):
+    mod = _load_cli()
+    outputs = iter([f"{tmp_path}\n".encode("utf-8"), b"docs/\x00safe.md\n"])
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(mod, "_run_git_bytes", lambda *_args, **_kwargs: next(outputs))
+
+    with pytest.raises(RuntimeError, match="NUL|invalid"):
+        mod._paths_from_git("HEAD")
+
+
+def test_from_git_failure_does_not_expose_raw_git_output(monkeypatch, tmp_path):
+    mod = _load_cli()
+    marker = "sensitive-git-stderr-marker"
+
+    def fail(*_args, **_kwargs):
+        return subprocess.CompletedProcess(args=["git"], returncode=1, stdout=b"", stderr=marker.encode("utf-8"))
+
+    monkeypatch.setattr(mod.subprocess, "run", fail)
+    with pytest.raises(RuntimeError) as exc_info:
+        mod._run_git_bytes(["git", "status"], cwd=tmp_path, env={})
+
+    assert marker not in str(exc_info.value)

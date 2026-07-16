@@ -22,6 +22,7 @@ import os
 import re
 import secrets
 import struct
+import subprocess
 import tempfile
 import textwrap
 import time
@@ -94,6 +95,7 @@ RETRY_DELAY_SECONDS = 2
 BACKOFF_DELAY_SECONDS = 30
 SESSION_EXPIRED_ERRCODE = -14
 RATE_LIMIT_ERRCODE = -2  # iLink frequency limit — backoff and retry
+ALERT_SCRIPT = os.environ.get("HERMES_ALERT_SCRIPT", "")
 MESSAGE_DEDUP_TTL_SECONDS = 300
 
 
@@ -152,6 +154,10 @@ _HEADER_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 _TABLE_RULE_RE = re.compile(r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$")
 _FENCE_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
+
+
+class SessionExpiredError(Exception):
+    """Raised when iLink session has expired (ret=-2 or ret=-3)."""
 
 
 def check_weixin_requirements() -> bool:
@@ -471,6 +477,16 @@ async def _send_message(
         token=token,
         timeout_ms=API_TIMEOUT_MS,
     )
+    ret = result.get("ret")
+    if ret is not None and ret != 0:
+        errmsg = result.get("errmsg", "unknown error")
+        if ret in (STALE_SESSION_RET, DEAD_SESSION_RET):
+            raise SessionExpiredError(
+                f"iLink session expired: ret={ret} errmsg={errmsg}"
+            )
+        raise RuntimeError(
+            f"iLink sendmessage error: ret={ret} errmsg={errmsg}"
+        )
 
 
 async def _send_typing(
@@ -1359,7 +1375,9 @@ class WeixinAdapter(BasePlatformAdapter):
                 if ret not in {0, None} or errcode not in {0, None}:
                     if (ret == SESSION_EXPIRED_ERRCODE or errcode == SESSION_EXPIRED_ERRCODE
                             or _is_stale_session_ret(ret, errcode, response.get("errmsg"))):
-                        logger.error("[%s] Session expired; pausing for 10 minutes", self.name)
+                        logger.error("[%s] Session expired (ret=%s errcode=%s); pausing for 10 minutes", self.name, ret, errcode)
+                        if ALERT_SCRIPT:
+                            _fire_alert("stale_session", f"ret={ret} errcode={errcode}")
                         await asyncio.sleep(600)
                         consecutive_failures = 0
                         continue
@@ -1819,6 +1837,33 @@ class WeixinAdapter(BasePlatformAdapter):
                         )
                 self._reset_rate_limit_circuit()
                 return
+            except SessionExpiredError:
+                logger.critical(
+                    "[%s] iLink session expired sending to=%s; "
+                    "not retrying (same session will fail again)",
+                    self.name,
+                    _safe_id(chat_id),
+                )
+                if ALERT_SCRIPT:
+                    try:
+                        subprocess.Popen(
+                            [
+                                "python3",
+                                ALERT_SCRIPT,
+                                "1",
+                                "ilink_session_expired",
+                                "0",
+                            ],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                    except Exception as alert_exc:
+                        logger.warning(
+                            "[%s] failed to fire session-expired alert: %s",
+                            self.name,
+                            alert_exc,
+                        )
+                raise
             except Exception as exc:
                 last_error = exc
                 if attempt >= self._send_chunk_retries:
@@ -2199,6 +2244,16 @@ class WeixinAdapter(BasePlatformAdapter):
             token=self._token,
             timeout_ms=API_TIMEOUT_MS,
         )
+        ret = result.get("ret")
+        if ret is not None and ret != 0:
+            errmsg = result.get("errmsg", "unknown error")
+            if ret in (STALE_SESSION_RET, DEAD_SESSION_RET):
+                raise SessionExpiredError(
+                    f"iLink session expired: ret={ret} errmsg={errmsg}"
+                )
+            raise RuntimeError(
+                f"iLink sendmessage error: ret={ret} errmsg={errmsg}"
+            )
         return last_message_id
 
     def _outbound_media_builder(self, path: str, force_file_attachment: bool = False):

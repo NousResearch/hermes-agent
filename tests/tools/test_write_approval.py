@@ -171,6 +171,39 @@ def test_skill_gate_with_exclude_bypasses_excluded(hermes_home):
     assert wa.pending_count("skills") == 1
 
 
+def test_runtime_approval_toggle_preserves_lists(hermes_home):
+    """#58533 review note: Toggling `enabled` via the CLI/gateway
+    approval handler must NOT wipe out configured `only`/`exclude`
+    lists. Simulate the gateway ``/skills approval off`` path by
+    writing ``enabled: false`` over a fully populated dict and
+    confirming the lists survive.
+    """
+    import hermes_cli.config as cfg
+
+    # Start with the gate configured for selective gating.
+    raw = cfg.read_raw_config()
+    raw.setdefault("skills", {})["write_approval"] = {
+        "enabled": True, "only": ["important-skill"], "exclude": ["scratch"],
+    }
+    cfg.save_config(raw)
+
+    # Simulate the toggle path the gateway uses when /skills approval off
+    # is invoked: merge ``enabled: false`` over the existing dict without
+    # touching only/exclude. (The handler does this via
+    # ``setdefault("write_approval", {})["enabled"] = ...``.)
+    config_path = cfg.get_config_path()
+    raw_after = cfg.read_raw_config()
+    raw_after.setdefault("skills", {}).setdefault("write_approval", {})["enabled"] = False
+    cfg.save_config(raw_after)
+
+    # Reload and verify the lists survived.
+    loaded = cfg.load_config()
+    wa_dict = loaded["skills"]["write_approval"]
+    assert wa_dict["enabled"] is False
+    assert wa_dict["only"] == ["important-skill"]
+    assert wa_dict["exclude"] == ["scratch"]
+
+
 # ---------------------------------------------------------------------------
 # Memory gate
 # ---------------------------------------------------------------------------

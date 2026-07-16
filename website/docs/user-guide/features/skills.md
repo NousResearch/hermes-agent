@@ -481,12 +481,15 @@ wanting eyes on the self-improvement loop), turn on the write-approval gate:
 
 ```yaml
 skills:
-  write_approval: false     # false = write freely (default) | true = require approval
+  write_approval:
+    enabled: false       # false = write freely (default) | true = require approval
+    only: []             # if non-empty, gate ONLY these skill names
+    exclude: []          # if non-empty, gate ALL skills EXCEPT these names
 ```
 
-When `write_approval: true`, every `skill_manage` write (create / edit /
-patch / delete / write_file / remove_file) is **staged** instead of committed —
-a SKILL.md is too large to review inline, so staging applies regardless of
+When `enabled: true`, every `skill_manage` write (create / edit / patch /
+delete / write_file / remove_file) is **staged** instead of committed — a
+SKILL.md is too large to review inline, so staging applies regardless of
 whether the write came from a foreground turn or the background review.
 Staged writes survive restarts under `~/.hermes/pending/skills/` and are
 reviewed with the same familiar approve/deny flow as dangerous commands:
@@ -498,6 +501,23 @@ reviewed with the same familiar approve/deny flow as dangerous commands:
 /skills reject <id>         # drop it (or 'all')
 /skills approval on         # turn the gate on (or 'off') and persist it
 ```
+
+`/skills approval on|off` toggles `enabled` while leaving any `only` or
+`exclude` lists you have configured untouched, so you can flip the gate on
+and off without re-entering your filtering rules.
+
+#### Selective gating with `only` and `exclude`
+
+If reviewing every skill write is too noisy, narrow the gate to a subset:
+
+* `only: [important-skill, another-skill]` — gate only writes to these
+  specific skills. Writes to anything else flow freely.
+* `exclude: [scratch-skill, demo-skill]` — gate every skill except these.
+
+If both lists are set, `only` wins (a name must be in `only` to be gated).
+A name in `exclude` is always exempt regardless of `only`. The lists are
+matched against the skill's canonical name as registered in `skill_manage`
+using exact string equality.
 
 The review surface works in the interactive CLI and on messaging platforms
 (diff output is truncated for chat bubbles — read the full diff on the CLI or

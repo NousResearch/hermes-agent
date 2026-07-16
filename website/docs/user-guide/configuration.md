@@ -600,14 +600,19 @@ When on, any flagged `skill_manage` write surfaces as an approval prompt with th
 
 ### Write approval for skill writes
 
-Independent of the content scanner above, `skills.write_approval` gates **every** agent skill write (create / edit / patch / delete / supporting files) behind your explicit approval — the same approve/deny mechanism as dangerous commands:
+Independent of the content scanner above, `skills.write_approval` gates agent skill writes (create / edit / patch / delete / supporting files) behind your explicit approval — the same approve/deny mechanism as dangerous commands. The gate is a dictionary with three keys:
 
 ```yaml
 skills:
-  write_approval: false   # false = write freely (default) | true = stage every write for review
+  write_approval:
+    enabled: false         # false = write freely (default) | true = stage every write
+    only: []               # if non-empty, gate ONLY these skill names
+    exclude: []            # if non-empty, gate ALL skills EXCEPT these names
 ```
 
-When on, skill writes are staged under `~/.hermes/pending/skills/` and reviewed with `/skills pending`, `/skills diff <id>`, `/skills approve <id>`, `/skills reject <id>` — from the CLI or any messaging platform. Toggle at runtime with `/skills approval on|off`. Memory has the same gate (`memory.write_approval`, below). Full walkthrough: [Gating agent skill writes](/user-guide/features/skills#gating-agent-skill-writes-skillswrite_approval).
+`only` and `exclude` are independent lists, not mutually exclusive in config. When both are non-empty, `only` takes precedence (the more restrictive view wins). A name absent from `only` is exempt when `only` is set; a name in `exclude` is always exempt.
+
+When the gate is on, skill writes are staged under `~/.hermes/pending/skills/` and reviewed with `/skills pending`, `/skills diff <id>`, `/skills approve <id>`, `/skills reject <id>` — from the CLI or any messaging platform. Toggle at runtime with `/skills approval on|off`; the toggle preserves any `only`/`exclude` lists you have configured. Memory has the same gate (`memory.write_approval`, below). Full walkthrough: [Gating agent skill writes](/user-guide/features/skills#gating-agent-skill-writes-skillswrite_approval).
 
 ## Memory Configuration
 

@@ -436,7 +436,16 @@ def _resolve_config_gates() -> set[str]:
             else:
                 val = None
                 break
-        if is_truthy_value(val, default=False):
+        # Dict-shaped gates (e.g. `skills.write_approval = {enabled, only,
+        # exclude}`) are "open" only when an explicit `enabled` sub-key is
+        # truthy. A non-empty dict without `enabled` (e.g. `{}` after a
+        # partial migration) keeps the command closed by default — never
+        # assume "non-empty = on". A bare bool/string still uses the shared
+        # is_truthy_value() path.
+        if isinstance(val, dict):
+            if is_truthy_value(val.get("enabled", False), default=False):
+                result.add(cmd.name)
+        elif is_truthy_value(val, default=False):
             result.add(cmd.name)
     return result
 

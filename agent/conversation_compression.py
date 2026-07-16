@@ -39,19 +39,21 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Tuple
 
+from agent.fork_ext.compaction_ext import (
+    _ANNOUNCE_STATUS_CONDITIONAL,
+    _ANNOUNCE_STATUS_UNCONDITIONAL,
+    _abbrev_tokens,
+    _append_subsplit_lines,
+    _compaction_reason_clause,
+    _compaction_window_label,
+    _fmt_gross_frac,
+    _format_compaction_announce,
+    _format_granular_announce,
+    _inturn_stats_render_eligible,
+)
 from agent.model_metadata import estimate_request_tokens_rough
 
 logger = logging.getLogger(__name__)
-
-# Stable marker the gateway matches on to re-tag the auto-compaction lifecycle
-# status as ``kind="compacting"`` (tui_gateway/server.py::_status_update), so
-# drivers like the desktop app can show an explicit "Summarizing…" indicator
-# instead of the transcript appearing to silently reset. Keep the marker phrase
-# intact if you reword COMPACTION_STATUS.
-COMPACTION_STATUS_MARKER = "Compacting context"
-COMPACTION_STATUS = (
-    f"🗜️ {COMPACTION_STATUS_MARKER} — summarizing earlier conversation so I can continue..."
-)
 
 # ── Compaction completion announce (engine-aware) ──────────────────────────
 # Spec: ~/.hermes/plans/2026-06-20_compaction-announce-with-context-reference.md
@@ -68,16 +70,15 @@ _COMPACTION_SUMMARY_MARKERS = (
     "[CONTEXT COMPACTION]",
 )
 
-# Allow-list gating (Invariant I8 / §5.5). Statuses that ALWAYS represent a real
-# context reduction → announce unconditionally.
-_ANNOUNCE_STATUS_UNCONDITIONAL = frozenset(
-    {"compacted", "overflow_recovery", "degraded_fallback_compressed"}
+# Stable marker the gateway matches on to re-tag the auto-compaction lifecycle
+# status as ``kind="compacting"`` (tui_gateway/server.py::_status_update), so
+# drivers like the desktop app can show an explicit "Summarizing…" indicator
+# instead of the transcript appearing to silently reset. Keep the marker phrase
+# intact if you reword COMPACTION_STATUS.
+COMPACTION_STATUS_MARKER = "Compacting context"
+COMPACTION_STATUS = (
+    f"🗜️ {COMPACTION_STATUS_MARKER} — summarizing earlier conversation so I can continue..."
 )
-# Statuses that announce ONLY when context tokens actually dropped (token
-# reduction is monotonic across LCM node reassignment; message count is not).
-_ANNOUNCE_STATUS_CONDITIONAL = frozenset({"degraded_fail_open", "sanitized"})
-# Statuses carrying a degraded-summary caveat.
-_DEGRADED_STATUSES = frozenset({"degraded_fallback_compressed", "degraded_fail_open"})
 
 # A-floor approximate-attribution gross-error ceiling (in-turn granular announce).
 # The A-floor (fallback single-walk partition in build_inturn_stats) reconciles
@@ -88,46 +89,6 @@ _DEGRADED_STATUSES = frozenset({"degraded_fallback_compressed", "degraded_fail_o
 # degrades to the honest two-line form instead. On real failing sessions the kept
 # tail is ≤~7% of pre, so this never trips in practice — it is the honest backstop.
 _APPROX_GROSS_MAX_FRAC = 0.10
-
-
-def _fmt_gross_frac(gross_tok: int, pre_tok: int) -> str:
-    """Render the raw-kept-tail-vs-pre ratio TRUTHFULLY for the observability marker.
-
-    ``gross_tok`` (``raw_tail_tokens``) is a documented UPPER BOUND on the kept-tail
-    magnitude, estimated on the RAW (pre-sanitize) suffix; ``pre_tok`` is the
-    pre-compaction total counted on the SANITIZED/in-context basis. The two are on
-    DIFFERENT bases, so the raw bound can legitimately exceed ``pre`` — printing a bare
-    ``101.3%`` reads as an impossible "kept more than existed". Cap the displayed
-    fraction at 100% and mark it as a bound (``≥100%``) with a basis note when it
-    exceeds pre, so the marker is honest; the underlying comparison still uses the raw
-    ratio (a bound over threshold correctly triggers the two-line degrade)."""
-    if pre_tok <= 0:
-        return "n/a (pre=0)"
-    frac = gross_tok / pre_tok
-    if frac > 1.0:
-        # raw upper-bound exceeds the sanitized pre-total: bases differ, not a real >100%
-        return f"≥100% (raw-tail bound {gross_tok} ≥ pre {pre_tok}; raw vs sanitized basis)"
-    return f"{frac:.1%}"
-
-
-def _inturn_stats_render_eligible(status, pre_tokens, post_tokens) -> bool:
-    """True iff the LCM announce will actually RENDER for ``status`` — the P1 gate
-    for the in-turn stats block (spec 2026-07-02, D-1/§5A).
-
-    Mirrors ``_format_compaction_announce``'s LCM gating exactly, by consuming the
-    SAME module-level allow-lists (single source of truth — no copied literals):
-    unconditional statuses always render; conditional statuses render only when
-    the token render-condition (``post < pre``, both truthy) holds; everything
-    else (noop/idle/running/bypassed/unknown) is default-denied. Building stats —
-    and emitting COMPACTION_STATS_* degrade WARNINGs — for a non-rendering status
-    is pure log noise: the ~100%-kept_tail APPROX_ATTRIBUTION markers on no-op
-    compactions that polluted the daily watcher report (2026-07-02 #logs).
-    """
-    if status in _ANNOUNCE_STATUS_UNCONDITIONAL:
-        return True
-    if status in _ANNOUNCE_STATUS_CONDITIONAL:
-        return bool(pre_tokens and post_tokens and post_tokens < pre_tokens)
-    return False
 
 
 def _warn_compaction_stats_once(agent, message: str, *, exc_info: bool = False) -> None:
@@ -174,32 +135,6 @@ def _warn_compaction_stats_once(agent, message: str, *, exc_info: bool = False) 
     except Exception:
         pass  # marker suffix is best-effort; never break the warn itself
     logger.warning(message, exc_info=exc_info)
-
-
-def _compaction_window_label(tokens: "int | None") -> str:
-    """Compact human label for a context window: 1M, 272K, 128K (mirror of
-    chat_completion_helpers._format_context_window; kept local to avoid a
-    cross-module import cycle)."""
-    if not tokens or tokens <= 0:
-        return ""
-    if tokens >= 1_000_000:
-        whole = tokens / 1_000_000
-        return f"{whole:.0f}M" if whole == int(whole) else f"{whole:.1f}M"
-    if tokens >= 1_000:
-        return f"{tokens // 1000}K"
-    return str(tokens)
-
-
-def _abbrev_tokens(tokens: "int | None") -> str:
-    """~323K / ~15K / ~1.2M style for the token-delta display."""
-    if tokens is None or tokens <= 0:
-        return "?"
-    if tokens >= 1_000_000:
-        whole = tokens / 1_000_000
-        return f"~{whole:.0f}M" if whole == int(whole) else f"~{whole:.1f}M"
-    if tokens >= 1_000:
-        return f"~{tokens // 1000}K"
-    return f"~{tokens}"
 
 
 def _msg_text(content: Any) -> str:
@@ -253,346 +188,6 @@ def _extract_compaction_summary_snippet(
             cut = cleaned[:max_chars].rstrip()
         return cut + "…"
     return None
-
-
-def _compaction_reason_clause(
-    trigger_reason: "str | None", trigger_value: "int | None"
-) -> str:
-    """Render the parenthetical 'why this fired' clause for the announce head.
-
-    Returns '' for None/unknown reasons (back-compat: no clause). The value is
-    the real number that tripped the trigger (message count / threshold tokens).
-    """
-    if not trigger_reason:
-        return ""
-    if trigger_reason == "hygiene_messages":
-        n = trigger_value if trigger_value else "?"
-        return f" (message-count safety limit: {n} messages)"
-    if trigger_reason == "hygiene_tokens":
-        if trigger_value:
-            return f" (session-hygiene token threshold, ~{trigger_value:,} tokens)"
-        return " (session-hygiene token threshold)"
-    if trigger_reason == "threshold":
-        if trigger_value:
-            return f" (crossed the compaction threshold, ~{trigger_value:,} tokens)"
-        return " (crossed the compaction threshold)"
-    if trigger_reason == "overflow_413":
-        return " (the API rejected an oversize request — 413)"
-    if trigger_reason == "overflow_context":
-        return " (context length exceeded)"
-    if trigger_reason == "tier_reduction":
-        return " (long-context tier window reduction)"
-    if trigger_reason == "manual":
-        return " (you ran /compress)"
-    return ""  # unknown/future reason → no clause (never echo a raw token)
-
-
-def _format_compaction_announce(
-    engine_name: "str | None",
-    status: "str | None",
-    *,
-    old_session_id: "str | None",
-    new_session_id: "str | None",
-    old_messages: int,
-    new_messages: int,
-    pre_tokens: "int | None",
-    post_tokens: "int | None",
-    model: "str | None",
-    provider: "str | None",
-    window_from: "int | None" = None,
-    window_to: "int | None" = None,
-    summary_snippet: "str | None" = None,
-    raw_store_count: "int | None" = None,
-    after_fallback: bool = False,
-    trigger_reason: "str | None" = None,
-    trigger_value: "int | None" = None,
-    reasoning: "str | None" = None,
-    stats: "Any | None" = None,
-    recovery_hint: "str | None" = None,
-    in_place: bool = False,
-) -> "str | None":
-    """Build the engine-aware announce line, or ``None`` if gating says skip.
-
-    Gating (§5.5, Invariant I8):
-    - LCM (``engine_name == "lcm"``): allow-list on ``status`` — unconditional
-      set always announces; conditional set announces only on a real token drop;
-      everything else (incl. unknown/future) is silent.
-    - Built-in (no engine name / no status): announce only when a real rotation
-      happened (``old_session_id != new_session_id``).
-
-    ``trigger_reason``/``trigger_value`` (optional) render an honest 'why this
-    fired' clause in the head (message-count valve, token valve, overflow, …);
-    they NEVER affect gating.
-
-    ``stats`` (optional ``CompactionStats``) renders the granular reconciling
-    breakdown ("Removed from live context …"). If absent OR it fails
-    ``validate()``, the announce degrades to the two-line Messages+Context form
-    (a reconcile failure can never ship wrong math). ``reasoning`` adds the
-    ``r:<level>`` segment to the model line (omitted for unset/default/none).
-    ``recovery_hint`` overrides the default recovery line (per-path store).
-    """
-    is_lcm = engine_name == "lcm"
-
-    if is_lcm:
-        if status in _ANNOUNCE_STATUS_UNCONDITIONAL:
-            pass
-        elif status in _ANNOUNCE_STATUS_CONDITIONAL:
-            if not (pre_tokens and post_tokens and post_tokens < pre_tokens):
-                return None
-        else:
-            return None  # default-deny: noop/idle/running/bypassed/unknown
-    else:
-        # built-in compressor: a real compaction normally rotates the session id.
-        # EXCEPTION (2026-06-29 upstream merge): upstream's in-place compaction
-        # (compression.in_place=True, the config default) rewrites the transcript
-        # WITHOUT rotating — old_session_id is None / equals new_session_id. That
-        # is still a real compaction and must announce (otherwise the announce
-        # campaign goes dark for every in-place compaction). Only gate out the
-        # genuine no-op: no new session id at all.
-        if not new_session_id:
-            return None
-        if not in_place and (not old_session_id or old_session_id == new_session_id):
-            return None
-
-    degraded = status in _DEGRADED_STATUSES
-
-    # Validate stats; on any failure fall back to None (two-line form) and log a
-    # loud, greppable marker — a reconcile bug must NEVER ship wrong numbers.
-    if stats is not None:
-        try:
-            _ok, _reason = stats.validate()
-        except Exception as _verr:  # pragma: no cover - defensive
-            _ok, _reason = False, f"validate() raised: {_verr}"
-        if not _ok:
-            logger.warning("COMPACTION_STATS_RECONCILE_FAILED %s", _reason)
-            stats = None
-
-    head = "🗜️ Context compacted"
-    head += _compaction_reason_clause(trigger_reason, trigger_value)
-    if after_fallback:
-        head += " after model fallback"
-    if degraded:
-        head += " (degraded)"
-
-    from agent.provider_model_util import format_provider_model
-    model_part = format_provider_model(provider, model) if model else ""
-    # r:<level> — omit for unset/empty/default/none (match runtime footer skip set)
-    _r = (reasoning or "").strip().lower()
-    if _r and _r not in {"default", "none"}:
-        model_part = f"{model_part} · r:{_r}" if model_part else f"r:{_r}"
-    if is_lcm and model_part:
-        model_part = f"{model_part} · engine: lcm"
-    elif is_lcm:
-        model_part = "engine: lcm"
-
-    if stats is not None:
-        line = _format_granular_announce(
-            head, stats, model_part, after_fallback, window_from, window_to,
-        )
-    else:
-        # ── back-compat two-line form ──
-        parts = [f"{head}: {old_messages}→{new_messages} messages"]
-        parts.append(f"{_abbrev_tokens(pre_tokens)}→{_abbrev_tokens(post_tokens)} tokens")
-        if model:
-            parts.append(format_provider_model(provider, model))
-            if _r and _r not in {"default", "none"}:
-                parts.append(f"r:{_r}")
-        if after_fallback:
-            wf, wt = _compaction_window_label(window_from), _compaction_window_label(window_to)
-            if wf and wt and wf != wt:
-                parts.append(f"window {wf}→{wt}")
-        if is_lcm:
-            parts.append("engine: lcm")
-        line = " · ".join(parts)
-
-    # Recovery reference (engine-correct, or caller-supplied per-path hint).
-    if recovery_hint:
-        ref = recovery_hint
-    elif is_lcm:
-        if raw_store_count and raw_store_count > 0:
-            ref = (
-                f"↩ nothing lost — {raw_store_count:,} raw turns from this session "
-                "preserved in lcm.db · recover with lcm_grep / lcm_expand"
-            )
-        else:
-            ref = (
-                "↩ nothing lost — raw turns preserved in lcm.db · "
-                "recover with lcm_grep / lcm_expand"
-            )
-    else:
-        ref = f"↩ previous: {old_session_id} → current: {new_session_id}"
-    line += "\n" + ref
-
-    if summary_snippet:
-        line += f"\nSummary: {summary_snippet}"
-    elif degraded:
-        line += "\nSummary: unavailable — summarizer degraded this pass; raw store is intact."
-
-    return line
-
-
-def _append_subsplit_lines(lines, *, tool_count, tool_tokens, other_count, other_tokens, other_desc):
-    """Append the tool/other sub-split sub-lines for a bucket, with zero-count
-    suppression (CHANGE-C): a populated-zero count never headlines a `0 … → ~0K`
-    line. The tool parenthetical is DESCRIPTIVE ("raw tool output"), not a
-    superlative the numbers could falsify (BLOCKER-1)."""
-    if tool_count > 0:
-        lines.append(
-            f"     • {tool_count} tool-result messages  →  {_abbrev_tokens(tool_tokens)} reclaimed"
-            f"   (raw tool output)"
-        )
-    if other_count > 0:
-        lines.append(
-            f"     • {other_count} other messages  →  {_abbrev_tokens(other_tokens)} reclaimed"
-            f"   ({other_desc})"
-        )
-
-
-def _format_granular_announce(
-    head: str, stats: "Any", model_part: str,
-    after_fallback: bool, window_from: "int | None", window_to: "int | None",
-    *, basis: str = "live",
-    wire_before: "int | None" = None,
-    wire_after: "int | None" = None,
-) -> str:
-    """Render the multi-line single-unit (messages) breakdown from a validated
-    ``CompactionStats``. Every line leads with messages; tokens are the
-    parenthetical secondary. Reconciles by construction (validate() passed).
-
-    ``basis`` selects the population the numbers actually describe, so the
-    LABELS never overstate what was measured:
-
-    - ``"live"`` (default, the auto-compaction announce): the stats were built
-      over the LIVE message list the model is actually sent, so the numbers are
-      genuine wire savings → ``Context:`` / ``Removed from live context`` /
-      ``kept in context``. Output is byte-identical to before this arg existed.
-    - ``"stored"`` (manual ``/compress``): the stats were built over the STORED
-      transcript (the gateway session archive), which under LCM has already had
-      its bulk compacted OFF the wire in earlier passes. The reduction is
-      STORAGE reclaimed, not request-size — so it must read ``Stored
-      transcript:`` / ``Removed from stored transcript`` / ``kept in
-      transcript``. The real wire cut is the caller's separate ``Full request
-      size:`` line (provider-measured), appended below this block.
-
-    ``wire_before`` / ``wire_after`` (stored basis only): when the caller has a
-    REAL provider-measured before-count and a pre-flight next-request estimate,
-    the prominent token line becomes the WIRE story (``Context:
-    303,201 → ~80K``) — real numbers first, per Ace's 2026-07-02 decision. The
-    stored-transcript token totals are then demoted into the ``Removed from
-    stored transcript`` header as an explicitly-labeled ``token-est``
-    parenthetical, and the caller should NOT append a duplicate ``Full request
-    size:`` line. Both must be > 0; otherwise the stored-basis rendering is
-    unchanged (post-restart sessions have no measured count).
-    """
-    stored = basis == "stored"
-    wire_mode = bool(stored and (wire_before or 0) > 0 and (wire_after or 0) > 0)
-    ctx_label = "Stored transcript:" if (stored and not wire_mode) else "Context:  "
-    freed_verb = "reclaimed" if (stored and not wire_mode) else "freed"
-    removed_hdr = "stored transcript" if stored else "live context"
-    kept_where = "transcript" if stored else "context"
-    lines: list[str] = []
-    # Headline: messages pre→post + what's kept
-    kept_bits = [f"kept {stats.kept_messages} recent chat"]
-    if stats.summary_messages:
-        kept_bits.append(f"{stats.summary_messages} summary")
-    if stats.anchor_messages:
-        kept_bits.append(f"{stats.anchor_messages} anchor{'s' if stats.anchor_messages != 1 else ''}")
-    lines.append(f"{head}")
-    lines.append(f"   Messages:  {stats.pre_messages} → {stats.post_messages}   ({' + '.join(kept_bits)})")
-
-    # Token line. Wire mode (stored basis + real measured count available):
-    # the wire story — REAL before (exact, no ~), estimated after (~). The
-    # freed/pct math runs on the wire numbers so the headline savings are the
-    # request-size truth, not archive storage.
-    if wire_mode:
-        _wb, _wa = int(wire_before or 0), int(wire_after or 0)
-        _wfreed = _wb - _wa
-        if _wfreed > 0:
-            _wpct = round(_wfreed * 100 / _wb) if _wb else 0
-            lines.append(
-                f"   Context:   {_wb:,} → ~{_wa:,} tokens"
-                f"   (freed {_abbrev_tokens(_wfreed)}, {_wpct}% smaller"
-                f" · before measured, after next-request estimate)"
-            )
-        else:
-            lines.append(
-                f"   Context:   {_wb:,} → ~{_wa:,} tokens"
-                f"   (no net reduction expected"
-                f" · before measured, after next-request estimate)"
-            )
-    # Context/Stored line — guard freed<=0 (no net reduction)
-    elif stats.freed_tokens > 0 and stats.freed_pct is not None:
-        lines.append(
-            f"   {ctx_label} {_abbrev_tokens(stats.pre_tokens)} → {_abbrev_tokens(stats.post_tokens)} tokens"
-            f"   ({freed_verb} {_abbrev_tokens(stats.freed_tokens)}, {stats.freed_pct}% smaller)"
-        )
-    else:
-        lines.append(
-            f"   {ctx_label} {_abbrev_tokens(stats.pre_tokens)} → {_abbrev_tokens(stats.post_tokens)} tokens"
-            f"   (no net token reduction this pass)"
-        )
-
-    # "Removed from <basis>" block — omit entirely when nothing cleared
-    removed = stats.cleared_count + stats.folded_count
-    if removed > 0:
-        if wire_mode:
-            # Wire mode: the stored-transcript totals live HERE, explicitly
-            # labeled as archive token-estimates so they can't be read as
-            # request-size savings.
-            _arch_freed = max(int(stats.freed_tokens or 0), 0)
-            lines.append(
-                f"   Removed from {removed_hdr} ({removed} messages,"
-                f" {_abbrev_tokens(_arch_freed)} token-est reclaimed from archive):"
-            )
-        else:
-            lines.append(f"   Removed from {removed_hdr} ({removed} messages):")
-        # cleared bucket: render the tool/other sub-split when populated, else coarse line
-        if stats.cleared_count > 0:
-            if stats.cleared_tool_count is not None:
-                _append_subsplit_lines(
-                    lines,
-                    tool_count=stats.cleared_tool_count or 0,
-                    tool_tokens=stats.cleared_tool_tokens or 0,
-                    other_count=stats.cleared_other_count or 0,
-                    other_tokens=stats.cleared_other_tokens or 0,
-                    other_desc="system + tool-call turns, cleared",
-                )
-            else:
-                lines.append(
-                    f"     • {stats.cleared_count} cleared messages  →  {_abbrev_tokens(stats.cleared_tokens)} reclaimed"
-                    f"   (tool results + system + tool-call-only turns)"
-                )
-        # folded bucket: same, with the in-turn "other" description
-        if stats.folded_count > 0:
-            if stats.folded_tool_count is not None:
-                _append_subsplit_lines(
-                    lines,
-                    tool_count=stats.folded_tool_count or 0,
-                    tool_tokens=stats.folded_tool_tokens or 0,
-                    other_count=stats.folded_other_count or 0,
-                    other_tokens=stats.folded_other_tokens or 0,
-                    other_desc=f"chat + tool-call turns + system, folded into {stats.summary_messages or 1} summary",
-                )
-            else:
-                lines.append(
-                    f"     • {stats.folded_count} folded messages   →  {_abbrev_tokens(stats.folded_tokens)} reclaimed"
-                    f"   (older chat condensed into {stats.summary_messages or 1} summary)"
-                )
-        replacement = stats.summary_tokens + stats.anchor_tokens
-        if replacement > 0:
-            lines.append(
-                f"   Replacement cost: {_abbrev_tokens(replacement)} kept in {kept_where} (summary + anchors)"
-            )
-
-    if after_fallback:
-        wf, wt = _compaction_window_label(window_from), _compaction_window_label(window_to)
-        if wf and wt and wf != wt:
-            lines.append(f"   Window: {wf} → {wt}")
-
-    if model_part:
-        lines.append(f"   Model: {model_part}")
-
-    return "\n".join(lines)
 
 
 def _emit_compaction_announce(agent: Any, *, dedupe_key, **fmt_kwargs) -> None:

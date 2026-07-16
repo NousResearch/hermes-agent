@@ -13578,6 +13578,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Mirrors ``_run_agent``'s gating so single-profile gateways never
         enter the scope.
 
+        Also passes ``source`` into the formatter so the banner reports the
+        *effective* route for this chat (session ``/model`` override, then
+        ``channel_overrides``, then global default) instead of always
+        advertising the global model.default.
+
         Call via ``asyncio.to_thread`` from async handlers: under the scope,
         resolution can do blocking work (credential refresh, context-length
         HTTP probes) that must not run on the event loop. The scope is entered
@@ -13586,15 +13591,66 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         if getattr(getattr(self, "config", None), "multiplex_profiles", False):
             with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
-                return self._format_session_info()
-        return self._format_session_info()
+                return self._format_session_info(source)
+        return self._format_session_info(source)
 
-    def _format_session_info(self) -> str:
+    def _describe_model_route_source(self, source: Optional[SessionSource]) -> Optional[str]:
+        """Human label for why this source's model/provider is active.
+
+        Priority mirrors ``_resolve_session_agent_runtime``:
+        session ``/model`` override → channel/room override → global default.
+        Returns None for the global-default case so the banner stays compact.
+        """
+        if source is None:
+            return None
+
+        try:
+            session_key = self._session_key_for_source(source)
+        except Exception:
+            session_key = None
+
+        overrides = getattr(self, "_session_model_overrides", None) or {}
+        if session_key and session_key in overrides:
+            return "session override"
+
+        cfg = getattr(self, "config", None)
+        if cfg is None or not getattr(source, "platform", None):
+            return None
+
+        chat_id = str(source.chat_id) if source.chat_id else ""
+        thread_id = (
+            str(source.thread_id) if getattr(source, "thread_id", None) else None
+        )
+        parent_id = (
+            str(source.parent_chat_id)
+            if getattr(source, "parent_chat_id", None)
+            else None
+        )
+        try:
+            ch = _get_channel_override(
+                cfg,
+                source.platform,
+                chat_id,
+                thread_id=thread_id,
+                parent_id=parent_id,
+            )
+        except Exception:
+            ch = None
+        if ch and (ch.model or ch.provider):
+            return "channel override"
+        return None
+
+    def _format_session_info(self, source: Optional[SessionSource] = None) -> str:
         """Resolve current model config and return a formatted info block.
 
         Surfaces model, provider, context length, and endpoint so gateway
         users can immediately see if context detection went wrong (e.g.
         local models falling to the 128K default).
+
+        When ``source`` is provided (``/new``, auto-reset notices), resolve via
+        the same path the next agent turn uses: session override →
+        channel/room override → global default. Without ``source``, keep the
+        global-only view for callers that have no chat context.
         """
         from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
 
@@ -13605,6 +13661,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         api_key = None
         custom_provs = None
         data = None
+        route_source: Optional[str] = None
 
         try:
             data = _load_gateway_config()
@@ -13626,6 +13683,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     custom_provs = data.get("custom_providers")
         except Exception:
             pass
+
+        # Prefer the same effective route the next turn will use so /new and
+        # auto-reset banners are not misleading on rooms with channel_overrides.
+        if source is not None:
+            try:
+                resolved_model, runtime_kwargs = self._resolve_session_agent_runtime(
+                    source=source
+                )
+                if resolved_model:
+                    model = resolved_model
+                if isinstance(runtime_kwargs, dict):
+                    provider = runtime_kwargs.get("provider") or provider
+                    base_url = runtime_kwargs.get("base_url") or base_url
+                    if runtime_kwargs.get("api_key") is not None:
+                        api_key = runtime_kwargs.get("api_key")
+                route_source = self._describe_model_route_source(source)
+            except Exception:
+                logger.debug(
+                    "session-info effective-route resolution failed; "
+                    "falling back to global model defaults",
+                    exc_info=True,
+                )
 
         # Also check custom_providers for context_length when top-level model.context_length is not set
         if config_context_length is None and data:
@@ -13662,14 +13741,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
 
-        # Resolve runtime credentials for probing
-        try:
-            runtime = _resolve_runtime_agent_kwargs()
-            provider = provider or runtime.get("provider")
-            base_url = base_url or runtime.get("base_url")
-            api_key = runtime.get("api_key")
-        except Exception:
-            pass
+        # Resolve runtime credentials for probing when source-scoped resolution
+        # did not already supply them (global path / partial failure).
+        if not api_key or not provider or not base_url:
+            try:
+                runtime = _resolve_runtime_agent_kwargs()
+                provider = provider or runtime.get("provider")
+                base_url = base_url or runtime.get("base_url")
+                api_key = api_key or runtime.get("api_key")
+            except Exception:
+                pass
 
         context_length = get_model_context_length(
             model,
@@ -13701,6 +13782,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             f"◆ Provider: {provider or 'openrouter'}",
             f"◆ Context: {ctx_display} tokens ({ctx_source})",
         ]
+        if route_source:
+            lines.append(f"◆ Route: {route_source}")
 
         # Show endpoint for local/custom setups
         if base_url and ("localhost" in base_url or "127.0.0.1" in base_url or "0.0.0.0" in base_url):

@@ -4532,8 +4532,35 @@ def test_setup_runtime_check_honors_requested_provider(monkeypatch):
     assert default["result"]["provider"] == "anthropic"
 
 
-def test_setup_runtime_check_singleflights_slow_resolution(monkeypatch):
-    """Overlapping desktop polls must share one provider-resolution probe."""
+class _RuntimeCheckTransport:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._changed = threading.Event()
+        self.responses = {}
+
+    def write(self, response):
+        with self._lock:
+            self.responses[response.get("id")] = response
+            self._changed.set()
+        return True
+
+    def wait_for(self, request_id, timeout=1.0):
+        deadline = time.monotonic() + timeout
+        while True:
+            with self._lock:
+                response = self.responses.get(request_id)
+                if response is not None:
+                    return response
+                self._changed.clear()
+            remaining = deadline - time.monotonic()
+            assert remaining > 0, f"timed out waiting for response {request_id!r}"
+            self._changed.wait(timeout=remaining)
+
+
+def test_setup_runtime_check_singleflights_dispatch_and_keeps_pool_responsive(
+    monkeypatch,
+):
+    """Same-provider polls must not consume every shared RPC worker."""
     started = threading.Event()
     release = threading.Event()
     calls = 0
@@ -4554,36 +4581,103 @@ def test_setup_runtime_check_singleflights_slow_resolution(monkeypatch):
         slow_resolve,
     )
     monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: True)
-    monkeypatch.setattr(server, "_RUNTIME_CHECK_WAIT_SECONDS", 0.05)
+    monkeypatch.setattr(server, "_RUNTIME_CHECK_WAIT_SECONDS", 0.2)
+    monkeypatch.setitem(
+        server._methods,
+        "process.list",
+        lambda rid, _params: server._ok(rid, {"responsive": True}),
+    )
+    transport = _RuntimeCheckTransport()
 
-    first = {}
-
-    def run_first():
-        first["response"] = server.handle_request(
-            {"id": "first", "method": "setup.runtime_check", "params": {}}
-        )
-
-    thread = threading.Thread(target=run_first)
-    thread.start()
+    assert server.dispatch(
+        {"id": "runtime-0", "method": "setup.runtime_check", "params": {}},
+        transport,
+    ) is None
     assert started.wait(timeout=1)
 
+    for index in range(1, server._rpc_pool_workers):
+        assert server.dispatch(
+            {
+                "id": f"runtime-{index}",
+                "method": "setup.runtime_check",
+                "params": {},
+            },
+            transport,
+        ) is None
+
     before = time.monotonic()
-    second = server.handle_request(
-        {"id": "second", "method": "setup.runtime_check", "params": {}}
-    )
+    assert server.dispatch(
+        {"id": "unrelated", "method": "process.list", "params": {}},
+        transport,
+    ) is None
+    unrelated = transport.wait_for("unrelated", timeout=1)
     elapsed = time.monotonic() - before
 
-    assert second["result"]["timeout"] is True
-    assert "ok" not in second["result"]
-    assert elapsed < 0.2
+    assert unrelated["result"] == {"responsive": True}
+    assert elapsed < 0.5
     assert calls == 1
 
-    thread.join(timeout=1)
-    assert not thread.is_alive()
-    assert first["response"]["result"]["timeout"] is True
-    assert "ok" not in first["response"]["result"]
-
     release.set()
+    deadline = time.monotonic() + 1
+    while server._runtime_check_inflight and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not server._runtime_check_inflight
+
+
+def test_setup_runtime_check_does_not_serialize_distinct_providers(monkeypatch):
+    """A blocked provider must not prevent a healthy provider check."""
+    provider_a_started = threading.Event()
+    release_provider_a = threading.Event()
+    calls = {"provider-a": 0, "provider-b": 0}
+
+    def resolve_by_provider(requested=None):
+        calls[requested] += 1
+        if requested == "provider-a":
+            provider_a_started.set()
+            release_provider_a.wait(timeout=2)
+        return {
+            "provider": requested,
+            "api_key": "no-key-required",
+            "source": "config",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        resolve_by_provider,
+    )
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: True)
+    monkeypatch.setattr(server, "_RUNTIME_CHECK_WAIT_SECONDS", 0.5)
+    transport = _RuntimeCheckTransport()
+
+    assert server.dispatch(
+        {
+            "id": "provider-a",
+            "method": "setup.runtime_check",
+            "params": {"provider": "provider-a"},
+        },
+        transport,
+    ) is None
+    assert provider_a_started.wait(timeout=1)
+
+    before = time.monotonic()
+    assert server.dispatch(
+        {
+            "id": "provider-b",
+            "method": "setup.runtime_check",
+            "params": {"provider": "provider-b"},
+        },
+        transport,
+    ) is None
+    provider_b = transport.wait_for("provider-b", timeout=1)
+    elapsed = time.monotonic() - before
+
+    assert provider_b["result"]["ok"] is True
+    assert provider_b["result"]["provider"] == "provider-b"
+    assert elapsed < 0.5
+    assert calls == {"provider-a": 1, "provider-b": 1}
+
+    release_provider_a.set()
+    transport.wait_for("provider-a", timeout=1)
     deadline = time.monotonic() + 1
     while server._runtime_check_inflight and time.monotonic() < deadline:
         time.sleep(0.01)

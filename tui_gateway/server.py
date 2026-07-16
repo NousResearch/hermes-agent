@@ -265,13 +265,13 @@ _pool = concurrent.futures.ThreadPoolExecutor(
 atexit.register(lambda: _pool.shutdown(wait=False, cancel_futures=True))
 
 # Runtime readiness is frontend-polled and already executes on ``_pool`` via
-# ``_LONG_HANDLERS``.  Keep the potentially blocking provider resolution on a
-# separate single-worker executor: submitting it back to ``_pool`` from the
-# handler can starve the shared RPC pool when several polls overlap.  A
-# single-flight future also prevents a slow keyring/OAuth lookup from spawning
-# another probe on every desktop refresh.
+# ``_LONG_HANDLERS``. Keep provider resolution on a separate bounded executor:
+# submitting it back to ``_pool`` can starve shared RPC work, while one global
+# worker would let a blocked provider serialize checks for every other
+# provider. Single-flight futures still deduplicate polls for the same key.
+_runtime_check_pool_workers = max(2, min(4, _rpc_pool_workers))
 _runtime_check_pool = concurrent.futures.ThreadPoolExecutor(
-    max_workers=1,
+    max_workers=_runtime_check_pool_workers,
     thread_name_prefix="tui-runtime-check",
 )
 _runtime_check_lock = threading.Lock()

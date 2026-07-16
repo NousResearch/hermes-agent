@@ -9,9 +9,16 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets, _cron_memory_provider_tools_only
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
+
+
+def test_cron_memory_provider_tools_only_requires_explicit_job_toolset():
+    assert _cron_memory_provider_tools_only({}) is False
+    assert _cron_memory_provider_tools_only({"enabled_toolsets": []}) is False
+    assert _cron_memory_provider_tools_only({"enabled_toolsets": ["terminal"]}) is False
+    assert _cron_memory_provider_tools_only({"enabled_toolsets": ["memory"]}) is True
 
 
 class TestPerJobToolsetMcpMerge:

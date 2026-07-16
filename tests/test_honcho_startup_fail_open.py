@@ -39,6 +39,39 @@ def _configured_tools_config(*, init_on_session_start: bool = False) -> _FakeHon
     return cfg
 
 
+def test_honcho_cron_remains_disabled_without_tools_only(monkeypatch):
+    provider = HonchoMemoryProvider()
+    monkeypatch.setattr(
+        "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+        lambda: _configured_tools_config(),
+    )
+
+    provider.initialize("cron-default", platform="cron", agent_context="cron")
+
+    assert provider._cron_skipped is True
+    assert provider._manager is None
+
+
+def test_honcho_cron_tools_only_keeps_lazy_tool_access(monkeypatch):
+    provider = HonchoMemoryProvider()
+    monkeypatch.setattr(
+        "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+        lambda: _configured_hybrid_config(),
+    )
+
+    provider.initialize(
+        "cron-tools",
+        platform="cron",
+        agent_context="cron",
+        tools_only=True,
+    )
+
+    assert provider._cron_skipped is False
+    assert provider._recall_mode == "tools"
+    assert provider._session_key == "test-session"
+    assert provider._manager is None
+
+
 def test_honcho_hybrid_initialize_returns_without_waiting_for_session_init(monkeypatch):
     """Slow Honcho session creation must not block agent startup."""
     provider = HonchoMemoryProvider()

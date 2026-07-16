@@ -1428,6 +1428,46 @@ class TestConverseNoBlankTextBlocks:
         system, msgs = convert_messages_to_converse(messages)
         self._assert_no_blank_text(msgs)
 
+    def test_empty_list_content_no_blank_block(self):
+        """A message with content=[] must not emit a blank text block."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+        messages = [
+            {"role": "user", "content": []},
+            {"role": "assistant", "content": "ok"},
+        ]
+        system, msgs = convert_messages_to_converse(messages)
+        self._assert_no_blank_text(msgs)
+
+    def test_whitespace_only_string_part_no_blank_block(self):
+        """A message with content=["   "] (whitespace-only) must not emit blank."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+        messages = [
+            {"role": "user", "content": ["   "]},
+            {"role": "assistant", "content": "ok"},
+        ]
+        system, msgs = convert_messages_to_converse(messages)
+        self._assert_no_blank_text(msgs)
+
+    def test_system_list_blank_text_no_blank_block(self):
+        """System messages with blank/whitespace list parts must not emit blank."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+        messages = [
+            {"role": "system", "content": [
+                {"type": "text", "text": ""},
+                {"type": "text", "text": "   "},
+                "  ",
+            ]},
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "Hello"},
+        ]
+        system, msgs = convert_messages_to_converse(messages)
+        # Verify system blocks have no blank text
+        assert system is not None
+        for blk in system:
+            if "text" in blk:
+                assert blk["text"].strip(), f"blank system text block: {blk!r}"
+        self._assert_no_blank_text(msgs)
+
 
 # ---------------------------------------------------------------------------
 

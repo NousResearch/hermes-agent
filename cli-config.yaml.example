@@ -1146,6 +1146,27 @@ omi_commitments:
   max_conversations_per_scan: 25
 
 # =============================================================================
+# Stalled-Thread Follow-Up
+# =============================================================================
+# A scheduled scan finds open loops -- kanban commitments past due or untouched
+# too long, and conversation threads awaiting your reply -- and delivers ONE
+# batched digest through the notification budget governor (category
+# "stalled_thread"). OPT-IN: off by default (consent). Enable with
+# `hermes threads enable`; preview with `hermes threads list`; run once with
+# `hermes threads scan`.
+stalled_threads:
+  enabled: false                # opt-in -- scans your cards + threads when true
+  scan_interval_hours: 12
+  staleness_hours: 48           # quiet this long -> candidate
+  cooldown_hours: 72            # don't re-nudge the same item within this window
+  lookback_hours: 336           # 14d -- ignore threads/cards older than this
+  min_confidence: 0.6           # aux-LLM open-vs-resolved threshold (0-1)
+  scan_threads: true            # source B (best-effort threads); false = commitments only
+  max_items_per_digest: 5
+  board: ""                     # empty = default kanban board
+  exclude_sources: ["tool", "tui"]   # not real human conversations
+
+# =============================================================================
 # Subagent Delegation
 # =============================================================================
 # The delegate_task tool spawns child agents with isolated context.

@@ -917,6 +917,14 @@ CREATE TABLE IF NOT EXISTS omi_processed_conversations (
     commitments_found INTEGER NOT NULL DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS stalled_nudges (
+    candidate_id   TEXT PRIMARY KEY,
+    kind           TEXT NOT NULL,
+    last_nudged_at REAL NOT NULL,
+    nudge_count    INTEGER NOT NULL DEFAULT 1,
+    summary        TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
@@ -932,6 +940,8 @@ CREATE INDEX IF NOT EXISTS idx_notif_ledger_cat_day
     ON notification_ledger(category, day_key);
 CREATE INDEX IF NOT EXISTS idx_notif_ledger_candidate
     ON notification_ledger(candidate_id);
+CREATE INDEX IF NOT EXISTS idx_stalled_nudges_time
+    ON stalled_nudges(last_nudged_at);
 """
 
 # Indexes that reference columns added in later schema versions must be
@@ -7004,6 +7014,99 @@ class SessionDB:
                 (conversation_id, time.time(), int(commitments_found)),
             )
         self._execute_write(_do)
+
+    # ── Stalled-thread follow-up bookkeeping ──
+
+    def stall_nudged_recently(
+        self, candidate_id: str, cooldown_seconds: float
+    ) -> bool:
+        """Whether *candidate_id* was nudged within the cooldown window."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT last_nudged_at FROM stalled_nudges WHERE candidate_id = ?",
+                (candidate_id,),
+            ).fetchone()
+        if row is None:
+            return False
+        last = row["last_nudged_at"] if isinstance(row, sqlite3.Row) else row[0]
+        return (time.time() - float(last)) < cooldown_seconds
+
+    def record_stall_nudge(
+        self, candidate_id: str, kind: str, summary: Optional[str] = None
+    ) -> None:
+        """Record (or refresh) a stalled-item nudge, bumping nudge_count."""
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO stalled_nudges (
+                       candidate_id, kind, last_nudged_at, nudge_count, summary
+                   )
+                   VALUES (?, ?, ?, 1, ?)
+                   ON CONFLICT(candidate_id) DO UPDATE SET
+                       last_nudged_at = excluded.last_nudged_at,
+                       nudge_count = stalled_nudges.nudge_count + 1,
+                       summary = excluded.summary""",
+                (candidate_id, kind, time.time(), summary),
+            )
+        self._execute_write(_do)
+
+    def list_live_threads_for_stall(
+        self,
+        cutoff_epoch: float,
+        *,
+        exclude_sources: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """List live gateway threads active since *cutoff_epoch*, each annotated
+        with its last active message's role/observed/content.
+
+        A "live thread" is the newest session per session_key with
+        ``ended_at IS NULL``. The last message is taken by ``id DESC`` (not
+        timestamp — the wall clock is non-monotonic). Sources in
+        *exclude_sources* (case-insensitive) are filtered out.
+        """
+        excluded = {s.lower() for s in (exclude_sources or [])}
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT sessions.*,
+                       COALESCE(
+                           (SELECT MAX(m.timestamp) FROM messages m
+                            WHERE m.session_id = sessions.id),
+                           sessions.started_at
+                       ) AS last_active
+                FROM sessions
+                WHERE session_key IS NOT NULL
+                  AND ended_at IS NULL
+                  AND started_at = (
+                      SELECT MAX(s2.started_at) FROM sessions s2
+                      WHERE s2.session_key = sessions.session_key
+                  )
+                ORDER BY last_active DESC
+                """
+            ).fetchall()
+
+            out: List[Dict[str, Any]] = []
+            for row in rows:
+                sess = dict(row)
+                if str(sess.get("source", "")).lower() in excluded:
+                    continue
+                if float(sess.get("last_active") or 0.0) < cutoff_epoch:
+                    continue
+                last = self._conn.execute(
+                    "SELECT id, role, content, timestamp, observed FROM messages "
+                    "WHERE session_id = ? AND active = 1 ORDER BY id DESC LIMIT 1",
+                    (sess["id"],),
+                ).fetchone()
+                if last is not None:
+                    lastd = dict(last)
+                    sess["last_role"] = lastd.get("role")
+                    sess["last_content"] = lastd.get("content")
+                    sess["last_observed"] = lastd.get("observed")
+                else:
+                    sess["last_role"] = None
+                    sess["last_content"] = None
+                    sess["last_observed"] = None
+                out.append(sess)
+        return out
 
     def apply_telegram_topic_migration(self) -> None:
         """Create Telegram DM topic-mode tables on explicit /topic opt-in.

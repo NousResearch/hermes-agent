@@ -2305,6 +2305,24 @@ DEFAULT_CONFIG = {
         "max_conversations_per_scan": 25,
     },
 
+    # Stalled-thread follow-up. A scheduled scan finds open loops — kanban
+    # commitments past due or untouched too long, and conversation threads
+    # awaiting the user's reply — and delivers ONE batched digest through the
+    # notification budget governor (category "stalled_thread"). OPT-IN: off by
+    # default (consent).
+    "stalled_threads": {
+        "enabled": False,
+        "scan_interval_hours": 12,
+        "staleness_hours": 48,        # quiet this long -> candidate
+        "cooldown_hours": 72,         # don't re-nudge the same item within this window
+        "lookback_hours": 336,        # 14d — ignore threads/cards older than this
+        "min_confidence": 0.6,        # aux-LLM open-vs-resolved threshold
+        "scan_threads": True,         # source B (best-effort); False = commitments only
+        "max_items_per_digest": 5,
+        "board": "",                  # empty = default board
+        "exclude_sources": ["tool", "tui"],  # not real human conversations
+    },
+
     # Subagent delegation — override the provider:model used by delegate_task
     # so child agents can run on a different (cheaper/faster) provider and model.
     # Uses the same runtime provider resolution as CLI/gateway startup, so all
@@ -5469,7 +5487,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "moa", "custom_providers", "context", "memory", "gateway",
-    "notifications", "omi_commitments",
+    "notifications", "omi_commitments", "stalled_threads",
     "sessions", "streaming", "updates", "mcp_servers",
 }
 

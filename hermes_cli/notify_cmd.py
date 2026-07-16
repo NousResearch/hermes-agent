@@ -178,3 +178,108 @@ def _register_omi_job(interval_hours: int) -> None:
 def _deregister_omi_job() -> None:
     """Placeholder: scheduled job is user-managed via `hermes cron`."""
     return None
+
+
+def threads_command(args) -> int:
+    """Dispatch ``hermes threads <action>``."""
+    action = getattr(args, "threads_action", None)
+    if action == "scan":
+        return _threads_scan()
+    if action == "list":
+        return _threads_list()
+    if action == "enable":
+        return _threads_set_enabled(True)
+    if action == "disable":
+        return _threads_set_enabled(False)
+    print("Usage: hermes threads {scan|list|enable|disable}")
+    return 1
+
+
+def _threads_scan() -> int:
+    from agent.stalled_threads import run_stalled_thread_scan
+
+    result = run_stalled_thread_scan()
+    if result.get("skipped") == "disabled":
+        print(
+            "Stalled-thread scan is disabled. Enable it with "
+            "`hermes threads enable` (opt-in / consent)."
+        )
+        return 1
+    if "error" in result:
+        print(f"Stalled-thread scan error: {result['error']}")
+        return 1
+    print(
+        f"Stalled-thread scan complete: scanned={result.get('scanned', 0)} "
+        f"candidates={result.get('candidates', 0)} "
+        f"nudged={result.get('nudged', 0)} "
+        f"delivered={result.get('delivered', 0)}"
+    )
+    return 0
+
+
+def _threads_list() -> int:
+    from agent.stalled_threads import list_stalled_candidates
+
+    result = list_stalled_candidates()
+    if result.get("skipped") == "disabled":
+        print(
+            "Stalled-thread scan is disabled. Enable it with "
+            "`hermes threads enable` (opt-in / consent)."
+        )
+        return 1
+    candidates = result.get("candidates", [])
+    if not candidates:
+        print("No open-loop candidates right now.")
+        return 0
+    print(f"Open-loop candidates ({len(candidates)}):")
+    for c in candidates:
+        print(f"  [{c.get('kind')}] {c.get('text', '')[:100]}")
+    print("(dry run — nothing was nudged; run `hermes threads scan` to act)")
+    return 0
+
+
+def _threads_set_enabled(enabled: bool) -> int:
+    """Flip stalled_threads.enabled in config.yaml (atomic, clobber-guarded)."""
+    from hermes_cli.config import (
+        atomic_config_write,
+        get_config_path,
+        load_config,
+        read_raw_config,
+    )
+
+    config_path = get_config_path()
+    cfg = load_config()
+    try:
+        on_disk = read_raw_config() or {}
+        section = dict(on_disk.get("stalled_threads", {}))
+        section["enabled"] = enabled
+        on_disk["stalled_threads"] = section
+        atomic_config_write(config_path, on_disk, sort_keys=False)
+    except Exception as exc:
+        print(f"Could not update {config_path}: {exc}")
+        return 1
+
+    interval_hours = int(cfg.get("stalled_threads", {}).get("scan_interval_hours", 12))
+    if enabled:
+        _register_threads_job(interval_hours)
+        print(
+            f"Stalled-thread scan ENABLED (every {interval_hours}h). "
+            "Consent: your kanban cards and conversation threads will be scanned."
+        )
+    else:
+        print("Stalled-thread scan DISABLED.")
+    return 0
+
+
+def _register_threads_job(interval_hours: int) -> None:
+    """Print how to schedule the recurring stalled-thread scan via `hermes cron`."""
+    print(
+        "To schedule automatic scans, first save a one-line script to "
+        "~/.hermes/scripts/threads_scan.py:\n"
+        "  from agent.stalled_threads import run_stalled_thread_scan as r; "
+        "print(r())\n"
+        "then register it:\n"
+        f"  hermes cron create 'every {interval_hours} hours' "
+        "--name stalled-thread-scan --no-agent --script threads_scan.py\n"
+        "(or just run `hermes threads scan` manually anytime)."
+    )

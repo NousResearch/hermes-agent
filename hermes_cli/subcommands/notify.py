@@ -56,3 +56,28 @@ def build_omi_parser(subparsers, *, cmd_omi: Callable) -> None:
     omi_subparsers.add_parser("disable", help="Disable the scan")
 
     omi_parser.set_defaults(func=cmd_omi)
+
+
+def build_threads_parser(subparsers, *, cmd_threads: Callable) -> None:
+    """Attach the ``threads`` (stalled-thread follow-up) subcommand."""
+    threads_parser = subparsers.add_parser(
+        "threads",
+        help="Stalled-thread / open-commitment follow-up",
+        description=(
+            "Find open loops — commitments past due or untouched, and threads "
+            "awaiting your reply — and nudge you once via a batched digest. "
+            "Opt-in (consent required)."
+        ),
+    )
+    threads_subparsers = threads_parser.add_subparsers(dest="threads_action")
+
+    threads_subparsers.add_parser("scan", help="Run the stalled-thread scan now")
+    threads_subparsers.add_parser(
+        "list", help="Show open-loop candidates without nudging (dry run)"
+    )
+    threads_subparsers.add_parser(
+        "enable", help="Enable the scan (opt-in) and show how to schedule it"
+    )
+    threads_subparsers.add_parser("disable", help="Disable the scan")
+
+    threads_parser.set_defaults(func=cmd_threads)

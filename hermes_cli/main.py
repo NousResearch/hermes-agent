@@ -294,7 +294,11 @@ from hermes_cli.subcommands.logout import build_logout_parser
 from hermes_cli.subcommands.auth import build_auth_parser
 from hermes_cli.subcommands.status import build_status_parser
 from hermes_cli.subcommands.webhook import build_webhook_parser
-from hermes_cli.subcommands.notify import build_notify_parser, build_omi_parser
+from hermes_cli.subcommands.notify import (
+    build_notify_parser,
+    build_omi_parser,
+    build_threads_parser,
+)
 from hermes_cli.subcommands.hooks import build_hooks_parser
 from hermes_cli.subcommands.doctor import build_doctor_parser
 from hermes_cli.subcommands.security import build_security_parser
@@ -4294,6 +4298,13 @@ def cmd_omi(args):
     from hermes_cli.notify_cmd import omi_command
 
     return omi_command(args)
+
+
+def cmd_threads(args):
+    """Stalled-thread / open-commitment follow-up."""
+    from hermes_cli.notify_cmd import threads_command
+
+    return threads_command(args)
 
 
 def cmd_slack(args):
@@ -11450,6 +11461,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "webhook",
         "notify",
         "omi",
+        "threads",
         "memory",
         "dump",
         "debug",
@@ -12691,7 +12703,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "prompt-size",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
-        "version", "webhook", "notify", "omi", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
+        "version", "webhook", "notify", "omi", "threads", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
         # expensive eager import of every bundled plugin module.
@@ -13462,6 +13474,7 @@ def main():
     # =========================================================================
     build_notify_parser(subparsers, cmd_notify=cmd_notify)
     build_omi_parser(subparsers, cmd_omi=cmd_omi)
+    build_threads_parser(subparsers, cmd_threads=cmd_threads)
 
     # =========================================================================
     # portal command — Nous Portal status + Tool Gateway routing

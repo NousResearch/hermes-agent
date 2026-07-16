@@ -195,6 +195,10 @@ Plugins can register callbacks for these lifecycle events. See the **[Event Hook
 | [`post_tool_call`](/user-guide/features/hooks#post_tool_call) | After any tool returns |
 | [`pre_llm_call`](/user-guide/features/hooks#pre_llm_call) | Once per turn, before the LLM loop — can return `{"context": "..."}` to [inject context into the user message](/user-guide/features/hooks#pre_llm_call) |
 | [`post_llm_call`](/user-guide/features/hooks#post_llm_call) | Once per turn, after the LLM loop (successful turns only) |
+| [`on_stream_start`](/user-guide/features/hooks#streaming-output-hooks) | A streaming LLM response starts |
+| [`on_stream_delta`](/user-guide/features/hooks#streaming-output-hooks) | A normalized text delta is produced during streaming |
+| [`on_stream_end`](/user-guide/features/hooks#streaming-output-hooks) | A streaming LLM response finishes or errors |
+| [`on_interim_message`](/user-guide/features/hooks#streaming-output-hooks) | A mid-loop assistant message is surfaced before the final answer |
 | [`on_session_start`](/user-guide/features/hooks#on_session_start) | New session created (first turn only) |
 | [`on_session_end`](/user-guide/features/hooks#on_session_end) | End of every `run_conversation` call + CLI exit handler |
 | [`on_session_finalize`](/user-guide/features/hooks#on_session_finalize) | CLI/gateway tears down an active session (`/new`, GC, CLI quit) |

@@ -5177,6 +5177,18 @@ def test_config_set_personality_preserves_history_and_returns_info(monkeypatch):
     assert ("session.info", "sid", {"model": "?"}) in emits
 
 
+def _reset_tui_config_state():
+    from tui_gateway import server
+
+    server._cfg_cache = None
+    server._cfg_mtime = None
+    server._cfg_path = None
+
+    cache_clear = getattr(server._available_personalities, "cache_clear", None)
+    if cache_clear is not None:
+        cache_clear()
+
+
 def test_config_set_personality_integration_with_real_lookup_and_write(
     tmp_path, monkeypatch
 ):
@@ -5202,10 +5214,10 @@ def test_config_set_personality_integration_with_real_lookup_and_write(
 
     token = set_hermes_home_override(home)
     monkeypatch.setattr(server, "_hermes_home", home)
+    import cli
+    monkeypatch.setattr(cli, "_hermes_home", home)
     try:
-        server._cfg_cache = None
-        server._cfg_mtime = None
-        server._cfg_path = None
+        _reset_tui_config_state()
 
         agent = types.SimpleNamespace(
             ephemeral_system_prompt=None, _cached_system_prompt="old default prompt"
@@ -5246,9 +5258,7 @@ def test_config_set_personality_integration_with_real_lookup_and_write(
 
     finally:
         server._sessions.pop("sid", None)
-        server._cfg_cache = None
-        server._cfg_mtime = None
-        server._cfg_path = None
+        _reset_tui_config_state()
         reset_hermes_home_override(token)
 
 
@@ -5279,10 +5289,10 @@ def test_config_set_personality_invalid_integration_does_not_persist_or_mutate(
 
     token = set_hermes_home_override(home)
     monkeypatch.setattr(server, "_hermes_home", home)
+    import cli
+    monkeypatch.setattr(cli, "_hermes_home", home)
     try:
-        server._cfg_cache = None
-        server._cfg_mtime = None
-        server._cfg_path = None
+        _reset_tui_config_state()
 
         agent = types.SimpleNamespace(
             ephemeral_system_prompt="before overlay", _cached_system_prompt="old cached prompt"
@@ -5321,9 +5331,7 @@ def test_config_set_personality_invalid_integration_does_not_persist_or_mutate(
 
     finally:
         server._sessions.pop("sid", None)
-        server._cfg_cache = None
-        server._cfg_mtime = None
-        server._cfg_path = None
+        _reset_tui_config_state()
         reset_hermes_home_override(token)
 
 

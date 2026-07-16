@@ -3988,6 +3988,18 @@ def generate_launchd_plist() -> str:
     
     <key>StandardErrorPath</key>
     <string>{log_dir}/gateway.error.log</string>
+
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>65536</integer>
+    </dict>
+
+    <key>HardResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>65536</integer>
+    </dict>
 </dict>
 </plist>
 """

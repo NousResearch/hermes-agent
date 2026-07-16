@@ -499,6 +499,14 @@ class TestGeneratedSystemdUnits:
         assert str(local_bin) in plist
         assert str(profile_node_bin) not in plist
 
+    def test_launchd_plist_includes_file_descriptor_limits(self):
+        """#36899: plist must set NumberOfFiles to prevent Errno 24."""
+        plist = gateway_cli.generate_launchd_plist()
+        assert "SoftResourceLimits" in plist
+        assert "HardResourceLimits" in plist
+        assert "<key>NumberOfFiles</key>" in plist
+        assert "<integer>65536</integer>" in plist
+
     def test_user_unit_includes_wsl_windows_interop_paths(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_wsl", lambda: True)
         monkeypatch.setenv(

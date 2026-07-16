@@ -1,3 +1,8 @@
+# llm-box MCP catalog entry for Hermes.
+# Pinned per catalog dependency policy: full commit SHA (branches and tags
+# can be moved; SHAs cannot). This SHA is llm-box v0.3.0
+# (2026-07-04). The catalog never auto-updates; bumping the pin is a
+# PR to this manifest.
 manifest_version: 1
 
 name: llm-box
@@ -6,16 +11,25 @@ source: https://github.com/alib8b8/llm-box
 
 transport:
   type: stdio
-  command: "llm-box"
+  # ${INSTALL_DIR} is substituted at install time with the path the catalog
+  # cloned the repo into. The binary is built in-place by the bootstrap step.
+  command: "${INSTALL_DIR}/llm-box"
   args:
     - "--mcp-server"
+  version: "0.3.0"
 
 install:
   type: git
   url: https://github.com/alib8b8/llm-box.git
-  ref: main
+  # Pinned commit SHA. Branches and tags are mutable and rejected by the
+  # catalog version-lock contract. This commit contains the MCP server mode
+  # introduced in v0.3.0.
+  ref: 33e7cabf45281877de3561a03ef374b1eab0459f
+  # Build from source into the clone directory (${INSTALL_DIR}).
+  # No privileged paths (/usr/local/bin) — the binary lives inside the
+  # catalog-managed install directory. Requires Go 1.23+ on the host.
   bootstrap:
-    - "./install.sh"
+    - "go build -o llm-box ./cmd/llm-box"
 
 auth:
   type: none
@@ -30,19 +44,20 @@ tools:
 
 post_install: |
   llm-box is a terminal-first workflow automation engine. To use:
-  
+
   1. Start llm-box MCP server: llm-box --mcp-server
   2. Create workflows from natural language: "Create a backup workflow"
   3. Execute workflows: llm-box run --file backup.yaml
-  
+
   Features:
   - 20+ built-in nodes (fetch_url, http_request, execute, json_parse, etc.)
   - 15+ LLM providers (Ollama, DeepSeek, OpenAI-compatible)
   - MCP server mode for Hermes, Claude Code, Grok integration
-  
+
   Security:
   - SSRF protection on URL fetching
   - Path traversal protection on file operations
   - Safe mode available to disable execute node
+  - Command allowlist for execute node (set LLM_BOX_EXECUTE_ALLOWLIST=1)
 
   Start a new Hermes session to load the llm-box tools.

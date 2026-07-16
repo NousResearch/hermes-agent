@@ -35,6 +35,24 @@ from gateway.platforms.helpers import strip_markdown
 
 logger = logging.getLogger(__name__)
 
+# BlueBubbles authenticates by embedding ``?password=<pw>`` in the request URL
+# (its REST/webhook API has no header-based auth path — see _api_url /
+# _webhook_register_url). httpx's ``HTTPStatusError``/``RequestError`` str()
+# includes that URL, so returning ``str(exc)`` verbatim in ``SendResult.error``
+# or a log line leaks the password. The global redactor intentionally passes
+# URL query strings through unchanged (#34029), and its webhook-access-log
+# guard only matches ``METHOD /path?...`` request-target lines — neither
+# catches the ``for url '...?password=...'`` shape an httpx error produces.
+# Mask it at the adapter boundary, mirroring telegram's
+# _redact_telegram_error_text for its token-in-URL leak.
+_BB_URL_PASSWORD_RE = re.compile(r"([?&]password=)[^&\s'\"]+", re.IGNORECASE)
+
+
+def _redact_bb_error_text(error: object) -> str:
+    """Mask the ``?password=`` value BlueBubbles carries in its API URLs."""
+    return _BB_URL_PASSWORD_RE.sub(r"\1***", str(error))
+
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -261,7 +279,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             )
         except Exception as exc:
             logger.error(
-                "[bluebubbles] cannot reach server at %s: %s", self.server_url, exc
+                "[bluebubbles] cannot reach server at %s: %s", self.server_url, _redact_bb_error_text(exc)
             )
             if self.client:
                 await self.client.aclose()
@@ -493,7 +511,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             msg_id = data.get("guid") or data.get("messageGuid") or "ok"
             return SendResult(success=True, message_id=str(msg_id), raw_response=res)
         except Exception as exc:
-            return SendResult(success=False, error=str(exc))
+            return SendResult(success=False, error=_redact_bb_error_text(exc))
 
     # ------------------------------------------------------------------
     # Text sending
@@ -556,7 +574,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     success=True, message_id=str(msg_id), raw_response=res
                 )
             except Exception as exc:
-                return SendResult(success=False, error=str(exc))
+                return SendResult(success=False, error=_redact_bb_error_text(exc))
         return last
 
     # ------------------------------------------------------------------
@@ -615,7 +633,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 error=result.get("message", "Attachment upload failed"),
             )
         except Exception as e:
-            return SendResult(success=False, error=str(e))
+            return SendResult(success=False, error=_redact_bb_error_text(e))
 
     async def send_image(
         self,

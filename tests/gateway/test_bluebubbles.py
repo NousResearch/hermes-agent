@@ -934,3 +934,60 @@ class TestBlueBubblesWebhookRegistration:
             adapter._unregister_webhook()
         )
         assert ok is False
+
+
+class TestBlueBubblesPasswordRedaction:
+    """BlueBubbles carries its auth password in the request URL query string
+    (?password=<pw>), so httpx errors — whose str() includes that URL — must be
+    masked before they reach SendResult.error or a log line."""
+
+    def test_redact_masks_password_query_param(self):
+        import httpx
+
+        from gateway.platforms.bluebubbles import _redact_bb_error_text
+
+        req = httpx.Request(
+            "POST", "http://mac.local:1234/api/v1/message/text?password=Sup3rS3cr3tPw"
+        )
+        try:
+            httpx.Response(401, request=req).raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            out = _redact_bb_error_text(exc)
+        assert "Sup3rS3cr3tPw" not in out
+        assert "password=***" in out
+
+    def test_redact_masks_url_encoded_and_ampersand_forms(self):
+        from gateway.platforms.bluebubbles import _redact_bb_error_text
+
+        out = _redact_bb_error_text(
+            "for url 'http://h/api/v1/webhook?guid=x&password=a%2Fb%2Bc'"
+        )
+        assert "a%2Fb%2Bc" not in out
+        assert "guid=x" in out  # non-secret query params are left intact
+
+    def test_redact_preserves_benign_error(self):
+        from gateway.platforms.bluebubbles import _redact_bb_error_text
+
+        assert _redact_bb_error_text("Connection timeout after 30s") == (
+            "Connection timeout after 30s"
+        )
+
+    def test_send_result_error_is_redacted(self, monkeypatch):
+        """A failed send must not return the password in SendResult.error."""
+        import httpx
+
+        adapter = _make_adapter(monkeypatch, password="Sup3rS3cr3tPw")
+
+        async def boom(path, payload):
+            req = httpx.Request("POST", adapter._api_url(path))
+            raise httpx.HTTPStatusError(
+                "Client error", request=req, response=httpx.Response(401, request=req)
+            )
+
+        adapter._api_post = boom
+        adapter.client = object()  # bypass the "Not connected" guard
+        result = asyncio.get_event_loop().run_until_complete(
+            adapter.send("+15551234567", "hi")
+        )
+        assert result.success is False
+        assert "Sup3rS3cr3tPw" not in (result.error or "")

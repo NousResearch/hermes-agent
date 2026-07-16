@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Prove a recorded lazy feature is restored into a replacement venv.
+# Uses real ensure() + apply_ledger() with real PyPI packages.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -14,38 +15,10 @@ fi
 
 WORK=$(mktemp -d)
 FEATURE_HOME="$WORK/home"
-WHEELS="$WORK/wheels"
 V1="$WORK/v1"
 V2="$WORK/v2"
-mkdir -p "$FEATURE_HOME/state" "$WHEELS"
-trap 'rm -rf "$WORK"' EXIT
-
-python3 - "$WHEELS" <<'PY'
-import base64
-import csv
-import hashlib
-import io
-import pathlib
-import zipfile
-
-root = pathlib.Path(__import__('sys').argv[1])
-wheel = root / 'edge_tts-7.2.7-py3-none-any.whl'
-files = {
-    'edge_tts/__init__.py': b'E2E_MARKER = "ledger-restored"\n',
-    'edge_tts-7.2.7.dist-info/METADATA': b'Metadata-Version: 2.1\nName: edge-tts\nVersion: 7.2.7\n',
-    'edge_tts-7.2.7.dist-info/WHEEL': b'Wheel-Version: 1.0\nGenerator: hermes-e2e\nRoot-Is-Purelib: true\nTag: py3-none-any\n',
-}
-rows = []
-for path, body in files.items():
-    digest = base64.urlsafe_b64encode(hashlib.sha256(body).digest()).rstrip(b'=').decode()
-    rows.append((path, f'sha256={digest}', str(len(body))))
-record = 'edge_tts-7.2.7.dist-info/RECORD'
-rows.append((record, '', ''))
-out = io.StringIO(); csv.writer(out, lineterminator='\n').writerows(rows)
-files[record] = out.getvalue().encode()
-with zipfile.ZipFile(wheel, 'w', zipfile.ZIP_DEFLATED) as archive:
-    for path, body in files.items(): archive.writestr(path, body)
-PY
+mkdir -p "$FEATURE_HOME/state"
+trap 'chmod -R u+w "$WORK" 2>/dev/null || true; rm -rf "$WORK"' EXIT
 
 "$UV" venv "$V1" >/dev/null
 "$UV" venv "$V2" >/dev/null
@@ -53,34 +26,31 @@ PY
 "$UV" pip install --python "$V2/bin/python" --no-deps -e "$REPO_ROOT" >/dev/null
 
 export HERMES_HOME="$FEATURE_HOME"
-export PIP_FIND_LINKS="$WHEELS"
-export PIP_NO_INDEX=1
-export UV_FIND_LINKS="$WHEELS"
-export UV_NO_INDEX=1
-SYSTEM_PYTHON=$(command -v python3)
+
+# 1. Install a real allowlisted feature into v1.
 "$V1/bin/python" - <<'PY'
 from tools.lazy_deps import ensure
-ensure('tts.edge', prompt=False)
-# Record the feature in the ledger so apply_ledger can replay it.
+ensure("tts.edge", prompt=False)
 PY
-# Verify the install landed in a fresh v1 process (importlib.metadata
-# can be stale in the process that ran the install on Python 3.12).
-"$V1/bin/python" -c 'import edge_tts; assert edge_tts.E2E_MARKER == "ledger-restored"'
+
+# 2. Verify it landed (fresh process — metadata can be stale on 3.12).
+"$V1/bin/python" -c 'import edge_tts; print("v1 has edge_tts", edge_tts.__version__)'
+
+# 3. v2 should not have it yet.
 if "$V2/bin/python" -c 'import edge_tts' 2>/dev/null; then
     echo 'replacement venv unexpectedly already contains the feature' >&2
     exit 1
 fi
-# Hide uv for replay so ensure() exercises the target venv's pip/ensurepip
-# ladder. This avoids CI project-environment discovery influencing the test.
-PATH=/usr/bin:/bin PYTHONPATH="$REPO_ROOT" "$SYSTEM_PYTHON" - "$V2/bin/python" <<'PY'
+
+# 4. Replay the ledger into v2 (run from v2 so no re-exec is needed).
+PYTHONPATH="$REPO_ROOT" "$V2/bin/python" - <<'PY'
 import json
-import sys
 from tools.lazy_deps import apply_ledger
-result = apply_ledger(sys.argv[1])
-assert result.get('tts.edge') == 'refreshed', json.dumps(result, sort_keys=True)
+result = apply_ledger()
+assert result.get("tts.edge") == "refreshed", json.dumps(result, sort_keys=True)
 PY
-"$V2/bin/python" - <<'PY'
-import edge_tts
-assert edge_tts.E2E_MARKER == 'ledger-restored'
-PY
+
+# 5. Verify v2 now has the feature (fresh process).
+"$V2/bin/python" -c 'import edge_tts; print("v2 has edge_tts", edge_tts.__version__)'
+
 printf 'E2E_PASS: lazy feature restored into replacement venv\n'

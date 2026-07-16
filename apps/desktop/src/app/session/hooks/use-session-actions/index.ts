@@ -12,6 +12,7 @@ import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalize
 import { resolveNewSessionCwd, tombstoneSessions, untombstoneSessions } from '@/store/projects'
 
 import { cullRenderCacheSession, normalizeCachedTranscriptRows, readCachedTranscript } from '../../../render-cache-hydration'
+import { cullStashedTranscript, readStashedTranscript, stashTranscript } from '../../../transcript-stash'
 import {
   $connection,
   $currentCwd,
@@ -107,6 +108,10 @@ export function useSessionActions({
 
   const startFreshSessionDraft = useCallback(
     (replaceRoute = false) => {
+      // Leaving a session for a fresh draft: stash its rows so clicking back
+      // repaints instantly (same contract as the resume-path stash).
+      stashTranscript(selectedStoredSessionIdRef.current, $messages.get())
+
       busyRef.current = false
       setBusy(false)
       setAwaitingResponse(false)
@@ -288,12 +293,19 @@ export function useSessionActions({
 
       // Paint the click before the profile-resolve / gateway-swap awaits below,
       // so there's zero dead air: highlight the row instantly (the sidebar reads
-      // $selectedStoredSessionId) and, for a cold target, drop the previous
-      // transcript so the thread shows its loader instead of the old session
-      // lingering until resume lands. A warm-cached target keeps its transcript —
-      // the cached fast-path repaints it this same tick. Setting the ref here is
-      // also what use-route-resume's self-heal assumes ("set synchronously at
-      // resume entry").
+      // $selectedStoredSessionId) and, for a cold target, swap the transcript in
+      // the SAME frame from the in-memory stash when we have one — no blank, no
+      // loader (Ace 2026-07-15: the old->blank->new sandwich reads as a flash).
+      // Setting the ref here is also what use-route-resume's self-heal assumes
+      // ("set synchronously at resume entry").
+      //
+      // Stash the outgoing session's rows first so switching BACK is instant.
+      const previousStoredSessionId = selectedStoredSessionIdRef.current
+
+      if (previousStoredSessionId && previousStoredSessionId !== storedSessionId) {
+        stashTranscript(previousStoredSessionId, $messages.get())
+      }
+
       setFreshDraftReady(false)
       clearNotifications()
       setSelectedStoredSessionId(storedSessionId)
@@ -338,25 +350,38 @@ export function useSessionActions({
       if (!takeWarmCache()) {
         setActiveSessionId(null)
         activeSessionIdRef.current = null
-        setMessages([])
 
-        // Switch-paint from the render cache (Ace 2026-07-11): for a cold
-        // target, paint the cached transcript instantly while the live
-        // prefetch below runs. Read is async (~ms IPC + disk); guarded so it
-        // only applies while THIS resume is current and nothing live (or a
-        // newer click) has painted yet — the live prefetch/resume wholesale-
-        // replaces these rows when it lands (same SWR contract as boot).
-        void readCachedTranscript(storedSessionId)
-          .then(cachedRows => {
-            if (!cachedRows || !isCurrentResume() || $messages.get().length > 0) {
-              return
-            }
-            const painted = normalizeCachedTranscriptRows(cachedRows)
-            if (painted.length > 0) {
-              setMessages(painted)
-            }
-          })
-          .catch(() => undefined)
+        // Instant paint: if this session's rows are stashed in memory (visited
+        // earlier this run), swap them in synchronously — the click's own
+        // commit shows the target transcript, never a blank/loader frame. The
+        // stash is a snapshot, not an authority: the live prefetch/resume
+        // below wholesale-replaces it (invariant I1), exactly like the disk
+        // cache paint.
+        const stashedRows = readStashedTranscript(storedSessionId)
+
+        if (stashedRows) {
+          setMessages(stashedRows)
+        } else {
+          setMessages([])
+
+          // Switch-paint from the disk render cache (Ace 2026-07-11): for a
+          // cold target, paint the cached transcript while the live prefetch
+          // below runs. Read is async (~ms IPC + disk); guarded so it only
+          // applies while THIS resume is current and nothing live (or a newer
+          // click) has painted yet — the live prefetch/resume wholesale-
+          // replaces these rows when it lands (same SWR contract as boot).
+          void readCachedTranscript(storedSessionId)
+            .then(cachedRows => {
+              if (!cachedRows || !isCurrentResume() || $messages.get().length > 0) {
+                return
+              }
+              const painted = normalizeCachedTranscriptRows(cachedRows)
+              if (painted.length > 0) {
+                setMessages(painted)
+              }
+            })
+            .catch(() => undefined)
+        }
       }
 
       // Swap the single live gateway to this session's profile before any
@@ -863,6 +888,7 @@ export function useSessionActions({
         // I4b delete wire: forward the delete to the render-cache culler so the
         // deleted session's cached transcript doesn't outlive it on disk.
         cullRenderCacheSession($connection.get()?.baseUrl ?? null, storedSessionId)
+        cullStashedTranscript(storedSessionId)
 
         if (closingRuntimeId) {
           clearQueuedPrompts(closingRuntimeId)

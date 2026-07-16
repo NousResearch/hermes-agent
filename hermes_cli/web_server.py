@@ -12140,7 +12140,7 @@ def _new_dashboard_backup_path() -> Path:
 
 @app.post("/api/ops/backup")
 async def run_backup(body: BackupRequest):
-    args = ["backup"]
+    args = ["backup", "-o"]
     archive: Optional[Path] = None
     output = (body.output or "").strip()
     if output:
@@ -16113,7 +16113,12 @@ async def pty_ws(ws: WebSocket) -> None:
     if channel:
         active_session_file = _active_session_file_for_channel(ws.app, channel)
         if force_fresh:
-            resume = None
+            # fresh=1 should bypass the PTY keep-alive, NOT override an
+            # explicit resume target from the WebSocket query params.
+            # Without this guard, clicking a sidebar session sends
+            # ?resume=TARGET_ID&fresh=1 and the resume is silently dropped,
+            # causing the sidebar click to spawn a fresh session instead
+            # of switching to the selected conversation.
             _forget_active_session_file(active_session_file)
         elif not resume:
             resume = _read_active_session_file(active_session_file)
@@ -16161,9 +16166,15 @@ async def pty_ws(ws: WebSocket) -> None:
         return
 
     # Keep-alive path: the PTY outlives this socket; reattach by token.
+    # Target identity includes resume session and profile — when either
+    # changes, attach_or_spawn tears down the old PTY and spawns a fresh
+    # one with the updated argv/env (HERMES_TUI_RESUME). Same-target
+    # reconnection (transient transport drop, page refresh) reattaches
+    # to the still-living PTY, preserving continuity.
+    target_id = f"{resume or ''}|{profile or ''}" if (resume or profile) else None
     try:
         session, _created = await PTY_REGISTRY.attach_or_spawn(
-            attach_token, spawn=_spawn
+            attach_token, spawn=_spawn, target_id=target_id
         )
     except PtyUnavailableError as exc:
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")

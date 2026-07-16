@@ -301,6 +301,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     () => generateChannelId(`${resumeParam ?? ""}\0${scopedProfile}`),
     [resumeParam, scopedProfile],
   );
+  // Track previous resumeParam so we can force a fresh PTY spawn when the
+  // user switches to a different session via the sidebar. Without this the
+  // PTY keep-alive reattaches to the old TUI process and the new resume id
+  // (HERMES_TUI_RESUME) is never read by the spawned child.
+  const prevResumeRef = useRef(resumeParam);
+  if (resumeParam !== prevResumeRef.current) {
+    if (prevResumeRef.current !== null) {
+      forceFreshPtyRef.current = true;
+    }
+    prevResumeRef.current = resumeParam;
+  }
+
   const titleScope = `${channel}\0${reconnectNonce}`;
   const sessionTitle =
     sessionTitleState.scope === titleScope ? sessionTitleState.title : null;

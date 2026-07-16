@@ -23,6 +23,10 @@ interface DownloadOptions {
   tempPath?: string
 }
 
+interface DownloadError extends Error {
+  statusCode?: number
+}
+
 function downloadFilename(filePath: string): string {
   const stripped = String(filePath || '')
     .trim()
@@ -49,6 +53,12 @@ function temporaryDownloadPath(destination: string): string {
   return path.join(path.dirname(destination), `.${path.basename(destination)}.hermes-download-${process.pid}-${nonce}`)
 }
 
+function backupDownloadPath(destination: string): string {
+  const nonce = crypto.randomBytes(6).toString('hex')
+
+  return path.join(path.dirname(destination), `.${path.basename(destination)}.hermes-backup-${process.pid}-${nonce}`)
+}
+
 async function replaceWithTemporaryFile(fsImpl: typeof fs, temporary: string, destination: string): Promise<void> {
   try {
     await fsImpl.promises.rename(temporary, destination)
@@ -60,8 +70,50 @@ async function replaceWithTemporaryFile(fsImpl: typeof fs, temporary: string, de
       throw error
     }
 
-    await fsImpl.promises.rm(destination, { force: true })
-    await fsImpl.promises.rename(temporary, destination)
+    // Never delete the existing destination before the replacement is known
+    // to be committable. Move it aside, then restore it if the retry fails.
+    const backup = backupDownloadPath(destination)
+
+    await fsImpl.promises.rename(destination, backup)
+
+    try {
+      await fsImpl.promises.rename(temporary, destination)
+    } catch (replacementError) {
+      try {
+        await fsImpl.promises.rename(backup, destination)
+      } catch (restoreError) {
+        const preservationError = new Error(
+          `Could not replace ${destination}; the previous file is preserved at ${backup}. ` +
+            `Replacement failed: ${String(replacementError)}. Restore failed: ${String(restoreError)}`
+        )
+
+        ;(preservationError as any).cause = replacementError
+        throw preservationError
+      }
+
+      throw replacementError
+    }
+
+    // The new destination is committed. A failed cleanup only leaves a hidden
+    // backup; it must not turn a successful save into apparent data loss.
+    await fsImpl.promises.rm(backup, { force: true }).catch(() => undefined)
+  }
+}
+
+async function writeBufferAtomically(
+  contents: Uint8Array,
+  destination: string,
+  options: DownloadOptions = {}
+): Promise<void> {
+  const fsImpl = options.fs || fs
+  const temporary = options.tempPath || temporaryDownloadPath(destination)
+
+  try {
+    await fsImpl.promises.writeFile(temporary, contents, { flag: 'wx' })
+    await replaceWithTemporaryFile(fsImpl, temporary, destination)
+  } catch (error) {
+    await fsImpl.promises.rm(temporary, { force: true }).catch(() => undefined)
+    throw error
   }
 }
 
@@ -91,7 +143,20 @@ function responseError(statusCode: number, statusMessage: string | undefined, bo
     // Plain-text gateway errors are already useful as-is.
   }
 
-  return new Error(`${statusCode}: ${detail || statusMessage || 'File download failed'}`)
+  const error: DownloadError = new Error(`${statusCode}: ${detail || statusMessage || 'File download failed'}`)
+  error.statusCode = statusCode
+
+  return error
+}
+
+function decodeBase64DataUrl(dataUrl: string): Buffer {
+  const match = String(dataUrl || '').match(/^data:[^,]*;base64,([\s\S]*)$/i)
+
+  if (!match) {
+    throw new Error('Gateway returned an invalid file data URL')
+  }
+
+  return Buffer.from(match[1], 'base64')
 }
 
 async function readErrorBody(response: DownloadResponse): Promise<string> {
@@ -197,11 +262,33 @@ function streamDownloadRequest(
   })
 }
 
+async function streamDownloadWithDataUrlFallback(
+  request: DownloadRequest,
+  destination: string,
+  fallback: () => Promise<string>,
+  options: DownloadOptions = {}
+): Promise<void> {
+  try {
+    await streamDownloadRequest(request, destination, options)
+  } catch (error) {
+    // Desktop and remote gateways update independently. Only a missing new
+    // endpoint may fall back to the older capped preview transport; permission,
+    // auth, and server failures must remain failures.
+    if ((error as DownloadError)?.statusCode !== 404) {
+      throw error
+    }
+
+    await writeBufferAtomically(decodeBase64DataUrl(await fallback()), destination, options)
+  }
+}
+
 export {
   copyFileAtomically,
+  decodeBase64DataUrl,
   DOWNLOAD_INACTIVITY_TIMEOUT_MS,
   downloadFilename,
   responseError,
   streamDownloadRequest,
+  streamDownloadWithDataUrlFallback,
   temporaryDownloadPath
 }

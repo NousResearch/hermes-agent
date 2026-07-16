@@ -63,7 +63,7 @@ import {
   uninstallArgsForMode
 } from './desktop-uninstall'
 import { installEmbedReferer } from './embed-referer'
-import { copyFileAtomically, downloadFilename, streamDownloadRequest } from './file-download'
+import { copyFileAtomically, downloadFilename, streamDownloadWithDataUrlFallback } from './file-download'
 import { readDirForIpc } from './fs-read-dir'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { scanGitRepos } from './git-repo-scan'
@@ -5370,7 +5370,7 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
 // Stream a backend file directly into a local destination without buffering
 // it in the main process. OAuth connections use the same isolated cookie jar
 // as other gateway REST calls; token/local connections use the session token.
-function streamBackendFileToPath(url, connection, destination: string): Promise<void> {
+function backendFileRequest(url, connection) {
   const requestOptions: any = { method: 'GET', url, redirect: 'follow' }
 
   if (connection.authMode === 'oauth') {
@@ -5394,7 +5394,30 @@ function streamBackendFileToPath(url, connection, destination: string): Promise<
     request.setHeader('X-Hermes-Session-Token', connection.token)
   }
 
-  return streamDownloadRequest(request as any, destination)
+  return request
+}
+
+async function streamBackendFileToPath(
+  url,
+  legacyDataUrl,
+  connection,
+  destination: string
+): Promise<void> {
+  const fallback = async () => {
+    const body = (
+      connection.authMode === 'oauth'
+        ? await fetchJsonViaOauthSession(legacyDataUrl)
+        : await fetchJson(legacyDataUrl, connection.token)
+    ) as any
+
+    if (typeof body?.dataUrl !== 'string') {
+      throw new Error('Gateway returned no file data')
+    }
+
+    return body.dataUrl
+  }
+
+  await streamDownloadWithDataUrlFallback(backendFileRequest(url, connection) as any, destination, fallback)
 }
 
 // Mint a single-use WS ticket for a gated gateway. Returns the ticket string.
@@ -8058,7 +8081,7 @@ ipcMain.handle('hermes:fs:saveFileAs', async (_event, payload: any = {}) => {
   const profile = String(payload?.profile || '').trim() || undefined
   const remote = Boolean(payload?.remote)
   let localSource: string | null = null
-  let remoteDownload: { connection: any; url: string } | null = null
+  let remoteDownload: { connection: any; legacyDataUrl: string; url: string } | null = null
 
   // Resolve local sources before showing the destination picker and capture
   // the intended remote connection up front. The remote endpoint applies its
@@ -8070,16 +8093,26 @@ ipcMain.handle('hermes:fs:saveFileAs', async (_event, payload: any = {}) => {
       throw new Error('The selected remote file source is no longer active.')
     }
 
+    const routeOptions = {
+      globalRemote: globalRemoteActive(),
+      profileRemoteOverride: profileHasRemoteOverride(profile)
+    }
     const requestPath = pathWithGlobalRemoteProfile(
-      `/api/files/download?path=${encodeURIComponent(sourcePath)}`,
+      `/api/fs/download?path=${encodeURIComponent(sourcePath)}`,
       profile,
-      {
-        globalRemote: globalRemoteActive(),
-        profileRemoteOverride: profileHasRemoteOverride(profile)
-      }
+      routeOptions
+    )
+    const legacyRequestPath = pathWithGlobalRemoteProfile(
+      `/api/fs/read-data-url?path=${encodeURIComponent(sourcePath)}`,
+      profile,
+      routeOptions
     )
 
-    remoteDownload = { connection, url: `${connection.baseUrl}${requestPath}` }
+    remoteDownload = {
+      connection,
+      legacyDataUrl: `${connection.baseUrl}${legacyRequestPath}`,
+      url: `${connection.baseUrl}${requestPath}`
+    }
   } else {
     ;({ resolvedPath: localSource } = await resolveReadableFileForIpc(sourcePath, { purpose: 'Save file copy' }))
   }
@@ -8094,7 +8127,12 @@ ipcMain.handle('hermes:fs:saveFileAs', async (_event, payload: any = {}) => {
   }
 
   if (remoteDownload) {
-    await streamBackendFileToPath(remoteDownload.url, remoteDownload.connection, result.filePath)
+    await streamBackendFileToPath(
+      remoteDownload.url,
+      remoteDownload.legacyDataUrl,
+      remoteDownload.connection,
+      result.filePath
+    )
   } else {
     await copyFileAtomically(localSource as string, result.filePath)
   }

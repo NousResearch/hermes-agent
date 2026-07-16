@@ -4,9 +4,14 @@ import os from 'node:os'
 import path from 'node:path'
 import { Readable } from 'node:stream'
 
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { copyFileAtomically, downloadFilename, streamDownloadRequest } from './file-download'
+import {
+  copyFileAtomically,
+  downloadFilename,
+  streamDownloadRequest,
+  streamDownloadWithDataUrlFallback
+} from './file-download'
 
 const temporaryDirectories: string[] = []
 
@@ -38,6 +43,7 @@ class FakeDownloadRequest extends EventEmitter {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks()
   await Promise.all(
     temporaryDirectories.splice(0).map(directory => fs.promises.rm(directory, { force: true, recursive: true }))
   )
@@ -67,6 +73,39 @@ describe('file download writes', () => {
     await expect(fs.promises.stat(temporary)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
+  it('restores an existing destination when the Windows replacement retry fails', async () => {
+    const directory = temporaryDirectory()
+    const source = path.join(directory, 'source.txt')
+    const destination = path.join(directory, 'saved.txt')
+    const temporary = path.join(directory, '.saved.tmp')
+    const rename = fs.promises.rename.bind(fs.promises)
+    let renameCall = 0
+
+    await fs.promises.writeFile(source, 'new contents')
+    await fs.promises.writeFile(destination, 'old contents')
+    vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      renameCall += 1
+
+      if (renameCall === 1) {
+        throw Object.assign(new Error('destination exists'), { code: 'EEXIST' })
+      }
+
+      if (renameCall === 3) {
+        throw Object.assign(new Error('replacement failed'), { code: 'EIO' })
+      }
+
+      return rename(from, to)
+    })
+
+    await expect(copyFileAtomically(source, destination, { tempPath: temporary })).rejects.toThrow(
+      'replacement failed'
+    )
+
+    await expect(fs.promises.readFile(destination, 'utf8')).resolves.toBe('old contents')
+    await expect(fs.promises.stat(temporary)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(fs.promises.readdir(directory)).resolves.toEqual(['saved.txt', 'source.txt'])
+  })
+
   it('streams a successful remote response to the selected destination', async () => {
     const directory = temporaryDirectory()
     const destination = path.join(directory, 'report.txt')
@@ -90,5 +129,29 @@ describe('file download writes', () => {
     ).rejects.toThrow('404: File not found')
     await expect(fs.promises.stat(destination)).rejects.toMatchObject({ code: 'ENOENT' })
     await expect(fs.promises.stat(temporary)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('falls back to the capped data-url route only when the streaming route is missing', async () => {
+    const directory = temporaryDirectory()
+    const destination = path.join(directory, 'legacy.txt')
+    const fallback = vi.fn(async () => `data:text/plain;base64,${Buffer.from('legacy contents').toString('base64')}`)
+    const request = new FakeDownloadRequest(downloadResponse(404, '{"detail":"Not Found"}', 'Not Found'))
+
+    await streamDownloadWithDataUrlFallback(request as never, destination, fallback, { inactivityTimeoutMs: 5_000 })
+
+    expect(fallback).toHaveBeenCalledOnce()
+    await expect(fs.promises.readFile(destination, 'utf8')).resolves.toBe('legacy contents')
+  })
+
+  it('does not hide permission failures behind the compatibility fallback', async () => {
+    const directory = temporaryDirectory()
+    const destination = path.join(directory, 'forbidden.txt')
+    const fallback = vi.fn(async () => 'data:text/plain;base64,bm90IHVzZWQ=')
+    const request = new FakeDownloadRequest(downloadResponse(403, '{"detail":"Sensitive path"}', 'Forbidden'))
+
+    await expect(
+      streamDownloadWithDataUrlFallback(request as never, destination, fallback, { inactivityTimeoutMs: 5_000 })
+    ).rejects.toThrow('403: Sensitive path')
+    expect(fallback).not.toHaveBeenCalled()
   })
 })

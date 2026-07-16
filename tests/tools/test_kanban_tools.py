@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import contextmanager
 
 import pytest
 
@@ -275,6 +276,88 @@ def test_reassign_running_requires_reclaim_and_closes_run(ready_task):
         assert kb.latest_run(conn, ready_task).outcome == "reclaimed"
 
 
+def test_reassign_reclaim_uses_one_atomic_write_transaction(ready_task, monkeypatch):
+    """No ready-state gap may exist between reclaim and assignment."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        assert kb.claim_task(conn, ready_task)
+
+    original_write_txn = kb.write_txn
+    transaction_count = 0
+
+    @contextmanager
+    def counted_write_txn(conn):
+        nonlocal transaction_count
+        transaction_count += 1
+        with original_write_txn(conn) as tx:
+            yield tx
+
+    monkeypatch.setattr(kb, "write_txn", counted_write_txn)
+    result = json.loads(kt._handle_reassign({
+        "task_id": ready_task,
+        "profile": "new-profile",
+        "reclaim": True,
+    }))
+
+    assert result["ok"] is True
+    assert transaction_count == 1
+
+
+def test_reassign_rejects_actor_that_turns_stale_after_preflight(
+    ready_task, monkeypatch,
+):
+    """Freshness must be checked in the same transaction as the mutation."""
+    from pathlib import Path
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "config.yaml").write_text(
+        "platform_toolsets:\n  cli:\n    - kanban\n"
+    )
+    with kb.connect() as conn:
+        assert kb.assign_task(conn, ready_task, "test-orchestrator")
+        assert kb.claim_task(conn, ready_task)
+        actor_run = kb.latest_run(conn, ready_task)
+        assert actor_run is not None
+        target = kb.create_task(conn, title="race-target", assignee="old-profile")
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", ready_task)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(actor_run.id))
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "Test-Orchestrator")
+
+    original_reassign = kb.reassign_task
+    race_injected = False
+
+    def end_actor_then_reassign(conn, *args, **kwargs):
+        nonlocal race_injected
+        race_injected = True
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'done', claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL WHERE id = ?",
+                (ready_task,),
+            )
+            kb._end_run(conn, ready_task, outcome="completed", status="done")
+        return original_reassign(conn, *args, **kwargs)
+
+    monkeypatch.setattr(kb, "reassign_task", end_actor_then_reassign)
+    result = json.loads(kt._handle_reassign({
+        "task_id": target,
+        "profile": "new-profile",
+    }))
+
+    assert "stale task-scoped orchestrator" in result.get("error", "")
+    assert race_injected is True
+    with kb.connect() as conn:
+        target_task = kb.get_task(conn, target)
+    assert target_task is not None
+    assert target_task.assignee == "old-profile"
+
+
 def test_reassign_current_running_card_hands_off_without_signaling_self(
     ready_task, monkeypatch,
 ):
@@ -419,6 +502,48 @@ def test_task_scoped_explicit_orchestrator_can_call_admin_handler(
     assert result["assignee"] == "new-profile"
 
 
+def test_task_scoped_orchestrator_atomic_context_covers_archive_and_notify(
+    ready_task, monkeypatch,
+):
+    from pathlib import Path
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "config.yaml").write_text(
+        "platform_toolsets:\n  cli:\n    - kanban\n"
+    )
+    with kb.connect() as conn:
+        assert kb.assign_task(conn, ready_task, "test-orchestrator")
+        assert kb.claim_task(conn, ready_task)
+        actor_run = kb.latest_run(conn, ready_task)
+        assert actor_run is not None
+        archive_target = kb.create_task(conn, title="archive-target")
+        notify_target = kb.create_task(conn, title="notify-target")
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", ready_task)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(actor_run.id))
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "Test-Orchestrator")
+
+    archived = json.loads(kt._handle_archive({"task_ids": [archive_target]}))
+    subscribed = json.loads(kt._handle_notify_subscribe({
+        "task_ids": [notify_target],
+        "platform": "discord",
+        "chat_id": "atomic-context",
+    }))
+
+    assert archived["ok"] is True
+    assert subscribed["ok"] is True
+    with kb.connect() as conn:
+        archived_task = kb.get_task(conn, archive_target)
+        subscriptions = kb.list_notify_subs(conn, notify_target)
+        actor = kb.get_task(conn, ready_task)
+    assert archived_task is not None and archived_task.status == "archived"
+    assert subscriptions[0]["notifier_profile"] == "test-orchestrator"
+    assert actor is not None and actor.status == "running"
+
+
 def test_archive_prevalidates_idempotently_and_deduplicates(ready_task):
     from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
@@ -437,6 +562,37 @@ def test_archive_prevalidates_idempotently_and_deduplicates(ready_task):
         assert kb.get_task(conn, valid).status == "ready"
 
 
+def test_archive_refuses_task_claimed_after_preflight(ready_task, monkeypatch):
+    """The non-running constraint must be enforced by the archive CAS."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    original_archive = kb.archive_task
+    injected = False
+
+    def claim_then_archive(conn, task_id, **kwargs):
+        nonlocal injected
+        if not injected:
+            injected = True
+            assert kb.claim_task(conn, task_id)
+        return original_archive(conn, task_id, **kwargs)
+
+    monkeypatch.setattr(kb, "archive_task", claim_then_archive)
+    result = json.loads(kt._handle_archive({"task_ids": [ready_task]}))
+
+    assert result["ok"] is False
+    assert result["archived"] == []
+    assert result["failed"] == [
+        {"task_id": ready_task, "error": "archive refused"}
+    ]
+    with kb.connect() as conn:
+        task = kb.get_task(conn, ready_task)
+        run = kb.latest_run(conn, ready_task)
+    assert task is not None
+    assert task.status == "running"
+    assert run is not None and run.ended_at is None
+
+
 def test_archive_partial_error_envelope(ready_task, monkeypatch):
     from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
@@ -444,10 +600,10 @@ def test_archive_partial_error_envelope(ready_task, monkeypatch):
         first = kb.create_task(conn, title="first", assignee="worker")
         second = kb.create_task(conn, title="second", assignee="worker")
     original = kb.archive_task
-    def fail(conn, task_id):
+    def fail(conn, task_id, **kwargs):
         if task_id == second:
             raise RuntimeError("injected archive failure")
-        return original(conn, task_id)
+        return original(conn, task_id, **kwargs)
     monkeypatch.setattr(kb, "archive_task", fail)
     result = json.loads(kt._handle_archive({"task_ids": [first, second]}))
     assert result == {"ok": False, "partial": True, "archived": [first], "already_archived": [],
@@ -1443,6 +1599,24 @@ def test_create_rejects_branch_for_non_worktree(worker_env):
         "branch_name": "feature/not-a-worktree",
     }))
     assert "branch_name is only valid for worktree workspaces" in result["error"]
+
+
+@pytest.mark.parametrize(
+    "branch_name",
+    ["bad branch", "bad..branch", "bad@{branch", "-bad", "bad.lock"],
+)
+def test_create_rejects_invalid_git_branch_names(worker_env, branch_name):
+    from tools import kanban_tools as kt
+
+    result = json.loads(kt._handle_create({
+        "title": "invalid git ref",
+        "assignee": "peer",
+        "workspace_kind": "worktree",
+        "workspace_path": "/tmp/invalid-git-ref",
+        "branch_name": branch_name,
+    }))
+
+    assert "invalid git branch name" in result["error"]
 
 
 def test_create_no_worker_task_stays_scratch(monkeypatch, worker_env):

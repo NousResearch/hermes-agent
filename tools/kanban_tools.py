@@ -361,20 +361,21 @@ def _required_nonempty_string(args: dict, name: str) -> tuple[Optional[str], Opt
 
 def _default_notifier_profile() -> str:
     """Match the interactive CLI's profile ownership resolution order."""
+    from hermes_cli.profiles import normalize_profile_name
+
     for env_name in ("HERMES_PROFILE_NAME", "HERMES_PROFILE"):
         value = os.environ.get(env_name)
         if value and value.strip():
-            return value.strip()
+            return normalize_profile_name(value)
     try:
         from hermes_cli.profiles import get_active_profile_name
-        return get_active_profile_name() or "user"
+
+        return normalize_profile_name(get_active_profile_name() or "user")
     except Exception:
         return "user"
 
 
 def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
-    import sys
-    print(f'\nDBG _require_orchestrator_tool({tool_name!r}) task_id={os.environ.get("HERMES_KANBAN_TASK")!r} run_id={os.environ.get("HERMES_KANBAN_RUN_ID")!r} profile={os.environ.get("HERMES_PROFILE")!r} profile_name={os.environ.get("HERMES_PROFILE_NAME")!r}', file=sys.stderr)
     """Belt-and-suspenders runtime guard for orchestrator-only handlers.
 
     The check_fn (`_check_kanban_orchestrator_mode`) keeps these tools
@@ -427,6 +428,18 @@ def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
             "without mutating the board again."
         )
     return None
+
+
+def _admin_actor_kwargs() -> dict[str, Any]:
+    """Trusted task-scoped actor fields for an atomic DB freshness check."""
+    task_id = os.environ.get("HERMES_KANBAN_TASK")
+    if not task_id:
+        return {}
+    return {
+        "actor_task_id": task_id,
+        "actor_run_id": _worker_run_id(task_id),
+        "actor_assignee": _default_notifier_profile(),
+    }
 
 
 def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
@@ -1192,6 +1205,7 @@ def _handle_reassign(args: dict, **kw) -> str:
                 changed = kb.reassign_task(
                     conn, task_id, profile,
                     reclaim_first=reclaim, reason=reason,
+                    **_admin_actor_kwargs(),
                 )
             except Exception as exc:
                 return tool_error(f"kanban_reassign: {exc}")
@@ -1243,7 +1257,12 @@ def _handle_archive(args: dict, **kw) -> str:
                 if task_id in already_archived:
                     continue
                 try:
-                    if kb.archive_task(conn, task_id):
+                    if kb.archive_task(
+                        conn,
+                        task_id,
+                        allow_running=False,
+                        **_admin_actor_kwargs(),
+                    ):
                         archived.append(task_id)
                     else:
                         failed.append({"task_id": task_id, "error": "archive refused"})
@@ -1308,6 +1327,7 @@ def _handle_notify_subscribe(args: dict, **kw) -> str:
                         conn, task_id=task_id, platform=platform, chat_id=chat_id,
                         thread_id=thread_id, user_id=user_id,
                         notifier_profile=notifier_profile,
+                        **_admin_actor_kwargs(),
                     )
                     rows = kb.list_notify_subs(conn, task_id)
                     subscriptions.extend(

@@ -33,7 +33,7 @@ def _set_approval(subsystem, enabled):
 
 
 def _set_approval_dict(subsystem, value):
-    """Set the write_approval value as a dict (config v33+ shape)."""
+    """Set the write_approval value as a dict (config v39+ shape)."""
     import hermes_cli.config as cfg
     c = cfg.load_config()
     c.setdefault(subsystem, {})["write_approval"] = value
@@ -69,7 +69,7 @@ def test_normalize_enabled_coerces_values():
     assert wa._normalize_enabled("off") is False
     assert wa._normalize_enabled("garbage") is False
     assert wa._normalize_enabled(None) is False
-    # Dict (config v33+ shape) → reads the 'enabled' sub-key.
+    # Dict (config v39+ shape) → reads the 'enabled' sub-key.
     assert wa._normalize_enabled({"enabled": True, "only": [], "exclude": []}) is True
     assert wa._normalize_enabled({"enabled": False}) is False
     assert wa._normalize_enabled({}) is False
@@ -88,7 +88,7 @@ def test_should_gate_skill_gate_off(hermes_home):
 
 
 def test_should_gate_skill_gate_on_no_lists(hermes_home):
-    """Gate on, no only/exclude → gate everything (pre-v33 behaviour)."""
+    """Gate on, no only/exclude → gate everything (pre-v39 behaviour)."""
     from tools import write_approval as wa
     _set_approval_dict("skills", {"enabled": True, "only": [], "exclude": []})
     assert wa.should_gate_skill("any-skill") is True
@@ -169,6 +169,39 @@ def test_skill_gate_with_exclude_bypasses_excluded(hermes_home):
     result2 = json.loads(r2)
     assert result2.get("staged") is True
     assert wa.pending_count("skills") == 1
+
+
+def test_runtime_approval_toggle_preserves_lists(hermes_home):
+    """#58533 review note: Toggling `enabled` via the CLI/gateway
+    approval handler must NOT wipe out configured `only`/`exclude`
+    lists. Simulate the gateway ``/skills approval off`` path by
+    writing ``enabled: false`` over a fully populated dict and
+    confirming the lists survive.
+    """
+    import hermes_cli.config as cfg
+
+    # Start with the gate configured for selective gating.
+    raw = cfg.read_raw_config()
+    raw.setdefault("skills", {})["write_approval"] = {
+        "enabled": True, "only": ["important-skill"], "exclude": ["scratch"],
+    }
+    cfg.save_config(raw)
+
+    # Simulate the toggle path the gateway uses when /skills approval off
+    # is invoked: merge ``enabled: false`` over the existing dict without
+    # touching only/exclude. (The handler does this via
+    # ``setdefault("write_approval", {})["enabled"] = ...``.)
+    config_path = cfg.get_config_path()
+    raw_after = cfg.read_raw_config()
+    raw_after.setdefault("skills", {}).setdefault("write_approval", {})["enabled"] = False
+    cfg.save_config(raw_after)
+
+    # Reload and verify the lists survived.
+    loaded = cfg.load_config()
+    wa_dict = loaded["skills"]["write_approval"]
+    assert wa_dict["enabled"] is False
+    assert wa_dict["only"] == ["important-skill"]
+    assert wa_dict["exclude"] == ["scratch"]
 
 
 # ---------------------------------------------------------------------------

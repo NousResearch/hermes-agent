@@ -1099,9 +1099,9 @@ class TestWriteApprovalMigration:
     ``on``/``off``/unset map to ``False`` (gate off). The old ``write_mode`` key
     is removed. Only a persisted key is rewritten — never invented.
 
-    Note: Since config v33, skills.write_approval is a dict
+    Note: Since config v39, skills.write_approval is a dict
     ``{enabled, only, exclude}`` rather than a bare bool, so after the v28→v29
-    rename the v32→v33 migration expands it. Memory stays as a bare bool.
+    rename the v38→v39 migration expands it. Memory stays as a bare bool.
     """
 
     def _write(self, tmp_path, body: str):

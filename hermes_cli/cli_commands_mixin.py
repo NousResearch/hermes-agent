@@ -2176,7 +2176,7 @@ class CLICommandsMixin:
         """Persist <subsystem>.write_approval to config (for /memory|/skills approval)."""
         from cli import save_config_value
         if subsystem == "skills":
-            # skills.write_approval is now a dict (config v33+); set the nested key.
+            # skills.write_approval is now a dict (config v39+); set the nested key.
             save_config_value("skills.write_approval.enabled", bool(enabled))
         else:
             save_config_value(f"{subsystem}.write_approval", bool(enabled))

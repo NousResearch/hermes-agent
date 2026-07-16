@@ -92,7 +92,7 @@ def write_approval_enabled(subsystem: str) -> bool:
 def _normalize_enabled(value: Any) -> bool:
     """Coerce a config value to a bool. Default (unknown) is False (gate off).
 
-    Accepts real bools, dicts (``{"enabled": True}`` — the new config-v33
+    Accepts real bools, dicts (``{"enabled": True}`` — the new config-v39
     shape), and the usual truthy/falsey strings. YAML 1.1 parses bare
     ``on``/``off``/``yes``/``no`` as bools already, so the string branch
     is mostly for hand-edited configs.
@@ -116,7 +116,7 @@ def should_gate_skill(name: str) -> bool:
 
     * ``only`` non-empty   — gate ONLY skills whose name is in this list
     * ``exclude`` non-empty — gate ALL skills EXCEPT those in this list
-    * neither set (default) — gate every skill write (the pre-v33 behaviour)
+    * neither set (default) — gate every skill write (the pre-v39 behaviour)
 
     ``only`` takes precedence when both are set (the more restrictive wins).
     """

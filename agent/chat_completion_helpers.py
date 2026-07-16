@@ -1199,7 +1199,23 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     if "reasoning_content" not in msg and reasoning_text:
         msg["reasoning_content"] = reasoning_text
 
-    if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
+    # Only preserve reasoning_details for providers whose wire schema accepts
+    # the field. OpenRouter and native Anthropic Messages use it for multi-turn
+    # reasoning continuity (signature / encrypted_content). Strict OpenAI-
+    # compatible gateways (OpenCode Go relay, Mistral, Fireworks, Moonshot/Kimi)
+    # reject it with HTTP 400 "Extra inputs are not permitted, field:
+    # messages[N].reasoning_details" because their pydantic validator uses
+    # extra="forbid". Gate on provider identity + endpoint so the field only
+    # lands on providers that won't 400 it.
+    _provider = (getattr(agent, "provider", "") or "").strip().lower()
+    _api_mode = (getattr(agent, "api_mode", "") or "").strip().lower()
+    _accepts_rd = (
+        _provider == "openrouter"
+        or agent._is_openrouter_url()
+        or _api_mode == "anthropic_messages"
+        or _api_mode == "codex_responses"
+    )
+    if _accepts_rd and hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
         # Pass reasoning_details back unmodified so providers (OpenRouter,
         # Anthropic, OpenAI) can maintain reasoning continuity across turns.
         # Each provider may include opaque fields (signature, encrypted_content)

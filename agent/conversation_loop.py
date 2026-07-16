@@ -844,8 +844,25 @@ def run_conversation(
             # for Codex Responses compatibility.
             if agent._should_sanitize_tool_calls():
                 agent._sanitize_tool_calls_for_strict_api(api_msg, model=agent.model)
-            # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
-            # The signature field helps maintain reasoning continuity
+            # Drop 'reasoning_details' for strict (non-OpenRouter, non-native)
+            # providers. OpenRouter and Anthropic Messages / Codex Responses
+            # accept the field for multi-turn reasoning continuity; strict
+            # OpenAI-compatible gateways (OpenCode Go relay, Mistral, Fireworks,
+            # Moonshot/Kimi) reject it with HTTP 400 "Extra inputs are not
+            # permitted, field: messages[N].reasoning_details". build_assistant
+            # _message now gates preservation the same way, but messages
+            # restored from the session DB (older turns persisted before the
+            # gate) may still carry the field, so strip it at send time too.
+            _provider = (getattr(agent, "provider", "") or "").strip().lower()
+            _api_mode_for_rd = (getattr(agent, "api_mode", "") or "").strip().lower()
+            _accepts_rd = (
+                _provider == "openrouter"
+                or agent._is_openrouter_url()
+                or _api_mode_for_rd == "anthropic_messages"
+                or _api_mode_for_rd == "codex_responses"
+            )
+            if not _accepts_rd and "reasoning_details" in api_msg:
+                api_msg.pop("reasoning_details", None)
             api_messages.append(api_msg)
 
         # Build the final system message: cached prompt + ephemeral system prompt.

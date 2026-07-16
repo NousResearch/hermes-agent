@@ -234,27 +234,35 @@ class FileToolsIntegrationTests(unittest.TestCase):
         r = json.loads(read_file_tool(path=p, task_id="agentA"))
         self.assertNotIn("error", r)
 
+        r_b = json.loads(read_file_tool(path=p, task_id="agentB"))
+        self.assertNotIn("error", r_b)
         w_b = json.loads(write_file_tool(path=p, content="B wrote\n", task_id="agentB"))
         self.assertNotIn("error", w_b)
 
         w_a = json.loads(write_file_tool(path=p, content="A stale\n", task_id="agentA"))
-        warn = w_a.get("_warning", "")
-        self.assertTrue(warn, f"expected warning, got: {w_a}")
+        err = w_a.get("error", "")
+        self.assertTrue(err, f"expected stale write refusal, got: {w_a}")
+        self.assertTrue(w_a.get("stale_write_blocked"))
         # The cross-agent message names the sibling task_id.
-        self.assertIn("agentB", warn)
-        self.assertIn("sibling", warn.lower())
+        self.assertIn("agentB", err)
+        self.assertIn("sibling", err.lower())
+        with open(p) as f:
+            self.assertEqual(f.read(), "B wrote\n")
 
     def test_same_agent_consecutive_writes_no_false_warning(self):
         p = self._write_seed("own.txt")
         json.loads(read_file_tool(path=p, task_id="agentC"))
         w1 = json.loads(write_file_tool(path=p, content="one\n", task_id="agentC"))
+        self.assertNotIn("error", w1)
         self.assertFalse(w1.get("_warning"))
         w2 = json.loads(write_file_tool(path=p, content="two\n", task_id="agentC"))
+        self.assertNotIn("error", w2)
         self.assertFalse(w2.get("_warning"))
 
     def test_patch_tool_also_surfaces_sibling_warning(self):
         p = self._write_seed("p.txt", "hello world\n")
         json.loads(read_file_tool(path=p, task_id="agentA"))
+        json.loads(read_file_tool(path=p, task_id="agentB"))
         json.loads(write_file_tool(path=p, content="hello planet\n", task_id="agentB"))
         r = json.loads(
             patch_tool(
@@ -281,6 +289,8 @@ class FileToolsIntegrationTests(unittest.TestCase):
         w = json.loads(write_file_tool(path=p, content="hi\n", task_id="agentX"))
         self.assertFalse(w.get("_warning"))
         self.assertNotIn("error", w)
+        with open(p) as f:
+            self.assertEqual(f.read(), "hi\n")
 
 
 if __name__ == "__main__":

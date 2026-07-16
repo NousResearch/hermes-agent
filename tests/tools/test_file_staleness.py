@@ -2,8 +2,9 @@
 """
 Tests for file staleness detection in write_file and patch.
 
-When a file is modified externally between the agent's read and write,
-the write should include a warning so the agent can re-read and verify.
+Full-file write_file overwrites must fail closed when the agent has not
+freshly read the existing file or when the file changed since that read.
+Targeted patch remains warning-only for stale reads.
 
 Run with:  python -m pytest tests/tools/test_file_staleness.py -v
 """
@@ -21,6 +22,7 @@ from tools.file_tools import (
     read_file_tool,
     write_file_tool,
     patch_tool,
+    reset_file_dedup,
     _check_file_staleness,
     _read_tracker,
 )
@@ -44,14 +46,6 @@ class _FakeReadResult:
         }
 
 
-class _FakeWriteResult:
-    def __init__(self):
-        self.bytes_written = 10
-
-    def to_dict(self):
-        return {"bytes_written": self.bytes_written}
-
-
 class _FakePatchResult:
     def __init__(self):
         self.success = True
@@ -65,16 +59,30 @@ def _make_fake_ops(read_content="hello\n", file_size=6):
     fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
         content=read_content, total_lines=1, file_size=file_size,
     )
-    fake.write_file = lambda path, content: _FakeWriteResult()
     fake.patch_replace = lambda path, old, new, replace_all=False: _FakePatchResult()
     return fake
 
 
+def _write_until_mtime_changes(path: str, content: str) -> None:
+    before = os.path.getmtime(path)
+    deadline = time.time() + 2.0
+    while True:
+        with open(path, "w") as f:
+            f.write(content)
+        if os.path.getmtime(path) != before:
+            return
+        if time.time() > deadline:
+            forced = before + 1.0
+            os.utime(path, (forced, forced))
+            return
+        time.sleep(0.02)
+
+
 # ---------------------------------------------------------------------------
-# Core staleness check
+# Core write_file staleness/no-baseline behavior
 # ---------------------------------------------------------------------------
 
-class TestStalenessCheck(unittest.TestCase):
+class TestWriteFileStalenessGuard(unittest.TestCase):
 
     def setUp(self):
         _read_tracker.clear()
@@ -87,67 +95,71 @@ class TestStalenessCheck(unittest.TestCase):
     def tearDown(self):
         _read_tracker.clear()
         file_state.get_registry().clear()
-        try:
-            os.unlink(self._tmpfile)
-            os.rmdir(self._tmpdir)
-        except OSError:
-            pass
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
 
-    @patch("tools.file_tools._get_file_ops")
-    def test_no_warning_when_file_unchanged(self, mock_ops):
-        """Read then write with no external modification — no warning."""
-        mock_ops.return_value = _make_fake_ops("original content\n", 18)
-        read_file_tool(self._tmpfile, task_id="t1")
+    def test_fresh_full_read_allows_write_file(self):
+        """Read then write with no external modification succeeds cleanly."""
+        read = json.loads(read_file_tool(self._tmpfile, task_id="t1"))
+        self.assertNotIn("error", read)
 
-        result = json.loads(write_file_tool(self._tmpfile, "new content", task_id="t1"))
+        result = json.loads(write_file_tool(self._tmpfile, "new content\n", task_id="t1"))
+
+        self.assertNotIn("error", result)
         self.assertNotIn("_warning", result)
+        with open(self._tmpfile) as f:
+            self.assertEqual(f.read(), "new content\n")
 
-    @patch("tools.file_tools._get_file_ops")
-    def test_warning_when_file_modified_externally(self, mock_ops):
-        """Read, then external modify, then write — should warn."""
-        mock_ops.return_value = _make_fake_ops("original content\n", 18)
-        read_file_tool(self._tmpfile, task_id="t1")
+    def test_write_file_refuses_when_file_modified_externally(self):
+        """Read, external modify, then write_file: refuse before clobbering."""
+        read = json.loads(read_file_tool(self._tmpfile, task_id="t1"))
+        self.assertNotIn("error", read)
 
-        # Simulate external modification
-        time.sleep(0.05)
-        with open(self._tmpfile, "w") as f:
-            f.write("someone else changed this\n")
+        _write_until_mtime_changes(self._tmpfile, "someone else changed this\n")
 
-        result = json.loads(write_file_tool(self._tmpfile, "new content", task_id="t1"))
-        self.assertIn("_warning", result)
-        self.assertIn("modified since you last read", result["_warning"])
+        result = json.loads(write_file_tool(self._tmpfile, "new content\n", task_id="t1"))
 
-    @patch("tools.file_tools._get_file_ops")
-    def test_no_warning_when_file_never_read(self, mock_ops):
-        """Writing a file that was never read — no warning."""
-        mock_ops.return_value = _make_fake_ops()
-        result = json.loads(write_file_tool(self._tmpfile, "new content", task_id="t2"))
-        self.assertNotIn("_warning", result)
+        self.assertIn("error", result)
+        self.assertTrue(result.get("stale_write_blocked"))
+        self.assertIn("modified since you last read", result["error"])
+        with open(self._tmpfile) as f:
+            self.assertEqual(f.read(), "someone else changed this\n")
 
-    @patch("tools.file_tools._get_file_ops")
-    def test_no_warning_for_new_file(self, mock_ops):
-        """Creating a new file — no warning."""
-        mock_ops.return_value = _make_fake_ops()
+    def test_existing_file_without_baseline_is_refused(self):
+        """Existing files must be read before full-file write_file overwrite."""
+        result = json.loads(write_file_tool(self._tmpfile, "new content\n", task_id="t2"))
+
+        self.assertIn("error", result)
+        self.assertTrue(result.get("stale_write_blocked"))
+        self.assertIn("has not been read", result["error"])
+        with open(self._tmpfile) as f:
+            self.assertEqual(f.read(), "original content\n")
+
+    def test_net_new_file_can_be_rewritten_by_same_task_without_read(self):
+        """A successful write_file creates a baseline for same-task rewrites."""
         new_path = os.path.join(self._tmpdir, "brand_new.txt")
-        result = json.loads(write_file_tool(new_path, "content", task_id="t3"))
-        self.assertNotIn("_warning", result)
-        try:
-            os.unlink(new_path)
-        except OSError:
-            pass
 
-    @patch("tools.file_tools._get_file_ops")
-    def test_different_task_isolated(self, mock_ops):
-        """Task A reads, file changes, Task B writes — no warning for B."""
-        mock_ops.return_value = _make_fake_ops("original content\n", 18)
-        read_file_tool(self._tmpfile, task_id="task_a")
+        first = json.loads(write_file_tool(new_path, "one\n", task_id="t3"))
+        second = json.loads(write_file_tool(new_path, "two\n", task_id="t3"))
 
-        time.sleep(0.05)
-        with open(self._tmpfile, "w") as f:
-            f.write("changed\n")
+        self.assertNotIn("error", first)
+        self.assertNotIn("error", second)
+        with open(new_path) as f:
+            self.assertEqual(f.read(), "two\n")
 
-        result = json.loads(write_file_tool(self._tmpfile, "new", task_id="task_b"))
-        self.assertNotIn("_warning", result)
+    def test_different_task_existing_file_requires_own_baseline(self):
+        """Task B cannot overwrite an existing file just because task A read it."""
+        read = json.loads(read_file_tool(self._tmpfile, task_id="task_a"))
+        self.assertNotIn("error", read)
+        _write_until_mtime_changes(self._tmpfile, "changed\n")
+
+        result = json.loads(write_file_tool(self._tmpfile, "new\n", task_id="task_b"))
+
+        self.assertIn("error", result)
+        self.assertTrue(result.get("stale_write_blocked"))
+        self.assertIn("has not been read", result["error"])
+        with open(self._tmpfile) as f:
+            self.assertEqual(f.read(), "changed\n")
 
     @patch("tools.file_tools._get_file_ops")
     def test_relative_path_uses_recorded_session_cwd_for_staleness_tracking(self, mock_ops):
@@ -165,29 +177,79 @@ class TestStalenessCheck(unittest.TestCase):
             f.write("live copy\n")
 
         fake_ops = _make_fake_ops("live copy\n", 10)
+        fake_ops.env = SimpleNamespace(cwd=live_dir)
+        fake_ops.cwd = start_dir
+        fake_ops.write_file = MagicMock(side_effect=AssertionError("must not write stale content"))
         mock_ops.return_value = fake_ops
 
         from tools import terminal_tool
-
-        # The session cd'd into the worktree (recorded by the completed command).
         terminal_tool.record_session_cwd("live_task", live_dir)
 
         try:
             with patch.dict(os.environ, {"TERMINAL_CWD": start_dir}, clear=False):
-                read_file_tool("shared.txt", task_id="live_task")
+                read = json.loads(read_file_tool("shared.txt", task_id="live_task"))
+                self.assertNotIn("error", read)
 
-                time.sleep(0.05)
-                with open(live_file, "w") as f:
-                    f.write("live copy modified elsewhere\n")
+                _write_until_mtime_changes(live_file, "live copy modified elsewhere\n")
 
                 result = json.loads(
-                    write_file_tool("shared.txt", "replacement", task_id="live_task")
+                    write_file_tool("shared.txt", "replacement\n", task_id="live_task")
                 )
         finally:
             terminal_tool.clear_session_cwd("live_task")
 
-        self.assertIn("_warning", result)
-        self.assertIn("modified since you last read", result["_warning"])
+        self.assertIn("error", result)
+        self.assertTrue(result.get("stale_write_blocked"))
+        self.assertIn("modified since you last read", result["error"])
+        fake_ops.write_file.assert_not_called()
+        with open(live_file) as f:
+            self.assertEqual(f.read(), "live copy modified elsewhere\n")
+
+    def test_write_file_succeeds_after_reread_refreshes_baseline(self):
+        read = json.loads(read_file_tool(self._tmpfile, task_id="refresh"))
+        self.assertNotIn("error", read)
+        _write_until_mtime_changes(self._tmpfile, "external current\n")
+
+        refused = json.loads(write_file_tool(self._tmpfile, "stale overwrite\n", task_id="refresh"))
+        reread = json.loads(read_file_tool(self._tmpfile, task_id="refresh"))
+        written = json.loads(write_file_tool(self._tmpfile, "external current\nplus update\n", task_id="refresh"))
+
+        self.assertIn("error", refused)
+        self.assertNotIn("error", reread)
+        self.assertNotIn("error", written)
+        with open(self._tmpfile) as f:
+            self.assertEqual(f.read(), "external current\nplus update\n")
+
+    def test_full_reread_clears_partial_read_refusal(self):
+        with open(self._tmpfile, "w") as f:
+            f.write("one\ntwo\nthree\n")
+
+        partial = json.loads(read_file_tool(self._tmpfile, offset=1, limit=1, task_id="partial"))
+        refused = json.loads(write_file_tool(self._tmpfile, "replacement\n", task_id="partial"))
+        full = json.loads(read_file_tool(self._tmpfile, offset=1, limit=10, task_id="partial"))
+        written = json.loads(write_file_tool(self._tmpfile, "replacement\n", task_id="partial"))
+
+        self.assertNotIn("error", partial)
+        self.assertIn("error", refused)
+        self.assertIn("partial", refused["error"].lower())
+        self.assertNotIn("error", full)
+        self.assertNotIn("error", written)
+        with open(self._tmpfile) as f:
+            self.assertEqual(f.read(), "replacement\n")
+
+    def test_context_compression_reset_clears_full_write_baseline(self):
+        """After compression, prior read content may be gone; require re-read."""
+        read = json.loads(read_file_tool(self._tmpfile, task_id="compressed"))
+        self.assertNotIn("error", read)
+
+        reset_file_dedup("compressed")
+        result = json.loads(write_file_tool(self._tmpfile, "after compression\n", task_id="compressed"))
+
+        self.assertIn("error", result)
+        self.assertTrue(result.get("stale_write_blocked"))
+        self.assertIn("has not been read", result["error"])
+        with open(self._tmpfile) as f:
+            self.assertEqual(f.read(), "original content\n")
 
 
 # ---------------------------------------------------------------------------
@@ -207,11 +269,8 @@ class TestPatchStaleness(unittest.TestCase):
     def tearDown(self):
         _read_tracker.clear()
         file_state.get_registry().clear()
-        try:
-            os.unlink(self._tmpfile)
-            os.rmdir(self._tmpdir)
-        except OSError:
-            pass
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
 
     @patch("tools.file_tools._get_file_ops")
     def test_patch_warns_on_stale_file(self, mock_ops):
@@ -219,9 +278,7 @@ class TestPatchStaleness(unittest.TestCase):
         mock_ops.return_value = _make_fake_ops("original line\n", 15)
         read_file_tool(self._tmpfile, task_id="p1")
 
-        time.sleep(0.05)
-        with open(self._tmpfile, "w") as f:
-            f.write("externally modified\n")
+        _write_until_mtime_changes(self._tmpfile, "externally modified\n")
 
         result = json.loads(patch_tool(
             mode="replace", path=self._tmpfile,
@@ -243,6 +300,23 @@ class TestPatchStaleness(unittest.TestCase):
             task_id="p2",
         ))
         self.assertNotIn("_warning", result)
+
+    def test_successful_patch_does_not_bless_later_full_overwrite(self):
+        """A targeted patch is not a whole-file read baseline for write_file."""
+        patched = json.loads(patch_tool(
+            mode="replace", path=self._tmpfile,
+            old_string="original", new_string="patched",
+            task_id="patch_only",
+        ))
+        overwritten = json.loads(write_file_tool(
+            self._tmpfile, "full overwrite\n", task_id="patch_only"
+        ))
+
+        self.assertNotIn("error", patched)
+        self.assertIn("error", overwritten)
+        self.assertIn("has not been read", overwritten["error"])
+        with open(self._tmpfile) as f:
+            self.assertEqual(f.read(), "patched line\n")
 
 
 # ---------------------------------------------------------------------------

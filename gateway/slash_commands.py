@@ -108,7 +108,17 @@ class GatewaySlashCommandsMixin:
         
         # Get existing session key
         session_key = self._session_key_for_source(source)
+        previous_generation = (
+            getattr(self, "_session_run_generation", {}) or {}
+        ).get(session_key)
         self._invalidate_session_run_generation(session_key, reason="session_reset")
+        cancel_pending = getattr(self, "_cancel_pending_interactions", None)
+        if callable(cancel_pending):
+            cancel_pending(
+                session_key,
+                source=source,
+                generation=previous_generation if previous_generation else None,
+            )
         # Evict the running-agent slot now that the generation is bumped. The
         # in-flight run's own guarded release (run_generation=old) will return
         # False and leave its dead agent behind; clearing here keeps the slot
@@ -220,7 +230,10 @@ class GatewaySlashCommandsMixin:
         # Clear session-scoped dangerous-command approvals and /yolo state.
         # /new is a conversation-boundary operation — approval state from the
         # previous conversation must not survive the reset.
-        self._clear_session_boundary_security_state(session_key)
+        self._clear_session_boundary_security_state(
+            session_key,
+            generation=previous_generation,
+        )
 
         _old_sid = old_entry.session_id if old_entry else None
 
@@ -1095,6 +1108,26 @@ class GatewaySlashCommandsMixin:
         # a different key.  Authorized users should still be able to /stop it
         # (#bernard-thread-stop).  Fall back to interrupting any running
         # agent(s) that share this thread, gated on authorization.
+        current_generation = (
+            getattr(self, "_session_run_generation", {}) or {}
+        ).get(session_key)
+        invalidate_generation = getattr(
+            self,
+            "_invalidate_session_run_generation",
+            None,
+        )
+        if current_generation and callable(invalidate_generation):
+            invalidate_generation(
+                session_key,
+                reason="stop_command_orphaned_interactions",
+            )
+        cancel_pending = getattr(self, "_cancel_pending_interactions", None)
+        if callable(cancel_pending):
+            cancel_pending(
+                session_key,
+                source=source,
+                generation=current_generation if current_generation else None,
+            )
         sibling_keys = self._sibling_thread_run_keys(source, session_key)
         if sibling_keys and self._is_user_authorized(source):
             for sibling_key in sibling_keys:

@@ -139,3 +139,36 @@ async def test_new_command_only_clears_own_session():
     assert other_key in runner._session_reasoning_overrides
     assert session_key not in runner._pending_model_notes
     assert other_key in runner._pending_model_notes
+
+
+@pytest.mark.asyncio
+async def test_new_cancels_old_generation_without_touching_fresh_prompt():
+    """A reset must wake its old clarify and leave a replacement pending."""
+    from tools import clarify_gateway
+
+    runner = _make_runner()
+    session_key = build_session_key(_make_source())
+    runner._session_run_generation = {session_key: 4}
+    old_entry = clarify_gateway.register(
+        "reset-old",
+        session_key,
+        "Old prompt",
+        ["A"],
+        generation=4,
+    )
+
+    try:
+        await runner._handle_reset_command(_make_event("/new"))
+
+        assert old_entry.event.is_set()
+        new_entry = clarify_gateway.register(
+            "reset-new",
+            session_key,
+            "New prompt",
+            ["B"],
+            generation=5,
+        )
+        assert clarify_gateway.clear_session(session_key, generation=4) == 0
+        assert not new_entry.event.is_set()
+    finally:
+        clarify_gateway.clear_session(session_key)

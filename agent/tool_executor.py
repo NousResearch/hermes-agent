@@ -187,6 +187,43 @@ def _cancelled_tool_result(reason: str = "user interrupt") -> str:
     )
 
 
+def _is_select_many_cancellation(function_name: str, result: Any) -> bool:
+    """Return True only for an explicit select_many cancellation result."""
+    if function_name != "select_many" or not isinstance(result, str):
+        return False
+    try:
+        payload = json.loads(result)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return isinstance(payload, dict) and payload.get("cancelled") is True
+
+
+def _append_cancelled_sequence_results(
+    agent,
+    messages: list,
+    tool_calls: list,
+) -> None:
+    """Emit one non-executed result for each call behind a cancelled prompt."""
+    for tool_call in tool_calls:
+        tool_name = tool_call.function.name
+        messages.append(
+            make_tool_result_message(
+                tool_name,
+                (
+                    f"[Tool execution skipped — {tool_name} was not started "
+                    "because the user cancelled the preceding selection]"
+                ),
+                tool_call.id,
+                effect_disposition="none",
+            )
+        )
+        _flush_session_db_after_tool_progress(
+            agent,
+            messages,
+            stage=f"selection-cancelled tool result {tool_name}",
+        )
+
+
 def _emit_cancelled_terminal_post_tool_call(
     agent,
     *,
@@ -1025,7 +1062,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
 
 
-def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
+def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> bool:
     """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools.
 
     ``finalize=False`` skips the end-of-batch aggregate budget enforcement
@@ -1034,6 +1071,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     """
     # Resolve the context-scaled tool-output budget once per turn.
     _tool_budget = _budget_for_agent(agent)
+    selection_cancelled = False
     for i, tool_call in enumerate(assistant_message.tool_calls, 1):
         # SAFETY: check interrupt BEFORE starting each tool.
         # If the user sent "stop" during a previous tool's execution,
@@ -1577,6 +1615,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
             tool_duration = time.time() - tool_start_time
 
+        cancel_sequence = _is_select_many_cancellation(
+            function_name,
+            function_result,
+        )
+
         if isinstance(function_result, str):
             result_preview = function_result if agent.verbose_logging else (
                 function_result[:200] if len(function_result) > 200 else function_result
@@ -1714,6 +1757,22 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # entire batch.  The model sees it on the next API iteration.
         agent._apply_pending_steer_to_tool_results(messages, 1)
 
+        if cancel_sequence:
+            remaining_calls = list(assistant_message.tool_calls[i:])
+            if remaining_calls:
+                agent._vprint(
+                    f"{agent.log_prefix}Selection cancelled: skipping "
+                    f"{len(remaining_calls)} remaining tool call(s)",
+                    force=True,
+                )
+                _append_cancelled_sequence_results(
+                    agent,
+                    messages,
+                    remaining_calls,
+                )
+            selection_cancelled = True
+            break
+
         if not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off":
             if agent.verbose_logging:
                 print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s")
@@ -1755,6 +1814,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     if finalize and num_tools_seq > 0:
         agent._apply_pending_steer_to_tool_results(messages, num_tools_seq)
 
+    return selection_cancelled
+
 
 
 
@@ -1788,7 +1849,7 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
         _exec_cwd = Path(_active_env.cwd) if _active_env is not None and _active_env.cwd else None
         segments = _plan_tool_batch_segments(assistant_message.tool_calls, execution_cwd=_exec_cwd)
 
-    for kind, calls in segments:
+    for segment_index, (kind, calls) in enumerate(segments):
         segment_message = SimpleNamespace(tool_calls=list(calls))
         if kind == "parallel":
             execute_tool_calls_concurrent(
@@ -1796,10 +1857,22 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
                 finalize=False,
             )
         else:
-            execute_tool_calls_sequential(
+            selection_cancelled = execute_tool_calls_sequential(
                 agent, segment_message, messages, effective_task_id, api_call_count,
                 finalize=False,
             )
+            if selection_cancelled:
+                remaining_calls = [
+                    tool_call
+                    for _, segment_calls in segments[segment_index + 1:]
+                    for tool_call in segment_calls
+                ]
+                _append_cancelled_sequence_results(
+                    agent,
+                    messages,
+                    remaining_calls,
+                )
+                break
 
     # ── Whole-turn finalize (budget + /steer) ─────────────────────────
     total_tools = len(assistant_message.tool_calls)

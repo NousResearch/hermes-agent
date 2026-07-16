@@ -16,9 +16,10 @@ Also: SessionDB connections were never closed on gateway shutdown,
 leaving WAL locks in place until Python actually exited.
 """
 
+import asyncio
 import threading
-from unittest.mock import MagicMock
-
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 
 def _make_runner():
@@ -235,7 +236,7 @@ class TestSessionResetZombieRace:
     guarded release must not leave a dead agent locking the slot forever.
     """
 
-    def test_generation_guard_blocks_then_unconditional_release_evicts(self):
+    def test_boundary_owner_release_can_evict_after_guarded_release_blocks(self):
         runner = _make_runner()
         runner._session_run_generation = {}
         key = "agent:main:telegram:private:1"
@@ -254,16 +255,164 @@ class TestSessionResetZombieRace:
         assert runner._release_running_agent_state(key, run_generation=gen_n) is False
         assert runner._running_agents.get(key) is dead_agent
 
-        # The fix: unconditional release (no run_generation) always clears it.
+        # The boundary command still owns the slot and may explicitly clear it
+        # after invalidating the old generation.
         assert runner._release_running_agent_state(key) is True
         assert key not in runner._running_agents
         assert key not in runner._running_agents_ts
         assert key not in runner._busy_ack_ts
 
+    def test_old_worker_release_cannot_evict_new_generation(self):
+        """A late worker finalizer must leave a replacement run installed."""
+        from gateway.session import build_session_key
+        from tests.gateway.test_session_race_guard import (
+            _make_event,
+            _make_runner as _make_race_runner,
+        )
+
+        runner = _make_race_runner()
+        runner._busy_ack_ts = {}
+        event = _make_event(chat_id="replacement-race")
+        key = build_session_key(event.source)
+        new_agent = MagicMock(name="new-agent")
+
+        async def install_replacement(_event, _source, session_key, _generation):
+            runner._invalidate_session_run_generation(
+                session_key,
+                reason="stop_command",
+            )
+            runner._begin_session_run_generation(session_key)
+            runner._running_agents[session_key] = new_agent
+            runner._running_agents_ts[session_key] = 2.0
+            runner._busy_ack_ts[session_key] = 2.0
+            return ""
+
+        runner._handle_message_with_agent = install_replacement
+
+        asyncio.run(runner._handle_message(event))
+
+        assert runner._running_agents[key] is new_agent
+        assert runner._running_agents_ts[key] == 2.0
+        assert runner._busy_ack_ts[key] == 2.0
+
+
+class TestInteractivePromptLifecycle:
+    """Stopping/resetting one generation must wake it without touching the next."""
+
+    def test_idle_stop_invalidates_and_cancels_orphaned_prompt(self):
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageEvent
+        from gateway.run import GatewayRunner
+        from gateway.session import SessionSource, build_session_key
+        from tools import clarify_gateway
+
+        source = SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="oc_idle",
+            chat_type="group",
+            user_id="u_alice",
+            user_id_alt="on_alice",
+            profile="coder",
+        )
+        key = build_session_key(source)
+        entry = clarify_gateway.register(
+            "idle-prompt",
+            key,
+            "Old prompt",
+            ["A"],
+            generation=7,
+        )
+        runner = object.__new__(GatewayRunner)
+        runner.session_store = object()
+        runner._async_session_store = SimpleNamespace(
+            _store=runner.session_store,
+            get_or_create_session=AsyncMock(
+                return_value=SimpleNamespace(session_key=key)
+            )
+        )
+        runner._running_agents = {}
+        runner._session_run_generation = {key: 7}
+        runner.adapters = {}
+        runner._sibling_thread_run_keys = lambda _source, _key: []
+
+        try:
+            asyncio.run(
+                runner._handle_stop_command(
+                    MessageEvent(text="/stop", source=source)
+                )
+            )
+
+            assert runner._session_run_generation[key] == 8
+            assert entry.event.is_set()
+            assert entry.response == ""
+        finally:
+            clarify_gateway.clear_session(key)
+
+    def test_stop_named_profile_cancels_wait_and_old_cleanup_preserves_fresh_prompt(self):
+        from gateway.config import Platform
+        from gateway.session import SessionSource
+        from gateway.run import GatewayRunner, _INTERRUPT_REASON_STOP
+        from tools import clarify_gateway
+
+        key = "agent:coder:feishu:group:oc_chat:on_alice"
+        old_entry = clarify_gateway.register(
+            "old-prompt",
+            key,
+            "Old prompt",
+            ["A"],
+            generation=1,
+        )
+
+        class _Agent:
+            def interrupt(self, _reason=None):
+                return None
+
+        class _Adapter:
+            def clear_pending_interactions(self, _key, *, generation=None):
+                return 0
+
+        runner = object.__new__(GatewayRunner)
+        runner._running_agents = {key: _Agent()}
+        runner._running_agents_ts = {key: 1.0}
+        runner._busy_ack_ts = {key: 1.0}
+        runner._active_session_leases = {}
+        runner._pending_messages = {}
+        runner._session_run_generation = {key: 1}
+        runner.adapters = {Platform.FEISHU: _Adapter()}
+        runner._persist_active_agents = lambda: None
+        runner._evict_cached_agent = lambda _key: None
+        source = SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="oc_chat",
+            chat_type="group",
+            user_id="u_alice",
+            user_id_alt="on_alice",
+            profile="coder",
+        )
+
+        asyncio.run(
+            runner._interrupt_and_clear_session(
+                key,
+                source,
+                interrupt_reason=_INTERRUPT_REASON_STOP,
+                invalidation_reason="stop_command",
+            )
+        )
+
+        assert old_entry.event.is_set()
+        new_entry = clarify_gateway.register(
+            "new-prompt",
+            key,
+            "New prompt",
+            ["B"],
+            generation=2,
+        )
+        assert clarify_gateway.clear_session(key, generation=1) == 0
+        assert not new_entry.event.is_set()
+        clarify_gateway.clear_session(key)
+
     def test_normal_completion_is_not_evicted_by_outer_release(self):
-        """Guarded release with the current generation succeeds; the outer
-        unconditional release that follows is a harmless no-op.
-        """
+        """A current-generation release succeeds and a later guarded no-op is safe."""
         runner = _make_runner()
         runner._session_run_generation = {}
         key = "agent:main:telegram:private:2"
@@ -275,7 +424,7 @@ class TestSessionResetZombieRace:
 
         assert runner._release_running_agent_state(key, run_generation=gen) is True
         assert key not in runner._running_agents
-        # Outer finally runs the unconditional release after — nothing stranded.
-        assert runner._release_running_agent_state(key) is True
+        # A late old-worker cleanup must not need an unguarded pop.
+        assert runner._release_running_agent_state(key, run_generation=gen) is True
         assert key not in runner._running_agents_ts
         assert key not in runner._busy_ack_ts

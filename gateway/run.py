@@ -9532,9 +9532,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _quick_key, _stale_age, _stale_idle,
                     _raw_stale_timeout, _stale_detail,
                 )
+                _stale_generation = (
+                    getattr(self, "_session_run_generation", {}) or {}
+                ).get(_quick_key)
                 self._invalidate_session_run_generation(
                     _quick_key,
                     reason="stale_running_agent_eviction",
+                )
+                self._cancel_pending_interactions(
+                    _quick_key,
+                    source=source,
+                    generation=(
+                        _stale_generation if _stale_generation else None
+                    ),
                 )
                 self._release_running_agent_state(_quick_key)
 
@@ -9842,6 +9852,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Agent is being set up but not ready yet.
                 if event.get_command() == "stop":
                     # Force-clean the sentinel so the session is unlocked.
+                    _pending_generation = (
+                        getattr(self, "_session_run_generation", {}) or {}
+                    ).get(_quick_key)
+                    self._invalidate_session_run_generation(
+                        _quick_key,
+                        reason="stop_command_pending",
+                    )
+                    self._cancel_pending_interactions(
+                        _quick_key,
+                        source=source,
+                        generation=(
+                            _pending_generation if _pending_generation else None
+                        ),
+                    )
                     self._release_running_agent_state(_quick_key)
                     logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
                     return EphemeralReply("⚡ Force-stopped. The agent was still starting — session unlocked.")
@@ -10639,14 +10663,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Putting it in finally guarantees the revert on success, exception,
             # and interrupt alike.
             self._restore_moa_one_shot(event, _quick_key)
-            # Unconditional release covers every exit path. _release_running_agent_state
-            # is idempotent (pop-on-absent is harmless) and, called without a
-            # run_generation guard, always clears the slot regardless of which
-            # generation it holds. This evicts the zombie left when session_reset
-            # bumps the generation (N -> N+1) mid-flight: gen-N's guarded release
-            # inside _run_agent returns False, and the old sentinel-only check here
-            # missed the leftover real agent — locking the session out forever (#28686).
-            self._release_running_agent_state(_quick_key)
+            # Release only the generation owned by this worker. A /stop or /new
+            # may have already installed a fresh run under the same session key;
+            # an unconditional pop here would evict that newer request while the
+            # old worker is still unwinding.
+            self._release_running_agent_state(
+                _quick_key,
+                run_generation=_run_generation,
+            )
 
     def _restore_moa_one_shot(self, event: "MessageEvent", quick_key: str) -> None:
         """Revert a ``/moa <prompt>`` one-shot model override after its turn.
@@ -16568,7 +16592,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._persist_active_agents()
         return True
 
-    def _clear_session_boundary_security_state(self, session_key: str) -> None:
+    def _clear_session_boundary_security_state(
+        self,
+        session_key: str,
+        *,
+        generation: Optional[int] = None,
+    ) -> None:
         """Clear per-session control state that must not survive a boundary switch."""
         if not session_key:
             return
@@ -16607,13 +16636,71 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
 
         try:
-            _clear_approval_session(session_key)
+            _clear_approval_session(session_key, generation=generation)
         except Exception as e:
             logger.debug(
                 "Failed to clear approval state for session boundary %s: %s",
                 session_key,
                 e,
             )
+
+    def _cancel_pending_interactions(
+        self,
+        session_key: str,
+        *,
+        source: Optional[SessionSource] = None,
+        generation: Optional[int] = None,
+    ) -> int:
+        """Wake blocking prompts and retire their platform card state."""
+        if not session_key:
+            return 0
+        cancelled = 0
+        try:
+            from tools.clarify_gateway import clear_session as _clear_clarify_session
+
+            cancelled += _clear_clarify_session(
+                session_key,
+                generation=generation,
+            )
+        except Exception:
+            logger.debug(
+                "Failed to cancel clarify state for %s",
+                session_key,
+                exc_info=True,
+            )
+        try:
+            from tools.approval import cancel_pending_gateway_approvals
+
+            cancelled += cancel_pending_gateway_approvals(
+                session_key,
+                generation=generation,
+            )
+        except Exception:
+            logger.debug(
+                "Failed to cancel approval waits for %s",
+                session_key,
+                exc_info=True,
+            )
+        try:
+            adapter = self._adapter_for_source(source) if source is not None else None
+        except Exception:
+            adapter = None
+        if adapter and hasattr(adapter, "clear_pending_interactions"):
+            try:
+                cancelled += int(
+                    adapter.clear_pending_interactions(
+                        session_key,
+                        generation=generation,
+                    )
+                    or 0
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to clear platform interaction state for %s",
+                    session_key,
+                    exc_info=True,
+                )
+        return cancelled
 
     def _begin_session_run_generation(self, session_key: str) -> int:
         """Claim a fresh run generation token for ``session_key``.
@@ -16683,7 +16770,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         running_agent = self._running_agents.get(session_key)
         if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
             running_agent.interrupt(interrupt_reason)
+        previous_generation = (
+            getattr(self, "_session_run_generation", {}) or {}
+        ).get(session_key)
         self._invalidate_session_run_generation(session_key, reason=invalidation_reason)
+        self._cancel_pending_interactions(
+            session_key,
+            source=source,
+            generation=previous_generation if previous_generation else None,
+        )
         adapter = self._adapter_for_source(source)
         interrupt_session_activity = getattr(
             type(adapter), "interrupt_session_activity", None
@@ -19157,6 +19252,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _mem_notif = "on" if _mem_notif else "off"
             agent.memory_notifications = str(_mem_notif).lower() if _mem_notif else "on"
 
+            _interactive_initiator_identities: frozenset[str] = frozenset()
+            if source.platform == Platform.FEISHU:
+                _identity_values = set(
+                    getattr(source, "_feishu_identity_aliases", ()) or ()
+                )
+                _identity_values.update(
+                    value
+                    for value in (source.user_id, source.user_id_alt)
+                    if value
+                )
+                _interactive_initiator_identities = frozenset(
+                    str(value).strip()
+                    for value in _identity_values
+                    if str(value or "").strip()
+                )
+
             # ------------------------------------------------------------------
             # Clarify callback: present a clarify prompt and block on a response.
             #
@@ -19190,6 +19301,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         session_key=session_key or "",
                         question=question,
                         choices=normalized_choices or [],
+                        generation=run_generation,
                     )
                 else:
                     _clarify_mod.register(
@@ -19197,6 +19309,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         session_key=session_key or "",
                         question=question,
                         choices=normalized_choices,
+                        generation=run_generation,
                     )
 
                 # Pause typing — like approval, we don't want a "thinking..."
@@ -19209,8 +19322,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     pass
 
                 send_ok = False
+                send_kwargs: Dict[str, Any]
                 if multiple:
-                    send_coro = _status_adapter.send_multi_select(
+                    send_kwargs = dict(
                         chat_id=_status_chat_id,
                         question=question,
                         choices=normalized_choices or [],
@@ -19218,9 +19332,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         session_key=session_key or "",
                         metadata=_status_thread_metadata,
                     )
+                    if source.platform == Platform.FEISHU:
+                        send_kwargs.update(
+                            initiator_identities=_interactive_initiator_identities,
+                            generation=run_generation,
+                        )
+                    send_coro = _status_adapter.send_multi_select(**send_kwargs)
                     prompt_label = "Multi-select"
                 else:
-                    send_coro = _status_adapter.send_clarify(
+                    send_kwargs = dict(
                         chat_id=_status_chat_id,
                         question=question,
                         choices=normalized_choices,
@@ -19228,6 +19348,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         session_key=session_key or "",
                         metadata=_status_thread_metadata,
                     )
+                    if source.platform == Platform.FEISHU:
+                        send_kwargs.update(
+                            initiator_identities=_interactive_initiator_identities,
+                            generation=run_generation,
+                        )
+                    send_coro = _status_adapter.send_clarify(**send_kwargs)
                     prompt_label = "Clarify"
                 fut = safe_schedule_threadsafe(
                     send_coro,
@@ -19268,7 +19394,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Couldn't deliver the prompt — clean up and return
                     # sentinel so the agent can fall back to a sensible
                     # default rather than hanging.
-                    _clarify_mod.clear_session(session_key or "")
+                    _clarify_mod.clear_session(
+                        session_key or "", generation=run_generation
+                    )
                     if multiple:
                         raise RuntimeError("Multi-select prompt could not be delivered")
                     return "[clarify prompt could not be delivered]"
@@ -19412,6 +19540,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # false positives from MagicMock auto-attribute creation in tests.
                 if getattr(type(_status_adapter), "send_exec_approval", None) is not None:
                     try:
+                        _feishu_approval_kwargs: Dict[str, Any] = {}
+                        if source.platform == Platform.FEISHU:
+                            _feishu_approval_kwargs.update(
+                                initiator_identities=_interactive_initiator_identities,
+                                generation=run_generation,
+                            )
                         _approval_fut = safe_schedule_threadsafe(
                             _status_adapter.send_exec_approval(
                                 chat_id=_status_chat_id,
@@ -19421,6 +19555,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 metadata=_status_thread_metadata,
                                 allow_permanent=approval_data.get("allow_permanent", True),
                                 smart_denied=approval_data.get("smart_denied", False),
+                                **_feishu_approval_kwargs,
                             ),
                             _loop_for_step,
                             logger=logger,
@@ -19637,7 +19772,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
-            register_gateway_notify(_approval_session_key, _approval_notify_sync)
+            register_gateway_notify(
+                _approval_session_key,
+                _approval_notify_sync,
+                generation=run_generation,
+            )
             try:
                 # If _prepare_inbound_message_text buffered image paths for native
                 # attachment, wrap the user turn as an OpenAI-style multimodal
@@ -19688,15 +19827,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
             finally:
-                unregister_gateway_notify(_approval_session_key)
+                unregister_gateway_notify(
+                    _approval_session_key,
+                    generation=run_generation,
+                )
                 # Cancel any pending clarify entries so blocked agent
                 # threads don't hang past the end of the run (interrupt,
                 # completion, gateway shutdown).  Idempotent.
                 try:
                     from tools.clarify_gateway import clear_session as _clear_clarify_session
-                    _clear_clarify_session(_approval_session_key)
+                    _clear_clarify_session(
+                        _approval_session_key,
+                        generation=run_generation,
+                    )
                 except Exception:
                     pass
+                if _status_adapter and hasattr(
+                    _status_adapter, "clear_pending_interactions"
+                ):
+                    try:
+                        _status_adapter.clear_pending_interactions(
+                            _approval_session_key,
+                            generation=run_generation,
+                        )
+                    except Exception:
+                        pass
                 reset_current_session_key(_approval_session_token)
             result_holder[0] = result
 

@@ -58,6 +58,8 @@ def _make_card_action_data(
     action_value: dict,
     chat_id: str = "oc_12345",
     open_id: str = "ou_user1",
+    user_id: str | None = None,
+    union_id: str | None = None,
     token: str = "tok_abc",
 ) -> SimpleNamespace:
     """Create a mock Feishu card action callback data object."""
@@ -65,7 +67,11 @@ def _make_card_action_data(
         event=SimpleNamespace(
             token=token,
             context=SimpleNamespace(open_chat_id=chat_id),
-            operator=SimpleNamespace(open_id=open_id),
+            operator=SimpleNamespace(
+                open_id=open_id,
+                user_id=user_id,
+                union_id=union_id,
+            ),
             action=SimpleNamespace(
                 tag="button",
                 value=action_value,
@@ -480,6 +486,13 @@ class _FakeCallBackCard:
 class _FakeP2Response:
     def __init__(self):
         self.card = None
+        self.toast = None
+
+
+class _FakeCallBackToast:
+    def __init__(self):
+        self.type = None
+        self.content = None
 
 
 @pytest.fixture(autouse=False)
@@ -487,6 +500,11 @@ def _patch_callback_card_types(monkeypatch):
     """Provide real-ish P2CardActionTriggerResponse / CallBackCard for tests."""
     monkeypatch.setattr(feishu_module, "P2CardActionTriggerResponse", _FakeP2Response)
     monkeypatch.setattr(feishu_module, "CallBackCard", _FakeCallBackCard)
+    monkeypatch.setattr(feishu_module, "CallBackToast", _FakeCallBackToast)
+    monkeypatch.setattr(
+        "tools.approval.resolve_gateway_approval",
+        lambda *_args, **_kwargs: 1,
+    )
 
 
 class TestCardActionCallbackResponse:
@@ -716,6 +734,191 @@ class TestCardActionCallbackResponse:
         assert response is not None
         assert response.card is None
         mock_submit.assert_not_called()
+
+    def test_other_allowed_group_member_cannot_approve_initiators_request(
+        self,
+        _patch_callback_card_types,
+    ):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_alice", "ou_bob"}
+        adapter._approval_state[9] = {
+            "session_key": "agent:coder:feishu:group:oc_12345:on_alice",
+            "message_id": "msg-9",
+            "chat_id": "oc_12345",
+            "initiator_identities": frozenset(
+                {"ou_alice", "u_alice", "on_alice"}
+            ),
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 9},
+            open_id="ou_bob",
+        )
+
+        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+            response = adapter._on_card_action_trigger(data)
+
+        mock_resolve.assert_not_called()
+        assert response.card is None
+        assert 9 in adapter._approval_state
+
+    def test_alias_only_operator_resolves_with_uncached_identities(
+        self,
+        _patch_callback_card_types,
+    ):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"u_alice"}
+        adapter._approval_state[10] = {
+            "session_key": "agent:coder:feishu:group:oc_12345:on_alice",
+            "message_id": "msg-10",
+            "chat_id": "oc_12345",
+            "initiator_identities": frozenset(
+                {"ou_alice", "u_alice", "on_alice"}
+            ),
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 10},
+            open_id="",
+            user_id="u_alice",
+        )
+
+        with patch(
+            "tools.approval.resolve_gateway_approval", return_value=1
+        ) as mock_resolve:
+            response = adapter._on_card_action_trigger(data)
+
+        mock_resolve.assert_called_once_with(
+            "agent:coder:feishu:group:oc_12345:on_alice",
+            "once",
+        )
+        assert response.card is not None
+        assert 10 not in adapter._approval_state
+
+    def test_uncached_open_id_resolves_when_allowlist_uses_union_alias(
+        self,
+        _patch_callback_card_types,
+    ):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"on_alice"}
+        adapter._approval_state[12] = {
+            "session_key": "agent:coder:feishu:group:oc_12345:on_alice",
+            "message_id": "msg-12",
+            "chat_id": "oc_12345",
+            "initiator_identities": frozenset(
+                {"ou_alice", "u_alice", "on_alice"}
+            ),
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 12},
+            open_id="ou_alice",
+        )
+
+        with patch(
+            "tools.approval.resolve_gateway_approval", return_value=1
+        ) as mock_resolve:
+            response = adapter._on_card_action_trigger(data)
+
+        mock_resolve.assert_called_once()
+        assert response.card is not None
+        assert 12 not in adapter._approval_state
+
+    def test_initiator_keeps_blacklist_policy_access_with_uncached_aliases(
+        self,
+        _patch_callback_card_types,
+    ):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._default_group_policy = "blacklist"
+        adapter._group_policy = "blacklist"
+        adapter._allowed_group_users = {"ou_other"}
+        adapter._approval_state[13] = {
+            "session_key": "agent:coder:feishu:group:oc_12345:on_alice",
+            "message_id": "msg-13",
+            "chat_id": "oc_12345",
+            "initiator_identities": frozenset(
+                {"ou_alice", "u_alice", "on_alice"}
+            ),
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 13},
+            open_id="ou_alice",
+        )
+
+        with patch(
+            "tools.approval.resolve_gateway_approval", return_value=1
+        ) as mock_resolve:
+            response = adapter._on_card_action_trigger(data)
+
+        mock_resolve.assert_called_once()
+        assert response.card is not None
+        assert 13 not in adapter._approval_state
+
+    def test_blacklisted_initiator_alias_cannot_approve(
+        self,
+        _patch_callback_card_types,
+    ):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._default_group_policy = "blacklist"
+        adapter._group_policy = "blacklist"
+        adapter._group_rules = {
+            "oc_12345": feishu_module.FeishuGroupRule(
+                policy="blacklist",
+                blacklist={"on_alice"},
+            )
+        }
+        adapter._approval_state[14] = {
+            "session_key": "agent:coder:feishu:group:oc_12345:on_alice",
+            "message_id": "msg-14",
+            "chat_id": "oc_12345",
+            "initiator_identities": frozenset(
+                {"ou_alice", "u_alice", "on_alice"}
+            ),
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 14},
+            open_id="ou_alice",
+        )
+
+        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+            response = adapter._on_card_action_trigger(data)
+
+        mock_resolve.assert_not_called()
+        assert response.card is None
+        assert 14 in adapter._approval_state
+
+    def test_does_not_render_success_when_resolution_fails(
+        self,
+        _patch_callback_card_types,
+    ):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_alice"}
+        adapter._approval_state[11] = {
+            "session_key": "agent:main:feishu:group:oc_12345:ou_alice",
+            "message_id": "msg-11",
+            "chat_id": "oc_12345",
+            "initiator_identities": frozenset({"ou_alice"}),
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 11},
+            open_id="ou_alice",
+        )
+
+        with patch("tools.approval.resolve_gateway_approval", return_value=0):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response.card is None
+        assert response.toast is not None
+        assert 11 in adapter._approval_state
 
     def test_returns_card_for_update_prompt_yes(self, _patch_callback_card_types):
         adapter = _make_adapter()

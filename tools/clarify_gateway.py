@@ -56,6 +56,7 @@ class _ClarifyEntry:
     response: Optional[Any] = None
     awaiting_text: bool = False  # set when user picked "Other" or clarify is open-ended
     multiple: bool = False
+    generation: Optional[int] = None
 
     def signature(self) -> Dict[str, object]:
         return {
@@ -64,6 +65,7 @@ class _ClarifyEntry:
             "question": self.question,
             "choices": list(self.choices) if self.choices else None,
             "multiple": self.multiple,
+            "generation": self.generation,
         }
 
 
@@ -85,6 +87,7 @@ def register(
     choices: Optional[List[str]],
     *,
     multiple: bool = False,
+    generation: Optional[int] = None,
 ) -> _ClarifyEntry:
     """Register a pending clarify request and return the entry.
 
@@ -99,6 +102,7 @@ def register(
         # Open-ended (no choices) → next message IS the response, no buttons needed.
         awaiting_text=not bool(choices),
         multiple=multiple,
+        generation=generation,
     )
     with _lock:
         _entries[clarify_id] = entry
@@ -111,6 +115,8 @@ def register_select_many(
     session_key: str,
     question: str,
     choices: List[str],
+    *,
+    generation: Optional[int] = None,
 ) -> _ClarifyEntry:
     """Register an explicit multi-select request in the shared wait queue."""
     return register(
@@ -119,6 +125,7 @@ def register_select_many(
         question=question,
         choices=choices,
         multiple=True,
+        generation=generation,
     )
 
 
@@ -154,13 +161,15 @@ def wait_for_response(clarify_id: str, timeout: float) -> Optional[Any]:
             touch_activity_if_due(activity_state, "waiting for user clarify response")
 
     with _lock:
-        # Remove from indices regardless of resolution outcome.
-        _entries.pop(clarify_id, None)
-        ids = _session_index.get(entry.session_key)
-        if ids and clarify_id in ids:
-            ids.remove(clarify_id)
-            if not ids:
-                _session_index.pop(entry.session_key, None)
+        # Remove only the entry this waiter owns. A replacement using the same
+        # id must survive a late old-worker cleanup.
+        if _entries.get(clarify_id) is entry:
+            _entries.pop(clarify_id, None)
+            ids = _session_index.get(entry.session_key)
+            if ids and clarify_id in ids:
+                ids.remove(clarify_id)
+                if not ids:
+                    _session_index.pop(entry.session_key, None)
 
     return entry.response
 
@@ -177,11 +186,15 @@ def resolve_gateway_clarify(clarify_id: str, response: str) -> bool:
     """
     with _lock:
         entry = _entries.get(clarify_id)
-        if entry is None or entry.multiple:
+        if entry is None or entry.multiple or entry.event.is_set():
             return False
-    entry.response = str(response) if response is not None else ""
-    entry.event.set()
-    return True
+        # Keep the accepted value and the event publication under the same
+        # lock.  Button and text callbacks can arrive on different threads;
+        # checking ``is_set`` and writing separately lets a late responder
+        # overwrite the first answer.
+        entry.response = str(response) if response is not None else ""
+        entry.event.set()
+        return True
 
 
 def resolve_gateway_select_many(select_id: str, responses: Sequence[str]) -> bool:
@@ -311,7 +324,7 @@ def mark_awaiting_text(clarify_id: str) -> bool:
     """
     with _lock:
         entry = _entries.get(clarify_id)
-        if entry is None:
+        if entry is None or entry.event.is_set():
             return False
         entry.awaiting_text = True
         return True
@@ -324,7 +337,7 @@ def has_pending(session_key: str) -> bool:
         return any(_entries.get(cid) is not None for cid in ids)
 
 
-def clear_session(session_key: str) -> int:
+def clear_session(session_key: str, *, generation: Optional[int] = None) -> int:
     """Resolve and drop every pending clarify for a session.
 
     Used by session-boundary cleanup (e.g. ``/new``, gateway shutdown,
@@ -332,20 +345,28 @@ def clear_session(session_key: str) -> int:
     end of their session.  Returns the number of entries cancelled.
     """
     with _lock:
-        ids = list(_session_index.pop(session_key, []) or [])
-        entries = [_entries.pop(cid, None) for cid in ids]
-    cancelled = 0
-    for entry in entries:
-        if entry is None:
-            continue
-        # Empty string sentinel — agent code can distinguish from a real
-        # response by inspecting the wait_for_response return value
-        # alongside its own timeout deadline.  Most callers just treat any
-        # falsy result as "user did not respond".
-        entry.response = ""
-        entry.event.set()
-        cancelled += 1
-    return cancelled
+        ids = list(_session_index.get(session_key, []) or [])
+        remaining_ids = []
+        cancelled = 0
+        for cid in ids:
+            entry = _entries.get(cid)
+            if entry is None:
+                continue
+            if generation is not None and entry.generation != generation:
+                remaining_ids.append(cid)
+                continue
+            _entries.pop(cid, None)
+            if not entry.event.is_set():
+                # Removal and cancellation publication share the resolver lock:
+                # whichever decision acquired it first keeps its response.
+                entry.response = ""
+                entry.event.set()
+                cancelled += 1
+        if remaining_ids:
+            _session_index[session_key] = remaining_ids
+        else:
+            _session_index.pop(session_key, None)
+        return cancelled
 
 
 # =========================================================================

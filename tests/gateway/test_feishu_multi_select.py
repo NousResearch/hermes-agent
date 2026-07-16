@@ -126,6 +126,7 @@ def _store_state(
     select_id: str,
     session_key: str,
     choices: list[str],
+    initiator_identities: tuple[str, ...] = (),
 ) -> None:
     adapter._multi_select_state[select_id] = {
         "session_key": session_key,
@@ -133,6 +134,7 @@ def _store_state(
         "chat_id": "oc_12345",
         "question": "Pick directories",
         "choices": choices,
+        "initiator_identities": frozenset(initiator_identities),
     }
 
 
@@ -475,3 +477,37 @@ class TestFeishuMultiSelectCallback:
         assert not entry.event.is_set()
         assert response.toast is not None
         assert "not authorized" in response.toast.content.lower()
+
+    def test_other_allowed_group_member_cannot_submit_initiators_form(
+        self,
+        _patch_callback_types,
+    ):
+        adapter = _prepare_callback_adapter()
+        adapter._allowed_group_users = {"ou_alice", "ou_bob"}
+        choices = ["cache"]
+        session_key = "agent:coder:feishu:group:oc_12345:on_alice"
+        entry = clarify_gateway.register_select_many(
+            "many-owner", session_key, "Pick", choices
+        )
+        _store_state(
+            adapter,
+            select_id="many-owner",
+            session_key=session_key,
+            choices=choices,
+            initiator_identities=("ou_alice", "u_alice", "on_alice"),
+        )
+        data = _make_card_action_data(
+            {
+                "hermes_action": "select_many_submit",
+                "select_id": "many-owner",
+            },
+            form_value={"selected_choice_0": True},
+            open_id="ou_bob",
+        )
+
+        response = adapter._on_card_action_trigger(data)
+
+        assert not entry.event.is_set()
+        assert response.card is None
+        assert response.toast is not None
+        assert "authorized" in response.toast.content.lower()

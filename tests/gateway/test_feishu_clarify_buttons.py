@@ -116,6 +116,7 @@ def _store_clarify_state(
     session_key: str,
     choices: list[str],
     chat_id: str = "oc_12345",
+    initiator_identities: tuple[str, ...] = (),
 ) -> None:
     adapter._clarify_state[clarify_id] = {
         "session_key": session_key,
@@ -123,6 +124,7 @@ def _store_clarify_state(
         "chat_id": chat_id,
         "question": "Pick one",
         "choices": choices,
+        "initiator_identities": frozenset(initiator_identities),
     }
 
 
@@ -355,6 +357,42 @@ class TestFeishuClarifyCardAction:
         assert entry.response == "Green"
         assert entry.event.is_set()
         assert response.card is not None
+
+    def test_other_allowed_group_member_cannot_answer_initiators_prompt(
+        self,
+        _patch_callback_types,
+    ):
+        adapter = _prepare_callback_adapter()
+        adapter._allowed_group_users = {"ou_alice", "ou_bob"}
+        session_key = "agent:coder:feishu:group:oc_12345:on_alice"
+        entry = clarify_gateway.register(
+            "clarify-owner",
+            session_key,
+            "Pick one",
+            ["A", "B"],
+        )
+        _store_clarify_state(
+            adapter,
+            clarify_id="clarify-owner",
+            session_key=session_key,
+            choices=["A", "B"],
+            initiator_identities=("ou_alice", "u_alice", "on_alice"),
+        )
+        data = _make_card_action_data(
+            {
+                "hermes_action": "clarify",
+                "clarify_id": "clarify-owner",
+                "choice_index": 0,
+            },
+            open_id="ou_bob",
+        )
+
+        response = adapter._on_card_action_trigger(data)
+
+        assert not entry.event.is_set()
+        assert response.card is None
+        assert response.toast is not None
+        assert "authorized" in response.toast.content.lower()
 
     def test_partial_identity_event_does_not_forget_cached_aliases(self):
         adapter = _prepare_callback_adapter()

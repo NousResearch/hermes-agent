@@ -43,6 +43,39 @@ class TestClarifyPrimitive:
         result = cm.wait_for_response("id1", timeout=2.0)
         assert result == "B"
 
+    def test_resolution_is_atomic_first_writer_wins(self):
+        """A late responder must not overwrite the accepted first answer."""
+        from tools import clarify_gateway as cm
+
+        entry = cm.register("race", "race-session", "Pick", ["A", "B"])
+
+        assert cm.resolve_text_response_for_session("race-session", "A") is True
+        assert cm.resolve_gateway_clarify("race", "B") is False
+        assert cm.clear_session("race-session") == 0
+        assert entry.response == "A"
+        assert entry.event.is_set()
+
+    def test_generation_scoped_cleanup_does_not_cancel_new_prompt(self):
+        """A late old-worker cleanup must leave a newer prompt pending."""
+        from tools import clarify_gateway as cm
+
+        old = cm.register(
+            "old", "same-session", "Old", ["A"], generation=1
+        )
+        cm.clear_session("same-session")
+        assert old.event.is_set()
+
+        new = cm.register(
+            "new", "same-session", "New", ["B"], generation=2
+        )
+        assert cm.clear_session("same-session", generation=1) == 0
+        assert not new.event.is_set()
+        pending = cm.get_pending_for_session(
+            "same-session", include_choice_prompts=True
+        )
+        assert pending is not None
+        assert pending.clarify_id == "new"
+
     def test_open_ended_auto_awaits_text(self):
         """Clarify with no choices is in text-capture mode immediately."""
         from tools import clarify_gateway as cm

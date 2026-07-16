@@ -2428,6 +2428,41 @@ class TestExecuteToolCalls:
             or "interrupted" in messages[0]["content"].lower()
         )
 
+    def test_select_many_cancel_is_a_side_effect_execution_barrier(self, agent):
+        """A cancelled selection must prevent later calls from that model turn."""
+        select_call = _mock_tool_call(
+            name="select_many",
+            arguments=json.dumps({"question": "Pick", "choices": ["A"]}),
+            call_id="select-1",
+        )
+        side_effect_call = _mock_tool_call(
+            name="terminal",
+            arguments=json.dumps({"command": "write-side-effect"}),
+            call_id="terminal-1",
+        )
+        write_calls = [
+            _mock_tool_call(
+                name="write_file",
+                arguments=json.dumps({"path": path, "content": "side effect"}),
+                call_id=f"write-{index}",
+            )
+            for index, path in enumerate(("/tmp/a", "/tmp/b"), start=1)
+        ]
+        mock_msg = _mock_assistant_msg(
+            content="",
+            tool_calls=[select_call, side_effect_call, *write_calls],
+        )
+        messages = []
+        agent.select_many_callback = lambda *_args: []
+
+        with patch("run_agent.handle_function_call", return_value="executed") as mock_hfc:
+            agent._execute_tool_calls(mock_msg, messages, "task-1")
+
+        mock_hfc.assert_not_called()
+        assert len(messages) == 4
+        assert json.loads(messages[0]["content"])["cancelled"] is True
+        assert all("skipped" in message["content"].lower() for message in messages[1:])
+
     def test_invalid_json_args_are_rejected_without_dispatch(self, agent):
         tc = _mock_tool_call(
             name="web_search", arguments="not valid json", call_id="c1"

@@ -2787,6 +2787,57 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertNotIn("| :--- |", rendered)
         self.assertNotIn("\n---\n", rendered)
 
+    def test_mobile_markdown_normalization_preserves_all_code_block_forms(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = (
+            "# Prose heading\n\n"
+            "````python\n"
+            "# four-backtick heading\n"
+            "| a | b |\n"
+            "|---|---|\n"
+            "| 1 | 2 |\n"
+            "---\n"
+            "````\n\n"
+            "~~~~~~~sql\n"
+            "# tilde heading\n"
+            "| x | y |\n"
+            "|---|---|\n"
+            "~~~~~~~\n\n"
+            "    # indented heading\n"
+            "    | i | j |\n"
+            "    |---|---|\n"
+            "    | 3 | 4 |\n"
+            "    ---\n\n"
+            "---\n\n"
+            "after"
+        )
+
+        rendered = adapter.format_message(content)
+
+        assert "**Prose heading**" in rendered
+        assert "````python\n# four-backtick heading\n| a | b |\n|---|---|\n| 1 | 2 |\n---\n````" in rendered
+        assert "~~~~~~~sql\n# tilde heading\n| x | y |\n|---|---|\n~~~~~~~" in rendered
+        assert "    # indented heading\n    | i | j |\n    |---|---|\n    | 3 | 4 |\n    ---" in rendered
+        assert "**four-backtick heading**" not in rendered
+        assert "• b" not in rendered
+        assert "**tilde heading**" not in rendered
+
+    def test_shared_thread_key_does_not_infer_thread_id_as_card_owner(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        assert (
+            FeishuAdapter._state_initiator_identities(
+                "agent:main:feishu:group:oc_chat:thread_123"
+            )
+            == frozenset()
+        )
+        assert FeishuAdapter._state_initiator_identities(
+            "agent:main:feishu:group:oc_chat:ou_alice"
+        ) == frozenset({"ou_alice"})
+
     @patch.dict(os.environ, {}, clear=True)
     def test_send_splits_fenced_code_blocks_into_separate_post_rows(self):
         from gateway.config import PlatformConfig

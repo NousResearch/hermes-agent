@@ -1491,9 +1491,9 @@ _permanent_approved: set = set()
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result", "reason")
+    __slots__ = ("event", "data", "result", "reason", "generation")
 
-    def __init__(self, data: dict):
+    def __init__(self, data: dict, generation: Optional[int] = None):
         self.event = threading.Event()
         self.data = data          # command, description, pattern_keys, …
         self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
@@ -1501,13 +1501,20 @@ class _ApprovalEntry:
         # (``/deny <reason>``) so the agent can adapt instead of only
         # hearing "denied". Ported from qwibitai/nanoclaw#2832.
         self.reason: Optional[str] = None
+        self.generation = generation
 
 
 _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
 _gateway_notify_cbs: dict[str, object] = {}  # session_key → callable(approval_data)
+_gateway_notify_generations: dict[str, Optional[int]] = {}
 
 
-def register_gateway_notify(session_key: str, cb) -> None:
+def register_gateway_notify(
+    session_key: str,
+    cb,
+    *,
+    generation: Optional[int] = None,
+) -> None:
     """Register a per-session callback for sending approval requests to the user.
 
     The callback signature is ``cb(approval_data: dict) -> None`` where
@@ -1517,19 +1524,77 @@ def register_gateway_notify(session_key: str, cb) -> None:
     """
     with _lock:
         _gateway_notify_cbs[session_key] = cb
+        _gateway_notify_generations[session_key] = generation
 
 
-def unregister_gateway_notify(session_key: str) -> None:
+def unregister_gateway_notify(
+    session_key: str,
+    *,
+    generation: Optional[int] = None,
+) -> None:
     """Unregister the per-session gateway approval callback.
 
     Signals ALL blocked threads for this session so they don't hang forever
     (e.g. when the agent run finishes or is interrupted).
     """
     with _lock:
-        _gateway_notify_cbs.pop(session_key, None)
-        entries = _gateway_queues.pop(session_key, [])
-    for entry in entries:
-        entry.event.set()
+        registered_generation = _gateway_notify_generations.get(session_key)
+        queue = list(_gateway_queues.get(session_key, []))
+        if generation is None:
+            entries = queue
+            _gateway_queues.pop(session_key, None)
+            remaining = []
+        else:
+            entries = [entry for entry in queue if entry.generation == generation]
+            remaining = [entry for entry in queue if entry.generation != generation]
+            if remaining:
+                _gateway_queues[session_key] = remaining
+            else:
+                _gateway_queues.pop(session_key, None)
+        # Only remove the callback when it belongs to this cleanup generation
+        # and no newer-generation queue remains. An old worker may unwind after
+        # a replacement callback has already been registered for the session.
+        if (
+            generation is None
+            or (
+                registered_generation == generation
+                and not remaining
+            )
+        ):
+            _gateway_notify_cbs.pop(session_key, None)
+            _gateway_notify_generations.pop(session_key, None)
+        for entry in entries:
+            entry.result = "deny"
+            entry.event.set()
+
+
+def cancel_pending_gateway_approvals(
+    session_key: str,
+    *,
+    generation: Optional[int] = None,
+) -> int:
+    """Wake pending approval waits without clearing durable session policy."""
+    if not session_key:
+        return 0
+    with _lock:
+        queue = _gateway_queues.get(session_key, [])
+        if generation is None:
+            targets = list(queue)
+            _gateway_queues.pop(session_key, None)
+        else:
+            targets = [entry for entry in queue if entry.generation == generation]
+            remaining = [entry for entry in queue if entry.generation != generation]
+            if remaining:
+                _gateway_queues[session_key] = remaining
+            else:
+                _gateway_queues.pop(session_key, None)
+        # Mark and publish cancellation while the queue lock is held. A
+        # concurrent resolver then observes the entry as already removed and
+        # cannot overwrite the stop/new outcome with a late approval.
+        for entry in targets:
+            entry.result = "deny"
+            entry.event.set()
+    return len(targets)
 
 
 def resolve_gateway_approval(session_key: str, choice: str,
@@ -1559,12 +1624,14 @@ def resolve_gateway_approval(session_key: str, choice: str,
             targets = [queue.pop(0)]
         if not queue:
             _gateway_queues.pop(session_key, None)
-
-    for entry in targets:
-        entry.result = choice
-        if reason:
-            entry.reason = reason
-        entry.event.set()
+        # Publish the accepted decision before releasing the queue lock. A
+        # concurrent /stop or /new cancellation must observe either the queued
+        # entry or its completed event, never a popped-but-unresolved gap.
+        for entry in targets:
+            entry.result = choice
+            if reason:
+                entry.reason = reason
+            entry.event.set()
     return len(targets)
 
 
@@ -1602,20 +1669,49 @@ def disable_session_yolo(session_key: str) -> None:
         _session_yolo.discard(session_key)
 
 
-def clear_session(session_key: str) -> None:
-    """Remove all approval and yolo state for a given session."""
+def clear_session(
+    session_key: str,
+    *,
+    generation: Optional[int] = None,
+) -> None:
+    """Remove approval policy and cancel pending waits for one session.
+
+    ``generation`` scopes only transient waits and notifier ownership. Durable
+    session approval/yolo state is always cleared because callers use this at a
+    conversation boundary; ordinary stop cancellation uses
+    :func:`cancel_pending_gateway_approvals` instead.
+    """
     if not session_key:
         return
     with _lock:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
         _pending.pop(session_key, None)
-        entries = _gateway_queues.pop(session_key, [])
-    for entry in entries:
-        # Session-boundary cleanup should cancel any blocked approval waits
-        # immediately so the old run can unwind instead of idling until timeout.
-        entry.result = "deny"
-        entry.event.set()
+        queue = list(_gateway_queues.get(session_key, []))
+        if generation is None:
+            entries = queue
+            remaining = []
+            _gateway_queues.pop(session_key, None)
+        else:
+            entries = [entry for entry in queue if entry.generation == generation]
+            remaining = [entry for entry in queue if entry.generation != generation]
+            if remaining:
+                _gateway_queues[session_key] = remaining
+            else:
+                _gateway_queues.pop(session_key, None)
+
+        registered_generation = _gateway_notify_generations.get(session_key)
+        if generation is None or (
+            registered_generation == generation and not remaining
+        ):
+            _gateway_notify_cbs.pop(session_key, None)
+            _gateway_notify_generations.pop(session_key, None)
+
+        for entry in entries:
+            # Session-boundary cleanup should cancel blocked approval waits
+            # immediately so the old run can unwind instead of timing out.
+            entry.result = "deny"
+            entry.event.set()
 
 
 def is_session_yolo_enabled(session_key: str) -> bool:
@@ -2537,8 +2633,9 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     primary_key = approval_data.get("pattern_key", "")
     all_keys = approval_data.get("pattern_keys", [primary_key])
 
-    entry = _ApprovalEntry(approval_data)
     with _lock:
+        generation = _gateway_notify_generations.get(session_key)
+        entry = _ApprovalEntry(approval_data, generation=generation)
         _gateway_queues.setdefault(session_key, []).append(entry)
 
     def _drop_entry() -> None:
@@ -2599,8 +2696,12 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
                 "returning deny for session %s",
                 session_key,
             )
-            entry.result = "deny"
-            entry.event.set()
+            with _lock:
+                # A user decision may have landed between the interrupt check
+                # and this lock acquisition. Preserve that first resolution.
+                if not entry.event.is_set():
+                    entry.result = "deny"
+                    entry.event.set()
             resolved = True
             break
         _remaining = _deadline - time.monotonic()

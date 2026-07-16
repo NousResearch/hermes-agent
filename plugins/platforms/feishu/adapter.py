@@ -66,7 +66,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Literal, Optional, Sequence
+from typing import Any, Dict, List, Literal, Optional, Sequence, cast
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -158,14 +158,13 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _MARKDOWN_HINT_RE = re.compile(
-    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
+    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(^\s*`{3,})|(^\s*~{3,})|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
     re.MULTILINE,
 )
 _MARKDOWN_HEADING_RE = re.compile(r"^\s*#{1,6}\s+(.+?)\s*#*\s*$")
 _MARKDOWN_HORIZONTAL_RULE_RE = re.compile(r"^\s*-{3,}\s*$")
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
-_MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
-_MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
+_MARKDOWN_FENCE_RE = re.compile(r"^( {0,3})(`{3,}|~{3,})([^\n]*)$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
@@ -476,43 +475,97 @@ def _sender_identity(sender: Any) -> frozenset:
 
 def _normalize_markdown_for_feishu(content: str) -> str:
     """Rewrite markdown constructs that Feishu mobile renders inconsistently."""
-    converted = convert_table_to_bullets(
-        content.replace("\r\n", "\n").replace("\r", "\n")
-    )
+    normalized = content.replace("\r\n", "\n").replace("\r", "\n")
+
+    # Protect complete CommonMark code regions before table/heading rewrites.
+    # The shared table helper intentionally has only lightweight fence parsing;
+    # doing protection here covers variable-length backtick/tilde fences and
+    # four-space indented code without changing the helper's other callers.
+    protected: Dict[str, str] = {}
+    lines = normalized.split("\n")
+    prose_lines: List[str] = []
+    code_lines: List[str] = []
+    fence_char = ""
+    fence_length = 0
+    in_indented_code = False
+
+    def flush_code() -> None:
+        if not code_lines:
+            return
+        token = f"\x00HERMES_CODE_{len(protected)}\x00"
+        protected[token] = "\n".join(code_lines)
+        prose_lines.append(token)
+        code_lines.clear()
+
+    def is_indented(line: str) -> bool:
+        return line.startswith("    ") or line.startswith("\t")
+
+    for line in lines:
+        stripped = line.strip()
+        match = _MARKDOWN_FENCE_RE.match(line)
+        if fence_char:
+            code_lines.append(line)
+            if (
+                match
+                and match.group(2)[0] == fence_char
+                and len(match.group(2)) >= fence_length
+                and not match.group(3).strip()
+            ):
+                flush_code()
+                fence_char = ""
+                fence_length = 0
+            continue
+        if in_indented_code:
+            if is_indented(line) or not stripped:
+                code_lines.append(line)
+                continue
+            flush_code()
+            in_indented_code = False
+        if match:
+            fence = match.group(2)
+            # Backtick info strings may not contain another backtick.
+            if fence[0] == "`" and "`" in match.group(3):
+                prose_lines.append(line)
+                continue
+            flush_code()
+            code_lines.append(line)
+            fence_char = fence[0]
+            fence_length = len(fence)
+            continue
+        if is_indented(line):
+            flush_code()
+            code_lines.append(line)
+            in_indented_code = True
+            continue
+        prose_lines.append(line)
+    if code_lines:
+        flush_code()
+
+    converted = convert_table_to_bullets("\n".join(prose_lines))
     lines: List[str] = []
-    in_code_block = False
     skip_blank_after_rule = False
 
     for line in converted.splitlines():
         stripped = line.strip()
-        is_fence = bool(
-            _MARKDOWN_FENCE_CLOSE_RE.match(stripped)
-            if in_code_block
-            else _MARKDOWN_FENCE_OPEN_RE.match(stripped)
-        )
-        if is_fence:
-            in_code_block = not in_code_block
-            skip_blank_after_rule = False
-            lines.append(line)
+        if skip_blank_after_rule and not stripped:
             continue
-
-        if not in_code_block:
-            if skip_blank_after_rule and not stripped:
-                continue
-            skip_blank_after_rule = False
-            heading = _MARKDOWN_HEADING_RE.match(line)
-            if heading:
-                title = heading.group(1).strip()
-                line = title if title.startswith("**") and title.endswith("**") else f"**{title}**"
-            elif _MARKDOWN_HORIZONTAL_RULE_RE.match(line):
-                if lines and lines[-1]:
-                    lines.append("")
-                skip_blank_after_rule = True
-                continue
+        skip_blank_after_rule = False
+        heading = _MARKDOWN_HEADING_RE.match(line)
+        if heading:
+            title = heading.group(1).strip()
+            line = title if title.startswith("**") and title.endswith("**") else f"**{title}**"
+        elif _MARKDOWN_HORIZONTAL_RULE_RE.match(line):
+            if lines and lines[-1]:
+                lines.append("")
+            skip_blank_after_rule = True
+            continue
 
         lines.append(line)
 
-    return "\n".join(lines).strip("\n")
+    result = "\n".join(lines).strip("\n")
+    for token, code in protected.items():
+        result = result.replace(token, code)
+    return result
 
 
 def _escape_markdown_text(text: str) -> str:
@@ -632,12 +685,13 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
     """
     if not content:
         return [[{"tag": "md", "text": ""}]]
-    if "```" not in content:
+    if not re.search(r"(?m)^ {0,3}(?:`{3,}|~{3,})", content):
         return [[{"tag": "md", "text": content}]]
 
     rows: List[List[Dict[str, str]]] = []
     current: List[str] = []
-    in_code_block = False
+    fence_char = ""
+    fence_length = 0
 
     def _flush_current() -> None:
         nonlocal current
@@ -649,19 +703,37 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
         current = []
 
     for raw_line in content.splitlines():
-        stripped_line = raw_line.strip()
-        is_fence = bool(
-            _MARKDOWN_FENCE_CLOSE_RE.match(stripped_line)
-            if in_code_block
-            else _MARKDOWN_FENCE_OPEN_RE.match(stripped_line)
+        match = _MARKDOWN_FENCE_RE.match(raw_line)
+        is_close = bool(
+            fence_char
+            and match
+            and match.group(2)[0] == fence_char
+            and len(match.group(2)) >= fence_length
+            and not match.group(3).strip()
+        )
+        is_open = bool(
+            not fence_char
+            and match
+            and not (
+                match.group(2)[0] == "`" and "`" in match.group(3)
+            )
         )
 
-        if is_fence:
-            if not in_code_block:
+        if is_open or is_close:
+            if is_open:
                 _flush_current()
             current.append(raw_line)
-            in_code_block = not in_code_block
-            if not in_code_block:
+            if is_open:
+                # ``is_open`` implies a match; keep the narrowing explicit for
+                # static type checkers without reparsing the line.
+                if match is None:
+                    continue
+                fence = match.group(2)
+                fence_char = fence[0]
+                fence_length = len(fence)
+            else:
+                fence_char = ""
+                fence_length = 0
                 _flush_current()
             continue
 
@@ -1535,6 +1607,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
         self._message_text_cache: "OrderedDict[str, Optional[str]]" = OrderedDict()
         self._sender_identity_aliases: "OrderedDict[str, frozenset[str]]" = OrderedDict()
+        self._interactive_state_lock = threading.RLock()
         self._app_lock_identity: Optional[str] = None
         self._text_batch_state = FeishuBatchState()
         self._pending_text_batches = self._text_batch_state.events
@@ -1544,7 +1617,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._pending_media_batches = self._media_batch_state.events
         self._pending_media_batch_tasks = self._media_batch_state.tasks
         # Exec approval button state (approval_id → {session_key, message_id, chat_id})
-        self._approval_state: Dict[int, Dict[str, str]] = {}
+        self._approval_state: Dict[int, Dict[str, Any]] = {}
         self._approval_counter = itertools.count(1)
         # Clarify button state (clarify_id → session/chat/message/question/choices)
         self._clarify_state: Dict[str, Dict[str, Any]] = {}
@@ -2042,6 +2115,8 @@ class FeishuAdapter(BasePlatformAdapter):
         clarify_id: str,
         session_key: str,
         metadata: Optional[Dict[str, Any]] = None,
+        initiator_identities: Any = None,
+        generation: Optional[int] = None,
     ) -> SendResult:
         """Send a clarify prompt as an interactive card when choices exist."""
         if not choices:
@@ -2109,13 +2184,19 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             result = self._finalize_send_result(response, "send_clarify failed")
             if result.success:
-                self._clarify_state[clarify_id] = {
+                state = {
                     "session_key": session_key,
                     "message_id": result.message_id or "",
                     "chat_id": chat_id,
                     "question": question,
                     "choices": normalized_choices,
+                    "initiator_identities": self._state_initiator_identities(
+                        session_key, initiator_identities, metadata
+                    ),
+                    "generation": generation,
                 }
+                with self._interactive_state_lock:
+                    self._clarify_state[clarify_id] = state
                 logger.info(
                     "[Feishu] Sent clarify interactive card "
                     "(id=%s, chat=%s, choices=%d, message_id=%s)",
@@ -2151,6 +2232,8 @@ class FeishuAdapter(BasePlatformAdapter):
         select_id: str,
         session_key: str,
         metadata: Optional[Dict[str, Any]] = None,
+        initiator_identities: Any = None,
+        generation: Optional[int] = None,
     ) -> SendResult:
         """Send visible Card 2.0 checkers with submit and cancel."""
         if not self._client:
@@ -2256,13 +2339,19 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             result = self._finalize_send_result(response, "send_multi_select failed")
             if result.success:
-                self._multi_select_state[select_id] = {
+                state = {
                     "session_key": session_key,
                     "message_id": result.message_id or "",
                     "chat_id": chat_id,
                     "question": question,
                     "choices": normalized_choices,
+                    "initiator_identities": self._state_initiator_identities(
+                        session_key, initiator_identities, metadata
+                    ),
+                    "generation": generation,
                 }
+                with self._interactive_state_lock:
+                    self._multi_select_state[select_id] = state
                 logger.info(
                     "[Feishu] Sent multi-select checker card "
                     "(id=%s, chat=%s, choices=%d, message_id=%s)",
@@ -2304,6 +2393,8 @@ class FeishuAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         allow_permanent: bool = True,
         smart_denied: bool = False,
+        initiator_identities: Any = None,
+        generation: Optional[int] = None,
     ) -> SendResult:
         """Send an interactive card with approval buttons.
 
@@ -2362,11 +2453,17 @@ class FeishuAdapter(BasePlatformAdapter):
 
             result = self._finalize_send_result(response, "send_exec_approval failed")
             if result.success:
-                self._approval_state[approval_id] = {
+                state = {
                     "session_key": session_key,
                     "message_id": result.message_id or "",
                     "chat_id": chat_id,
+                    "initiator_identities": self._state_initiator_identities(
+                        session_key, initiator_identities, metadata
+                    ),
+                    "generation": generation,
                 }
+                with self._interactive_state_lock:
+                    self._approval_state[approval_id] = state
             return result
         except Exception as exc:
             logger.warning("[Feishu] send_exec_approval failed: %s", exc)
@@ -3042,8 +3139,8 @@ class FeishuAdapter(BasePlatformAdapter):
 
         For Hermes prompt actions: parses the event once and returns the
         resolved card inline (the only reliable way to sync all clients).
-        Approval resolution is scheduled on the adapter loop; clarify
-        resolution uses its thread-safe gateway primitive directly.
+        Approval and clarify resolution use their thread-safe gateway
+        primitives directly so the returned card reflects the real outcome.
 
         For other card actions: delegates to ``_handle_card_action_event``.
         """
@@ -3073,7 +3170,10 @@ class FeishuAdapter(BasePlatformAdapter):
                 form_value=getattr(action, "form_value", None),
             )
         if hermes_action:
-            return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
+            return self._handle_approval_card_action(
+                event=event,
+                action_value=action_value,
+            )
         if update_prompt_action:
             return self._handle_update_prompt_card_action(
                 event=event,
@@ -3109,6 +3209,12 @@ class FeishuAdapter(BasePlatformAdapter):
     def _raw_sender_identities(sender_id: Any) -> frozenset[str]:
         if isinstance(sender_id, str):
             values = (sender_id,)
+        elif isinstance(sender_id, dict):
+            values = (
+                sender_id.get("open_id"),
+                sender_id.get("user_id"),
+                sender_id.get("union_id"),
+            )
         else:
             values = (
                 getattr(sender_id, "open_id", None),
@@ -3120,6 +3226,62 @@ class FeishuAdapter(BasePlatformAdapter):
             for value in values
             if str(value or "").strip()
         )
+
+    @classmethod
+    def _normalize_interactive_identities(cls, identities: Any) -> frozenset[str]:
+        """Normalize the initiator principal carried with an interactive card."""
+        if identities is None:
+            return frozenset()
+        if isinstance(identities, str):
+            values = (identities,)
+        else:
+            try:
+                values = tuple(identities)
+            except TypeError:
+                values = (identities,)
+        return frozenset(
+            str(value).strip()
+            for value in values
+            if str(value or "").strip()
+        )
+
+    @classmethod
+    def _state_initiator_identities(
+        cls,
+        session_key: str,
+        explicit: Any = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> frozenset[str]:
+        """Resolve all known aliases for the actor that opened a card.
+
+        The gateway supplies the complete Feishu identity tuple when it has
+        one.  The session-key suffix remains a compatibility fallback for
+        older callers that only passed a per-user group key.
+        """
+        identities = set(cls._normalize_interactive_identities(explicit))
+        if isinstance(metadata, dict):
+            identities.update(
+                cls._normalize_interactive_identities(
+                    metadata.get("feishu_initiator_identities")
+                )
+            )
+        parts = str(session_key or "").split(":")
+        if not identities and (
+            len(parts) >= 6
+            and parts[0] == "agent"
+            and parts[2] == "feishu"
+            and parts[3] in {"group", "channel", "forum"}
+        ):
+            # A participant suffix is present only for per-user sessions.
+            # Shared group/thread keys stop at chat_id (or thread_id).
+            suffix = parts[-1]
+            # Shared thread keys also have a sixth component, but that
+            # component is a thread/message id rather than a Feishu principal.
+            # Only infer the suffix for the well-known Feishu ID prefixes;
+            # current gateway callers pass the complete alias set explicitly.
+            if suffix.startswith(("ou_", "u_", "on_")):
+                identities.add(suffix)
+        return frozenset(value for value in identities if value)
 
     def _remember_identity_aliases(self, sender_id: Any) -> None:
         """Cache equivalent Feishu IDs from an admitted inbound event."""
@@ -3159,18 +3321,52 @@ class FeishuAdapter(BasePlatformAdapter):
         *,
         chat_id: str,
         session_key: str,
+        initiator_identities: Any = None,
     ) -> bool:
         """Apply DM or group admission semantics to a card-action operator."""
-        if not self._known_sender_identities(operator):
+        operator_identities = self._known_sender_identities(operator)
+        if not operator_identities:
             return False
+        expected_identities = set(
+            self._normalize_interactive_identities(initiator_identities)
+        )
+        for identity in tuple(expected_identities):
+            expected_identities.update(self._known_sender_identities(identity))
+        if expected_identities and not (operator_identities & expected_identities):
+            return False
+        principal_identities = expected_identities | set(operator_identities)
         if self._session_chat_type(session_key) == "dm":
             # A Feishu p2p chat has one human peer. The callback chat-id check
             # binds this click to the same DM that received the card.
             return True
-        return (
-            self._allow_group_message(operator, chat_id, is_bot=False)
-            and self._is_interactive_operator_authorized(operator)
+        if not expected_identities:
+            return (
+                self._allow_group_message(operator, chat_id, is_bot=False)
+                and self._is_interactive_operator_authorized(operator)
+            )
+
+        # The callback may expose only one Feishu alias while policy stores
+        # another (open_id/user_id/union_id). Evaluate the complete, verified
+        # initiator principal so allowlists and blacklists behave consistently.
+        rule = self._group_rules.get(chat_id) if chat_id else None
+        policy = (
+            rule.policy
+            if rule
+            else (self._default_group_policy or self._group_policy)
         )
+        allowlist = rule.allowlist if rule else self._allowed_group_users
+        blacklist = rule.blacklist if rule else set()
+        if principal_identities & self._admins:
+            return True
+        if policy in {"disabled", "admin_only"}:
+            return False
+        if policy == "allowlist":
+            return bool(principal_identities & (set(allowlist) | self._admins))
+        if policy == "blacklist":
+            return not bool(principal_identities & set(blacklist))
+        if policy == "open":
+            return True
+        return bool(principal_identities & set(allowlist))
 
     def _is_interactive_operator_authorized(self, sender_id: Any) -> bool:
         """Match a callback operator against every known Feishu ID variant."""
@@ -3181,6 +3377,37 @@ class FeishuAdapter(BasePlatformAdapter):
         if not allowed_ids:
             return True
         return "*" in allowed_ids or bool(identities & allowed_ids)
+
+    def clear_pending_interactions(
+        self,
+        session_key: str,
+        *,
+        generation: Optional[int] = None,
+    ) -> int:
+        """Drop Feishu card state owned by one session/run generation."""
+        if not session_key:
+            return 0
+        removed = 0
+        with self._interactive_state_lock:
+            state_maps: tuple[dict[Any, dict[str, Any]], ...] = (
+                cast(dict[Any, dict[str, Any]], self._approval_state),
+                cast(dict[Any, dict[str, Any]], self._clarify_state),
+                cast(dict[Any, dict[str, Any]], self._multi_select_state),
+            )
+            for states in state_maps:
+                stale_ids = [
+                    item_id
+                    for item_id, state in states.items()
+                    if str(state.get("session_key", "") or "") == session_key
+                    and (
+                        generation is None
+                        or state.get("generation") == generation
+                    )
+                ]
+                for item_id in stale_ids:
+                    del states[item_id]
+                removed += len(stale_ids)
+        return removed
 
     @staticmethod
     def _build_clarify_action_response(
@@ -3227,7 +3454,8 @@ class FeishuAdapter(BasePlatformAdapter):
                 toast_content="This clarify action is invalid. Please ask Hermes to try again.",
             )
 
-        state = self._clarify_state.get(clarify_id)
+        with self._interactive_state_lock:
+            state = self._clarify_state.get(clarify_id)
         if not state:
             logger.warning("[Feishu] Clarify %s already resolved or expired", clarify_id)
             return self._build_clarify_action_response(
@@ -3254,12 +3482,16 @@ class FeishuAdapter(BasePlatformAdapter):
             )
 
         session_key = str(state.get("session_key", "") or "")
+        initiator_identities = state.get("initiator_identities") or self._state_initiator_identities(
+            session_key
+        )
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
         if not self._is_interactive_prompt_authorized(
             operator,
             chat_id=expected_chat_id,
             session_key=session_key,
+            initiator_identities=initiator_identities,
         ):
             logger.warning(
                 "[Feishu] Unauthorized clarify click by %s for %s",
@@ -3291,7 +3523,8 @@ class FeishuAdapter(BasePlatformAdapter):
             )
 
         if pending is None or pending.clarify_id != clarify_id:
-            self._clarify_state.pop(clarify_id, None)
+            with self._interactive_state_lock:
+                self._clarify_state.pop(clarify_id, None)
             logger.warning(
                 "[Feishu] Clarify %s is not pending for session %s",
                 clarify_id,
@@ -3320,13 +3553,6 @@ class FeishuAdapter(BasePlatformAdapter):
                     toast_content="That clarify choice is invalid. Please choose another option.",
                 )
 
-        # Claim the prompt before resolving so simultaneous clicks cannot race
-        # and overwrite the response with a second choice.
-        if self._clarify_state.pop(clarify_id, None) is None:
-            return self._build_clarify_action_response(
-                toast_content="This clarify action was already processed.",
-            )
-
         user_name = self._get_cached_sender_name(open_id) or open_id or "User"
         question = str(state.get("question", "") or "")
         if choice_index == "other":
@@ -3348,6 +3574,12 @@ class FeishuAdapter(BasePlatformAdapter):
                     toast_type="warning",
                     toast_content="This clarify prompt expired or the session changed.",
                 )
+            with self._interactive_state_lock:
+                if self._clarify_state.get(clarify_id) is not state:
+                    return self._build_clarify_action_response(
+                        toast_content="This clarify action was already processed.",
+                    )
+                self._clarify_state.pop(clarify_id, None)
             logger.info(
                 "Feishu clarify is awaiting typed response (id=%s, session=%s, user=%s)",
                 clarify_id,
@@ -3384,6 +3616,12 @@ class FeishuAdapter(BasePlatformAdapter):
                 toast_type="warning",
                 toast_content="This clarify prompt expired or the session changed.",
             )
+        with self._interactive_state_lock:
+            if self._clarify_state.get(clarify_id) is not state:
+                return self._build_clarify_action_response(
+                    toast_content="This clarify action was already processed.",
+                )
+            self._clarify_state.pop(clarify_id, None)
 
         logger.info(
             "Feishu clarify button resolved (id=%s, choice=%r, session=%s, user=%s)",
@@ -3425,7 +3663,8 @@ class FeishuAdapter(BasePlatformAdapter):
                 toast_content="This selection is invalid. Please ask Hermes to try again.",
             )
 
-        state = self._multi_select_state.get(select_id)
+        with self._interactive_state_lock:
+            state = self._multi_select_state.get(select_id)
         if not state:
             logger.warning("[Feishu] Multi-select %s already resolved or expired", select_id)
             return self._build_clarify_action_response(
@@ -3453,12 +3692,16 @@ class FeishuAdapter(BasePlatformAdapter):
             )
 
         session_key = str(state.get("session_key", "") or "")
+        initiator_identities = state.get("initiator_identities") or self._state_initiator_identities(
+            session_key
+        )
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
         if not self._is_interactive_prompt_authorized(
             operator,
             chat_id=expected_chat_id,
             session_key=session_key,
+            initiator_identities=initiator_identities,
         ):
             logger.warning(
                 "[Feishu] Unauthorized multi-select click by %s for %s",
@@ -3494,7 +3737,8 @@ class FeishuAdapter(BasePlatformAdapter):
             or pending.clarify_id != select_id
             or not getattr(pending, "multiple", False)
         ):
-            self._multi_select_state.pop(select_id, None)
+            with self._interactive_state_lock:
+                self._multi_select_state.pop(select_id, None)
             logger.warning(
                 "[Feishu] Multi-select %s is not pending for session %s",
                 select_id,
@@ -3547,13 +3791,6 @@ class FeishuAdapter(BasePlatformAdapter):
                 if choice not in selected:
                     selected.append(choice)
 
-        # Claim the form before unblocking the agent so concurrent submissions
-        # cannot replace the first accepted result.
-        if self._multi_select_state.pop(select_id, None) is None:
-            return self._build_clarify_action_response(
-                toast_content="This selection was already processed.",
-            )
-
         try:
             if cancelled:
                 from tools.clarify_gateway import cancel_gateway_select_many
@@ -3581,6 +3818,12 @@ class FeishuAdapter(BasePlatformAdapter):
                 toast_type="warning",
                 toast_content="This selection expired or the session changed.",
             )
+        with self._interactive_state_lock:
+            if self._multi_select_state.get(select_id) is not state:
+                return self._build_clarify_action_response(
+                    toast_content="This selection was already processed.",
+                )
+            self._multi_select_state.pop(select_id, None)
 
         user_name = self._get_cached_sender_name(open_id) or open_id or "User"
         question = str(state.get("question", "") or "")
@@ -3608,13 +3851,19 @@ class FeishuAdapter(BasePlatformAdapter):
             ),
         )
 
-    def _handle_approval_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
-        """Schedule approval resolution and build the synchronous callback response."""
+    def _handle_approval_card_action(
+        self,
+        *,
+        event: Any,
+        action_value: Dict[str, Any],
+    ) -> Any:
+        """Resolve an approval before returning a success card to Feishu."""
         approval_id = action_value.get("approval_id")
         if approval_id is None:
             logger.debug("[Feishu] Card action missing approval_id, ignoring")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
-        state = self._approval_state.get(approval_id)
+        with self._interactive_state_lock:
+            state = self._approval_state.get(approval_id)
         if not state:
             logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
@@ -3638,35 +3887,36 @@ class FeishuAdapter(BasePlatformAdapter):
             operator,
             chat_id=expected_chat_id,
             session_key=str(state.get("session_key", "") or ""),
+            initiator_identities=(state.get("initiator_identities") or self._state_initiator_identities(
+                str(state.get("session_key", "") or "")
+            )),
         ):
             logger.warning("[Feishu] Unauthorized approval click by %s", open_id or "<unknown>")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
-        user_name = self._get_cached_sender_name(open_id) or open_id
-
-        chat_context = getattr(event, "context", None)
-        chat_id = str(getattr(chat_context, "open_chat_id", "") or "")
-        if not self._submit_on_loop(
-            loop,
-            self._resolve_approval(
-                approval_id=approval_id,
+        operator_ids = self._raw_sender_identities(operator)
+        display_id = open_id or next(iter(sorted(operator_ids)), "")
+        user_name = self._get_cached_sender_name(display_id) or display_id or "User"
+        resolved = self._resolve_approval_sync(
+            approval_id=approval_id,
+            choice=choice,
+            user_name=user_name,
+            operator=operator,
+            chat_id=callback_chat_id,
+        )
+        if not resolved:
+            return self._build_clarify_action_response(
+                toast_type="warning",
+                toast_content="This approval expired or was already resolved.",
+            )
+        return self._build_clarify_action_response(
+            card_data=self._build_resolved_approval_card(
                 choice=choice,
                 user_name=user_name,
-                open_id=open_id,
-                chat_id=chat_id,
             ),
-        ):
-            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
-
-        if P2CardActionTriggerResponse is None:
-            return None
-        response = P2CardActionTriggerResponse()
-        if CallBackCard is not None:
-            card = CallBackCard()
-            card.type = "raw"
-            card.data = self._build_resolved_approval_card(choice=choice, user_name=user_name)
-            response.card = card
-        return response
+            toast_type="success",
+            toast_content="Approval recorded.",
+        )
 
     def _handle_update_prompt_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
         """Schedule update prompt resolution and build the synchronous callback response."""
@@ -3729,48 +3979,109 @@ class FeishuAdapter(BasePlatformAdapter):
             response.card = card
         return response
 
+    def _resolve_approval_sync(
+        self,
+        approval_id: Any,
+        choice: str,
+        user_name: str,
+        *,
+        operator: Any = None,
+        open_id: str = "",
+        chat_id: str = "",
+    ) -> bool:
+        """Atomically validate, resolve, and retire one approval card."""
+        principal = operator if operator is not None else open_id
+        principal_ids = self._raw_sender_identities(principal)
+        principal_label = open_id or next(iter(sorted(principal_ids)), "")
+        with self._interactive_state_lock:
+            state = self._approval_state.get(approval_id)
+            if not state:
+                logger.debug(
+                    "[Feishu] Approval %s already resolved or unknown",
+                    approval_id,
+                )
+                return False
+            session_key = str(state.get("session_key", "") or "")
+            initiator_identities = state.get("initiator_identities") or self._state_initiator_identities(
+                session_key
+            )
+            expected_chat_id = str(state.get("chat_id", "") or "")
+            if expected_chat_id and chat_id and expected_chat_id != chat_id:
+                logger.warning(
+                    "[Feishu] Approval %s chat mismatch (expected=%s, got=%s)",
+                    approval_id,
+                    expected_chat_id,
+                    chat_id,
+                )
+                return False
+            if initiator_identities:
+                authorized = self._is_interactive_prompt_authorized(
+                    principal,
+                    chat_id=expected_chat_id,
+                    session_key=session_key,
+                    initiator_identities=initiator_identities,
+                )
+            elif self._session_chat_type(session_key) == "dm":
+                authorized = bool(principal_ids)
+            else:
+                # Compatibility for cards created by older callers that did
+                # not persist an initiator principal; new gateway cards always
+                # include one and take the stricter path above.
+                authorized = self._is_interactive_operator_authorized(principal)
+            if not authorized:
+                logger.warning(
+                    "[Feishu] Unauthorized approval click by %s for approval %s",
+                    principal_label or "<unknown>",
+                    approval_id,
+                )
+                return False
+            try:
+                from tools.approval import resolve_gateway_approval
+
+                count = resolve_gateway_approval(session_key, choice)
+            except Exception as exc:
+                logger.error(
+                    "Failed to resolve gateway approval from Feishu button: %s",
+                    exc,
+                )
+                return False
+            if count <= 0:
+                logger.warning(
+                    "[Feishu] Approval %s had no matching pending wait",
+                    approval_id,
+                )
+                return False
+            self._approval_state.pop(approval_id, None)
+
+        logger.info(
+            "Feishu button resolved %d approval(s) for session %s "
+            "(choice=%s, user=%s)",
+            count,
+            session_key,
+            choice,
+            user_name,
+        )
+        return True
+
     async def _resolve_approval(
         self,
         approval_id: Any,
         choice: str,
         user_name: str,
         *,
+        operator: Any = None,
         open_id: str = "",
         chat_id: str = "",
-    ) -> None:
-        """Pop approval state and unblock the waiting agent thread."""
-        state = self._approval_state.get(approval_id)
-        if not state:
-            logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
-            return
-        session_key = str(state.get("session_key", "") or "")
-        if self._session_chat_type(session_key) == "dm":
-            authorized = bool(str(open_id or "").strip())
-        else:
-            authorized = self._is_interactive_operator_authorized(open_id)
-        if not authorized:
-            logger.warning("[Feishu] Unauthorized approval click by %s for approval %s", open_id or "<unknown>", approval_id)
-            return
-        expected_chat_id = str(state.get("chat_id", "") or "")
-        if expected_chat_id and chat_id and expected_chat_id != chat_id:
-            logger.warning(
-                "[Feishu] Approval %s chat mismatch (expected=%s, got=%s)",
-                approval_id, expected_chat_id, chat_id,
-            )
-            return
-        state = self._approval_state.pop(approval_id, None)
-        if not state:
-            logger.debug("[Feishu] Approval %s already resolved while validating callback", approval_id)
-            return
-        try:
-            from tools.approval import resolve_gateway_approval
-            count = resolve_gateway_approval(state["session_key"], choice)
-            logger.info(
-                "Feishu button resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                count, state["session_key"], choice, user_name,
-            )
-        except Exception as exc:
-            logger.error("Failed to resolve gateway approval from Feishu button: %s", exc)
+    ) -> bool:
+        """Compatibility wrapper for callers that already await this helper."""
+        return self._resolve_approval_sync(
+            approval_id,
+            choice,
+            user_name,
+            operator=operator,
+            open_id=open_id,
+            chat_id=chat_id,
+        )
 
     async def _resolve_update_prompt(
         self,
@@ -4225,6 +4536,14 @@ class FeishuAdapter(BasePlatformAdapter):
             thread_id=thread_id,
             user_id_alt=sender_profile["user_id_alt"],
             is_bot=is_bot,
+        )
+        # Keep the complete Feishu principal on this live event. SessionSource
+        # exposes only primary + alternate IDs, while card authorization needs
+        # all open_id/user_id/union_id aliases to bind a prompt to its initiator.
+        setattr(
+            source,
+            "_feishu_identity_aliases",
+            self._raw_sender_identities(sender_id),
         )
         normalized = MessageEvent(
             text=text,

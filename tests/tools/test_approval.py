@@ -2560,3 +2560,59 @@ class TestApprovalPromptRedaction:
         # The script's credential must not appear in the user-facing message.
         assert "sk-proj-abc123xyz4567890abcdef" not in result["message"]
         assert "sk-proj-abc123xyz4567890abcdef" not in result["command"]
+
+
+def test_generation_scoped_unregister_preserves_new_queue():
+    """An old worker's cleanup must not wake a newer approval wait."""
+    from tools import approval as mod
+
+    session_key = "generation-test"
+    with mod._lock:
+        mod._gateway_queues.pop(session_key, None)
+        mod._gateway_notify_cbs.pop(session_key, None)
+        mod._gateway_notify_generations.pop(session_key, None)
+
+    old_entry = mod._ApprovalEntry({}, generation=1)
+    new_entry = mod._ApprovalEntry({}, generation=2)
+    mod.register_gateway_notify(session_key, lambda _data: None, generation=1)
+    with mod._lock:
+        mod._gateway_queues[session_key] = [old_entry]
+    mod.register_gateway_notify(session_key, lambda _data: None, generation=2)
+    with mod._lock:
+        mod._gateway_queues[session_key].append(new_entry)
+
+    mod.unregister_gateway_notify(session_key, generation=1)
+
+    assert old_entry.event.is_set()
+    assert not new_entry.event.is_set()
+    with mod._lock:
+        assert mod._gateway_notify_generations[session_key] == 2
+
+    mod.unregister_gateway_notify(session_key, generation=2)
+
+
+def test_generation_scoped_boundary_clear_preserves_new_queue():
+    """A late boundary cleanup may clear policy but not a fresh approval wait."""
+    from tools import approval as mod
+
+    session_key = "generation-boundary-test"
+    old_entry = mod._ApprovalEntry({}, generation=1)
+    new_entry = mod._ApprovalEntry({}, generation=2)
+    mod.register_gateway_notify(session_key, lambda _data: None, generation=2)
+    mod.approve_session(session_key, "old-pattern")
+    mod.enable_session_yolo(session_key)
+    with mod._lock:
+        mod._gateway_queues[session_key] = [old_entry, new_entry]
+
+    mod.clear_session(session_key, generation=1)
+
+    assert old_entry.result == "deny"
+    assert old_entry.event.is_set()
+    assert not new_entry.event.is_set()
+    assert mod.is_approved(session_key, "old-pattern") is False
+    assert mod.is_session_yolo_enabled(session_key) is False
+    with mod._lock:
+        assert mod._gateway_queues[session_key] == [new_entry]
+        assert mod._gateway_notify_generations[session_key] == 2
+
+    mod.clear_session(session_key)

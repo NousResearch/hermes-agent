@@ -42,21 +42,30 @@ export const messageHeightKey = (msg: Msg) => {
 const MAX_ESTIMATE_LINES = 800
 
 // East-Asian "wide" code points (CJK ideographs, hiragana/katakana, hangul,
-// fullwidth forms, ...) render at 2 terminal columns instead of 1. Counting
-// them as width 1 (plain code-unit count) undercounts wrapped rows by ~2x
-// for CJK-heavy text, which under-reserves virtualized transcript space —
+// fullwidth forms, vertical forms, CJK compatibility forms, CJK extension
+// planes, ...) render at 2 terminal columns instead of 1. Counting them as
+// width 1 (plain code-unit count) undercounts wrapped rows by ~2x for
+// CJK-heavy text, which under-reserves virtualized transcript space —
 // visible as clipped trailing lines and a scrollHeight that falls short of
-// the real rendered bottom. This is a cheap charCode-range check (not full
-// grapheme/emoji-width handling — that's `stringWidth` in inputMetrics.ts,
-// too costly to call per char across a multi-thousand-char wrap walk) so it
-// keeps the single-pass O(text) budget this estimator relies on.
+// the real rendered bottom.
+//
+// This is a cheap code-point-range check aligned with Ink's bundled
+// isEastAsianWide (packages/hermes-ink/src/ink/termio/parser.ts). It is
+// NOT full grapheme/emoji-width handling (that's `stringWidth` in
+// inputMetrics.ts, too costly to call per char across a multi-thousand-char
+// wrap walk) so it keeps the single-pass O(text) budget this estimator
+// relies on.
 const isWideCodePoint = (code: number) =>
   (code >= 0x1100 && code <= 0x115f) || // Hangul Jamo
-  (code >= 0x2e80 && code <= 0xa4cf && code !== 0x303f) || // CJK Radicals .. Yi Radicals
+  (code >= 0x2e80 && code <= 0x9fff) || // CJK Radicals .. CJK Unified Ideographs
   (code >= 0xac00 && code <= 0xd7a3) || // Hangul Syllables
   (code >= 0xf900 && code <= 0xfaff) || // CJK Compatibility Ideographs
+  (code >= 0xfe10 && code <= 0xfe1f) || // Vertical Forms
+  (code >= 0xfe30 && code <= 0xfe6f) || // CJK Compatibility Forms
   (code >= 0xff00 && code <= 0xff60) || // Fullwidth Forms
-  (code >= 0xffe0 && code <= 0xffe6)
+  (code >= 0xffe0 && code <= 0xffe6) || // Fullwidth Signs
+  (code >= 0x20000 && code <= 0x2fffd) || // CJK Extension B..F
+  (code >= 0x30000 && code <= 0x3fffd) // CJK Extension G..H
 
 const charWidth = (code: number) => (isWideCodePoint(code) ? 2 : 1)
 
@@ -85,7 +94,28 @@ export const wrappedLines = (text: string, width: number, maxLines: number = MAX
       continue
     }
 
-    lineWidth += charWidth(text.charCodeAt(i))
+    const cc = text.charCodeAt(i)
+    let code: number
+
+    if (cc >= 0xd800 && cc <= 0xdbff) {
+      // Supplementary plane character (surrogate pair). Decode the full
+      // code point so isWideCodePoint can match Ink's supplementary-plane
+      // ranges (U+20000–U+2FFFD, U+30000–U+3FFFD). Only consume the low
+      // surrogate when it is inside this bounded walk; otherwise the next
+      // iteration must still finalize the accumulated row at i===budget.
+      const low = text.charCodeAt(i + 1)
+
+      if (i + 1 < budget && low >= 0xdc00 && low <= 0xdfff) {
+        code = (cc - 0xd800) * 0x400 + (low - 0xdc00) + 0x10000
+        i++ // skip the low surrogate
+      } else {
+        code = cc // unpaired or budget-split surrogate; count this code unit once
+      }
+    } else {
+      code = cc
+    }
+
+    lineWidth += charWidth(code)
   }
 
   return n

@@ -98,6 +98,25 @@ describe('virtual height estimates', () => {
     expect(withSep).toBe(base + 2)
   })
 
+  it('counts U+FE10 (Vertical Forms) as 2-column wide, matching Ink isEastAsianWide', () => {
+    // U+FE10 is in the Vertical Forms block (U+FE10–U+FE1F). Ink's
+    // isEastAsianWide classifies it as wide (2 columns). The prior
+    // isWideCodePoint predicate was missing this range, so 40 chars at width 20
+    // would be counted as 40 cells → 2 rows instead of 4.
+    const text = '\uFE10'.repeat(40)
+
+    expect(wrappedLines(text, 20)).toBe(4)
+  })
+
+  it('still finalizes rows when the bounded walk stops inside a surrogate pair', () => {
+    // maxLines=2 and width=2 set a six-code-unit walk budget. The high
+    // surrogate of U+20000 lands at the last visited code unit, so the
+    // estimator must not skip the i===budget row-finalization step.
+    const text = `${'x'.repeat(5)}\u{20000}suffix`
+
+    expect(wrappedLines(text, 2, 2)).toBe(2)
+  })
+
   it('caps wrapped-line counting so giant assistant turns do not block offset rebuilds', () => {
     // wrappedLines is invoked once per uncached message during
     // useVirtualHistory's offset rebuild. Unbounded counting on a long

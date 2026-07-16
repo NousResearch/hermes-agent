@@ -48,13 +48,33 @@ class TestCLIPersonalityNone:
         cli = self._make_cli()
         with patch("cli.save_config_value", return_value=True) as mock_save:
             cli._handle_personality_command("/personality none")
-        mock_save.assert_called_once_with("agent.system_prompt", "")
+        # Saves both agent.system_prompt (the resolved prompt body, empty when
+        # clearing) AND display.personality (the canonical name, empty when
+        # clearing). Without the second write, the TUI status bar and the
+        # `/personality` listing would read stale state.
+        assert mock_save.call_args_list == [
+            (("agent.system_prompt", ""),),
+            (("display.personality", ""),),
+        ]
 
     def test_known_personality_still_works(self):
         cli = self._make_cli()
         with patch("cli.save_config_value", return_value=True):
             cli._handle_personality_command("/personality helpful")
         assert cli.system_prompt == "You are helpful."
+
+    def test_known_personality_saves_both_keys(self):
+        """Setting a named personality persists both the prompt body and the
+        canonical name. Regression: previously only agent.system_prompt was
+        written, leaving display.personality stale so the status bar and
+        `/personality` listing disagreed with the active overlay."""
+        cli = self._make_cli()
+        with patch("cli.save_config_value", return_value=True) as mock_save:
+            cli._handle_personality_command("/personality helpful")
+        assert mock_save.call_args_list == [
+            (("agent.system_prompt", "You are helpful."),),
+            (("display.personality", "helpful"),),
+        ]
 
     def test_unknown_personality_shows_none_in_available(self, capsys):
         cli = self._make_cli()
@@ -143,6 +163,47 @@ class TestGatewayPersonalityNone:
             result = await runner._handle_personality_command(event)
 
         assert "none" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_set_named_persists_both_keys_via_save_config_value(self, tmp_path):
+        """Gateway must persist BOTH agent.system_prompt and
+        display.personality via the comment-preserving save_config_value
+        helper. Previously it called atomic_yaml_write on the whole config
+        dict (clobbering comments) and only wrote agent.system_prompt so
+        display.personality stayed stale."""
+        runner = self._make_runner()
+        config_data = {"agent": {"personalities": {"helpful": "You are helpful."}}}
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump(config_data))
+
+        with patch("gateway.run._hermes_home", tmp_path), \
+             patch("cli.save_config_value", return_value=True) as mock_save:
+            event = self._make_event("helpful")
+            await runner._handle_personality_command(event)
+
+        assert mock_save.call_args_list == [
+            (("agent.system_prompt", "You are helpful."),),
+            (("display.personality", "helpful"),),
+        ]
+        assert runner._ephemeral_system_prompt == "You are helpful."
+
+    @pytest.mark.asyncio
+    async def test_clear_persists_both_keys_via_save_config_value(self, tmp_path):
+        """Clearing (`/personality none`) must also clear display.personality."""
+        runner = self._make_runner()
+        config_data = {"agent": {"personalities": {"helpful": "You are helpful."}}}
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump(config_data))
+
+        with patch("gateway.run._hermes_home", tmp_path), \
+             patch("cli.save_config_value", return_value=True) as mock_save:
+            event = self._make_event("none")
+            await runner._handle_personality_command(event)
+
+        assert mock_save.call_args_list == [
+            (("agent.system_prompt", ""),),
+            (("display.personality", ""),),
+        ]
 
     @pytest.mark.asyncio
     async def test_empty_personality_list_uses_profile_display_path(self, tmp_path):

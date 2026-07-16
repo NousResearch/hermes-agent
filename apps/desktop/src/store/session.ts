@@ -328,8 +328,7 @@ export const setSessionProfileTotals = (next: Updater<Record<string, number>>) =
 export const setSessionsLoading = (next: Updater<boolean>) => updateAtom($sessionsLoading, next)
 export const setWorkingSessionIds = (next: Updater<string[]>) => updateAtom($workingSessionIds, next)
 export const setActiveSessionId = (next: Updater<string | null>) => updateAtom($activeSessionId, next)
-export const setActiveSessionStoredId = (next: Updater<string | null>) =>
-  updateAtom($activeSessionStoredId, next)
+export const setActiveSessionStoredId = (next: Updater<string | null>) => updateAtom($activeSessionStoredId, next)
 
 export const setSelectedStoredSessionId = (next: Updater<string | null>) => {
   updateAtom($selectedStoredSessionId, next)

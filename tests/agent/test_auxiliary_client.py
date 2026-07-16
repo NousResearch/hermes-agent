@@ -3160,7 +3160,7 @@ class TestKimiTemperatureOmitted:
 
 
 class TestGpt5TemperatureOmitted:
-    """GPT-5 Responses models must not receive a chat temperature override."""
+    """GPT-5 Responses requests must not receive a chat temperature override."""
 
     @pytest.mark.parametrize("model", [
         "gpt-5",
@@ -3169,7 +3169,7 @@ class TestGpt5TemperatureOmitted:
         "gpt-5.6-terra",
         "openai/gpt-5.6-terra",
     ])
-    def test_gpt5_models_omit_temperature(self, model):
+    def test_gpt5_responses_models_omit_temperature(self, model):
         from agent.auxiliary_client import _build_call_kwargs
 
         kwargs = _build_call_kwargs(
@@ -3178,9 +3178,61 @@ class TestGpt5TemperatureOmitted:
             messages=[{"role": "user", "content": "Generate a title"}],
             temperature=0.2,
             base_url="http://litellm.example/v1",
+            api_mode="codex_responses",
         )
 
         assert "temperature" not in kwargs
+
+    @pytest.mark.parametrize("provider,base_url", [
+        ("nous", "https://inference-api.nousresearch.com/v1"),
+        ("custom", "https://relay.example/v1"),
+    ])
+    def test_gpt5_chat_completions_requests_preserve_temperature(self, provider, base_url):
+        """The same model keeps temperature when its route is chat completions."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider=provider,
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "Generate a title"}],
+            temperature=0.2,
+            base_url=base_url,
+            api_mode="chat_completions",
+        )
+
+        assert kwargs["temperature"] == 0.2
+
+    @pytest.mark.parametrize(
+        "api_mode,expects_temperature",
+        [("codex_responses", False), ("chat_completions", True)],
+    )
+    def test_request_uses_temperature_contract_of_selected_route(
+        self, api_mode, expects_temperature
+    ):
+        """Route metadata, not the GPT-5 name, controls the outgoing request."""
+        from agent.auxiliary_client import call_llm
+
+        client = MagicMock()
+        client.base_url = "http://litellm.example/v1"
+        response = MagicMock()
+        with (
+            patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("custom", "gpt-5.4", client.base_url, "test-key", api_mode),
+            ),
+            patch("agent.auxiliary_client._get_cached_client", return_value=(client, "gpt-5.4")),
+            patch("agent.auxiliary_client._validate_llm_response", return_value=response),
+        ):
+            assert call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "Generate a title"}],
+                temperature=0.2,
+            ) is response
+
+        request = client.chat.completions.create.call_args.kwargs
+        assert ("temperature" in request) is expects_temperature
+        if expects_temperature:
+            assert request["temperature"] == 0.2
 
 
 class TestStaleBaseUrlWarning:

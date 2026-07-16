@@ -385,6 +385,7 @@ def _is_codex_spark(model: Optional[str], provider: Optional[str] = None) -> boo
 def _fixed_temperature_for_model(
     model: Optional[str],
     base_url: Optional[str] = None,
+    api_mode: Optional[str] = None,
 ) -> "Optional[float] | object":
     """Return a temperature directive for models with strict contracts.
 
@@ -400,12 +401,14 @@ def _fixed_temperature_for_model(
     if _is_kimi_model(model):
         logger.debug("Omitting temperature for Kimi model %r (server-managed)", model)
         return OMIT_TEMPERATURE
-    # LiteLLM sends this model family through OpenAI's Responses API. That
-    # route rejects non-default temperature values, so auxiliary callers must
-    # use the same request contract as the main route instead of relying on a
-    # title-specific retry/fallback.
+    # GPT-5 only rejects this on the Responses route.  The same model can be
+    # deliberately kept on chat completions by Nous and custom providers, so
+    # a model-only check would silently change those requests.
     bare_model = (model or "").strip().lower().rsplit("/", 1)[-1]
-    if bare_model == "gpt-5" or bare_model.startswith("gpt-5-") or bare_model.startswith("gpt-5."):
+    if (
+        api_mode == "codex_responses"
+        and (bare_model == "gpt-5" or bare_model.startswith("gpt-5-") or bare_model.startswith("gpt-5."))
+    ):
         logger.debug("Omitting temperature for GPT-5 Responses model %r", model)
         return OMIT_TEMPERATURE
     if _is_arcee_trinity_thinking(model):
@@ -3441,6 +3444,7 @@ def _retry_same_provider_sync(
         timeout=effective_timeout,
         extra_body=effective_extra_body,
         base_url=retry_base or resolved_base_url,
+        api_mode=resolved_api_mode,
     )
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
@@ -3498,6 +3502,7 @@ async def _retry_same_provider_async(
         timeout=effective_timeout,
         extra_body=effective_extra_body,
         base_url=retry_base or resolved_base_url,
+        api_mode=resolved_api_mode,
     )
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
@@ -6214,6 +6219,7 @@ def _build_call_kwargs(
     timeout: float = 30.0,
     extra_body: Optional[dict] = None,
     base_url: Optional[str] = None,
+    api_mode: Optional[str] = None,
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments."""
     kwargs: Dict[str, Any] = {
@@ -6222,7 +6228,7 @@ def _build_call_kwargs(
         "timeout": timeout,
     }
 
-    fixed_temperature = _fixed_temperature_for_model(model, base_url)
+    fixed_temperature = _fixed_temperature_for_model(model, base_url, api_mode)
     if fixed_temperature is OMIT_TEMPERATURE:
         temperature = None  # strip — let server choose
     elif fixed_temperature is not None:
@@ -6539,7 +6545,7 @@ def call_llm(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
-        base_url=_base_info or resolved_base_url)
+        base_url=_base_info or resolved_base_url, api_mode=resolved_api_mode)
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     _client_base = str(getattr(client, "base_url", "") or "")
@@ -7142,7 +7148,7 @@ async def async_call_llm(
         resolved_provider, final_model, messages,
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
-        base_url=_client_base or resolved_base_url)
+        base_url=_client_base or resolved_base_url, api_mode=resolved_api_mode)
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     if _is_anthropic_compat_endpoint(resolved_provider, _client_base):

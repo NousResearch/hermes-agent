@@ -48,4 +48,5 @@ def test_cronjob_schema_reasoning_effort_matches_generic_contract():
     enum = CRONJOB_SCHEMA["parameters"]["properties"]["reasoning_effort"]["enum"]
     assert enum == [*VALID_REASONING_EFFORTS, "none"]
     assert "max" in enum
-    assert "ultra" not in enum
+    # 2026-07-15 parity merge: upstream #62650 made ultra a valid effort.
+    assert "ultra" in enum

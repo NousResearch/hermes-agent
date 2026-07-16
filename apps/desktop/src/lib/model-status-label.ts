@@ -1,14 +1,14 @@
-import { isReasoningEffort, type ReasoningEffort } from '@/lib/reasoning-effort'
 import { normalize } from '@/lib/text'
 
-const REASONING_LABELS: Record<ReasoningEffort, string> = {
+const REASONING_LABELS: Record<string, string> = {
   none: 'Off',
   minimal: 'Min',
   low: 'Low',
   medium: 'Med',
   high: 'High',
   xhigh: 'XHigh',
-  max: 'Max'
+  max: 'Max',
+  ultra: 'Ultra'
 }
 
 export function reasoningEffortLabel(effort: string): string {
@@ -18,11 +18,7 @@ export function reasoningEffortLabel(effort: string): string {
     return ''
   }
 
-  if (isReasoningEffort(key)) {
-    return REASONING_LABELS[key]
-  }
-
-  return effort
+  return REASONING_LABELS[key] ?? effort
 }
 
 /** Which model/provider a picker should mark "current". With a live session the

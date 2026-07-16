@@ -20,6 +20,30 @@ from cron.jobs import create_job, update_job, get_job
 from hermes_constants import parse_reasoning_effort
 
 
+
+# ---------------------------------------------------------------------------
+# Self-isolation (2026-07-15 fixture-leak incident) — backported in place to
+# this worktree copy; canonical version lives on fork/main (PR #365).
+# ---------------------------------------------------------------------------
+import os as _os
+
+if not _os.environ.get("PYTEST_VERSION"):  # pragma: no cover - non-pytest harness
+    import tempfile as _tempfile
+
+    import cron.jobs as _jobs_mod
+
+    _standalone_tmp = _tempfile.TemporaryDirectory(prefix="cron-test-home-reasoning-effort-")
+    _standalone_store = _jobs_mod.use_cron_store(_standalone_tmp.name)
+    _standalone_store.__enter__()  # held for the process lifetime, by design
+
+
+@pytest.fixture(autouse=True)
+def _self_isolated_cron_store(tmp_path):
+    """Belt-and-suspenders: never write 'brief' fixture jobs to a real store."""
+    import cron.jobs as _jm
+    with _jm.use_cron_store(tmp_path):
+        yield
+
 # ---------------------------------------------------------------------------
 # Persistence: create_job / update_job
 # ---------------------------------------------------------------------------

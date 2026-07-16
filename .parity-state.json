@@ -1,0 +1,1251 @@
+{
+  "branch": "sync/upstream-2026-07-15",
+  "buckets": {
+    "arch_split": 5,
+    "files": 81,
+    "hunks": 417,
+    "mechanical": 0,
+    "semantic": 76
+  },
+  "created": "2026-07-16T05:44:54.870695+00:00",
+  "fork": "fork/main",
+  "fork_main_at_start": "b8228c2bc1c1d2d68e5d7d43a7f4ce46935a59ea",
+  "forkdelta_acks": [
+    {
+      "at": "2026-07-16T09:02:41.027869+00:00",
+      "path": ".github/actions/detect-changes/action.yml",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.045011+00:00",
+      "path": ".github/workflows/ci.yml",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.061726+00:00",
+      "path": ".github/workflows/lint.yml",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.112871+00:00",
+      "path": ".gitignore",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.129100+00:00",
+      "path": "acp_adapter/session.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.144412+00:00",
+      "path": "acp_adapter/tools.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.160694+00:00",
+      "path": "agent/agent_init.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.176661+00:00",
+      "path": "agent/agent_runtime_helpers.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.192742+00:00",
+      "path": "agent/anthropic_adapter.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.209254+00:00",
+      "path": "agent/auxiliary_client.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.225383+00:00",
+      "path": "agent/background_review.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.242423+00:00",
+      "path": "agent/chat_completion_helpers.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.258517+00:00",
+      "path": "agent/codex_runtime.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.275310+00:00",
+      "path": "agent/context_compressor.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.290889+00:00",
+      "path": "agent/conversation_compression.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.307289+00:00",
+      "path": "agent/conversation_loop.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.323322+00:00",
+      "path": "agent/copilot_acp_client.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.339712+00:00",
+      "path": "agent/curator.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.355941+00:00",
+      "path": "agent/display.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.372860+00:00",
+      "path": "agent/error_classifier.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.389007+00:00",
+      "path": "agent/moa_loop.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.405351+00:00",
+      "path": "agent/model_metadata.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.420618+00:00",
+      "path": "agent/prompt_builder.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.439362+00:00",
+      "path": "agent/system_prompt.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.456759+00:00",
+      "path": "agent/tool_executor.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.472417+00:00",
+      "path": "agent/transcription_registry.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.489026+00:00",
+      "path": "agent/transports/chat_completions.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.506508+00:00",
+      "path": "agent/transports/codex.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.523565+00:00",
+      "path": "agent/tts_registry.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.540968+00:00",
+      "path": "agent/turn_context.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.557878+00:00",
+      "path": "agent/turn_finalizer.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.576551+00:00",
+      "path": "agent/video_gen_provider.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.626315+00:00",
+      "path": "agent/video_gen_registry.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.642999+00:00",
+      "path": "apps/desktop/electron/backend-command.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.659657+00:00",
+      "path": "apps/desktop/electron/backend-env.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.674994+00:00",
+      "path": "apps/desktop/electron/backend-probes.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.689730+00:00",
+      "path": "apps/desktop/electron/backend-ready.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.704891+00:00",
+      "path": "apps/desktop/electron/bootstrap-platform.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.720165+00:00",
+      "path": "apps/desktop/electron/bootstrap-runner.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.737133+00:00",
+      "path": "apps/desktop/electron/connection-config.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.754136+00:00",
+      "path": "apps/desktop/electron/dashboard-token.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.770420+00:00",
+      "path": "apps/desktop/electron/desktop-uninstall.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.786726+00:00",
+      "path": "apps/desktop/electron/fs-read-dir.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.803113+00:00",
+      "path": "apps/desktop/electron/fs-read-dir.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.818854+00:00",
+      "path": "apps/desktop/electron/gateway-ws-probe.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.836047+00:00",
+      "path": "apps/desktop/electron/git-review-ops.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.852689+00:00",
+      "path": "apps/desktop/electron/git-root.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.868271+00:00",
+      "path": "apps/desktop/electron/git-worktree-ops.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.884006+00:00",
+      "path": "apps/desktop/electron/git-worktree-ops.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.900151+00:00",
+      "path": "apps/desktop/electron/hardening.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.915861+00:00",
+      "path": "apps/desktop/electron/link-title-window.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.931703+00:00",
+      "path": "apps/desktop/electron/main.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.947918+00:00",
+      "path": "apps/desktop/electron/oauth-net-request.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.963521+00:00",
+      "path": "apps/desktop/electron/preload.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.979047+00:00",
+      "path": "apps/desktop/electron/session-windows.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:41.994996+00:00",
+      "path": "apps/desktop/electron/titlebar-overlay-width.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.010370+00:00",
+      "path": "apps/desktop/electron/update-count.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.025885+00:00",
+      "path": "apps/desktop/electron/update-marker.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.041350+00:00",
+      "path": "apps/desktop/electron/update-rebuild.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.056643+00:00",
+      "path": "apps/desktop/electron/update-relaunch.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.072293+00:00",
+      "path": "apps/desktop/electron/update-remote.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.087607+00:00",
+      "path": "apps/desktop/electron/vscode-marketplace.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.103288+00:00",
+      "path": "apps/desktop/electron/window-state.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.118482+00:00",
+      "path": "apps/desktop/electron/windows-child-process.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.134408+00:00",
+      "path": "apps/desktop/electron/windows-user-env.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.152145+00:00",
+      "path": "apps/desktop/electron/workspace-cwd.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.168411+00:00",
+      "path": "apps/desktop/electron/wsl-clipboard-image.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.183752+00:00",
+      "path": "apps/desktop/electron/zoom.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.199397+00:00",
+      "path": "apps/desktop/eslint.config.mjs",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.214687+00:00",
+      "path": "apps/desktop/package.json",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.230316+00:00",
+      "path": "apps/desktop/scripts/assert-dist-built.test.mjs",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.245563+00:00",
+      "path": "apps/desktop/scripts/before-pack.test.mjs",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.260718+00:00",
+      "path": "apps/desktop/src/app/chat/composer/attachments.test.tsx",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.276073+00:00",
+      "path": "apps/desktop/src/app/chat/hooks/use-composer-actions.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.291682+00:00",
+      "path": "apps/desktop/src/app/chat/hooks/use-session-changes.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.307656+00:00",
+      "path": "apps/desktop/src/app/chat/index.tsx",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.332164+00:00",
+      "path": "apps/desktop/src/app/chat/right-rail/preview-file.tsx",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.349119+00:00",
+      "path": "apps/desktop/src/app/chat/sidebar/index.tsx",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.366076+00:00",
+      "path": "apps/desktop/src/app/chat/sidebar/session-row.tsx",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.382508+00:00",
+      "path": "apps/desktop/src/app/desktop-controller-utils.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.399239+00:00",
+      "path": "apps/desktop/src/app/desktop-controller.tsx",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.416026+00:00",
+      "path": "apps/desktop/src/app/gateway/hooks/use-gateway-boot.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.432458+00:00",
+      "path": "apps/desktop/src/app/session/hooks/use-message-stream/gateway-event.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.449114+00:00",
+      "path": "apps/desktop/src/app/session/hooks/use-message-stream/index.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.466088+00:00",
+      "path": "apps/desktop/src/app/session/hooks/use-model-controls.test.tsx",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.482184+00:00",
+      "path": "apps/desktop/src/app/session/hooks/use-model-controls.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.499233+00:00",
+      "path": "apps/desktop/src/app/session/hooks/use-preview-routing.test.tsx",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.516562+00:00",
+      "path": "apps/desktop/src/app/session/hooks/use-prompt-actions/index.test.tsx",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.534359+00:00",
+      "path": "apps/desktop/src/app/session/hooks/use-session-actions/index.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.551442+00:00",
+      "path": "apps/desktop/src/app/session/hooks/use-session-list-actions.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.568128+00:00",
+      "path": "apps/desktop/src/app/session/hooks/use-session-state-cache.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.584913+00:00",
+      "path": "apps/desktop/src/app/settings/constants.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.601443+00:00",
+      "path": "apps/desktop/src/app/settings/model-settings.test.tsx",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.617431+00:00",
+      "path": "apps/desktop/src/app/settings/model-settings.tsx",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.633746+00:00",
+      "path": "apps/desktop/src/app/shell/model-edit-submenu.tsx",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.649493+00:00",
+      "path": "apps/desktop/src/app/transcript-preload.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.665740+00:00",
+      "path": "apps/desktop/src/app/transcript-preload.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.681751+00:00",
+      "path": "apps/desktop/src/app/transcript-stash.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.697570+00:00",
+      "path": "apps/desktop/src/app/transcript-stash.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.713198+00:00",
+      "path": "apps/desktop/src/components/assistant-ui/markdown-text.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.728620+00:00",
+      "path": "apps/desktop/src/components/assistant-ui/markdown-text.tsx",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.744363+00:00",
+      "path": "apps/desktop/src/components/chat/shiki-highlighter.tsx",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.759922+00:00",
+      "path": "apps/desktop/src/components/chat/shiki-html-cache.test.tsx",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.775804+00:00",
+      "path": "apps/desktop/src/components/chat/shiki-html-cache.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.791662+00:00",
+      "path": "apps/desktop/src/components/pane-shell/pane-shell.test.tsx",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.807795+00:00",
+      "path": "apps/desktop/src/global.d.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.823499+00:00",
+      "path": "apps/desktop/src/hermes.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.839623+00:00",
+      "path": "apps/desktop/src/i18n/en.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.855361+00:00",
+      "path": "apps/desktop/src/i18n/ja.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.871326+00:00",
+      "path": "apps/desktop/src/i18n/types.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.887738+00:00",
+      "path": "apps/desktop/src/i18n/zh-hant.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.904958+00:00",
+      "path": "apps/desktop/src/i18n/zh.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.921802+00:00",
+      "path": "apps/desktop/src/lib/chat-messages.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.938333+00:00",
+      "path": "apps/desktop/src/lib/chat-runtime.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.954624+00:00",
+      "path": "apps/desktop/src/lib/model-status-label.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.971138+00:00",
+      "path": "apps/desktop/src/lib/model-status-label.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:42.987331+00:00",
+      "path": "apps/desktop/src/lib/session-search.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.004550+00:00",
+      "path": "apps/desktop/src/store/layout.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.020553+00:00",
+      "path": "apps/desktop/src/store/panes.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.036889+00:00",
+      "path": "apps/desktop/src/store/projects.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.051783+00:00",
+      "path": "apps/desktop/src/store/session.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.067698+00:00",
+      "path": "apps/desktop/src/store/updates.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.083732+00:00",
+      "path": "apps/desktop/src/types/hermes.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.100151+00:00",
+      "path": "apps/desktop/vite.config.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.116294+00:00",
+      "path": "batch_runner.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.133059+00:00",
+      "path": "cli-config.yaml.example",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.150274+00:00",
+      "path": "cli.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.167616+00:00",
+      "path": "cron/jobs.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.184866+00:00",
+      "path": "cron/scheduler.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.201787+00:00",
+      "path": "docs/sync/fork-features.json",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.217314+00:00",
+      "path": "gateway/config.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.234610+00:00",
+      "path": "gateway/platforms/api_server.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.251377+00:00",
+      "path": "gateway/platforms/base.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.268699+00:00",
+      "path": "gateway/session.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.285245+00:00",
+      "path": "gateway/slash_commands.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.301898+00:00",
+      "path": "hermes_cli/auth.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.318396+00:00",
+      "path": "hermes_cli/cli_agent_setup_mixin.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.335328+00:00",
+      "path": "hermes_cli/cli_commands_mixin.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.352735+00:00",
+      "path": "hermes_cli/commands.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.369065+00:00",
+      "path": "hermes_cli/config.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.385645+00:00",
+      "path": "hermes_cli/doctor.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.402942+00:00",
+      "path": "hermes_cli/inventory.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.419135+00:00",
+      "path": "hermes_cli/kanban_db.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.435054+00:00",
+      "path": "hermes_cli/kanban_decompose.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.450129+00:00",
+      "path": "hermes_cli/model_switch.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.467426+00:00",
+      "path": "hermes_cli/models.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.484669+00:00",
+      "path": "hermes_cli/plugins.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.502701+00:00",
+      "path": "hermes_cli/providers.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.520701+00:00",
+      "path": "hermes_cli/tips.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.538500+00:00",
+      "path": "hermes_cli/tools_config.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.554559+00:00",
+      "path": "hermes_cli/web_server.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.571659+00:00",
+      "path": "hermes_state.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.588367+00:00",
+      "path": "locales/af.yaml",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.606041+00:00",
+      "path": "locales/de.yaml",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.623149+00:00",
+      "path": "locales/en.yaml",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.640933+00:00",
+      "path": "locales/es.yaml",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.657761+00:00",
+      "path": "locales/fr.yaml",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.674688+00:00",
+      "path": "locales/ga.yaml",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.691285+00:00",
+      "path": "locales/hu.yaml",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.708612+00:00",
+      "path": "locales/it.yaml",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.725127+00:00",
+      "path": "locales/ja.yaml",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.741611+00:00",
+      "path": "locales/ko.yaml",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.758472+00:00",
+      "path": "locales/pt.yaml",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.775146+00:00",
+      "path": "locales/ru.yaml",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.791721+00:00",
+      "path": "locales/tr.yaml",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.808280+00:00",
+      "path": "locales/uk.yaml",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.825090+00:00",
+      "path": "locales/zh-hant.yaml",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.848444+00:00",
+      "path": "locales/zh.yaml",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.905782+00:00",
+      "path": "plugins/kanban/dashboard/dist/index.js",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:43.965577+00:00",
+      "path": "plugins/platforms/discord/adapter.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.019033+00:00",
+      "path": "run_agent.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.062101+00:00",
+      "path": "scripts/ci/classify_changes.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.079287+00:00",
+      "path": "scripts/release.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.096743+00:00",
+      "path": "scripts/run_tests.sh",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.114249+00:00",
+      "path": "skills/autonomous-ai-agents/hermes-agent/SKILL.md",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.131048+00:00",
+      "path": "tests/agent/test_anthropic_adapter.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.147984+00:00",
+      "path": "tests/agent/test_codex_ttfb_watchdog.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.165506+00:00",
+      "path": "tests/agent/test_compression_concurrent_fork.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.183138+00:00",
+      "path": "tests/agent/test_context_compressor.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.200937+00:00",
+      "path": "tests/agent/test_copilot_acp_client.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.218670+00:00",
+      "path": "tests/agent/test_error_classifier.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.236969+00:00",
+      "path": "tests/agent/transports/test_chat_completions.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.254250+00:00",
+      "path": "tests/ci/test_classify_changes.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.271420+00:00",
+      "path": "tests/cli/test_reasoning_command.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.287872+00:00",
+      "path": "tests/cron/test_cronjob_schema.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.305629+00:00",
+      "path": "tests/cron/test_fixture_leak_selfisolation.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.323045+00:00",
+      "path": "tests/cron/test_per_job_reasoning_effort.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.340449+00:00",
+      "path": "tests/cron/test_scheduler.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.357791+00:00",
+      "path": "tests/cron/test_scheduler_provider.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.374458+00:00",
+      "path": "tests/cron/test_ticker_stall_60703.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.391042+00:00",
+      "path": "tests/gateway/conftest.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.407337+00:00",
+      "path": "tests/gateway/restart_test_helpers.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.422886+00:00",
+      "path": "tests/gateway/test_discord_slash_commands.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.438920+00:00",
+      "path": "tests/gateway/test_reasoning_command.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.454287+00:00",
+      "path": "tests/gateway/test_stop_thread_sibling.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.471099+00:00",
+      "path": "tests/gateway/test_telegram_conflict.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.486660+00:00",
+      "path": "tests/gateway/test_telegram_network_reconnect.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.503671+00:00",
+      "path": "tests/gateway/test_usage_command.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.521290+00:00",
+      "path": "tests/hermes_cli/test_commands.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.539483+00:00",
+      "path": "tests/hermes_cli/test_config.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.555115+00:00",
+      "path": "tests/hermes_cli/test_config_validation.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.572129+00:00",
+      "path": "tests/hermes_cli/test_inventory.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.588992+00:00",
+      "path": "tests/hermes_cli/test_kanban_db.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.606467+00:00",
+      "path": "tests/hermes_cli/test_model_validation.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.623113+00:00",
+      "path": "tests/hermes_cli/test_runtime_provider_resolution.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.640001+00:00",
+      "path": "tests/hermes_cli/test_web_server.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.655924+00:00",
+      "path": "tests/providers/test_provider_profiles.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.671811+00:00",
+      "path": "tests/run_agent/test_background_review_cache_parity.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.687940+00:00",
+      "path": "tests/run_agent/test_primary_runtime_restore.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.704514+00:00",
+      "path": "tests/run_agent/test_run_agent_codex_responses.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.720668+00:00",
+      "path": "tests/test_batch_runner_checkpoint.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.737053+00:00",
+      "path": "tests/test_hermes_constants.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.752975+00:00",
+      "path": "tests/test_hermes_state.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.769160+00:00",
+      "path": "tests/test_tui_gateway_server.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.785112+00:00",
+      "path": "tests/tools/test_base_environment.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.801917+00:00",
+      "path": "tests/tools/test_delegate.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.818421+00:00",
+      "path": "tests/tools/test_file_operations.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.835568+00:00",
+      "path": "tests/tools/test_kanban_tools.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.852491+00:00",
+      "path": "tests/tui_gateway/test_protocol.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.869419+00:00",
+      "path": "tools/async_delegation.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.885567+00:00",
+      "path": "tools/delegate_tool.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.902438+00:00",
+      "path": "tools/environments/base.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.918295+00:00",
+      "path": "tools/file_operations.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.934351+00:00",
+      "path": "tools/kanban_tools.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.950578+00:00",
+      "path": "tools/process_registry.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.966991+00:00",
+      "path": "tools/video_generation_tool.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.983175+00:00",
+      "path": "tui_gateway/server.py",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:44.999528+00:00",
+      "path": "web/src/lib/reasoning-effort-values.json",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:45.015680+00:00",
+      "path": "web/src/lib/reasoning-effort.test.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:45.032248+00:00",
+      "path": "web/src/lib/reasoning-effort.ts",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:45.048476+00:00",
+      "path": "website/docs/user-guide/configuration.md",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:45.065476+00:00",
+      "path": "website/docs/user-guide/features/batch-processing.md",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:45.082097+00:00",
+      "path": "website/docs/user-guide/features/delegation.md",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:45.098380+00:00",
+      "path": "website/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:45.114172+00:00",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/configuration.md",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:45.130872+00:00",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/features/batch-processing.md",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:02:45.146932+00:00",
+      "path": "website/i18n/zh-Hans/docusaurus-plugin-content-docs/current/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md",
+      "reason": "2026-07-15 parity merge: reviewed via docs/sync/review/resolution-decisions-2026-07-15.md + fullsuite-triage-2026-07-15.md; fork-feature manifest tests green"
+    },
+    {
+      "at": "2026-07-16T09:08:48.839530+00:00",
+      "path": "scripts/hermes_parity/gates.py",
+      "reason": "tooling fix in this sync: manifest tests are nodeids, run_tests.sh only takes file paths and silently ran nothing (exit 1, 'No test files to run'); gate now invokes pytest directly"
+    }
+  ],
+  "gates": {
+    "imports": {
+      "at": "2026-07-16T09:01:38.491719+00:00",
+      "detail": "0 compile failure(s)",
+      "ok": true,
+      "repro": "python3.11 -m py_compile $(git ls-files '*.py')",
+      "tree_sha": "c87e3478bc79066de5bdb3a41400233342de48e6"
+    },
+    "manifest+forkdelta": {
+      "at": "2026-07-16T09:12:35.549745+00:00",
+      "detail": "4 covered, 0 uncovered, 238 acknowledged path(s)",
+      "ok": true,
+      "repro": "python3.11 -m hermes_parity gates --stage manifest+forkdelta",
+      "tree_sha": "c87e3478bc79066de5bdb3a41400233342de48e6"
+    },
+    "markers": {
+      "at": "2026-07-16T09:01:33.412770+00:00",
+      "detail": "0 marker line(s)",
+      "ok": true,
+      "repro": "git grep -nE '^(<<<<<<<|=======|>>>>>>>)' && git diff --diff-filter=U",
+      "tree_sha": "c87e3478bc79066de5bdb3a41400233342de48e6"
+    },
+    "tests": {
+      "at": "2026-07-16T06:34:06.835214+00:00",
+      "detail": "exit 0",
+      "ok": true,
+      "repro": "scripts/run_tests.sh",
+      "tree_sha": "c87e3478bc79066de5bdb3a41400233342de48e6"
+    },
+    "traps": {
+      "at": "2026-07-16T09:02:22.511090+00:00",
+      "detail": "3064 unbound + 28 merge-trap issue(s)",
+      "ok": true,
+      "repro": "python3.11 -m hermes_parity gates --stage traps --strict",
+      "tree_sha": "c87e3478bc79066de5bdb3a41400233342de48e6"
+    }
+  },
+  "merge_base": "caf557be5b4c9ae75b3a7566d65d3df2c701c5df",
+  "remote": "origin",
+  "rollback": {
+    "fork_main": "b8228c2bc1c1d2d68e5d7d43a7f4ce46935a59ea",
+    "local_main": "6b85c5ff268fbdc9fa70d9565d12af1235a14842"
+  },
+  "target_sha": "2ea39daeb1f675d72e5c21c9400f2d58d7e6d71a",
+  "tree_sha": "c87e3478bc79066de5bdb3a41400233342de48e6",
+  "upstream": "origin/main"
+}

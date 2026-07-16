@@ -112,16 +112,21 @@ def test_run_batch_accepts_max_reasoning_effort(tmp_path, monkeypatch, capsys):
     assert "Reasoning effort: max" in capsys.readouterr().out
 
 
-def test_run_batch_rejects_ultra_reasoning_effort(tmp_path, monkeypatch, capsys):
+def test_run_batch_accepts_ultra_reasoning_effort(tmp_path, monkeypatch, capsys):
     dataset = tmp_path / "prompts.jsonl"
     dataset.write_text('{"prompt": "hi"}\n', encoding="utf-8")
+    captured = {}
 
     class _FakeBatchRunner:
         def __init__(self, **kwargs):
-            raise AssertionError("BatchRunner should not be constructed")
+            captured.update(kwargs)
+
+        def run(self, *, resume=False):
+            captured["resume"] = resume
 
     monkeypatch.setattr("batch_runner.BatchRunner", _FakeBatchRunner)
 
+    # 2026-07-15 parity merge: upstream #62650 made ultra a valid effort.
     run_batch(
         dataset_file=str(dataset),
         batch_size=1,
@@ -130,10 +135,8 @@ def test_run_batch_rejects_ultra_reasoning_effort(tmp_path, monkeypatch, capsys)
         api_key="test",
     )
 
-    out = capsys.readouterr().out
-    assert "must be one of" in out
-    assert "max" in out
-    assert "ultra" not in out.split("must be one of", 1)[-1]
+    assert captured["reasoning_config"] == {"enabled": True, "effort": "ultra"}
+    assert "Reasoning effort: ultra" in capsys.readouterr().out
 
 
 class TestLoadCheckpoint:

@@ -68,8 +68,19 @@ environments/benchmarks/evals/
 hermes_cli/web_dist/
 apps/desktop/build/
 apps/desktop/dist/
+
+# tsc-emitted artifacts (a stray `tsc -b` compiles into src/, and vite then
+# resolves the stale .js OVER the .tsx — never track these)
+apps/desktop/src/**/*.js
+apps/desktop/src/**/*.js.map
+apps/desktop/src/**/*.d.ts
+!apps/desktop/src/global.d.ts
+!apps/desktop/src/vite-env.d.ts
+apps/shared/src/**/*.js
+apps/shared/src/**/*.js.map
+apps/shared/src/**/*.d.ts
 apps/desktop/release/
-apps/desktop/*.tsbuildinfo
+*.tsbuildinfo
 
 # TypeScript dev/watch compile output emitted NEXT TO the .ts/.tsx source in
 # apps/*/src (tsc without an outDir). These are build artifacts — every .js has
@@ -128,6 +139,9 @@ docs/superpowers/*
 # ignore it so `hermes update`'s `git stash push --include-untracked` does not
 # treat it as a local edit and autostash it on every run (#38529).
 .hermes-bootstrap-complete
+
+# Persistent dev sandbox dir (scripts/dev-sandbox.sh --persistent)
+.hermes-sandbox/
 
 # Interrupted-update breadcrumb + recovery lock written next to the shared venv
 # by `hermes update` / launch-time self-heal. Runtime state, never a code change

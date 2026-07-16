@@ -187,9 +187,10 @@ async def test_registers_native_reasoning_descriptions_mention_max(adapter):
     effort_description = parameter_descriptions.get("effort", "").lower()
 
     assert "max" in command_description
-    assert "ultra" not in command_description
     assert "max" in effort_description
-    assert "ultra" not in effort_description
+    # 2026-07-15 parity merge: upstream #62650 made ultra a valid effort.
+    assert "ultra" in command_description
+    assert "ultra" in effort_description
 
 
 @pytest.mark.asyncio

@@ -129,6 +129,21 @@ When you provide a `tasks` array, subagents run in **parallel** using a thread p
 
 Single-task delegation runs directly without thread pool overhead.
 
+### Durable background completions
+
+When a background delegation finishes, Hermes stores its completion event in
+the active profile's `state.db` before publishing it to the normal fresh-turn
+queue. If Hermes restarts after completion but before delivery, the pending
+event is restored and routed through the same ownership checks. Competing
+consumers use a durable claim, so only the consumer that successfully accepts
+the synthetic turn acknowledges delivery; failed attempts release the claim for
+retry.
+
+This does not resume child execution after a crash. A delegation whose owner
+process disappears while it is still running is recorded as `unknown`, because
+Hermes cannot prove whether its external side effects happened. Pending and
+delivered records are bounded and profile-local.
+
 ## Model Override
 
 You can configure a different model for subagents via `config.yaml` — useful for delegating simple tasks to cheaper/faster models:
@@ -225,16 +240,20 @@ delegate_task(
 
 ## Lifetime and Durability
 
-By default, `delegate_task` is synchronous: it runs inside the parent's current turn and blocks until every child finishes or is cancelled. With `background=true`, a gateway session instead returns a delegation handle immediately and receives restart and terminal results as fresh internal turns.
+:::warning Background completion durability is not durable execution
+By default, `delegate_task` runs **inside the parent's current turn** and blocks until every child finishes. With `background=true`, the child may continue after that turn returns while the owning session and Hermes process remain alive:
 
-Gateway background delegations persist restart intent under the originating profile. With `delegation.resume_on_restart: true` (the default), a later gateway boot can launch a fresh replacement attempt from the original task settings and continuation context. Hermes permits two submitted replacement launches, pins every notification to the parent session, and never edits existing conversation history. `/new`, `/stop`, parent cancellation, and ended sessions cancel the durable record so it cannot be resurrected or rerouted.
+- If the parent is interrupted (user sends a new message, `/stop`, `/new`), all active children are cancelled and return `status="interrupted"`. Their in-progress work is discarded.
+- Explicit session close/reset interrupts that session's background children. Closing a TUI viewer of a gateway-owned session does not kill the gateway's work.
+- A Hermes process restart does **not** resume a running child. Its attempt becomes `unknown` because Hermes cannot prove which side effects happened.
+- A child that completed before restart but whose result was not delivered is restored and routed back through the owning session's normal checks.
+- Cancelled children return a structured result (`status="interrupted"`, `exit_reason="interrupted"`), but because the parent was interrupted too, that result often never makes it into a user-visible reply.
 
-This recovery is a fresh execution attempt, not a child-transcript checkpoint. Put partial work in paths named explicitly in the task so a replacement can inspect and continue it. CLI/TUI background delegations remain process-local in this phase because those surfaces do not have the gateway's durable delivery route.
+For **durable execution** that must survive session closure or process restart, use:
 
-For work that needs an independent schedule or process rather than parent-session delivery, use:
-
-- `cronjob` (action=`create`) — schedules a separate agent run.
-- `terminal(background=True, notify_on_complete=True)` — runs a shell command independently and reports its result.
+- `cronjob` (action=`create`) — schedules a separate agent run; immune to parent-turn interrupts.
+- `terminal(background=True, notify_on_complete=True)` — long-running shell commands that keep running while the agent does other things.
+:::
 
 ## Key Properties
 

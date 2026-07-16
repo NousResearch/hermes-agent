@@ -97,6 +97,7 @@ function Harness({
     storedSessionId: SID,
     streamId: null,
     turnStartedAt: null,
+    usage: null,
     yolo: false
   }
 
@@ -628,4 +629,3 @@ describe('reconnect-seam zombie optimistic rows (severed message.complete stamp)
     expect(committed.messages.map(row => row.id)).toEqual(['700'])
   })
 })
-

@@ -286,14 +286,46 @@ class TestRestorePrimaryRuntime:
         agent._credential_pool = _DeepseekPool()
         agent._swap_credential = MagicMock()
 
-        with patch("run_agent.OpenAI", return_value=MagicMock()):
+        primary_pool = MagicMock()
+        primary_pool.provider = primary_provider
+        primary_pool.has_available.return_value = False
+        with (
+            patch("run_agent.OpenAI", return_value=MagicMock()),
+            patch("agent.credential_pool.load_pool", return_value=primary_pool) as load_pool,
+        ):
             result = agent._restore_primary_runtime()
 
         assert result is True
         assert agent.provider == primary_provider
         assert agent.base_url == primary_base_url
         assert "deepseek" not in str(agent.base_url)
+        assert agent._credential_pool is primary_pool
+        load_pool.assert_called_once_with(primary_provider)
         agent._swap_credential.assert_not_called()
+
+    def test_restore_clears_fallback_pool_when_primary_pool_reload_fails(self):
+        """A fallback pool must never remain attached to the restored primary."""
+        agent = _make_agent(
+            provider="openai-api",
+            base_url="https://api.openai.com/v1",
+        )
+        agent._fallback_activated = True
+        fallback_pool = MagicMock()
+        fallback_pool.provider = "deepseek"
+        agent._credential_pool = fallback_pool
+
+        with (
+            patch("run_agent.OpenAI", return_value=MagicMock()),
+            patch(
+                "agent.credential_pool.load_pool",
+                side_effect=RuntimeError("auth store unavailable"),
+            ),
+        ):
+            result = agent._restore_primary_runtime()
+
+        assert result is True
+        assert agent.provider == "openai-api"
+        assert agent._credential_pool is None
 
     def test_restore_swaps_matching_custom_pool_entry(self):
         """Custom primary + custom:<name> entry whose base_url resolves to the
@@ -785,12 +817,12 @@ class TestFallbackReasoningEffort:
         # No reasoning_effort on the entry → keep whatever was active.
         assert agent.reasoning_config == primary_cfg
 
-    def test_invalid_level_ignored(self):
+    def test_ultra_level_applied(self):
         agent = _make_agent(
             fallback_model={
                 "provider": "openrouter",
                 "model": "model-x",
-                "reasoning_effort": "ultra",  # not a valid level
+                "reasoning_effort": "ultra",
             },
         )
         primary_cfg = {"enabled": True, "effort": "medium"}
@@ -800,8 +832,8 @@ class TestFallbackReasoningEffort:
         with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
             agent._try_activate_fallback()
 
-        # Unknown level → no override, primary effort preserved.
-        assert agent.reasoning_config == primary_cfg
+        # 2026-07-15 parity merge: upstream #62650 made ultra a valid effort.
+        assert agent.reasoning_config == {"enabled": True, "effort": "ultra"}
 
     def test_none_disables_reasoning_on_fallback(self):
         agent = _make_agent(

@@ -122,6 +122,8 @@ export function setSidebarPinnedOrderIds(ids: string[]) {
   }
 }
 
+export const setPinnedSessionOrder = setSidebarPinnedOrderIds
+
 export const $sidebarWorkspaceOrderIds = persistentAtom(
   SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY,
   [] as string[],

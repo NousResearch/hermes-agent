@@ -2,10 +2,11 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import test from 'node:test'
 import { pathToFileURL } from 'node:url'
 
-import { readDirForIpc } from './fs-read-dir.ts'
+import { test } from 'vitest'
+
+import { readDirForIpc } from './fs-read-dir'
 
 function mkTmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-fs-read-dir-'))

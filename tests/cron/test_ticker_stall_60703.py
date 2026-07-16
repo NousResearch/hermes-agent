@@ -44,6 +44,25 @@ except ImportError:  # pragma: no cover - non-POSIX
 
 pytestmark = pytest.mark.skipif(fcntl is None, reason="flock semantics are POSIX-only")
 
+# ---------------------------------------------------------------------------
+# Self-isolation (2026-07-15 fixture-leak incident) — backported in place to
+# this worktree copy; canonical version lives on fork/main (PR #365).
+# ---------------------------------------------------------------------------
+if not os.environ.get("PYTEST_VERSION"):  # pragma: no cover - non-pytest harness
+    import tempfile as _tempfile
+
+    _standalone_tmp = _tempfile.TemporaryDirectory(prefix="cron-test-home-ticker-stall-")
+    _standalone_store = jobs_mod.use_cron_store(_standalone_tmp.name)
+    _standalone_store.__enter__()  # held for the process lifetime, by design
+
+
+@pytest.fixture(autouse=True)
+def _self_isolated_cron_store(tmp_path):
+    """Belt-and-suspenders: never write fixture jobs to a non-temp store."""
+    with jobs_mod.use_cron_store(tmp_path):
+        yield
+
+
 
 def _hold_jobs_flock(path: Path, release: threading.Event, held: threading.Event):
     """Hold an exclusive flock on *path* from a separate fd until released.

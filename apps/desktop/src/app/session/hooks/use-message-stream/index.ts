@@ -526,8 +526,6 @@ export function useMessageStream({
     compactedTurnRef,
     lastCwdInfoSessionRef,
     nativeSubagentSessionsRef,
-    onTurnComplete,
-    onTurnFrame,
     completeAssistantMessage,
     failAssistantMessage,
     flushQueuedDeltas,

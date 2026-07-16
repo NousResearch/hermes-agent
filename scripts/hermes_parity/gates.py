@@ -131,9 +131,22 @@ def gate_manifest_forkdelta(repo: Path, *, base: str | None, fork_ref: str) -> G
         tests = forkdelta.manifest_nodeids(manifest)
         test_proc = None
         if tests:
-            script = repo / "scripts" / "run_tests.sh"
+            # run_tests.sh only accepts FILE paths — it silently drops
+            # `path::nodeid` selectors ("No test files to run", exit 1).
+            # Manifest entries are nodeids, so invoke pytest directly with
+            # the repo venv (fall back to the sibling dev-checkout venv:
+            # worktrees share the parent checkout's venv, which is not
+            # materialized inside the worktree).
+            venv_python = repo / "venv" / "bin" / "python"
+            if not venv_python.exists():
+                venv_python = (
+                    Path.home() / ".hermes" / "hermes-agent" / "venv" / "bin" / "python"
+                )
             test_proc = subprocess.run(
-                [str(script), *tests],
+                [
+                    str(venv_python), "-m", "pytest", *tests,
+                    "-q", "-o", "addopts=", "-p", "no:randomly",
+                ],
                 cwd=repo,
                 text=True,
                 stdout=subprocess.PIPE,

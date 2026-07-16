@@ -113,6 +113,36 @@ async def test_forwards_allow_always_false_to_adapter(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_default_allow_always_not_passed_to_legacy_adapter(monkeypatch):
+    """When allow_always=True (the default), the kwarg must NOT be sent.
+
+    Legacy platform adapters don't have the allow_always parameter in their
+    signature. Passing it unconditionally would raise TypeError and silently
+    fall back to text — losing native confirmation buttons. The fix gates
+    the kwarg so legacy adapters see only the params they already accept.
+    """
+    monkeypatch.setenv("HERMES_MANAGED", "")
+    runner = _make_runner()
+
+    # Simulate a caller that uses the default allow_always=True (e.g. /reload-mcp)
+    event = _make_event("/reload-mcp")
+    await runner._request_slash_confirm(
+        event=event,
+        command="reload-mcp",
+        title="/reload-mcp",
+        message="Confirm reload",
+        handler=lambda choice: None,
+        # allow_always defaults to True — explicitly omitted here
+    )
+
+    adapter = runner.adapters[Platform.TELEGRAM]
+    adapter.send_slash_confirm.assert_awaited_once()
+    # The default-True case must NOT include allow_always in kwargs,
+    # so a legacy adapter without that parameter won't TypeError.
+    assert "allow_always" not in adapter.send_slash_confirm.await_args.kwargs
+
+
+@pytest.mark.asyncio
 async def test_registers_pending_confirm(monkeypatch):
     """A pending slash-confirm entry is registered for the session."""
     from tools import slash_confirm as _slash_confirm_mod

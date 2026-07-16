@@ -2706,7 +2706,7 @@ _RESPONSES_ONLY_KWARGS = frozenset(
 
 
 def sanitize_anthropic_kwargs(api_kwargs: Any, *, log_prefix: str = "") -> Any:
-    """Drop Responses-API-only keys before an Anthropic Messages SDK call.
+    """Repair the final payload before an Anthropic Messages SDK call.
 
     Defensive boundary guard for #31673: under rare api_mode-flip races
     (e.g. a concurrent auxiliary call mutating a shared agent between the
@@ -2733,6 +2733,47 @@ def sanitize_anthropic_kwargs(api_kwargs: Any, *, log_prefix: str = "") -> Any:
             "api_mode while dispatch ran under anthropic_messages.",
             log_prefix,
             sorted(leaked),
+        )
+
+    # Anthropic requires every tool_result block to come before any text or
+    # image blocks in the immediately following user message.  Compaction can
+    # preserve an assistant tool_use/result pair while injecting a
+    # system-reminder text block at the front of that user turn.  The IDs still
+    # match, but the API rejects the block order with a non-retryable HTTP 400.
+    # Repair at the final SDK boundary so later message decorators cannot leave
+    # an otherwise valid session permanently wedged.  Stable partitioning
+    # preserves the relative order within both block groups.
+    reordered_tool_result_turns = 0
+    messages = api_kwargs.get("messages")
+    if isinstance(messages, list):
+        for message in messages:
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            tool_results = [
+                block
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "tool_result"
+            ]
+            if not tool_results:
+                continue
+            other_blocks = [
+                block
+                for block in content
+                if not (isinstance(block, dict) and block.get("type") == "tool_result")
+            ]
+            reordered = tool_results + other_blocks
+            if reordered != content:
+                message["content"] = reordered
+                reordered_tool_result_turns += 1
+    if reordered_tool_result_turns:
+        logger.warning(
+            "%sReordered tool_result blocks before other user content in %d "
+            "Anthropic message(s)",
+            log_prefix,
+            reordered_tool_result_turns,
         )
     return api_kwargs
 

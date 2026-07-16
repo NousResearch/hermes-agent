@@ -25,6 +25,7 @@ from agent.anthropic_adapter import (
     read_claude_code_credentials,
     resolve_anthropic_token,
     run_oauth_setup_token,
+    sanitize_anthropic_kwargs,
 )
 from agent.transports import get_transport
 
@@ -826,6 +827,46 @@ class TestConvertTools:
 
 
 class TestConvertMessages:
+    def test_final_sanitizer_moves_tool_results_before_user_text(self):
+        """Anthropic requires tool_result blocks to lead the user turn.
+
+        Compaction can place an injected system-reminder text block before a
+        preserved tool result.  The final SDK boundary must repair that shape
+        instead of letting a non-retryable HTTP 400 kill the session.
+        """
+        api_kwargs = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "call_compacted",
+                            "name": "execute_code",
+                            "input": {},
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "<system-reminder>context</system-reminder>"},
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "call_compacted",
+                            "content": "ok",
+                        },
+                    ],
+                },
+            ]
+        }
+
+        sanitize_anthropic_kwargs(api_kwargs)
+
+        assert [
+            block["type"] for block in api_kwargs["messages"][1]["content"]
+        ] == ["tool_result", "text"]
+
     def test_extracts_system_prompt(self):
         messages = [
             {"role": "system", "content": "You are helpful."},

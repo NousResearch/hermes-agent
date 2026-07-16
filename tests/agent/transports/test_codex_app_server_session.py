@@ -53,6 +53,9 @@ class FakeClient:
         if method == "thread/start":
             return {"thread": {"id": "thread-fake-001"},
                     "activePermissionProfile": {"id": "workspace-write"}}
+        if method == "thread/resume":
+            return {"thread": {"id": params["threadId"]},
+                    "activePermissionProfile": {"id": "workspace-write"}}
         if method == "turn/start":
             return {"turn": {"id": "turn-fake-001"}}
         if method == "turn/interrupt":
@@ -148,6 +151,21 @@ class TestLifecycle:
         # thread/start should be called exactly once
         method_calls = [m for (m, _) in client.requests if m == "thread/start"]
         assert len(method_calls) == 1
+
+    def test_existing_thread_id_is_resumed(self):
+        client = FakeClient()
+        s = make_session(client, thread_id="thread-existing")
+
+        assert s.ensure_started() == "thread-existing"
+        method, params = next(
+            request for request in client.requests
+            if request[0] == "thread/resume"
+        )
+        assert method == "thread/resume"
+        assert params == {
+            "threadId": "thread-existing",
+            "cwd": "/tmp",
+        }
 
     def test_thread_start_passes_cwd_only(self):
         """thread/start carries cwd. We intentionally do NOT pass `permissions`

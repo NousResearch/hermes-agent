@@ -204,6 +204,7 @@ class CodexAppServerSession:
         cwd: Optional[str] = None,
         codex_bin: str = "codex",
         codex_home: Optional[str] = None,
+        thread_id: Optional[str] = None,
         permission_profile: Optional[str] = None,
         approval_callback: Optional[Callable[..., str]] = None,
         on_event: Optional[Callable[[dict], None]] = None,
@@ -225,7 +226,8 @@ class CodexAppServerSession:
         self._client_factory = client_factory or CodexAppServerClient
 
         self._client: Optional[CodexAppServerClient] = None
-        self._thread_id: Optional[str] = None
+        self._thread_id: Optional[str] = thread_id
+        self._thread_resumed = False
         self._interrupt_event = threading.Event()
         # Pending file-change items, keyed by item id. Populated on
         # item/started for fileChange items; consumed by the approval
@@ -241,7 +243,7 @@ class CodexAppServerSession:
         """Spawn the subprocess, do the initialize handshake, and start a
         thread. Returns the codex thread id. Idempotent — repeated calls
         return the same thread id."""
-        if self._thread_id is not None:
+        if self._thread_id is not None and self._client is not None:
             return self._thread_id
         if self._client is None:
             self._client = self._client_factory(
@@ -267,8 +269,16 @@ class CodexAppServerSession:
         # codex CLI workflow and avoids fighting codex's own validation.
         # Users who want a write-capable profile configure it in their
         # ~/.codex/config.toml the same way they would for any codex usage.
-        params: dict[str, Any] = {"cwd": self._cwd}
-        result = self._client.request("thread/start", params, timeout=15)
+        if self._thread_id is not None:
+            result = self._client.request(
+                "thread/resume",
+                {"threadId": self._thread_id, "cwd": self._cwd},
+                timeout=15,
+            )
+            self._thread_resumed = True
+        else:
+            params: dict[str, Any] = {"cwd": self._cwd}
+            result = self._client.request("thread/start", params, timeout=15)
         # Cross-fill thread.id/sessionId — different codex versions have
         # serialized this under either key. Mirrors openclaw beta.8's
         # tolerance fix so future codex drops/renames don't KeyError us
@@ -290,7 +300,8 @@ class CodexAppServerSession:
             )
         self._thread_id = thread_id
         logger.info(
-            "codex app-server thread started: id=%s profile=%s cwd=%s",
+            "codex app-server thread %s: id=%s profile=%s cwd=%s",
+            "resumed" if self._thread_resumed else "started",
             self._thread_id[:8],
             self._permission_profile,
             self._cwd,

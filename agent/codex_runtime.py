@@ -350,6 +350,10 @@ def run_codex_app_server_turn(
         from agent.runtime_cwd import resolve_agent_cwd
 
         cwd = getattr(agent, "session_cwd", None) or str(resolve_agent_cwd())
+        from agent.codex_thread_store import get_codex_thread_id
+        persisted_thread_id = get_codex_thread_id(
+            getattr(agent, "session_id", None) or ""
+        )
         # Approval callback: defer to Hermes' standard prompt flow if a
         # CLI thread has installed one. Gateway / cron contexts get the
         # codex-side fail-closed default.
@@ -398,6 +402,7 @@ def run_codex_app_server_turn(
 
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
+            thread_id=persisted_thread_id,
             approval_callback=approval_callback,
             request_routing=_ServerRequestRouting(
                 auto_approve_exec=auto_approve_requests,
@@ -489,6 +494,16 @@ def run_codex_app_server_turn(
     )
     _record_codex_app_server_compaction(agent, turn)
     usage_result = _record_codex_app_server_usage(agent, turn)
+    if turn.thread_id and getattr(agent, "session_id", None):
+        try:
+            from agent.codex_thread_store import save_codex_thread_id
+            save_codex_thread_id(
+                agent.session_id,
+                turn.thread_id,
+                cwd=getattr(agent, "session_cwd", None) or "",
+            )
+        except Exception:
+            logger.debug("codex thread mapping persistence failed", exc_info=True)
     api_calls = 1
 
     # Now check the skill nudge AFTER iters were incremented — same

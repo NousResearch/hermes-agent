@@ -368,12 +368,15 @@ def finalize_turn(
     if final_response and not interrupted:
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _transform_platform = getattr(agent, "_transform_llm_output_platform", None)
+            if not isinstance(_transform_platform, str) or not _transform_platform.strip():
+                _transform_platform = getattr(agent, "platform", None) or ""
             _transform_results = _invoke_hook(
                 "transform_llm_output",
                 response_text=final_response,
                 session_id=agent.session_id or "",
                 model=agent.model,
-                platform=getattr(agent, "platform", None) or "",
+                platform=_transform_platform,
             )
             for _hook_result in _transform_results:
                 if isinstance(_hook_result, str) and _hook_result:

@@ -372,7 +372,7 @@ def register(ctx):
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
 - If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
 - Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
-- Observer callbacks receive `telemetry_schema_version` automatically. When present, `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are separate correlation fields. Treat `api_request_id` as an opaque identifier; do not parse its string format.
+- Observer callbacks receive `telemetry_schema_version` automatically. When present, `turn_id`, `api_request_id`, `task_id`, `session_id`, `gateway_session_key`, and `api_call_count` are separate correlation fields. `gateway_session_key` is the stable gateway conversation key and may be empty outside gateway-backed sessions; it does not replace the live `session_id`. Treat `api_request_id` as an opaque identifier; do not parse its string format.
 
 ### Quick reference
 
@@ -413,6 +413,8 @@ def my_callback(tool_name: str, args: dict, task_id: str, **kwargs):
 | `tool_name` | `str` | Name of the tool about to execute (e.g. `"terminal"`, `"web_search"`, `"read_file"`) |
 | `args` | `dict` | The arguments the model passed to the tool |
 | `task_id` | `str` | Session/task identifier. Empty string if not set. |
+| `session_id` | `str` | Current live agent session identifier. May change after reset or rotation. |
+| `gateway_session_key` | `str` | Stable gateway conversation or routing key. Empty outside gateway-backed sessions; does not replace `session_id`. |
 
 **Fires:** In `model_tools.py`, inside `handle_function_call()`, before the tool's handler runs. Fires once per tool call — if the model calls 3 tools in parallel, this fires 3 times.
 
@@ -522,6 +524,7 @@ def my_callback(session_id: str, user_message: str, conversation_history: list,
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `session_id` | `str` | Unique identifier for the current session |
+| `gateway_session_key` | `str` | Stable gateway conversation or routing key. Empty outside gateway-backed sessions; does not replace `session_id`. |
 | `user_message` | `str` | The user's original message for this turn (before any skill injection) |
 | `conversation_history` | `list` | Copy of the full message list (OpenAI format: `[{"role": "user", "content": "..."}]`) |
 | `is_first_turn` | `bool` | `True` if this is the first turn of a new session, `False` on subsequent turns |

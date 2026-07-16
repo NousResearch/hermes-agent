@@ -710,8 +710,10 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         # Interactive model picker state per chat
         self._model_picker_state: Dict[str, dict] = {}
-        # Approval button state: message_id → session_key
-        self._approval_state: Dict[int, str] = {}
+        # Approval button state: approval_id -> request context used by callbacks.
+        # Values are dicts with session_key/chat_id/message_id/text/requested_at;
+        # legacy string session_key values are still accepted for in-flight prompts.
+        self._approval_state: Dict[int, Any] = {}
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
         # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
         self._slash_confirm_state: Dict[str, str] = {}
@@ -4934,13 +4936,65 @@ class TelegramAdapter(BasePlatformAdapter):
 
             msg = await self._send_message_with_thread_fallback(**kwargs)
 
-            # Store session_key keyed by approval_id for the callback handler
-            self._approval_state[approval_id] = session_key
+            # Store request context keyed by approval_id for the callback handler
+            # so the edited result can retain command/reason audit details.
+            self._approval_state[approval_id] = {
+                "session_key": session_key,
+                "chat_id": str(chat_id),
+                "message_id": str(msg.message_id),
+                "text": text,
+                "requested_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            }
 
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             logger.warning("[%s] send_exec_approval failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
+
+    @staticmethod
+    def _telegram_user_field(user: Any, field: str) -> Optional[str]:
+        value = getattr(user, field, None)
+        if value is None:
+            return None
+        if not isinstance(value, (str, int)):
+            return None
+        text = str(value).strip()
+        return text if text else None
+
+    @classmethod
+    def _format_approval_operator(cls, user: Any) -> str:
+        first_name = cls._telegram_user_field(user, "first_name")
+        last_name = cls._telegram_user_field(user, "last_name")
+        username = cls._telegram_user_field(user, "username")
+        user_id = cls._telegram_user_field(user, "id")
+
+        name = " ".join(part for part in (first_name, last_name) if part)
+        details: list[str] = []
+        if username:
+            details.append(f"@{username}")
+        if user_id:
+            details.append(f"id {user_id}")
+        if name and details:
+            return f"{name} ({', '.join(details)})"
+        if name:
+            return name
+        if details:
+            return ", ".join(details)
+        return "unknown Telegram user"
+
+    @staticmethod
+    def _format_approval_resolution_text(
+        original_text: str,
+        label: str,
+        operator: str,
+        requested_at: str,
+    ) -> str:
+        return (
+            f"{original_text}\n\n"
+            f"<b>Result:</b> {_html.escape(label)}\n"
+            f"<b>Handled by:</b> {_html.escape(operator)}\n"
+            f"<b>Requested at:</b> {_html.escape(requested_at)}"
+        )
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str,
@@ -5676,10 +5730,19 @@ class TelegramAdapter(BasePlatformAdapter):
                     await query.answer(text="⛔ You are not authorized to approve commands.")
                     return
 
-                session_key = self._approval_state.pop(approval_id, None)
-                if not session_key:
+                approval_state = self._approval_state.pop(approval_id, None)
+                if not approval_state:
                     await query.answer(text="This approval has already been resolved.")
                     return
+                if isinstance(approval_state, dict):
+                    session_key = approval_state["session_key"]
+                    original_text = approval_state.get("text")
+                    requested_at = approval_state.get("requested_at")
+                else:
+                    # Legacy in-flight value: bare session_key string.
+                    session_key = approval_state
+                    original_text = None
+                    requested_at = None
 
                 # Map choice to human-readable label
                 label_map = {
@@ -5688,16 +5751,29 @@ class TelegramAdapter(BasePlatformAdapter):
                     "always": "✅ Approved permanently",
                     "deny": "❌ Denied",
                 }
-                user_display = getattr(query.from_user, "first_name", "User")
+                user_display = self._format_approval_operator(query.from_user)
                 label = label_map.get(choice, "Resolved")
 
                 await query.answer(text=label)
 
-                # Edit message to show decision, remove buttons
+                # Edit message to show decision, remove buttons.
+                # Prefer preserving the original HTML approval request so the
+                # command/reason remain auditable in chat history.
                 try:
+                    if original_text and requested_at:
+                        edit_text = self._format_approval_resolution_text(
+                            original_text,
+                            label,
+                            user_display,
+                            requested_at,
+                        )
+                        parse_mode = ParseMode.HTML
+                    else:
+                        edit_text = self.format_message(f"{label} by {user_display}")
+                        parse_mode = ParseMode.MARKDOWN_V2
                     await query.edit_message_text(
-                        text=self.format_message(f"{label} by {user_display}"),
-                        parse_mode=ParseMode.MARKDOWN_V2,
+                        text=edit_text,
+                        parse_mode=parse_mode,
                         reply_markup=None,
                     )
                 except Exception:

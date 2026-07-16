@@ -1,0 +1,72 @@
+{
+  "cases": [
+    {
+      "name": "sql placeholders empty and populated",
+      "kind": "placeholders",
+      "values": [[], ["a"], ["a", "b", "c"]]
+    },
+    {
+      "name": "session list denorm config ignores env",
+      "kind": "denorm_flag",
+      "env": {
+        "HERMES_SESSION_LIST_DENORM": "1"
+      },
+      "configs": [false, true]
+    },
+    {
+      "name": "session list denorm config read failure",
+      "kind": "denorm_flag",
+      "config_error": "boom",
+      "configs": [true]
+    },
+    {
+      "name": "title search platform alias boosts source",
+      "kind": "title_search",
+      "query": "general tg",
+      "limit": 5,
+      "include_archived": true
+    },
+    {
+      "name": "title search exact title outranks channel",
+      "kind": "title_search",
+      "query": "deploy",
+      "limit": 5,
+      "include_archived": true
+    },
+    {
+      "name": "title search exact whole title",
+      "kind": "title_search",
+      "query": "general chatter",
+      "limit": 5,
+      "include_archived": true
+    },
+    {
+      "name": "title search substring whole phrase",
+      "kind": "title_search",
+      "query": "coverage",
+      "limit": 5,
+      "include_archived": true
+    },
+    {
+      "name": "title search escaped wildcard",
+      "kind": "title_search",
+      "query": "100%",
+      "limit": 5,
+      "include_archived": true
+    },
+    {
+      "name": "title search platform only excludes untitled unrelated",
+      "kind": "title_search",
+      "query": "discord",
+      "limit": 5,
+      "include_archived": true
+    },
+    {
+      "name": "title search blank and zero limit",
+      "kind": "title_search",
+      "query": "discord",
+      "limit": 0,
+      "include_archived": true
+    }
+  ]
+}

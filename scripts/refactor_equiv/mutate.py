@@ -185,6 +185,36 @@ def tool_gate_mutations() -> list[Mutation]:
     ]
 
 
+def state_ext_mutations() -> list[Mutation]:
+    """Mutations for the pure hermes_state helper extraction."""
+    return [
+        Mutation(
+            "return-value: corrupt SQL placeholder token",
+            lambda p: replace_once(
+                p,
+                'return ",".join("?" for _ in values)',
+                'return ",".join("!" for _ in values)',
+            ),
+        ),
+        Mutation(
+            "config-gate: invert denorm flag result",
+            lambda p: replace_once(
+                p,
+                "return value is True",
+                "return value is False",
+            ),
+        ),
+        Mutation(
+            "branch-classification: remap telegram shorthand",
+            lambda p: replace_once(
+                p,
+                '"tg": "telegram",',
+                '"tg": "discord",',
+            ),
+        ),
+    ]
+
+
 def restart_codec_mutations() -> list[Mutation]:
     """Mutations over restart failure entry decode/encode outputs."""
     return [
@@ -267,6 +297,8 @@ def main(argv: list[str] | None = None) -> int:
         mutations = compaction_ext_mutations()
     elif module.endswith("tool_gate.py"):
         mutations = tool_gate_mutations()
+    elif module.endswith("hermes_state_ext.py"):
+        mutations = state_ext_mutations()
     elif module.endswith("restart_codec.py"):
         mutations = restart_codec_mutations()
     elif module.endswith("route_identity.py"):

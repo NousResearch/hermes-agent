@@ -1,0 +1,502 @@
+{
+  "28313a70119eda9921d9fb77167987ccaaecb0d5ee9c9dc7feec432ccf3a4d1f": {
+    "input": {
+      "configs": [
+        false,
+        true
+      ],
+      "env": {
+        "HERMES_SESSION_LIST_DENORM": "1"
+      },
+      "kind": "denorm_flag",
+      "name": "session list denorm config ignores env"
+    },
+    "name": "session list denorm config ignores env",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": [
+        false,
+        true
+      ]
+    }
+  },
+  "357db47e33a8e3dcd1f4183a75f0e4a5823436bd1594557cc8c18994e0bbca04": {
+    "input": {
+      "include_archived": true,
+      "kind": "title_search",
+      "limit": 5,
+      "name": "title search exact title outranks channel",
+      "query": "deploy"
+    },
+    "name": "title search exact title outranks channel",
+    "output": {
+      "db": [
+        {
+          "display_name": "Daemonarchy / #general / Deploy Notes",
+          "id": "dc",
+          "source": "discord",
+          "title": null
+        },
+        {
+          "display_name": null,
+          "id": "plain",
+          "source": "cli",
+          "title": "No platform words here"
+        },
+        {
+          "display_name": null,
+          "id": "tg",
+          "source": "telegram",
+          "title": "General chatter"
+        },
+        {
+          "display_name": null,
+          "id": "titled",
+          "source": "cli",
+          "title": "Deploy pipeline"
+        },
+        {
+          "display_name": null,
+          "id": "untitled-discord",
+          "source": "discord",
+          "title": null
+        },
+        {
+          "display_name": null,
+          "id": "wild",
+          "source": "cli",
+          "title": "100% coverage plan"
+        }
+      ],
+      "messages": [],
+      "return": [
+        {
+          "display_name": null,
+          "id": "titled",
+          "preview": "cli preview",
+          "source": "cli",
+          "title": "Deploy pipeline"
+        },
+        {
+          "display_name": "Daemonarchy / #general / Deploy Notes",
+          "id": "dc",
+          "preview": "discord preview",
+          "source": "discord",
+          "title": null
+        }
+      ]
+    }
+  },
+  "560702536394d9864fd9ec7f0be69b5be8da0c83baec99606150e2cd14b1edeb": {
+    "input": {
+      "config_error": "boom",
+      "configs": [
+        true
+      ],
+      "kind": "denorm_flag",
+      "name": "session list denorm config read failure"
+    },
+    "name": "session list denorm config read failure",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": [
+        false
+      ]
+    }
+  },
+  "630ea362ca0517c889385e47f7ea78ed0ae95f62ae252082d2580279bc89d64f": {
+    "input": {
+      "include_archived": true,
+      "kind": "title_search",
+      "limit": 0,
+      "name": "title search blank and zero limit",
+      "query": "discord"
+    },
+    "name": "title search blank and zero limit",
+    "output": {
+      "db": [
+        {
+          "display_name": "Daemonarchy / #general / Deploy Notes",
+          "id": "dc",
+          "source": "discord",
+          "title": null
+        },
+        {
+          "display_name": null,
+          "id": "plain",
+          "source": "cli",
+          "title": "No platform words here"
+        },
+        {
+          "display_name": null,
+          "id": "tg",
+          "source": "telegram",
+          "title": "General chatter"
+        },
+        {
+          "display_name": null,
+          "id": "titled",
+          "source": "cli",
+          "title": "Deploy pipeline"
+        },
+        {
+          "display_name": null,
+          "id": "untitled-discord",
+          "source": "discord",
+          "title": null
+        },
+        {
+          "display_name": null,
+          "id": "wild",
+          "source": "cli",
+          "title": "100% coverage plan"
+        }
+      ],
+      "messages": [],
+      "return": []
+    }
+  },
+  "89119ac2506d2bcb28199ae78717756a84d44bd1901e4c87e3537576ff351bb9": {
+    "input": {
+      "include_archived": true,
+      "kind": "title_search",
+      "limit": 5,
+      "name": "title search platform only excludes untitled unrelated",
+      "query": "discord"
+    },
+    "name": "title search platform only excludes untitled unrelated",
+    "output": {
+      "db": [
+        {
+          "display_name": "Daemonarchy / #general / Deploy Notes",
+          "id": "dc",
+          "source": "discord",
+          "title": null
+        },
+        {
+          "display_name": null,
+          "id": "plain",
+          "source": "cli",
+          "title": "No platform words here"
+        },
+        {
+          "display_name": null,
+          "id": "tg",
+          "source": "telegram",
+          "title": "General chatter"
+        },
+        {
+          "display_name": null,
+          "id": "titled",
+          "source": "cli",
+          "title": "Deploy pipeline"
+        },
+        {
+          "display_name": null,
+          "id": "untitled-discord",
+          "source": "discord",
+          "title": null
+        },
+        {
+          "display_name": null,
+          "id": "wild",
+          "source": "cli",
+          "title": "100% coverage plan"
+        }
+      ],
+      "messages": [],
+      "return": [
+        {
+          "display_name": "Daemonarchy / #general / Deploy Notes",
+          "id": "dc",
+          "preview": "discord preview",
+          "source": "discord",
+          "title": null
+        }
+      ]
+    }
+  },
+  "9ace3df3d6818bc9b79fe041dbb8141cf8bd22bd073d322a51cca1c95de666c7": {
+    "input": {
+      "include_archived": true,
+      "kind": "title_search",
+      "limit": 5,
+      "name": "title search platform alias boosts source",
+      "query": "general tg"
+    },
+    "name": "title search platform alias boosts source",
+    "output": {
+      "db": [
+        {
+          "display_name": "Daemonarchy / #general / Deploy Notes",
+          "id": "dc",
+          "source": "discord",
+          "title": null
+        },
+        {
+          "display_name": null,
+          "id": "plain",
+          "source": "cli",
+          "title": "No platform words here"
+        },
+        {
+          "display_name": null,
+          "id": "tg",
+          "source": "telegram",
+          "title": "General chatter"
+        },
+        {
+          "display_name": null,
+          "id": "titled",
+          "source": "cli",
+          "title": "Deploy pipeline"
+        },
+        {
+          "display_name": null,
+          "id": "untitled-discord",
+          "source": "discord",
+          "title": null
+        },
+        {
+          "display_name": null,
+          "id": "wild",
+          "source": "cli",
+          "title": "100% coverage plan"
+        }
+      ],
+      "messages": [],
+      "return": [
+        {
+          "display_name": null,
+          "id": "tg",
+          "preview": "telegram preview",
+          "source": "telegram",
+          "title": "General chatter"
+        },
+        {
+          "display_name": "Daemonarchy / #general / Deploy Notes",
+          "id": "dc",
+          "preview": "discord preview",
+          "source": "discord",
+          "title": null
+        }
+      ]
+    }
+  },
+  "aa78f73428975bb37e4b6ada4bdb46fd9f7413a9789e6bd278725f90f37f98ec": {
+    "input": {
+      "kind": "placeholders",
+      "name": "sql placeholders empty and populated",
+      "values": [
+        [],
+        [
+          "a"
+        ],
+        [
+          "a",
+          "b",
+          "c"
+        ]
+      ]
+    },
+    "name": "sql placeholders empty and populated",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": [
+        "",
+        "?",
+        "?,?,?"
+      ]
+    }
+  },
+  "c223e99cb4c96eb3aee2606292b98e871884adaeefcc3d3a638cdb6f1fc42cbe": {
+    "input": {
+      "include_archived": true,
+      "kind": "title_search",
+      "limit": 5,
+      "name": "title search substring whole phrase",
+      "query": "coverage"
+    },
+    "name": "title search substring whole phrase",
+    "output": {
+      "db": [
+        {
+          "display_name": "Daemonarchy / #general / Deploy Notes",
+          "id": "dc",
+          "source": "discord",
+          "title": null
+        },
+        {
+          "display_name": null,
+          "id": "plain",
+          "source": "cli",
+          "title": "No platform words here"
+        },
+        {
+          "display_name": null,
+          "id": "tg",
+          "source": "telegram",
+          "title": "General chatter"
+        },
+        {
+          "display_name": null,
+          "id": "titled",
+          "source": "cli",
+          "title": "Deploy pipeline"
+        },
+        {
+          "display_name": null,
+          "id": "untitled-discord",
+          "source": "discord",
+          "title": null
+        },
+        {
+          "display_name": null,
+          "id": "wild",
+          "source": "cli",
+          "title": "100% coverage plan"
+        }
+      ],
+      "messages": [],
+      "return": [
+        {
+          "display_name": null,
+          "id": "wild",
+          "preview": "wildcard preview",
+          "source": "cli",
+          "title": "100% coverage plan"
+        }
+      ]
+    }
+  },
+  "ca1eeb5204618bb81e3a2b02c7f84cf847fbbf618e710e9db588b2a423e0432a": {
+    "input": {
+      "include_archived": true,
+      "kind": "title_search",
+      "limit": 5,
+      "name": "title search escaped wildcard",
+      "query": "100%"
+    },
+    "name": "title search escaped wildcard",
+    "output": {
+      "db": [
+        {
+          "display_name": "Daemonarchy / #general / Deploy Notes",
+          "id": "dc",
+          "source": "discord",
+          "title": null
+        },
+        {
+          "display_name": null,
+          "id": "plain",
+          "source": "cli",
+          "title": "No platform words here"
+        },
+        {
+          "display_name": null,
+          "id": "tg",
+          "source": "telegram",
+          "title": "General chatter"
+        },
+        {
+          "display_name": null,
+          "id": "titled",
+          "source": "cli",
+          "title": "Deploy pipeline"
+        },
+        {
+          "display_name": null,
+          "id": "untitled-discord",
+          "source": "discord",
+          "title": null
+        },
+        {
+          "display_name": null,
+          "id": "wild",
+          "source": "cli",
+          "title": "100% coverage plan"
+        }
+      ],
+      "messages": [],
+      "return": [
+        {
+          "display_name": null,
+          "id": "wild",
+          "preview": "wildcard preview",
+          "source": "cli",
+          "title": "100% coverage plan"
+        }
+      ]
+    }
+  },
+  "cd579637bf7778a8dc6da46b354dba73051cd21861f146914a45892d0ae9e6c9": {
+    "input": {
+      "include_archived": true,
+      "kind": "title_search",
+      "limit": 5,
+      "name": "title search exact whole title",
+      "query": "general chatter"
+    },
+    "name": "title search exact whole title",
+    "output": {
+      "db": [
+        {
+          "display_name": "Daemonarchy / #general / Deploy Notes",
+          "id": "dc",
+          "source": "discord",
+          "title": null
+        },
+        {
+          "display_name": null,
+          "id": "plain",
+          "source": "cli",
+          "title": "No platform words here"
+        },
+        {
+          "display_name": null,
+          "id": "tg",
+          "source": "telegram",
+          "title": "General chatter"
+        },
+        {
+          "display_name": null,
+          "id": "titled",
+          "source": "cli",
+          "title": "Deploy pipeline"
+        },
+        {
+          "display_name": null,
+          "id": "untitled-discord",
+          "source": "discord",
+          "title": null
+        },
+        {
+          "display_name": null,
+          "id": "wild",
+          "source": "cli",
+          "title": "100% coverage plan"
+        }
+      ],
+      "messages": [],
+      "return": [
+        {
+          "display_name": null,
+          "id": "tg",
+          "preview": "telegram preview",
+          "source": "telegram",
+          "title": "General chatter"
+        },
+        {
+          "display_name": "Daemonarchy / #general / Deploy Notes",
+          "id": "dc",
+          "preview": "discord preview",
+          "source": "discord",
+          "title": null
+        }
+      ]
+    }
+  }
+}

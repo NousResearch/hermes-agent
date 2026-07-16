@@ -127,5 +127,17 @@
       "tests/golden/tool_gate/"
     ],
     "why": "Tool-search bridge calls must be scoped to the session's granted deferrable tools, and inherited subagent toolsets must keep the fork's code_execution exemption while stripping blocked delegation surfaces."
+  },
+  {
+    "feature": "state pure fork helpers preserve denorm gate and platform session search",
+    "tests": [
+      "tests/hermes_state/test_session_list_denorm_reland.py::test_session_list_denorm_flag_is_live_config_only",
+      "tests/test_hermes_state.py::TestSearchSessionsByTitle"
+    ],
+    "paths": [
+      "hermes_state_ext.py",
+      "tests/golden/state_ext/"
+    ],
+    "why": "Fork-owned pure state helpers must keep the config-only session-list denorm gate and cross-platform session title search aliases byte-identical while reducing inline fork logic in hermes_state.py."
   }
 ]

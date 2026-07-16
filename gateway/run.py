@@ -2918,6 +2918,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Topic renames are serialized so a slow placeholder from /new cannot
         # finish after (and overwrite) the generated or explicit title.
         self._telegram_topic_rename_locks: Dict[tuple[str, str], asyncio.Lock] = {}
+        self._telegram_topic_rename_lock_users: Dict[tuple[str, str], int] = {}
         self._shutdown_event = asyncio.Event()
         self._exit_cleanly = False
         self._exit_with_failure = False
@@ -13959,10 +13960,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if rename_lock is None:
             rename_lock = asyncio.Lock()
             self._telegram_topic_rename_locks[topic_key] = rename_lock
-        async with rename_lock:
-            await self._rename_telegram_topic_for_session_title_locked(
-                source, session_id, title
-            )
+        self._telegram_topic_rename_lock_users[topic_key] = (
+            self._telegram_topic_rename_lock_users.get(topic_key, 0) + 1
+        )
+        try:
+            async with rename_lock:
+                await self._rename_telegram_topic_for_session_title_locked(
+                    source, session_id, title
+                )
+        finally:
+            remaining_users = self._telegram_topic_rename_lock_users[topic_key] - 1
+            if remaining_users:
+                self._telegram_topic_rename_lock_users[topic_key] = remaining_users
+            else:
+                self._telegram_topic_rename_lock_users.pop(topic_key, None)
+                if self._telegram_topic_rename_locks.get(topic_key) is rename_lock:
+                    self._telegram_topic_rename_locks.pop(topic_key, None)
 
     async def _rename_telegram_topic_for_session_title_locked(
         self,

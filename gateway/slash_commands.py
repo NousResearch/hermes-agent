@@ -310,10 +310,10 @@ class GatewaySlashCommandsMixin:
             except Exception:
                 logger.debug("Failed to rebind Telegram topic after /new", exc_info=True)
 
-            # Reused topics otherwise keep advertising the old conversation
-            # until auto-title completes after the first exchange. Rename now
-            # to a neutral placeholder (or the explicit /new <title>) and let
-            # the normal auto-title callback replace it later.
+            # Reused topics otherwise keep advertising the old conversation.
+            # Rename now to a neutral placeholder for bare /new, or to the
+            # persisted explicit /new <title>. Only the untitled placeholder
+            # is later replaced by the normal auto-title callback.
             schedule_rename = getattr(
                 self, "_schedule_telegram_topic_title_rename", None
             )

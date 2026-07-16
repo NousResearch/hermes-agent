@@ -124,6 +124,7 @@ def _make_runner(session_db=None):
     runner._session_model_overrides = {}
     runner._pending_model_notes = {}
     runner._telegram_topic_rename_locks = {}
+    runner._telegram_topic_rename_lock_users = {}
     # Gateway holds the async facade; the slash handlers await it.
     if session_db is not None:
         from hermes_state import AsyncSessionDB
@@ -975,6 +976,7 @@ async def test_topic_renames_are_serialized_so_newest_title_wins(tmp_path):
     await asyncio.gather(placeholder, generated)
 
     assert applied_titles == ["New Session", "Generated Topic Title"]
+    assert topic_key not in runner._telegram_topic_rename_locks
 
 
 @pytest.mark.asyncio

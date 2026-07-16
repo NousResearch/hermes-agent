@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.auxiliary_client import call_llm, _is_connection_error, aux_interrupt_protection
 from agent.context_engine import ContextEngine
+from agent.error_classifier import FailoverReason, classify_api_error
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     get_model_context_length,
@@ -34,6 +35,47 @@ from agent.model_metadata import (
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
+
+
+_SUMMARY_PERMANENT_QUOTA_MARKERS: tuple[str, ...] = (
+    "insufficient_quota",
+    "quota exceeded",
+    "quota_exceeded",
+    "out of funds",
+    "out of credits",
+    "out of credit",
+    "out of extra usage",
+)
+
+_SUMMARY_MISSING_CREDENTIAL_MARKERS: tuple[str, ...] = (
+    "no api key was found",
+    "no api key found",
+)
+
+
+def _is_summary_access_or_quota_error(exc: Exception) -> bool:
+    """Return True for non-retryable summary auth, permission, or quota errors."""
+
+    classified = classify_api_error(exc)
+    if classified.reason is FailoverReason.rate_limit:
+        return False
+    if classified.reason in {FailoverReason.auth, FailoverReason.auth_permanent}:
+        return True
+
+    err_text = str(exc).lower()
+    if any(marker in err_text for marker in _SUMMARY_MISSING_CREDENTIAL_MARKERS):
+        return True
+
+    status = getattr(exc, "status_code", None) or getattr(
+        getattr(exc, "response", None), "status_code", None
+    )
+    if status in {401, 402, 403}:
+        return True
+
+    if classified.reason is FailoverReason.billing:
+        return any(marker in err_text for marker in _SUMMARY_PERMANENT_QUOTA_MARKERS)
+    return any(marker in err_text for marker in _SUMMARY_PERMANENT_QUOTA_MARKERS)
+
 
 HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
 HISTORICAL_IN_PROGRESS_HEADING = "## Historical In-Progress State"
@@ -586,6 +628,42 @@ def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, An
     return result if changed else messages
 
 
+def _image_part_label(part: Dict[str, Any]) -> str:
+    """Render a multimodal image part as a short text label for the summarizer.
+
+    Keeps a real, referenceable URL when the image lives at an http(s)
+    address — the summary can then preserve the handle so the agent (or a
+    later vision_analyze call) can still reach the image after compaction.
+    Base64 ``data:`` URLs carry no reusable reference and would flood the
+    summarizer input, so they collapse to ``[image]``.
+    """
+    url = ""
+    if isinstance(part.get("image_url"), dict):
+        url = str(part["image_url"].get("url") or "")
+    elif isinstance(part.get("image_url"), str):
+        url = part["image_url"]
+    elif isinstance(part.get("url"), str):
+        url = part["url"]
+    if url.startswith(("http://", "https://")):
+        return f"[image: {url}]"
+    return "[image]"
+
+
+def _str_arg(args: dict, key: str, default: str = "") -> str:
+    """Safely get a string argument from parsed tool args.
+
+    LLMs sometimes return non-string parameter values (e.g. bool, int) for
+    tool calls.  Calling ``len()`` / ``.count()`` / slicing on those causes
+    ``TypeError`` / ``AttributeError`` which crashes context compression.
+    This helper coerces any value to ``str`` so downstream code can assume
+    a string is always returned.
+    """
+    val = args.get(key, default)
+    if isinstance(val, str):
+        return val
+    return str(val) if val is not None else default
+
+
 def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) -> str:
     """Create an informative 1-line summary of a tool call + result.
 
@@ -598,10 +676,29 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
         [terminal] ran `npm test` -> exit 0, 47 lines output
         [read_file] read config.py from line 1 (1,200 chars)
         [search_files] content search for 'compress' in agent/ -> 12 matches
+
+    Never raises: models sometimes emit non-string argument values (bool,
+    int, None) and the args here come from persisted session history, so a
+    single malformed historical call must not crash compression — which
+    retries on the same history and would crash-loop. Individual branches
+    coerce the values they slice/measure (keeping summaries informative);
+    this wrapper is the backstop for anything they miss.
     """
+    try:
+        return _summarize_tool_result_unguarded(tool_name, tool_args, tool_content)
+    except Exception as exc:  # noqa: BLE001 — a summary must never crash compression
+        logger.debug("Tool-result summary failed for %s: %s", tool_name, exc)
+        _len = len(tool_content) if isinstance(tool_content, str) else 0
+        return f"[{tool_name}] ({_len:,} chars result)"
+
+
+def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_content: str) -> str:
+    """Build the summary line (unguarded; see ``_summarize_tool_result``)."""
     try:
         args = json.loads(tool_args) if tool_args else {}
     except (json.JSONDecodeError, TypeError):
+        args = {}
+    if not isinstance(args, dict):
         args = {}
 
     content = tool_content or ""
@@ -609,7 +706,7 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
     line_count = content.count("\n") + 1 if content.strip() else 0
 
     if tool_name == "terminal":
-        cmd = args.get("command", "")
+        cmd = _str_arg(args, "command")
         if len(cmd) > 80:
             cmd = cmd[:77] + "..."
         exit_match = re.search(r'"exit_code"\s*:\s*(-?\d+)', content)
@@ -623,7 +720,7 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
 
     if tool_name == "write_file":
         path = args.get("path", "?")
-        written_lines = args.get("content", "").count("\n") + 1 if args.get("content") else "?"
+        written_lines = _str_arg(args, "content").count("\n") + 1 if args.get("content") else "?"
         return f"[write_file] wrote to {path} ({written_lines} lines)"
 
     if tool_name == "search_files":
@@ -652,20 +749,30 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
 
     if tool_name == "web_extract":
         urls = args.get("urls", [])
-        url_desc = urls[0] if isinstance(urls, list) and urls else "?"
+        first = urls[0] if isinstance(urls, list) and urls else "?"
+        # web_search results are dicts ({"url"/"href": ...}) and models often
+        # forward them straight into web_extract. Unwrap to the URL string so
+        # the summary stays readable and the ``+=`` below never hits the
+        # ``dict + str`` TypeError that would abort pre-compression pruning.
+        if isinstance(first, dict):
+            first = first.get("url") or first.get("href") or "?"
+        elif not isinstance(first, str):
+            first = "?"
+        url_desc = first
         if isinstance(urls, list) and len(urls) > 1:
             url_desc += f" (+{len(urls) - 1} more)"
         return f"[web_extract] {url_desc} ({content_len:,} chars)"
 
     if tool_name == "delegate_task":
-        goal = args.get("goal", "")
+        goal = _str_arg(args, "goal")
         if len(goal) > 60:
             goal = goal[:57] + "..."
         return f"[delegate_task] '{goal}' ({content_len:,} chars result)"
 
     if tool_name == "execute_code":
-        code_preview = (args.get("code") or "")[:60].replace("\n", " ")
-        if len(args.get("code", "")) > 60:
+        code_str = _str_arg(args, "code")
+        code_preview = code_str[:60].replace("\n", " ")
+        if len(code_str) > 60:
             code_preview += "..."
         return f"[execute_code] `{code_preview}` ({line_count} lines output)"
 
@@ -674,7 +781,7 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
         return f"[{tool_name}] name={name} ({content_len:,} chars)"
 
     if tool_name == "vision_analyze":
-        question = args.get("question", "")[:50]
+        question = _str_arg(args, "question")[:50]
         return f"[vision_analyze] '{question}' ({content_len:,} chars)"
 
     if tool_name == "memory":
@@ -730,6 +837,7 @@ class ContextCompressor(ContextEngine):
         self._context_probe_persistable = False
         self._previous_summary = None
         self._last_summary_error = None
+        self._consecutive_timeout_failures = 0
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
         self._last_aux_model_failure_error = None
@@ -768,6 +876,7 @@ class ContextCompressor(ContextEngine):
         """
         self._previous_summary = None
         self._last_summary_error = None
+        self._consecutive_timeout_failures = 0
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
         self._last_aux_model_failure_error = None
@@ -792,6 +901,7 @@ class ContextCompressor(ContextEngine):
         self._session_id = session_id or ""
         self._summary_failure_cooldown_until = 0.0
         self._last_summary_error = None
+        self._consecutive_timeout_failures = 0
         self._fallback_compression_streak = 0
         self.get_active_compression_failure_cooldown()
         self._load_fallback_compression_streak()
@@ -940,6 +1050,7 @@ class ContextCompressor(ContextEngine):
     def _clear_compression_failure_cooldown(self) -> None:
         self._summary_failure_cooldown_until = 0.0
         self._last_summary_error = None
+        self._consecutive_timeout_failures = 0
 
         session_db = getattr(self, "_session_db", None)
         session_id = getattr(self, "_session_id", "")
@@ -1620,7 +1731,24 @@ class ContextCompressor(ContextEngine):
         parts = []
         for msg in turns:
             role = msg.get("role", "unknown")
-            content = redact_sensitive_text(msg.get("content") or "")
+            content = msg.get("content")
+            if isinstance(content, list):
+                text_parts: list[str] = []
+                for part in content:
+                    if isinstance(part, dict):
+                        ptype = part.get("type")
+                        if ptype == "text":
+                            text_parts.append(part.get("text", ""))
+                        elif ptype in {"image", "image_url", "input_image"}:
+                            text_parts.append(_image_part_label(part))
+                        else:
+                            # Unknown part type — keep a marker so the
+                            # summarizer knows content existed here.
+                            text_parts.append(f"[{ptype or 'attachment'}]")
+                    elif isinstance(part, str):
+                        text_parts.append(part)
+                content = "\n".join(text_parts)
+            content = redact_sensitive_text(content or "")
             content = _MEDIA_DIRECTIVE_RE.sub("[media attachment]", content)
             # Strip inline reasoning blocks (<think>, <reasoning>, etc.) from
             # assistant content before it reaches the summarizer. Reasoning
@@ -2206,6 +2334,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             _is_timeout = (
                 _status in {408, 429, 502, 504}
                 or "timeout" in _err_str
+                or "timed out" in _err_str
             )
             # Non-JSON / malformed-body responses from misconfigured providers
             # or proxies (e.g. an HTML 502 page returned with
@@ -2227,25 +2356,18 @@ This compaction should PRIORITISE preserving all information related to the focu
             # back to the main model instead of entering a 60-second cooldown.
             # See issue #18458.
             _is_streaming_closed = _is_connection_error(e)
-            # Authentication / permission failures (401/403) are NOT transient
-            # and NOT fixable by retrying the same request: the credential is
-            # invalid/blocked/expired or the endpoint is wrong (e.g. a prod
-            # token sent to a staging inference URL). Flag them so compress()
-            # aborts and preserves the session instead of rotating into a
+            # Authentication, permission, and exhausted-quota failures are NOT
+            # transient or fixable by retrying the same request. Flag them so
+            # compress() preserves the session instead of rotating into a
             # degraded child with a placeholder summary. We still allow the
             # one-shot fallback to the MAIN model below when the failure came
-            # from a distinct auxiliary summary_model (its dedicated creds may
-            # be the only broken thing); only a failure on the main model — or
-            # a fallback that also auth-fails — makes the abort stick.
-            _is_auth_error = (
-                _status in {401, 403}
-                or "invalid api key" in _err_str
-                or "invalid x-api-key" in _err_str
-                or ("api key" in _err_str and ("invalid" in _err_str or "blocked" in _err_str))
-                or "unauthorized" in _err_str
-                or "authentication" in _err_str
-            )
-            if _is_auth_error:
+            # from a distinct auxiliary summary_model; only a failure on the
+            # main model — or a fallback that also access/quota-fails — makes
+            # the abort stick.
+            _is_access_or_quota_error = _is_summary_access_or_quota_error(e)
+            if _is_access_or_quota_error:
+                # Keep the established field name for caller compatibility;
+                # it now represents the broader terminal access/quota class.
                 self._last_summary_auth_failure = True
             if _is_json_decode and not _is_model_not_found and not _is_timeout:
                 logger.error(
@@ -2295,7 +2417,30 @@ This compaction should PRIORITISE preserving all information related to the focu
             # Transient errors (timeout, rate limit, network, JSON decode,
             # streaming premature-close) — shorter cooldown for JSON decode and
             # streaming-closed since those conditions can self-resolve quickly.
-            _transient_cooldown = 30 if (_is_json_decode or _is_streaming_closed) else 60
+            # Timeout-class failures escalate with consecutive occurrences:
+            # a session whose transcript structurally exceeds what the
+            # summary route can produce within its deadline will fail the
+            # same way every time, and re-burning the full timeout every
+            # 60s turns each subsequent turn into a multi-minute stall
+            # (#62452). 60s → 300s → 900s (capped); any successful summary
+            # resets the streak via _clear_compression_failure_cooldown().
+            # Timeout takes precedence over the streaming-closed short rung:
+            # a "timed out" error also matches _is_connection_error, but a
+            # deadline exhaustion is the structural repeat-offender class,
+            # not a transient mid-stream drop.
+            if _is_timeout:
+                self._consecutive_timeout_failures = (
+                    getattr(self, "_consecutive_timeout_failures", 0) + 1
+                )
+                _TIMEOUT_COOLDOWN_LADDER = (60, 300, 900)
+                _transient_cooldown = _TIMEOUT_COOLDOWN_LADDER[
+                    min(self._consecutive_timeout_failures,
+                        len(_TIMEOUT_COOLDOWN_LADDER)) - 1
+                ]
+            elif _is_json_decode or _is_streaming_closed:
+                _transient_cooldown = 30
+            else:
+                _transient_cooldown = 60
             err_text = str(e).strip() or e.__class__.__name__
             if len(err_text) > 220:
                 err_text = err_text[:217].rstrip() + "..."
@@ -3108,16 +3253,14 @@ This compaction should PRIORITISE preserving all information related to the focu
         #           surface a warning.
         # Default is False (historical behavior).
         #
-        # EXCEPTION — auth AND transient network failures always abort. A
-        # 401/403 from the summary call means the credential or endpoint is
-        # broken (invalid/blocked key, or a token pointed at the wrong
-        # inference host). A connection/stream-close error means the network
-        # blipped at the compaction moment (#29559). In BOTH cases rotating into
-        # a child session with a placeholder summary on a broken credential
-        # strands the user on a degraded session for zero benefit — every
-        # subsequent call fails the same way. So when the failure was an auth
-        # error we abort regardless of abort_on_summary_failure, preserving
-        # the conversation unchanged until the credential is fixed.
+        # EXCEPTION — terminal access/quota AND transient network failures
+        # always abort. Missing credentials, 401/402/403 access failures, and
+        # confirmed non-resetting quota exhaustion cannot be repaired by
+        # retrying the same summary request. A connection/stream-close error
+        # means the network blipped at the compaction moment (#29559). In all
+        # of these cases, rotating into a child session with a placeholder
+        # summary degrades the conversation for zero benefit. Preserve it
+        # unchanged until access is restored or connectivity recovers.
         if not summary and (
             self.abort_on_summary_failure
             or self._last_summary_auth_failure
@@ -3130,11 +3273,12 @@ This compaction should PRIORITISE preserving all information related to the focu
             if not self.quiet_mode:
                 if self._last_summary_auth_failure:
                     logger.warning(
-                        "Summary generation failed with an authentication "
-                        "error — aborting compression. %d message(s) preserved "
-                        "unchanged; the session was NOT rotated. Check your "
-                        "provider credential / inference endpoint, then retry "
-                        "with /compress or start fresh with /new.",
+                        "Summary generation failed with a terminal access or "
+                        "quota error — aborting compression. %d message(s) "
+                        "preserved unchanged; the session was NOT rotated. "
+                        "Check the provider credential, permission, quota, or "
+                        "inference endpoint, then retry with /compress or "
+                        "start fresh with /new.",
                         n_skipped,
                     )
                 elif self._last_summary_network_failure:

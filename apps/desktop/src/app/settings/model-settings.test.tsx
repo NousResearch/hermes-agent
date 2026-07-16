@@ -186,3 +186,139 @@ describe('ModelSettings', () => {
     expect(await screen.findByText(/still run on/)).toBeTruthy()
   })
 })
+
+describe('ModelSettings MoA preset editor', () => {
+  const moaConfig = () => ({
+    default_preset: 'default',
+    active_preset: '',
+    presets: {
+      default: {
+        reference_models: [
+          { provider: 'nous', model: 'hermes-4' },
+          { provider: 'openrouter', model: 'deepseek/deepseek-v4-pro' }
+        ],
+        aggregator: { provider: 'openrouter', model: 'anthropic/claude-opus-4.8' },
+        reference_temperature: 0,
+        aggregator_temperature: 0,
+        max_tokens: 4096,
+        enabled: true
+      }
+    },
+    reference_models: [
+      { provider: 'nous', model: 'hermes-4' },
+      { provider: 'openrouter', model: 'deepseek/deepseek-v4-pro' }
+    ],
+    aggregator: { provider: 'openrouter', model: 'anthropic/claude-opus-4.8' },
+    reference_temperature: 0,
+    aggregator_temperature: 0,
+    max_tokens: 4096,
+    enabled: true
+  })
+
+  beforeEach(() => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [
+        {
+          name: 'Nous',
+          slug: 'nous',
+          models: ['hermes-4', 'hermes-4-mini'],
+          authenticated: true,
+          capabilities: { 'hermes-4': { reasoning: true, fast: true } }
+        },
+        {
+          name: 'OpenRouter',
+          slug: 'openrouter',
+          models: ['deepseek/deepseek-v4-pro', 'anthropic/claude-opus-4.8'],
+          authenticated: true
+        }
+      ]
+    })
+    getMoaModels.mockResolvedValue(moaConfig())
+    saveMoaModels.mockImplementation((body: unknown) => Promise.resolve(body))
+  })
+
+  async function openReferenceEditor() {
+    await renderModelSettings()
+    expect(await screen.findByText('Reference 1')).toBeTruthy()
+  }
+
+  function slotSelects() {
+    // Combobox order in the MoA section (last 7 on the page): preset select,
+    // then provider+model per reference (2 refs), then aggregator
+    // provider+model. Reference 1's pair is therefore at -6 / -5.
+    const all = screen.getAllByRole('combobox')
+
+    return { ref1Provider: all.at(-6)!, ref1Model: all.at(-5)! }
+  }
+
+  it('holds the autosave while a slot is half-filled (provider changed, model pending)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      await openReferenceEditor()
+
+      fireEvent.click(slotSelects().ref1Provider)
+      fireEvent.click(await screen.findByRole('option', { name: 'OpenRouter' }))
+
+      // Model was cleared by the provider change → config incomplete → the
+      // debounced autosave must NOT fire, even well past the 600ms window.
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(saveMoaModels).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('saves once the model pick completes the slot', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      await openReferenceEditor()
+
+      fireEvent.click(slotSelects().ref1Provider)
+      fireEvent.click(await screen.findByRole('option', { name: 'OpenRouter' }))
+      await vi.advanceTimersByTimeAsync(700)
+
+      fireEvent.click(slotSelects().ref1Model)
+      fireEvent.click(await screen.findByRole('option', { name: 'anthropic/claude-opus-4.8' }))
+      await vi.advanceTimersByTimeAsync(700)
+
+      expect(saveMoaModels).toHaveBeenCalledTimes(1)
+      const sent = saveMoaModels.mock.calls[0][0] as ReturnType<typeof moaConfig>
+      expect(sent.presets.default.reference_models[0]).toEqual({
+        provider: 'openrouter',
+        model: 'anthropic/claude-opus-4.8'
+      })
+      // The untouched slots ride along unchanged — nothing reverts to defaults.
+      expect(sent.presets.default.reference_models[1]).toEqual({
+        provider: 'openrouter',
+        model: 'deepseek/deepseek-v4-pro'
+      })
+      expect(sent.presets.default.aggregator).toEqual({
+        provider: 'openrouter',
+        model: 'anthropic/claude-opus-4.8'
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not clear the model or save when the same provider is re-selected', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      await openReferenceEditor()
+
+      fireEvent.click(slotSelects().ref1Provider)
+      fireEvent.click(await screen.findByRole('option', { name: 'Nous' }))
+      await vi.advanceTimersByTimeAsync(700)
+
+      // Radix treats re-picking the current value as a no-op (no
+      // onValueChange), so nothing changes: no save, model still shown.
+      expect(saveMoaModels).not.toHaveBeenCalled()
+      expect(screen.getByText('nous · hermes-4')).toBeTruthy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

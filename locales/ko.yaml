@@ -364,6 +364,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_estimated_context:  "예상 컨텍스트: 약 {count} 토큰"
     detailed_after_first:     "_(자세한 사용량은 첫 에이전트 응답 이후 확인할 수 있습니다)_"
     no_data:                  "이 세션에 사용 가능한 사용량 데이터가 없습니다."
+    unknown_subcommand:       "알 수 없는 /usage 하위 명령: `{args}`. `/usage` 또는 `/usage reset [--force]`를 사용해 보세요."
+    reset_wrong_provider:     "적립된 사용량 한도 초기화는 openai-codex 공급자에서만 사용할 수 있습니다. 먼저 `/model`로 전환하세요."
 
   credits:
     not_logged_in:            "Nous Portal에 로그인되어 있지 않습니다. 로그인하면 크레딧 잔액 확인 및 충전을 할 수 있습니다."

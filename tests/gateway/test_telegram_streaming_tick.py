@@ -129,10 +129,15 @@ class TestStreamingTickMarkdownV2:
 
     @pytest.mark.asyncio
     async def test_streaming_tick_flood_propagates(self):
-        """Flood-control errors from the MarkdownV2 attempt propagate to the
-        outer handler (not silently swallowed) so the consumer can back off."""
-        flood_exc = Exception("flood control: retry in 2 seconds")
-        flood_exc.retry_after = 2
+        """A long flood-control wait from the MarkdownV2 attempt propagates to
+        the outer handler as a failure (not silently swallowed) so the
+        consumer can back off, instead of blocking the tick on a long sleep.
+
+        Short waits (<=5s) are handled inline via retry — see
+        test_streaming_tick_short_flood_retries_and_can_succeed below.
+        """
+        flood_exc = Exception("flood control: retry in 8 seconds")
+        flood_exc.retry_after = 8
 
         async def _edit(**kwargs):
             if kwargs.get("parse_mode") is not None:
@@ -141,8 +146,6 @@ class TestStreamingTickMarkdownV2:
         adapter = _make_adapter()
         adapter._bot.edit_message_text = _edit
 
-        # The flood error should reach the outer except block
-        # (which handles retry_after and returns a failure result)
         result = await adapter.edit_message(
             chat_id="42",
             message_id="100",
@@ -150,8 +153,36 @@ class TestStreamingTickMarkdownV2:
             finalize=False,
         )
 
-        # Outer handler converts flood to a SendResult with success=False
+        # Outer handler converts a long flood wait to SendResult(success=False)
+        # rather than sleeping 8s inline on a streaming tick.
         assert not result.success
+
+    @pytest.mark.asyncio
+    async def test_streaming_tick_short_flood_retries_and_can_succeed(self):
+        """A short (<=5s) flood-control wait is retried inline as plain text;
+        if that retry succeeds, the tick as a whole succeeds."""
+        flood_exc = Exception("flood control: retry in 2 seconds")
+        flood_exc.retry_after = 2
+        plain_call_kwargs = {}
+
+        async def _edit(**kwargs):
+            if kwargs.get("parse_mode") is not None:
+                raise flood_exc
+            plain_call_kwargs.update(kwargs)
+            return None
+
+        adapter = _make_adapter()
+        adapter._bot.edit_message_text = _edit
+
+        result = await adapter.edit_message(
+            chat_id="42",
+            message_id="100",
+            content="some content",
+            finalize=False,
+        )
+
+        assert result.success
+        assert plain_call_kwargs, "Inline retry (plain text) must have happened"
 
     @pytest.mark.asyncio
     async def test_finalize_true_still_uses_own_path(self):

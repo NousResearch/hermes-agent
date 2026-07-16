@@ -964,6 +964,53 @@ def test_remote_session_abort_requires_exact_remote_exit_two():
     assert postflight == ["postflight"]
 
 
+@pytest.mark.parametrize("returncode", (0, 2))
+def test_remote_failure_receipt_requires_exact_exit_two(returncode):
+    read_descriptor, write_descriptor = os.pipe()
+    os.close(write_descriptor)
+    stdout = os.fdopen(read_descriptor, "rb", buffering=0)
+    receipt = {
+        "schema": launcher.SCHEMA_RECONCILIATION_REMOTE_FAILURE_SCHEMA,
+        "ok": False,
+    }
+
+    class _ExitedProcess:
+        def __init__(self):
+            self.stdout = stdout
+
+        def wait(self, _timeout):
+            return returncode
+
+    session = object.__new__(launcher._IapRemoteSession)
+    session._process = _ExitedProcess()
+    session._termination_timeout = 1.0
+    session._buffer = bytearray()
+    session._stdout_eof = False
+    session._stdin_closed = True
+    session._last_mapping = receipt
+    session._validated_terminal = False
+    session._termination_proven = False
+    postflight = []
+    session._run_postflight = lambda: postflight.append("postflight")
+    try:
+        if returncode == 2:
+            session.mark_validated(receipt)
+            assert session._validated_terminal is True
+            assert session._termination_proven is True
+            assert postflight == ["postflight"]
+        else:
+            with pytest.raises(
+                launcher.OwnerLauncherError,
+                match="remote_terminal_exit_mismatch",
+            ):
+                session.mark_validated(receipt)
+            assert session._validated_terminal is False
+            assert session._termination_proven is False
+            assert postflight == []
+    finally:
+        stdout.close()
+
+
 def test_schema_reconciliation_first_frame_guard_failure_writes_nothing():
     session = object.__new__(launcher._IapRemoteSession)
     session._stdin_closed = False
@@ -1207,6 +1254,69 @@ def _schema_reconciliation_gate():
             "head_sha256": "5" * 64,
         },
     }
+
+
+def _schema_reconciliation_remote_failure(
+    gate,
+    *,
+    wire_stage,
+    transcript_head_sha256,
+    error_code="schema_reconciliation_runtime_post_cleanup_invalid",
+):
+    return _self_digest(
+        {
+            "schema": launcher.SCHEMA_RECONCILIATION_REMOTE_FAILURE_SCHEMA,
+            "ok": False,
+            "wire_stage": wire_stage,
+            "error_code": error_code,
+            "gate_sha256": gate["gate_sha256"],
+            "release_revision": gate["release_revision"],
+            "plan_sha256": gate["plan_sha256"],
+            "transcript_head_sha256": transcript_head_sha256,
+            "secret_material_recorded": False,
+        },
+        "receipt_sha256",
+    )
+
+
+def test_schema_reconciliation_remote_failure_validator_binds_exact_prefix():
+    gate = _schema_reconciliation_gate()
+    receipt = _schema_reconciliation_remote_failure(
+        gate,
+        wire_stage="a2_to_i2",
+        transcript_head_sha256="7" * 64,
+    )
+
+    assert launcher.validate_schema_reconciliation_remote_failure(
+        receipt,
+        gate=gate,
+        expected_wire_stage="a2_to_i2",
+        expected_transcript_head_sha256="7" * 64,
+    ) == receipt
+
+    for field, replacement in (
+        ("wire_stage", "c3_to_t3"),
+        ("error_code", "not_schema_reconciliation_code"),
+        ("gate_sha256", "8" * 64),
+        ("release_revision", "b" * 40),
+        ("plan_sha256", "9" * 64),
+        ("transcript_head_sha256", "a" * 64),
+        ("secret_material_recorded", True),
+    ):
+        changed = dict(receipt)
+        changed[field] = replacement
+        changed.pop("receipt_sha256")
+        changed = _self_digest(changed, "receipt_sha256")
+        with pytest.raises(
+            launcher.OwnerLauncherError,
+            match="schema_reconciliation_remote_failure_invalid",
+        ):
+            launcher.validate_schema_reconciliation_remote_failure(
+                changed,
+                gate=gate,
+                expected_wire_stage="a2_to_i2",
+                expected_transcript_head_sha256="7" * 64,
+            )
 
 
 class _RoleBoundReconciliationClient:
@@ -1755,6 +1865,7 @@ class _SchemaReconciliationSession:
         *,
         fail_a2=False,
         abort_fails=False,
+        failure_stage=None,
     ):
         self.gate = gate
         self.challenge = challenge
@@ -1763,7 +1874,20 @@ class _SchemaReconciliationSession:
         self.events = events
         self.fail_a2 = fail_a2
         self.abort_fails = abort_fails
+        self.failure_stage = failure_stage
         self.round = 0
+
+    def _failure(self, wire_stage):
+        head = {
+            "a1_to_p1": self.gate["gate_sha256"],
+            "a2_to_i2": self.challenge["preflight_challenge_sha256"],
+            "c3_to_t3": self.intermediate["database_intermediate_sha256"],
+        }[wire_stage]
+        return _schema_reconciliation_remote_failure(
+            self.gate,
+            wire_stage=wire_stage,
+            transcript_head_sha256=head,
+        )
 
     def read_gate(self):
         return self.gate
@@ -1783,6 +1907,8 @@ class _SchemaReconciliationSession:
         write_guard()
         on_first_write()
         on_write_complete()
+        if self.failure_stage == "a1_to_p1":
+            return self._failure("a1_to_p1")
         return self.challenge
 
     def schema_reconciliation_exchange(self, frame, *, terminal):
@@ -1791,11 +1917,17 @@ class _SchemaReconciliationSession:
         if self.round == 1:
             if self.fail_a2:
                 raise launcher.OwnerLauncherError("remote_apply_failed")
+            if self.failure_stage == "a2_to_i2":
+                return self._failure("a2_to_i2")
             return self.intermediate
+        if self.failure_stage == "c3_to_t3":
+            return self._failure("c3_to_t3")
         return self.terminal
 
     def mark_validated(self, terminal):
-        assert terminal == self.terminal
+        assert terminal == self.terminal or terminal == self._failure(
+            self.failure_stage
+        )
         self.events.append("validated")
 
     def abort_and_prove_terminated(self):
@@ -1847,6 +1979,7 @@ def _schema_reconciliation_owner_case(
     create_fails=False,
     authority_fails=False,
     abort_fails=False,
+    failure_stage=None,
 ):
     authority = _fixed_owner_authority()
     account = "owner@example.com"
@@ -1882,6 +2015,7 @@ def _schema_reconciliation_owner_case(
         events,
         fail_a2=fail_a2,
         abort_fails=abort_fails,
+        failure_stage=failure_stage,
     )
     boundary = _SchemaReconciliationBoundary(
         events,
@@ -1934,6 +2068,52 @@ def test_schema_reconciliation_owner_orchestrates_and_cleans_before_c3(monkeypat
     )
     assert delete_index < c3_index
     assert events[-2:] == ["validated", "closed"]
+
+
+@pytest.mark.parametrize(
+    "failure_stage",
+    ("a1_to_p1", "a2_to_i2", "c3_to_t3"),
+)
+def test_schema_reconciliation_owner_validates_phase_failure_before_cleanup(
+    monkeypatch,
+    failure_stage,
+):
+    _patch_schema_reconciliation_owner_validators(monkeypatch)
+    events = []
+    case = _schema_reconciliation_owner_case(
+        events,
+        failure_stage=failure_stage,
+    )
+
+    with pytest.raises(launcher.RemoteCommandFailed) as caught:
+        launcher.reconcile_legacy_canary_schema(
+            release_sha=RELEASE_SHA,
+            transport=case["transport"],
+            cloud_sql_client=object(),
+            owner_identity=case["identity"],
+            now=lambda: NOW,
+            password_factory=lambda: bytearray(b"v" * 64),
+            nonce_factory=lambda size: b"n" * size,
+            signer=_FixedSchemaReconciliationSigner(case["authority"]),
+            boundary_factory=lambda _client: case["boundary"],
+            secret_hardener=lambda: None,
+            provenance_guard=lambda _revision: None,
+        )
+
+    assert caught.value.code == (
+        "schema_reconciliation_runtime_post_cleanup_invalid"
+    )
+    assert caught.value.receipt["wire_stage"] == failure_stage
+    assert "validated" in events
+    assert sum(
+        isinstance(item, tuple) and item[0] == "delete" for item in events
+    ) == 1
+    validated_index = events.index("validated")
+    delete_index = next(i for i, item in enumerate(events) if item[0] == "delete")
+    if failure_stage == "c3_to_t3":
+        assert delete_index < validated_index
+    else:
+        assert validated_index < delete_index
 
 
 def test_schema_reconciliation_owner_failure_still_deletes_admin(monkeypatch):

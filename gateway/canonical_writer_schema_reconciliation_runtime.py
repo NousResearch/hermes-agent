@@ -115,7 +115,9 @@ _ROOT_RELEASE_FILES: Mapping[str, str] = {
 }
 
 
-class SchemaReconciliationRuntimeError(RuntimeError):
+class SchemaReconciliationRuntimeError(
+    bootstrap.SchemaReconciliationBootstrapError
+):
     """Stable, secret-free fixed-runtime failure."""
 
     def __init__(self, code: str) -> None:

@@ -258,6 +258,17 @@ SCHEMA_RECONCILIATION_PREFLIGHT_AUTHORIZATION_MAGIC = b"MSP2"
 SCHEMA_RECONCILIATION_ADMIN_CLEANUP_MAGIC = b"MSC2"
 SCHEMA_RECONCILIATION_CREDENTIAL_BYTES = 64
 SCHEMA_RECONCILIATION_MIN_GATE_REMAINING_SECONDS = 900
+SCHEMA_RECONCILIATION_REMOTE_FAILURE_SCHEMA = (
+    "muncho-canonical-writer-schema-reconciliation-remote-failure.v1"
+)
+_SCHEMA_RECONCILIATION_REMOTE_FAILURE_STAGES = frozenset({
+    "a1_to_p1",
+    "a2_to_i2",
+    "c3_to_t3",
+})
+_SCHEMA_RECONCILIATION_REMOTE_ERROR = re.compile(
+    r"^[a-z][a-z0-9_]{2,95}$"
+)
 _SCHEMA_RECONCILIATION_TRANSITIONS = {
     ("empty", "exact_old_missing_one_helper"): "reconcile_missing_helper",
     ("empty", "exact_target"): "adopt_existing_target",
@@ -638,6 +649,18 @@ _PHASE_B_APPLY_RECEIPT_KEYS = frozenset({
     "phase_b_readiness_receipt_sha256",
     "safe_to_start",
     "completed_at_unix",
+    "receipt_sha256",
+})
+_SCHEMA_RECONCILIATION_REMOTE_FAILURE_KEYS = frozenset({
+    "schema",
+    "ok",
+    "wire_stage",
+    "error_code",
+    "gate_sha256",
+    "release_revision",
+    "plan_sha256",
+    "transcript_head_sha256",
+    "secret_material_recorded",
     "receipt_sha256",
 })
 _PHASE_B_APPLY_GATE_KEYS = frozenset({
@@ -11600,6 +11623,74 @@ def _cleanup_schema_reconciliation_admin(
         raise CleanupBlocked(exc.code) from None
 
 
+def validate_schema_reconciliation_remote_failure(
+    value: Any,
+    *,
+    gate: Mapping[str, Any],
+    expected_wire_stage: str,
+    expected_transcript_head_sha256: str,
+) -> Mapping[str, Any]:
+    """Validate one failure bound to the exact successful wire prefix."""
+
+    code = "schema_reconciliation_remote_failure_invalid"
+    _reject_secret_echo(value, active_secrets=(), code=code)
+    receipt = _validate_self_digest(
+        value,
+        expected_keys=_SCHEMA_RECONCILIATION_REMOTE_FAILURE_KEYS,
+        digest_key="receipt_sha256",
+        code=code,
+    )
+    error_code = receipt.get("error_code")
+    if (
+        expected_wire_stage not in _SCHEMA_RECONCILIATION_REMOTE_FAILURE_STAGES
+        or receipt.get("schema")
+        != SCHEMA_RECONCILIATION_REMOTE_FAILURE_SCHEMA
+        or receipt.get("ok") is not False
+        or receipt.get("wire_stage") != expected_wire_stage
+        or not isinstance(error_code, str)
+        or _SCHEMA_RECONCILIATION_REMOTE_ERROR.fullmatch(error_code) is None
+        or not error_code.startswith("schema_reconciliation_")
+        or receipt.get("gate_sha256") != gate.get("gate_sha256")
+        or receipt.get("release_revision") != gate.get("release_revision")
+        or receipt.get("plan_sha256") != gate.get("plan_sha256")
+        or receipt.get("transcript_head_sha256")
+        != expected_transcript_head_sha256
+        or receipt.get("secret_material_recorded") is not False
+    ):
+        raise OwnerLauncherError(code)
+    for name in (
+        "gate_sha256",
+        "plan_sha256",
+        "transcript_head_sha256",
+        "receipt_sha256",
+    ):
+        _require_sha256(receipt.get(name), code)
+    if (
+        not isinstance(receipt.get("release_revision"), str)
+        or _RELEASE_SHA.fullmatch(receipt["release_revision"]) is None
+    ):
+        raise OwnerLauncherError(code)
+    return receipt
+
+
+def _raise_validated_schema_reconciliation_remote_failure(
+    session: _IapRemoteSession,
+    value: Mapping[str, Any],
+    *,
+    gate: Mapping[str, Any],
+    expected_wire_stage: str,
+    expected_transcript_head_sha256: str,
+) -> None:
+    receipt = validate_schema_reconciliation_remote_failure(
+        value,
+        gate=gate,
+        expected_wire_stage=expected_wire_stage,
+        expected_transcript_head_sha256=expected_transcript_head_sha256,
+    )
+    session.mark_validated(receipt)
+    raise RemoteCommandFailed(receipt)
+
+
 def reconcile_legacy_canary_schema(
     *,
     release_sha: str,
@@ -11784,6 +11875,17 @@ def reconcile_legacy_canary_schema(
         _wipe(admin_frame)
         credential = None
         admin_frame = None
+        if (
+            challenge_raw.get("schema")
+            == SCHEMA_RECONCILIATION_REMOTE_FAILURE_SCHEMA
+        ):
+            _raise_validated_schema_reconciliation_remote_failure(
+                session,
+                challenge_raw,
+                gate=gate,
+                expected_wire_stage="a1_to_p1",
+                expected_transcript_head_sha256=gate["gate_sha256"],
+            )
         try:
             challenge = bootstrap.validate_preflight_challenge_for_owner(
                 challenge_raw,
@@ -11819,6 +11921,19 @@ def reconcile_legacy_canary_schema(
         )
         _wipe(authorization_frame)
         authorization_frame = None
+        if (
+            intermediate_raw.get("schema")
+            == SCHEMA_RECONCILIATION_REMOTE_FAILURE_SCHEMA
+        ):
+            _raise_validated_schema_reconciliation_remote_failure(
+                session,
+                intermediate_raw,
+                gate=gate,
+                expected_wire_stage="a2_to_i2",
+                expected_transcript_head_sha256=challenge[
+                    "preflight_challenge_sha256"
+                ],
+            )
         try:
             intermediate = bootstrap.validate_database_intermediate_for_owner(
                 intermediate_raw,
@@ -11862,6 +11977,19 @@ def reconcile_legacy_canary_schema(
         )
         _wipe(cleanup_frame)
         cleanup_frame = None
+        if (
+            terminal_raw.get("schema")
+            == SCHEMA_RECONCILIATION_REMOTE_FAILURE_SCHEMA
+        ):
+            _raise_validated_schema_reconciliation_remote_failure(
+                session,
+                terminal_raw,
+                gate=gate,
+                expected_wire_stage="c3_to_t3",
+                expected_transcript_head_sha256=intermediate[
+                    "database_intermediate_sha256"
+                ],
+            )
         try:
             terminal = bootstrap.validate_terminal_for_owner(
                 terminal_raw,
@@ -16038,6 +16166,7 @@ __all__ = [
     "SCHEMA_RECONCILIATION_MIN_GATE_REMAINING_SECONDS",
     "SCHEMA_RECONCILIATION_PREFLIGHT_AUTHORIZATION_MAGIC",
     "SCHEMA_RECONCILIATION_PREFLIGHT_AUTHORIZATION_SSHSIG_NAMESPACE",
+    "SCHEMA_RECONCILIATION_REMOTE_FAILURE_SCHEMA",
     "SCHEMA_RECONCILIATION_DATABASE_ROLES",
     "SESSION_BOUND_APPROVAL_REQUEST_SCHEMA",
     "SESSION_BOUND_COORDINATOR_RECEIPT_SCHEMA",
@@ -16098,6 +16227,7 @@ __all__ = [
     "validate_session_bound_approval_request",
     "validate_session_bound_coordinator_receipt",
     "validate_session_bound_final_owner_approval",
+    "validate_schema_reconciliation_remote_failure",
     "validate_stopped_release_plan",
     "validate_stopped_release_receipt",
     "validate_writer_preflight_plan",

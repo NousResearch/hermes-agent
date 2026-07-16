@@ -19,6 +19,10 @@ Wire dialogue (remote output is canonical NDJSON):
   proof explicitly records that it cannot re-read the privileged full-data
   truth without broadening permanent authority.
 
+After a complete G0, a failed transition emits one secret-free failure receipt
+bound to the last successfully emitted transcript head, then exits 2.  A
+failed or partial output write is never followed by another wire record.
+
 The credential is validated only after A1's signature and Cloud authority
 receipt have been accepted.  It is passed once to the preflight callback and
 zeroized immediately when that callback returns.  The callback therefore has
@@ -113,6 +117,9 @@ POST_CLEANUP_OBSERVATION_SCHEMA = (
     "muncho-canonical-writer-schema-reconciliation-post-cleanup-observation.v3"
 )
 TERMINAL_SCHEMA = "muncho-canonical-writer-schema-reconciliation-terminal.v4"
+REMOTE_FAILURE_SCHEMA = (
+    "muncho-canonical-writer-schema-reconciliation-remote-failure.v1"
+)
 
 CLOUD_ADMIN_AUTHORITY_SCHEMA = "muncho-cloud-sql-temporary-admin-authority.v2"
 SCHEMA_RECONCILIATION_DATABASE_ROLES = (
@@ -542,6 +549,25 @@ _TERMINAL_FIELDS = frozenset({
     "completed_at_unix",
     "terminal_sha256",
 })
+_REMOTE_FAILURE_FIELDS = frozenset({
+    "schema",
+    "ok",
+    "wire_stage",
+    "error_code",
+    "gate_sha256",
+    "release_revision",
+    "plan_sha256",
+    "transcript_head_sha256",
+    "secret_material_recorded",
+    "receipt_sha256",
+})
+_REMOTE_FAILURE_WIRE_STAGES = frozenset({
+    "a1_to_p1",
+    "a2_to_i2",
+    "c3_to_t3",
+})
+_STABLE_REMOTE_ERROR = re.compile(r"^[a-z][a-z0-9_]{2,95}$")
+_GENERIC_REMOTE_ERROR = "schema_reconciliation_remote_failed"
 
 _TRANSITIONS: Mapping[tuple[str, str], str] = {
     ("empty", "exact_old_missing_one_helper"): "reconcile_missing_helper",
@@ -2379,6 +2405,44 @@ def _emit_mapping(stream: BinaryIO, value: Mapping[str, Any]) -> None:
         ) from exc
 
 
+def _remote_failure_receipt(
+    *,
+    gate: Mapping[str, Any],
+    wire_stage: str,
+    transcript_head_sha256: str,
+    error: BaseException,
+) -> Mapping[str, Any]:
+    """Build one wire-only, secret-free failure bound to the emitted prefix."""
+
+    error_code = _GENERIC_REMOTE_ERROR
+    if isinstance(error, SchemaReconciliationBootstrapError):
+        candidate = error.code
+        if isinstance(candidate, str) and _STABLE_REMOTE_ERROR.fullmatch(candidate):
+            error_code = candidate
+    if (
+        wire_stage not in _REMOTE_FAILURE_WIRE_STAGES
+        or not isinstance(transcript_head_sha256, str)
+        or _SHA256.fullmatch(transcript_head_sha256) is None
+    ):
+        _fail(_GENERIC_REMOTE_ERROR)
+    unsigned = {
+        "schema": REMOTE_FAILURE_SCHEMA,
+        "ok": False,
+        "wire_stage": wire_stage,
+        "error_code": error_code,
+        "gate_sha256": gate["gate_sha256"],
+        "release_revision": gate["release_revision"],
+        "plan_sha256": gate["plan_sha256"],
+        "transcript_head_sha256": transcript_head_sha256,
+        "secret_material_recorded": False,
+    }
+    receipt = {**unsigned, "receipt_sha256": _sha256_json(unsigned)}
+    if set(receipt) != _REMOTE_FAILURE_FIELDS:
+        _fail(_GENERIC_REMOTE_ERROR)
+    _require_secret_free(receipt)
+    return json.loads(_canonical_bytes(receipt).decode("utf-8"))
+
+
 PreflightCallback = Callable[
     [Mapping[str, Any], Mapping[str, Any], bytearray],
     Mapping[str, Any],
@@ -2447,22 +2511,37 @@ def run_protocol_v2(
     )
 
     # This flush is the only authorization for the owner transport to create
-    # and transmit the temporary-admin frame.
+    # and transmit the temporary-admin frame.  Failures before a complete G0
+    # cannot be bound to an owner-visible transcript and therefore remain EOF.
     _emit_mapping(sink, validated_gate)
 
-    admin_frame = _read_mapping_frame(
-        source,
-        magic=ADMIN_PREFLIGHT_MAGIC,
-        code="schema_reconciliation_admin_preflight_frame_invalid",
-    )
-    validated_admin = _validate_admin_preflight(
-        admin_frame,
-        gate=validated_gate,
-        now_unix=now(),
-    )
-
     credential: bytearray | None = None
+    wire_stage = "a1_to_p1"
+    transcript_head_sha256 = str(validated_gate["gate_sha256"])
+    output_unreliable = False
+
+    def emit_protocol_mapping(value: Mapping[str, Any]) -> None:
+        nonlocal output_unreliable
+        try:
+            _emit_mapping(sink, value)
+        except BaseException:
+            # A failed write may already have emitted a partial JSON line.
+            # Never append a second record to an unreliable wire prefix.
+            output_unreliable = True
+            raise
+
     try:
+        admin_frame = _read_mapping_frame(
+            source,
+            magic=ADMIN_PREFLIGHT_MAGIC,
+            code="schema_reconciliation_admin_preflight_frame_invalid",
+        )
+        validated_admin = _validate_admin_preflight(
+            admin_frame,
+            gate=validated_gate,
+            now_unix=now(),
+        )
+
         # No credential byte is read until the signed frame and full Cloud
         # authority receipt above have passed.
         credential = _read_exact_mutable(
@@ -2486,7 +2565,9 @@ def run_protocol_v2(
             collection=collection,
             issued_at_unix=now(),
         )
-        _emit_mapping(sink, challenge)
+        emit_protocol_mapping(challenge)
+        wire_stage = "a2_to_i2"
+        transcript_head_sha256 = str(challenge["preflight_challenge_sha256"])
 
         authorization_frame = _read_mapping_frame(
             source,
@@ -2526,7 +2607,9 @@ def run_protocol_v2(
             apply_result=apply_result,
             applied_at_unix=now(),
         )
-        _emit_mapping(sink, intermediate)
+        emit_protocol_mapping(intermediate)
+        wire_stage = "c3_to_t3"
+        transcript_head_sha256 = str(intermediate["database_intermediate_sha256"])
 
         cleanup_frame = _read_mapping_frame(
             source,
@@ -2578,8 +2661,25 @@ def run_protocol_v2(
             cleanup=validated_cleanup,
             now_unix=terminal["completed_at_unix"],
         )
-        _emit_mapping(sink, terminal)
+        emit_protocol_mapping(terminal)
         return terminal
+    except BaseException as error:
+        if not output_unreliable:
+            try:
+                _emit_mapping(
+                    sink,
+                    _remote_failure_receipt(
+                        gate=validated_gate,
+                        wire_stage=wire_stage,
+                        transcript_head_sha256=transcript_head_sha256,
+                        error=error,
+                    ),
+                )
+            except BaseException:
+                # The original failure remains primary.  In particular, an
+                # output failure must not trigger another write attempt.
+                pass
+        raise
     finally:
         _zeroize(credential)
 
@@ -2652,6 +2752,7 @@ __all__ = [
     "PREFLIGHT_AUTHORIZATION_MAGIC",
     "PREFLIGHT_AUTHORIZATION_OWNER_SSHSIG_NAMESPACE",
     "PREFLIGHT_CHALLENGE_SCHEMA",
+    "REMOTE_FAILURE_SCHEMA",
     "SchemaReconciliationBootstrapError",
     "TEMPORARY_OWNER_BRIDGE_SCHEMA",
     "TERMINAL_SCHEMA",

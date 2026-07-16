@@ -39,6 +39,15 @@ ASSET = (
 )
 
 
+def test_runtime_failures_are_eligible_for_the_sealed_wire_code_boundary():
+    error = runtime.SchemaReconciliationRuntimeError(
+        "schema_reconciliation_runtime_post_cleanup_invalid"
+    )
+
+    assert isinstance(error, bootstrap.SchemaReconciliationBootstrapError)
+    assert error.code == "schema_reconciliation_runtime_post_cleanup_invalid"
+
+
 def _sha(value: Any) -> str:
     return hashlib.sha256(runtime._canonical_bytes(value)).hexdigest()
 

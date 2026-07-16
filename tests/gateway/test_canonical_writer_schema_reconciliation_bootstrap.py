@@ -1041,6 +1041,129 @@ def test_v2_success_flushes_gate_then_emits_g0_p1_i2_t3_and_zeroizes() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("failure_stage", "expected_wire_stage", "expected_head_field"),
+    (
+        ("preflight", "a1_to_p1", "gate_sha256"),
+        ("apply", "a2_to_i2", "preflight_challenge_sha256"),
+        ("post_cleanup", "c3_to_t3", "database_intermediate_sha256"),
+    ),
+)
+def test_remote_failure_receipt_binds_each_wire_stage_and_transcript_head(
+    failure_stage: str,
+    expected_wire_stage: str,
+    expected_head_field: str,
+) -> None:
+    case = _case()
+    failure = bootstrap.SchemaReconciliationBootstrapError(
+        "schema_reconciliation_runtime_post_cleanup_invalid"
+    )
+
+    def raise_failure(*_args):
+        raise failure
+
+    output = _TrackingOutput()
+    with pytest.raises(
+        bootstrap.SchemaReconciliationBootstrapError,
+        match="schema_reconciliation_runtime_post_cleanup_invalid",
+    ):
+        _run(
+            case,
+            preflight_callback=(
+                raise_failure
+                if failure_stage == "preflight"
+                else lambda *_args: _collection(
+                    case.gate,
+                    state="exact_old_missing_one_helper",
+                )
+            ),
+            apply_callback=(
+                raise_failure
+                if failure_stage == "apply"
+                else lambda *_args: case.apply_result
+            ),
+            post_cleanup_callback=(
+                raise_failure
+                if failure_stage == "post_cleanup"
+                else lambda *_args: _post_cleanup(case.gate)
+            ),
+            output=output,
+        )
+
+    lines = [json.loads(line) for line in output.getvalue().splitlines()]
+    receipt = lines[-1]
+    expected_head = (
+        case.gate[expected_head_field]
+        if expected_wire_stage == "a1_to_p1"
+        else case.challenge[expected_head_field]
+        if expected_wire_stage == "a2_to_i2"
+        else case.intermediate[expected_head_field]
+    )
+    unsigned = dict(receipt)
+    del unsigned["receipt_sha256"]
+    assert receipt == {
+        **unsigned,
+        "receipt_sha256": hashlib.sha256(_canonical(unsigned)).hexdigest(),
+    }
+    assert set(receipt) == bootstrap._REMOTE_FAILURE_FIELDS
+    assert receipt["schema"] == bootstrap.REMOTE_FAILURE_SCHEMA
+    assert receipt["ok"] is False
+    assert receipt["wire_stage"] == expected_wire_stage
+    assert receipt["error_code"] == failure.code
+    assert receipt["gate_sha256"] == case.gate["gate_sha256"]
+    assert receipt["release_revision"] == case.gate["release_revision"]
+    assert receipt["plan_sha256"] == case.gate["plan_sha256"]
+    assert receipt["transcript_head_sha256"] == expected_head
+    assert receipt["secret_material_recorded"] is False
+
+
+def test_generic_callback_failure_never_echoes_secret_detail() -> None:
+    case = _case()
+    output = _TrackingOutput()
+
+    with pytest.raises(RuntimeError, match="owner-password-must-not-leak"):
+        _run(
+            case,
+            preflight_callback=lambda *_args: (_ for _ in ()).throw(
+                RuntimeError("owner-password-must-not-leak")
+            ),
+            output=output,
+        )
+
+    assert b"owner-password-must-not-leak" not in output.getvalue()
+    receipt = json.loads(output.getvalue().splitlines()[-1])
+    assert receipt["error_code"] == "schema_reconciliation_remote_failed"
+    assert receipt["wire_stage"] == "a1_to_p1"
+
+
+def test_partial_protocol_output_failure_never_appends_failure_record() -> None:
+    case = _case()
+
+    class _PartialSecondWrite(_TrackingOutput):
+        def __init__(self) -> None:
+            super().__init__()
+            self.write_count = 0
+
+        def write(self, value: bytes) -> int:
+            self.write_count += 1
+            if self.write_count == 2:
+                super().write(b"{")
+                raise OSError("partial output")
+            return super().write(value)
+
+    output = _PartialSecondWrite()
+    with pytest.raises(
+        bootstrap.SchemaReconciliationBootstrapError,
+        match="schema_reconciliation_output_failed",
+    ):
+        _run(case, output=output)
+
+    assert output.write_count == 2
+    assert output.getvalue().count(b"\n") == 1
+    assert output.getvalue().endswith(b"{")
+    assert bootstrap.REMOTE_FAILURE_SCHEMA.encode("ascii") not in output.getvalue()
+
+
 def test_gate_has_no_impossible_preflight_or_db_claims_and_exact_target_needs_secret() -> None:
     case = _case(state="exact_target")
     forbidden = {
@@ -1090,7 +1213,10 @@ def test_invalid_a1_signature_is_rejected_before_any_credential_byte_is_read() -
         )
 
     assert source.maximum_position == len(admin_bytes)
-    assert len(output.getvalue().splitlines()) == 1
+    lines = [json.loads(line) for line in output.getvalue().splitlines()]
+    assert len(lines) == 2
+    assert lines[-1]["schema"] == bootstrap.REMOTE_FAILURE_SCHEMA
+    assert lines[-1]["wire_stage"] == "a1_to_p1"
 
 
 @pytest.mark.parametrize(
@@ -1469,6 +1595,7 @@ def test_post_cleanup_callback_requires_exact_post_delete_terminal_receipt() -> 
         bootstrap.GATE_SCHEMA,
         bootstrap.PREFLIGHT_CHALLENGE_SCHEMA,
         bootstrap.DATABASE_INTERMEDIATE_SCHEMA,
+        bootstrap.REMOTE_FAILURE_SCHEMA,
     ]
 
 
@@ -1613,7 +1740,10 @@ def test_secret_like_apply_receipt_is_rejected_without_intermediate() -> None:
     ):
         _run(case, apply_callback=lambda *_args: bad, output=output)
     assert b"must-not-appear" not in output.getvalue()
-    assert len(output.getvalue().splitlines()) == 2
+    lines = [json.loads(line) for line in output.getvalue().splitlines()]
+    assert len(lines) == 3
+    assert lines[-1]["schema"] == bootstrap.REMOTE_FAILURE_SCHEMA
+    assert lines[-1]["wire_stage"] == "a2_to_i2"
 
 
 def test_duplicate_a1_json_key_is_rejected_before_preflight() -> None:

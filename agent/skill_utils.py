@@ -807,6 +807,15 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
         yield Path(path)
 
 
+def has_excluded_skill_path_part(path: Path, scan_dir: Path) -> bool:
+    """Return whether *path* contains an excluded component within *scan_dir*."""
+    try:
+        parts = path.relative_to(scan_dir).parts
+    except ValueError:
+        parts = path.parts
+    return any(part in EXCLUDED_SKILL_DIRS for part in parts)
+
+
 # ── Namespace helpers for plugin-provided skills ───────────────────────────
 
 _NAMESPACE_RE = re.compile(r"^[a-zA-Z0-9_-]+$")

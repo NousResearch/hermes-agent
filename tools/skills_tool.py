@@ -81,7 +81,7 @@ from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get
 from utils import env_var_enabled
 from agent.skill_utils import (
-    EXCLUDED_SKILL_DIRS as _EXCLUDED_SKILL_DIRS,
+    has_excluded_skill_path_part as _has_excluded_skill_path_part,
     is_skill_support_path as _is_skill_support_path,
 )
 
@@ -719,11 +719,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     # dirs_to_scan already resolved above for the signature.
     for scan_dir in dirs_to_scan:
         for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
-            try:
-                skill_parts = skill_md.relative_to(scan_dir).parts
-            except ValueError:
-                skill_parts = skill_md.parts
-            if any(part in _EXCLUDED_SKILL_DIRS for part in skill_parts):
+            if _has_excluded_skill_path_part(skill_md, scan_dir):
                 continue
 
             skill_dir = skill_md.parent

@@ -82,10 +82,32 @@ state in SQLite). Agent loop lives in `public/js/widgets/agent.js` +
   (push-to-talk + speak replies), command palette (Ctrl/⌘-K) that also searches
   your own data and jumps to it.
 - Cross-device sync (SQLite `data/hub.db`, optimistic concurrency), bearer-token
-  auth + lock screen, PWA (manifest + service worker, currently **hub-v9**).
+  auth + lock screen, PWA (manifest + service worker, currently **hub-v10**).
 - Automations engine (`automations.py`): daily/market/worldstate triggers →
   notify/briefing/backup/reflect actions; 20s daemon thread.
-- Server-side backups (`/api/backup`, `/api/backups`, `/api/backup/restore`).
+- Server-side backups (`/api/backup`, `/api/backups`, `/api/backup/restore`);
+  snapshots include memory **and** agent_notes.
+
+### Post-phase feature additions (all shipped, tested)
+- **News search** — filter box in the news widget; client-side, no refetch.
+- **Accent presets** — settings swatches switch the UI accent (cyan default /
+  amber / green / magenta); sets `--accent*` inline, persisted in state.
+- **Structured tasks** — optional due date + priority via inline tokens
+  (`!high`/`!low`, `@YYYY-MM-DD`/`@today`/`@tomorrow`); priority rail + overdue
+  due chip; open tasks sort by priority then due; due tasks overlay the
+  calendar; `add_task` tool + local parser learned the tokens.
+- **Evolution rollback + audit** (Phase 6) — applied proposals show a one-click
+  "Roll back" that restores the pre-apply snapshot; `evolve.history()` +
+  `GET /api/evolve/history`; `rollback` op on `/api/evolve/proposal`.
+- **Model-augmented reflection** (Phase 6) — in claude mode the deep tier
+  proposes richer `prompt_addendum` guidelines into the same approval inbox
+  (validated, capped, never auto-applies). `assistant.reflect_candidates()`.
+- **Routing overrides UI** — "Model routing…" panel edits per-tier models,
+  persisted in `data/routing.json`; precedence env > file > default (env-pinned
+  tiers shown locked). `GET/POST /api/assistant/routing`.
+- **SSRF hardening** — the reader resolves the host and rejects non-global
+  addresses and re-validates every redirect hop (`host_is_blocked`); all
+  upstream fetches capped at 8 MiB.
 
 ## 5. File map (`apps/dashboard/`)
 ```
@@ -103,13 +125,15 @@ compose.yaml      OPTIONAL
 deploy/           serve.sh + systemd/launchd units (no-Docker always-on)
 JARVIS.md         merged agent architecture + phase status
 HANDOFF.md        this file
+ROADMAP.md        detailed future-feature build plans
 README.md         full user docs
 public/           zero-build frontend
   js/main.js        layout, palette (data search), settings menu
   js/store.js       localStorage state + defaults + sync merge
   js/api.js         API client (+ SSE reader)
   js/actions.js     executes agent tool calls; TOOL_TIERS mirror
-  js/evolve.js      Agent-proposals inbox panel
+  js/evolve.js      Agent-proposals inbox panel (+ rollback/history)
+  js/routing.js     Model-routing overrides panel
   js/sources.js / calendars.js   settings panels
   js/widgets/*.js   one module per widget
 tests/test_server.py   140 unit tests
@@ -120,7 +144,8 @@ tests/e2e.mjs          109-check Playwright suite
 ## 6. Runtime data files (under `--data-dir`, default `data/`)
 `hub.db` (synced state), `memory.md` (agent facts), `agent_notes.md` (learned
 guidelines), `feeds.json`, `calendars.json`, `automations.json` (rules + frozen
-flag + notifications), `telemetry.jsonl`, `proposals.json`, `backups/*.json`.
+flag + notifications), `telemetry.jsonl`, `proposals.json`, `routing.json`
+(per-tier model overrides), `backups/*.json`.
 
 ## 7. Environment variables
 - `HERMES_HUB_TOKEN` — access code (required when exposed beyond localhost).
@@ -171,15 +196,20 @@ flag + notifications), `telemetry.jsonl`, `proposals.json`, `backups/*.json`.
   the Phase 6 auto-apply boundary was confirmed via a question).
 
 ## 11. Current status
-- Latest work: all 6 Jarvis phases complete + original-scope extras (palette
-  data search, focus timer) + no-Docker deploy. Test counts: **140 unit / 109
-  e2e**, all green, all pushed to `claude/all-in-one-dashboard-xqh6ct`.
+- All 6 Jarvis phases complete + original-scope extras + no-Docker deploy, plus
+  the post-phase additions above (news search, accent presets, structured tasks,
+  evolution rollback/audit, model-augmented reflection, routing UI, SSRF
+  hardening, worldstate expand-flash fix, visual-polish layer).
+- Test counts: **155 unit / ~125 e2e checks**, all green (3/3 consecutive e2e),
+  all pushed to `claude/all-in-one-dashboard-xqh6ct`.
+- Detailed plans for what's left live in `ROADMAP.md`.
 
-## 12. Open / future ideas (not started)
-- **Model-augmented reflection** (Phase 6 enhancement): let Claude write richer
-  self-improvement proposals on top of today's deterministic heuristics. Wire an
-  `assistant.reflect()` model call into `evolve.Reflection._observe()`, gated to
-  claude mode, still queuing to the same approval inbox.
-- Web Push notifications (currently in-app toasts + Notification API only).
-- News search box; agent multi-step plan preview; routing-table overrides UI.
-- Optional: expose an audit/history view of applied evolution changes.
+## 12. Open / future ideas (not yet built — see ROADMAP.md for full plans)
+- **Web Push notifications** (Tier 1) — real push beyond in-app toasts; the
+  recommended path is a payload-less VAPID "tickle" so it stays stdlib-only.
+- **Agent multi-step plan preview** (Tier 2) — show a plan card before running
+  a multi-tool turn, with Run-all / auto-only / cancel.
+- **Command palette execution** (Tier 3) — run agent commands from ⌘-K, not
+  just navigate.
+- Smaller: per-widget refresh intervals; backup download/upload + off-box copy;
+  task recurrence (the due/priority groundwork is now in place).

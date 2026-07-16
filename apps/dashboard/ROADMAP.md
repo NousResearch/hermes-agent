@@ -9,6 +9,16 @@ Each proposal states: the problem, the design, the exact files/APIs touched, a
 step-by-step build plan, tests, and a rough effort (S = <½ day, M = ~1 day,
 L = multi-day). Items are ordered by value-to-effort within each tier.
 
+### Status (updated as items ship)
+- ✅ **1.2 Model-augmented reflection** — shipped (`assistant.reflect_candidates`).
+- ✅ **1.3 Evolution audit/rollback** — shipped (`evolve.rollback`/`history`).
+- ✅ **2.1 News search** — shipped (client-side filter).
+- ✅ **2.3 Routing overrides UI** — shipped (`data/routing.json` + panel).
+- ✅ **2.4 Structured tasks** — shipped (due + priority; recurrence still open).
+- ✅ **3.3 Accent presets** — shipped (cyan/amber/green/magenta).
+- ⬜ **1.1 Web Push**, **2.2 Plan preview**, **3.1 Palette execution**,
+  **3.2 Per-widget intervals**, **3.4 Backup download/upload** — still open.
+
 ---
 
 ## Tier 1 — highest value, ship first

@@ -10,7 +10,7 @@ import {
 import { $modelPresets, getModelPreset } from '@/store/model-presets'
 import { $activeSessionId } from '@/store/session'
 
-import { type FastControl, ModelEditSubmenu } from './model-edit-submenu'
+import { type FastControl, ModelEditSubmenu, resolveReasoningEffort } from './model-edit-submenu'
 
 // Radix calls these on open; jsdom doesn't implement them.
 beforeAll(() => {
@@ -30,7 +30,12 @@ afterEach(() => {
 })
 
 // Render the submenu inside an open menu/sub so its content (switches) mounts.
-function renderSubmenu(opts: { fastControl: FastControl; reasoning: boolean; requestGateway: () => Promise<unknown> }) {
+function renderSubmenu(opts: {
+  fastControl: FastControl
+  reasoning: boolean
+  reasoningEfforts?: string[]
+  requestGateway: () => Promise<unknown>
+}) {
   return render(
     <DropdownMenu open>
       <DropdownMenuContent>
@@ -44,6 +49,7 @@ function renderSubmenu(opts: { fastControl: FastControl; reasoning: boolean; req
             onSelectModel={vi.fn()}
             provider="p1"
             reasoning={opts.reasoning}
+            reasoningEfforts={opts.reasoningEfforts}
             requestGateway={opts.requestGateway as never}
           />
         </DropdownMenuSub>
@@ -85,5 +91,28 @@ describe('ModelEditSubmenu no-session guard', () => {
     fireEvent.click(screen.getByRole('switch'))
 
     expect(requestGateway).toHaveBeenCalledWith('config.set', { key: 'fast', session_id: 'sess1', value: 'fast' })
+  })
+})
+
+describe('Copilot reasoning capabilities', () => {
+  const efforts = ['none', 'low', 'medium', 'high', 'xhigh', 'max']
+
+  it('shows only provider-supported effort choices', () => {
+    renderSubmenu({
+      fastControl: { kind: 'none' },
+      reasoning: true,
+      reasoningEfforts: efforts,
+      requestGateway: vi.fn().mockResolvedValue({})
+    })
+
+    expect(screen.getByText('Max')).not.toBeNull()
+    expect(screen.getByText('Extra High')).not.toBeNull()
+    expect(screen.queryByText('Ultra')).toBeNull()
+    expect(screen.queryByText('Minimal')).toBeNull()
+  })
+
+  it('preserves supported Max and clamps unsupported Ultra', () => {
+    expect(resolveReasoningEffort('max', efforts)).toBe('max')
+    expect(resolveReasoningEffort('ultra', efforts)).toBe('medium')
   })
 })

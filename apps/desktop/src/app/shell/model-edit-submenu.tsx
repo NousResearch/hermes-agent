@@ -90,6 +90,8 @@ interface ModelEditSubmenuProps {
   provider: string
   /** Whether this model supports reasoning effort. */
   reasoning: boolean
+  /** Exact provider-supported effort values, when known. */
+  reasoningEfforts?: readonly string[]
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
@@ -101,13 +103,19 @@ export function ModelEditSubmenu({
   onSelectModel,
   provider,
   reasoning,
+  reasoningEfforts,
   requestGateway
 }: ModelEditSubmenuProps) {
   const { t } = useI18n()
   const copy = t.shell.modelOptions
   const activeSessionId = useStore($activeSessionId)
 
-  const effortValue = normalizeEffort(effort)
+  const effortValue = normalizeEffort(resolveReasoningEffort(effort, reasoningEfforts))
+
+  const effortOptions = reasoningEfforts?.length
+    ? EFFORT_OPTIONS.filter(option => reasoningEfforts.includes(option.value))
+    : EFFORT_OPTIONS
+
   const thinkingOn = isThinkingEnabled(effort)
 
   // Editing always records the model's global preset; the active model also gets
@@ -215,7 +223,7 @@ export function ModelEditSubmenu({
               <DropdownMenuSeparator className="mx-0" />
               <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.effort}</DropdownMenuLabel>
               <DropdownMenuRadioGroup onValueChange={value => void patchReasoning(value)} value={effortValue}>
-                {EFFORT_OPTIONS.map(option => (
+                {effortOptions.map(option => (
                   <DropdownMenuRadioItem
                     className={dropdownMenuRow}
                     key={option.value}
@@ -237,6 +245,24 @@ export function ModelEditSubmenu({
 function isThinkingEnabled(effort: string): boolean {
   // Empty = Hermes default (medium) = on; only an explicit "none" is off.
   return normalize(effort || 'medium') !== 'none'
+}
+
+export function resolveReasoningEffort(effort: string, supported?: readonly string[]): string {
+  const value = normalize(effort || 'medium')
+
+  if (value === 'none' || !supported?.length || supported.includes(value)) {
+    return value
+  }
+
+  if (value === 'xhigh' && supported.includes('high')) {
+    return 'high'
+  }
+
+  if (value === 'minimal' && supported.includes('low')) {
+    return 'low'
+  }
+
+  return supported.includes('medium') ? 'medium' : supported[0]
 }
 
 function normalizeEffort(effort: string): string {

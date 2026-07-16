@@ -260,15 +260,15 @@ def build_models_payload(
 
 
 def _apply_capabilities(rows: list[dict]) -> None:
-    """Attach a ``{model: {fast, reasoning}}`` map to each provider row.
+    """Attach per-model option support to each provider row.
 
-    `fast` mirrors ``model_supports_fast_mode`` (the same gate the runtime
-    enforces). `reasoning` comes from the models.dev catalog when known and
-    defaults to True otherwise — the effort dial is broadly accepted and a
-    no-op on models that ignore it, whereas hiding it from a capable-but-
-    uncatalogued model is the worse failure.
+    `fast` mirrors ``model_supports_fast_mode`` except on provider routes that
+    reject its request parameter. `reasoning` comes from the models.dev catalog
+    when known and defaults to True otherwise — the effort dial is broadly
+    accepted and a no-op on models that ignore it, whereas hiding it from a
+    capable-but-uncatalogued model is the worse failure.
     """
-    from hermes_cli.models import model_supports_fast_mode
+    from hermes_cli.models import github_model_reasoning_efforts, model_supports_fast_mode
 
     try:
         from agent.models_dev import get_model_capabilities
@@ -277,7 +277,8 @@ def _apply_capabilities(rows: list[dict]) -> None:
 
     for row in rows:
         slug = row.get("slug") or ""
-        caps: dict[str, dict[str, bool]] = {}
+        is_copilot = str(slug).strip().lower() in {"copilot", "copilot-acp"}
+        caps: dict[str, dict] = {}
 
         for model in row.get("models") or []:
             reasoning = True
@@ -289,10 +290,17 @@ def _apply_capabilities(rows: list[dict]) -> None:
                 except Exception:
                     reasoning = True
 
-            caps[model] = {
-                "fast": bool(model_supports_fast_mode(model)),
+            model_caps: dict[str, object] = {
+                # Copilot rejects OpenAI's service_tier=priority even for GPT
+                # models, so its picker must not expose the parameter toggle.
+                "fast": bool(model_supports_fast_mode(model)) and not is_copilot,
                 "reasoning": reasoning,
             }
+            if is_copilot:
+                efforts = github_model_reasoning_efforts(model)
+                if efforts:
+                    model_caps["reasoning_efforts"] = efforts
+            caps[model] = model_caps
 
         row["capabilities"] = caps
 

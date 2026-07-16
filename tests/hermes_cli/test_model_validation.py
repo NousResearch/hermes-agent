@@ -343,6 +343,11 @@ class TestFetchApiModels:
 
 
 class TestGithubReasoningEfforts:
+    def test_gpt56_fallback_matches_copilot_capabilities(self):
+        assert github_model_reasoning_efforts("gpt-5.6-sol") == [
+            "none", "low", "medium", "high", "xhigh", "max",
+        ]
+
     def test_gpt5_supports_minimal_to_high(self):
         catalog = [{
             "id": "gpt-5.4",

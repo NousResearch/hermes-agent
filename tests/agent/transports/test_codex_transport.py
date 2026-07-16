@@ -906,9 +906,8 @@ class TestCodexTransportXaiServiceTierStrip:
             "non-xAI codex_responses providers must keep service_tier"
         )
 
-    def test_github_responses_preserves_service_tier(self, transport):
-        """GitHub Models (Copilot) is another codex_responses surface
-        that should not be affected by the xAI strip."""
+    def test_github_responses_strips_service_tier(self, transport):
+        """Copilot rejects OpenAI Priority Processing with HTTP 400."""
         kw = transport.build_kwargs(
             model="gpt-5.5",
             messages=[{"role": "user", "content": "hi"}],
@@ -916,7 +915,7 @@ class TestCodexTransportXaiServiceTierStrip:
             is_github_responses=True,
             request_overrides={"service_tier": "priority"},
         )
-        assert kw.get("service_tier") == "priority"
+        assert "service_tier" not in kw
 
 
 class TestPreflightSlashEnumStrip:

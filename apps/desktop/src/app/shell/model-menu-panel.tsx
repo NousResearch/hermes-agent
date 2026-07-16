@@ -45,7 +45,7 @@ import {
 } from '@/store/session'
 import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
 
-import { ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
+import { ModelEditSubmenu, resolveFastControl, resolveReasoningEffort } from './model-edit-submenu'
 
 // Lets the host dropdown (model-pill) hand the panel a way to dismiss itself so
 // clicking a model row commits + closes, while the hover-revealed edit submenu
@@ -172,7 +172,10 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
 
     await applyModelPreset(
       {
-        effort: (caps?.reasoning ?? true) ? (preset.effort ?? 'medium') : undefined,
+        effort:
+          (caps?.reasoning ?? true)
+            ? resolveReasoningEffort(preset.effort ?? 'medium', caps?.reasoning_efforts)
+            : undefined,
         fast: (caps?.fast ?? false) ? (preset.fast ?? false) : undefined
       },
       { failMessage: t.shell.modelOptions.updateFailed, request: requestGateway, sessionId: activeSessionId }
@@ -253,7 +256,8 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                 // defaults when unset). Row label AND submenu read from these so
                 // they never disagree.
                 const preset = modelPresets[modelPresetKey(group.provider.slug, family.id)] ?? {}
-                const effEffort = isCurrent ? currentReasoningEffort : (preset.effort ?? '')
+                const requestedEffort = isCurrent ? currentReasoningEffort : (preset.effort ?? '')
+                const effEffort = resolveReasoningEffort(requestedEffort, caps?.reasoning_efforts)
                 const effFast = isCurrent ? currentFastMode : (preset.fast ?? false)
 
                 const fastControl = resolveFastControl(
@@ -312,6 +316,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                       onSelectModel={nextModel => switchTo(nextModel, group.provider.slug)}
                       provider={group.provider.slug}
                       reasoning={caps?.reasoning ?? true}
+                      reasoningEfforts={caps?.reasoning_efforts}
                       requestGateway={requestGateway}
                     />
                   </DropdownMenuSub>

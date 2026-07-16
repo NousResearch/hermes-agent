@@ -204,11 +204,22 @@ class TestNormalizeReasoningDelta(unittest.TestCase):
         self.assertEqual(normalize_reasoning_delta(acc, " about"), " about")
 
     def test_cumulative_snapshot_keeps_new_suffix(self):
-        acc = "Let me think"
-        delta = "Let me think about merging."
+        acc = "Let me think about this problem carefully"  # past the gate
+        delta = acc + " and then merge."
         self.assertEqual(
-            normalize_reasoning_delta(acc, delta), " about merging."
+            normalize_reasoning_delta(acc, delta), " and then merge."
         )
+
+    def test_early_stream_snapshot_below_gate_appends_verbatim(self):
+        """Contract: below _MIN_REASONING_OVERLAP accumulated chars the
+        snapshot branch does NOT engage — a short prefix match is
+        indistinguishable from legitimate repetition ("the" + "the quick"),
+        and dropping real tokens is worse than briefly duplicating a short
+        one. Cumulative providers self-heal via the overlap branch once
+        past the gate."""
+        acc = "the "
+        delta = "the quick"
+        self.assertEqual(normalize_reasoning_delta(acc, delta), delta)
 
     def test_exact_echo_dropped(self):
         """The doubled-halves bug: provider re-sends the full accumulated

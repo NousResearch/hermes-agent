@@ -3465,8 +3465,17 @@ def normalize_reasoning_delta(accumulated: str, delta: str) -> str:
         return ""
     if not accumulated:
         return delta
-    # Case 1+2: cumulative snapshot / exact echo.
-    if delta.startswith(accumulated):
+    # Case 1+2: cumulative snapshot / exact echo — gated on the accumulated
+    # text being long enough to make a startswith match meaningful. Early in
+    # the stream a SHORT accumulated prefix ("the") is trivially also the
+    # prefix of a legitimate repeated token ("the" again), and an ungated
+    # test silently dropped such tokens (caught by randomized stress tests,
+    # 2026-07-16: streams starting with a repeated word lost the repeat).
+    # The gate is safe for the misbehaviors this function exists to fix:
+    # both observed modes (trailing full-text echo, post-reconnect window
+    # re-delivery) occur late in a stream, when the accumulated text is far
+    # past 24 chars and the gate has long since engaged.
+    if len(accumulated) >= _MIN_REASONING_OVERLAP and delta.startswith(accumulated):
         return delta[len(accumulated):]
     # Case 3: overlapping re-delivery — longest suffix of ``accumulated``
     # that is a prefix of ``delta``, gated to ≥ _MIN_REASONING_OVERLAP so

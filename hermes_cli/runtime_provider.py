@@ -1960,7 +1960,9 @@ def resolve_runtime_provider(
             )
         # Read bedrock-specific config from config.yaml
         _bedrock_cfg = load_config().get("bedrock", {})
-        # Region priority: config.yaml bedrock.region → env var → us-east-1
+        # Region priority: config.yaml bedrock.region → env var → us-east-1.
+        # Same resolution as resolve_bedrock_runtime_region() in
+        # agent/bedrock_adapter.py — auxiliary calls must agree with this.
         region = (_bedrock_cfg.get("region") or "").strip() or resolve_bedrock_region()
         auth_source = resolve_aws_auth_env_var() or "aws-sdk-default-chain"
         # Build guardrail config if configured

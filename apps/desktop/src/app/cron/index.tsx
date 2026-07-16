@@ -29,7 +29,6 @@ import {
   createCronJob,
   type CronJob,
   deleteCronJob,
-  getCronJobRuns,
   getCronJobs,
   pauseCronJob,
   resumeCronJob,
@@ -41,7 +40,16 @@ import { type Translations, useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 import { requestModelOptions } from '@/lib/model-options'
 import { asText } from '@/lib/text'
-import { $cronFocusJobId, $cronJobs, getCachedCronRuns, setCachedCronRuns, setCronFocusJobId, setCronJobs, updateCronJobs } from '@/store/cron'
+import {
+  $cronFocusJobId,
+  $cronJobs,
+  getCachedCronRuns,
+  invalidateCronJobRuns,
+  loadCronJobRuns,
+  setCronFocusJobId,
+  setCronJobs,
+  updateCronJobs
+} from '@/store/cron'
 import { notify, notifyError } from '@/store/notifications'
 import { $profileScope, ALL_PROFILES } from '@/store/profile'
 
@@ -385,6 +393,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
 
     try {
       const updated = await triggerCronJob(job.id)
+      invalidateCronJobRuns(job.id)
       updateCronJobs(rows => rows.map(row => (row.id === job.id ? updated : row)))
       notify({ kind: 'success', title: c.triggered, message: truncate(jobTitle(job), 60) })
     } catch (err) {
@@ -403,6 +412,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
 
     try {
       await deleteCronJob(pendingDelete.id)
+      invalidateCronJobRuns(pendingDelete.id)
       updateCronJobs(rows => rows.filter(row => row.id !== pendingDelete.id))
       notify({ kind: 'success', title: c.deleted, message: truncate(jobTitle(pendingDelete), 60) })
       setPendingDelete(null)
@@ -659,10 +669,9 @@ function CronJobRuns({
     let cancelled = false
 
     const load = () =>
-      getCronJobRuns(jobId)
+      loadCronJobRuns(jobId)
         .then(result => {
           if (!cancelled) {
-            setCachedCronRuns(jobId, result)
             setRuns(result)
           }
         })

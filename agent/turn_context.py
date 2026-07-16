@@ -247,6 +247,10 @@ def build_turn_context(
     agent._persist_user_message_idx = None
     agent._persist_user_message_override = persist_user_message
     agent._persist_user_message_timestamp = persist_user_timestamp
+    # One-shot signal: set by the pre_persist hook below only when its returns
+    # must correct an already-durable staged user row in place (CLI close path).
+    # Reset each turn so a prior turn's flag can never leak forward.
+    agent._persist_user_message_durable_rewrite = None
     # Generate unique task_id if not provided to isolate VMs between tasks.
     effective_task_id = task_id or str(uuid.uuid4())
     agent._current_task_id = effective_task_id
@@ -415,7 +419,19 @@ def build_turn_context(
         # `is not None` so it is a no-op when no override was set.
         _ov = getattr(agent, "_persist_user_message_override", None)
         if _pp and _ov is not None and not isinstance(_ov, list):
-            agent._persist_user_message_override = _compose_pre_persist_returns(_ov, _pp)
+            _composed_override = _compose_pre_persist_returns(_ov, _pp)
+            agent._persist_user_message_override = _composed_override
+            # If this staged user dict was ALREADY written durably (the CLI
+            # close safety-net persists the pending dict and stamps it
+            # `_db_persisted` before this turn's hook runs), the append-only
+            # flush will SKIP it on marker — the recomposed override above never
+            # reaches the durable row. Flag a one-shot in-place correction the
+            # flush applies instead of skipping (see
+            # AIAgent._flush_messages_to_session_db). No-op on the ordinary path
+            # where the dict is not yet persisted (flush writes it fresh).
+            from run_agent import _DB_PERSISTED_MARKER
+            if _pp and user_msg.get(_DB_PERSISTED_MARKER):
+                agent._persist_user_message_durable_rewrite = _composed_override
     except Exception as exc:
         logger.warning("pre_persist_user_message hook failed: %s", exc)
     user_msg["content"] = user_message

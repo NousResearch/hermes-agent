@@ -4361,6 +4361,53 @@ class SessionDB:
 
         self._execute_write(_do)
 
+    def update_active_message_content(
+        self,
+        session_id: str,
+        content: Any,
+        *,
+        role: str = "user",
+    ) -> bool:
+        """Correct the content of the newest active row of *role* in place.
+
+        A ``pre_persist_user_message`` hook can compose durable context onto a
+        user message whose dict was ALREADY written to the store: the CLI close
+        safety-net (:meth:`cli.HermesCLI._persist_active_session_before_close`)
+        persists the staged user dict and stamps it ``_db_persisted`` before the
+        turn's hook runs. The append-only turn flush
+        (:meth:`run_agent.AIAgent._flush_messages_to_session_db`) then skips that
+        marked dict, so the injected context reaches the live prompt but never
+        the durable row.
+
+        This performs a targeted in-place UPDATE of the most recent active row
+        for *role* (ordered by ``id``, i.e. insertion order), correcting the
+        durable body WITHOUT inserting a second row — the exactly-once
+        persistence invariant is preserved (the staged user turn stays a single
+        row). The ``messages_fts*`` triggers re-index the row automatically on
+        UPDATE.
+
+        Returns ``True`` if a row was updated, ``False`` if no matching active
+        row exists.
+        """
+        encoded = self._encode_content(content)
+
+        def _do(conn) -> bool:
+            row = conn.execute(
+                "SELECT id FROM messages "
+                "WHERE session_id = ? AND role = ? AND active = 1 "
+                "ORDER BY id DESC LIMIT 1",
+                (session_id, role),
+            ).fetchone()
+            if row is None:
+                return False
+            conn.execute(
+                "UPDATE messages SET content = ? WHERE id = ?",
+                (encoded, row[0]),
+            )
+            return True
+
+        return self._execute_write(_do)
+
     def has_archived_messages(self, session_id: str) -> bool:
         """Return True if the session has any soft-archived (``active = 0``) rows.
 

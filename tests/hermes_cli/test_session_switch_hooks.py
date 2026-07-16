@@ -20,10 +20,15 @@ class TestSessionSwitchHooks:
         cli.reasoning_config = None
         cli.agent = MagicMock()
         cli.conversation_history = []
-        cli._session_db = None
+        # Mock SessionDB so session_switched fires (lives after create_session)
+        mock_db = MagicMock()
+        mock_db.create_session = MagicMock()
+        cli._session_db = mock_db
         cli._pending_title = None
         cli._console_print = lambda text: None
         cli._active_session_lease = None
+        cli._discard_session_if_empty = MagicMock(return_value=False)
+        cli._notify_session_boundary = MagicMock()
         for k, v in overrides.items():
             setattr(cli, k, v)
         return cli
@@ -33,7 +38,7 @@ class TestSessionSwitchHooks:
         return [
             (c[0][0], c[1])
             for c in mock_invoke.call_args_list
-            if c[0][0].startswith("session_switch_")
+            if c[0][0].startswith("session_switch")
         ]
 
     # ── tests ──
@@ -43,8 +48,7 @@ class TestSessionSwitchHooks:
 
         with patch("hermes_cli.plugins.has_hook", return_value=True), \
              patch("hermes_cli.plugins.invoke_hook") as mock_invoke, \
-             patch("cli._sync_process_session_id"), \
-             patch.object(cli, "_notify_session_boundary"):
+             patch("cli._sync_process_session_id"):
             cli.new_session(silent=True)
 
         calls = self._switch_calls(mock_invoke)
@@ -63,12 +67,11 @@ class TestSessionSwitchHooks:
         cli = self._make_cli()
 
         def _has_hook(name):
-            return not name.startswith("session_switch_")
+            return not name.startswith("session_switch")
 
         with patch("hermes_cli.plugins.has_hook", side_effect=_has_hook), \
              patch("hermes_cli.plugins.invoke_hook") as mock_invoke, \
-             patch("cli._sync_process_session_id"), \
-             patch.object(cli, "_notify_session_boundary"):
+             patch("cli._sync_process_session_id"):
             cli.new_session(silent=True)
 
         assert self._switch_calls(mock_invoke) == []
@@ -79,8 +82,7 @@ class TestSessionSwitchHooks:
         with patch("hermes_cli.plugins.has_hook", return_value=True), \
              patch("hermes_cli.plugins.invoke_hook",
                    side_effect=RuntimeError("boom")), \
-             patch("cli._sync_process_session_id"), \
-             patch.object(cli, "_notify_session_boundary"):
+             patch("cli._sync_process_session_id"):
             cli.new_session(silent=True)
 
     def test_starting_hook_receives_old_session_id_only(self):
@@ -88,8 +90,7 @@ class TestSessionSwitchHooks:
 
         with patch("hermes_cli.plugins.has_hook", return_value=True), \
              patch("hermes_cli.plugins.invoke_hook") as mock_invoke, \
-             patch("cli._sync_process_session_id"), \
-             patch.object(cli, "_notify_session_boundary"):
+             patch("cli._sync_process_session_id"):
             cli.new_session(silent=True)
 
         kwargs = self._switch_calls(mock_invoke)[0][1]
@@ -101,8 +102,7 @@ class TestSessionSwitchHooks:
 
         with patch("hermes_cli.plugins.has_hook", return_value=True), \
              patch("hermes_cli.plugins.invoke_hook") as mock_invoke, \
-             patch("cli._sync_process_session_id"), \
-             patch.object(cli, "_notify_session_boundary"):
+             patch("cli._sync_process_session_id"):
             cli.new_session(silent=True)
 
         kwargs = self._switch_calls(mock_invoke)[1][1]

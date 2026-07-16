@@ -616,6 +616,10 @@ def run_conversation(
     _plugin_user_context = _ctx.plugin_user_context
     _ext_prefetch_cache = _ctx.ext_prefetch_cache
 
+    # Commentary deduplication spans all provider continuations and tool calls
+    # within one user turn, but must not suppress the same phrase next turn.
+    agent._delivered_interim_texts = set()
+
     # Main conversation loop counters (pure locals consumed by the loop below).
     api_call_count = 0
     final_response = None

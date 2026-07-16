@@ -983,3 +983,95 @@ class TestTextBatchFlushRace:
         assert adapter._pending_text_batches.get(key) is None, (
             "active task must pop the event after processing"
         )
+
+
+class TestWaitForHandshakeClosing:
+    """Tests for _wait_for_handshake() handling CLOSING state (PR #64716).
+
+    _read_events() was fixed to handle WSMsgType.CLOSING in #28311
+    (issue #28293), but _wait_for_handshake() was overlooked.
+    These tests prove the fix closes that gap.
+    """
+
+    @pytest.mark.asyncio
+    async def test_handshake_raises_on_closing_frame(self):
+        """_wait_for_handshake() raises immediately on CLOSING frame.
+
+        Before the fix, the handshake loop would ignore CLOSING frames,
+        eventually timing out after CONNECT_TIMEOUT_SECONDS (20s) instead
+        of surfacing the real error immediately.
+        """
+        import aiohttp
+        from types import SimpleNamespace
+        from plugins.platforms.wecom.adapter import WeComAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = WeComAdapter(
+            PlatformConfig(enabled=True, extra={"bot_id": "bot-1", "secret": "secret-1"})
+        )
+
+        class _ClosingWS:
+            closed = False
+
+            async def receive(self):
+                return SimpleNamespace(type=aiohttp.WSMsgType.CLOSING)
+
+            async def close(self):
+                return None
+
+        adapter._ws = _ClosingWS()
+
+        with pytest.raises(RuntimeError, match="WeCom websocket closed during authentication"):
+            await adapter._wait_for_handshake("subscribe-req-id")
+
+    @pytest.mark.asyncio
+    async def test_handshake_raises_on_closed_frame(self):
+        """Existing terminal state (CLOSED) still raises correctly."""
+        import aiohttp
+        from types import SimpleNamespace
+        from plugins.platforms.wecom.adapter import WeComAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = WeComAdapter(
+            PlatformConfig(enabled=True, extra={"bot_id": "bot-1", "secret": "secret-1"})
+        )
+
+        class _ClosedWS:
+            closed = False
+
+            async def receive(self):
+                return SimpleNamespace(type=aiohttp.WSMsgType.CLOSED)
+
+            async def close(self):
+                return None
+
+        adapter._ws = _ClosedWS()
+
+        with pytest.raises(RuntimeError, match="WeCom websocket closed during authentication"):
+            await adapter._wait_for_handshake("subscribe-req-id")
+
+    @pytest.mark.asyncio
+    async def test_handshake_raises_on_error_frame(self):
+        """Existing terminal state (ERROR) still raises correctly."""
+        import aiohttp
+        from types import SimpleNamespace
+        from plugins.platforms.wecom.adapter import WeComAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = WeComAdapter(
+            PlatformConfig(enabled=True, extra={"bot_id": "bot-1", "secret": "secret-1"})
+        )
+
+        class _ErrorWS:
+            closed = False
+
+            async def receive(self):
+                return SimpleNamespace(type=aiohttp.WSMsgType.ERROR)
+
+            async def close(self):
+                return None
+
+        adapter._ws = _ErrorWS()
+
+        with pytest.raises(RuntimeError, match="WeCom websocket closed during authentication"):
+            await adapter._wait_for_handshake("subscribe-req-id")

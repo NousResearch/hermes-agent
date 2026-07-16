@@ -1,10 +1,12 @@
 """Tests for cron/scheduler.py — origin resolution, delivery routing, and error logging."""
 
 import contextlib
+import gc
 import itertools
 import json
 import logging
 import os
+import warnings
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -380,6 +382,90 @@ class TestDeliverResultWrapping:
         assert "Here is today's summary." in sent_content
         assert "To stop or manage this job" in sent_content
 
+    @pytest.mark.parametrize(
+        ("reject_submit", "expected_coroutines", "expected_error"),
+        [
+            (True, 1, "interpreter is shutting down"),
+            (False, 2, "worker asyncio.run rejected coroutine"),
+        ],
+    )
+    def test_fresh_loop_rejection_does_not_leak_coroutine(
+        self, reject_submit, expected_coroutines, expected_error
+    ):
+        from gateway.config import Platform
+
+        pconfig = MagicMock(enabled=True)
+        mock_cfg = MagicMock(platforms={Platform.TELEGRAM: pconfig})
+        constructed = []
+
+        async def send_result():
+            return {"success": True}
+
+        def fake_send(*_args, **_kwargs):
+            coro = send_result()
+            constructed.append(coro)
+            return coro
+
+        future = MagicMock()
+        pool = MagicMock()
+        if reject_submit:
+            pool.submit.side_effect = RuntimeError(
+                "cannot schedule new futures after interpreter shutdown"
+            )
+            run_errors = [
+                RuntimeError("asyncio.run() cannot be called from a running event loop")
+            ]
+        else:
+            pool.submit.return_value = future
+
+            def run_worker(timeout):
+                assert timeout == 30
+                submit_args = pool.submit.call_args.args
+                if len(submit_args) == 2:
+                    return submit_args[1]()
+                return submit_args[0]()
+
+            future.result.side_effect = run_worker
+            run_errors = [
+                RuntimeError("asyncio.run() cannot be called from a running event loop"),
+                RuntimeError("worker asyncio.run rejected coroutine"),
+            ]
+        job = {
+            "id": "shutdown-race",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", RuntimeWarning)
+            with (
+                patch("gateway.config.load_gateway_config", return_value=mock_cfg),
+                patch("tools.send_message_tool._send_to_platform", new=fake_send),
+                patch("cron.scheduler_delivery.asyncio.run", side_effect=run_errors),
+                patch(
+                    "cron.scheduler_delivery.concurrent.futures.ThreadPoolExecutor",
+                    return_value=pool,
+                ),
+            ):
+                error = _deliver_result(job, "Output.")
+
+            assert len(constructed) == expected_coroutines
+            assert all(coro.cr_frame is None for coro in constructed)
+            pool.submit.assert_called_once()
+            assert len(pool.submit.call_args.args) in (1, 2)
+            pool.shutdown.assert_called_once_with(wait=False)
+            constructed.clear()
+            pool.reset_mock(return_value=True, side_effect=True)
+            future.reset_mock(side_effect=True)
+            gc.collect()
+
+        assert not [
+            warning
+            for warning in caught
+            if "was never awaited" in str(warning.message)
+        ]
+        assert expected_error in error
+
 
     def test_relay_fronted_home_uses_relay_config_and_live_adapter(self, monkeypatch, tmp_path):
         """Persisted Slack home survives restart without native Slack config."""
@@ -734,7 +820,7 @@ class TestRunJobSessionPersistence:
         fake_db = MagicMock()
         seen = {}
 
-        (tmp_path / ".env").write_text("TELEGRAM_HOME_CHANNEL=-2002\n")
+        (tmp_path / ".env").write_text("TELEGRAM_HOME_CHANNEL=-2002\n", encoding="utf-8")
         monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
         monkeypatch.delenv("HERMES_CRON_AUTO_DELIVER_PLATFORM", raising=False)
         monkeypatch.delenv("HERMES_CRON_AUTO_DELIVER_CHAT_ID", raising=False)
@@ -1027,8 +1113,7 @@ class TestRunJobConfigLogging:
     def test_bad_config_yaml_is_logged(self, caplog, tmp_path):
         """When config.yaml is malformed, a warning should be logged."""
         bad_yaml = tmp_path / "config.yaml"
-        bad_yaml.write_text("invalid: yaml: [[[bad")
-
+        bad_yaml.write_text("invalid: yaml: [[[bad", encoding="utf-8")
         job = {
             "id": "test-job",
             "name": "test",
@@ -1073,7 +1158,7 @@ class TestRunJobConfigEnvVarExpansion:
 
     def test_model_env_ref_in_config_yaml_is_expanded(self, tmp_path, monkeypatch):
         """${VAR} in config.yaml model: is expanded using env after .env is loaded."""
-        (tmp_path / "config.yaml").write_text("model: ${_HERMES_TEST_CRON_MODEL}\n")
+        (tmp_path / "config.yaml").write_text("model: ${_HERMES_TEST_CRON_MODEL}\n", encoding="utf-8")
         monkeypatch.setenv("_HERMES_TEST_CRON_MODEL", "gpt-4o-mini-cron-test")
 
         job = {"id": "env-job", "name": "env test", "prompt": "hi"}
@@ -1223,7 +1308,7 @@ class TestRunJobConfigEnvVarExpansion:
 
     def test_unexpanded_ref_passthrough_when_var_unset(self, tmp_path, monkeypatch):
         """When the env var is not set, the literal ${VAR} is kept verbatim (not crashed)."""
-        (tmp_path / "config.yaml").write_text("model: ${_HERMES_TEST_CRON_UNSET_VAR}\n")
+        (tmp_path / "config.yaml").write_text("model: ${_HERMES_TEST_CRON_UNSET_VAR}\n", encoding="utf-8")
         monkeypatch.delenv("_HERMES_TEST_CRON_UNSET_VAR", raising=False)
 
         job = {"id": "unset-job", "name": "unset var test", "prompt": "hi"}
@@ -1268,7 +1353,7 @@ class TestRunJobModelResolution:
 
     def test_null_job_model_falls_back_to_env(self, tmp_path, monkeypatch):
         """``model: null`` on the job uses HERMES_MODEL when set."""
-        (tmp_path / "config.yaml").write_text("")
+        (tmp_path / "config.yaml").write_text("", encoding="utf-8")
         monkeypatch.setenv("HERMES_MODEL", "env-model")
 
         job = {"id": "null-model-job", "name": "null model", "prompt": "hi", "model": None}
@@ -1294,7 +1379,7 @@ class TestRunJobModelResolution:
 
     def test_no_model_anywhere_fails_with_actionable_error(self, tmp_path, monkeypatch):
         """All three sources empty → fail fast with a clear message, not an opaque 400."""
-        (tmp_path / "config.yaml").write_text("")
+        (tmp_path / "config.yaml").write_text("", encoding="utf-8")
         monkeypatch.delenv("HERMES_MODEL", raising=False)
 
         job = {"id": "no-model-job", "name": "no model anywhere", "prompt": "hi", "model": None}
@@ -1326,7 +1411,7 @@ class TestRunJobModelResolution:
         resolver mirrors that so a config that works in the CLI also works in
         cron.
         """
-        (tmp_path / "config.yaml").write_text("model:\n  model: alias-key-model\n")
+        (tmp_path / "config.yaml").write_text("model:\n  model: alias-key-model\n", encoding="utf-8")
         monkeypatch.delenv("HERMES_MODEL", raising=False)
 
         job = {"id": "alias-job", "name": "alias", "prompt": "hi", "model": None}
@@ -1351,7 +1436,7 @@ class TestRunJobModelResolution:
 
     def test_corrupt_config_yaml_does_not_crash_with_job_model(self, tmp_path, monkeypatch):
         """A malformed config.yaml degrades gracefully when the job has a model."""
-        (tmp_path / "config.yaml").write_text("{{{invalid yaml!!!")
+        (tmp_path / "config.yaml").write_text("{{{invalid yaml!!!", encoding="utf-8")
         monkeypatch.delenv("HERMES_MODEL", raising=False)
 
         job = {"id": "corrupt-job", "name": "corrupt", "prompt": "hi", "model": "explicit-model"}
@@ -1735,7 +1820,7 @@ class TestBuildJobPromptAbsoluteSkillPath:
         skills_dir = tmp_path / "skills"
         skill_dir = skills_dir / "alpha-skill"
         skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text("# Alpha\nDo alpha.")
+        (skill_dir / "SKILL.md").write_text("# Alpha\nDo alpha.", encoding="utf-8")
         absolute_path = str(skill_dir)
         seen_names: list[str] = []
 

@@ -228,3 +228,49 @@ jobs:
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
+
+  postgres-state:
+    name: PostgreSQL durable state
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: hermes
+          POSTGRES_USER: hermes
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd "pg_isready -U hermes -d hermes"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+        ports:
+          - 5432:5432
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Install PostgreSQL state test dependencies
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.11 --extra all --extra dev --extra postgres-state
+
+      - name: Run live PostgreSQL durable-state tests
+        run: |
+          source .venv/bin/activate
+          python -m pytest -o addopts="" -m integration \
+            tests/state_store/postgres/test_live_postgres.py -v --tb=short
+        env:
+          HERMES_TEST_POSTGRES_DSN: postgresql://hermes:postgres@localhost:5432/hermes

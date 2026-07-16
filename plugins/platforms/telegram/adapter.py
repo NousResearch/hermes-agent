@@ -2982,31 +2982,40 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._post_connect_task = None
 
     def _wire_plugin_handlers(self) -> None:
-        """Wire plugin-registered PTB handlers into the Application at connect.
+        """Invoke plugin-registered Telegram handler factories at connect.
 
-        Consumes ``PluginManager.get_telegram_handlers()`` (populated by
-        ``ctx.register_telegram_handler``) and registers each on the PTB
-        Application with its requested group. The plugin-manager load and each
-        per-handler ``add_handler`` are isolated so one bad plugin cannot block
-        Telegram connect — mirrors how the Slack adapter consumes
-        ``get_slack_action_handlers``.
+        Plugins call ``ctx.register_telegram_handler(factory)`` at register()
+        time; the manager queues the factories and this method invokes each
+        with ``(application, adapter)`` right after the PTB Application is
+        built and BEFORE the core handlers are added. PTB dispatches only the
+        first matching handler per group, so plugin handlers registered first
+        take precedence for the updates they scope to (e.g. a
+        ``CallbackQueryHandler`` with a ``pattern=`` prefix) while everything
+        else falls through to the core handlers.
+
+        Each factory is isolated so a misbehaving plugin can't prevent
+        Telegram from connecting.
         """
         try:
             from hermes_cli.plugins import get_plugin_manager
-            tg_handlers = get_plugin_manager().get_telegram_handlers()
+            factories = get_plugin_manager().get_telegram_handler_factories()
         except Exception as tg_load_exc:
             logger.warning(
-                "[%s] could not load plugin Telegram handlers: %s",
+                "[%s] Could not load plugin Telegram handler factories: %s",
                 self.name, tg_load_exc,
             )
-            tg_handlers = []
-        for tg_h, tg_g, tg_pname in tg_handlers:
+            return
+        for factory, plugin_name in factories:
             try:
-                self._app.add_handler(tg_h, group=tg_g)
-            except Exception as tg_reject_exc:
-                logger.warning(
-                    "[%s] plugin Telegram handler from %s rejected: %s",
-                    self.name, tg_pname, tg_reject_exc,
+                factory(self._app, self)
+                logger.info(
+                    "[%s] Wired Telegram handlers from plugin '%s'",
+                    self.name, plugin_name,
+                )
+            except Exception as tg_factory_exc:
+                logger.error(
+                    "[%s] Plugin '%s' Telegram handler factory raised: %s",
+                    self.name, plugin_name, tg_factory_exc, exc_info=True,
                 )
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
@@ -3196,6 +3205,10 @@ class TelegramAdapter(BasePlatformAdapter):
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()
             self._bot = self._app.bot
+
+            # Wire plugin-provided PTB handlers BEFORE the core handlers are
+            # added — see _wire_plugin_handlers for precedence + isolation.
+            self._wire_plugin_handlers()
             
             # Register handlers
             self._app.add_handler(TelegramMessageHandler(
@@ -3216,9 +3229,6 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
-            # Wire plugin-registered python-telegram-bot handlers (plugins call
-            # ctx.register_telegram_handler) into the Application.
-            self._wire_plugin_handlers()
             
             # Start polling — retry initialize() for transient TLS resets.
             # Each attempt is capped by _init_timeout so a single unreachable

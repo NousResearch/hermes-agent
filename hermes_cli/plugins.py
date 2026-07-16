@@ -1042,65 +1042,59 @@ class PluginContext:
 
     # -- auxiliary task registration ---------------------------------------
 
-    def register_telegram_handler(
-        self,
-        handler: Any,
-        group: int = 0,
-    ) -> None:
-        """Register a python-telegram-bot handler from a plugin.
+    def register_telegram_handler(self, factory: Callable) -> None:
+        """Register a python-telegram-bot handler factory from a plugin.
 
-        Hermes' Telegram adapter wires registered handlers into its PTB
-        ``Application`` at connect time, so plugins can react to updates the
-        built-in handlers don't cover — message reactions, edited messages,
-        custom commands, chat-member changes, etc. This mirrors
-        :meth:`register_slack_action_handler` for the Slack adapter.
+        Hermes' Telegram adapter invokes registered factories at ``connect()``
+        time, right after the PTB ``Application`` is built and **before** the
+        core handlers are added. The factory receives ``(application, adapter)``
+        and wires its own handlers::
+
+            def _wire(application, adapter):
+                from telegram.ext import CallbackQueryHandler
+
+                application.add_handler(
+                    CallbackQueryHandler(_on_button, pattern=r"^myplugin:")
+                )
+
+            ctx.register_telegram_handler(_wire)
+
+        Notes:
+
+        * The factory is called lazily at connect time, so plugins may import
+          ``telegram`` / ``telegram.ext`` inside the factory body — the
+          plugin's ``register()`` still works when PTB is not installed.
+        * PTB dispatches only the *first* matching handler within a group.
+          Because plugin factories run before the core handlers, a
+          pattern-scoped handler (e.g. ``CallbackQueryHandler`` with
+          ``pattern=r"^myplugin:"``) takes precedence for its own updates
+          while everything else falls through to the core handlers unchanged.
+          Always scope callback handlers with ``pattern=`` — an unscoped one
+          would swallow the core button flows (approvals, model picker).
+        * ``adapter`` is the ``TelegramAdapter`` instance (``adapter.config``);
+          treat it as read-only. Reach the bot handle via ``application.bot``
+          (PTB), not ``adapter.bot``.
+        * Exceptions raised by the factory are caught and logged by the
+          adapter — a broken plugin cannot prevent Telegram from connecting.
 
         Args:
-            handler: A ``telegram.ext.BaseHandler`` instance (e.g.
-                ``MessageHandler``, ``TypeHandler``, ``CommandHandler``,
-                ``CallbackQueryHandler``) exactly as
-                ``Application.add_handler`` accepts.
-            group: PTB handler group. Handlers are organised in groups; 0 or
-                1 handler per group is used per update. Use a non-zero group
-                (e.g. ``1``) to run alongside the built-ins in group 0
-                without displacing them. Defaults to ``0``.
+            factory: Callable receiving ``(application, adapter)``.
 
         Raises:
-            ValueError: if ``handler`` is not a BaseHandler instance.
-
-        Example::
-
-            from telegram import Update
-            from telegram.ext import TypeHandler
-
-            async def _on_reaction(update, context):
-                if update.message_reaction:
-                    ...  # e.g. render a table image fallback
-
-            ctx.register_telegram_handler(
-                TypeHandler(Update, _on_reaction), group=1
-            )
+            ValueError: if ``factory`` is not callable.
         """
-        # Duck-type to avoid importing python-telegram-bot in environments
-        # that don't use Telegram (it is an optional dependency). PTB v22's
-        # BaseHandler contract is check_update() + handle_update(); it has no
-        # `handle` attribute, so a real MessageHandler/TypeHandler must pass.
-        if not (
-            callable(getattr(handler, "check_update", None))
-            and callable(getattr(handler, "handle_update", None))
-        ):
+        if not callable(factory):
             raise ValueError(
-                "register_telegram_handler expects a telegram.ext.BaseHandler "
-                "instance (needs check_update/handle_update)."
+                f"Plugin '{self.manifest.name}' tried to register a Telegram "
+                f"handler factory with a non-callable factory."
             )
-        self._manager._telegram_handlers.append(
-            (handler, group, self.manifest.name)
+        self._manager._telegram_handler_factories.append(
+            (factory, self.manifest.name)
         )
         logger.debug(
-            "Plugin %s registered Telegram handler: %s (group=%s)",
+            "Plugin %s registered Telegram handler factory: %s",
             self.manifest.name,
-            type(handler).__name__,
-            group,
+            getattr(factory, "__name__", repr(factory)),
         )
 
     def register_auxiliary_task(
@@ -1330,10 +1324,12 @@ class PluginManager:
         # ``re.Pattern``, or a constraint dict); ``callback`` is an async
         # function with the slack_bolt signature ``(ack, body, action)``.
         self._slack_action_handlers: List[tuple] = []
-        # Plugin-registered python-telegram-bot handlers; the Telegram adapter
-        # wires them into its PTB Application at connect time. Each entry is a
-        # ``(handler, group, plugin_name)`` tuple.
-        self._telegram_handlers: List[tuple] = []
+        # Telegram handler factories registered by plugins. Each entry is
+        # (factory, plugin_name); the Telegram adapter invokes factories at
+        # connect() time with (application, adapter) so plugins can wire
+        # their own PTB handlers (pattern-scoped CallbackQueryHandler, etc.)
+        # before the core handlers are added.
+        self._telegram_handler_factories: List[tuple] = []
 
     # -----------------------------------------------------------------------
     # Public
@@ -1363,7 +1359,7 @@ class PluginManager:
             self._plugin_skills.clear()
             self._aux_tasks.clear()
             self._slack_action_handlers.clear()
-            self._telegram_handlers.clear()
+            self._telegram_handler_factories.clear()
             self._context_engine = None
         # Set the flag up front as a re-entrancy guard (a plugin's register()
         # can transitively trigger discovery again), but reset it if the sweep
@@ -2037,17 +2033,18 @@ class PluginManager:
         """
         return list(self._slack_action_handlers)
 
-    def get_telegram_handlers(self) -> List[tuple]:
-        """Return the list of plugin-registered python-telegram-bot handlers.
+    def get_telegram_handler_factories(self) -> List[tuple]:
+        """Return the list of plugin-registered Telegram handler factories.
 
-        Each entry is a ``(handler, group, plugin_name)`` tuple. Consumed by
-        the Telegram adapter at connect time to wire the handlers into its PTB
-        ``Application`` via ``Application.add_handler``.
+        Each entry is a ``(factory, plugin_name)`` tuple. Consumed by the
+        Telegram adapter at connect time; each factory is invoked with
+        ``(application, adapter)`` so plugins can wire their own PTB handlers
+        before the core handlers are added.
 
-        Plugins register handlers via
+        Plugins register factories via
         :meth:`PluginContext.register_telegram_handler`.
         """
-        return list(self._telegram_handlers)
+        return list(self._telegram_handler_factories)
 
     # -----------------------------------------------------------------------
     # Introspection

@@ -3663,22 +3663,40 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # becomes running only immediately before the actual run.
         mark_execution_running(execution_id)
 
-        # Run the job under the profile's secret scope. get_secret() fails
-        # closed outside a scope once profile isolation is in play (multiple
-        # gateway profiles / room→profile multiplexing), and cron fires from
-        # the ticker thread where no per-turn scope is installed — so
-        # resolve_runtime_provider() raised UnscopedSecretError before model
-        # selection, breaking every cron job. Mirrors the per-turn pattern in
-        # gateway/run.py (_profile_runtime_scope).
+        # Run the job under the profile's secret scope, but ONLY when
+        # multiplexing is on. get_secret() fails closed outside a scope once
+        # profile isolation is in play (multiple gateway profiles →
+        # room→profile multiplexing), and cron fires from the ticker thread
+        # where no per-turn scope is installed — so resolve_runtime_provider()
+        # raised UnscopedSecretError before model selection, breaking every
+        # cron job (#60726).
+        #
+        # The multiplex guard mirrors the per-turn pattern in gateway/run.py
+        # (_profile_runtime_scope), which installs a scope only when
+        # multiplex_profiles is on. Installing it unconditionally is not merely
+        # redundant on a single-profile deployment — it is harmful:
+        # build_profile_secret_scope() returns ONLY <home>/.env, and an
+        # installed scope is authoritative (get_secret does NOT fall through to
+        # os.environ). Credentials injected via the process environment
+        # (container env vars, systemd Environment=) therefore became invisible
+        # to cron while interactive turns on the same deployment resolved them
+        # fine, and the provider call went out with a placeholder key → HTTP
+        # 401 (#65773). Outside multiplex, skipping the scope restores the
+        # os.environ read that every interactive path already does; <home>/.env
+        # is loaded into os.environ by load_hermes_dotenv() above, so .env-based
+        # credentials keep resolving with the same precedence.
         from agent.secret_scope import (
             build_profile_secret_scope,
+            is_multiplex_active,
             reset_secret_scope,
             set_secret_scope,
         )
 
-        _scope_token = set_secret_scope(
-            build_profile_secret_scope(_get_hermes_home())
-        )
+        _scope_token = None
+        if is_multiplex_active():
+            _scope_token = set_secret_scope(
+                build_profile_secret_scope(_get_hermes_home())
+            )
         # Defer the cron agent's async-resource teardown until AFTER delivery.
         # run_job normally closes the agent (and reaps stale async clients) in
         # its finally block; doing that before _deliver_result runs means the
@@ -3701,7 +3719,8 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
                 _teardown_cron_agent(_deferred_agent, job["id"])
             raise
         finally:
-            reset_secret_scope(_scope_token)
+            if _scope_token is not None:
+                reset_secret_scope(_scope_token)
 
         # Everything from here through delivery runs with the agent still live
         # (deferred teardown). Wrap it ALL in a try/finally so that if any step

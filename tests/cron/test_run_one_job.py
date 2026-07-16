@@ -274,3 +274,79 @@ def test_run_one_job_tears_down_deferred_agent_when_save_raises(monkeypatch):
     assert ok is False
     assert "deliver" not in order
     assert order == ["save-raise", "agent.close", "cleanup_stale"], order
+
+
+def test_run_one_job_skips_secret_scope_without_multiplex(monkeypatch, tmp_path):
+    """Regression (#65773): on a single-profile deployment (multiplex OFF),
+    run_one_job must NOT install a profile secret scope.
+
+    build_profile_secret_scope() returns ONLY <home>/.env, and an installed
+    scope is authoritative — get_secret() does not fall through to os.environ.
+    So installing it unconditionally hid credentials injected via the process
+    environment (container env vars / systemd Environment=), and the provider
+    call went out with a placeholder key -> HTTP 401, while interactive turns
+    on the same deployment resolved the key fine.
+
+    Contract: multiplex OFF -> no scope during run_job, and an env-injected
+    secret resolves through os.environ.
+    """
+    from agent import secret_scope as ss
+
+    # Profile .env exists but does NOT carry the provider key — it is injected
+    # into the process environment instead, exactly like the reported
+    # deployment (Kubernetes secretKeyRef).
+    (tmp_path / ".env").write_text("SOME_OTHER_KEY=unrelated\n")
+    monkeypatch.setattr(s, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setenv("DEEPINFRA_API_KEY", "env-injected-key")
+
+    observed = {}
+
+    def fake_run_job(job, *, defer_agent_teardown=None):
+        # Where resolve_runtime_provider() reads the provider credential.
+        observed["scope"] = ss.current_secret_scope()
+        observed["key"] = ss.get_secret("DEEPINFRA_API_KEY")
+        return (True, "out", "final", None)
+
+    monkeypatch.setattr(s, "run_job", fake_run_job)
+    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
+    monkeypatch.setattr(s, "_deliver_result", lambda *a, **k: None)
+    monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: None)
+
+    ss.set_multiplex_active(False)
+    ok = s.run_one_job({"id": "j8", "name": "t"})
+
+    assert ok is True
+    # The user-facing symptom first: under the unconditional scope this was
+    # None (the key is absent from .env), which resolved to the
+    # "no-key-required" placeholder and the provider returned HTTP 401.
+    assert observed["key"] == "env-injected-key"
+    # The mechanism: no scope installed -> get_secret reads os.environ.
+    assert observed["scope"] is None
+
+
+def test_run_one_job_env_scope_restored_after_run_without_multiplex(monkeypatch, tmp_path):
+    """The no-scope path must leave the ambient scope untouched on the way out.
+
+    Guards the `if _scope_token is not None` teardown: passing a None token to
+    reset_secret_scope() would raise, and an unbalanced reset would clobber a
+    scope this call never installed.
+    """
+    from agent import secret_scope as ss
+
+    (tmp_path / ".env").write_text("")
+    monkeypatch.setattr(s, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(s, "run_job", lambda job, **kw: (True, "out", "final", None))
+    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
+    monkeypatch.setattr(s, "_deliver_result", lambda *a, **k: None)
+    monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: None)
+
+    ss.set_multiplex_active(False)
+    sentinel = {"AMBIENT": "outer"}
+    token = ss.set_secret_scope(sentinel)
+    try:
+        ok = s.run_one_job({"id": "j9", "name": "t"})
+        assert ok is True
+        # The ambient scope survived — run_one_job neither installed nor reset one.
+        assert ss.current_secret_scope() is sentinel
+    finally:
+        ss.reset_secret_scope(token)

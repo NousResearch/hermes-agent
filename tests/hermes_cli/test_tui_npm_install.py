@@ -265,6 +265,7 @@ def test_make_tui_argv_keeps_desktop_workspace_install_behaviour(
         "install",
         "--workspace",
         "ui-tui",
+        "--include=dev",
         "--silent",
         "--no-fund",
         "--no-audit",
@@ -273,6 +274,39 @@ def test_make_tui_argv_keeps_desktop_workspace_install_behaviour(
     assert calls[0][1]["cwd"] == str(tmp_path)
     _assert_utf8_replace_capture(calls[0][1])
     _assert_utf8_replace_capture(calls[1][1])
+
+
+def test_make_tui_argv_npm_install_forces_include_dev(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    """The TUI-launch npm install must force --include=dev: ui-tui's build
+    toolchain (esbuild, typescript) lives in devDependencies, and an inherited
+    NODE_ENV=production (container shells; a parent TUI sets it on its own
+    subprocess env) or an npm `omit=dev` config would silently skip them,
+    breaking the TUI build with `tsc`/`esbuild: command not found."""
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    (tmp_path / "package-lock.json").write_text("{}")
+
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setenv("NODE_ENV", "production")
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    main_mod._make_tui_argv(tui_dir, tui_dev=False)
+
+    install_cmd = calls[0][0][0]
+    assert install_cmd[:2] == ["/bin/npm", "install"]
+    assert "--include=dev" in install_cmd
 
 
 def test_make_tui_argv_keeps_desktop_always_build_behaviour(

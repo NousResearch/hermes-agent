@@ -156,6 +156,47 @@ class TestBuildWebUISkipsWhenFresh:
         assert kwargs["env"]["CI"] == "1"
         assert kwargs["env"]["PYTHON"] == "/nix/store/python"
 
+    def test_npm_ci_forces_include_dev(self, tmp_path):
+        """`npm ci` must pass --include=dev so an inherited NODE_ENV=production
+        (e.g. from a container shell, or the bundled TUI launcher which sets
+        NODE_ENV=production on its subprocess env) or an npm `omit=dev` config
+        can't silently strip the build toolchain (tsc/vite/electron-builder),
+        which otherwise fails the web/desktop build with `tsc: command not
+        found` (exit 127) despite the install exiting 0."""
+        web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
+
+        mock_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main.subprocess.run", return_value=mock_cp) as mock_run:
+            _run_npm_install_deterministic("/usr/bin/npm", web_dir)
+
+        args, _ = mock_run.call_args
+        cmd = args[0]
+        assert cmd[:2] == ["/usr/bin/npm", "ci"]
+        assert "--include=dev" in cmd
+
+    def test_npm_install_fallback_forces_include_dev_and_no_save(self, tmp_path):
+        """When `npm ci` fails (lockfile out of sync) the `npm install`
+        fallback must still force --include=dev (same NODE_ENV rationale as
+        above) and must pass --no-save so the fallback never rewrites the
+        committed lockfile — a drifted lockfile makes every future `npm ci`
+        fail, a self-reinforcing cycle that keeps devDeps from installing."""
+        web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
+
+        ci_fail = __import__("subprocess").CompletedProcess([], 1, stdout="", stderr="lockfile out of sync")
+        install_ok = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main.subprocess.run", side_effect=[ci_fail, install_ok]) as mock_run:
+            result = _run_npm_install_deterministic("/usr/bin/npm", web_dir)
+
+        assert result.returncode == 0
+        assert mock_run.call_count == 2
+        install_args, _ = mock_run.call_args_list[1]
+        install_cmd = install_args[0]
+        assert install_cmd[:2] == ["/usr/bin/npm", "install"]
+        assert "--include=dev" in install_cmd
+        assert "--no-save" in install_cmd
+
     def test_npm_install_uses_workspace_web_scope(self, tmp_path):
         web_dir, _ = _make_web_dir(tmp_path)
         # Real workspace checkout: the single lockfile lives at the root, so
@@ -201,7 +242,7 @@ class TestBuildWebUISkipsWhenFresh:
         assert result is True
         args, kwargs = mock_run.call_args
         assert "--workspace" not in args[0]
-        assert args[0] == ["/usr/bin/npm", "ci", "--silent"]
+        assert args[0] == ["/usr/bin/npm", "ci", "--include=dev", "--silent"]
         assert kwargs["cwd"] == web_dir
 
     def test_web_build_uses_idle_timeout_helper(self, tmp_path):
@@ -245,6 +286,7 @@ class TestBuildWebUISkipsWhenFresh:
         assert args[0] == [
             "/usr/bin/npm",
             "ci",
+            "--include=dev",
             "--workspace",
             "web",
             "--include-workspace-root=false",
@@ -269,7 +311,7 @@ class TestBuildWebUISkipsWhenFresh:
 
         assert result is True
         args, kwargs = mock_run.call_args
-        assert args[0] == ["/usr/bin/npm", "ci", "--workspace", "web", "--silent"]
+        assert args[0] == ["/usr/bin/npm", "ci", "--include=dev", "--workspace", "web", "--silent"]
         assert kwargs["cwd"] == tmp_path
 
 

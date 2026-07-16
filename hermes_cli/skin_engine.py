@@ -81,8 +81,8 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       web_search: "🔮"        # Override web_search tool emoji
       # Any tool not listed here uses its registry default
 
-    # Compact mode: use minimal single-line banner instead of full ASCII art + tool list
-    compact: true              # true = compact banner, false = full banner (default)
+    # Compact mode: minimal single-line banner.
+    compact: true
 
 USAGE
 =====
@@ -141,7 +141,7 @@ class SkinConfig:
     tool_emojis: Dict[str, str] = field(default_factory=dict)  # per-tool emoji overrides
     banner_logo: str = ""    # Rich-markup ASCII art logo (replaces HERMES_AGENT_LOGO)
     banner_hero: str = ""    # Rich-markup hero art (replaces HERMES_CADUCEUS)
-    compact: bool = False    # Use compact single-line banner (hides ASCII art + tool list)
+    compact: bool = False    # minimal single-line banner
 
     def get_color(self, key: str, fallback: str = "") -> str:
         """Get a color value with fallback."""
@@ -707,6 +707,10 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
     branding = dict(default.get("branding", {}))
     branding.update(branding_overrides)
 
+    raw_compact = data.get("compact", False)
+    # Only a real boolean enables compact.
+    compact = raw_compact if isinstance(raw_compact, bool) else False
+
     return SkinConfig(
         name=skin_name,
         description=data.get("description", ""),
@@ -717,7 +721,7 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
         tool_emojis=emoji_overrides,
         banner_logo=data.get("banner_logo", ""),
         banner_hero=data.get("banner_hero", ""),
-        compact=bool(data.get("compact", False)),
+        compact=compact,
     )
 
 

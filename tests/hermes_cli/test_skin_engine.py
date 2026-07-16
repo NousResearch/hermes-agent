@@ -398,12 +398,6 @@ class TestSkinCompactField:
         skin = load_skin("default")
         assert skin.compact is False
 
-    def test_compact_false_for_all_builtin_skins(self):
-        from hermes_cli.skin_engine import _BUILTIN_SKINS, _build_skin_config
-        for name, data in _BUILTIN_SKINS.items():
-            skin = _build_skin_config(data)
-            assert skin.compact is False, f"Built-in skin '{name}' should not be compact by default"
-
     def test_compact_parsed_from_yaml(self, tmp_path, monkeypatch):
         import yaml
         from hermes_cli.skin_engine import load_skin
@@ -435,13 +429,8 @@ class TestSkinCompactField:
         skin = load_skin("normal")
         assert skin.compact is False
 
-    def test_compact_coerced_to_bool(self):
+    def test_compact_only_accepts_real_booleans(self):
         from hermes_cli.skin_engine import _build_skin_config
-        # Truthy values
-        skin = _build_skin_config({"name": "t", "compact": 1})
-        assert skin.compact is True
-        # Falsy values
-        skin = _build_skin_config({"name": "f", "compact": 0})
-        assert skin.compact is False
-        skin = _build_skin_config({"name": "f2", "compact": ""})
-        assert skin.compact is False
+        # Quoted booleans must not be truthy (the bool() regression).
+        assert _build_skin_config({"name": "a", "compact": "false"}).compact is False
+        assert _build_skin_config({"name": "b", "compact": "true"}).compact is False

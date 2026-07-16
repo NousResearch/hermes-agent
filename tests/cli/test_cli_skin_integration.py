@@ -107,6 +107,58 @@ class TestCliSkinPromptIntegration:
         assert cli._app.style is not None
 
 
+class TestSkinCompactBannerRendering:
+    """A compact skin drives the compact banner branch at startup and /new."""
+
+    def _banner_cli(self):
+        cli = HermesCLI.__new__(HermesCLI)
+        cli.compact = False          # isolate the skin flag
+        cli.console = MagicMock()
+        cli._console_print = MagicMock()
+        cli._show_status = MagicMock()
+        cli.enabled_toolsets = None
+        cli.model = "test-model"
+        cli.session_id = "sess"
+        cli.agent = None
+        cli._modal_input_snapshot = None   # read by the banner path
+        return cli
+
+    def test_compact_skin_takes_compact_branch_on_startup(self):
+        cli = self._banner_cli()
+        set_active_skin("default")
+        with patch("hermes_cli.skin_engine.get_active_skin") as gs, \
+                patch("cli._build_compact_banner", return_value="COMPACT") as compact_fn, \
+                patch("cli.build_welcome_banner") as full_fn, \
+                patch("shutil.get_terminal_size") as ts:
+            gs.return_value.compact = True
+            ts.return_value.columns = 120   # wide terminal
+            cli.show_banner()
+
+        compact_fn.assert_called_once()
+        full_fn.assert_not_called()
+
+    def test_compact_skin_takes_compact_branch_on_new_session(self):
+        cli = self._banner_cli()
+        cli._app = MagicMock()          # banner block needs _app
+        cli.new_session = MagicMock()
+        cli._confirm_destructive_slash = MagicMock(return_value=True)  # bypass /clear confirm
+        set_active_skin("default")
+        cc = MagicMock()
+        with patch("hermes_cli.skin_engine.get_active_skin") as gs, \
+                patch("cli.ChatConsole", return_value=cc), \
+                patch("cli._build_compact_banner", return_value="COMPACT") as compact_fn, \
+                patch("cli.build_welcome_banner") as full_fn, \
+                patch("cli._clear_output_history"), \
+                patch("shutil.get_terminal_size") as ts:
+            gs.return_value.compact = True
+            ts.return_value.columns = 120
+            cli.process_command("/clear")
+
+        compact_fn.assert_called_once()
+        cc.print.assert_any_call("COMPACT")
+        full_fn.assert_not_called()
+
+
 class TestAnsiRichTextHelper:
     def test_preserves_literal_brackets(self):
         text = _rich_text_from_ansi("[notatag] literal")

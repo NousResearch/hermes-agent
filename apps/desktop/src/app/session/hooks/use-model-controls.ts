@@ -13,17 +13,17 @@ interface ModelSelection {
 }
 
 interface ModelControlsOptions {
-  activeSessionId: string | null
   queryClient: QueryClient
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
-export function useModelControls({ activeSessionId, queryClient, requestGateway }: ModelControlsOptions) {
+export function useModelControls({ queryClient, requestGateway }: ModelControlsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
 
   const updateModelOptionsCache = useCallback(
     (provider: string, model: string, includeGlobal: boolean) => {
+      const activeSessionId = $activeSessionId.get()
       const patch = (prev: ModelOptionsResponse | undefined) => ({ ...(prev ?? {}), provider, model })
 
       queryClient.setQueryData<ModelOptionsResponse>(['model-options', activeSessionId || 'global'], patch)
@@ -32,7 +32,7 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
         queryClient.setQueryData<ModelOptionsResponse>(['model-options', 'global'], patch)
       }
     },
-    [activeSessionId, queryClient]
+    [queryClient]
   )
 
   // Seed the composer's model state from the profile default. `force` reseeds
@@ -76,6 +76,11 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
   // silently mutate global config.
   const selectModel = useCallback(
     async (selection: ModelSelection): Promise<boolean> => {
+      // The contribution shell keeps a stable action bag so memoized surfaces
+      // can hold this callback across session creation/resume. Read the runtime
+      // id at invocation time rather than trusting the render that created the
+      // callback, or a pre-session picker silently stays UI-only forever.
+      const liveSessionId = $activeSessionId.get()
       // Snapshot for rollback: the switch is applied optimistically, so a
       // failure must restore the prior model/provider (store + query cache)
       // rather than leave the UI showing a model the backend never selected.
@@ -84,34 +89,34 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
 
       setCurrentModel(selection.model)
       setCurrentProvider(selection.provider)
-      updateModelOptionsCache(selection.provider, selection.model, !activeSessionId)
+      updateModelOptionsCache(selection.provider, selection.model, !liveSessionId)
 
       // No live session yet: the pick is pure UI state. session.create reads
       // $currentModel/$currentProvider and applies it as that session's override.
-      if (!activeSessionId) {
+      if (!liveSessionId) {
         return true
       }
 
       try {
         await requestGateway('config.set', {
-          session_id: activeSessionId,
+          session_id: liveSessionId,
           key: 'model',
           value: `${selection.model} --provider ${selection.provider} --session`
         })
 
-        void queryClient.invalidateQueries({ queryKey: ['model-options', activeSessionId] })
+        void queryClient.invalidateQueries({ queryKey: ['model-options', liveSessionId] })
 
         return true
       } catch (err) {
         setCurrentModel(prevModel)
         setCurrentProvider(prevProvider)
-        updateModelOptionsCache(prevProvider, prevModel, !activeSessionId)
+        updateModelOptionsCache(prevProvider, prevModel, !liveSessionId)
         notifyError(err, copy.modelSwitchFailed)
 
         return false
       }
     },
-    [activeSessionId, copy.modelSwitchFailed, queryClient, requestGateway, updateModelOptionsCache]
+    [copy.modelSwitchFailed, queryClient, requestGateway, updateModelOptionsCache]
   )
 
   return { refreshCurrentModel, selectModel, updateModelOptionsCache }

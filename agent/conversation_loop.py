@@ -62,6 +62,13 @@ from agent.model_metadata import (
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
+from agent.retry_messaging import (
+    TRANSIENT_OUTAGE_REASONS,
+    build_terminal_error_message,
+    build_terminal_return_dict,
+    is_transient_outage,
+    select_backoff_params,
+)
 from agent.retry_utils import (
     adaptive_rate_limit_backoff,
     is_zai_coding_overload_error,
@@ -3353,11 +3360,7 @@ def run_conversation(
                 # hiccups, provider overload/500/502/timeout) typically last
                 # 2-3 minutes. Use an extended backoff schedule for these so
                 # retries span the outage window instead of giving up at ~14s.
-                _is_transient_outage = classified.reason in {
-                    FailoverReason.overloaded,
-                    FailoverReason.server_error,
-                    FailoverReason.timeout,
-                }
+                _is_transient_outage = is_transient_outage(classified.reason)
                 _should_fallback = (
                     is_rate_limited
                     or (_is_transport_failure and retry_count >= 2)
@@ -4263,59 +4266,28 @@ def run_conversation(
                             api_kwargs, reason="max_retries_exhausted", error=api_error,
                         )
                     agent._persist_session(messages, conversation_history)
-                    if classified.reason == FailoverReason.billing:
-                        _final_response = f"Billing or credits exhausted: {_final_summary}"
-                        if _billing_guidance:
-                            _final_response += f"\n\n{_billing_guidance}"
-                    elif classified.reason in {FailoverReason.overloaded, FailoverReason.server_error, FailoverReason.timeout}:
-                        # Transient outage — the conversation was saved, so the
-                        # user can resume once the provider recovers. Don't show
-                        # this for permanent failures (billing/auth/policy) where
-                        # /resume would just hit the same wall. See issue #33693.
-                        _final_response = (
-                            f"Provider temporarily unavailable after {max_retries} retries: {_final_summary}\n\n"
-                            f"Your conversation has been saved. Use /resume to continue when the provider is back online."
-                        )
-                    else:
-                        _final_response = f"API call failed after {max_retries} retries: {_final_summary}"
-                    if _is_thinking_timeout:
-                        # Thinking-timeout guidance overrides the generic
-                        # stream-drop guidance — the latter is wrong for
-                        # this case (it suggests splitting large file
-                        # writes, which isn't what happened).  See the
-                        # reasoning-model override at
-                        # agent/error_classifier.py:720-738 and the
-                        # detection block above for context.
-                        from agent.thinking_timeout_guidance import (
-                            build_thinking_timeout_guidance,
-                        )
-                        _final_response += build_thinking_timeout_guidance(
-                            provider=_provider,
-                            model=_model,
-                        )
-                    elif _is_stream_drop:
-                        _final_response += (
-                            "\n\nThe provider's stream connection keeps "
-                            "dropping — this often happens when generating "
-                            "very large tool call responses (e.g. write_file "
-                            "with long content). Try asking me to use "
-                            "execute_code with Python's open() for large "
-                            "files, or to write in smaller sections."
-                        )
-                    return {
-                        "final_response": _final_response,
-                        "messages": messages,
-                        "api_calls": api_call_count,
-                        "completed": False,
-                        "failed": True,
-                        "error": _final_summary,
-                        # Surface the classified reason so callers (notably the
-                        # kanban worker path in cli.py) can distinguish a
-                        # transient throttle from a real failure and choose a
-                        # different exit code. ``rate_limit`` / ``billing`` here
-                        # mean "quota wall, not a task error".
-                        "failure_reason": classified.reason.value,
-                    }
+                    _final_response = build_terminal_error_message(
+                        classified.reason,
+                        final_summary=_final_summary,
+                        max_retries=max_retries,
+                        billing_guidance=_billing_guidance,
+                        is_thinking_timeout=_is_thinking_timeout,
+                        is_stream_drop=_is_stream_drop,
+                        provider=_provider,
+                        model=_model,
+                    )
+                    return build_terminal_return_dict(
+                        classified.reason,
+                        final_summary=_final_summary,
+                        max_retries=max_retries,
+                        messages=messages,
+                        api_call_count=api_call_count,
+                        billing_guidance=_billing_guidance,
+                        is_thinking_timeout=_is_thinking_timeout,
+                        is_stream_drop=_is_stream_drop,
+                        provider=_provider,
+                        model=_model,
+                    )
 
                 # For rate limits, respect the Retry-After header if present
                 _retry_after = None
@@ -4335,15 +4307,9 @@ def run_conversation(
                                 pass
                 if _retry_after:
                     wait_time = _retry_after
-                elif _is_transient_outage:
-                    # Extended backoff for transient outages: ~5s + ~10s + ~20s
-                    # (+ ~40s + ~80s if the user configures more retries), which
-                    # covers the 2-3 minute window of a real provider outage
-                    # (server restart / network hiccup) instead of giving up at
-                    # ~14s. See issue #33693.
-                    wait_time = jittered_backoff(retry_count, base_delay=5.0, max_delay=120.0)
                 else:
-                    wait_time = jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
+                    _backoff_kwargs = select_backoff_params(classified.reason)
+                    wait_time = jittered_backoff(retry_count, **_backoff_kwargs)
                 _backoff_policy = None
                 if (is_rate_limited or _is_zai_coding_overload) and not _retry_after:
                     wait_time, _backoff_policy = adaptive_rate_limit_backoff(

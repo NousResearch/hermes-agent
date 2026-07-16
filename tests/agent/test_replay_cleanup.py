@@ -239,13 +239,13 @@ def test_sanitize_strips_trailing_tool_message():
     history = [
         {"role": "user", "content": "run a command"},
         {"role": "assistant", "content": None, "tool_calls": [
-            {"id": "tc1", "function": {"name": "terminal", "arguments": "{}"}}]},
+            {"id": "tc1", "function": {"name": "read_file", "arguments": "{}"}}]},
         {"role": "tool", "tool_call_id": "tc1", "content": "command output"},
     ]
     result = sanitize_replay_history(history)
     # The trailing tool is stripped by strip_trailing_orphan_tool_messages,
     # then the dangling assistant(tool_calls) is stripped by
-    # strip_dangling_tool_call_tail (no content → popped entirely).
+    # strip_dangling_tool_call_tail (read-only, no content → popped entirely).
     assert result == [{"role": "user", "content": "run a command"}]
 
 
@@ -272,7 +272,7 @@ def test_sanitize_strips_dangling_assistant_tool_calls_no_content():
     history = [
         {"role": "user", "content": "hello"},
         {"role": "assistant", "content": None, "tool_calls": [
-            {"id": "tc1", "function": {"name": "terminal", "arguments": "{}"}}]},
+            {"id": "tc1", "function": {"name": "read_file", "arguments": "{}"}}]},
     ]
     result = sanitize_replay_history(history)
     assert result == [{"role": "user", "content": "hello"}]
@@ -308,7 +308,7 @@ def test_gateway_resume_strips_trailing_tool_after_tool_results():
     history = [
         {"role": "user", "content": "list files"},
         {"role": "assistant", "content": None, "tool_calls": [
-            {"id": "tc1", "function": {"name": "terminal", "arguments": "{}"}}]},
+            {"id": "tc1", "function": {"name": "read_file", "arguments": "{}"}}]},
         {"role": "tool", "tool_call_id": "tc1", "content": "file1.txt\nfile2.txt"},
     ]
     result = sanitize_replay_history(history)
@@ -323,8 +323,8 @@ def test_gateway_resume_with_concurrent_tool_calls():
     history = [
         {"role": "user", "content": "run 3 commands"},
         {"role": "assistant", "content": None, "tool_calls": [
-            {"id": "tc1", "function": {"name": "terminal", "arguments": "{}"}},
-            {"id": "tc2", "function": {"name": "terminal", "arguments": "{}"}},
+            {"id": "tc1", "function": {"name": "read_file", "arguments": "{}"}},
+            {"id": "tc2", "function": {"name": "read_file", "arguments": "{}"}},
         ]},
         {"role": "tool", "tool_call_id": "tc1", "content": "output1"},
         {"role": "tool", "tool_call_id": "tc2", "content": "output2"},

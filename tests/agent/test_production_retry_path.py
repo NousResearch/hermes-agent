@@ -1,60 +1,47 @@
-"""Integration tests that drive the REAL production code path.
+"""Tests that drive the REAL production code path — not a copy of it.
 
-These tests exercise the actual retry logic, backoff scheduling, and terminal
-error message construction that live in ``conversation_loop.py`` — not just
-the isolated helper functions.  They construct a real ``AIAgent`` and verify
-the production code's behavior contracts:
+These tests import and exercise the actual helper functions extracted from
+``conversation_loop.py`` into ``agent/retry_messaging.py``:
 
-1. The retry loop uses the extended backoff schedule (base_delay=5.0,
-   max_delay=120.0) for transient outage reasons (overloaded, server_error,
-   timeout) and the default schedule (base_delay=2.0, max_delay=60.0) for
-   other errors.
-2. After all retries exhaust on a transient outage, the returned dict has
-   ``failed: True`` AND the response text mentions ``/resume``.
-3. After all retries exhaust on a non-transient error (billing), the response
-   does NOT mention ``/resume``.
-4. ``classify_api_error`` produces the right ``FailoverReason`` values for
-   HTTP 500, 502, 503, and timeout exceptions.
-5. The production code calls ``jittered_backoff`` with the right parameters
-   (not tested in isolation, but verified via the backoff decision logic).
+- ``is_transient_outage`` — the transient-outage decision (was inline at
+  conversation_loop.py:2944)
+- ``select_backoff_params`` — the backoff parameter selection (was inline at
+  conversation_loop.py:3845-3853)
+- ``build_terminal_error_message`` — the terminal error message construction
+  (was inline at conversation_loop.py:3773-3811)
+- ``build_terminal_return_dict`` — the terminal return dict shape (was inline
+  at conversation_loop.py:3812-3825)
+
+The production code in ``conversation_loop.py`` calls these same functions,
+so if the production logic changes the tests catch it — they test the
+original, not a copy.
+
+The ``TestProductionErrorClassifier`` class calls the real
+``classify_api_error`` and feeds its output into the production helpers,
+verifying the full classify → decide → message pipeline.
 
 Tests follow AGENTS.md rules: behavior contracts (not snapshots), real
-imports, no mocks for the classifier path.
+imports, no logic duplication.
 """
 
-import time
-from unittest.mock import MagicMock, patch
-
+import httpx
 import pytest
+from unittest.mock import MagicMock
 
 from agent.error_classifier import FailoverReason, ClassifiedError, classify_api_error
+from agent.retry_messaging import (
+    TRANSIENT_BACKOFF_PARAMS,
+    TRANSIENT_OUTAGE_REASONS,
+    DEFAULT_BACKOFF_PARAMS,
+    build_terminal_error_message,
+    build_terminal_return_dict,
+    is_transient_outage,
+    select_backoff_params,
+)
 from agent.retry_utils import jittered_backoff
 
 
-# ── Helpers to build a real AIAgent ──────────────────────────────────────
-
-
-def _make_real_agent():
-    """Construct a minimal but real AIAgent for testing.
-
-    Uses the same patching pattern as ``test_session_outage_recovery.py``
-    but returns a fully initialized agent that can be used to exercise
-    production code paths.
-    """
-    with (
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
-    ):
-        from run_agent import AIAgent
-        agent = AIAgent(
-            api_key="test-key",
-            base_url="https://openrouter.ai/api/v1",
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-        )
-        return agent
+# ── Helpers ─────────────────────────────────────────────────────────────
 
 
 def _make_mock_error(status_code, message="", provider="test"):
@@ -73,39 +60,10 @@ def _make_mock_error(status_code, message="", provider="test"):
 
 
 class TestProductionBackoffSchedule:
-    """Verify the production code path's backoff parameter selection.
-
-    The conversation_loop.py retry block (around line 3845) selects:
-      - ``jittered_backoff(retry_count, base_delay=5.0, max_delay=120.0)``
-        for transient outages (overloaded, server_error, timeout)
-      - ``jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)``
-        for other errors
-
-    These tests verify that the REAL classification + backoff decision
-    logic (not a mock) produces the right parameters.
+    """Verify the REAL ``select_backoff_params`` and ``is_transient_outage``
+    functions from ``agent.retry_messaging`` — the same functions the
+    conversation loop calls.
     """
-
-    # These are the exact parameters from conversation_loop.py:3845-3853
-    TRANSIENT_BACKOFF_PARAMS = {"base_delay": 5.0, "max_delay": 120.0}
-    DEFAULT_BACKOFF_PARAMS = {"base_delay": 2.0, "max_delay": 60.0}
-
-    # These are the exact reasons from conversation_loop.py:2944-2948
-    TRANSIENT_OUTAGE_REASONS = {
-        FailoverReason.overloaded,
-        FailoverReason.server_error,
-        FailoverReason.timeout,
-    }
-
-    def _is_transient_outage(self, classified):
-        """Mirror the production decision from conversation_loop.py:2944."""
-        return classified.reason in self.TRANSIENT_OUTAGE_REASONS
-
-    def _get_backoff_params(self, classified):
-        """Mirror the production backoff selection from
-        conversation_loop.py:3845-3853."""
-        if self._is_transient_outage(classified):
-            return self.TRANSIENT_BACKOFF_PARAMS
-        return self.DEFAULT_BACKOFF_PARAMS
 
     @pytest.mark.parametrize("status_code,expected_reason", [
         (500, FailoverReason.server_error),
@@ -118,7 +76,7 @@ class TestProductionBackoffSchedule:
         err = _make_mock_error(status_code, "Server error")
         classified = classify_api_error(err, provider="test", model="test")
         assert classified.reason == expected_reason
-        assert self._is_transient_outage(classified), (
+        assert is_transient_outage(classified.reason), (
             f"HTTP {status_code} classified as {classified.reason} should be "
             f"a transient outage"
         )
@@ -126,11 +84,10 @@ class TestProductionBackoffSchedule:
     def test_timeout_classified_as_transient(self):
         """A timeout exception must classify as FailoverReason.timeout,
         triggering the extended backoff schedule."""
-        import httpx
         err = httpx.ConnectTimeout("Connection timed out")
         classified = classify_api_error(err, provider="test", model="test")
         assert classified.reason == FailoverReason.timeout
-        assert self._is_transient_outage(classified)
+        assert is_transient_outage(classified.reason)
 
     def test_billing_not_transient(self):
         """Billing errors must NOT be classified as transient — /resume
@@ -138,11 +95,11 @@ class TestProductionBackoffSchedule:
         err = _make_mock_error(402, "Insufficient credits")
         classified = classify_api_error(err, provider="test", model="test")
         assert classified.reason == FailoverReason.billing
-        assert not self._is_transient_outage(classified)
+        assert not is_transient_outage(classified.reason)
 
     def test_transient_outage_uses_extended_backoff(self):
-        """For every transient outage reason, the production code must
-        select the extended backoff parameters (base_delay=5.0,
+        """For every transient outage reason, ``select_backoff_params`` must
+        return the extended backoff parameters (base_delay=5.0,
         max_delay=120.0), not the default (base_delay=2.0, max_delay=60.0)."""
         test_cases = [
             (_make_mock_error(500, "Internal Server Error"), "server_error"),
@@ -151,8 +108,8 @@ class TestProductionBackoffSchedule:
         ]
         for err, label in test_cases:
             classified = classify_api_error(err, provider="test", model="test")
-            params = self._get_backoff_params(classified)
-            assert params == self.TRANSIENT_BACKOFF_PARAMS, (
+            params = select_backoff_params(classified.reason)
+            assert params == TRANSIENT_BACKOFF_PARAMS, (
                 f"{label} should use extended backoff, got {params}"
             )
 
@@ -160,13 +117,13 @@ class TestProductionBackoffSchedule:
         """Non-transient errors must use the default backoff parameters."""
         err = _make_mock_error(402, "Insufficient credits")
         classified = classify_api_error(err, provider="test", model="test")
-        params = self._get_backoff_params(classified)
-        assert params == self.DEFAULT_BACKOFF_PARAMS
+        params = select_backoff_params(classified.reason)
+        assert params == DEFAULT_BACKOFF_PARAMS
 
     def test_transient_backoff_first_wait_at_least_5s(self):
         """The first retry for a transient outage must wait at least 5s
         (the extended base_delay), giving the provider time to restart."""
-        wait = jittered_backoff(1, **self.TRANSIENT_BACKOFF_PARAMS)
+        wait = jittered_backoff(1, **TRANSIENT_BACKOFF_PARAMS)
         assert wait >= 5.0, (
             f"first transient retry should be >= 5.0s, got {wait:.1f}s"
         )
@@ -174,7 +131,7 @@ class TestProductionBackoffSchedule:
     def test_default_backoff_first_wait_at_least_2s(self):
         """The first retry for a non-transient error uses the default
         base_delay of 2.0s."""
-        wait = jittered_backoff(1, **self.DEFAULT_BACKOFF_PARAMS)
+        wait = jittered_backoff(1, **DEFAULT_BACKOFF_PARAMS)
         assert wait >= 2.0, (
             f"first default retry should be >= 2.0s, got {wait:.1f}s"
         )
@@ -184,11 +141,11 @@ class TestProductionBackoffSchedule:
         cover a 2-minute outage window (~120s). The default schedule
         only covers ~14s."""
         transient_total = sum(
-            jittered_backoff(a, **self.TRANSIENT_BACKOFF_PARAMS)
+            jittered_backoff(a, **TRANSIENT_BACKOFF_PARAMS)
             for a in range(1, 6)
         )
         default_total = sum(
-            jittered_backoff(a, **self.DEFAULT_BACKOFF_PARAMS)
+            jittered_backoff(a, **DEFAULT_BACKOFF_PARAMS)
             for a in range(1, 6)
         )
         assert transient_total > default_total * 1.5, (
@@ -196,51 +153,40 @@ class TestProductionBackoffSchedule:
             f"default total ({default_total:.1f}s)"
         )
 
+    def test_select_backoff_params_returns_copy(self):
+        """``select_backoff_params`` must return a fresh dict each call so
+        callers can't accidentally mutate the module-level constants."""
+        p1 = select_backoff_params(FailoverReason.overloaded)
+        p2 = select_backoff_params(FailoverReason.overloaded)
+        assert p1 == p2
+        assert p1 is not p2, "select_backoff_params must return a copy, not the shared constant"
+
+    def test_transient_outage_reasons_constant_matches_helper(self):
+        """The ``TRANSIENT_OUTAGE_REASONS`` constant and the
+        ``is_transient_outage`` function must agree — every reason in the
+        set must return True, and every reason not in the set must return
+        False."""
+        for reason in TRANSIENT_OUTAGE_REASONS:
+            assert is_transient_outage(reason), (
+                f"{reason} is in TRANSIENT_OUTAGE_REASONS but "
+                f"is_transient_outage returned False"
+            )
+        all_reasons = set(FailoverReason)
+        for reason in all_reasons - TRANSIENT_OUTAGE_REASONS:
+            assert not is_transient_outage(reason), (
+                f"{reason} is NOT in TRANSIENT_OUTAGE_REASONS but "
+                f"is_transient_outage returned True"
+            )
+
 
 # ── Production-path: terminal error message construction ────────────────
 
 
 class TestProductionTerminalErrorMessage:
-    """Verify the production terminal error message construction from
-    conversation_loop.py:3773-3787.
-
-    The production code constructs different messages based on the
-    classified reason:
-      - billing: "Billing or credits exhausted: ..."
-      - overloaded/server_error/timeout: "Provider temporarily unavailable
-        after N retries: ...\\n\\nYour conversation has been saved. Use
-        /resume to continue when the provider is back online."
-      - other: "API call failed after N retries: ..."
+    """Verify the REAL ``build_terminal_error_message`` and
+    ``build_terminal_return_dict`` functions from ``agent.retry_messaging``
+    — the same functions the conversation loop calls.
     """
-
-    # This mirrors the exact production logic from conversation_loop.py:3773-3787
-    def _build_terminal_message(self, reason, summary="test error", max_retries=3):
-        if reason == FailoverReason.billing:
-            return f"Billing or credits exhausted: {summary}"
-        elif reason in {
-            FailoverReason.overloaded,
-            FailoverReason.server_error,
-            FailoverReason.timeout,
-        }:
-            return (
-                f"Provider temporarily unavailable after {max_retries} retries: {summary}\n\n"
-                f"Your conversation has been saved. Use /resume to continue "
-                f"when the provider is back online."
-            )
-        else:
-            return f"API call failed after {max_retries} retries: {summary}"
-
-    def _build_return_dict(self, reason, summary="test error", max_retries=3):
-        """Mirror the production return dict from conversation_loop.py:3812-3825."""
-        return {
-            "final_response": self._build_terminal_message(reason, summary, max_retries),
-            "messages": [],
-            "api_calls": max_retries,
-            "completed": False,
-            "failed": True,
-            "error": summary,
-            "failure_reason": reason.value,
-        }
 
     @pytest.mark.parametrize("reason", [
         FailoverReason.overloaded,
@@ -250,7 +196,9 @@ class TestProductionTerminalErrorMessage:
     def test_transient_outage_return_has_failed_and_resume(self, reason):
         """When all retries exhaust on a transient outage, the return dict
         must have ``failed: True`` AND the response text mentions /resume."""
-        result = self._build_return_dict(reason)
+        result = build_terminal_return_dict(
+            reason, final_summary="test error", max_retries=3,
+        )
         assert result["failed"] is True
         assert "/resume" in result["final_response"]
         assert "saved" in result["final_response"]
@@ -260,27 +208,46 @@ class TestProductionTerminalErrorMessage:
         """When all retries exhaust on a billing error, the return dict
         must have ``failed: True`` but the response must NOT mention /resume
         — billing is permanent, resuming would hit the same wall."""
-        result = self._build_return_dict(FailoverReason.billing)
+        result = build_terminal_return_dict(
+            FailoverReason.billing, final_summary="test error", max_retries=3,
+        )
         assert result["failed"] is True
         assert "/resume" not in result["final_response"]
         assert "Billing or credits exhausted" in result["final_response"]
 
+    def test_billing_return_includes_guidance(self):
+        """When billing guidance is provided, it must be appended to the
+        terminal message."""
+        result = build_terminal_return_dict(
+            FailoverReason.billing,
+            final_summary="Insufficient credits",
+            max_retries=3,
+            billing_guidance="Check your billing settings.",
+        )
+        assert "Check your billing settings." in result["final_response"]
+
     def test_auth_permanent_return_no_resume(self):
         """Auth permanent failure must not mention /resume."""
-        result = self._build_return_dict(FailoverReason.auth_permanent)
+        result = build_terminal_return_dict(
+            FailoverReason.auth_permanent, final_summary="test error", max_retries=3,
+        )
         assert result["failed"] is True
         assert "/resume" not in result["final_response"]
         assert "API call failed" in result["final_response"]
 
     def test_content_policy_return_no_resume(self):
         """Content policy blocks are deterministic — no /resume."""
-        result = self._build_return_dict(FailoverReason.content_policy_blocked)
+        result = build_terminal_return_dict(
+            FailoverReason.content_policy_blocked, final_summary="test error", max_retries=3,
+        )
         assert result["failed"] is True
         assert "/resume" not in result["final_response"]
 
     def test_unknown_error_return_no_resume(self):
         """Unknown errors keep the generic message — no /resume."""
-        result = self._build_return_dict(FailoverReason.unknown)
+        result = build_terminal_return_dict(
+            FailoverReason.unknown, final_summary="test error", max_retries=3,
+        )
         assert result["failed"] is True
         assert "/resume" not in result["final_response"]
 
@@ -288,8 +255,58 @@ class TestProductionTerminalErrorMessage:
         """The return dict must surface the classified reason as
         ``failure_reason`` so callers (kanban worker) can distinguish
         transient throttle from real failure."""
-        result = self._build_return_dict(FailoverReason.overloaded)
+        result = build_terminal_return_dict(
+            FailoverReason.overloaded, final_summary="test error", max_retries=3,
+        )
         assert result["failure_reason"] == "overloaded"
+
+    def test_return_dict_shape(self):
+        """The return dict must have exactly the keys the conversation loop
+        returns: final_response, messages, api_calls, completed, failed,
+        error, failure_reason."""
+        result = build_terminal_return_dict(
+            FailoverReason.server_error,
+            final_summary="boom",
+            max_retries=5,
+            messages=[{"role": "user", "content": "hi"}],
+            api_call_count=7,
+        )
+        assert set(result.keys()) == {
+            "final_response", "messages", "api_calls",
+            "completed", "failed", "error", "failure_reason",
+        }
+        assert result["messages"] == [{"role": "user", "content": "hi"}]
+        assert result["api_calls"] == 7
+        assert result["completed"] is False
+        assert result["error"] == "boom"
+        assert result["failure_reason"] == "server_error"
+
+    def test_stream_drop_guidance_appended(self):
+        """When ``is_stream_drop`` is True (and not a thinking timeout),
+        the stream-drop guidance must be appended to the message."""
+        msg = build_terminal_error_message(
+            FailoverReason.server_error,
+            final_summary="connection lost",
+            max_retries=3,
+            is_stream_drop=True,
+        )
+        assert "stream connection keeps dropping" in msg
+        assert "execute_code" in msg
+
+    def test_thinking_timeout_overrides_stream_drop(self):
+        """When both ``is_thinking_timeout`` and ``is_stream_drop`` are True,
+        the thinking-timeout guidance takes precedence — the stream-drop
+        guidance must NOT appear."""
+        msg = build_terminal_error_message(
+            FailoverReason.timeout,
+            final_summary="thinking too long",
+            max_retries=3,
+            is_thinking_timeout=True,
+            is_stream_drop=True,
+            provider="openai",
+            model="o1",
+        )
+        assert "stream connection keeps dropping" not in msg
 
 
 # ── Production-path: error classifier integration ────────────────────────
@@ -301,7 +318,8 @@ class TestProductionErrorClassifier:
     retry loop depends on.
 
     These are NOT mocked — they use real error objects through the real
-    classifier pipeline.
+    classifier pipeline, then feed the result into the production
+    ``is_transient_outage`` and ``select_backoff_params`` helpers.
     """
 
     def test_500_classified_as_server_error(self):
@@ -309,51 +327,35 @@ class TestProductionErrorClassifier:
         err = _make_mock_error(500, "Internal Server Error")
         classified = classify_api_error(err, provider="test", model="test")
         assert classified.reason == FailoverReason.server_error
-        assert classified.reason in {
-            FailoverReason.overloaded,
-            FailoverReason.server_error,
-            FailoverReason.timeout,
-        }
+        assert is_transient_outage(classified.reason)
 
     def test_502_classified_as_server_error(self):
         """HTTP 502 → server_error → transient outage path."""
         err = _make_mock_error(502, "Bad Gateway")
         classified = classify_api_error(err, provider="test", model="test")
         assert classified.reason == FailoverReason.server_error
-        assert classified.reason in {
-            FailoverReason.overloaded,
-            FailoverReason.server_error,
-            FailoverReason.timeout,
-        }
+        assert is_transient_outage(classified.reason)
 
     def test_503_classified_as_overloaded(self):
         """HTTP 503 → overloaded → transient outage path."""
         err = _make_mock_error(503, "Service Unavailable")
         classified = classify_api_error(err, provider="test", model="test")
         assert classified.reason == FailoverReason.overloaded
-        assert classified.reason in {
-            FailoverReason.overloaded,
-            FailoverReason.server_error,
-            FailoverReason.timeout,
-        }
+        assert is_transient_outage(classified.reason)
 
     def test_timeout_exception_classified_as_timeout(self):
         """A real httpx.ConnectTimeout → timeout → transient outage path."""
-        import httpx
         err = httpx.ConnectTimeout("Connection timed out")
         classified = classify_api_error(err, provider="test", model="test")
         assert classified.reason == FailoverReason.timeout
-        assert classified.reason in {
-            FailoverReason.overloaded,
-            FailoverReason.server_error,
-            FailoverReason.timeout,
-        }
+        assert is_transient_outage(classified.reason)
 
     def test_529_anthropic_classified_as_overloaded(self):
         """HTTP 529 (Anthropic overload) → overloaded → transient outage."""
         err = _make_mock_error(529, "Overloaded")
         classified = classify_api_error(err, provider="anthropic", model="claude")
         assert classified.reason == FailoverReason.overloaded
+        assert is_transient_outage(classified.reason)
 
     def test_402_classified_as_billing_not_transient(self):
         """HTTP 402 → billing → NOT a transient outage. This is the critical
@@ -361,11 +363,7 @@ class TestProductionErrorClassifier:
         err = _make_mock_error(402, "Insufficient credits")
         classified = classify_api_error(err, provider="test", model="test")
         assert classified.reason == FailoverReason.billing
-        assert classified.reason not in {
-            FailoverReason.overloaded,
-            FailoverReason.server_error,
-            FailoverReason.timeout,
-        }
+        assert not is_transient_outage(classified.reason)
 
     def test_classified_error_has_retryable_flag(self):
         """The ClassifiedError object must carry a retryable flag — the
@@ -376,3 +374,45 @@ class TestProductionErrorClassifier:
         assert hasattr(classified, "retryable")
         # Server errors are retryable
         assert classified.retryable is True
+
+    def test_full_pipeline_classify_to_backoff(self):
+        """End-to-end: classify a real error → feed the reason into
+        ``select_backoff_params`` → verify the backoff parameters match
+        the production decision."""
+        for status, expected_params in [
+            (500, TRANSIENT_BACKOFF_PARAMS),
+            (502, TRANSIENT_BACKOFF_PARAMS),
+            (503, TRANSIENT_BACKOFF_PARAMS),
+            (402, DEFAULT_BACKOFF_PARAMS),
+        ]:
+            err = _make_mock_error(status, "error")
+            classified = classify_api_error(err, provider="test", model="test")
+            params = select_backoff_params(classified.reason)
+            assert params == expected_params, (
+                f"HTTP {status} → {classified.reason} should select "
+                f"{expected_params}, got {params}"
+            )
+
+    def test_full_pipeline_classify_to_terminal_message(self):
+        """End-to-end: classify a real error → feed the reason into
+        ``build_terminal_return_dict`` → verify the message shape matches
+        the production contract."""
+        # Transient outage → /resume in message
+        err = _make_mock_error(503, "Service Unavailable")
+        classified = classify_api_error(err, provider="test", model="test")
+        result = build_terminal_return_dict(
+            classified.reason, final_summary="503", max_retries=3,
+        )
+        assert result["failed"] is True
+        assert "/resume" in result["final_response"]
+        assert result["failure_reason"] == classified.reason.value
+
+        # Billing → no /resume
+        err = _make_mock_error(402, "Insufficient credits")
+        classified = classify_api_error(err, provider="test", model="test")
+        result = build_terminal_return_dict(
+            classified.reason, final_summary="402", max_retries=3,
+        )
+        assert result["failed"] is True
+        assert "/resume" not in result["final_response"]
+        assert result["failure_reason"] == classified.reason.value

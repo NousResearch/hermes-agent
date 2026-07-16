@@ -71,7 +71,7 @@ replace the foreground transcript or steal focus.
 
 ### Delivered v1
 
-- Browser is a first-class pane and tree destination. Its guest overlay is fixed and reparent-safe so pane and tree moves preserve the mounted guest surface.
+- Browser content and QC are separate first-class pane destinations. The QC inspector opens beside Browser only on an explicit QC action and can be independently docked, resized, or closed; it is never an inline Browser sidebar. The guest overlay is fixed and reparent-safe so pane and tree moves preserve the mounted guest surface.
 - Browser presentation authority is renderer- and window-scoped. Persist only bounded tab/QC metadata; never persist inline capture bytes.
 - Electron applies guest security policy and exposes only narrow, typed capture IPC. The v1 in-app guest capture uses `capturePage`; it does not promise an external-window capture path.
 - An explicit user action opens, navigates, captures, or focuses browser/QC work. Background tool results may offer actions, but never move focus, navigate, or open a pane.

@@ -101,6 +101,7 @@ describe('browser store', () => {
     expect(() => store.openBrowserQc({ url })).toThrow(BrowserUnsupportedUrlError)
     expect(store.$browserOpen.get()).toBe(false)
     expect(store.$browserRevealRequest.get()).toBe(0)
+    expect(store.$browserQcRevealRequest.get()).toBe(0)
     expect(store.$browserState.get()).toEqual(before)
     expect(store.$browserState.get().activeTabId).toBe(tabId)
   })
@@ -218,6 +219,7 @@ describe('browser store', () => {
 
     const tab = store.$browserState.get().tabs[0]
     expect(store.$browserState.get().qcOpen).toBe(true)
+    expect(store.$browserQcRevealRequest.get()).toBe(1)
     expect(Object.values(tab.qc)).toEqual(
       Array.from({ length: 7 }, () => ({ status: 'unchecked', note: '', evidence: '' }))
     )
@@ -275,6 +277,7 @@ describe('browser store', () => {
     )
     store.openBrowserQc()
     expect(store.$browserRevealRequest.get()).toBe(2)
+    expect(store.$browserQcRevealRequest.get()).toBe(1)
     store.setBrowserCapture({
       captureId: 'capture-1',
       createdAt: 123,

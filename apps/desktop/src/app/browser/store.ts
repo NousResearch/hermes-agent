@@ -3,6 +3,7 @@ import { atom, type WritableAtom } from 'nanostores'
 import { type Codec, persistentAtom } from '@/lib/persisted'
 
 export const BROWSER_PANE_ID = 'browser'
+export const BROWSER_QC_PANE_ID = 'browser-qc'
 export const BROWSER_QC_DIMENSIONS = [
   'composition',
   'color',
@@ -295,6 +296,7 @@ const createBrowserTab = (input: BrowserTabInput = {}): BrowserTab => ({
 
 export interface BrowserStore {
   $browserCapture: WritableAtom<BrowserCapture | null>
+  $browserQcRevealRequest: WritableAtom<number>
   $browserRevealRequest: WritableAtom<number>
   $browserOpen: WritableAtom<boolean>
   $browserState: WritableAtom<BrowserState>
@@ -325,6 +327,7 @@ export const createBrowserStore = (scope = browserWindowScope()): BrowserStore =
   // Explicit user/SDK open requests advance this transient counter so pane chrome
   // can front the Browser surface even when it is already open.
   const $browserRevealRequest = atom(0)
+  const $browserQcRevealRequest = atom(0)
 
   const addBrowserTab = (input: BrowserTabInput = {}) => {
     const state = $browserState.get()
@@ -364,6 +367,19 @@ export const createBrowserStore = (scope = browserWindowScope()): BrowserStore =
 
   const setBrowserOpen = (open: boolean) => $browserOpen.set(open)
   const requestBrowserReveal = () => $browserRevealRequest.set($browserRevealRequest.get() + 1)
+  const requestBrowserQcReveal = () => $browserQcRevealRequest.set($browserQcRevealRequest.get() + 1)
+
+  const setBrowserQcOpen = (open: boolean) => {
+    const state = $browserState.get()
+
+    if (state.qcOpen !== open) {
+      $browserState.set({ ...state, qcOpen: open })
+    }
+
+    if (open) {
+      requestBrowserQcReveal()
+    }
+  }
 
   const assertSupportedExplicitBrowserUrl = (input: BrowserTabInput | undefined) => {
     if (hasUnsupportedExplicitBrowserUrl(input)) {
@@ -386,11 +402,7 @@ export const createBrowserStore = (scope = browserWindowScope()): BrowserStore =
 
   const openBrowserQc = (input?: BrowserTabInput) => {
     const tabId = openBrowserSurface(input)
-    const state = $browserState.get()
-
-    if (!state.qcOpen) {
-      $browserState.set({ ...state, qcOpen: true })
-    }
+    setBrowserQcOpen(true)
 
     return tabId
   }
@@ -478,6 +490,7 @@ export const createBrowserStore = (scope = browserWindowScope()): BrowserStore =
 
   return {
     $browserCapture,
+    $browserQcRevealRequest,
     $browserRevealRequest,
     $browserOpen,
     $browserState,
@@ -489,13 +502,7 @@ export const createBrowserStore = (scope = browserWindowScope()): BrowserStore =
     setBrowserActiveTab,
     setBrowserCapture: capture => $browserCapture.set(capture),
     setBrowserOpen,
-    setBrowserQcOpen: open => {
-      const state = $browserState.get()
-
-      if (state.qcOpen !== open) {
-        $browserState.set({ ...state, qcOpen: open })
-      }
-    },
+    setBrowserQcOpen,
     toggleBrowserTabPin,
     updateBrowserQc,
     updateBrowserTab
@@ -509,6 +516,8 @@ export const $browserState = browserStore.$browserState
 export const $browserCapture = browserStore.$browserCapture
 /** @internal Core pane controller signal; intentionally omitted from the public SDK. */
 export const $browserRevealRequest = browserStore.$browserRevealRequest
+/** @internal Core QC pane controller signal; intentionally omitted from the public SDK. */
+export const $browserQcRevealRequest = browserStore.$browserQcRevealRequest
 export const setBrowserOpen = browserStore.setBrowserOpen
 export const openBrowserSurface = browserStore.openBrowserSurface
 export const openBrowserQc = browserStore.openBrowserQc

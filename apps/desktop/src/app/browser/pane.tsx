@@ -14,37 +14,21 @@ import {
   $browserCapture,
   $browserState,
   addBrowserTab,
-  BROWSER_QC_DIMENSIONS,
-  BROWSER_QC_EVIDENCE_MAX_LENGTH,
-  BROWSER_QC_NOTE_MAX_LENGTH,
-  type BrowserQcDimension,
   BrowserTabLimitError,
   clearBrowserCapture,
   closeBrowserTab,
   normalizeBrowserRuntimeUrl,
   setBrowserActiveTab,
   setBrowserQcOpen,
-  toggleBrowserTabPin,
-  updateBrowserQc
+  toggleBrowserTabPin
 } from '@/app/browser/store'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
-import { SegmentedControl } from '@/components/ui/segmented-control'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { useI18n } from '@/i18n'
 import { Check, ChevronLeft, ChevronRight, ExternalLink, Globe, Pin, Plus, RefreshCw, Save, X } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
-
-const qcLabels = {
-  clipping: 'browserQcClipping',
-  color: 'browserQcColor',
-  composition: 'browserQcComposition',
-  contrast: 'browserQcContrast',
-  referenceMatch: 'browserQcReferenceMatch',
-  spacing: 'browserQcSpacing',
-  typography: 'browserQcTypography'
-} as const satisfies Record<BrowserQcDimension, keyof ReturnType<typeof useI18n>['t']['desktop']>
 
 const isInlineImage = (value: string) => /^data:image\/(?:png|jpe?g|webp|gif|avif|bmp)(?:;[^,]*)?,/i.test(value)
 
@@ -59,12 +43,6 @@ const externalBrowserUrl = (value: string) => /^https?:/i.test(value)
 export function BrowserPane() {
   const { t } = useI18n()
   const copy = t.desktop
-
-  const qcStatusOptions = [
-    { id: 'pass', label: copy.browserQcPass },
-    { id: 'fail', label: copy.browserQcFail },
-    { id: 'unchecked', label: copy.browserQcUnchecked }
-  ] as const
 
   const browserState = useStore($browserState)
   const capture = useStore($browserCapture)
@@ -127,7 +105,7 @@ export function BrowserPane() {
   return (
     <section
       aria-label={copy.browserTitle}
-      className="flex min-h-0 min-w-0 flex-1 flex-col bg-(--ui-editor-surface-background)"
+      className="flex h-full min-h-0 min-w-0 flex-1 flex-col bg-(--ui-editor-surface-background)"
       data-testid="browser-pane"
     >
       <header className="flex shrink-0 flex-col gap-2 border-b border-(--ui-stroke-tertiary) p-2">
@@ -156,7 +134,7 @@ export function BrowserPane() {
           </Button>
           <Button
             aria-label={copy.browserQc}
-            onClick={() => setBrowserQcOpen(!browserState.qcOpen)}
+            onClick={() => setBrowserQcOpen(true)}
             size="icon-xs"
             variant="ghost"
           >
@@ -231,51 +209,12 @@ export function BrowserPane() {
         </div>
         {invalidUrl ? <p className="text-xs text-destructive">{copy.browserInvalidUrl}</p> : null}
       </header>
-      <div className="flex min-h-0 min-w-0 flex-1">
-        <div className="relative flex min-h-0 min-w-0 flex-1">
-          <BrowserSlot />
-          {!activeTab?.url ? (
-            <p className="pointer-events-none absolute inset-0 grid place-items-center text-sm text-(--ui-text-tertiary)">
-              {copy.browserEmpty}
-            </p>
-          ) : null}
-        </div>
-        {browserState.qcOpen && activeTab ? (
-          <aside className="w-72 shrink-0 overflow-y-auto border-l border-(--ui-stroke-tertiary) p-3">
-            <h2 className="text-sm font-semibold">{copy.browserQc}</h2>
-            <div className="mt-3 flex flex-col gap-4">
-              {BROWSER_QC_DIMENSIONS.map(dimension => {
-                const item = activeTab.qc[dimension]
-
-                return (
-                  <div className="flex flex-col gap-2" key={dimension}>
-                    <h3 className="text-xs font-medium">{copy[qcLabels[dimension]]}</h3>
-                    <div aria-label={copy[qcLabels[dimension]]} role="group">
-                      <SegmentedControl
-                        onChange={status => updateBrowserQc(activeTab.id, dimension, { status })}
-                        options={qcStatusOptions}
-                        value={item.status}
-                      />
-                    </div>
-                    <Input
-                      aria-label={copy.browserQcNote}
-                      maxLength={BROWSER_QC_NOTE_MAX_LENGTH}
-                      onChange={event => updateBrowserQc(activeTab.id, dimension, { note: event.target.value })}
-                      placeholder={copy.browserQcNote}
-                      value={item.note}
-                    />
-                    <Input
-                      aria-label={copy.browserQcEvidence}
-                      maxLength={BROWSER_QC_EVIDENCE_MAX_LENGTH}
-                      onChange={event => updateBrowserQc(activeTab.id, dimension, { evidence: event.target.value })}
-                      placeholder={copy.browserQcEvidence}
-                      value={item.evidence}
-                    />
-                  </div>
-                )
-              })}
-            </div>
-          </aside>
+      <div className="relative flex min-h-0 min-w-0 flex-1">
+        <BrowserSlot />
+        {!activeTab?.url ? (
+          <p className="pointer-events-none absolute inset-0 grid place-items-center text-sm text-(--ui-text-tertiary)">
+            {copy.browserEmpty}
+          </p>
         ) : null}
       </div>
       <Dialog onOpenChange={open => !open && clearBrowserCapture()} open={Boolean(capture)}>

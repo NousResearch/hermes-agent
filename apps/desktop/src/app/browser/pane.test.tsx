@@ -23,6 +23,7 @@ vi.mock('./persistent', () => ({
 }))
 
 import { BrowserPane } from './pane'
+import { BrowserQcPane } from './qc-pane'
 
 const emptyQc = (): BrowserQc =>
   Object.fromEntries(
@@ -76,9 +77,20 @@ describe('BrowserPane', () => {
     expect(commands.navigate).toHaveBeenCalledWith('tab-1', 'https://example.test/next')
   })
 
-  it('records manual QC status, note, and evidence per dimension', () => {
+  it('opens QC as a separate pane instead of rendering the inspector inline', () => {
     render(<BrowserPane />)
+
+    expect(screen.queryByRole('group', { name: 'Composition' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Quality control' }))
+
+    expect($browserState.get().qcOpen).toBe(true)
+    expect(screen.queryByRole('group', { name: 'Composition' })).toBeNull()
+  })
+})
+
+describe('BrowserQcPane', () => {
+  it('records manual QC status, note, and evidence per dimension', () => {
+    render(<BrowserQcPane />)
 
     fireEvent.click(screen.getAllByRole('button', { name: 'Fail' })[0])
     fireEvent.change(screen.getAllByRole('textbox', { name: 'Note' })[0], {
@@ -90,8 +102,7 @@ describe('BrowserPane', () => {
     expect(composition).toEqual({ status: 'fail', note: 'Subject is off-center', evidence: 'fixture capture' })
   })
   it('preserves spaces in controlled QC fields while typing', () => {
-    render(<BrowserPane />)
-    fireEvent.click(screen.getByRole('button', { name: 'Quality control' }))
+    render(<BrowserQcPane />)
 
     const [note] = screen.getAllByRole('textbox', { name: 'Note' })
     const [evidence] = screen.getAllByRole('textbox', { name: 'Evidence' })
@@ -110,7 +121,9 @@ describe('BrowserPane', () => {
     expect((note as HTMLInputElement).value).toBe(' Subject centered ')
     expect($browserState.get().tabs[0].qc.composition.note).toBe(' Subject centered ')
   })
+})
 
+describe('BrowserPane capture', () => {
   it('does not capture or open a surface from render/background state', () => {
     render(<BrowserPane />)
 

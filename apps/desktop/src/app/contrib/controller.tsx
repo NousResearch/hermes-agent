@@ -54,7 +54,17 @@ import { $reviewOpen, closeReview, REVIEW_PANE_ID } from '@/store/review'
 import { $currentCwd, $selectedStoredSessionId, $sessions, sessionMatchesStoredId } from '@/store/session'
 
 import { BrowserPane } from '../browser/pane'
-import { $browserOpen, $browserRevealRequest, BROWSER_PANE_ID, setBrowserOpen } from '../browser/store'
+import { BrowserQcPane } from '../browser/qc-pane'
+import {
+  $browserOpen,
+  $browserQcRevealRequest,
+  $browserRevealRequest,
+  $browserState,
+  BROWSER_PANE_ID,
+  BROWSER_QC_PANE_ID,
+  setBrowserOpen,
+  setBrowserQcOpen
+} from '../browser/store'
 import type { SessionDragPayload } from '../chat/composer/inline-refs'
 import { watchRouteTiles } from '../chat/route-tile'
 import { startSessionDrag } from '../chat/session-drag'
@@ -183,6 +193,20 @@ registry.registerMany([
       maxWidth: '90vw'
     },
     render: () => <BrowserPane />
+  },
+  {
+    id: BROWSER_QC_PANE_ID,
+    area: 'panes',
+    title: 'quality control',
+    data: {
+      placement: 'right',
+      collapsible: true,
+      dock: { pane: BROWSER_PANE_ID, pos: 'right' },
+      width: 'clamp(18rem, 24vw, 26rem)',
+      minWidth: '16rem',
+      maxWidth: '32rem'
+    },
+    render: () => <BrowserQcPane />
   },
   {
     id: 'files',
@@ -561,6 +585,21 @@ bindPaneVisibility(
 $browserRevealRequest.listen(() => {
   if ($browserOpen.get()) {
     revealTreePane(BROWSER_PANE_ID)
+  }
+})
+
+const $browserQcVisible = computed($browserState, state => state.qcOpen)
+
+bindPaneVisibility(
+  BROWSER_QC_PANE_ID,
+  $browserQcVisible,
+  () => setBrowserQcOpen(false),
+  () => setBrowserQcOpen(true)
+)
+$browserQcRevealRequest.listen(() => {
+  if ($browserState.get().qcOpen) {
+    dockPaneBeside(BROWSER_QC_PANE_ID, BROWSER_PANE_ID)
+    revealTreePane(BROWSER_QC_PANE_ID)
   }
 })
 

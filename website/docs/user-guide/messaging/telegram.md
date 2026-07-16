@@ -1222,6 +1222,91 @@ Unlike Discord (where reactions are additive), Telegram's Bot API replaces all b
 If the bot doesn't have permission to add reactions in a group, the reaction calls fail silently and message processing continues normally.
 :::
 
+## Inbound Message Reactions
+
+When you **long-press a message from the bot and tap an emoji reaction**, Hermes can interpret that reaction as a lightweight command — completing a task, escalating priority, snoozing a reminder, or flagging for later. No typing required; just a quick emoji tap.
+
+### Configuration
+
+Define your reaction vocabulary in `~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  telegram:
+    extra:
+      reaction_actions:
+        "👍": done              # Mark complete / acknowledged
+        "👀": seen              # Seen, not yet acting
+        "🔥": escalate          # Push to P1 / urgent
+        "💤": snooze            # Postpone / remind later
+        "❌": cancel            # Dismiss / disregard
+        "📌": pin               # Keep visible / important
+        "🤔": flag              # Flag for discussion
+        "🏃": in_progress       # Now in progress / doing it
+```
+
+**Supported emoji:** any single-character emoji. The action label (the value) is informational and appears in the Hermes log. For Todoist integration, consider standard labels like `done`, `escalate`, `snooze` that map to Hermes's toolset functions. The bot interprets the emoji → action mapping; your agent/workflows then call Todoist or other tools based on the action.
+
+Env equivalent:
+
+```bash
+# Comma-separated list of emoji=action pairs (not recommended for long lists)
+TELEGRAM_REACTION_ACTIONS="👍=done,❌=cancel,🔥=escalate"
+```
+
+:::caution Duplicate reactions on same message
+If the same message receives multiple reactions from the user, the handler fires **per distinct new emoji** (not per tap). Removing a reaction or adding the same emoji again does not trigger a new dispatch.
+:::
+
+### How it works
+
+1. **You long-press a bot message** (in DMs, groups, or forums)
+2. **You tap an emoji from your reaction menu**
+3. **Hermes detects the new reaction** and looks it up in `reaction_actions`
+4. **If the emoji is configured**, Hermes synthesizes an agent turn with the emoji's action label and the original bot message as context
+5. **If the emoji is unconfigured**, it's treated as a regular reaction and ignored (no agent turn)
+
+The agent has access to the message you reacted to, so it can contextualize the action — e.g., "you marked [original message content] as done" → mark the corresponding Todoist task complete.
+
+### Authorization and scope
+
+Reaction handling respects the same authorization gates as regular messages:
+
+- **DMs:** sender must be in `allow_from` (or `allow_admin_from`)
+- **Groups/forums:** sender must be in `group_allow_from` or `group_allowed_chats` (or `group_allow_admin_from`)
+
+If the sender is unauthorized, the reaction is delivered to Telegram normally but **no agent turn is dispatched** — the bot silently ignores it.
+
+### Group and forum restrictions
+
+- **DMs (private chats):** reaction actions work normally
+- **Groups/supergroups:** reactions work if the bot has permission to see them (privacy mode off or bot is admin)
+- **Forum topics:** reactions work like any other topic message — subject to the same authorization gates
+
+Reactions in `ignored_threads` (if configured) are not processed — they land on the message but do not trigger a handler.
+
+### Why this is useful
+
+- **Fast acknowledgment:** ✅ on a task reminder means "got it" without typing
+- **Escalation:** 🔥 on a due-date warning → bump priority to P1 and surface immediately
+- **Async workflows:** long-press a meal plan with 👍 to confirm, or ❌ to request a different option
+- **Voice call recaps:** React to a meeting summary with 🤔 to flag "needs discussion at standup"
+- **Zero friction:** single emoji tap vs. typing `/done` or `/escalate`
+
+### Logged actions and retention
+
+When an inbound reaction is processed, Hermes logs the action (`DEBUG: Reaction dispatch: emoji=👍, action=done, message_id=<id>, chat_id=<id>`). The dispatched agent turn shows up in the normal conversation history alongside regular messages — so if you later ask the agent "what did I mark as done", it can refer back to that turn.
+
+Reactions themselves (the emoji marks on the bot's original message) are **not persisted** — they're stored only in Telegram's message state. If you remove the emoji, it disappears from the UI but doesn't trigger an "undo" handler — only newly-added reactions are processed.
+
+### Message recovery and context
+
+When the agent processes a reaction, Hermes recovers the original message you reacted to (via its internal message cache) and includes it in the synthesized turn. If the original message is no longer in the cache (e.g., a very old message, or the cache was cleared), the agent receives the message ID but not the text — agent workflows can handle both cases gracefully.
+
+:::tip
+For workflows that depend on exact message content (e.g. extracting a link from the reacted-to message), reactions on recent messages are most reliable. Reactions on older messages work but have less context.
+:::
+
 ## Per-Channel Prompts
 
 Assign ephemeral system prompts to specific Telegram groups or forum topics. The prompt is injected at runtime on every turn — never persisted to transcript history — so changes take effect immediately.

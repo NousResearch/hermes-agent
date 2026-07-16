@@ -107,13 +107,16 @@ dependencies = [
   "websockets==15.0.1",
   # .gitignore-aware file matching for desktop build stamp.
   "pathspec==1.1.1",
-  "fastapi>=0.104.0,<1",
+  # Keep the root dashboard stack above its patched security floors. Extras
+  # and lazy-install pins do not protect lean `pip install hermes-agent` users.
+  "fastapi>=0.133.1,<1",
+  "starlette>=1.3.1,<2",
   "uvicorn[standard]>=0.24.0,<1",
   # Streaming multipart uploads for the dashboard file manager (NS-501).
   # FastAPI's UploadFile/Form depend on python-multipart; it is NOT pulled in
   # by fastapi itself, so the dashboard's multipart upload endpoint would 500
   # without an explicit dependency here (and in the `web` extra below).
-  "python-multipart>=0.0.9,<1",
+  "python-multipart>=0.0.32,<1",
   "ptyprocess>=0.7.0,<1; sys_platform != 'win32'",
   "pywinpty>=2.0.0,<3; sys_platform == 'win32'",
   # Image resize recovery for the vision tools. Pillow shrinks oversized images

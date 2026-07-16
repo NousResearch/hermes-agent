@@ -539,6 +539,29 @@ def _is_known_provider_base_url(base_url: str) -> bool:
     return _infer_provider_from_url(base_url) is not None
 
 
+def _endpoint_scoped_context_length(model: str, base_url: str) -> Optional[int]:
+    """Return metadata confirmed only for one provider endpoint."""
+    normalized = _normalize_base_url(base_url)
+    try:
+        parsed = urlparse(normalized)
+        port = parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme.lower() == "https"
+        and (parsed.hostname or "").lower() == "api.kimi.com"
+        and port in (None, 443)
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.path.rstrip("/") in {"/coding", "/coding/v1"}
+        and not parsed.query
+        and not parsed.fragment
+        and model.strip().lower() == "k3"
+    ):
+        return 1_048_576
+    return None
+
+
 def _skip_persistent_context_cache(base_url: str, provider: str) -> bool:
     """Return True when the on-disk context cache must not short-circuit probing.
 
@@ -2056,6 +2079,7 @@ def get_model_context_length(
 
     Resolution order:
     0. Explicit config override (model.context_length or custom_providers per-model)
+    0c. Endpoint-scoped metadata for models validated on one multiplexed endpoint
     1. Persistent cache (previously discovered via probing).  Nous URLs
        bypass the cache here so step 5b can always reconcile against
        the authoritative portal /v1/models response.
@@ -2125,10 +2149,28 @@ def get_model_context_length(
         except Exception:
             pass  # fall through to probing
 
+    # Malformed user-provided URLs (for example an unmatched IPv6 bracket)
+    # make urllib.parse raise. Context resolution should treat those as an
+    # unknown endpoint rather than crashing before the inference layer can
+    # report the configuration error itself.
+    if base_url:
+        try:
+            parsed_base_url = urlparse(_normalize_base_url(base_url))
+            _ = parsed_base_url.port
+        except ValueError:
+            base_url = ""
+
     # Normalise provider-prefixed model names (e.g. "local:model-name" →
     # "model-name") so cache lookups and server queries use the bare ID that
     # local servers actually know about.  Ollama "model:tag" colons are preserved.
     model = _strip_provider_prefix(model)
+
+    # Endpoint-scoped provider metadata. Keep this ahead of the persistent
+    # cache so a value learned for a multiplexed provider's other endpoint
+    # cannot override the endpoint where the model was actually validated.
+    endpoint_context = _endpoint_scoped_context_length(model, base_url)
+    if endpoint_context is not None:
+        return endpoint_context
 
     # 1. Check persistent cache (model+provider)
     # LM Studio is excluded — its loaded context length is transient (the

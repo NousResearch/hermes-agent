@@ -174,6 +174,40 @@ class TestEstimateRequestTokensRough:
 # =========================================================================
 
 class TestDefaultContextLengths:
+    def test_k3_context_is_scoped_to_confirmed_coding_endpoint(self):
+        """K3's 1 Mi context must not leak to unverified Moonshot endpoints."""
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=None):
+            accepted_urls = (
+                "https://api.kimi.com/coding",
+                "https://API.KIMI.COM/coding/",
+                "https://api.kimi.com:443/coding",
+                "https://api.kimi.com/coding/v1",
+            )
+            rejected_urls = (
+                "http://api.kimi.com/coding",
+                "https://api.kimi.com:8443/coding",
+                "https://api.kimi.com/coding/../other",
+                "https://api.kimi.com/codingevil",
+                "https://example.invalid/coding",
+                "https://[api.kimi.com/coding",
+                "https://api.moonshot.ai/v1",
+                "https://api.moonshot.cn/v1",
+            )
+
+            for base_url in accepted_urls:
+                assert get_model_context_length(
+                    "k3", provider="kimi-coding", base_url=base_url
+                ) == 1_048_576
+
+            for base_url in rejected_urls:
+                assert get_model_context_length(
+                    "k3", provider="kimi-coding", base_url=base_url
+                ) != 1_048_576
+
     def test_grok_substring_matching(self):
         # Longest-first substring matching must resolve the real xAI model
         # IDs to the correct fallback entries without 128k probe-down.

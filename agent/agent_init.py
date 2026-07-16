@@ -1184,6 +1184,20 @@ def init_agent(
             print(f"🔄 Fallback chain ({len(agent._fallback_chain)} providers): " +
                   " → ".join(f"{f['model']} ({f['provider']})" for f in agent._fallback_chain))
 
+    # Load agent config before finalizing the lifetime-stable tool snapshot.
+    try:
+        from hermes_cli.config import load_config as _load_agent_config
+        _agent_cfg = _load_agent_config()
+    except Exception:
+        _agent_cfg = {}
+    _agent_section = _agent_cfg.get("agent", {})
+    if not isinstance(_agent_section, dict):
+        _agent_section = {}
+    _mode_router = _agent_section.get("mode_router", {})
+    agent._mode_router_enabled = bool(
+        isinstance(_mode_router, dict) and _mode_router.get("enabled") is True
+    )
+
     # Get available tools with filtering. Capture the registry generation this
     # snapshot is derived from FIRST, so a later concurrent refresh can tell
     # whether it holds a newer or staler view (see refresh_agent_mcp_tools).
@@ -1196,6 +1210,10 @@ def init_agent(
         enabled_toolsets=enabled_toolsets,
         disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
+    )
+    from agent.research_mode_tool import inject_research_mode_tool
+    agent.tools = inject_research_mode_tool(
+        agent.tools, enabled=agent._mode_router_enabled,
     )
     
     # Show tool configuration and store valid tool names for validation
@@ -1348,12 +1366,7 @@ def init_agent(
     from tools.todo_tool import TodoStore
     agent._todo_store = TodoStore()
     
-    # Load config once for memory, skills, and compression sections
-    try:
-        from hermes_cli.config import load_config as _load_agent_config
-        _agent_cfg = _load_agent_config()
-    except Exception:
-        _agent_cfg = {}
+    # Config was loaded once before the lifetime-stable tool snapshot above.
     try:
         agent._tool_guardrails = ToolCallGuardrailController(
             ToolCallGuardrailConfig.from_mapping(
@@ -1473,9 +1486,6 @@ def init_agent(
 
     # Tool-use enforcement config: "auto" (default — matches hardcoded
     # model list), true (always), false (never), or list of substrings.
-    _agent_section = _agent_cfg.get("agent", {})
-    if not isinstance(_agent_section, dict):
-        _agent_section = {}
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
 
     # Intent-ack continuation config: "auto" (default — codex_responses only,
@@ -1971,6 +1981,13 @@ def init_agent(
             agent.valid_tool_names.add(_tname)
             agent._context_engine_tool_names.add(_tname)
             _existing_tool_names.add(_tname)
+
+    # Memory providers and context engines inject tools after the initial
+    # registry snapshot. Re-establish the private router as the unique final
+    # schema and derive validation names from the completed surface. OFF is a
+    # strict no-op (including list/set identity) inside the finalizer.
+    from agent.research_mode_tool import finalize_research_mode_tool
+    finalize_research_mode_tool(agent)
 
     # Notify context engine of session start
     if hasattr(agent, "context_compressor") and agent.context_compressor:

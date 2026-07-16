@@ -65,6 +65,64 @@ cannot override, via a system-level managed directory. See
 [Managed Scope](/user-guide/managed-scope).
 :::
 
+## Experimental Automatic Research Routing
+
+Hermes can expose an experimental, agent-local research router that delegates
+substantial evidence-gathering or comparative-analysis work to an isolated
+research child. The child runs synchronously, so the parent can verify and
+synthesize its findings in the same response.
+
+The feature is **disabled by default**. Enable it with:
+
+```bash
+hermes config set agent.mode_router.enabled true
+```
+
+Or edit `~/.hermes/config.yaml` directly:
+
+```yaml
+agent:
+  mode_router:
+    enabled: true
+```
+
+Start a new Hermes agent session after changing the setting. Hermes snapshots
+the router setting and tool schema when an agent is created; it does not mutate
+the model's tools midway through a session.
+
+When enabled:
+
+- exploratory thinking remains in the parent conversation;
+- substantial research may use a synchronous `research-analysis` child;
+- the child is filtered to the exact read-only names `web_search` and
+  `web_extract` when those capabilities are enabled in the parent, with
+  canonical schemas and handlers pinned agent-locally; dynamic plugin or MCP
+  registration cannot widen or replace that capability boundary;
+- interactive browser automation and inherited MCP toolsets are excluded from
+  trusted research routes;
+- leaf children do not receive the automatic router, preventing recursive mode
+  routing through a separate child surface;
+- mode decisions and session linkage are recorded in normal profile-aware logs
+  without task prompts, external content, or secrets.
+
+:::warning Research-only experimental scope
+This setting does **not** expose automatic execution/development routing. A
+model-selected Boolean or natural-language guess is not a trustworthy approval
+to modify files, run implementation workflows, or trigger side effects. The
+internal execution route therefore remains fail-closed until Hermes has a
+separate, scope-bound user authorization mechanism. Existing dangerous-command
+approvals continue to apply independently.
+:::
+
+To disable the experiment again:
+
+```bash
+hermes config set agent.mode_router.enabled false
+```
+
+Then start a new agent session. For the underlying child-agent model and budget
+settings, see [Subagent Delegation](/user-guide/features/delegation).
+
 ## Environment Variable Substitution
 
 You can reference environment variables in `config.yaml` using `${VAR_NAME}` syntax:

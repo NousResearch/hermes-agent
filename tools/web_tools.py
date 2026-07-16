@@ -41,6 +41,7 @@ import logging
 import os
 import re
 import asyncio
+from copy import deepcopy
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 import httpx  # noqa: F401 — kept at module top so tests can patch tools.web_tools.httpx
 # After the web-provider plugin migration (PR #25182), the Firecrawl SDK
@@ -1165,7 +1166,7 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
-from tools.registry import registry, tool_error
+from tools.registry import ToolEntry, registry, tool_error
 
 WEB_SEARCH_SCHEMA = {
     "name": "web_search",
@@ -1211,11 +1212,34 @@ WEB_EXTRACT_SCHEMA = {
     }
 }
 
+def _canonical_web_search_handler(args, **kwargs):
+    return web_search_tool(args.get("query", ""), limit=args.get("limit", 5))
+
+
+async def _canonical_web_extract_handler(args, **kwargs):
+    return await web_extract_tool(
+        args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [],
+        "markdown",
+        char_limit=args.get("char_limit"),
+    )
+
+
+CANONICAL_WEB_TOOL_ENTRIES = {
+    "web_search": ToolEntry(
+        "web_search", "web", deepcopy(WEB_SEARCH_SCHEMA), _canonical_web_search_handler,
+        check_web_api_key, _web_requires_env(), False, "", "🔍", 100_000,
+    ),
+    "web_extract": ToolEntry(
+        "web_extract", "web", deepcopy(WEB_EXTRACT_SCHEMA), _canonical_web_extract_handler,
+        check_web_api_key, _web_requires_env(), True, "", "📄", 100_000,
+    ),
+}
+
 registry.register(
     name="web_search",
     toolset="web",
     schema=WEB_SEARCH_SCHEMA,
-    handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=args.get("limit", 5)),
+    handler=_canonical_web_search_handler,
     check_fn=check_web_api_key,
     requires_env=_web_requires_env(),
     emoji="🔍",
@@ -1225,11 +1249,7 @@ registry.register(
     name="web_extract",
     toolset="web",
     schema=WEB_EXTRACT_SCHEMA,
-    handler=lambda args, **kw: web_extract_tool(
-        args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [],
-        "markdown",
-        char_limit=args.get("char_limit"),
-    ),
+    handler=_canonical_web_extract_handler,
     check_fn=check_web_api_key,
     requires_env=_web_requires_env(),
     is_async=True,

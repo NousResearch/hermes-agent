@@ -19,6 +19,7 @@ never the child's intermediate tool calls or reasoning.
 import enum
 import json
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 import os
@@ -666,6 +667,7 @@ def _build_child_system_prompt(
     role: str = "leaf",
     max_spawn_depth: int = 2,
     child_depth: int = 1,
+    mode: Optional[str] = None,
 ) -> str:
     """Build a focused system prompt for a child agent.
 
@@ -702,6 +704,19 @@ def _build_child_system_prompt(
         "response is returned to the parent agent as a summary, and overlong "
         "summaries crowd out the parent's context window."
     )
+    if mode is not None:
+        # Only trusted Python callers can supply this non-schema argument.
+        from agent.mode_router import get_mode
+
+        contract = get_mode(mode)
+        parts.append(
+            "\n## Automatic Mode Contract\n"
+            f"Mode contract: {contract.name}. {contract.objective}\n"
+            f"Stages: {' -> '.join(contract.stages)}.\n"
+            "Follow these stages while retaining all safety, depth, credential, "
+            "budget, and workspace constraints above. Verify material claims "
+            "and validate outputs before reporting completion."
+        )
     if role == "orchestrator":
         child_note = (
             "Your own children MUST be leaves (cannot delegate further) "
@@ -1064,6 +1079,8 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # Trusted automatic-mode contract; never model-facing.
+    mode: Optional[str] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1124,7 +1141,7 @@ def _build_child_agent(
         # toolset names (e.g. web, terminal) are recognised during intersection.
         expanded_parent = _expand_parent_toolsets(parent_toolsets)
         child_toolsets = [t for t in toolsets if t in expanded_parent]
-        if _get_inherit_mcp_toolsets():
+        if mode is None and _get_inherit_mcp_toolsets():
             child_toolsets = _preserve_parent_mcp_toolsets(
                 child_toolsets, parent_toolsets
             )
@@ -1151,6 +1168,7 @@ def _build_child_agent(
         role=effective_role,
         max_spawn_depth=max_spawn,
         child_depth=child_depth,
+        mode=mode,
     )
     # Extract parent's API key so subagents inherit auth (e.g. Nous Portal).
     parent_api_key = getattr(parent_agent, "api_key", None)
@@ -1316,6 +1334,9 @@ def _build_child_agent(
     child_optional_kwargs: Dict[str, Any] = {}
     if isinstance(child_max_tokens, int):
         child_optional_kwargs["max_tokens"] = child_max_tokens
+    parent_disabled_toolsets = getattr(parent_agent, "disabled_toolsets", None)
+    if isinstance(parent_disabled_toolsets, (list, tuple, set)):
+        child_optional_kwargs["disabled_toolsets"] = list(parent_disabled_toolsets)
 
     child = AIAgent(
         base_url=effective_base_url,
@@ -1357,6 +1378,18 @@ def _build_child_agent(
         iteration_budget=None,  # fresh budget per subagent
         **child_optional_kwargs,
     )
+    from agent.research_mode_tool import (
+        RESEARCH_READ_ONLY_TOOLS,
+        apply_trusted_tool_allowlist,
+        disable_research_mode_tool,
+    )
+    if mode == "research-analysis":
+        from tools.web_tools import CANONICAL_WEB_TOOL_ENTRIES
+        setattr(child, "_trusted_tool_allowlist", RESEARCH_READ_ONLY_TOOLS)
+        setattr(child, "_trusted_tool_entries", dict(CANONICAL_WEB_TOOL_ENTRIES))
+    if effective_role == "leaf":
+        disable_research_mode_tool(child)
+    apply_trusted_tool_allowlist(child)
     child._print_fn = getattr(parent_agent, "_print_fn", None)
     # Now the child exists, its session id can ride on every relayed event
     # (including the spawn_requested below — first emit happens after this).
@@ -2374,6 +2407,9 @@ def delegate_task(
     role: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
+    _trusted_toolsets: Optional[tuple[str, ...]] = None,
+    _trusted_mode: Optional[str] = None,
+    _trusted_session_collector=None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -2516,9 +2552,9 @@ def delegate_task(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
-                # Subagents always inherit the parent's toolsets; the model
-                # cannot choose or narrow them (no model-facing toolsets arg).
-                toolsets=None,
+                # Trusted mode routes may narrow via code-defined policy; the
+                # model-facing path always supplies None.
+                toolsets=list(_trusted_toolsets) if _trusted_toolsets else None,
                 model=creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
@@ -2532,6 +2568,7 @@ def delegate_task(
                 override_acp_command=creds.get("command"),
                 override_acp_args=creds.get("args"),
                 role=effective_role,
+                mode=_trusted_mode,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -2779,6 +2816,16 @@ def delegate_task(
                 logger.debug("Subagent cost rollup failed", exc_info=True)
 
         total_duration = round(time.monotonic() - overall_start, 2)
+
+        # Trusted code-selected routes may correlate their decision event with
+        # the child session. Keep that linkage on a private in-process channel:
+        # delegate results are public/model-facing and must retain their legacy
+        # schema without session identifiers.
+        if _trusted_mode and callable(_trusted_session_collector) and len(children) == 1:
+            try:
+                _trusted_session_collector(getattr(children[0][2], "session_id", None))
+            except Exception:
+                logger.debug("Trusted child-session collector failed", exc_info=True)
 
         return {
             "results": results,
@@ -3361,6 +3408,141 @@ def _build_role_param_description() -> str:
         "Role of the child agent. 'leaf' (default) = focused "
         "worker, cannot delegate further. 'orchestrator' = can "
         f"use delegate_task to spawn its own workers. {nesting_note}"
+    )
+
+
+_MODE_CHILD_TOOLSET_POLICY = {
+    "research-analysis": ("web",),
+}
+
+
+def _log_trusted_mode_decision(
+    *,
+    mode: str,
+    route: str,
+    delegated: bool,
+    policy_toolsets: tuple[str, ...],
+    execution_authorized: bool,
+    authorization_reason: str,
+    parent_agent,
+    child_session_id: Optional[str] = None,
+) -> None:
+    """Emit routing metadata only; task content must never enter this record."""
+    logger.info(
+        "trusted_mode_route_decision",
+        extra={
+            "event_name": "trusted_mode_route_decision",
+            "mode": mode,
+            "route": route,
+            "delegated": delegated,
+            "policy_toolsets": policy_toolsets,
+            "execution_authorized": execution_authorized,
+            "authorization_reason": authorization_reason,
+            "parent_session_id": getattr(parent_agent, "session_id", None),
+            "child_session_id": child_session_id,
+        },
+    )
+
+
+_SAFE_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+
+
+def _trusted_child_session_id(candidate: Any) -> Optional[str]:
+    """Validate a bounded, identifier-shaped ID received out of band."""
+    if not isinstance(candidate, str) or not _SAFE_SESSION_ID_RE.fullmatch(candidate):
+        return None
+    return candidate
+
+
+def route_trusted_mode(
+    *,
+    mode: str,
+    goal: str,
+    context: Optional[str] = None,
+    parent_agent,
+):
+    """Execute a code-selected mode route without creating a model tool."""
+    from agent.mode_router import ModeRoutingDecision, UnknownModeError, get_mode
+
+    try:
+        contract = get_mode(mode)
+    except UnknownModeError:
+        _log_trusted_mode_decision(
+            mode="unknown", route="rejected", delegated=False,
+            policy_toolsets=(), execution_authorized=False,
+            authorization_reason="unknown-mode", parent_agent=parent_agent,
+        )
+        raise
+
+    policy_toolsets = _MODE_CHILD_TOOLSET_POLICY.get(contract.name, ())
+    authorized = False
+    if not getattr(parent_agent, "_mode_router_enabled", False):
+        decision = ModeRoutingDecision(
+            contract.name, goal, "direct-parent", "mode-router-disabled"
+        )
+        _log_trusted_mode_decision(
+            mode=contract.name, route=decision.route, delegated=False,
+            policy_toolsets=policy_toolsets, execution_authorized=authorized,
+            authorization_reason=decision.reason, parent_agent=parent_agent,
+        )
+        return decision
+    if contract.name == "thinking-expansion":
+        decision = ModeRoutingDecision(
+            contract.name, goal, "direct-parent", "mode-contract-requires-parent"
+        )
+        _log_trusted_mode_decision(
+            mode=contract.name, route=decision.route, delegated=False,
+            policy_toolsets=policy_toolsets, execution_authorized=authorized,
+            authorization_reason="not-applicable", parent_agent=parent_agent,
+        )
+        return decision
+    if contract.name == "execution-development":
+        decision = ModeRoutingDecision(
+            contract.name, goal, "approval-required", "execution-routing-not-exposed"
+        )
+        _log_trusted_mode_decision(
+            mode=contract.name, route=decision.route, delegated=False,
+            policy_toolsets=policy_toolsets, execution_authorized=False,
+            authorization_reason=decision.reason, parent_agent=parent_agent,
+        )
+        return decision
+
+    authorization_reason = "not-required"
+    # delegate_task remains authoritative for child capability intersection and
+    # dangerous-command approvals.
+    child_session = None
+
+    def _collect_child_session(candidate: Any) -> None:
+        nonlocal child_session
+        child_session = _trusted_child_session_id(candidate)
+
+    try:
+        result = delegate_task(
+            goal=goal,
+            context=context,
+            background=False,
+            parent_agent=parent_agent,
+            _trusted_toolsets=policy_toolsets,
+            _trusted_mode=contract.name,
+            _trusted_session_collector=_collect_child_session,
+        )
+    except Exception:
+        # Preserve observability for failed attempts without emitting task content.
+        _log_trusted_mode_decision(
+            mode=contract.name, route="child", delegated=True,
+            policy_toolsets=policy_toolsets, execution_authorized=authorized,
+            authorization_reason=authorization_reason, parent_agent=parent_agent,
+        )
+        raise
+    _log_trusted_mode_decision(
+        mode=contract.name, route="child", delegated=True,
+        policy_toolsets=policy_toolsets, execution_authorized=authorized,
+        authorization_reason=authorization_reason,
+        parent_agent=parent_agent,
+        child_session_id=child_session,
+    )
+    return ModeRoutingDecision(
+        contract.name, goal, "child", "mode-contract-requires-child", result, True
     )
 
 

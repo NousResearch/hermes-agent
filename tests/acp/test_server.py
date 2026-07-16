@@ -1794,6 +1794,7 @@ class TestRegisterSessionMcpServers:
         state = mock_manager.create_session(cwd="/tmp")
         state.agent.enabled_toolsets = ["hermes-acp"]
         state.agent.disabled_toolsets = None
+        state.agent._mode_router_enabled = False
         state.agent.tools = []
         state.agent.valid_tool_names = set()
         state.agent._cached_system_prompt = "old prompt"
@@ -1843,6 +1844,138 @@ class TestRegisterSessionMcpServers:
         }
         # _invalidate_system_prompt should have been called
         state.agent._invalidate_system_prompt.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_refresh_preserves_canonical_research_router_last(self, agent, mock_manager):
+        """ACP MCP refresh replaces hostile collisions with one local router."""
+        from acp.schema import McpServerStdio
+        from agent.research_mode_tool import ROUTE_RESEARCH_MODE_TOOL, TOOL_NAME
+
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.enabled_toolsets = ["hermes-acp"]
+        state.agent.disabled_toolsets = None
+        state.agent._mode_router_enabled = True
+        state.agent._memory_manager = None
+        registry_tools = [
+            {"function": {"name": "terminal"}},
+            {"function": {"name": TOOL_NAME, "description": "hostile registry schema"}},
+            {"function": {"name": TOOL_NAME, "description": "hostile plugin schema"}},
+        ]
+        server = McpServerStdio(name="srv", command="/bin/test", args=[], env=[])
+
+        with patch("tools.mcp_tool.register_mcp_servers", return_value=[]), \
+             patch("model_tools.get_tool_definitions", return_value=registry_tools):
+            await agent._register_session_mcp_servers(state, [server])
+
+        assert [tool["function"]["name"] for tool in state.agent.tools] == [
+            "terminal", TOOL_NAME,
+        ]
+        assert state.agent.tools[-1] == ROUTE_RESEARCH_MODE_TOOL
+        assert state.agent.tools[-1] is not ROUTE_RESEARCH_MODE_TOOL
+        assert state.agent.valid_tool_names == {"terminal", TOOL_NAME}
+
+    @pytest.mark.asyncio
+    async def test_refresh_preserves_exact_trusted_tool_name_allowlist(
+        self, agent, mock_manager, monkeypatch,
+    ):
+        from acp.schema import McpServerStdio
+        from tools.web_tools import CANONICAL_WEB_TOOL_ENTRIES
+
+        for entry in CANONICAL_WEB_TOOL_ENTRIES.values():
+            monkeypatch.setattr(entry, "check_fn", lambda: True)
+
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.enabled_toolsets = ["web"]
+        state.agent.disabled_toolsets = None
+        state.agent._mode_router_enabled = False
+        state.agent._trusted_tool_allowlist = frozenset({"web_search", "web_extract"})
+        state.agent._trusted_tool_entries = dict(CANONICAL_WEB_TOOL_ENTRIES)
+        state.agent._memory_manager = None
+        registry_tools = [
+            {"function": {"name": "web_search"}},
+            {"function": {"name": "plugin_web_write"}},
+            {"function": {"name": "mcp_new_tool"}},
+            {"function": {"name": "route_research_mode"}},
+        ]
+        server = McpServerStdio(name="srv", command="/bin/test", args=[], env=[])
+
+        with patch("tools.mcp_tool.register_mcp_servers", return_value=[]), \
+             patch("model_tools.get_tool_definitions", return_value=registry_tools):
+            await agent._register_session_mcp_servers(state, [server])
+
+        assert [tool["function"]["name"] for tool in state.agent.tools] == [
+            "web_search", "web_extract",
+        ]
+        assert state.agent.valid_tool_names == {"web_search", "web_extract"}
+        assert [tool["function"] for tool in state.agent.tools] == [
+            CANONICAL_WEB_TOOL_ENTRIES[name].schema
+            for name in ("web_search", "web_extract")
+        ]
+
+    @pytest.mark.asyncio
+    async def test_refresh_reinjects_full_post_build_surface_and_context_routing(self, agent, mock_manager):
+        """ACP rebuild retains memory/context tools and publishes router last."""
+        from acp.schema import McpServerStdio
+        from agent.research_mode_tool import ROUTE_RESEARCH_MODE_TOOL, TOOL_NAME
+
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.enabled_toolsets = ["hermes-acp", "context_engine"]
+        state.agent.disabled_toolsets = None
+        state.agent._mode_router_enabled = True
+        state.agent._context_engine_tool_names = {"stale_context_tool"}
+        state.agent._memory_manager = SimpleNamespace(
+            get_all_tool_schemas=lambda: [
+                {"name": "memory_recall", "description": "Recall", "parameters": {}}
+            ]
+        )
+        state.agent.context_compressor = SimpleNamespace(
+            get_tool_schemas=lambda: [
+                {"name": "lcm_grep", "description": "Search context", "parameters": {}}
+            ]
+        )
+        registry_tools = [
+            {"function": {"name": "memory"}},
+            {"function": {"name": "terminal"}},
+            {"function": {"name": TOOL_NAME, "description": "hostile"}},
+        ]
+        server = McpServerStdio(name="srv", command="/bin/test", args=[], env=[])
+
+        with patch("tools.mcp_tool.register_mcp_servers", return_value=[]), \
+             patch("model_tools.get_tool_definitions", return_value=registry_tools):
+            await agent._register_session_mcp_servers(state, [server])
+
+        assert [tool["function"]["name"] for tool in state.agent.tools] == [
+            "memory", "terminal", "memory_recall", "lcm_grep", TOOL_NAME,
+        ]
+        assert state.agent.tools[-1] == ROUTE_RESEARCH_MODE_TOOL
+        assert state.agent._context_engine_tool_names == {"lcm_grep"}
+        assert state.agent.valid_tool_names == {
+            "memory", "terminal", "memory_recall", "lcm_grep", TOOL_NAME,
+        }
+
+    @pytest.mark.asyncio
+    async def test_refresh_disabled_is_exact_registry_list_parity(self, agent, mock_manager):
+        """Disabled routing neither filters nor copies the registry snapshot."""
+        from acp.schema import McpServerStdio
+        from agent.research_mode_tool import TOOL_NAME
+
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.enabled_toolsets = ["hermes-acp"]
+        state.agent.disabled_toolsets = None
+        state.agent._mode_router_enabled = False
+        state.agent._memory_manager = None
+        registry_tools = [
+            {"function": {"name": "terminal"}},
+            {"function": {"name": TOOL_NAME, "description": "registry-owned collision"}},
+        ]
+        server = McpServerStdio(name="srv", command="/bin/test", args=[], env=[])
+
+        with patch("tools.mcp_tool.register_mcp_servers", return_value=[]), \
+             patch("model_tools.get_tool_definitions", return_value=registry_tools):
+            await agent._register_session_mcp_servers(state, [server])
+
+        assert state.agent.tools is registry_tools
+        assert state.agent.valid_tool_names == {"terminal", TOOL_NAME}
 
     @pytest.mark.asyncio
     async def test_register_failure_logs_warning(self, agent, mock_manager):

@@ -5458,13 +5458,14 @@ def refresh_agent_mcp_tools(
     swap).
 
     Crucially it is **additive-preserving**: ``get_tool_definitions`` returns
-    only the registry-derived tools, but ``agent_init`` appends two further
+    only the registry-derived tools, but ``agent_init`` appends further
     families directly onto ``agent.tools`` *after* that — external
-    memory-provider tools (mem0/honcho/…) and context-engine tools
-    (``lcm_*``).  A naive ``agent.tools = get_tool_definitions(...)`` would
-    silently DELETE those.  So after rebuilding the registry set we re-run the
-    same post-build injectors ``agent_init`` used, reconstructing the full
-    surface.  The new ``(tools, valid_tool_names)`` pair is published together
+    memory-provider tools (mem0/honcho/…), context-engine tools
+    (``lcm_*``), and the private mode router. A naive
+    ``agent.tools = get_tool_definitions(...)`` would
+    silently DELETE those. So after rebuilding the registry set we re-run the
+    shared post-build injector, reconstructing and canonicalizing the full
+    surface. The new ``(tools, valid_tool_names)`` pair is published together
     under ``_agent_tools_lock`` so a concurrent reader never sees a
     cross-attribute half-swap.
 
@@ -5523,6 +5524,16 @@ def refresh_agent_mcp_tools(
     # this rebuild actually appended (matching agent_init's dedup-aware add).
     staged_engine_names = _reinject_post_build_tools(agent, new_defs, new_names)
 
+    # Trusted children keep an exact name-level capability policy even when a
+    # plugin or MCP refresh registers additional tools into an allowed toolset.
+    from agent.research_mode_tool import apply_trusted_tool_allowlist
+    new_defs = apply_trusted_tool_allowlist(agent, new_defs)
+    new_names = {t["function"]["name"] for t in new_defs}
+    staged_engine_names.intersection_update(new_names)
+
+    # The allowlist runs after all post-build operational schemas are restored,
+    # so the published snapshot and validation names remain capability-exact.
+
     # Single atomic read-diff-publish so the returned ``added`` is consistent
     # with what was actually published, even under concurrent callers, and a
     # stale (older-generation) rebuild can't overwrite a newer published one.
@@ -5540,9 +5551,14 @@ def refresh_agent_mcp_tools(
             t["function"]["name"]
             for t in (getattr(agent, "tools", None) or [])
         }
-        if new_names == current:
-            # No change → leave the live snapshot untouched (no churn), but
-            # record the generation so an in-flight older caller can't clobber.
+        trusted_snapshot_changed = (
+            isinstance(getattr(agent, "_trusted_tool_entries", None), dict)
+            and (getattr(agent, "tools", None) or []) != new_defs
+        )
+        if new_names == current and not trusted_snapshot_changed:
+            # No capability or trusted-schema change → leave the live snapshot
+            # untouched (no churn), but record the generation so an in-flight
+            # older caller can't clobber.
             agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
             return set()
         agent.tools = new_defs
@@ -5557,13 +5573,15 @@ def refresh_agent_mcp_tools(
 
 
 def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
-    """Append memory-provider and context-engine tools onto staged locals.
+    """Rebuild every non-registry tool family onto staged locals.
 
     Mirrors the post-``get_tool_definitions`` injection in ``agent_init`` so a
     snapshot rebuild reconstructs the FULL tool surface, not just the
     registry-derived subset. Operates ONLY on the caller's staged ``tools_list``
     / ``name_set`` (never the live agent attributes) so the rebuild stays atomic.
-    Idempotent (skips names already present) and fail-soft.
+    Memory/context injection is idempotent (skips names already present) and
+    fail-soft. The canonical mode router is then injected last when enabled;
+    disabled mode remains an identity-preserving no-op.
 
     Returns the set of context-engine routing names actually appended by THIS
     rebuild — matching ``agent_init``'s dedup behavior (a name already provided
@@ -5617,6 +5635,20 @@ def _reinject_post_build_tools(agent, tools_list: list, name_set: set) -> set:
                     staged_engine_names.add(name)
     except Exception:
         logger.debug("Context-engine tool re-injection skipped", exc_info=True)
+
+    # Private operational tools always come last. Slice assignment keeps the
+    # caller's staged list identity while replacing hostile collisions.
+    from agent.research_mode_tool import TOOL_NAME, inject_research_mode_tool
+    router_enabled = getattr(agent, "_mode_router_enabled", False) is True
+    routed_tools = inject_research_mode_tool(tools_list, enabled=router_enabled)
+    if routed_tools is not tools_list:
+        tools_list[:] = routed_tools
+    if router_enabled:
+        # A colliding context schema was replaced and must not retain dispatch
+        # ownership of the canonical local router.
+        staged_engine_names.discard(TOOL_NAME)
+    name_set.clear()
+    name_set.update(t["function"]["name"] for t in tools_list)
 
     return staged_engine_names
 

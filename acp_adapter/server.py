@@ -828,7 +828,7 @@ class HermesACPAgent(acp.Agent):
 
         try:
             from model_tools import get_tool_definitions
-            from agent.memory_manager import inject_memory_provider_tools
+            from tools.mcp_tool import _reinject_post_build_tools
 
             enabled_toolsets = _expand_acp_enabled_toolsets(
                 getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"],
@@ -841,10 +841,27 @@ class HermesACPAgent(acp.Agent):
                 disabled_toolsets=disabled_toolsets,
                 quiet_mode=True,
             )
-            state.agent.valid_tool_names = {
+            staged_names = {
                 tool["function"]["name"] for tool in state.agent.tools or []
             }
-            inject_memory_provider_tools(state.agent)
+            context_engine_names = _reinject_post_build_tools(
+                state.agent, state.agent.tools, staged_names,
+            )
+            from agent.research_mode_tool import apply_trusted_tool_allowlist
+            state.agent.tools = apply_trusted_tool_allowlist(
+                state.agent, state.agent.tools,
+            )
+            staged_names = {
+                tool["function"]["name"] for tool in state.agent.tools or []
+            }
+            context_engine_names.intersection_update(staged_names)
+            state.agent.valid_tool_names = staged_names
+            existing_context_names = getattr(state.agent, "_context_engine_tool_names", None)
+            if isinstance(existing_context_names, set):
+                existing_context_names.clear()
+                existing_context_names.update(context_engine_names)
+            else:
+                state.agent._context_engine_tool_names = context_engine_names
             invalidate = getattr(state.agent, "_invalidate_system_prompt", None)
             if callable(invalidate):
                 invalidate()

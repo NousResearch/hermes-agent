@@ -14,8 +14,15 @@ only — no stdio/WebSocket). It implements the protocol but ships no tools of
 its own. Tools come from **Toolsets** — classes deriving from
 `UToolsetDefinition` (C++) or `unreal.ToolsetDefinition` (Python) — collected
 at startup by the **Toolset Registry** subsystem (sibling plugin,
-auto-enabled). Epic's shipped toolsets are delivered by a separate toolset
-provider plugin (**AllToolsets**); project plugins and Game Feature Plugins
+auto-enabled; the registry itself ships no toolsets either). The shipped
+tools live in per-domain plugins under `Engine/Plugins/Experimental/
+Toolsets/` — the workhorse is **EditorToolset** (core editor toolsets,
+Python + C++) — and **AllToolsets** is a one-checkbox aggregator plugin
+that depends on ~21 of them (verified from `AllToolsets.uplugin`, 5.8):
+AIModule, AnimationAssistant, AutomationTest, ConfigSettings, Conversation,
+DataRegistry, DataflowAgent, Editor, GameFeatures, GameplayTags, GAS,
+MCPClient, Niagara, PCG, Physics, Plugin, SemanticSearch, SlateInspector,
+StateTree, UMG, WorldConditions. Project plugins and Game Feature Plugins
 can contribute more. Unreal MCP wraps every registered tool call as an MCP
 Tool. Execution is **serialized onto the game thread** — one tool call at a
 time, editor UI blocked while each runs.
@@ -50,56 +57,142 @@ Schema payload grows with every registered toolset, and tool authors are told
 NOT to rely on eager advertising — stay in tool-search mode unless a very
 small fixed surface is wanted.
 
-## call_tool dispatch semantics
+## call_tool dispatch semantics (live-verified, 5.8)
 
-Confirmed against Epic's own agent-facing skill for this server:
+Verified against a running 5.8 server; these details are where naive
+clients die:
 
-- `call_tool` takes `toolset_name`, `tool_name`, and an `arguments` object
-  matching the schema from `describe_toolset`. The result returns on the
-  same turn.
-- Tool identities are effectively dotted: `BlueprintTools.create`,
-  `SequencerTools.create_level_sequence`,
-  `LiveCodingToolset.CompileLiveCoding` — they are dispatched server-side
-  and never appear as native MCP tools while tool search is on.
-- Top-level dispatch (omitting `toolset_name`) is reserved for tools
-  registered directly on the MCP server — and is rejected for `call_tool`
-  itself.
+- `list_toolsets` returns **fully-qualified** toolset names — Python:
+  `editor_toolset.toolsets.scene.SceneTools`; C++:
+  `EditorToolset.EditorAppToolset`. Epic's prose says "SceneTools"; the
+  registry speaks qualified names. Use them verbatim in `describe_toolset`
+  and `call_tool`'s `toolset_name`.
+- `tool_name` must be the **short** name (`get_current_level`,
+  `CaptureViewport`). Passing the fully-qualified tool name fails with
+  "Unknown tool" even though `describe_toolset` displays qualified names.
+- `call_tool` args: `{"toolset_name": ..., "tool_name": ..., "arguments":
+  {...}}`; result returns on the same turn (the HTTP response blocks until
+  the game thread finishes the call).
+- **`TOptional` parameters must be passed explicitly as `null`** — omitting
+  them errors with `input param "X" needs a default value`. E.g.
+  `CaptureViewport` minimal call is `{"captureTransform": null,
+  "annotations": null, "bShowUI": false}`.
+- **Schema `required` is literal.** `find_actors` marks `name`, `tag`,
+  `collision_channels` required even though they're semantically optional —
+  pass `""` / `[]` to mean "any".
+- **Property names are camelCase with UE's `b` prefix intact** at this
+  reflection layer: `bUseTemperature`, `bAtmosphereSunLight`, `fogDensity`,
+  `bRealTimeCapture`, `mobility`. Writing `useTemperature` does NOT error
+  the whole call — the response names each property that could not be set
+  (schema-in-error style; READ error text, it lists the exact failures and
+  often the full input schema).
+- **Object references travel as `{"refPath": "<soft object path>"}`**
+  everywhere (actors, classes, components). Class refs use
+  `/Script/Module.Class` (e.g. `/Script/Engine.PointLight`); actor refs are
+  the full path (`/Temp/Untitled_1.Untitled_1:PersistentLevel.DirectionalLight_UAID_...`).
+  Spawn/find tools RETURN refPaths — capture and reuse them.
+- **`ObjectTools.set_properties` takes `values` as a JSON *string***, not
+  an object: `{"instance": {"refPath": ...}, "values":
+  "{\"intensity\": 10.0}"}`. `get_properties` likewise returns a JSON
+  string inside `returnValue`. Double-encode/decode accordingly.
+- Primitive results arrive wrapped as `{"returnValue": ...}` inside the
+  text content block.
+
+### HTTP wire behavior (for raw clients / debugging)
+
+- `initialize` → plain JSON response + `Mcp-Session-Id` header you must
+  echo on every subsequent request; `notifications/initialized` → 202
+  empty; `tools/call` → **`text/event-stream`**: the result arrives as an
+  `event: message` + `data: <jsonrpc>` frame only when the game thread
+  finishes. A client that treats the response as plain JSON reads an empty
+  body. Send `Accept: application/json, text/event-stream` always.
 
 ## Shipped toolsets
 
-The registry is project-dependent; treat this as orientation, not contract —
-`describe_toolset` on the live server is the only source of truth for tool
-names and schemas. Epic's plugin pack describes the shipped surface as
-"hundreds of tools across 30+ toolsets": actors, blueprints, materials,
-Niagara, Control Rigs, Sequencer, State Trees, widgets, Gameplay Ability
-System, automation testing, Live Coding.
+The registry is project-dependent; `describe_toolset` on the live server is
+the only source of truth for schemas. The core surface below is verified
+against EditorToolset's source in the 5.8 install (Python:
+`.../EditorToolset/Content/Python/editor_toolset/toolsets/`; C++:
+`EditorAppToolset.h`).
 
-Toolset names confirmed in Epic's docs and Epic's own Claude Code skill pack:
+**EditorToolset plugin (the core), Python toolsets** (live-verified on 5.8;
+qualified prefix `editor_toolset.toolsets.<module>.<Class>`):
 
-| Toolset | Scope |
+| Toolset | Verified tools (subset) |
 |---|---|
-| `SceneTools` | Scene-level queries and edits |
-| `ActorTools` | Inspect/modify actors: transforms, labels, parent-child relationships, components |
-| `MaterialInstanceTools` | Create/configure material instances |
-| `MaterialTools` | Material assets |
-| `ObjectTools` | Generic UObject property inspection/editing |
-| `BlueprintTools` | Blueprint creation/editing (e.g. `BlueprintTools.create`) |
-| `StaticMeshTools` | Static mesh asset operations |
-| `LevelTools` | Level operations |
-| `SequencerTools` | Level Sequences (e.g. `create_level_sequence`) |
-| `LiveCodingToolset` | C++ Live Coding recompile (`CompileLiveCoding` blocks until the compile finishes and surfaces compiler diagnostics) |
-| `AgentSkillToolset` | Project-registered Agent Skills (see below) |
-| `GASToolsets` (plugin, C++) | Gameplay Ability System attributes — ships disabled; enabling prompts an experimental-feature warning |
+| `scene.SceneTools` | `load_level`, `get_current_level`, `find_actors` (by name/type/tag/bounds), `add_to_scene_from_class`, `add_to_scene_from_asset`, `remove_from_scene`, `save_actor`, `create_level_instance`, folders |
+| `actor.ActorTools` | `get_label`/`set_label`, tags, `get_actor_transform`/`set_actor_transform` (`xform` fields optional = "don't change"), parenting, components |
+| `primitive.PrimitiveTools` | `add_cube` (dimensions), `add_sphere` (radius), `add_cylinder`/`add_cone` (radius+height) — adds StaticMeshComponents with `local_transform` to a host actor: spawn `/Script/Engine.Actor`, then compose. The fastest blocking path, zero asset dependencies |
+| `object.ObjectTools` | `list_properties` (returns full JSON schema of every property), `get_properties`/`set_properties` (JSON-string `values`), `reset_properties` (restore defaults — also your rollback), `get_class`, `search_subclasses` |
+| `material_instance.MaterialInstanceTools` | `create`, `list_parameters`, `get/set_scalar_parameter`, `get/set_vector_parameter` |
+| `asset.AssetTools` | `find_assets`, `load_asset`, `exists`, `save_assets`, `is_dirty`, `get_dependencies`/`get_referencers` (check before delete!), `delete`, `move`, `duplicate`, folders, `read_file`/`write_file` (project-scoped) |
+| `blueprint.BlueprintTools` (+ dsl/layout/node) | Blueprint authoring |
+| `material.MaterialTools`, `static_mesh.StaticMeshTools`, `texture.TextureTools`, `data_table.DataTableTools`, … | per-asset-type operations |
+| `programmatic.ProgrammaticToolset` | **the batching escape hatch** — see below |
 
-Known gap: the shipped toolsets contain **no mesh-modelling tools** — you
-can spawn/place/instance existing meshes but not author new geometry. The
-supported route to parametric geometry is a custom Python toolset wrapping
-**Geometry Script** (`UDynamicMesh`: append box/cylinder/sphere, booleans,
-then `Create New Static Mesh Asset from Mesh` to bake an `SM_` asset). For
-organic/sculpted meshes, model in Blender (`blender-mcp` skill) and import.
+**`EditorToolset.EditorAppToolset` (C++, same plugin) — the agent's eyes
+(full live list):** `CaptureViewport`, `CaptureEditorImage`,
+`CaptureAssetImage`, `GetCameraTransform`/`SetCameraTransform`,
+`GetSelectedActors`/`SelectActors`/`FocusOnActors`/`GetVisibleActors`,
+`WorldPosToScreenCoords`/`ScreenCoordsToWorld`,
+`GetSelectedAssets`/`SelectAssets`,
+`GetContentBrowserPath`/`SetContentBrowserPath`, `OpenEditorForAsset`,
+`GetOpenAssets`, `SearchCVars`, `StartPIE`/`StopPIE`/`IsPIERunning`.
+
+`CaptureViewport` specifics (live-verified): args `{"captureTransform":
+<transform-or-null>, "annotations": <config-or-null>, "bShowUI": false}`.
+Returns base64 PNG (decode + save it yourself) plus camera
+location/rotation/FOV. `captureTransform` captures from any pose WITHOUT
+moving the user's viewport — use it as a virtual camera. Annotation config
+`{"gridSpacingCm": 500, "gridExtentCm": 3000, "gridHeight": <ground Z>,
+"labelActors": true}` overlays a projected ground grid and actor callouts;
+**grid coordinate labels are in METERS** (world cm ÷ 100). Use annotated
+captures for placement work, clean ones for beauty checks.
+
+Also confirmed live: `ToolsetRegistry.AgentSkillToolset`,
+`EditorToolset.LogsToolset` (read Output Log + set verbosity — useful for
+self-debugging), `SemanticSearchToolset` (hybrid vector+BM25 asset search),
+five `NiagaraToolsets.NiagaraToolset_*` groups, `PCGToolset` (+Spatial),
+`UMGToolSet`, three `GASToolsets.*`, `AutomationTestToolset`,
+`ConfigSettingsToolset` (read/write Project Settings & Editor Preferences
+sections by schema — the remote path to exposure defaults, rendering
+settings, etc.), `SlateInspectorToolset`, `PluginToolset`,
+`animation_toolset.toolsets.sequencer.SequencerTools` + keyframing/
+controlrig/outliner siblings, `aimodule_toolset` BehaviorTreeTools,
+`state_tree_toolset` StateTreeTools, and more — 67 toolsets on a blank
+project with AllToolsets enabled.
+
+Known gap: no mesh-modelling tools — spawn/place/instance existing meshes,
+yes; author new geometry, no. The supported route to parametric geometry is
+a custom Python toolset wrapping **Geometry Script** (`UDynamicMesh`:
+append box/cylinder/sphere, booleans, then `Create New Static Mesh Asset
+from Mesh` to bake an `SM_` asset). For organic/sculpted meshes, model in
+Blender (`blender-mcp` skill) and import.
 
 First-session move: `list_toolsets`, then `describe_toolset` each group you
 plan to use, and keep those schemas in working memory for the session.
+
+## ProgrammaticToolset — sanctioned batching
+
+The serial-call rule makes N-step edits slow over the wire. The shipped
+answer is `ProgrammaticToolset` (verified in `programmatic.py`):
+
+1. `get_execution_environment` — **mandatory first call** (the tool's own
+   docstring requires it); returns the allowed modules, script constraints,
+   and usage instructions.
+2. `execute_tool_script(script)` — runs a **sandboxed** Python script that
+   defines `run() -> dict`. Inside, you call other registered tools
+   programmatically and glue them with logic — one MCP round-trip for a
+   whole loop (e.g. spawn 20 actors with computed transforms).
+
+Sandbox facts (from source): allowed imports are `json`, `math`,
+`datetime`, `copy`, `re`, `time` only; `open()` is restricted to
+project-contained paths; scripts run inside an editor **transaction scope**
+(undo-friendly); it is tool orchestration, NOT general Python — arbitrary
+`unreal.*` calls are not the contract. Data returns via `run()`'s dict.
+
+Use it whenever a recipe loop exceeds ~5 homogeneous calls; keep one-off
+edits as plain `call_tool`.
 
 ## Project Agent Skills (AgentSkillToolset)
 
@@ -121,20 +214,17 @@ Check at the start of unfamiliar work in any project, not just once ever.
 
 An agent that can't see the viewport is flying blind. In order of preference:
 
-1. **A shipped screenshot/viewport tool, if the registry advertises one** —
-   check `list_toolsets`/`describe_toolset` output for viewport, screenshot,
-   or thumbnail capture tools and use those (they return the image through
-   MCP directly).
-2. **Console command via any shipped console/exec tool**: `HighResShot 1`
-   writes the current viewport to
+1. **`EditorAppToolset.CaptureViewport`** (confirmed shipped) — returns the
+   image through MCP as base64 PNG with camera metadata; supports capturing
+   from an arbitrary transform without disturbing the user's viewport, and
+   an optional annotation overlay (world-space meter grid + actor callouts)
+   for spatial-placement work. This is the default verification tool.
+2. **Console `HighResShot` via any console/exec tool** when you need
+   resolutions beyond the viewport: `HighResShot 3840x2160` writes to
    `<Project>/Saved/Screenshots/<Platform>/` on the EDITOR host's
-   filesystem. `HighResShot 3840x2160` for fixed resolution,
-   `HighResShot 2` for 2× viewport. Read the file back with `read_file`/
-   `vision_analyze` (same machine) — remember paths resolve on the editor
-   host.
-3. **Custom toolset escape hatch** (below) exposing
-   `unreal.AutomationLibrary.take_high_res_screenshot()` or viewport
-   capture, when nothing shipped covers it.
+   filesystem; read the file back (same machine) with `vision_analyze`.
+3. **Custom toolset escape hatch** for anything else (e.g. camera-actor
+   framed captures with MRQ-quality settings).
 
 Always `vision_analyze` the capture and art-direct against the brief before
 declaring a milestone done.

@@ -74,6 +74,15 @@ compose correctly with exposure instead of fighting it.
 
 ### Sun (DirectionalLight, lux)
 
+**Calibration check first (live-verified):** template levels often ship a
+sun at `intensity: 10` with auto-exposure tuned around it — physical lux
+values below will blow such a scene to white. Read the existing sun's
+intensity; if it's single/double digits, scale moods RELATIVE to it (noon =
+template value, golden hour ≈ 0.5–0.7×, overcast ≈ 0.3×, night ≈ 0.01×)
+and rely on temperature + pitch for the mood. The absolute table applies
+when you own the whole exposure chain (manual EV100 + physical values
+everywhere):
+
 | Condition | Intensity (lux) | Pitch | Temperature |
 |---|---|---|---|
 | Noon, clear | 75,000–120,000 | −60° to −90° | 5,500–6,000 K |

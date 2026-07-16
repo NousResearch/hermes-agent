@@ -25,11 +25,22 @@ dead" cause).
 
 Session preamble for every recipe (do once):
 
-1. `list_toolsets` → note actor/scene/material/level capability groups.
+1. `list_toolsets` → note the qualified names (e.g.
+   `editor_toolset.toolsets.scene.SceneTools`,
+   `EditorToolset.EditorAppToolset`).
 2. `describe_toolset` on each group you'll touch → cache schemas.
-3. Query current level state (all actors + classes) → never assume empty.
-4. Locate the screenshot path for this project:
-   `<Project>/Saved/Screenshots/<Platform>/`.
+3. Query current level (`SceneTools.get_current_level`) and inventory the
+   environment: `find_actors` for DirectionalLight, SkyAtmosphere,
+   SkyLight, ExponentialHeightFog, PostProcessVolume, VolumetricCloud.
+   **Configure existing environment actors; spawn only what's missing** —
+   template levels ship with most of them, and duplicates compound into
+   whiteouts.
+4. Read the existing sun's `intensity` — it tells you the scene's exposure
+   calibration (template worlds are often calibrated around `intensity: 10`,
+   not physical lux; see pitfalls 12b before applying scene-craft absolute
+   values).
+5. Locate your verification path: `EditorAppToolset.CaptureViewport` with a
+   `captureTransform` is the virtual camera — no viewport piloting needed.
 
 Save the level + dirty packages after every phase marked 💾. One tool call
 at a time throughout — no batching, ever.
@@ -148,16 +159,20 @@ Brief: "make it golden hour and give me a cinematic shot of <subject>"
 
 **Phase 2 — the camera**
 
-- INTENT a framed CineCamera, not a viewport eyeball.
-  DISCOVER CineCameraActor spawn + property-set; viewport-pilot or
-  camera-view capability if advertised.
-  VALUES position: subject-distance by lens — 85 mm at 400–600 cm for a
-  prop/character subject; height 120–160 cm; aim so subject sits on a
-  thirds intersection, horizon in upper or lower third (not center).
-  Focal 85 mm, aperture f/2.0, manual focus distance = measured
-  camera→subject distance (compute from the two locations).
-  VERIFY screenshot THROUGH this camera (pilot it / set viewport to its
-  view first — confirm by a cheap `HighResShot 1` before the big one).
+- INTENT a framed shot WITHOUT touching the user's viewport.
+  DISCOVER `EditorAppToolset.CaptureViewport` with `captureTransform` — a
+  virtual camera; no CineCamera or viewport piloting needed for stills.
+  VALUES position: subject-distance by lens-equivalent framing — for a
+  prop/monument subject ~500–800 cm back, height 120–160 cm; rotation
+  aimed so the subject sits on a thirds intersection, horizon in upper or
+  lower third. Slight upward pitch (+2° to +5°) from below eye height
+  reads heroic and guarantees sky/horizon in frame.
+  For an actual CineCameraActor (user wants a camera in the level, DoF,
+  or a Sequencer shot): spawn `/Script/CinematicCamera.CineCameraActor`,
+  set focal/aperture/focus via ObjectTools on its CineCameraComponent,
+  then capture with `captureTransform` matching its transform.
+  VERIFY capture at viewport res first; iterate framing cheaply, then take
+  the final.
 
 **Phase 3 — deliver**
 

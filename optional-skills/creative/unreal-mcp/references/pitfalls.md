@@ -21,7 +21,20 @@ returns nothing/near-nothing, the toolset provider plugin (AllToolsets) or
 Toolset Registry isn't enabled in this project. Fix in Edit > Plugins,
 restart the editor, restart the Hermes session.
 
-### 3. Port 8000 conflicts
+### 3. macOS: full Xcode is required, not just Command Line Tools
+
+On a Mac, the editor needs Xcode to compile shaders for Metal. Without it,
+first launch dies with a modal "Xcode Not Found" dialog and the editor
+exits as soon as it's dismissed (verified UE 5.8 behavior — the log shows
+`RequestExit` right after the dialog). Fix: install full Xcode from the App
+Store, open it once to accept the license / install components, and if it
+lives anywhere other than `/Applications/Xcode.app`, point the toolchain at
+it: `sudo xcode-select -s /path/to/Xcode.app`. Verify with
+`xcode-select -p` (should print an Xcode path, not the bare CLT path).
+Expect the first successful editor launch after that to spend a long time
+compiling shaders.
+
+### 4. Port 8000 conflicts
 
 Common collisions: local dev servers, Jupyter, other MCP hosts. Symptom: the
 server fails to bind (Output Log) or Hermes' probe times out. Fix: change
@@ -99,19 +112,54 @@ this skill afterward.
 
 ## Editor & Scene State
 
-### 12. Never assume a fresh level
+### 12. Never assume a fresh level — and NEVER double-spawn environment actors
 
-Query the scene before the first edit. The user's level may have existing
-actors, a non-default sun, post-process volumes with exposure overrides —
-your lighting changes can look wrong because of a pre-existing volume, not
-your values.
+Query the scene before the first edit. Template levels (Open World, etc.)
+ALREADY contain a DirectionalLight, SkyAtmosphere, SkyLight,
+ExponentialHeightFog, and often VolumetricCloud. Spawning your own creates
+duplicates that compound (double fog = whiteout, double sky = wrong
+exposure) and are invisible in a screenshot until things look
+inexplicably wrong. Live-verified failure: spawning a "golden hour kit"
+into the default Open World template produced two of everything and a
+254/255-luminance whiteout. Rule: `find_actors` for each environment class
+FIRST; configure what exists; spawn only what's missing.
+
+### 12b. Read the existing sun before imposing physical light values
+
+Scene-craft tables give physical values (golden hour ≈ 10k lux), but a
+template's world is calibrated as a SYSTEM — the default Open World sun is
+`intensity: 10` (lux-ish units under default exposure), not 100,000. Setting
+12,000 lux into that world blows the frame to pure white regardless of
+small exposure tweaks. Live-verified rule: `get_properties` the existing
+sun's intensity first. If the scene is calibrated low (single-digit sun),
+work RELATIVE to it (e.g. golden hour ≈ 0.5–1× the template's noon value,
+warm temperature, low pitch) and let auto-exposure adapt, or rebuild the
+whole exposure chain deliberately (manual EV100 + physical values
+everywhere). Mixing the two conventions is the #1 whiteout cause.
+`ObjectTools.reset_properties` is the escape hatch — it restores per-project
+defaults when you've painted into a corner.
+
+### 12c. Verify exposure objectively, not just by eye
+
+A capture can look "bright" in vision judgment while being unrecoverable.
+Cheap objective check on any capture (editor-host filesystem):
+`ffprobe -f lavfi -i "movie=<png>,signalstats" -show_entries
+frame_tags=lavfi.signalstats.YAVG -of json` — YAVG > 250 means blown
+white, < 5 means black. Use it whenever a lighting change should have
+moved the histogram; it distinguishes "fog whiteout" from "exposure
+whiteout" faster than iterating blind.
 
 ### 13. In-memory edits are lost on crash — save per milestone
 
 Everything you do lives in unsaved packages until a save happens. The editor
 is an application that can crash, especially mid-experimental-feature. Save
-the level + dirty packages after every milestone. Also: some operations
-(level streaming, some asset moves) behave differently on unsaved assets.
+the level + dirty packages after every milestone (`AssetTools.save_assets`,
+`SceneTools.save_actor`). Caveat: an UNTITLED level (`/Temp/Untitled_*`,
+the state after File > New or launching without a map argument) may route a
+save through the Save-As dialog — a modal that deadlocks the MCP loop
+(pitfall 8). Prefer starting from a saved level (pass the map path on the
+editor command line, or `SceneTools.load_level` a real `/Game/...` map)
+before doing hours of work.
 
 ### 14. Label ≠ Name ≠ path — use the full path as the stable identifier
 

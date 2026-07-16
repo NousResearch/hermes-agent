@@ -5347,6 +5347,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     # still small enough to never threaten memory.
     _BUSY_QUEUE_MAX_PENDING = 32
 
+    @staticmethod
+    def _is_plain_text_followup(event: MessageEvent) -> bool:
+        """Return whether a busy-session event is safe to inject as text."""
+        return (
+            event.message_type == MessageType.TEXT
+            and not event.media_urls
+            and not event.media_types
+        )
+
     def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
         adapter = self._adapter_for_source(event.source)
         if not adapter:
@@ -5356,25 +5365,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # the single pending slot when consecutive text messages arrived
         # in ``busy_input_mode: queue``. Route through the FIFO
         # infrastructure shared with ``/queue`` so each follow-up gets
-        # its own turn in arrival order. Photo bursts still merge into
-        # the head slot via ``merge_pending_message_event`` (album
-        # semantics); everything else appends to the overflow tail.
-        pending_slot = getattr(adapter, "_pending_messages", None)
-        existing = pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
-        if existing is not None and (
-            getattr(existing, "message_type", None) == MessageType.PHOTO
-            or event.message_type == MessageType.PHOTO
-            or bool(getattr(existing, "media_urls", None))
-            or bool(getattr(event, "media_urls", None))
-        ):
-            # Preserve photo-burst / media-merge semantics for the head slot.
-            merge_pending_message_event(
-                adapter._pending_messages,
-                session_key,
-                event,
-                merge_text=event.message_type == MessageType.TEXT,
-            )
-            return
+        # its own turn in arrival order. Keep media events intact as well:
+        # merging them into the head slot discards the incoming event's raw
+        # platform object and attachment metadata.
 
         if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
             logger.warning(
@@ -5575,6 +5568,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             steer_text = (event.text or "").strip()
             can_steer = (
                 steer_text
+                and self._is_plain_text_followup(event)
                 and running_agent is not None
                 and running_agent is not _AGENT_PENDING_SENTINEL
                 and hasattr(running_agent, "steer")
@@ -9505,6 +9499,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 steer_text = event.get_command_args().strip()
                 if not steer_text:
                     return "Usage: /steer <prompt>"
+                if (
+                    event.message_type not in {MessageType.TEXT, MessageType.COMMAND}
+                    or event.media_urls
+                    or event.media_types
+                ):
+                    # Preserve the complete platform event, but strip the
+                    # command prefix before queueing. Replaying the original
+                    # ``/steer`` text at the next turn would dispatch it as a
+                    # command again instead of processing the attachment.
+                    queued_event = dataclasses.replace(event, text=steer_text)
+                    self._queue_or_replace_pending_event(_quick_key, queued_event)
+                    return "Attachment queued for the next turn; only plain text can steer the current run."
                 running_agent = self._running_agents.get(_quick_key)
                 if running_agent is _AGENT_PENDING_SENTINEL:
                     # Agent hasn't started yet — queue as turn-boundary fallback.
@@ -9655,9 +9661,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if event.message_type == MessageType.PHOTO:
                 logger.debug("PRIORITY photo follow-up for session %s — queueing without interrupt", _quick_key)
-                adapter = self._adapter_for_source(source)
-                if adapter:
-                    merge_pending_message_event(adapter._pending_messages, _quick_key, event)
+                self._queue_or_replace_pending_event(_quick_key, event)
                 return None
 
             _telegram_followup_grace = float(
@@ -9666,7 +9670,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _started_at = self._running_agents_ts.get(_quick_key, 0)
             if (
                 source.platform == Platform.TELEGRAM
-                and event.message_type == MessageType.TEXT
+                and self._is_plain_text_followup(event)
                 and _telegram_followup_grace > 0
                 and _started_at
                 and (time.time() - _started_at) <= _telegram_followup_grace
@@ -9699,14 +9703,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return EphemeralReply("⚡ Force-stopped. The agent was still starting — session unlocked.")
                 # Queue the message so it will be picked up after the
                 # agent starts.
-                adapter = self._adapter_for_source(source)
-                if adapter:
-                    merge_pending_message_event(
-                        adapter._pending_messages,
-                        _quick_key,
-                        event,
-                        merge_text=True,
-                    )
+                self._queue_or_replace_pending_event(_quick_key, event)
                 return None
             if self._draining:
                 if self._queue_during_drain_enabled():
@@ -9726,7 +9723,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # is empty, the agent lacks steer(), or steer() rejects.
                 steer_text = (event.text or "").strip()
                 steered = False
-                if steer_text and hasattr(running_agent, "steer"):
+                if (
+                    steer_text
+                    and self._is_plain_text_followup(event)
+                    and hasattr(running_agent, "steer")
+                ):
                     try:
                         steered = bool(running_agent.steer(steer_text))
                     except Exception as exc:

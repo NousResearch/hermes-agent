@@ -757,3 +757,84 @@ class TestCmdUpdateGatewayMode:
         from types import SimpleNamespace
         args = SimpleNamespace(gateway=True)
         assert args.gateway is True
+
+
+# ---------------------------------------------------------------------------
+# _send_update_notification — retryable delivery failure deferral
+# ---------------------------------------------------------------------------
+
+
+class TestSendUpdateNotificationRetryable:
+    """Post-update notification must survive a retryable send failure.
+
+    Mirrors the lifecycle/restart notification handling: a retryable
+    SendResult (e.g. Telegram send_path_degraded right after a gateway
+    restart) must preserve the update marker files and return False so the
+    watcher poll loop retries once the platform's send path has healed.
+    """
+
+    def _seed_markers(self, hermes_home):
+        """Write a completed-update marker set for the notification path."""
+        (hermes_home / ".update_pending.json").write_text(json.dumps({
+            "platform": "telegram",
+            "chat_id": "67890",
+            "chat_type": "private",
+            "thread_id": None,
+            "message_id": None,
+            "session_key": "telegram:67890",
+        }))
+        (hermes_home / ".update_output.txt").write_text("update done")
+        (hermes_home / ".update_exit_code").write_text("0")
+
+    def test_retryable_failure_defers_and_keeps_markers(self, tmp_path):
+        """A retryable SendResult makes the method return False and keep markers."""
+        from gateway.platforms.base import SendResult
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        self._seed_markers(hermes_home)
+
+        runner = _make_runner()
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=SendResult(
+            success=False, error="send_path_degraded", retryable=True,
+        ))
+        runner.adapters = {Platform.TELEGRAM: adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            result = asyncio.get_event_loop().run_until_complete(
+                runner._send_update_notification()
+            )
+
+        assert result is False
+        # Markers must survive so the watcher can retry once the path heals.
+        assert (hermes_home / ".update_pending.json").exists()
+        assert (hermes_home / ".update_exit_code").exists()
+
+    def test_successful_delivery_after_retry_returns_true(self, tmp_path):
+        """After the send path heals, a successful SendResult returns True."""
+        from gateway.platforms.base import SendResult
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        self._seed_markers(hermes_home)
+
+        runner = _make_runner()
+        adapter = MagicMock()
+        # First attempt: retryable failure; second attempt (watcher retry): ok.
+        adapter.send = AsyncMock(side_effect=[
+            SendResult(success=False, error="send_path_degraded", retryable=True),
+            SendResult(success=True),
+        ])
+        runner.adapters = {Platform.TELEGRAM: adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            first = asyncio.get_event_loop().run_until_complete(
+                runner._send_update_notification()
+            )
+            # Markers preserved after the retryable failure.
+            assert (hermes_home / ".update_pending.json").exists()
+            second = asyncio.get_event_loop().run_until_complete(
+                runner._send_update_notification()
+            )
+
+        assert first is False
+        assert second is True

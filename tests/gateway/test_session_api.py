@@ -170,6 +170,125 @@ async def test_session_crud_and_message_history(adapter, session_db):
 
 
 @pytest.mark.asyncio
+async def test_session_patch_end_reason_returns_the_updated_session(adapter, session_db):
+    session_id = session_db.create_session("end-session", "api_server")
+    app = _create_session_app(adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.patch(
+            f"/api/sessions/{session_id}",
+            json={"end_reason": "client_close"},
+        )
+        payload = await response.json()
+
+    assert response.status == 200
+    assert payload["session"]["id"] == session_id
+    assert payload["session"]["end_reason"] == "client_close"
+    assert payload["session"]["ended_at"] is not None
+    assert session_db.get_session(session_id)["end_reason"] == "client_close"
+
+
+@pytest.mark.asyncio
+async def test_session_patch_applies_title_and_end_reason_to_the_compression_tip(
+    adapter,
+    session_db,
+):
+    session_db.create_session("root-end", "api_server")
+    session_db.end_session("root-end", "compression")
+    session_db.create_session("tip-end", "api_server", parent_session_id="root-end")
+    app = _create_session_app(adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.patch(
+            "/api/sessions/root-end",
+            json={"title": "Finished Project", "end_reason": "client_close"},
+        )
+        payload = await response.json()
+
+    assert response.status == 200
+    assert payload["session"]["id"] == "tip-end"
+    assert payload["session"]["title"] == "Finished Project"
+    assert payload["session"]["end_reason"] == "client_close"
+    assert payload["session"]["ended_at"] is not None
+    assert session_db.get_session("root-end")["end_reason"] == "compression"
+    assert session_db.get_session("tip-end")["end_reason"] == "client_close"
+
+
+@pytest.mark.asyncio
+async def test_session_patch_does_not_end_an_ordinary_child_session(adapter, session_db):
+    session_db.create_session("source-end", "api_server")
+    session_db.end_session("source-end", "branched")
+    session_db.create_session(
+        "fork-end",
+        "api_server",
+        parent_session_id="source-end",
+    )
+    session_db.append_message("fork-end", "user", "fork content")
+    app = _create_session_app(adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.patch(
+            "/api/sessions/source-end",
+            json={"title": "Old Source", "end_reason": "client_close"},
+        )
+        payload = await response.json()
+
+    assert response.status == 200
+    assert payload["session"]["id"] == "source-end"
+    assert payload["session"]["title"] == "Old Source"
+    assert payload["session"]["end_reason"] == "branched"
+    assert session_db.get_session("source-end")["end_reason"] == "branched"
+    assert session_db.get_session("fork-end")["end_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_session_auto_title_patch_only_names_an_untitled_session(adapter, session_db):
+    session_id = session_db.create_session("title-once", "api_server")
+    app = _create_session_app(adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        first = await cli.patch(
+            f"/api/sessions/{session_id}",
+            json={"title": "First Automatic Title", "if_untitled": True},
+        )
+        first_payload = await first.json()
+        second = await cli.patch(
+            f"/api/sessions/{session_id}",
+            json={"title": "Latest User Message", "if_untitled": True},
+        )
+        second_payload = await second.json()
+
+    assert first.status == 200
+    assert first_payload["session"]["title"] == "First Automatic Title"
+    assert first_payload["title_updated"] is True
+    assert second.status == 200
+    assert second_payload["title_updated"] is False
+    assert second_payload["session"]["title"] == "First Automatic Title"
+    assert session_db.get_session_title(session_id) == "First Automatic Title"
+
+
+@pytest.mark.asyncio
+async def test_session_patch_title_targets_the_visible_compression_tip(adapter, session_db):
+    session_db.create_session("root", "api_server")
+    session_db.end_session("root", "compression")
+    session_db.create_session("tip", "api_server", parent_session_id="root")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.patch(
+            "/api/sessions/root",
+            json={"title": "Manual Project Name"},
+        )
+        assert response.status == 200
+        payload = await response.json()
+
+    assert payload["session"]["id"] == "tip"
+    assert payload["session"]["title"] == "Manual Project Name"
+    assert session_db.get_session_title("root") is None
+    assert session_db.get_session_title("tip") == "Manual Project Name"
+
+
+@pytest.mark.asyncio
 async def test_session_messages_follow_compression_tip(adapter, session_db):
     source_id = session_db.create_session("source-session", "api_server")
     session_db.append_message(source_id, "user", "before compression")
@@ -209,6 +328,36 @@ async def test_session_fork_uses_current_sessiondb_branch_primitives(adapter, se
     assert fork["title"] == "Alternative"
     assert [m["content"] for m in session_db.get_messages(fork["id"])] == ["first path", "answer"]
     assert session_db.get_session(source_id)["end_reason"] == "branched"
+
+
+@pytest.mark.asyncio
+async def test_api_fork_cannot_be_selected_as_a_compression_continuation(adapter, session_db):
+    session_db.create_session("root-fork", "api_server")
+    session_db.append_message("root-fork", "user", "before compression")
+    session_db.end_session("root-fork", "compression")
+    session_db.create_session("tip-fork", "api_server", parent_session_id="root-fork")
+    session_db.append_message("tip-fork", "user", "real continuation")
+    app = _create_session_app(adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        fork_response = await cli.post(
+            "/api/sessions/root-fork/fork",
+            json={"id": "ordinary-fork", "title": "Alternative Path"},
+        )
+        assert fork_response.status == 201
+        session_db.append_message("ordinary-fork", "user", "new fork turn")
+        patch_response = await cli.patch(
+            "/api/sessions/root-fork",
+            json={"title": "Finished Project", "end_reason": "client_close"},
+        )
+        payload = await patch_response.json()
+
+    assert patch_response.status == 200
+    assert payload["session"]["id"] == "tip-fork"
+    assert payload["session"]["title"] == "Finished Project"
+    assert payload["session"]["end_reason"] == "client_close"
+    assert session_db.get_session("ordinary-fork")["title"] == "Alternative Path"
+    assert session_db.get_session("ordinary-fork")["end_reason"] is None
 
 
 @pytest.mark.asyncio

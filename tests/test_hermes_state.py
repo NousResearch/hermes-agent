@@ -2990,6 +2990,134 @@ class TestSessionTitle:
         session = db.get_session("s1")
         assert session["title"] == "Updated Title"
 
+    def test_set_title_if_untitled_accepts_only_the_first_title(self, db):
+        db.create_session(session_id="s1", source="api_server")
+
+        assert db.set_session_title_if_untitled("s1", "First Automatic Title") is True
+        assert db.set_session_title_if_untitled("s1", "Latest User Message") is False
+        assert db.get_session_title("s1") == "First Automatic Title"
+
+    def test_set_title_if_untitled_never_overwrites_manual_title(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.set_session_title("s1", "Manual Project Name")
+
+        assert not db.set_session_title_if_untitled("s1", "Stale Automatic Title")
+        assert db.get_session_title("s1") == "Manual Project Name"
+
+    def test_manual_clear_stays_final_and_blocks_stale_auto_title(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.set_session_title("s1", "Manual Project Name")
+        db.set_session_title("s1", "")
+
+        assert not db.set_session_title_if_untitled("s1", "Stale Automatic Title")
+        assert db.get_session_title("s1") is None
+
+    def test_schema_upgrade_finalizes_existing_nonempty_titles(self, tmp_path):
+        db_path = tmp_path / "legacy-title.db"
+        legacy = SessionDB(db_path=db_path)
+        legacy.create_session(session_id="s1", source="cli")
+        legacy.set_session_title("s1", "Existing Title")
+        legacy.close()
+
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("ALTER TABLE sessions DROP COLUMN title_finalized")
+        conn.commit()
+        conn.close()
+
+        upgraded = SessionDB(db_path=db_path)
+        try:
+            row = upgraded._conn.execute(
+                "SELECT title_finalized FROM sessions WHERE id = 's1'"
+            ).fetchone()
+            assert row["title_finalized"] == 1
+            assert not upgraded.set_session_title_if_untitled(
+                "s1", "Stale Automatic Title"
+            )
+            assert upgraded.get_session_title("s1") == "Existing Title"
+        finally:
+            upgraded.close()
+
+    def test_auto_title_follows_a_compression_continuation(self, db):
+        db.create_session(session_id="root", source="api_server")
+        db.end_session("root", "compression")
+        db.create_session(
+            session_id="tip",
+            source="api_server",
+            parent_session_id="root",
+        )
+
+        assert db.set_session_title_if_untitled("root", "Generated Late")
+        assert db.get_session_title("root") is None
+        assert db.get_session_title("tip") == "Generated Late"
+
+    def test_compression_transfer_uses_latest_parent_title_atomically(self, db):
+        db.create_session(session_id="root", source="api_server")
+        db.set_session_title("root", "Captured Before Rename")
+        db.end_session("root", "compression")
+        db.create_session(
+            session_id="tip",
+            source="api_server",
+            parent_session_id="root",
+        )
+        db.set_session_title("root", "Manual Rename During Rotation")
+
+        # The public manual setter already resolves the visible tip, so the
+        # transfer becomes a no-op and must preserve that newer title.
+        assert not db.transfer_session_title_to_continuation("root", "tip")
+        assert db.get_session_title("root") is None
+        assert db.get_session_title("tip") == "Manual Rename During Rotation"
+
+    def test_compression_transfer_preserves_an_intentional_clear(self, db):
+        db.create_session(session_id="root", source="api_server")
+        db.set_session_title("root", "Manual Project Name")
+        db.set_session_title("root", "")
+        db.end_session("root", "compression")
+        db.create_session(
+            session_id="tip",
+            source="api_server",
+            parent_session_id="root",
+        )
+
+        assert db.transfer_session_title_to_continuation("root", "tip")
+        assert not db.set_session_title_if_untitled("tip", "Stale Automatic Title")
+        assert db.get_session_title("tip") is None
+
+    def test_atomic_compression_rotation_rolls_back_if_title_transfer_fails(
+        self, db, monkeypatch
+    ):
+        db.create_session(session_id="root", source="api_server")
+        db.set_session_title("root", "Manual Project Name")
+
+        def fail_transfer(*_args, **_kwargs):
+            raise RuntimeError("injected title transfer failure")
+
+        monkeypatch.setattr(
+            db, "_transfer_session_title_to_continuation_in_transaction", fail_transfer
+        )
+
+        with pytest.raises(RuntimeError, match="injected title transfer failure"):
+            db.rotate_session_for_compression(
+                "root",
+                "tip",
+                source="api_server",
+                model="test-model",
+            )
+
+        assert db.get_session("root")["ended_at"] is None
+        assert db.get_session_title("root") == "Manual Project Name"
+        assert db.get_session("tip") is None
+
+    def test_public_title_setter_targets_the_visible_compression_tip(self, db):
+        db.create_session(session_id="root", source="api_server")
+        db.set_session_title("root", "Original Title")
+        db.rotate_session_for_compression(
+            "root", "tip", source="api_server", model="test-model"
+        )
+
+        assert db.set_session_title("root", "Manual Rename")
+        assert db.get_session_title("root") is None
+        assert db.get_session_title("tip") == "Manual Rename"
+
     def test_title_in_search_sessions(self, db):
         db.create_session(session_id="s1", source="cli")
         db.set_session_title("s1", "Debugging Auth")

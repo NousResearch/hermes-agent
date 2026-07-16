@@ -784,6 +784,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     cost_source TEXT,
     pricing_version TEXT,
     title TEXT,
+    title_finalized INTEGER NOT NULL DEFAULT 0,
     api_call_count INTEGER DEFAULT 0,
     handoff_state TEXT,
     handoff_platform TEXT,
@@ -1473,6 +1474,13 @@ class SessionDB:
         # migration was skipped (e.g. due to version renumbering), the
         # column gets created here.
         self._reconcile_columns(cursor)
+        # Existing non-empty titles predate the durable one-shot marker. Treat
+        # them as finalized so an upgrade cannot make old conversations eligible
+        # for another automatic rename.
+        cursor.execute(
+            "UPDATE sessions SET title_finalized = 1 "
+            "WHERE title IS NOT NULL AND title_finalized = 0"
+        )
 
         # Indexes that reference reconciler-added columns must be created
         # AFTER _reconcile_columns runs — declaring them in SCHEMA_SQL
@@ -1840,6 +1848,59 @@ class SessionDB:
     # Session lifecycle
     # =========================================================================
 
+    def _insert_session_row_in_transaction(
+        self,
+        conn: sqlite3.Connection,
+        session_id: str,
+        source: str,
+        model: str = None,
+        model_config: Dict[str, Any] = None,
+        system_prompt: str = None,
+        user_id: str = None,
+        session_key: str = None,
+        chat_id: str = None,
+        chat_type: str = None,
+        thread_id: str = None,
+        parent_session_id: str = None,
+        cwd: str = None,
+        profile_name: str = None,
+    ) -> None:
+        conn.execute(
+            """INSERT INTO sessions (
+               id, source, user_id, session_key, chat_id, chat_type, thread_id,
+               model, model_config, system_prompt, parent_session_id, cwd,
+               profile_name, started_at
+            )
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                   model = COALESCE(sessions.model, excluded.model),
+                   model_config = COALESCE(sessions.model_config, excluded.model_config),
+                   system_prompt = COALESCE(sessions.system_prompt, excluded.system_prompt),
+                   session_key = COALESCE(sessions.session_key, excluded.session_key),
+                   chat_id = COALESCE(sessions.chat_id, excluded.chat_id),
+                   chat_type = COALESCE(sessions.chat_type, excluded.chat_type),
+                   thread_id = COALESCE(sessions.thread_id, excluded.thread_id),
+                   parent_session_id = COALESCE(sessions.parent_session_id, excluded.parent_session_id),
+                   cwd = COALESCE(sessions.cwd, excluded.cwd),
+                   profile_name = COALESCE(sessions.profile_name, excluded.profile_name)""",
+            (
+                session_id,
+                source,
+                user_id,
+                session_key,
+                chat_id,
+                chat_type,
+                thread_id,
+                model,
+                json.dumps(model_config) if model_config else None,
+                system_prompt,
+                parent_session_id,
+                cwd,
+                profile_name,
+                time.time(),
+            ),
+        )
+
     def _insert_session_row(
         self,
         session_id: str,
@@ -1858,58 +1919,27 @@ class SessionDB:
     ) -> None:
         """Insert a session row, enriching NULL metadata on conflict.
 
-        The gateway's ``get_or_create_session`` creates a bare row (source +
-        user_id) *before* the agent exists; the agent's later
-        ``create_session`` then carries the real ``model`` / ``model_config`` /
-        ``system_prompt``. A plain ``INSERT OR IGNORE`` silently dropped that
-        enrichment, leaving gateway sessions with NULL model/billing metadata.
-        The ``ON CONFLICT`` upsert backfills those fields via ``COALESCE`` —
-        only filling columns that are still NULL, never overwriting values an
-        earlier writer already set (so a later bare call with source="unknown"
-        can't clobber a real source/model).
-
-        ``chat_id``/``thread_id`` record the messaging origin (the chat/room and
-        thread the session was started in) so that gateway ``/resume`` can prove
-        a persisted, now-inactive row belongs to the caller's chat/thread before
-        switching to it (IDOR scoping — without them the ``sessions`` table has
-        no chat/thread to compare).
+        The gateway may create a bare row before the agent has model and origin
+        metadata. The transactional helper fills only columns that remain NULL.
         """
-        def _do(conn):
-            conn.execute(
-                """INSERT INTO sessions (
-                   id, source, user_id, session_key, chat_id, chat_type, thread_id,
-                   model, model_config, system_prompt, parent_session_id, cwd, profile_name, started_at
-                )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(id) DO UPDATE SET
-                       model = COALESCE(sessions.model, excluded.model),
-                       model_config = COALESCE(sessions.model_config, excluded.model_config),
-                       system_prompt = COALESCE(sessions.system_prompt, excluded.system_prompt),
-                       session_key = COALESCE(sessions.session_key, excluded.session_key),
-                       chat_id = COALESCE(sessions.chat_id, excluded.chat_id),
-                       chat_type = COALESCE(sessions.chat_type, excluded.chat_type),
-                       thread_id = COALESCE(sessions.thread_id, excluded.thread_id),
-                       parent_session_id = COALESCE(sessions.parent_session_id, excluded.parent_session_id),
-                       cwd = COALESCE(sessions.cwd, excluded.cwd),
-                       profile_name = COALESCE(sessions.profile_name, excluded.profile_name)""",
-                (
-                    session_id,
-                    source,
-                    user_id,
-                    session_key,
-                    chat_id,
-                    chat_type,
-                    thread_id,
-                    model,
-                    json.dumps(model_config) if model_config else None,
-                    system_prompt,
-                    parent_session_id,
-                    cwd,
-                    profile_name,
-                    time.time(),
-                ),
+        self._execute_write(
+            lambda conn: self._insert_session_row_in_transaction(
+                conn,
+                session_id,
+                source,
+                model=model,
+                model_config=model_config,
+                system_prompt=system_prompt,
+                user_id=user_id,
+                session_key=session_key,
+                chat_id=chat_id,
+                chat_type=chat_type,
+                thread_id=thread_id,
+                parent_session_id=parent_session_id,
+                cwd=cwd,
+                profile_name=profile_name,
             )
-        self._execute_write(_do)
+        )
 
     def create_session(self, session_id: str, source: str, **kwargs) -> str:
         """Create a new session record. Returns the session_id."""
@@ -3222,62 +3252,252 @@ class SessionDB:
         ).fetchone()
         return row is not None
 
-    def set_session_title(self, session_id: str, title: str) -> bool:
-        """Set or update a session's title.
-
-        Returns True if session was found and title was set.
-        Raises ValueError if title is already in use by another session,
-        or if the title fails validation (too long, invalid characters).
-        Empty/whitespace-only strings are normalized to None (clearing the title).
-        """
-        title = self.sanitize_title(title)
-        def _do(conn):
-            if title:
-                # Check uniqueness (allow the same session to keep its own title)
-                cursor = conn.execute(
-                    "SELECT id FROM sessions WHERE title = ? AND id != ?",
-                    (title, session_id),
-                )
-                conflict = cursor.fetchone()
-                if conflict:
-                    conflict_id = conflict["id"]
-                    # A compression continuation is the live, projected-forward
-                    # head of its conversation; its compressed predecessors are
-                    # ended and hidden from the session list (list_sessions_rich
-                    # projects roots → tip). When the title that "conflicts" is
-                    # held by such a hidden ancestor, the user has no way to free
-                    # it — renaming the visible tip back to the base name would
-                    # dead-end with "already in use by <session they can't see>".
-                    # Treat this as a transfer: move the title off the ancestor
-                    # onto the continuation. Uniqueness is preserved (still only
-                    # one session carries the exact title) and the parent-link
-                    # lineage is untouched.
-                    if self._is_compression_ancestor(
-                        conn, ancestor_id=conflict_id, descendant_id=session_id
-                    ):
-                        conn.execute(
-                            "UPDATE sessions SET title = NULL WHERE id = ?",
-                            (conflict_id,),
-                        )
-                    else:
-                        raise ValueError(
-                            f"Title '{title}' is already in use by session {conflict_id}"
-                        )
-            cursor = conn.execute(
-                "UPDATE sessions SET title = ? WHERE id = ?",
+    def _set_session_title_in_transaction(
+        self, conn: sqlite3.Connection, session_id: str, title: Optional[str]
+    ) -> int:
+        if title:
+            conflict = conn.execute(
+                "SELECT id FROM sessions WHERE title = ? AND id != ?",
                 (title, session_id),
+            ).fetchone()
+            if conflict:
+                conflict_id = conflict["id"]
+                if self._is_compression_ancestor(
+                    conn, ancestor_id=conflict_id, descendant_id=session_id
+                ):
+                    conn.execute(
+                        "UPDATE sessions SET title = NULL WHERE id = ?",
+                        (conflict_id,),
+                    )
+                else:
+                    raise ValueError(
+                        f"Title '{title}' is already in use by session {conflict_id}"
+                    )
+        cursor = conn.execute(
+            "UPDATE sessions SET title = ?, title_finalized = 1 WHERE id = ?",
+            (title, session_id),
+        )
+        return cursor.rowcount
+
+    def set_session_title(self, session_id: str, title: str) -> bool:
+        """Set or clear the visible logical session title."""
+        return self.set_logical_session_title(session_id, title) is not None
+
+    def set_logical_session_title_result(self, session_id: str, title: str) -> Dict[str, Any]:
+        """Set the visible title and return its session snapshot atomically."""
+        title = self.sanitize_title(title)
+
+        def _do(conn):
+            lineage = self._forward_compression_lineage_in_transaction(
+                conn, session_id
             )
-            return cursor.rowcount
-        rowcount = self._execute_write(_do)
-        return rowcount > 0
+            target_id = lineage[-1] if lineage else session_id
+            updated = bool(
+                self._set_session_title_in_transaction(conn, target_id, title)
+            )
+            row = conn.execute(
+                "SELECT * FROM sessions WHERE id = ?", (target_id,)
+            ).fetchone()
+            return {"updated": updated, "session": dict(row) if row else None}
+
+        return self._execute_write(_do)
+
+    def set_logical_session_title(self, session_id: str, title: str) -> Optional[str]:
+        """Set the title on the current compression tip in one transaction."""
+        result = self.set_logical_session_title_result(session_id, title)
+        session = result.get("session")
+        return session.get("id") if result.get("updated") and session else None
+
+    def set_session_title_if_untitled_result(
+        self, session_id: str, title: str
+    ) -> Dict[str, Any]:
+        """Finalize the first logical title and return its atomic snapshot."""
+        title = self.sanitize_title(title)
+        if not title:
+            return {"updated": False, "session": None}
+
+        def _do(conn):
+            lineage = self._forward_compression_lineage_in_transaction(
+                conn, session_id
+            )
+            target_id = lineage[-1] if lineage else session_id
+            placeholders = ",".join("?" for _ in lineage)
+            rows = conn.execute(
+                f"SELECT id, title, title_finalized FROM sessions "
+                f"WHERE id IN ({placeholders})",
+                tuple(lineage),
+            ).fetchall()
+            eligible = len(rows) == len(lineage) and not any(
+                row["title"] is not None or bool(row["title_finalized"])
+                for row in rows
+            )
+            updated = False
+            if eligible:
+                conflict = conn.execute(
+                    "SELECT id FROM sessions WHERE title = ? AND id != ?",
+                    (title, target_id),
+                ).fetchone()
+                if conflict:
+                    raise ValueError(
+                        f"Title '{title}' is already in use by session {conflict['id']}"
+                    )
+                cursor = conn.execute(
+                    "UPDATE sessions SET title = ?, title_finalized = 1 "
+                    "WHERE id = ? AND title IS NULL AND title_finalized = 0",
+                    (title, target_id),
+                )
+                updated = cursor.rowcount > 0
+            row = conn.execute(
+                "SELECT * FROM sessions WHERE id = ?", (target_id,)
+            ).fetchone()
+            return {"updated": updated, "session": dict(row) if row else None}
+
+        return self._execute_write(_do)
+
+    def set_session_title_if_untitled(self, session_id: str, title: str) -> bool:
+        """Finalize the first logical title atomically, exactly once."""
+        return bool(
+            self.set_session_title_if_untitled_result(session_id, title).get(
+                "updated"
+            )
+        )
+
+    def _transfer_session_title_to_continuation_in_transaction(
+        self,
+        conn: sqlite3.Connection,
+        parent_session_id: str,
+        child_session_id: str,
+    ) -> bool:
+        parent = conn.execute(
+            "SELECT title, title_finalized, end_reason FROM sessions WHERE id = ?",
+            (parent_session_id,),
+        ).fetchone()
+        child = conn.execute(
+            "SELECT title, title_finalized, parent_session_id FROM sessions WHERE id = ?",
+            (child_session_id,),
+        ).fetchone()
+        if (
+            parent is None
+            or child is None
+            or parent["end_reason"] != "compression"
+            or child["parent_session_id"] != parent_session_id
+        ):
+            raise ValueError("Invalid compression continuation title transfer")
+
+        if bool(child["title_finalized"]):
+            if bool(parent["title_finalized"]) and parent["title"] is not None:
+                conn.execute(
+                    "UPDATE sessions SET title = NULL WHERE id = ?",
+                    (parent_session_id,),
+                )
+            return False
+        if not bool(parent["title_finalized"]):
+            return False
+
+        title = parent["title"]
+        if title:
+            conflict = conn.execute(
+                "SELECT id FROM sessions WHERE title = ? AND id NOT IN (?, ?)",
+                (title, parent_session_id, child_session_id),
+            ).fetchone()
+            if conflict:
+                raise ValueError(
+                    f"Title '{title}' is already in use by session {conflict['id']}"
+                )
+        conn.execute(
+            "UPDATE sessions SET title = NULL WHERE id = ?",
+            (parent_session_id,),
+        )
+        cursor = conn.execute(
+            "UPDATE sessions SET title = ?, title_finalized = 1 WHERE id = ?",
+            (title, child_session_id),
+        )
+        return cursor.rowcount > 0
+
+    def transfer_session_title_to_continuation(
+        self, parent_session_id: str, child_session_id: str
+    ) -> bool:
+        """Atomically move finalized title intent to a compression child."""
+        return bool(
+            self._execute_write(
+                lambda conn: self._transfer_session_title_to_continuation_in_transaction(
+                    conn, parent_session_id, child_session_id
+                )
+            )
+        )
+
+    def rotate_session_for_compression(
+        self,
+        parent_session_id: str,
+        child_session_id: str,
+        source: str,
+        model: str = None,
+        model_config: Dict[str, Any] = None,
+        system_prompt: str = None,
+        user_id: str = None,
+        session_key: str = None,
+        chat_id: str = None,
+        chat_type: str = None,
+        thread_id: str = None,
+        cwd: str = None,
+    ) -> str:
+        """End, create, and transfer title state as one compression transaction."""
+
+        def _do(conn):
+            if conn.execute(
+                "SELECT 1 FROM sessions WHERE id = ?", (child_session_id,)
+            ).fetchone():
+                raise ValueError(f"Compression child already exists: {child_session_id}")
+            ended = conn.execute(
+                "UPDATE sessions SET ended_at = ?, end_reason = 'compression' "
+                "WHERE id = ? AND ended_at IS NULL",
+                (time.time(), parent_session_id),
+            )
+            if ended.rowcount != 1:
+                raise ValueError(
+                    f"Compression parent is missing or already ended: {parent_session_id}"
+                )
+            self._insert_session_row_in_transaction(
+                conn,
+                child_session_id,
+                source,
+                model=model,
+                model_config=model_config,
+                system_prompt=system_prompt,
+                user_id=user_id,
+                session_key=session_key,
+                chat_id=chat_id,
+                chat_type=chat_type,
+                thread_id=thread_id,
+                parent_session_id=parent_session_id,
+                cwd=cwd,
+            )
+            self._transfer_session_title_to_continuation_in_transaction(
+                conn, parent_session_id, child_session_id
+            )
+            return child_session_id
+
+        return self._execute_write(_do)
 
     def get_session_title(self, session_id: str) -> Optional[str]:
-        """Get the title for a session, or None."""
+        """Get the title for a physical session row, or None."""
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT title FROM sessions WHERE id = ?", (session_id,)
             )
             row = cursor.fetchone()
+        return row["title"] if row else None
+
+    def get_logical_session_title(self, session_id: str) -> Optional[str]:
+        """Get the title on the visible compression tip."""
+        with self._lock:
+            lineage = self._forward_compression_lineage_in_transaction(
+                self._conn, session_id
+            )
+            target_id = lineage[-1] if lineage else session_id
+            row = self._conn.execute(
+                "SELECT title FROM sessions WHERE id = ?", (target_id,)
+            ).fetchone()
         return row["title"] if row else None
 
     def set_session_archived(self, session_id: str, archived: bool) -> bool:
@@ -3403,75 +3623,67 @@ class SessionDB:
 
         return f"{base} #{max_num + 1}"
 
-    def get_compression_tip(self, session_id: str) -> Optional[str]:
-        """Walk the compression-continuation chain forward and return the tip.
-
-        A compression continuation is a child of a session whose
-        ``end_reason = 'compression'``.  Older builds tried to distinguish
-        continuations from branches/subagents by requiring
-        ``child.started_at >= parent.ended_at``.  That ordering is too brittle:
-        gateway + compression races can insert the real continuation row before
-        the parent row's ``ended_at`` is written, while a stale websocket later
-        creates/reuses a sibling that *does* satisfy the timestamp test.  The
-        visible symptom is brutal: desktop resume follows the stale sibling and
-        the user's latest messages look "lost" even though they are persisted in
-        the real continuation chain.
-
-        Instead, only follow children of compression-ended parents, exclude
-        explicit branch/delegate/tool children, and prefer children that are
-        themselves continuing the compression chain (``end_reason='compression'``)
-        or still live over stale closed siblings such as ``ws_orphan_reap``.
-        Returns the latest continuation tip, or the input id when no
-        continuation exists.
-        """
+    @staticmethod
+    def _forward_compression_lineage_in_transaction(
+        conn: sqlite3.Connection, session_id: str
+    ) -> List[str]:
+        """Walk the preferred compression path using the caller's transaction."""
+        if not session_id:
+            return []
         current = session_id
-        seen = {current} if current else set()
-        # Bound the walk defensively — compression chains this deep are
-        # pathological and shouldn't happen in practice. 100 = plenty.
+        lineage = [current]
+        seen = {current}
         for _ in range(100):
-            with self._lock:
-                cursor = self._conn.execute(
-                    """
-                    SELECT child.id
-                    FROM sessions parent
-                    JOIN sessions child ON child.parent_session_id = parent.id
-                    WHERE parent.id = ?
-                      AND parent.end_reason = 'compression'
-                      AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL
-                      AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL
-                      AND COALESCE(child.source, '') != 'tool'
-                    ORDER BY
-                      CASE
-                        WHEN child.end_reason = 'compression' THEN 0
-                        WHEN child.ended_at IS NULL THEN 1
-                        ELSE 2
-                      END,
-                      COALESCE(
-                        (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = child.id),
-                        child.started_at
-                      ) DESC,
-                      child.started_at DESC,
-                      child.id DESC
-                    LIMIT 1
-                    """,
-                    (current,),
-                )
-                row = cursor.fetchone()
+            row = conn.execute(
+                """
+                SELECT child.id
+                FROM sessions parent
+                JOIN sessions child ON child.parent_session_id = parent.id
+                WHERE parent.id = ?
+                  AND parent.end_reason = 'compression'
+                  AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL
+                  AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL
+                  AND COALESCE(child.source, '') != 'tool'
+                ORDER BY
+                  CASE
+                    WHEN child.end_reason = 'compression' THEN 0
+                    WHEN child.ended_at IS NULL THEN 1
+                    ELSE 2
+                  END,
+                  COALESCE(
+                    (SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = child.id),
+                    child.started_at
+                  ) DESC,
+                  child.started_at DESC,
+                  child.id DESC
+                LIMIT 1
+                """,
+                (current,),
+            ).fetchone()
             if row is None:
-                return current
+                return lineage
             child_id = row["id"]
             if not child_id or child_id in seen:
-                return current
+                return lineage
             seen.add(child_id)
             current = child_id
-        return current
+            lineage.append(current)
+        return lineage
+
+    def get_forward_compression_lineage(self, session_id: str) -> List[str]:
+        """Return a session and its preferred forward compression continuations."""
+        with self._lock:
+            return self._forward_compression_lineage_in_transaction(
+                self._conn, session_id
+            )
+
+    def get_compression_tip(self, session_id: str) -> Optional[str]:
+        """Return the preferred visible compression tip for a logical session."""
+        lineage = self.get_forward_compression_lineage(session_id)
+        return lineage[-1] if lineage else None
 
     # Columns excluded from compact_rows projections: only the payload-heavy
-    # blob no list consumer renders. Everything else — including gateway
-    # routing fields and desktop sidebar fields like git_branch — stays, and
-    # the projection is derived from SCHEMA_SQL so columns added later via
-    # declarative reconciliation are included automatically instead of
-    # silently dropping out of list rows.
+    # blob no list consumer renders. Everything else stays in compact rows.
     _SESSION_COMPACT_EXCLUDED = frozenset({"system_prompt"})
     _session_compact_cols_sql: Optional[str] = None
 

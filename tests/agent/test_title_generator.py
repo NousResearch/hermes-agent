@@ -228,14 +228,17 @@ class TestAutoTitleSession:
     def test_generates_and_sets_title(self):
         db = MagicMock()
         db.get_session_title.return_value = None
+        db.set_session_title_if_untitled.return_value = True
 
         with patch("agent.title_generator.generate_title", return_value="New Title"):
             auto_title_session(db, "sess-1", "hi", "hello")
-            db.set_session_title.assert_called_once_with("sess-1", "New Title")
+            db.set_session_title_if_untitled.assert_called_once_with("sess-1", "New Title")
 
     def test_invokes_title_callback_after_setting_title(self):
         db = MagicMock()
         db.get_session_title.return_value = None
+        db.set_session_title_if_untitled.return_value = True
+        db.get_logical_session_title.return_value = "Readable Session"
         seen = []
         with patch("agent.title_generator.generate_title", return_value="Readable Session"):
             auto_title_session(
@@ -245,8 +248,44 @@ class TestAutoTitleSession:
                 "hi there",
                 title_callback=seen.append,
             )
-        db.set_session_title.assert_called_once_with("sess-1", "Readable Session")
+        db.set_session_title_if_untitled.assert_called_once_with("sess-1", "Readable Session")
         assert seen == ["Readable Session"]
+
+    def test_manual_rename_during_generation_wins_the_title_race(self):
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        db.set_session_title_if_untitled.return_value = False
+        seen = []
+
+        with patch("agent.title_generator.generate_title", return_value="Latest User Message"):
+            auto_title_session(
+                db,
+                "sess-1",
+                "latest user message",
+                "response",
+                title_callback=seen.append,
+            )
+
+        db.set_session_title_if_untitled.assert_called_once_with("sess-1", "Latest User Message")
+        assert seen == []
+
+    def test_manual_rename_after_auto_cas_suppresses_stale_callback(self):
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        db.set_session_title_if_untitled.return_value = True
+        db.get_logical_session_title.return_value = "Manual Project Name"
+        seen = []
+
+        with patch("agent.title_generator.generate_title", return_value="Generated Title"):
+            auto_title_session(
+                db,
+                "sess-1",
+                "hello",
+                "response",
+                title_callback=seen.append,
+            )
+
+        assert seen == []
 
     def test_skips_if_generation_fails(self):
         db = MagicMock()
@@ -254,7 +293,7 @@ class TestAutoTitleSession:
 
         with patch("agent.title_generator.generate_title", return_value=None):
             auto_title_session(db, "sess-1", "hi", "hello")
-            db.set_session_title.assert_not_called()
+            db.set_session_title_if_untitled.assert_not_called()
 
     def test_never_raises_when_body_throws(self):
         """Daemon-thread target must swallow ALL exceptions (e.g. the
@@ -319,6 +358,21 @@ class TestMaybeAutoTitle:
         with patch("agent.title_generator.auto_title_session") as mock_auto:
             maybe_auto_title(db, "sess-1", "third", "response 3", history)
             # Wait briefly for any thread to start
+            import time
+            time.sleep(0.1)
+            mock_auto.assert_not_called()
+
+    def test_skips_the_second_exchange_even_if_the_first_worker_is_still_running(self):
+        db = MagicMock()
+        history = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "response 1"},
+            {"role": "user", "content": "second"},
+            {"role": "assistant", "content": "response 2"},
+        ]
+
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            maybe_auto_title(db, "sess-1", "second", "response 2", history)
             import time
             time.sleep(0.1)
             mock_auto.assert_not_called()

@@ -9678,18 +9678,24 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     from agent.title_generator import maybe_auto_title
 
                     _title_key = session.get("session_key") or sid
+
+                    def _emit_authoritative_title(_generated_title, _k=_title_key):
+                        current_title = _get_db().get_logical_session_title(_k)
+                        if current_title:
+                            _emit(
+                                "session.title",
+                                sid,
+                                {"session_id": _k, "title": current_title},
+                            )
+
                     maybe_auto_title(
                         _get_db(),
                         _title_key,
                         text,
                         raw,
                         session.get("history", []),
-                        # Push the generated title live so the sidebar renames
-                        # without waiting for the next list refresh (the titler
-                        # runs async, after this turn's refresh already fired).
-                        title_callback=lambda t, _k=_title_key: _emit(
-                            "session.title", sid, {"session_id": _k, "title": t}
-                        ),
+                        # Re-read the winning title before the live sidebar event.
+                        title_callback=_emit_authoritative_title,
                     )
                 except Exception:
                     pass

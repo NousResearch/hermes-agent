@@ -14191,7 +14191,47 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_id: str,
         title: str,
     ) -> None:
-        """Best-effort rename of a Telegram DM topic when Hermes auto-titles a session."""
+        """Serialize topic writes and apply only the authoritative DB title."""
+        key = (str(source.chat_id or ""), str(source.thread_id or ""))
+        locks = getattr(self, "_telegram_topic_title_locks", None)
+        if locks is None:
+            locks = {}
+            self._telegram_topic_title_locks = locks
+        lock = locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            authoritative_title = title
+            session_db = getattr(self, "_session_db", None)
+            authoritative_session_id = session_id
+            if session_db is not None:
+                try:
+                    tip_id = await session_db.get_compression_tip(session_id)
+                    authoritative_session_id = tip_id or session_id
+                    authoritative_title = await session_db.get_session_title(
+                        authoritative_session_id
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to verify authoritative title before topic rename",
+                        exc_info=True,
+                    )
+                    return
+                if (
+                    not authoritative_title
+                    or self._sanitize_telegram_topic_title(authoritative_title)
+                    != self._sanitize_telegram_topic_title(title)
+                ):
+                    return
+            await self._rename_telegram_topic_for_authoritative_session_title(
+                source, authoritative_session_id, authoritative_title
+            )
+
+    async def _rename_telegram_topic_for_authoritative_session_title(
+        self,
+        source: SessionSource,
+        session_id: str,
+        title: str,
+    ) -> None:
+        """Best-effort rename of a Telegram DM topic after title verification."""
         if not await asyncio.to_thread(self._is_telegram_topic_lane, source) or not source.chat_id or not source.thread_id:
             return
 

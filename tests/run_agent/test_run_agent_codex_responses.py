@@ -39,6 +39,9 @@ def _patch_agent_bootstrap(monkeypatch):
     monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
 
 
+_PLACEHOLDER_TOKEN = "-".join(["not", "a", "real", "credential"])
+
+
 def _build_agent(monkeypatch):
     _patch_agent_bootstrap(monkeypatch)
 
@@ -448,6 +451,80 @@ def test_build_api_kwargs_copilot_responses_omits_reasoning_for_non_reasoning_mo
     assert "reasoning" not in kwargs
     assert "include" not in kwargs
     assert "prompt_cache_key" not in kwargs
+
+
+def test_build_api_kwargs_custom_responses_backend_gets_session_headers(monkeypatch):
+    """#65094: a custom OpenAI-compatible /v1 provider that opts into the
+    codex_responses wire format (e.g. a Codex-protocol pooler) must still
+    get the cache-scope routing headers, even though it isn't the Codex
+    backend, GitHub Copilot, or xAI.
+
+    Regression coverage for a real reviewer gap: the transport-level test
+    (tests/agent/transports/test_codex_transport.py's
+    test_custom_responses_backend_sets_cache_routing_headers) exercises
+    ResponsesApiTransport.build_kwargs() directly with hand-built flags —
+    it can't catch a break in the production classification/forwarding
+    path at agent/chat_completion_helpers.py that computes
+    is_custom_responses_backend and decides whether to pass session_id
+    through at all. This test drives the real agent._build_api_kwargs()
+    entry point end-to-end instead.
+    """
+    _patch_agent_bootstrap(monkeypatch)
+
+    agent = run_agent.AIAgent(
+        model="my-custom-model",
+        provider="custom",
+        api_mode="codex_responses",
+        base_url="https://my-codex-pooler.example.internal/v1",
+        api_key=_PLACEHOLDER_TOKEN,
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent._cleanup_task_resources = lambda task_id: None
+    agent._persist_session = lambda messages, history=None: None
+    agent._save_trajectory = lambda messages, user_message, completed: None
+    agent.session_id = "session-abc123"
+
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+    assert kwargs.get("extra_headers", {}).get("session_id") == "session-abc123", (
+        "A custom /v1 provider using codex_responses must receive the "
+        "session_id cache-scope header — see #65094."
+    )
+    assert kwargs.get("extra_headers", {}).get("x-client-request-id") == "session-abc123", (
+        "A custom /v1 provider using codex_responses must receive the "
+        "x-client-request-id cache-scope header — see #65094."
+    )
+
+
+def test_build_api_kwargs_custom_responses_backend_no_headers_without_session_id(monkeypatch):
+    """Sanity check: no session_id set → no cache-scope headers injected
+    (proves the assertion above isn't trivially true for every request)."""
+    _patch_agent_bootstrap(monkeypatch)
+
+    agent = run_agent.AIAgent(
+        model="my-custom-model",
+        provider="custom",
+        api_mode="codex_responses",
+        base_url="https://my-codex-pooler.example.internal/v1",
+        api_key=_PLACEHOLDER_TOKEN,
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent._cleanup_task_resources = lambda task_id: None
+    agent._persist_session = lambda messages, history=None: None
+    agent._save_trajectory = lambda messages, user_message, completed: None
+    agent.session_id = None
+
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
+
+    extra_headers = kwargs.get("extra_headers") or {}
+    assert "session_id" not in extra_headers
+    assert "x-client-request-id" not in extra_headers
 
 
 # ---------------------------------------------------------------------------

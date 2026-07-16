@@ -106,6 +106,7 @@ import {
   resolveTimeoutMs,
   TEXT_PREVIEW_SOURCE_MAX_BYTES
 } from './hardening'
+import { createLinkTitleFetcher } from './link-title-fetch'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
@@ -4280,44 +4281,16 @@ function usableTitle(value: string): string {
   return value && !TITLE_ERROR_RE.test(value) ? value : ''
 }
 
-function fetchLinkTitle(rawUrl) {
-  const url = String(rawUrl || '').trim()
-
-  if (!isLinkTitleFetchableUrl(url)) {
-    return Promise.resolve('')
-  }
-
-  const key = canonicalTitleCacheKey(url)
-
-  if (!key) {
-    return Promise.resolve('')
-  }
-
-  if (titleCache.has(key)) {
-    return Promise.resolve(titleCache.get(key))
-  }
-
-  if (titleInflight.has(key)) {
-    return titleInflight.get(key)
-  }
-
-  const pending = fetchHtmlTitleWithCurl(url)
-    .catch(() => '')
-    .then(value => usableTitle((value || '').slice(0, 240)))
-    .then(
-      async value => value || usableTitle(((await fetchHtmlTitleWithRenderer(url).catch(() => '')) || '').slice(0, 240))
-    )
-    .then(clean => {
-      cacheTitle(key, clean)
-      titleInflight.delete(key)
-
-      return clean
-    })
-
-  titleInflight.set(key, pending)
-
-  return pending
-}
+const fetchLinkTitle = createLinkTitleFetcher({
+  admitUrl: isLinkTitleFetchableUrl,
+  cache: titleCache,
+  cacheKey: canonicalTitleCacheKey,
+  fetchWithCurl: fetchHtmlTitleWithCurl,
+  fetchWithRenderer: fetchHtmlTitleWithRenderer,
+  inflight: titleInflight,
+  normalizeTitle: usableTitle,
+  storeCachedTitle: cacheTitle
+})
 
 async function resourceBufferFromUrl(rawUrl) {
   if (!rawUrl) {

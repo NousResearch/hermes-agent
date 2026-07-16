@@ -66,7 +66,7 @@ def test_create_task_idempotency_key_is_race_safe(kanban_home, monkeypatch):
 
     def worker(n: int) -> None:
         try:
-            with kb.connect() as conn:
+            with kb.connect_closing() as conn:
                 results[n] = kb.create_task(
                     conn, title="racer-%d" % n, idempotency_key=key
                 )
@@ -83,7 +83,7 @@ def test_create_task_idempotency_key_is_race_safe(kanban_home, monkeypatch):
     # Both callers resolve to the SAME task id (loser recovers the winner's row).
     assert results[0] == results[1], "racers got different ids: %r" % results
     # Exactly one active (non-archived) row carries the key.
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         rows = conn.execute(
             "SELECT id FROM tasks WHERE idempotency_key = ? "
             "AND status != 'archived'",
@@ -100,7 +100,7 @@ def test_empty_idempotency_key_is_not_unique(kanban_home):
     normalises '' (and whitespace-only) to NULL, and the index excludes both
     NULL and '', so keyless creates always succeed.
     """
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         # Two identical empty keys is the reported regression: pre-fix the second
         # stored-'' INSERT hits the UNIQUE index and raises IntegrityError.
         a = kb.create_task(conn, title="keyless-a", idempotency_key="")
@@ -109,7 +109,7 @@ def test_empty_idempotency_key_is_not_unique(kanban_home):
         d = kb.create_task(conn, title="keyless-d", idempotency_key=None)
 
     assert len({a, b, c, d}) == 4, "keyless creates collided: %r" % [a, b, c, d]
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         # Empty/whitespace keys are normalised to NULL, never stored as ''.
         stored = conn.execute(
             "SELECT COUNT(*) AS n FROM tasks WHERE idempotency_key = ''"
@@ -131,7 +131,7 @@ def test_migration_dedupes_preexisting_active_duplicates(kanban_home):
 
     # Reproduce the pre-fix on-disk state: restore a plain index and insert two
     # active rows sharing one key (create_task can no longer produce this).
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         conn.execute("DROP INDEX IF EXISTS idx_tasks_idempotency")
         conn.execute("CREATE INDEX idx_tasks_idempotency ON tasks(idempotency_key)")
         for i, created_at in ((0, 100), (1, 200)):  # older, then newer
@@ -140,11 +140,13 @@ def test_migration_dedupes_preexisting_active_duplicates(kanban_home):
                 "VALUES (?, ?, 'ready', ?, ?)",
                 ("dupe-%d" % i, "legacy-%d" % i, created_at, key),
             )
+        # connect_closing only closes; commit the setup writes explicitly.
+        conn.commit()
 
     # Re-run the migration pass, as opening an upgraded DB would.
     kb.init_db(path)
 
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         active = conn.execute(
             "SELECT id FROM tasks WHERE idempotency_key = ? AND status != 'archived'",
             (key,),

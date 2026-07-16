@@ -843,18 +843,35 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "kickstart", target],
         ]
 
-    def test_launchd_restart_drains_running_gateway_before_kickstart(self, monkeypatch, capsys):
+    def test_launchd_restart_uses_atomic_kickstart_without_preterminate(
+        self, monkeypatch, capsys
+    ):
         calls = []
+        terminated = []
+        self_restart_requests = []
         target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
 
-        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
-        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
-        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
-        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: calls.append(("term", pid, force)))
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
         monkeypatch.setattr(
-            "gateway.status.get_running_pid",
-            lambda: 321,
+            gateway_cli,
+            "_request_gateway_self_restart",
+            lambda pid: self_restart_requests.append(pid) or True,
         )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_gateway_replacement",
+            lambda previous_pid, previous_start_id, timeout: True,
+        )
+        monkeypatch.setattr(
+            "gateway.status.read_runtime_status",
+            lambda: {"gateway_start_id": "gw-old", "gateway_state": "running"},
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "terminate_pid",
+            lambda pid, force=False: terminated.append((pid, force)),
+        )
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
 
         def fake_run(cmd, check=False, **kwargs):
             calls.append(cmd)
@@ -864,28 +881,65 @@ class TestLaunchdServiceRecovery:
 
         gateway_cli.launchd_restart()
 
-        assert calls == [
-            ("term", 321, False),
-            ["launchctl", "kickstart", "-k", target],
-        ]
-        # The drain can silently hold for the full budget (180s default); the
-        # desktop updater streams this output as its only progress feedback,
-        # so the stop must be announced BEFORE the wait (#44515).
-        out = capsys.readouterr().out
-        assert "draining in-flight runs" in out
-        assert "up to 12s" in out
+        assert calls == [["launchctl", "kickstart", "-k", target]]
+        assert terminated == []
+        assert self_restart_requests == []
+        assert "handing replacement to launchd" in capsys.readouterr().out
 
-    def test_launchd_restart_self_requests_graceful_restart_without_kickstart(self, monkeypatch, capsys):
+    def test_wait_for_gateway_replacement_requires_new_start_id_and_pid(
+        self, tmp_path, monkeypatch
+    ):
+        states = iter(
+            [
+                {
+                    "pid": 321,
+                    "gateway_start_id": "gw-old",
+                    "gateway_state": "running",
+                },
+                {
+                    "pid": 654,
+                    "gateway_start_id": "gw-new",
+                    "gateway_state": "running",
+                },
+            ]
+        )
+        ticks = iter([0.0, 0.1, 0.2])
+        monkeypatch.setattr(gateway_cli.time, "monotonic", lambda: next(ticks))
+        monkeypatch.setattr(gateway_cli.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path)
+        monkeypatch.setattr("gateway.status.read_runtime_status", lambda: next(states))
+        monkeypatch.setattr(
+            "gateway.status.get_runtime_status_running_pid",
+            lambda runtime, expected_home=None: runtime["pid"],
+        )
+
+        assert gateway_cli._wait_for_gateway_replacement(321, "gw-old", 1.0) is True
+
+    def test_launchd_restart_self_request_waits_for_new_start_id(self, monkeypatch, capsys):
         calls = []
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
 
         monkeypatch.setattr(
             "gateway.status.get_running_pid",
             lambda: 321,
         )
         monkeypatch.setattr(
+            "gateway.status.read_runtime_status",
+            lambda: {"gateway_start_id": "gw-old", "gateway_state": "running"},
+        )
+        monkeypatch.setattr(
             gateway_cli,
             "_request_gateway_self_restart",
             lambda pid: calls.append(("self", pid)) or True,
+        )
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: {321})
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_gateway_replacement",
+            lambda previous_pid, previous_start_id, timeout: calls.append(
+                ("ready", previous_pid, previous_start_id, timeout)
+            )
+            or True,
         )
         monkeypatch.setattr(
             gateway_cli.subprocess,
@@ -895,8 +949,28 @@ class TestLaunchdServiceRecovery:
 
         gateway_cli.launchd_restart()
 
-        assert calls == [("self", 321)]
-        assert "restart requested" in capsys.readouterr().out.lower()
+        assert calls == [("self", 321), ("ready", 321, "gw-old", 90.0)]
+        assert "ready" in capsys.readouterr().out.lower()
+
+    def test_launchd_restart_fails_when_replacement_never_becomes_ready(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
+        monkeypatch.setattr(
+            "gateway.status.read_runtime_status",
+            lambda: {"gateway_start_id": "gw-old", "gateway_state": "running"},
+        )
+        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: True)
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: {321})
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_gateway_replacement",
+            lambda previous_pid, previous_start_id, timeout: False,
+        )
+
+        with pytest.raises(RuntimeError, match="readiness"):
+            gateway_cli.launchd_restart()
 
     def test_launchd_stop_uses_bootout_not_kill(self, monkeypatch):
         """launchd_stop must bootout the service so KeepAlive doesn't respawn it."""
@@ -1101,15 +1175,25 @@ class TestLaunchdServiceRecovery:
         assert "Service installed and loaded" not in capsys.readouterr().out
         assert gateway_cli._launchd_unsupported_marker_exists()
 
-    def test_launchd_restart_falls_back_to_detached_on_error_5(self, monkeypatch, capsys):
-        """kickstart -k error 5 (domain unmanageable) should relaunch detached."""
-        target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
+    def test_launchd_restart_fails_closed_on_unmanageable_domain(
+        self, monkeypatch
+    ):
+        """Restart must not fall back to a detached successor helper."""
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+        target = f"gui/501/{gateway_cli.get_launchd_label()}"
 
-        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 5.0)
         monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
-        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
-        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: None)
+        terminated = []
+        monkeypatch.setattr(
+            gateway_cli,
+            "terminate_pid",
+            lambda pid, force=False: terminated.append((pid, force)),
+        )
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
+        monkeypatch.setattr(
+            "gateway.status.read_runtime_status",
+            lambda: {"gateway_start_id": "gw-old", "gateway_state": "running"},
+        )
 
         def fake_run(cmd, check=False, **kwargs):
             if cmd == ["launchctl", "kickstart", "-k", target]:
@@ -1125,10 +1209,11 @@ class TestLaunchdServiceRecovery:
             gateway_cli, "_spawn_detached_gateway", lambda: spawned.append(True) or True
         )
 
-        gateway_cli.launchd_restart()
+        with pytest.raises(RuntimeError, match="refusing detached fallback"):
+            gateway_cli.launchd_restart()
 
-        assert spawned == [True]
-        assert gateway_cli._launchd_unsupported_marker_exists()
+        assert spawned == []
+        assert terminated == []
 
     def test_launchd_restart_boots_out_stale_registration_before_bootstrap(
         self, tmp_path, monkeypatch
@@ -1140,12 +1225,17 @@ class TestLaunchdServiceRecovery:
         target = f"{domain}/{label}"
 
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
-        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 5.0)
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
         monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
         monkeypatch.setattr(
-            gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True
+            gateway_cli,
+            "_wait_for_gateway_replacement",
+            lambda previous_pid, previous_start_id, timeout: True,
         )
-        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: None)
+        monkeypatch.setattr(
+            "gateway.status.read_runtime_status",
+            lambda: {"gateway_start_id": "gw-old", "gateway_state": "running"},
+        )
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
 
         calls = []
@@ -1899,7 +1989,7 @@ class TestGatewaySystemServiceRouting:
             gateway_cli,
             "launchd_restart",
             lambda: (_ for _ in ()).throw(
-                gateway_cli.subprocess.CalledProcessError(5, ["launchctl", "kickstart", "-k", "gui/501/ai.hermes.gateway"])
+                RuntimeError("Gateway restart readiness was not confirmed within 90s")
             ),
         )
 

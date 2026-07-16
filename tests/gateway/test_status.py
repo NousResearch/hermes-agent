@@ -2,7 +2,11 @@
 
 import json
 import os
+import subprocess
 import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -435,6 +439,76 @@ class TestGatewayRuntimeStatus:
         payload = status.read_runtime_status()
         assert payload["pid"] == os.getpid(), "PID should be overwritten, not preserved via setdefault"
         assert payload["start_time"] != 1000.0, "start_time should be overwritten on restart"
+
+    def test_write_runtime_status_emits_stable_process_start_id(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        state_path = tmp_path / "gateway_state.json"
+        state_path.write_text(
+            json.dumps(
+                {
+                    "pid": 99999,
+                    "gateway_start_id": "gw-previous",
+                    "gateway_state": "running",
+                    "platforms": {},
+                }
+            )
+        )
+
+        status.write_runtime_status(gateway_state="starting")
+        first = status.read_runtime_status()
+        status.write_runtime_status(gateway_state="running")
+        second = status.read_runtime_status()
+
+        assert first is not None
+        assert second is not None
+        assert first["gateway_start_id"].startswith("gw_")
+        assert first["gateway_start_id"] != "gw-previous"
+        assert second["gateway_start_id"] == first["gateway_start_id"]
+
+    def test_gateway_start_id_is_thread_stable_on_first_initialization(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(status, "_gateway_start_identity", None)
+        uuid_calls = 0
+        calls_lock = threading.Lock()
+
+        def delayed_uuid4():
+            nonlocal uuid_calls
+            with calls_lock:
+                uuid_calls += 1
+                value = uuid_calls
+            time.sleep(0.05)
+            return SimpleNamespace(hex=f"{value:032x}")
+
+        monkeypatch.setattr(status.uuid, "uuid4", delayed_uuid4)
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            start_ids = list(executor.map(lambda _index: status._get_gateway_start_id(), range(8)))
+
+        assert uuid_calls == 1
+        assert len(set(start_ids)) == 1
+
+    def test_runtime_status_start_id_changes_across_gateway_processes(self, tmp_path):
+        env = os.environ.copy()
+        env["HERMES_HOME"] = str(tmp_path)
+        command = [
+            sys.executable,
+            "-c",
+            (
+                "from gateway.status import write_runtime_status; "
+                "write_runtime_status(gateway_state='running')"
+            ),
+        ]
+
+        subprocess.run(command, check=True, env=env)
+        first = json.loads((tmp_path / "gateway_state.json").read_text())
+        subprocess.run(command, check=True, env=env)
+        second = json.loads((tmp_path / "gateway_state.json").read_text())
+
+        assert first["gateway_start_id"].startswith("gw_")
+        assert second["gateway_start_id"].startswith("gw_")
+        assert second["gateway_start_id"] != first["gateway_start_id"]
 
     def test_write_runtime_status_overwrites_stale_argv_on_restart(self, tmp_path, monkeypatch):
         """Regression: gateway_state.json must not keep the previous launch argv."""

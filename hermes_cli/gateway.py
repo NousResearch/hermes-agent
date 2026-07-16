@@ -4319,50 +4319,91 @@ def _wait_for_gateway_exit(
     return True
 
 
+def _wait_for_gateway_replacement(
+    previous_pid: int | None,
+    previous_start_id: str | None,
+    timeout: float = 90.0,
+) -> bool:
+    """Wait until a distinct, identity-validated gateway reports running.
+
+    A PID alone is not restart evidence: it may be stale or reused. Require a
+    validated runtime PID plus a non-empty ``gateway_start_id`` that differs
+    from the pre-restart instance. This helper only observes status; it never
+    starts, stops, or repairs a service.
+    """
+    from gateway.status import get_runtime_status_running_pid, read_runtime_status
+
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    while time.monotonic() < deadline:
+        runtime = read_runtime_status()
+        if isinstance(runtime, dict):
+            pid = get_runtime_status_running_pid(
+                runtime,
+                expected_home=get_hermes_home(),
+            )
+            start_id = runtime.get("gateway_start_id")
+            if (
+                pid is not None
+                and (previous_pid is None or pid != previous_pid)
+                and isinstance(start_id, str)
+                and bool(start_id)
+                and start_id != previous_start_id
+                and runtime.get("gateway_state") == "running"
+            ):
+                return True
+        time.sleep(0.25)
+    return False
+
+
 def launchd_restart():
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
-    drain_timeout = _get_restart_drain_timeout()
-    from gateway.status import get_running_pid
+    from gateway.status import get_running_pid, read_runtime_status
+
+    before = read_runtime_status()
+    previous_start_id = (
+        before.get("gateway_start_id") if isinstance(before, dict) else None
+    )
+    pid: int | None = None
 
     try:
         pid = get_running_pid()
-        if pid is not None and _request_gateway_self_restart(pid):
-            print("✓ Service restart requested")
+        launchd_pids = _get_service_pids() if pid is not None else set()
+        if (
+            pid is not None
+            and pid in launchd_pids
+            and _request_gateway_self_restart(pid)
+        ):
+            print("→ Service restart requested; waiting for replacement readiness...")
+            if not _wait_for_gateway_replacement(pid, previous_start_id, 90.0):
+                raise RuntimeError(
+                    "Gateway restart readiness was not confirmed within 90s"
+                )
+            print("✓ Service restarted and ready")
             _clear_launchd_unsupported_marker()
             return
         if pid is not None:
-            # Announce the drain BEFORE waiting on it. This wait can run for
-            # the full drain budget (180s by default) while the old gateway
-            # finishes in-flight agent runs, and it streams into surfaces with
-            # no other feedback — the desktop updater's live output most of
-            # all, where a silent stop here reads as "update stuck" (#44515).
-            # Mirrors the systemd branch's "draining (up to Ns)..." line.
+            # Do not terminate the current gateway before launchd has accepted
+            # responsibility for the replacement. ``kickstart -k`` performs
+            # the stop/start as one supervisor-owned operation; if launchd
+            # rejects the domain, the current gateway remains available.
             print(
-                f"→ Stopping gateway (PID {pid}) — draining in-flight runs "
-                f"(up to {drain_timeout:.0f}s)..."
+                f"→ Gateway PID {pid} did not accept a graceful restart request; "
+                "handing replacement to launchd..."
             )
-            try:
-                terminate_pid(pid, force=False)
-            except (ProcessLookupError, PermissionError, OSError):
-                pid = None
-            if pid is not None:
-                exited = _wait_for_gateway_exit(timeout=drain_timeout, force_after=None)
-                if not exited:
-                    print(
-                        f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart"
-                    )
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
-        print("✓ Service restarted")
+        if not _wait_for_gateway_replacement(pid, previous_start_id, 90.0):
+            raise RuntimeError("Gateway restart readiness was not confirmed within 90s")
+        print("✓ Service restarted and ready")
         _clear_launchd_unsupported_marker()
     except subprocess.CalledProcessError as e:
         if not _launchd_error_indicates_unloaded(e):
-            # Not a "job unloaded" code. If the domain is fundamentally
-            # unmanageable (error 5), degrade to detached; the old process was
-            # already drained/terminated above. Otherwise re-raise.
+            # Fail closed when launchd cannot manage the domain. Restart must
+            # never fall back to a detached successor helper.
             if _launchctl_domain_unsupported(e.returncode):
-                _launchd_fallback_to_detached(f"launchctl kickstart exit {e.returncode}")
-                return
+                raise RuntimeError(
+                    "launchd domain is unavailable; refusing detached fallback"
+                ) from e
             raise
         # Job not loaded — bootstrap and start fresh
         print("↻ launchd job was unloaded; reloading")
@@ -4387,9 +4428,12 @@ def launchd_restart():
         except subprocess.CalledProcessError as e2:
             if not _launchctl_domain_unsupported(e2.returncode):
                 raise
-            _launchd_fallback_to_detached(f"launchctl exit {e2.returncode}")
-            return
-        print("✓ Service restarted")
+            raise RuntimeError(
+                "launchd domain is unavailable; refusing detached fallback"
+            ) from e2
+        if not _wait_for_gateway_replacement(pid, previous_start_id, 90.0):
+            raise RuntimeError("Gateway restart readiness was not confirmed within 90s")
+        print("✓ Service restarted and ready")
         _clear_launchd_unsupported_marker()
 
 
@@ -6181,7 +6225,7 @@ def gateway_setup():
                 except SystemScopeRequiresRootError as e:
                     print_error(f"  Restart failed: {e}")
                     _print_system_scope_remediation("restart")
-                except subprocess.CalledProcessError as e:
+                except (subprocess.CalledProcessError, RuntimeError, OSError) as e:
                     print_error(f"  Restart failed: {e}")
         elif service_installed:
             if supports_systemd_services() and _system_scope_wizard_would_need_root():
@@ -6966,7 +7010,7 @@ def _gateway_command_inner(args):
             try:
                 launchd_restart()
                 service_available = True
-            except subprocess.CalledProcessError:
+            except (subprocess.CalledProcessError, RuntimeError, OSError):
                 pass
         elif is_windows():
             from hermes_cli import gateway_windows

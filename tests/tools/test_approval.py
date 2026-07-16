@@ -234,14 +234,18 @@ class TestWindowsShellDestructiveCommands:
         assert dangerous is True
         assert desc == "Windows PowerShell destructive delete"
 
-    def test_powershell_benign_path_containing_del_not_flagged(self):
-        # A benign file path that merely contains "del" must NOT trip the guard
-        # (verb-position anchoring prevents matching inside a -File arg).
+    def test_powershell_benign_path_containing_del_not_matched_by_delete_pattern(self):
+        # A benign file path that merely contains "del" must NOT trip the
+        # destructive-delete guard specifically (verb-position anchoring
+        # prevents matching "del" inside a -File path argument). It IS now
+        # flagged by the separate -File execution rule added alongside
+        # this test update — running any .ps1 script via -File requires
+        # approval, regardless of what its path happens to contain.
         dangerous, key, desc = detect_dangerous_command(
             r"powershell -File C:\del-logs\run.ps1"
         )
-        assert dangerous is False
-        assert key is None
+        assert dangerous is True
+        assert desc == "PowerShell script execution via -File flag"
 
     def test_plain_text_does_not_trigger_windows_delete(self):
         dangerous, key, desc = detect_dangerous_command(
@@ -250,6 +254,76 @@ class TestWindowsShellDestructiveCommands:
         assert dangerous is False
         assert key is None
         assert desc is None
+
+    def test_powershell_file_execution_flagged(self):
+        # Running an arbitrary .ps1 via -File was completely unmatched by
+        # any DANGEROUS_PATTERNS rule before this fix — the destructive-
+        # delete pattern deliberately excludes -File (see the test above),
+        # and no other pattern covered plain script execution the way the
+        # -c/-e interpreter rule does for bash/python/node.
+        dangerous, key, desc = detect_dangerous_command(
+            "powershell -File helper.ps1"
+        )
+        assert dangerous is True
+        assert desc == "PowerShell script execution via -File flag"
+
+    def test_powershell_exe_file_execution_flagged(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "powershell.exe -File helper.ps1"
+        )
+        assert dangerous is True
+
+    def test_pwsh_file_execution_flagged(self):
+        dangerous, key, desc = detect_dangerous_command("pwsh -File helper.ps1")
+        assert dangerous is True
+
+    def test_powershell_file_execution_with_extra_flags_flagged(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "powershell -ExecutionPolicy Bypass -File helper.ps1"
+        )
+        assert dangerous is True
+
+    def test_powershell_command_flag_not_matched_by_file_rule(self):
+        # -Command is a different flag from -File; running an inline
+        # PowerShell command should not be misattributed to the -File rule
+        # (it may still be flagged by other rules, but not this one).
+        dangerous, key, desc = detect_dangerous_command(
+            'powershell -Command "Get-Process"'
+        )
+        assert desc != "PowerShell script execution via -File flag"
+
+    def test_powershell_file_flag_double_quoted_flagged(self):
+        # Regression test found in review: the flag name itself can be
+        # shell-quoted ("-File" instead of -File) without changing what
+        # PowerShell actually receives after shell quote removal — the
+        # regex must not require the dash to immediately follow whitespace
+        # with nothing in between.
+        dangerous, key, desc = detect_dangerous_command(
+            'powershell "-File" helper.ps1'
+        )
+        assert dangerous is True
+        assert desc == "PowerShell script execution via -File flag"
+
+    def test_powershell_file_flag_single_quoted_flagged(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "powershell '-File' helper.ps1"
+        )
+        assert dangerous is True
+        assert desc == "PowerShell script execution via -File flag"
+
+    def test_pwsh_file_flag_quoted_flagged(self):
+        dangerous, key, desc = detect_dangerous_command(
+            'pwsh "-File" helper.ps1'
+        )
+        assert dangerous is True
+        assert desc == "PowerShell script execution via -File flag"
+
+    def test_powershell_short_f_flag_quoted_flagged(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "powershell '-f' helper.ps1"
+        )
+        assert dangerous is True
+        assert desc == "PowerShell script execution via -File flag"
 
 
 class TestDetectDangerousSudo:

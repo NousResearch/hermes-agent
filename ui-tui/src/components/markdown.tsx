@@ -190,10 +190,21 @@ function ResolvedLink({ fallbackLabel, t, url }: ResolvedLinkProps) {
   )
 }
 
-const renderResolvedLink = (k: number, t: Theme, rawUrl: string, label?: string) => {
+const renderResolvedLink = (
+  k: number,
+  t: Theme,
+  rawUrl: string,
+  label?: string,
+  // Autolinks (`<https://…>`) and bare URLs never carry an author-supplied
+  // label — the "label" is just the URL text itself. Only explicit
+  // `[label](url)` links should suppress fetched-title resolution, so
+  // autolink/bare callers pass isAutolink=true to keep title fetching.
+  isAutolink = false
+) => {
   const target = normalizeExternalUrl(rawUrl)
+  const fallbackLabel = isAutolink ? undefined : pickFallbackLabel(label, target)
 
-  return <ResolvedLink fallbackLabel={pickFallbackLabel(label, target)} key={k} t={t} url={target} />
+  return <ResolvedLink fallbackLabel={fallbackLabel} key={k} t={t} url={target} />
 }
 
 export const stripInlineMarkup = (v: string) =>
@@ -569,7 +580,7 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
     } else if (m[3] && m[4]) {
       parts.push(renderResolvedLink(parts.length, t, m[4], m[3]))
     } else if (m[5]) {
-      parts.push(renderResolvedLink(parts.length, t, autolinkUrl(m[5]), m[5].replace(/^mailto:/, '')))
+      parts.push(renderResolvedLink(parts.length, t, autolinkUrl(m[5]), m[5].replace(/^mailto:/, ''), true))
     } else if (m[6]) {
       parts.push(
         <Text key={parts.length} strikethrough>

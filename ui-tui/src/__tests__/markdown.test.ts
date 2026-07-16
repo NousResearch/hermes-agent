@@ -2,7 +2,7 @@ import { PassThrough } from 'stream'
 
 import { Box, renderSync } from '@hermes/ink'
 import React from 'react'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { AUDIO_DIRECTIVE_RE, INLINE_RE, Md, MEDIA_LINE_RE, pickFallbackLabel, preferLinkDisplayLabel, stripInlineMarkup } from '../components/markdown.js'
 import { stripAnsi } from '../lib/text.js'
@@ -349,5 +349,39 @@ describe('explicit Markdown link labels (#64795)', () => {
     expect(preferLinkDisplayLabel(undefined, 'Fetched Page Title', url)).toBe('Fetched Page Title')
     expect(pickFallbackLabel(undefined, url)).toBeUndefined()
     expect(pickFallbackLabel('   ', url)).toBeUndefined()
+  })
+
+  // Regression for hermes-sweeper review on PR #64820: the `<https://…>`
+  // autolink parser branch passes the URL text itself as the "label".
+  // Treating that as an explicit author label made autolinks render the
+  // literal URL instead of a fetched title, breaking the auto-link
+  // title-resolution contract. Autolinks must keep fetched-title display.
+  it('prefers fetched titles for angle-bracket autolinks (no explicit label)', async () => {
+    vi.resetModules()
+    vi.doMock('../lib/externalLink.js', async () => {
+      const actual = await vi.importActual<typeof import('../lib/externalLink.js')>('../lib/externalLink.js')
+
+      return { ...actual, useLinkTitle: () => 'Fetched Autolink Title' }
+    })
+
+    const { Md: MdMocked } = await import('../components/markdown.js')
+    const lines = renderPlain(
+      React.createElement(
+        Box,
+        { width: 120 },
+        React.createElement(MdMocked, {
+          t: DEFAULT_THEME,
+          text: 'see <https://www.example.test/some/deep/path> now'
+        })
+      )
+    )
+
+    const rendered = lines.join('\n')
+
+    expect(rendered).toContain('Fetched Autolink Title')
+    expect(rendered).not.toContain('https://www.example.test/some/deep/path')
+
+    vi.doUnmock('../lib/externalLink.js')
+    vi.resetModules()
   })
 })

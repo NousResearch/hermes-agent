@@ -1639,12 +1639,6 @@ def run_conversation(
                             )
                     continue  # Retry the API call
 
-                # A structurally valid response proves that the exact runtime
-                # credential used for this request is healthy.  Promote only a
-                # matching in-flight Codex recheck; normal credentials are no-op.
-                from agent.agent_runtime_helpers import record_credential_pool_success
-                record_credential_pool_success(agent)
-
                 # Check finish_reason before proceeding
                 if agent.api_mode == "codex_responses":
                     status = getattr(response, "status", None)

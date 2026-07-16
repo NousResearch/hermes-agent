@@ -35,7 +35,7 @@ from hermes_cli.timeouts import get_provider_request_timeout
 from agent.prompt_builder import format_steer_marker
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.trajectory import convert_scratchpad_to_think
-from agent.credential_pool import STATUS_EXHAUSTED, STATUS_PROBING
+from agent.credential_pool import STATUS_EXHAUSTED
 from agent.error_classifier import FailoverReason
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 
@@ -693,18 +693,6 @@ def strip_think_blocks(agent, content: str) -> str:
 
 
 
-def record_credential_pool_success(agent) -> None:
-    """Promote an in-flight pool recheck after a valid provider response."""
-    pool = getattr(agent, "_credential_pool", None)
-    api_key = getattr(agent, "api_key", None)
-    if pool is None or not isinstance(api_key, str) or not api_key:
-        return
-    try:
-        pool.mark_success(api_key_hint=api_key)
-    except Exception as exc:
-        _ra().logger.debug("Failed to record credential-pool success: %s", exc)
-
-
 def recover_with_credential_pool(
     agent,
     *,
@@ -792,13 +780,29 @@ def recover_with_credential_pool(
     # copy one account's 429/cooldown onto a healthy sibling credential.
     failed_credential_kwargs: Dict[str, Any] = {"error_context": error_context}
     failed_api_key = getattr(agent, "api_key", None)
-    entry_for_api_key = getattr(pool, "entry_for_api_key", None)
-    supports_exact_credential_binding = callable(entry_for_api_key)
+    # Inspect the concrete type, not the instance. Unrestricted MagicMock and
+    # some legacy adapters synthesize callable child attributes on getattr(),
+    # which would falsely advertise support for the new exact-key contract.
+    entry_for_api_key_method = getattr(type(pool), "entry_for_api_key", None)
+    supports_exact_credential_binding = callable(entry_for_api_key_method)
+    entry_for_api_key = (
+        getattr(pool, "entry_for_api_key")
+        if supports_exact_credential_binding
+        else None
+    )
+    failed_entry = None
     if (
         supports_exact_credential_binding
         and isinstance(failed_api_key, str)
         and failed_api_key
     ):
+        failed_entry = entry_for_api_key(failed_api_key)
+        if failed_entry is None:
+            _ra().logger.warning(
+                "Request credential is not present in the active pool — "
+                "skipping pool recovery to avoid mutating a healthy sibling"
+            )
+            return False, has_retried_429
         failed_credential_kwargs["api_key_hint"] = failed_api_key
 
     if effective_reason == FailoverReason.upstream_rate_limit:
@@ -839,13 +843,13 @@ def recover_with_credential_pool(
         # where has_retried_429 (a local var) gets reset on each new prompt,
         # causing the pool to retry the same exhausted credential forever.
         if supports_exact_credential_binding and failed_api_key:
-            current_entry = entry_for_api_key(failed_api_key)
+            current_entry = failed_entry
         else:
             current_entry = pool.current()
         current_last_status = getattr(current_entry, "last_status", None) if current_entry else None
-        if current_last_status in {STATUS_EXHAUSTED, STATUS_PROBING}:
+        if current_last_status == STATUS_EXHAUSTED:
             _ra().logger.info(
-                "Credential already unavailable (last_status=%s) — rotating immediately instead of retrying",
+                "Credential already exhausted (last_status=%s) — rotating immediately instead of retrying",
                 current_last_status,
             )
             rotate_status = status_code if status_code is not None else 429
@@ -941,8 +945,9 @@ def recover_with_credential_pool(
                 agent.provider or "provider",
             )
             return False, has_retried_429
-        refresh_for_api_key = getattr(pool, "try_refresh_for_api_key", None)
-        if failed_api_key and callable(refresh_for_api_key):
+        refresh_for_api_key_method = getattr(type(pool), "try_refresh_for_api_key", None)
+        if failed_api_key and callable(refresh_for_api_key_method):
+            refresh_for_api_key = getattr(pool, "try_refresh_for_api_key")
             refreshed = refresh_for_api_key(failed_api_key)
         else:
             refreshed = pool.try_refresh_current()

@@ -56,18 +56,6 @@ def _load_config_safe() -> Optional[dict]:
 
 STATUS_OK = "ok"
 STATUS_EXHAUSTED = "exhausted"
-# A stale Codex cooldown is claimed by one process for a live recheck.  It is
-# promoted to OK only after a valid provider response, or re-armed as EXHAUSTED
-# when that request fails.
-STATUS_PROBING = "probing"
-_PERSISTED_STATUS_FIELDS = (
-    "last_status",
-    "last_status_at",
-    "last_error_code",
-    "last_error_reason",
-    "last_error_message",
-    "last_error_reset_at",
-)
 # Terminal failure — the credential will never recover on its own.  Used for
 # upstream-permanent OAuth states like ``token_invalidated`` / ``token_revoked``
 # where retrying after a TTL cooldown is guaranteed to fail.  ``DEAD`` entries
@@ -125,12 +113,6 @@ SUPPORTED_POOL_STRATEGIES = {
 EXHAUSTED_TTL_401_SECONDS = 5 * 60           # 5 minutes
 EXHAUSTED_TTL_429_SECONDS = 60 * 60          # 1 hour
 EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
-# Even when Codex reports a multi-day reset_at, permit one atomically claimed
-# live recheck after an hour when every normal credential is unavailable.
-# A fresh 429 re-arms this interval via last_status_at.  Abandoned claims can
-# be reclaimed after five minutes.
-OPENAI_CODEX_EXHAUSTED_RECHECK_SECONDS = 60 * 60
-OPENAI_CODEX_PROBE_TIMEOUT_SECONDS = 5 * 60
 
 # Pool key prefix for custom OpenAI-compatible endpoints.
 # Custom endpoints all share provider='custom' but are keyed by their
@@ -591,119 +573,8 @@ class CredentialPool:
         return bool(self._entries)
 
     def has_available(self) -> bool:
-        """True if a disk-current normal entry or Codex recheck is available."""
-        with self._lock:
-            self._sync_existing_entries_from_auth_store_unlocked()
-            return bool(self._available_entries()) or self._has_claimable_codex_recheck()
-
-    def _sync_existing_entries_from_auth_store_unlocked(self) -> None:
-        """Refresh persisted entry state before cross-process availability decisions."""
-        with _auth_store_lock():
-            auth_store = _load_auth_store()
-            pool_data = auth_store.get("credential_pool")
-            rows = pool_data.get(self.provider) if isinstance(pool_data, dict) else None
-            if not isinstance(rows, list):
-                return
-            disk_by_id = {
-                payload.get("id"): payload
-                for payload in rows
-                if isinstance(payload, dict) and payload.get("id")
-            }
-        for index, entry in enumerate(self._entries):
-            payload = disk_by_id.get(entry.id)
-            if payload is None:
-                continue
-            disk_entry = PooledCredential.from_dict(self.provider, payload)
-            updates = {field: getattr(disk_entry, field) for field in _PERSISTED_STATUS_FIELDS}
-            if any(getattr(entry, field) != value for field, value in updates.items()):
-                self._entries[index] = replace(entry, **updates)
-
-    def _has_claimable_codex_recheck(self) -> bool:
-        candidates = self._recheckable_exhausted_entries()
-        if not candidates:
-            return False
-        candidate_ids = {entry.id for entry in candidates}
-        with _auth_store_lock():
-            auth_store = _load_auth_store()
-            pool_data = auth_store.get("credential_pool")
-            rows = pool_data.get(self.provider) if isinstance(pool_data, dict) else None
-            if not isinstance(rows, list):
-                return False
-            now = time.time()
-            return any(
-                isinstance(payload, dict)
-                and payload.get("id") in candidate_ids
-                and self._is_codex_recheckable(
-                    PooledCredential.from_dict(self.provider, payload),
-                    now,
-                )
-                for payload in rows
-            )
-
-    def _is_codex_recheckable(self, entry: PooledCredential, now: float) -> bool:
-        if self.provider != "openai-codex" or not entry.runtime_api_key or not entry.last_status_at:
-            return False
-        age = now - entry.last_status_at
-        if entry.last_status == STATUS_PROBING:
-            return age >= OPENAI_CODEX_PROBE_TIMEOUT_SECONDS
-        return (
-            entry.last_status == STATUS_EXHAUSTED
-            and entry.last_error_code == 429
-            and age >= OPENAI_CODEX_EXHAUSTED_RECHECK_SECONDS
-        )
-
-    def _recheckable_exhausted_entries(self) -> List[PooledCredential]:
-        """Return Codex cooldowns eligible for one atomically claimed recheck."""
-        now = time.time()
-        return sorted(
-            (entry for entry in self._entries if self._is_codex_recheckable(entry, now)),
-            key=lambda entry: entry.priority,
-        )
-
-    def _claim_codex_recheck_unlocked(self) -> Optional[PooledCredential]:
-        """Atomically claim one stale Codex entry across Hermes processes."""
-        for candidate in self._recheckable_exhausted_entries():
-            with _auth_store_lock():
-                auth_store = _load_auth_store()
-                pool_data = auth_store.get("credential_pool")
-                if not isinstance(pool_data, dict):
-                    continue
-                rows = pool_data.get(self.provider)
-                if not isinstance(rows, list):
-                    continue
-                row_index = next(
-                    (
-                        index for index, payload in enumerate(rows)
-                        if isinstance(payload, dict) and payload.get("id") == candidate.id
-                    ),
-                    None,
-                )
-                if row_index is None:
-                    continue
-                disk_entry = PooledCredential.from_dict(self.provider, rows[row_index])
-                claimed_at = time.time()
-                if not self._is_codex_recheckable(disk_entry, claimed_at):
-                    continue
-                claimed_payload = dict(rows[row_index])
-                claimed_payload["last_status"] = STATUS_PROBING
-                claimed_payload["last_status_at"] = claimed_at
-                updated_rows = list(rows)
-                updated_rows[row_index] = claimed_payload
-                pool_data[self.provider] = updated_rows
-                _save_auth_store(auth_store)
-
-            claimed = replace(
-                candidate,
-                last_status=STATUS_PROBING,
-                last_status_at=claimed_at,
-            )
-            self._replace_entry(candidate, claimed)
-            logger.info(
-                "credential pool: claimed stale Codex credential %s for one live recheck",
-                candidate.label or candidate.id[:8],
-            )
-            return claimed
-        return None
+        """True if at least one entry is not currently in exhaustion cooldown."""
+        return bool(self._available_entries())
 
     def entries(self) -> List[PooledCredential]:
         return list(self._entries)
@@ -760,47 +631,6 @@ class CredentialPool:
             return False
         return reason.strip().lower() in _TERMINAL_AUTH_REASONS
 
-    def _patch_persisted_status(
-        self,
-        entry: PooledCredential,
-        *,
-        expected_probe: Optional[tuple[str, Optional[float]]] = None,
-    ) -> Optional[bool]:
-        """Patch failure metadata: True=written, False=CAS lost, None=row absent."""
-        with _auth_store_lock():
-            auth_store = _load_auth_store()
-            pool_data = auth_store.get("credential_pool")
-            if not isinstance(pool_data, dict):
-                return None
-            rows = pool_data.get(self.provider)
-            if not isinstance(rows, list):
-                return None
-            row_index = next(
-                (
-                    index for index, payload in enumerate(rows)
-                    if isinstance(payload, dict) and payload.get("id") == entry.id
-                ),
-                None,
-            )
-            if row_index is None:
-                return None
-            disk_entry = PooledCredential.from_dict(self.provider, rows[row_index])
-            if expected_probe is not None:
-                expected_status, expected_at = expected_probe
-                if (
-                    disk_entry.last_status != expected_status
-                    or disk_entry.last_status_at != expected_at
-                ):
-                    return False
-            patched_payload = dict(rows[row_index])
-            for field in _PERSISTED_STATUS_FIELDS:
-                patched_payload[field] = getattr(entry, field)
-            updated_rows = list(rows)
-            updated_rows[row_index] = patched_payload
-            pool_data[self.provider] = updated_rows
-            _save_auth_store(auth_store)
-            return True
-
     def _mark_exhausted(
         self,
         entry: PooledCredential,
@@ -819,11 +649,6 @@ class CredentialPool:
             terminal_status = STATUS_DEAD
         else:
             terminal_status = STATUS_EXHAUSTED
-        probe_claim = (
-            (STATUS_PROBING, entry.last_status_at)
-            if entry.last_status == STATUS_PROBING
-            else None
-        )
         updated = replace(
             entry,
             last_status=terminal_status,
@@ -834,21 +659,7 @@ class CredentialPool:
             last_error_reset_at=normalized_error.get("reset_at"),
         )
         self._replace_entry(entry, updated)
-        patch_result = self._patch_persisted_status(
-            updated,
-            expected_probe=probe_claim,
-        )
-        if patch_result is False:
-            # The probe was reclaimed or completed by another process. Its
-            # newer result owns disk state; this late failure must not win.
-            self._sync_existing_entries_from_auth_store_unlocked()
-            return next(
-                (item for item in self._entries if item.id == updated.id),
-                updated,
-            )
-        if patch_result is None:
-            # Legacy/unpersisted entries still need the normal full write path.
-            self._persist()
+        self._persist()
         return updated
 
     def _sync_anthropic_entry_from_credentials_file(self, entry: PooledCredential) -> PooledCredential:
@@ -1709,11 +1520,6 @@ class CredentialPool:
                 # device-code login).  The auth.json-sync paths below handle
                 # the re-auth case for OAuth singletons.
                 continue
-            if entry.last_status == STATUS_PROBING:
-                # Claimed by one process for a live health check.  It becomes
-                # selectable again only after mark_success(), a fresh failure,
-                # or the abandoned-claim timeout handled by the claim path.
-                continue
             if entry.last_status == STATUS_EXHAUSTED:
                 exhausted_until = _exhausted_until(entry)
                 if exhausted_until is not None and now < exhausted_until:
@@ -1744,17 +1550,8 @@ class CredentialPool:
             self._persist(removed_ids=entries_to_prune)
         return available
 
-    def _selection_candidates_unlocked(self) -> List[PooledCredential]:
-        """Return disk-current credentials, or atomically claim one stale Codex entry."""
-        self._sync_existing_entries_from_auth_store_unlocked()
-        available = self._available_entries(clear_expired=True, refresh=True)
-        if available:
-            return available
-        claimed = self._claim_codex_recheck_unlocked()
-        return [claimed] if claimed is not None else []
-
     def _select_unlocked(self) -> Optional[PooledCredential]:
-        available = self._selection_candidates_unlocked()
+        available = self._available_entries(clear_expired=True, refresh=True)
         if not available:
             self._current_id = None
             logger.info("credential pool: no available entries (all exhausted or empty)")
@@ -1792,42 +1589,6 @@ class CredentialPool:
             return current
         available = self._available_entries()
         return available[0] if available else None
-
-    def mark_success(self, *, api_key_hint: Optional[str]) -> bool:
-        """Promote a matching in-flight Codex recheck after a valid response."""
-        if not api_key_hint:
-            return False
-        with self._lock:
-            entry = next(
-                (item for item in self._entries if item.runtime_api_key == api_key_hint),
-                None,
-            )
-            if entry is None or entry.last_status != STATUS_PROBING:
-                return False
-            updated = replace(
-                entry,
-                last_status=STATUS_OK,
-                last_status_at=None,
-                last_error_code=None,
-                last_error_reason=None,
-                last_error_message=None,
-                last_error_reset_at=None,
-            )
-            if not self._patch_persisted_status(
-                updated,
-                expected_probe=(STATUS_PROBING, entry.last_status_at),
-            ):
-                # Another process wrote a newer failure or reclaimed the probe.
-                # Refresh local metadata and never let this late success win.
-                self._sync_existing_entries_from_auth_store_unlocked()
-                return False
-            self._replace_entry(entry, updated)
-            self._current_id = updated.id
-            logger.info(
-                "credential pool: Codex credential %s passed live recheck",
-                updated.label or updated.id[:8],
-            )
-            return True
 
     def mark_exhausted_and_rotate(
         self,
@@ -1900,7 +1661,7 @@ class CredentialPool:
                 self._current_id = credential_id
                 return credential_id
 
-            available = self._selection_candidates_unlocked()
+            available = self._available_entries(clear_expired=True, refresh=True)
             if not available:
                 return None
 

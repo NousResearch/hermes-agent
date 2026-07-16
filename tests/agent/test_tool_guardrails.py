@@ -200,7 +200,7 @@ def test_idempotent_no_progress_repeated_result_warns_without_blocking_by_defaul
         decision = controller.after_call("read_file", args, result, failed=False)
 
     assert decision.action == "warn"
-    assert decision.code == "idempotent_no_progress_warning"
+    assert decision.code == "no_progress_warning"
     assert controller.before_call("read_file", args).action == "allow"
     assert controller.halt_decision is None
 
@@ -221,7 +221,7 @@ def test_hard_stop_enabled_blocks_idempotent_no_progress_future_repeat():
     assert controller.before_call("read_file", args).action == "allow"
     warn = controller.after_call("read_file", args, result, failed=False)
     assert warn.action == "warn"
-    assert warn.code == "idempotent_no_progress_warning"
+    assert warn.code == "no_progress_warning"
 
     blocked = controller.before_call("read_file", args)
     assert blocked.action == "block"
@@ -229,15 +229,32 @@ def test_hard_stop_enabled_blocks_idempotent_no_progress_future_repeat():
 
 
 def test_mutating_or_unknown_tools_are_not_blocked_for_repeated_identical_success_output_by_default():
+    """Mutating/unknown tools are not BLOCKED for repeated identical output (hard_stop disabled by default).
+    They DO warn after threshold, but execution is never blocked without hard_stop_enabled."""
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(no_progress_warn_after=2, no_progress_block_after=2)
     )
 
-    for _ in range(3):
+    for i in range(3):
         assert controller.before_call("write_file", {"path": "/tmp/x", "content": "x"}).action == "allow"
-        assert controller.after_call("write_file", {"path": "/tmp/x", "content": "x"}, "ok", failed=False).action == "allow"
-        assert controller.before_call("custom_tool", {"x": 1}).action == "allow"
-        assert controller.after_call("custom_tool", {"x": 1}, "ok", failed=False).action == "allow"
+        decision = controller.after_call("write_file", {"path": "/tmp/x", "content": "x"}, "ok", failed=False)
+        if i == 0:
+            assert decision.action == "allow"
+        else:
+            assert decision.action == "warn"
+            assert decision.code == "no_progress_warning"
+
+    controller2 = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(no_progress_warn_after=2, no_progress_block_after=2)
+    )
+    for i in range(3):
+        assert controller2.before_call("custom_tool", {"x": 1}).action == "allow"
+        decision = controller2.after_call("custom_tool", {"x": 1}, "ok", failed=False)
+        if i == 0:
+            assert decision.action == "allow"
+        else:
+            assert decision.action == "warn"
+            assert decision.code == "no_progress_warning"
 
 
 def test_reset_for_turn_clears_bounded_guardrail_state():

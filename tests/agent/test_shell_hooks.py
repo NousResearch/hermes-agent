@@ -250,6 +250,45 @@ class TestLiveTerminalCwd:
         )
         assert json.loads(raw)["cwd"] == str(Path.cwd())
 
+    def test_explicit_workdir_wins_over_live_env_cwd(self, monkeypatch):
+        # terminal_tool resolves the per-command cwd as workdir > env.cwd
+        # (_resolve_command_cwd), so the payload must report the directory
+        # the command will actually run in when both are set and differ.
+        self._patch_active_env(monkeypatch, "/live/worktree")
+        raw = shell_hooks._serialize_payload(
+            "pre_tool_call",
+            {
+                "tool_name": "terminal",
+                "args": {"command": "git commit", "workdir": "/explicit/dir"},
+                "task_id": "t-1",
+            },
+        )
+        assert json.loads(raw)["cwd"] == "/explicit/dir"
+
+    def test_blank_workdir_falls_through_to_live_env_cwd(self, monkeypatch):
+        self._patch_active_env(monkeypatch, "/live/worktree")
+        raw = shell_hooks._serialize_payload(
+            "pre_tool_call",
+            {
+                "tool_name": "terminal",
+                "args": {"command": "ls", "workdir": "   "},
+                "task_id": "t-1",
+            },
+        )
+        assert json.loads(raw)["cwd"] == "/live/worktree"
+
+    def test_workdir_on_non_terminal_tool_is_ignored(self, monkeypatch):
+        self._patch_active_env(monkeypatch, "/live/worktree")
+        raw = shell_hooks._serialize_payload(
+            "pre_tool_call",
+            {
+                "tool_name": "read_file",
+                "args": {"path": "x", "workdir": "/explicit/dir"},
+                "task_id": "t-1",
+            },
+        )
+        assert json.loads(raw)["cwd"] == str(Path.cwd())
+
 
 # ── Matcher behaviour ─────────────────────────────────────────────────────
 

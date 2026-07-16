@@ -529,12 +529,22 @@ def _live_terminal_cwd(kwargs: Dict[str, Any]) -> Optional[str]:
     ``git commit`` is judged against a stale directory and can false-block in a
     worktree-off-main layout.
 
+    An explicit ``args.workdir`` outranks the tracked env cwd:
+    :func:`_resolve_command_cwd` resolves the per-command directory as
+    ``workdir > env.cwd > default``, so the payload mirrors that order or a
+    hook is judged against a directory the command will not run in.
+
     Lazy import: terminal_tool is heavy and importing it at module load would
     risk a cycle. Fail-open: any miss (no env, no task, import error) returns
     None so the caller falls back to ``Path.cwd()`` and the prior behavior.
     """
     if kwargs.get("tool_name") != "terminal":
         return None
+    args = kwargs.get("args")
+    if isinstance(args, dict):
+        workdir = args.get("workdir")
+        if isinstance(workdir, str) and workdir.strip():
+            return workdir
     task_id = kwargs.get("task_id") or ""
     try:
         from tools.terminal_tool import get_active_env

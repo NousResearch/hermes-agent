@@ -4596,6 +4596,29 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         )
         adapter._dispatch_inbound_event.assert_not_called()
 
+    def test_empty_non_text_event_is_ignored(self):
+        """A non-TEXT event (e.g. sticker) with no text and no downloadable media
+        must not enter dispatch — regression guard for the widened type guard.
+        """
+        adapter = self._build_adapter()
+        message = SimpleNamespace(
+            content="{}",
+            message_type="sticker",
+            message_id="m6",
+            mentions=[],
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            thread_id=None,
+        )
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message, message=message, sender_id=None,
+                chat_type="group", message_id="m6",
+            )
+        )
+        adapter._dispatch_inbound_event.assert_not_called()
+
 
 class TestFeishuFetchMessageText(unittest.TestCase):
     def _build_adapter(self):

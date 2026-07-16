@@ -909,6 +909,70 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
     assert not kb.board_exists("removed-board")
 
 
+def test_ws_events_poll_loop_does_not_resurrect_deleted_board(tmp_path, monkeypatch):
+    """A board deleted *after* the WS handshake must not be recreated by the
+    poll loop. The pre-accept check covers stale reconnects, but a board
+    removed while a stream is already live still reaches connect(board=...)
+    in _fetch_new, which mkdir(parents=True, exist_ok=True) on the DB dir.
+
+    Regression for the review concern on PR #65295.
+    """
+    import asyncio
+    import plugins.kanban.dashboard.plugin_api as pa
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+
+    # Create a board, then remove it mid-stream.
+    kb.create_board("live-board")
+    # Short-circuit auth.
+    monkeypatch.setattr(pa, "_ws_upgrade_authorized", lambda ws: True)
+
+    class _FakeWS:
+        def __init__(self):
+            self.query_params = {"token": "x", "since": "0", "board": "live-board"}
+            self.accepted = False
+            self.closed = False
+            self.sent: list[dict] = []
+
+        async def accept(self):
+            self.accepted = True
+
+        async def send_json(self, data):
+            self.sent.append(data)
+
+        async def close(self, code=None):
+            self.closed = True
+
+    async def _run():
+        ws = _FakeWS()
+        task = asyncio.create_task(pa.stream_events(ws))
+        # Let the handler accept and complete at least one poll cycle.
+        await asyncio.sleep(0.5)
+        assert ws.accepted is True
+        # Now delete the board while the stream is live.
+        kb.remove_board("live-board")
+        assert not kb.board_exists("live-board")
+        # Give the poll loop one more cycle to detect the deletion.
+        await asyncio.sleep(0.5)
+        # The stream should have exited cleanly (break from while loop),
+        # not crashed and not recreated the board.
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass  # task already exited; cancel on a finished task is benign
+        # The board must NOT have been recreated.
+        assert not kb.board_exists("live-board"), (
+            "poll loop recreated a removed board through connect(board=...)"
+        )
+
+    asyncio.run(_run())
+
+
 def test_ws_events_accepts_gated_ticket(tmp_path, monkeypatch):
     """Gated OAuth mode: the WS must accept a single-use ?ticket= (and reject
     a bare ?token=, even one matching _SESSION_TOKEN). This is the regression

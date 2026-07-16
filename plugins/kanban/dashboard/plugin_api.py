@@ -2482,6 +2482,11 @@ async def stream_events(ws: WebSocket):
                 conn.close()
 
         while True:
+            # Guard against a board deleted between handshake and this poll.
+            # connect(board=...) recreates its parent directory and empty DB;
+            # breaking here keeps the stream from resurrecting a removed board.
+            if ws_board and not kanban_db.board_exists(ws_board):
+                break
             cursor, events = await asyncio.to_thread(_fetch_new, cursor)
             if events:
                 await ws.send_json({"events": events, "cursor": cursor})

@@ -67,3 +67,90 @@ def test_singleton_dispatcher_lock_is_exclusive(tmp_path):
     h3, st3 = _acquire_singleton_lock(lock)
     assert st3 == "held" and h3 is not None
     _release_singleton_lock(h3)
+
+
+def test_dispatcher_caps_live_workers_across_active_boards(monkeypatch, tmp_path):
+    """The gateway's live width is shared by every non-archived board."""
+    import asyncio
+    from types import SimpleNamespace
+
+    import hermes_cli.config as config
+    from hermes_cli import kanban_db as kb
+
+    runner = GatewayKanbanWatchersMixin()
+    runner._running = True
+    running = {"first": 12, "second": 3}
+    dispatched = []
+
+    class Connection:
+        def __init__(self, board):
+            self.board = board
+
+        def execute(self, query):
+            assert "status = 'running'" in query
+            return SimpleNamespace(fetchone=lambda: (running[self.board],))
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        config,
+        "load_config",
+        lambda: {
+            "kanban": {
+                "dispatch_in_gateway": True,
+                "dispatch_interval_seconds": 1,
+                "auto_decompose": False,
+                "max_in_progress": 20,
+                "max_spawn": 20,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        kb, "list_boards", lambda include_archived=False: [
+            {"slug": "first"}, {"slug": "second"},
+        ],
+    )
+    monkeypatch.setattr(kb, "connect", lambda *, board: Connection(board))
+    monkeypatch.setattr(kb, "kanban_home", lambda: tmp_path)
+    monkeypatch.setattr(kb, "kanban_db_path", lambda board: tmp_path / board)
+    monkeypatch.setattr(kb, "reap_worker_zombies", lambda: [])
+    monkeypatch.setattr(kb, "has_spawnable_ready", lambda conn: False)
+    monkeypatch.setattr(kb, "has_spawnable_review", lambda conn: False)
+    monkeypatch.setattr(
+        "gateway.kanban_watchers._acquire_singleton_lock",
+        lambda path: (None, "unavailable"),
+    )
+
+    def dispatch_once(conn, **kwargs):
+        cap = min(kwargs["max_in_progress"], kwargs["max_spawn"])
+        headroom = cap - running[conn.board]
+        # The first board leaves three slots unused. The second board must
+        # receive exactly those three slots, not a fresh per-board limit.
+        spawned = min(headroom, 2 if conn.board == "first" else 99)
+        running[conn.board] += spawned
+        dispatched.append((conn.board, kwargs["max_in_progress"], kwargs["max_spawn"], spawned))
+        if conn.board == "second":
+            runner._running = False
+        return SimpleNamespace(
+            spawned=[("task", "worker", "")] * spawned,
+            reclaimed=0,
+            crashed=[],
+            timed_out=[],
+            promoted=0,
+            auto_blocked=[],
+        )
+
+    monkeypatch.setattr(kb, "dispatch_once", dispatch_once)
+
+    async def no_sleep(_delay):
+        pass
+
+    monkeypatch.setattr("gateway.kanban_watchers.asyncio.sleep", no_sleep)
+    asyncio.run(runner._kanban_dispatcher_watcher())
+
+    assert dispatched == [
+        ("first", 17, 17, 2),
+        ("second", 6, 6, 3),
+    ]
+    assert sum(running.values()) == 20

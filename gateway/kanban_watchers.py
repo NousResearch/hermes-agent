@@ -972,7 +972,33 @@ class GatewayKanbanWatchersMixin:
                 or "database disk image is malformed" in msg
             )
 
-        def _tick_once_for_board(slug: str) -> "Optional[object]":
+        def _running_count_for_board(slug: str) -> "Optional[int]":
+            """Read one board's live running count for the global admission cap."""
+            conn = None
+            try:
+                conn = _kb.connect(board=slug)
+                return int(conn.execute(
+                    "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
+                ).fetchone()[0])
+            except Exception as exc:
+                logger.warning(
+                    "kanban dispatcher: cannot read running count for board %s; "
+                    "skipping aggregate dispatch this tick (%s)", slug, exc,
+                )
+                return None
+            finally:
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+
+        def _tick_once_for_board(
+            slug: str,
+            *,
+            board_max_spawn: "Optional[int]" = max_spawn,
+            board_max_in_progress: "Optional[int]" = max_in_progress,
+        ) -> "Optional[object]":
             """Run one dispatch_once for a specific board.
 
             Runs in a worker thread via `asyncio.to_thread`. `board=slug`
@@ -1016,8 +1042,8 @@ class GatewayKanbanWatchersMixin:
                 return _kb.dispatch_once(
                     conn,
                     board=slug,
-                    max_spawn=max_spawn,
-                    max_in_progress=max_in_progress,
+                    max_spawn=board_max_spawn,
+                    max_in_progress=board_max_in_progress,
                     failure_limit=failure_limit,
                     stale_timeout_seconds=stale_timeout_seconds,
                     default_assignee=default_assignee,
@@ -1071,10 +1097,49 @@ class GatewayKanbanWatchersMixin:
                 boards = _kb.list_boards(include_archived=False)
             except Exception:
                 boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+            # Both limits are live worker ceilings in dispatch_once. The
+            # singleton gateway owns their aggregate admission across boards,
+            # while direct delegate_task work remains outside this Kanban path.
+            aggregate_capped = max_spawn is not None or max_in_progress is not None
+            board_running: dict[str, int] = {}
+            total_running = 0
+            if aggregate_capped:
+                for b in boards:
+                    slug = b.get("slug") or _kb.DEFAULT_BOARD
+                    running = _running_count_for_board(slug)
+                    if running is None:
+                        # Do not hand a fresh per-board allowance to the
+                        # remaining boards when the aggregate is unknown.
+                        return []
+                    board_running[slug] = running
+                    total_running += running
+
             out: list[tuple[str, "Optional[object]"]] = []
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
-                out.append((slug, _tick_once_for_board(slug)))
+                running = board_running.get(slug, 0)
+
+                def _board_cap(cap: "Optional[int]") -> "Optional[int]":
+                    if cap is None:
+                        return None
+                    return running + max(0, cap - total_running)
+
+                result = _tick_once_for_board(
+                    slug,
+                    board_max_spawn=_board_cap(max_spawn),
+                    board_max_in_progress=_board_cap(max_in_progress),
+                )
+                out.append((slug, result))
+                if aggregate_capped:
+                    # Re-read after each serial dispatch so an undersubscribed
+                    # board leaves its unused slots available to the next one.
+                    # This also accounts for stale/crashed workers reclaimed by
+                    # dispatch_once without guessing from result fields.
+                    updated_running = _running_count_for_board(slug)
+                    if updated_running is None:
+                        break
+                    total_running += updated_running - running
+                    board_running[slug] = updated_running
             return out
 
         def _ready_nonempty() -> bool:

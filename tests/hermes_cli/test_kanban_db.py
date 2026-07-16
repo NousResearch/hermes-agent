@@ -3908,6 +3908,30 @@ def test_dispatch_review_dry_run(kanban_home, all_assignees_spawnable):
         assert kb.get_task(conn, t).status == "review"
 
 
+def test_dispatch_review_shares_global_and_profile_headroom(
+    kanban_home, all_assignees_spawnable,
+):
+    """Review workers consume the same live-worker caps as ready workers."""
+    with kb.connect() as conn:
+        task_ids = [
+            kb.create_task(conn, title="alpha one", assignee="alpha"),
+            kb.create_task(conn, title="alpha two", assignee="alpha"),
+            kb.create_task(conn, title="beta", assignee="beta"),
+        ]
+        for task_id in task_ids:
+            _set_task_status(conn, task_id, "review")
+
+        res = kb.dispatch_once(
+            conn,
+            dry_run=True,
+            max_in_progress=2,
+            max_in_progress_per_profile=1,
+        )
+
+    assert [assignee for _, assignee, _ in res.spawned] == ["alpha", "beta"]
+    assert res.skipped_per_profile_capped == [(task_ids[1], "alpha", 1)]
+
+
 def test_dispatch_review_spawns_with_correct_skills(
     kanban_home, all_assignees_spawnable,
 ):

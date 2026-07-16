@@ -28,7 +28,7 @@ from typing import Any, Dict, Optional
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
-from agent.errors import EmptyStreamError
+from agent.errors import EmptyStreamError, ProviderStreamError
 from agent.gemini_native_adapter import is_native_gemini_base_url
 from agent.model_metadata import is_local_endpoint
 from agent.message_sanitization import (
@@ -2404,6 +2404,23 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 break
 
             if not chunk.choices:
+                # Check for provider-specific error fields on error chunks.
+                # Some OpenAI-compatible providers (e.g. DeepInfra) return
+                # HTTP 200 with a single SSE chunk whose ``choices`` is None
+                # and whose ``error_type`` / ``error_message`` fields carry a
+                # validation error (e.g. a context-length 400). Without this
+                # check, the error chunk is silently skipped and the stream
+                # ends empty — triggering EmptyStreamError and an infinite
+                # retry loop on the identical oversized request.
+                # See issue #65631.
+                _chunk_error_type = getattr(chunk, "error_type", None)
+                _chunk_error_message = getattr(chunk, "error_message", None)
+                if _chunk_error_type or _chunk_error_message:
+                    _err_detail = _chunk_error_message or _chunk_error_type
+                    raise ProviderStreamError(
+                        str(_err_detail),
+                        error_type=str(_chunk_error_type) if _chunk_error_type else None,
+                    )
                 if hasattr(chunk, "model") and chunk.model:
                     model_name = chunk.model
                 # Usage comes in the final chunk with empty choices

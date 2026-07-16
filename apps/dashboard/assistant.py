@@ -373,6 +373,60 @@ class Assistant:
         text = next((b.text for b in response.content if b.type == "text"), "").strip()
         return text or None
 
+    # Jarvis Phase 6+ — model-augmented reflection. In claude mode the deep
+    # tier reviews the agent's telemetry/memory and proposes richer *advisory*
+    # guidelines than the deterministic heuristics can. Hard trust boundary:
+    # the model may ONLY propose prompt_addendum items, which never auto-apply
+    # (they still require a human click), and everything is validated + capped
+    # server-side. Any failure returns [] so reflection never breaks.
+    REFLECT_SYSTEM = (
+        "You audit a personal-dashboard AI agent's own behaviour to suggest small, "
+        "durable operating guidelines that would make it more useful. You are given "
+        "usage telemetry, long-term memory and current guidelines. Propose at most 3 "
+        "NEW guidelines that are not already covered. Reply with ONLY a JSON array of "
+        "objects {\"title\": short label, \"rationale\": one sentence, \"text\": the "
+        "guideline as an imperative instruction to the agent}. No prose, no code fences. "
+        "If nothing is worth changing, reply with []."
+    )
+
+    def reflect_candidates(self, context: dict) -> list[dict]:
+        if self.mode != "claude":
+            return []
+        decision = self.router.route("reflection")
+        if decision["tier"] != "deep":
+            return []  # deep budget exhausted — skip model reflection this pass
+        self._log_route(decision)
+        try:
+            prompt = json.dumps(context, ensure_ascii=False)[:8000]
+            response = self._get_client().messages.create(
+                model=decision["model"],
+                max_tokens=1024,
+                system=self.REFLECT_SYSTEM,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = next((b.text for b in response.content if b.type == "text"), "").strip()
+            raw = json.loads(text)
+        except Exception:
+            return []
+        if not isinstance(raw, list):
+            return []
+        out = []
+        for item in raw[:3]:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title", "")).strip()[:80]
+            guideline = " ".join(str(item.get("text", "")).split())[:400]
+            if not title or not guideline:
+                continue
+            out.append({
+                "kind": "prompt_addendum",
+                "title": title,
+                "rationale": (str(item.get("rationale", "")).strip()[:200]
+                              or "Model-suggested operating guideline."),
+                "payload": {"text": guideline, "source": "model"},
+            })
+        return out
+
     @staticmethod
     def _last_user_text(messages: list) -> str:
         for msg in reversed(messages):

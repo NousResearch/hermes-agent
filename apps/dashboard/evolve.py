@@ -143,6 +143,28 @@ class Reflection:
                 "rationale": f"The agent escalated {summary['escalations']} times; a clearer default would cut cost.",
                 "payload": {"text": "When uncertain, state your assumptions and give a best-effort answer rather than hedging."},
             })
+
+        # 4) model-augmented reflection (claude mode only): the deep tier may
+        # suggest richer prompt_addendum guidelines. These are advisory and, per
+        # policy, still require a human click — they never auto-apply. Deduped by
+        # title against the heuristic findings above.
+        assistant = getattr(self.api, "assistant", None)
+        if assistant is not None and hasattr(assistant, "reflect_candidates"):
+            seen_titles = {f["title"].lower() for f in findings}
+            context = {
+                "telemetry": summary,
+                "recent_tools": [e for e in (self.api.telemetry.recent(30) if self.api else [])
+                                 if e.get("kind") == "tool"][:20],
+                "memory": memory[-2000:],
+                "current_guidelines": (self.api.agent_notes_read() if self.api else "")[-1500:],
+            }
+            try:
+                for cand in assistant.reflect_candidates(context):
+                    if cand["kind"] == "prompt_addendum" and cand["title"].lower() not in seen_titles:
+                        seen_titles.add(cand["title"].lower())
+                        findings.append(cand)
+            except Exception:
+                pass  # model reflection is best-effort; never breaks a pass
         return findings
 
     # -- apply / dismiss -----------------------------------------------------

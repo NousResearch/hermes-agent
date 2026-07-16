@@ -1263,6 +1263,52 @@ class EvolveTests(unittest.TestCase):
         # newest-first: the dismissed addendum was completed after the auto prune
         self.assertEqual(history[0]["id"], pid)
 
+    def test_model_reflection_disabled_in_local_mode(self):
+        api = self._api()
+        self.assertEqual(api.assistant.reflect_candidates({}), [])
+
+    def test_model_reflection_parses_and_validates(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        api = self._api()
+        payload = json.dumps([
+            {"title": "Batch reads", "rationale": "seen sequential reads",
+             "text": "Batch independent read tools into one turn."},
+            {"title": "", "text": "dropped — no title"},          # invalid → skipped
+            {"nonsense": True},                                    # invalid → skipped
+        ])
+        fake = SimpleNamespace(content=[SimpleNamespace(type="text", text=payload)])
+        client = mock.Mock()
+        client.messages.create.return_value = fake
+        with mock.patch.object(type(api.assistant), "mode", new_callable=mock.PropertyMock,
+                               return_value="claude"), \
+             mock.patch.object(api.assistant, "_get_client", return_value=client):
+            cands = api.assistant.reflect_candidates({"telemetry": {}})
+        self.assertEqual(len(cands), 1)
+        self.assertEqual(cands[0]["kind"], "prompt_addendum")     # model can only propose this
+        self.assertEqual(cands[0]["title"], "Batch reads")
+        self.assertEqual(cands[0]["payload"]["source"], "model")
+
+    def test_model_reflection_merges_into_inbox_without_auto_apply(self):
+        from unittest import mock
+        api = self._api()
+        model_cand = [{"kind": "prompt_addendum", "title": "Prefer concise replies",
+                       "rationale": "long answers", "payload": {"text": "Be concise.", "source": "model"}}]
+        with mock.patch.object(api.assistant, "reflect_candidates", return_value=model_cand):
+            api.evolve.reflect()
+        props = api.evolve.list_proposals()
+        model = [p for p in props if p["title"] == "Prefer concise replies"]
+        self.assertEqual(len(model), 1)
+        self.assertEqual(model[0]["status"], "pending")   # advisory — never auto-applies
+        self.assertEqual(model[0]["kind"], "prompt_addendum")
+
+    def test_model_reflection_failure_is_swallowed(self):
+        from unittest import mock
+        api = self._api()
+        with mock.patch.object(api.assistant, "reflect_candidates", side_effect=RuntimeError("boom")):
+            created = api.evolve.reflect()  # must not raise
+        self.assertIsInstance(created, list)
+
     def test_reflect_automation_action(self):
         api = self._api()
         api.memory_append("x"); api.memory_append("x")

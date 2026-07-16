@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -40,6 +41,24 @@ from utils import base_url_host_matches, base_url_hostname, env_float, env_int
 
 logger = logging.getLogger(__name__)
 _OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
+
+
+def _safe_int_seconds(value: float) -> int:
+    """Convert a timeout/deadline to int for display without crashing on infinity.
+
+    Local providers (Ollama, MoA virtual endpoints) set the stale timeout to
+    ``float("inf")`` to disable the stale detector.  ``int(float("inf"))``
+    raises ``OverflowError: cannot convert float infinity to integer``, which
+    crashes the wait-status heartbeat and propagates through the retry layer
+    as a spurious API failure.  See issue #65746.
+
+    Returns a large sentinel (999999) for non-finite values so the display
+    reads "auto-reconnect at 999999s" — clearly indicating no timeout —
+    instead of crashing.
+    """
+    if math.isinf(value) or math.isnan(value):
+        return 999999
+    return int(value)
 
 # When the fallback chain is fully exhausted on a non-rate-limit failure
 # (e.g. every provider returns a non-retryable client error like HTTP 400),
@@ -620,7 +639,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
             agent._emit_wait_notice(
                 f"⏳ waiting on {api_kwargs.get('model', 'the provider')} — "
                 f"{int(_elapsed)}s with no response yet (provider may be slow "
-                f"or overloaded; auto-reconnect at {int(_deadline)}s)"
+                f"or overloaded; auto-reconnect at {_safe_int_seconds(_deadline)}s)"
             )
 
         _elapsed = time.time() - _call_start
@@ -775,13 +794,13 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 if _silent_hint:
                     result["error"] = TimeoutError(
                         f"Non-streaming API call timed out after {int(_elapsed)}s "
-                        f"with no response (threshold: {int(_stale_timeout)}s). "
+                        f"with no response (threshold: {_safe_int_seconds(_stale_timeout)}s). "
                         f"{_silent_hint}"
                     )
                 else:
                     result["error"] = TimeoutError(
                         f"Non-streaming API call timed out after {int(_elapsed)}s "
-                        f"with no response (threshold: {int(_stale_timeout)}s)"
+                        f"with no response (threshold: {_safe_int_seconds(_stale_timeout)}s)"
                     )
             break
 

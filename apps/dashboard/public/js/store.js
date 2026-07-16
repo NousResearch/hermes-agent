@@ -20,6 +20,7 @@ function defaultState() {
       { id: uid(), type: "reading", size: "m" },
       { id: uid(), type: "tasks", size: "m" },
       { id: uid(), type: "markets", size: "m" },
+      { id: uid(), type: "scores", size: "m" },
       { id: uid(), type: "calendar", size: "m" },
       { id: uid(), type: "notes", size: "m" },
       { id: uid(), type: "focus", size: "s" },
@@ -74,6 +75,7 @@ function defaultState() {
     reading: { items: [] },
     newsRead: {}, // url → timestamp of first open (bounded in markRead)
     markets: { ids: ["bitcoin", "ethereum", "solana", "dogecoin"], holdings: {} },
+    sports: { league: "nba" },
     search: { engine: "google" },
   };
 }

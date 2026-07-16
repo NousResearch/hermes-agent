@@ -466,6 +466,40 @@ class MarketsWatchlistTests(unittest.TestCase):
         self.assertTrue(t["coins"])
         self.assertIn("symbol", t["coins"][0])
 
+    def test_scores_sample_shape(self):
+        for league in ("nba", "nfl", "epl"):
+            d = self.api.scores({"league": [league]})
+            self.assertEqual(d["league"], league)
+            self.assertTrue(d["games"])
+            g = d["games"][0]
+            self.assertIn(g["state"], ("pre", "in", "post"))
+            for side in ("home", "away"):
+                self.assertIn("abbr", g[side])
+
+    def test_scores_unknown_league_rejected(self):
+        with self.assertRaises(server.ApiError):
+            self.api.scores({"league": ["quidditch"]})
+
+    def test_scores_normalizer_from_espn_fixture(self):
+        raw = {
+            "events": [{
+                "id": "1", "date": "2026-07-16T00:00:00Z",
+                "status": {"type": {"state": "in", "shortDetail": "Q2"}, "displayClock": "5:00", "period": 2},
+                "competitions": [{"competitors": [
+                    {"homeAway": "home", "team": {"abbreviation": "KC", "displayName": "Chiefs"}, "score": "14"},
+                    {"homeAway": "away", "team": {"abbreviation": "BUF", "displayName": "Bills"}, "score": "10"},
+                ]}],
+            }],
+        }
+        import unittest.mock as mock
+        with mock.patch.object(server, "fetch_url", return_value=json.dumps(raw).encode()):
+            out = server.live_scores("nfl")
+        g = out["games"][0]
+        self.assertEqual(g["state"], "in")
+        self.assertEqual(g["home"]["abbr"], "KC")
+        self.assertEqual(g["away"]["abbr"], "BUF")
+        self.assertEqual(g["home"]["score"], "14")
+
 
 class MemoryAndToolsTests(unittest.TestCase):
     def setUp(self):

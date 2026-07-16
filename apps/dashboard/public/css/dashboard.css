@@ -841,6 +841,30 @@ a { color: inherit; }
 .evolve-rollback { padding: 3px 9px; font-size: 11px; color: var(--muted); }
 .evolve-rollback:hover { color: var(--status-warning); border-color: color-mix(in srgb, var(--status-warning) 45%, transparent); }
 
+/* ---------- sports scores ---------- */
+.score-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; max-height: 360px; overflow-y: auto; }
+.score-game {
+  display: flex; align-items: center; gap: 10px;
+  border: 1px solid var(--hairline); border-radius: 4px; padding: 8px 10px;
+}
+.score-game-live { border-color: color-mix(in srgb, var(--status-critical) 40%, transparent); }
+.score-teams { flex: 1; display: grid; gap: 3px; min-width: 0; }
+.score-team { display: flex; align-items: baseline; gap: 8px; }
+.score-abbr { font-family: ui-monospace, Menlo, monospace; font-weight: 700; min-width: 40px; }
+.score-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.score-num { font-variant-numeric: tabular-nums; font-size: 15px; min-width: 28px; text-align: right; }
+.score-num-live { color: var(--accent); }
+.score-team.score-win .score-abbr, .score-team.score-win .score-num { color: var(--ink); }
+.score-team:not(.score-win) .score-num { color: var(--ink-2); }
+.score-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 3px; flex: 0 0 auto; }
+.score-chip {
+  font-family: ui-monospace, Menlo, monospace; font-size: 9px; letter-spacing: 0.1em;
+  border: 1px solid var(--hairline-2); border-radius: 2px; padding: 1px 6px;
+}
+.score-live { color: var(--status-critical); border-color: color-mix(in srgb, var(--status-critical) 45%, transparent); animation: blink 1.4s steps(2) infinite; }
+.score-final { color: var(--muted); }
+.score-pre { color: var(--ink-2); }
+
 /* ---------- detail / expand window ---------- */
 .detail-backdrop {
   position: fixed;

@@ -853,6 +853,87 @@ def live_reader(url: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Sports scoreboards (ESPN public JSON — no key; unofficial, so parse defensively)
+# ---------------------------------------------------------------------------
+SCORES_TTL = 60  # short: live games move fast
+SPORT_LEAGUES = {
+    "nfl": ("football", "nfl"),
+    "nba": ("basketball", "nba"),
+    "mlb": ("baseball", "mlb"),
+    "nhl": ("hockey", "nhl"),
+    "epl": ("soccer", "eng.1"),
+    "mls": ("soccer", "usa.1"),
+    "ncaaf": ("football", "college-football"),
+    "wnba": ("basketball", "wnba"),
+}
+
+
+def _norm_competitor(c: dict) -> dict:
+    team = c.get("team") or {}
+    return {
+        "abbr": team.get("abbreviation") or team.get("shortDisplayName") or "?",
+        "name": team.get("displayName") or team.get("name") or "",
+        "score": c.get("score"),
+        "home": c.get("homeAway") == "home",
+        "winner": c.get("winner"),
+    }
+
+
+def live_scores(league: str) -> dict:
+    sport, lg = SPORT_LEAGUES[league]
+    url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{lg}/scoreboard"
+    raw = json.loads(fetch_url(url))
+    games = []
+    for event in raw.get("events", []):
+        try:
+            comp = (event.get("competitions") or [{}])[0]
+            status = (event.get("status") or {}).get("type") or {}
+            competitors = [_norm_competitor(c) for c in comp.get("competitors", [])]
+            home = next((c for c in competitors if c["home"]), None)
+            away = next((c for c in competitors if not c["home"]), None)
+            if not home or not away:
+                continue
+            games.append({
+                "id": event.get("id"),
+                "state": status.get("state", "pre"),   # pre | in | post
+                "status": status.get("shortDetail") or status.get("detail") or "",
+                "clock": (event.get("status") or {}).get("displayClock"),
+                "period": (event.get("status") or {}).get("period"),
+                "start": event.get("date"),
+                "home": home,
+                "away": away,
+            })
+        except Exception:
+            continue  # one malformed event must not sink the board
+    return {"source": "live", "league": league, "games": games}
+
+
+def sample_scores(league: str) -> dict:
+    now = datetime.now(timezone.utc)
+    demo = {
+        "nfl": [("KC", "Chiefs", "24", "BUF", "Bills", "20", "in", "Q4 · 2:11"),
+                ("DAL", "Cowboys", "0", "PHI", "Eagles", "0", "pre", "8:20 PM ET")],
+        "nba": [("BOS", "Celtics", "112", "LAL", "Lakers", "108", "post", "Final"),
+                ("GSW", "Warriors", "51", "DEN", "Nuggets", "48", "in", "Q3 · 5:40")],
+        "epl": [("ARS", "Arsenal", "2", "MCI", "Man City", "1", "in", "72'"),
+                ("LIV", "Liverpool", "0", "CHE", "Chelsea", "0", "pre", "Sat 12:30")],
+    }
+    rows = demo.get(league, demo["nba"])
+    games = []
+    for i, (ha, hn, hs, aa, an, as_, state, status) in enumerate(rows):
+        games.append({
+            "id": f"{league}-{i}", "state": state, "status": status,
+            "clock": None, "period": None,
+            "start": (now + timedelta(hours=i + 1)).isoformat(),
+            "home": {"abbr": ha, "name": hn, "score": hs if state != "pre" else None, "home": True,
+                     "winner": state == "post" and hs > as_},
+            "away": {"abbr": aa, "name": an, "score": as_ if state != "pre" else None, "home": False,
+                     "winner": state == "post" and as_ > hs},
+        })
+    return {"source": "sample", "league": league, "games": games}
+
+
+# ---------------------------------------------------------------------------
 # Live upstream calls (normalized to the same shapes as the samples)
 # ---------------------------------------------------------------------------
 def live_news(topic: str, limit: int, sources: list[dict]) -> dict:
@@ -1396,6 +1477,16 @@ class Api:
             lambda: sample_coin_chart(coin_id, days),
         )
 
+    def scores(self, params: dict) -> dict:
+        league = params.get("league", ["nba"])[0].lower()
+        if league not in SPORT_LEAGUES:
+            raise ApiError(400, f"unknown league {league!r}; valid: {list(SPORT_LEAGUES)}")
+        return self._cached(
+            f"scores:{league}", SCORES_TTL,
+            lambda: live_scores(league),
+            lambda: sample_scores(league),
+        )
+
     def crypto_global(self, params: dict) -> dict:
         return self._cached("crypto:global", CRYPTO_GLOBAL_TTL,
                             live_crypto_global, sample_crypto_global)
@@ -1816,6 +1907,7 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/crypto/chart": "crypto_chart",
         "/api/crypto/global": "crypto_global",
         "/api/crypto/trending": "crypto_trending",
+        "/api/scores": "scores",
         "/api/worldstate": "worldstate",
         "/api/reader": "reader",
         "/api/health": "health",

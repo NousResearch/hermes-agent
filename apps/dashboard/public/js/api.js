@@ -134,6 +134,7 @@ export const api = {
   cryptoChart: (id, days) => getJSON("/api/crypto/chart", { id, days }),
   cryptoGlobal: () => getJSON("/api/crypto/global"),
   cryptoTrending: () => getJSON("/api/crypto/trending"),
+  scores: (league) => getJSON("/api/scores", { league }),
   backupNow: () => postJSON("/api/backup", {}),
   backupGet: (name) => getJSON("/api/backup/get", { name }),
   backupImport: (snapshot) => postJSON("/api/backup/import", { snapshot }),

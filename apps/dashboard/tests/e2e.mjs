@@ -116,7 +116,7 @@ check("topbar brand", await page.locator(".brand-name").innerText() === "HERMES/
 check("dark theme default", await page.evaluate(() => document.documentElement.dataset.theme) === "dark");
 
 // ---- widgets render --------------------------------------------------------
-for (const type of ["clock", "worldstate", "agent", "weather", "launcher", "news", "reading", "tasks", "markets", "calendar", "notes", "focus", "system"]) {
+for (const type of ["clock", "worldstate", "agent", "weather", "launcher", "news", "reading", "tasks", "markets", "scores", "calendar", "notes", "focus", "system"]) {
   await page.waitForSelector(`.widget-${type}`, { timeout: 10000 });
   check(`widget ${type} present`, true);
 }
@@ -482,6 +482,17 @@ await page.evaluate(async (base) => {
 }, BASE);
 await page.waitForSelector(".cal-event-ext", { state: "detached", timeout: 10000 });
 check("unsubscribe clears external events", true);
+
+// ---- sports scores ---------------------------------------------------------------
+await page.waitForSelector(".widget-scores .score-game");
+check("scores board renders games", (await page.locator(".widget-scores .score-game").count()) >= 1);
+check("scores show a status chip", (await page.locator(".widget-scores .score-chip").count()) >= 1);
+await page.locator(".widget-scores .tab", { hasText: "NFL" }).click();
+await page.waitForFunction(() =>
+  document.querySelector('.widget-scores .tab[aria-selected="true"]')?.textContent === "NFL",
+  null, { timeout: 5000 });
+await page.waitForSelector(".widget-scores .score-game");
+check("scores league switch works", (await page.locator(".widget-scores .score-game").count()) >= 1);
 
 // ---- crypto global bar + trending -----------------------------------------------
 await page.waitForSelector(".global-bar");

@@ -28,6 +28,14 @@ describe('desktop i18n runtime translator', () => {
     expect(translateNow('notifications.updateReadyMessage', 2)).toBe('2 new changes available.')
   })
 
+  it('renders Ukrainian plural strings with the count', () => {
+    setRuntimeI18nLocale('uk')
+
+    expect(translateNow('settings.about.updateReady', 1)).toContain('1 зміна')
+    expect(translateNow('settings.about.updateReady', 5)).toContain('5 змін')
+    expect(translateNow('settings.about.updateReady', 21)).toContain('21 зміна')
+  })
+
   it('translates migrated overlap keys for newly supported locales', () => {
     setRuntimeI18nLocale('ja')
     expect(translateNow('common.save')).toBe('保存')

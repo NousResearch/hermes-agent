@@ -42,8 +42,11 @@ brew install himalaya
 # Any platform with Rust
 cargo install himalaya --locked
 
-# Fallback for platforms without brew or cargo (pre-built binary, Linux/macOS)
-curl -sSL https://raw.githubusercontent.com/pimalaya/himalaya/master/install.sh | PREFIX=~/.local sh
+# Fallback for platforms without brew or cargo (pre-built binary, Linux/macOS).
+# Download the installer first, inspect it, then run it — do not pipe remote content straight into a shell.
+curl -sSL https://raw.githubusercontent.com/pimalaya/himalaya/master/install.sh -o himalaya-install.sh
+# (review himalaya-install.sh, then:)
+PREFIX=~/.local sh himalaya-install.sh
 ```
 
 ## Configuration Setup

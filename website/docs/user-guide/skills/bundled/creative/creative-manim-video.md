@@ -1,14 +1,14 @@
 ---
-title: "Manim Video — Production pipeline for mathematical and technical animations using Manim Community Edition"
+title: "Manim Video — Manim CE animations: 3Blue1Brown math/algo videos"
 sidebar_label: "Manim Video"
-description: "Production pipeline for mathematical and technical animations using Manim Community Edition"
+description: "Manim CE animations: 3Blue1Brown math/algo videos"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Manim Video
 
-Production pipeline for mathematical and technical animations using Manim Community Edition. Creates 3Blue1Brown-style explainer videos, algorithm visualizations, equation derivations, architecture diagrams, and data stories. Use when users request: animated explanations, math animations, concept visualizations, algorithm walkthroughs, technical explainers, 3Blue1Brown style videos, or any programmatic animation with geometric/mathematical content.
+Manim CE animations: 3Blue1Brown math/algo videos.
 
 ## Skill metadata
 
@@ -17,6 +17,7 @@ Production pipeline for mathematical and technical animations using Manim Commun
 | Source | Bundled (installed by default) |
 | Path | `skills/creative/manim-video` |
 | Version | `1.0.0` |
+| Platforms | linux, macos, windows |
 
 ## Reference: full SKILL.md
 
@@ -25,6 +26,10 @@ The following is the complete skill definition that Hermes loads when this skill
 :::
 
 # Manim Video Production Pipeline
+
+## When to use
+
+Use when users request: animated explanations, math animations, concept visualizations, algorithm walkthroughs, technical explainers, 3Blue1Brown style videos, or any programmatic animation with geometric/mathematical content. Creates 3Blue1Brown-style explainer videos, algorithm visualizations, equation derivations, architecture diagrams, and data stories using Manim Community Edition.
 
 ## Creative Standard
 

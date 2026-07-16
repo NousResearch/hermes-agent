@@ -1,6 +1,5 @@
 """Tests for named custom provider and 'main' alias resolution in auxiliary_client."""
 
-import os
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -427,3 +426,138 @@ class TestProvidersDictApiModeAnthropicMessages:
         assert isinstance(sync_client, OpenAI)
         async_client, _ = resolve_provider_client("localchat", async_mode=True)
         assert isinstance(async_client, AsyncOpenAI)
+
+
+class TestCustomProviderAliasCollision:
+    """A user-declared custom_providers entry whose name matches a built-in
+    *alias* (not a canonical provider) must win over the built-in.
+
+    Regression guard for #15743: users who defined fallback_model pointing at
+    a custom_providers entry named ``kimi`` were having requests routed to
+    the built-in kimi-coding endpoint because ``_normalize_aux_provider``
+    rewrote ``kimi`` → ``kimi-coding`` before the named-custom lookup.
+    """
+
+    def test_custom_named_kimi_wins_over_builtin_alias(self, tmp_path):
+        _write_config(tmp_path, {
+            "model": {"provider": "openrouter", "default": "anthropic/claude-sonnet-4.6"},
+            "custom_providers": [
+                {
+                    "name": "kimi",
+                    "base_url": "https://my-custom-kimi.example.com/v1",
+                    "api_key": "my-kimi-key",
+                    "models": {"my-kimi-model": {"context_length": 200000}},
+                },
+            ],
+        })
+        from agent.auxiliary_client import resolve_provider_client
+        from openai import OpenAI
+        client, model = resolve_provider_client("kimi", model="my-kimi-model", raw_codex=True)
+        assert isinstance(client, OpenAI)
+        assert "my-custom-kimi.example.com" in str(client.base_url)
+        assert client.api_key == "my-kimi-key"
+        assert model == "my-kimi-model"
+
+    def test_bare_kimi_without_custom_still_routes_to_builtin(self, tmp_path, monkeypatch):
+        """Regression guard: bare 'kimi' with no custom entry must still
+        reach the built-in kimi-coding provider."""
+        _write_config(tmp_path, {
+            "model": {"provider": "openrouter", "default": "anthropic/claude-sonnet-4.6"},
+        })
+        monkeypatch.setenv("KIMI_API_KEY", "builtin-kimi-key")
+        from agent.auxiliary_client import resolve_provider_client
+        client, _ = resolve_provider_client("kimi", model="kimi-k2-0905-preview", raw_codex=True)
+        assert client is not None
+        base_url = str(client.base_url)
+        # Built-in kimi-coding points at api.moonshot.ai
+        assert "moonshot" in base_url or "kimi" in base_url, f"unexpected base_url {base_url!r}"
+
+    def test_explicit_overrides_applied_on_api_key_branch(self, tmp_path, monkeypatch):
+        """Explicit base_url/api_key from the caller must override the
+        registered provider's defaults on the API-key branch.  Used by
+        _try_activate_fallback to route a fallback through a built-in
+        provider name but targeting a user-supplied endpoint."""
+        _write_config(tmp_path, {
+            "model": {"provider": "openrouter", "default": "anthropic/claude-sonnet-4.6"},
+        })
+        monkeypatch.setenv("KIMI_API_KEY", "builtin-kimi-key")
+        from agent.auxiliary_client import resolve_provider_client
+        from openai import OpenAI
+        client, _ = resolve_provider_client(
+            "kimi-coding", model="kimi-k2", raw_codex=True,
+            explicit_base_url="https://override.example.com",
+            explicit_api_key="override-key",
+        )
+        assert isinstance(client, OpenAI)
+        assert "override.example.com" in str(client.base_url)
+        assert client.api_key == "override-key"
+
+
+class TestResolveProviderClientMainRuntimeCustom:
+    """When the main agent uses a named custom provider (custom:<name>),
+    resolve_provider_client('custom', ..., main_runtime=...) must reuse the
+    main_runtime's base_url + api_key instead of re-resolving from the bare
+    'custom' provider name.  Re-resolution loses the provider name and falls
+    back to OpenRouter or a wrong API-key provider. (#45472)"""
+
+    def test_custom_provider_main_runtime_used_directly(self, tmp_path, monkeypatch):
+        """main_runtime with base_url + api_key for a named custom provider
+        is used directly, bypassing the _try_custom_endpoint / API-key
+        fallback chain."""
+        from agent.auxiliary_client import resolve_provider_client
+        main_runtime = {
+            "provider": "custom",
+            "base_url": "https://my-gateway.example.com/v1",
+            "api_key": "***",
+            "model": "glm-5.1",
+        }
+        client, model = resolve_provider_client(
+            "custom",
+            model="explicit-glm-5.1",
+            main_runtime=main_runtime,
+        )
+        assert client is not None
+        assert model == "explicit-glm-5.1"
+        assert "my-gateway.example.com" in str(client.base_url)
+        assert client.api_key == "***"
+
+    def test_custom_provider_main_runtime_no_credentials_falls_through(self, tmp_path, monkeypatch):
+        """When main_runtime has no base_url or no api_key, the existing
+        _try_custom_endpoint / _resolve_api_key_provider fallback chain is
+        still tried."""
+        # Ensure no env-provided credentials interfere
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        from agent.auxiliary_client import resolve_provider_client
+        # main_runtime with key but no base_url → must fall through
+        client, model = resolve_provider_client(
+            "custom",
+            main_runtime={"api_key": "k", "base_url": ""},
+        )
+        # Should fall through to _try_custom_endpoint → return None,None
+        # because no OPENAI_BASE_URL is set and no custom endpoint is configured
+        assert client is None
+
+    def test_custom_provider_main_runtime_respects_explicit_base_url(self, tmp_path):
+        """explicit_base_url still wins over main_runtime — the caller's
+        explicit argument is the strongest signal."""
+        from agent.auxiliary_client import resolve_provider_client
+        main_runtime = {
+            "base_url": "https://main-runtime.example.com/v1",
+            "api_key": "sk-main",
+            "model": "ignored-model",
+        }
+        client, model = resolve_provider_client(
+            "custom",
+            model="explicit-model",
+            explicit_base_url="https://explicit.example.com/v1",
+            explicit_api_key="sk-explicit",
+            main_runtime=main_runtime,
+        )
+        assert client is not None
+        assert model == "explicit-model"
+        assert "explicit.example.com" in str(client.base_url)
+        assert client.api_key == "sk-explicit"

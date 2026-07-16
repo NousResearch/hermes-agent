@@ -1,14 +1,14 @@
 ---
-title: "Jupyter Live Kernel — Use a live Jupyter kernel for stateful, iterative Python execution via hamelnb"
+title: "Jupyter Live Kernel — Iterative Python via live Jupyter kernel (hamelnb)"
 sidebar_label: "Jupyter Live Kernel"
-description: "Use a live Jupyter kernel for stateful, iterative Python execution via hamelnb"
+description: "Iterative Python via live Jupyter kernel (hamelnb)"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Jupyter Live Kernel
 
-Use a live Jupyter kernel for stateful, iterative Python execution via hamelnb. Load this skill when the task involves exploration, iteration, or inspecting intermediate results — data science, ML experimentation, API exploration, or building up complex code step-by-step. Uses terminal to run CLI commands against a live Jupyter kernel. No new tools required.
+Iterative Python via live Jupyter kernel (hamelnb).
 
 ## Skill metadata
 
@@ -19,6 +19,7 @@ Use a live Jupyter kernel for stateful, iterative Python execution via hamelnb. 
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `jupyter`, `notebook`, `repl`, `data-science`, `exploration`, `iterative` |
 
 ## Reference: full SKILL.md

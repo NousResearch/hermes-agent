@@ -5,8 +5,10 @@ from __future__ import annotations
 import importlib
 import os
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from hermes_state import SessionDB
 from tools.todo_tool import TodoStore
@@ -130,7 +132,21 @@ def _prepare_cli_with_active_session(tmp_path):
     old_session_start = cli.session_start - timedelta(seconds=1)
     cli.session_start = old_session_start
     cli.agent.session_start = old_session_start
+
+    # Bypass the destructive-slash confirmation gate — these tests focus on
+    # the new-session mechanics, not the confirm prompt itself (covered in
+    # tests/cli/test_destructive_slash_confirm.py).
+    cli._confirm_destructive_slash = lambda *_a, **_kw: "once"
     return cli
+
+
+@pytest.fixture(autouse=True)
+def _reset_session_id_context():
+    from gateway.session_context import _UNSET, _VAR_MAP
+
+    yield
+    os.environ.pop("HERMES_SESSION_ID", None)
+    _VAR_MAP["HERMES_SESSION_ID"].set(_UNSET)
 
 
 def test_new_command_creates_real_fresh_session_and_resets_agent_state(tmp_path):
@@ -157,6 +173,102 @@ def test_new_command_creates_real_fresh_session_and_resets_agent_state(tmp_path)
     assert cli.session_start > old_session_start
     assert cli.agent.session_start == cli.session_start
     cli.agent._invalidate_system_prompt.assert_called_once()
+
+
+def test_new_session_queues_boundary_commit_with_snapshot(tmp_path):
+    """/new hands the OLD session's history + ids to the memory manager's
+    serialized boundary task instead of blocking on extraction inline."""
+    cli = _prepare_cli_with_active_session(tmp_path)
+    old_session_id = cli.session_id
+
+    mm = MagicMock()
+    cli.agent._memory_manager = mm
+
+    cli.process_command("/new")
+
+    mm.commit_session_boundary_async.assert_called_once()
+    args, kwargs = mm.commit_session_boundary_async.call_args
+    assert args[0] == [{"role": "user", "content": "hello"}]
+    assert kwargs["new_session_id"] == cli.session_id
+    assert kwargs["parent_session_id"] == old_session_id
+    assert kwargs["reason"] == "new_session"
+    # The queued path replaces the inline switch — not both.
+    mm.on_session_switch.assert_not_called()
+
+
+def test_new_session_without_history_switches_inline(tmp_path):
+    """No old-session history → nothing to extract → plain inline switch."""
+    cli = _prepare_cli_with_active_session(tmp_path)
+    cli.conversation_history = []
+
+    mm = MagicMock()
+    cli.agent._memory_manager = mm
+
+    cli.process_command("/new")
+
+    mm.commit_session_boundary_async.assert_not_called()
+    mm.on_session_switch.assert_called_once()
+    _, kwargs = mm.on_session_switch.call_args
+    assert kwargs["reset"] is True
+
+
+def test_new_session_delivers_context_engine_boundary_synchronously(tmp_path):
+    """The context-engine on_session_end must fire during /new itself.
+
+    It is cheap local state work and ordering-sensitive: it must land before
+    reset_session_state() rebinds the engine to the new session. The LLM-bound
+    provider extraction is what gets deferred, not this."""
+    cli = _prepare_cli_with_active_session(tmp_path)
+    old_session_id = cli.session_id
+
+    engine_calls = []
+    cli.agent.context_compressor.on_session_end = (
+        lambda sid, msgs: engine_calls.append((sid, list(msgs)))
+    )
+
+    cli.process_command("/new")
+
+    assert engine_calls == [(old_session_id, [{"role": "user", "content": "hello"}])]
+
+
+def test_run_cleanup_flushes_pending_memory_manager_work(tmp_path):
+    """A '/new then quit' must not drop the queued old-session extraction.
+
+    _run_cleanup gives the manager's serialized worker a bounded drain via
+    flush_pending() before shutdown_all()'s short-fuse drain runs."""
+    import cli as _cli_mod
+
+    agent = MagicMock()
+    mm = MagicMock()
+    mm.flush_pending.return_value = True
+    agent._memory_manager = mm
+    agent._session_messages = []
+
+    old_ref = _cli_mod._active_agent_ref
+    _cli_mod._active_agent_ref = agent
+    _cli_mod._cleanup_done = False
+    try:
+        _cli_mod._run_cleanup(notify_session_finalize=False)
+    finally:
+        _cli_mod._cleanup_done = True
+        _cli_mod._active_agent_ref = old_ref
+
+    mm.flush_pending.assert_called_once_with(timeout=10)
+
+
+def test_new_command_rotates_hermes_session_id_env_and_context(tmp_path):
+    from gateway.session_context import _VAR_MAP, get_session_env
+
+    cli = _prepare_cli_with_active_session(tmp_path)
+    old_session_id = cli.session_id
+    os.environ["HERMES_SESSION_ID"] = old_session_id
+    _VAR_MAP["HERMES_SESSION_ID"].set(old_session_id)
+
+    cli.process_command("/new")
+
+    assert cli.session_id != old_session_id
+    assert os.environ["HERMES_SESSION_ID"] == cli.session_id
+    assert get_session_env("HERMES_SESSION_ID") == cli.session_id
 
 
 def test_reset_command_is_alias_for_new_session(tmp_path):
@@ -219,3 +331,59 @@ def test_new_session_resets_token_counters(tmp_path):
     assert comp.last_total_tokens == 0
     assert comp.compression_count == 0
     assert comp._context_probed is False
+
+
+def test_new_session_with_title(capsys):
+    """new_session(title=...) creates a session and sets the title."""
+    cli = _make_cli()
+    cli._session_db = MagicMock()
+    cli.agent = _FakeAgent("old_session_id", datetime.now())
+    cli.conversation_history = []
+
+    cli.new_session(title="My Test Session")
+
+    # Assert set_session_title was called with the new session ID and sanitized title
+    cli._session_db.set_session_title.assert_called_once()
+    call_args = cli._session_db.set_session_title.call_args
+    assert call_args[0][0] == cli.session_id
+    assert call_args[0][1] == "My Test Session"
+
+    captured = capsys.readouterr()
+    assert "My Test Session" in captured.out
+
+
+def test_new_session_with_duplicate_title_surfaces_error(capsys):
+    """new_session(title=...) handles ValueError from a duplicate-title conflict.
+
+    The session is still created; the title assignment fails; the success banner
+    must not claim the rejected title as the session name.
+    """
+    cli = _make_cli()
+    cli._session_db = MagicMock()
+    cli._session_db.set_session_title.side_effect = ValueError(
+        "Title 'Dup' is already in use by session abc-123"
+    )
+    cli.agent = _FakeAgent("old_session_id", datetime.now())
+    cli.conversation_history = []
+
+    # Capture warnings printed via cli._cprint. After importlib.reload(),
+    # the method's __globals__ dict is the one from the live module — patch
+    # the exact dict the method will read.
+    warnings: list[str] = []
+    method_globals = cli.new_session.__globals__
+    original = method_globals["_cprint"]
+    method_globals["_cprint"] = lambda msg: warnings.append(msg)
+    try:
+        cli.new_session(title="Dup")
+    finally:
+        method_globals["_cprint"] = original
+
+    cli._session_db.set_session_title.assert_called_once()
+    joined = "\n".join(warnings)
+    assert "already in use" in joined
+    assert "session started untitled" in joined
+
+    # The success banner must NOT claim the rejected title as the session name.
+    captured = capsys.readouterr()
+    assert "New session started: Dup" not in captured.out
+    assert "New session started!" in captured.out

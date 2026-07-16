@@ -14,10 +14,13 @@
     uv2nix = {
       url = "github:pyproject-nix/uv2nix";
       inputs.nixpkgs.follows = "nixpkgs";
+      inputs.pyproject-nix.follows = "pyproject-nix";
     };
     pyproject-build-systems = {
       url = "github:pyproject-nix/build-system-pkgs";
       inputs.nixpkgs.follows = "nixpkgs";
+      inputs.pyproject-nix.follows = "pyproject-nix";
+      inputs.uv2nix.follows = "uv2nix";
     };
     npm-lockfile-fix = {
       url = "github:jeslie0/npm-lockfile-fix";
@@ -36,6 +39,7 @@
 
       imports = [
         ./nix/packages.nix
+        ./nix/overlays.nix
         ./nix/nixosModules.nix
         ./nix/checks.nix
         ./nix/devShell.nix

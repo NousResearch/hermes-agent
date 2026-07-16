@@ -5177,6 +5177,81 @@ def test_config_set_personality_preserves_history_and_returns_info(monkeypatch):
     assert ("session.info", "sid", {"model": "?"}) in emits
 
 
+def test_config_set_personality_integration_with_real_lookup_and_write(
+    tmp_path, monkeypatch
+):
+    import yaml
+
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    cfg_file = home / "config.yaml"
+    cfg = {
+        "agent": {
+            "personalities": {
+                "super_helper": {
+                    "system_prompt": "You are a super helper.",
+                    "tone": "enthusiastic",
+                    "style": "concise",
+                }
+            }
+        }
+    }
+    cfg_file.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+    token = set_hermes_home_override(home)
+    monkeypatch.setattr(server, "_hermes_home", home)
+    try:
+        server._cfg_cache = None
+        server._cfg_mtime = None
+        server._cfg_path = None
+
+        agent = types.SimpleNamespace(
+            ephemeral_system_prompt=None, _cached_system_prompt="old default prompt"
+        )
+        session = _session(
+            agent=agent,
+            history=[],
+            history_version=1,
+        )
+        server._sessions["sid"] = session
+
+        monkeypatch.setattr(server, "_session_info", lambda _agent, *a: {"model": "?"})
+
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": "sid",
+                    "key": "personality",
+                    "value": "super_helper",
+                },
+            }
+        )
+
+        assert "error" not in resp, f"Request failed: {resp}"
+        assert resp["result"]["key"] == "personality"
+        assert resp["result"]["value"] == "super_helper"
+        assert resp["result"]["history_reset"] is False
+
+        rendered = "You are a super helper.\nTone: enthusiastic\nStyle: concise"
+        assert agent.ephemeral_system_prompt == rendered
+        assert agent._cached_system_prompt == "old default prompt"
+
+        written_cfg = yaml.safe_load(cfg_file.read_text(encoding="utf-8"))
+        assert written_cfg["display"]["personality"] == "super_helper"
+        assert written_cfg["agent"]["system_prompt"] == rendered
+
+    finally:
+        server._sessions.pop("sid", None)
+        server._cfg_cache = None
+        server._cfg_mtime = None
+        server._cfg_path = None
+        reset_hermes_home_override(token)
+
+
 def test_session_compress_uses_compress_helper(monkeypatch):
     agent = types.SimpleNamespace()
     server._sessions["sid"] = _session(agent=agent)

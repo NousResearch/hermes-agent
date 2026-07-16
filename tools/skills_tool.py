@@ -1142,7 +1142,7 @@ def skill_view(
                             ".tex",
                             ".sh",
                         }:
-                            available_files["other"].append(rel)
+                            available_files["other"].append(str(rel_path))
 
                 # Remove empty categories
                 available_files = {k: v for k, v in available_files.items() if v}

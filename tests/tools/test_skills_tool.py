@@ -438,6 +438,38 @@ class TestSkillView:
         result = json.loads(raw)
         assert result["success"] is False
 
+    def test_view_nonexistent_file_categorizes_available_files(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(tmp_path, "my-skill")
+            (skill_dir / "references").mkdir()
+            (skill_dir / "references" / "guide.md").write_text("ref content")
+            (skill_dir / "templates").mkdir()
+            (skill_dir / "templates" / "output.yaml").write_text("template content")
+            (skill_dir / "assets").mkdir()
+            (skill_dir / "assets" / "icon.png").write_bytes(b"\x89PNG")
+            (skill_dir / "scripts").mkdir()
+            (skill_dir / "scripts" / "build.sh").write_text("#!/bin/bash")
+
+            raw = skill_view("my-skill", file_path="references/nonexistent.md")
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        available = result["available_files"]
+        # Use Path parts for platform-agnostic comparison (Windows uses backslashes)
+        assert [Path(p).parts for p in available["references"]] == [
+            ("references", "guide.md")
+        ]
+        assert [Path(p).parts for p in available["templates"]] == [
+            ("templates", "output.yaml")
+        ]
+        assert [Path(p).parts for p in available["assets"]] == [
+            ("assets", "icon.png")
+        ]
+        assert [Path(p).parts for p in available["scripts"]] == [
+            ("scripts", "build.sh")
+        ]
+        assert "other" not in available
+
     def test_view_shows_linked_files(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             skill_dir = _make_skill(tmp_path, "my-skill")

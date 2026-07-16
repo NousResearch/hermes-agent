@@ -5522,33 +5522,25 @@ def _require_valid_memory_provider_name(name: str) -> None:
 
 
 @app.get("/api/memory/providers/{name}/config")
-async def get_memory_provider_config(name: str, profile: Optional[str] = None):
+async def get_memory_provider_config(name: str, surface: Optional[str] = None, profile: Optional[str] = None):
     _require_valid_memory_provider_name(name)
 
     def _run():
         with _profile_scope(profile):
-            declared = get_provider_config_schema(name)
-            if declared is not None:
-                payload = _declared_provider_payload(declared)
-                payload["setup"] = _memory_provider_setup_info(name)
-                return payload
+            if surface == "declared":
+                declared = get_provider_config_schema(name)
+                if declared is None:
+                    # Undeclared providers (e.g. builtin) have no desktop
+                    # config surface; the generic panel renders nothing.
+                    return {"name": name, "label": name, "docs_url": "", "fields": []}
+                return _declared_provider_payload(declared)
+
             provider = _load_memory_provider(name)
             if provider is None:
-                # Undeclared providers (e.g. builtin) have no config surface. Return
-                # an empty schema so the generic panels simply render nothing.
-                return {
-                    "name": name,
-                    "label": name,
-                    "docs_url": "",
-                    "fields": [],
-                    "actions": [],
-                    "setup": _memory_provider_setup_info(name),
-                }
-            payload = _memory_provider_payload(name, provider)
-            # The desktop panel expects these keys on every provider payload.
-            payload.setdefault("docs_url", "")
-            payload.setdefault("actions", [])
-            return payload
+                # Undeclared providers (e.g. builtin) have no config surface. Return an
+                # empty schema so the generic panel simply renders nothing.
+                return {"name": name, "label": name, "fields": [], "setup": _memory_provider_setup_info(name)}
+            return _memory_provider_payload(name, provider)
 
     return await asyncio.to_thread(_run)
 
@@ -5574,16 +5566,21 @@ async def setup_memory_provider(name: str, body: MemoryProviderSetupRequest):
 
 
 @app.put("/api/memory/providers/{name}/config")
-async def update_memory_provider_config(name: str, body: MemoryProviderConfigUpdate, profile: Optional[str] = None):
+async def update_memory_provider_config(
+    name: str, body: MemoryProviderConfigUpdate, surface: Optional[str] = None, profile: Optional[str] = None
+):
     _require_valid_memory_provider_name(name)
     values = body.values or {}
 
     def _run():
         with _profile_scope(profile):
-            declared = get_provider_config_schema(name)
-            if declared is not None:
+            if surface == "declared":
+                declared = get_provider_config_schema(name)
+                if declared is None:
+                    raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")
                 _update_memory_provider_config(declared, _stringify_submitted_values(values))
-                return {"ok": True, "active": declared.name}
+                return {"ok": True}
+
             provider = _load_memory_provider(name)
             if provider is None:
                 raise HTTPException(status_code=404, detail=f"Unknown memory provider: {name}")

@@ -469,16 +469,30 @@ class TestWebServerEndpoints:
         fields = self._provider_field_map(data)
         assert fields["mode"]["kind"] == "select"
         assert fields["mode"]["value"] == "cloud"
-        assert {opt["value"] for opt in fields["mode"]["options"]} == {"cloud", "local_external"}
-        assert fields["api_url"]["value"] == "https://api.hindsight.vectorize.io"
+        assert {opt["value"] for opt in fields["mode"]["options"]} >= {
+            "cloud",
+            "local_external",
+        }
+        assert fields["api_url"]["kind"] == "text"
+        assert fields["api_url"]["value"]
         assert fields["bank_id"]["value"] == "hermes"
         assert fields["recall_budget"]["value"] == "mid"
         assert fields["api_key"]["kind"] == "secret"
         assert fields["api_key"]["is_set"] is False
+        assert fields["api_key"]["required"] is False
+
+    def test_get_memory_provider_config_loads_dynamic_plugin_schema(self):
+        resp = self.client.get("/api/memory/providers/honcho/config")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        fields = self._provider_field_map(data)
+        assert fields["api_key"]["kind"] == "secret"
+        assert fields["api_key"]["url"] == "https://app.honcho.dev"
+        assert fields["baseUrl"]["kind"] == "text"
 
     def test_instance_schema_serves_providers_without_declared_schema(self, monkeypatch):
-        # Providers with no config_schema.py fall back to the plugin instance's
-        # get_config_schema(); the payload gains the keys the desktop expects.
+        # The default surface serves the plugin instance's get_config_schema().
         from hermes_cli import web_server
 
         class _Stub:
@@ -498,8 +512,6 @@ class TestWebServerEndpoints:
         assert fields["api_key"]["kind"] == "secret"
         assert fields["api_key"]["url"] == "https://stub.example"
         assert fields["baseUrl"]["kind"] == "text"
-        assert data["actions"] == []
-        assert data["docs_url"] == ""
 
     def test_declared_surface_serves_curated_hindsight_schema(self):
         resp = self.client.get("/api/memory/providers/hindsight/config?surface=declared")
@@ -512,7 +524,7 @@ class TestWebServerEndpoints:
         assert fields["api_key"]["kind"] == "secret"
 
     def test_declared_surface_hides_undeclared_providers(self):
-        resp = self.client.get("/api/memory/providers/honcho/config?surface=declared")
+        resp = self.client.get("/api/memory/providers/builtin/config?surface=declared")
 
         assert resp.status_code == 200
         assert resp.json()["fields"] == []
@@ -544,7 +556,7 @@ class TestWebServerEndpoints:
 
     def test_declared_surface_put_rejects_undeclared_provider(self):
         resp = self.client.put(
-            "/api/memory/providers/honcho/config?surface=declared",
+            "/api/memory/providers/builtin/config?surface=declared",
             json={"values": {"api_key": "x"}},
         )
 
@@ -967,7 +979,7 @@ class TestWebServerEndpoints:
         # HOME isn't isolated by the suite; pin it so ~/.honcho can't leak in.
         monkeypatch.setenv("HOME", str(tmp_path))
 
-        resp = self.client.get("/api/memory/providers/honcho/config")
+        resp = self.client.get("/api/memory/providers/honcho/config?surface=declared")
 
         assert resp.status_code == 200
         data = resp.json()
@@ -999,7 +1011,7 @@ class TestWebServerEndpoints:
         from hermes_cli.config import load_config, load_env
 
         resp = self.client.put(
-            "/api/memory/providers/honcho/config",
+            "/api/memory/providers/honcho/config?surface=declared",
             json={
                 "values": {
                     "apiKey": "hch-test-key",
@@ -1014,7 +1026,7 @@ class TestWebServerEndpoints:
         )
 
         assert resp.status_code == 200
-        assert resp.json() == {"ok": True, "active": "honcho"}
+        assert resp.json() == {"ok": True}
         assert load_config()["memory"]["provider"] == "honcho"
         assert load_env()["HONCHO_API_KEY"] == "hch-test-key"
 
@@ -1034,11 +1046,11 @@ class TestWebServerEndpoints:
         from hermes_constants import get_hermes_home
 
         self.client.put(
-            "/api/memory/providers/honcho/config",
+            "/api/memory/providers/honcho/config?surface=declared",
             json={"values": {"workspace": "myws"}},
         )
         self.client.put(
-            "/api/memory/providers/honcho/config",
+            "/api/memory/providers/honcho/config?surface=declared",
             json={"values": {"workspace": ""}},
         )
 
@@ -1051,11 +1063,11 @@ class TestWebServerEndpoints:
         from hermes_constants import get_hermes_home
 
         self.client.put(
-            "/api/memory/providers/honcho/config",
+            "/api/memory/providers/honcho/config?surface=declared",
             json={"values": {"workspace": "myws"}},
         )
         self.client.put(
-            "/api/memory/providers/honcho/config",
+            "/api/memory/providers/honcho/config?surface=declared",
             json={"values": {"peerName": "eri"}},
         )
 
@@ -1067,7 +1079,7 @@ class TestWebServerEndpoints:
         monkeypatch.setenv("HOME", str(tmp_path))
 
         resp = self.client.put(
-            "/api/memory/providers/honcho/config",
+            "/api/memory/providers/honcho/config?surface=declared",
             json={"values": {"environment": "bogus"}},
         )
 
@@ -1080,11 +1092,11 @@ class TestWebServerEndpoints:
         self._seed_local_honcho()
 
         self.client.put(
-            "/api/memory/providers/honcho/config",
+            "/api/memory/providers/honcho/config?surface=declared",
             json={"values": {"apiKey": "secret-value"}},
         )
 
-        resp = self.client.get("/api/memory/providers/honcho/config")
+        resp = self.client.get("/api/memory/providers/honcho/config?surface=declared")
 
         assert resp.status_code == 200
         data = resp.json()
@@ -1099,7 +1111,7 @@ class TestWebServerEndpoints:
         from hermes_constants import get_hermes_home
 
         self.client.put(
-            "/api/memory/providers/honcho/config",
+            "/api/memory/providers/honcho/config?surface=declared",
             json={"values": {"saveMessages": "false", "dialecticDynamic": "true"}},
         )
 
@@ -1108,7 +1120,7 @@ class TestWebServerEndpoints:
         assert host["saveMessages"] is False
         assert host["dialecticDynamic"] is True
 
-        fields = self._provider_field_map(self.client.get("/api/memory/providers/honcho/config").json())
+        fields = self._provider_field_map(self.client.get("/api/memory/providers/honcho/config?surface=declared").json())
         assert fields["saveMessages"]["value"] == "false"
         assert fields["dialecticDynamic"]["value"] == "true"
 
@@ -1118,7 +1130,7 @@ class TestWebServerEndpoints:
         from hermes_constants import get_hermes_home
 
         self.client.put(
-            "/api/memory/providers/honcho/config",
+            "/api/memory/providers/honcho/config?surface=declared",
             json={"values": {"dialecticMaxChars": "1200", "timeout": "2.5"}},
         )
 
@@ -1128,7 +1140,7 @@ class TestWebServerEndpoints:
         # timeout is root-scoped and keeps its fractional part.
         assert cfg["timeout"] == 2.5
 
-        fields = self._provider_field_map(self.client.get("/api/memory/providers/honcho/config").json())
+        fields = self._provider_field_map(self.client.get("/api/memory/providers/honcho/config?surface=declared").json())
         assert fields["dialecticMaxChars"]["value"] == "1200"
 
     def test_put_honcho_json_round_trips_object(self, monkeypatch, tmp_path):
@@ -1137,14 +1149,14 @@ class TestWebServerEndpoints:
         from hermes_constants import get_hermes_home
 
         self.client.put(
-            "/api/memory/providers/honcho/config",
+            "/api/memory/providers/honcho/config?surface=declared",
             json={"values": {"userPeerAliases": '{"telegram_1": "eri"}'}},
         )
 
         host = json.loads((get_hermes_home() / "honcho.json").read_text(encoding="utf-8"))["hosts"]["hermes"]
         assert host["userPeerAliases"] == {"telegram_1": "eri"}
 
-        fields = self._provider_field_map(self.client.get("/api/memory/providers/honcho/config").json())
+        fields = self._provider_field_map(self.client.get("/api/memory/providers/honcho/config?surface=declared").json())
         assert json.loads(fields["userPeerAliases"]["value"]) == {"telegram_1": "eri"}
 
     def test_put_honcho_first_save_merges_into_resolved_config(self, monkeypatch, tmp_path):
@@ -1160,7 +1172,7 @@ class TestWebServerEndpoints:
         )
 
         resp = self.client.put(
-            "/api/memory/providers/honcho/config",
+            "/api/memory/providers/honcho/config?surface=declared",
             json={"values": {"peerName": "eri"}},
         )
 
@@ -1178,7 +1190,7 @@ class TestWebServerEndpoints:
         path = self._seed_local_honcho({"hosts": {"hermes.work": {"workspace": "w", "peerName": "eri"}}})
 
         resp = self.client.put(
-            "/api/memory/providers/honcho/config",
+            "/api/memory/providers/honcho/config?surface=declared",
             json={"values": {"sessionStrategy": "per-repo"}},
         )
 
@@ -1196,7 +1208,7 @@ class TestWebServerEndpoints:
         path = self._seed_local_honcho({"hosts": {"hermes": {"apiKey": "hch-at-oauth-token"}}})
 
         resp = self.client.put(
-            "/api/memory/providers/honcho/config",
+            "/api/memory/providers/honcho/config?surface=declared",
             json={"values": {"apiKey": "manual-key"}},
         )
 
@@ -1212,7 +1224,7 @@ class TestWebServerEndpoints:
         path = self._seed_local_honcho({"hosts": None})
 
         resp = self.client.put(
-            "/api/memory/providers/honcho/config",
+            "/api/memory/providers/honcho/config?surface=declared",
             json={"values": {"workspace": "myws"}},
         )
 
@@ -1234,7 +1246,7 @@ class TestWebServerEndpoints:
         worker_cfg.write_text(json.dumps({"hosts": {"hermes_worker": {"workspace": "kept"}}}), encoding="utf-8")
 
         resp = self.client.put(
-            "/api/memory/providers/honcho/config?profile=worker",
+            "/api/memory/providers/honcho/config?surface=declared&profile=worker",
             json={"values": {"peerName": "eri"}},
         )
 
@@ -1247,7 +1259,7 @@ class TestWebServerEndpoints:
         assert "peerName" not in json.dumps(own)
 
         fields = self._provider_field_map(
-            self.client.get("/api/memory/providers/honcho/config?profile=worker").json()
+            self.client.get("/api/memory/providers/honcho/config?surface=declared&profile=worker").json()
         )
         assert fields["peerName"]["value"] == "eri"
 
@@ -1255,11 +1267,11 @@ class TestWebServerEndpoints:
         monkeypatch.setenv("HOME", str(tmp_path))
 
         assert self.client.put(
-            "/api/memory/providers/honcho/config",
+            "/api/memory/providers/honcho/config?surface=declared",
             json={"values": {"dialecticMaxChars": "lots"}},
         ).status_code == 400
         assert self.client.put(
-            "/api/memory/providers/honcho/config",
+            "/api/memory/providers/honcho/config?surface=declared",
             json={"values": {"userPeerAliases": "{not json"}},
         ).status_code == 400
 

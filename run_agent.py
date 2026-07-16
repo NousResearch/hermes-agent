@@ -4897,7 +4897,7 @@ class AIAgent:
         """
         model = (getattr(self, "model", "") or "").strip().lower()
         bare_model = model.rsplit("/", 1)[-1]
-        if bare_model.startswith("mimo"):
+        if bare_model.startswith("mimo-"):
             return False
         return True
 

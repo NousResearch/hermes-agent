@@ -995,12 +995,12 @@ def _get_db():
         from hermes_state import SessionDB
 
         try:
-            _db = SessionDB()
+            _db = SessionDB.for_home(Path(_hermes_home))
             _db_error = None
         except Exception as exc:
             _db_error = str(exc)
             logger.warning(
-                "TUI session store unavailable — continuing without state.db features: %s",
+                "TUI session store unavailable - continuing without durable state features: %s",
                 exc,
             )
             return None
@@ -1008,8 +1008,8 @@ def _get_db():
 
 
 def _db_unavailable_error(rid, *, code: int):
-    detail = _db_error or "state.db unavailable"
-    return _err(rid, code, f"state.db unavailable: {detail}")
+    detail = _db_error or "session store unavailable"
+    return _err(rid, code, f"session store unavailable: {detail}")
 
 
 # ── per-session profile scoping (global remote mode) ───────────────────────────

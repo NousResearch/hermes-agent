@@ -7082,7 +7082,9 @@ def test_get_db_degrades_cleanly_when_sessiondb_init_fails(monkeypatch):
     fake_mod = types.ModuleType("hermes_state")
 
     class _BrokenSessionDB:
-        def __init__(self):
+        @classmethod
+        def for_home(cls, home):
+            del cls, home
             raise RuntimeError("locking protocol")
 
     fake_mod.SessionDB = _BrokenSessionDB
@@ -7092,6 +7094,28 @@ def test_get_db_degrades_cleanly_when_sessiondb_init_fails(monkeypatch):
 
     assert server._get_db() is None
     assert server._db_error == "locking protocol"
+
+
+def test_get_db_resolves_the_launch_profile_backend(monkeypatch, tmp_path):
+    fake_mod = types.ModuleType("hermes_state")
+    expected = object()
+    homes = []
+
+    class _SessionDB:
+        @classmethod
+        def for_home(cls, home):
+            del cls
+            homes.append(home)
+            return expected
+
+    fake_mod.SessionDB = _SessionDB
+    monkeypatch.setitem(sys.modules, "hermes_state", fake_mod)
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    monkeypatch.setattr(server, "_db", None)
+    monkeypatch.setattr(server, "_db_error", None)
+
+    assert server._get_db() is expected
+    assert homes == [tmp_path]
 
 
 @pytest.mark.real_agent_prewarm
@@ -7173,7 +7197,7 @@ def test_session_list_returns_clean_error_when_state_db_is_unavailable(monkeypat
     resp = server.handle_request({"id": "1", "method": "session.list", "params": {}})
 
     assert "error" in resp
-    assert "state.db unavailable: locking protocol" in resp["error"]["message"]
+    assert "session store unavailable: locking protocol" in resp["error"]["message"]
 
 
 # --------------------------------------------------------------------------
@@ -7208,7 +7232,7 @@ def test_session_delete_returns_db_unavailable_when_no_db(monkeypatch):
 
     assert "error" in resp
     assert resp["error"]["code"] == 5036
-    assert "state.db unavailable" in resp["error"]["message"]
+    assert "session store unavailable" in resp["error"]["message"]
 
 
 def test_session_delete_refuses_active_session(monkeypatch):

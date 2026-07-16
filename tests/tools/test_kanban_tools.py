@@ -1,10 +1,7 @@
 """Tests for the Kanban tool surface (tools/kanban_tools.py).
 
-Verifies:
-  - Tools are gated on HERMES_KANBAN_TASK: a normal chat session sees
-    zero kanban tools in its schema; a worker session sees the kanban set.
-  - Each handler's happy path.
-  - Error paths (missing required args, bad metadata type, etc).
+Tests cover worker/orchestrator schema gating, lifecycle handlers, administrative
+reassign/archive/notification routing, and structured validation/error paths.
 """
 from __future__ import annotations
 
@@ -105,12 +102,15 @@ def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_p
     from toolsets import resolve_toolset
 
     invalidate_check_fn_cache()
-    schema = registry.get_definitions(set(resolve_toolset("hermes-cli")), quiet=True)
+    schema = registry.get_definitions(set(resolve_toolset("kanban")), quiet=True)
     names = {s["function"].get("name") for s in schema if "function" in s}
     kanban = {n for n in names if n and n.startswith("kanban_")}
     assert {
         "kanban_list",
         "kanban_unblock",
+        "kanban_reassign",
+        "kanban_archive",
+        "kanban_notify_subscribe",
     }.isdisjoint(kanban), (
         f"Board-routing tools leaked into worker schema: "
         f"{kanban & {'kanban_list', 'kanban_unblock'}}"
@@ -130,7 +130,7 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
     from toolsets import resolve_toolset
 
     invalidate_check_fn_cache()
-    schema = registry.get_definitions(set(resolve_toolset("hermes-cli")), quiet=True)
+    schema = registry.get_definitions(set(resolve_toolset("kanban")), quiet=True)
     names = {s["function"].get("name") for s in schema if "function" in s}
     kanban = {n for n in names if n and n.startswith("kanban_")}
     expected = {
@@ -138,6 +138,7 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
         "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
         "kanban_comment", "kanban_create", "kanban_link",
         "kanban_unblock",
+        "kanban_reassign", "kanban_archive", "kanban_notify_subscribe",
     }
     assert kanban == expected, f"expected {expected}, got {kanban}"
 
@@ -169,6 +170,179 @@ def worker_env(monkeypatch, tmp_path):
         conn.close()
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
     return tid
+
+
+@pytest.fixture
+def ready_task(monkeypatch, tmp_path):
+    """Orchestrator fixture with an unclaimed ready task."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "test-orchestrator")
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_PROFILE_NAME", raising=False)
+    from pathlib import Path as _Path
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    with kb.connect() as conn:
+        return kb.create_task(conn, title="ready-admin-task", assignee="old-profile")
+
+
+def test_admin_schemas_are_bounded_and_explicit():
+    from tools import kanban_tools as kt
+    assert kt.KANBAN_REASSIGN_SCHEMA["parameters"]["required"] == ["task_id", "profile"]
+    assert kt.KANBAN_ARCHIVE_SCHEMA["parameters"]["properties"]["task_ids"]["maxItems"] == 100
+    assert kt.KANBAN_NOTIFY_SUBSCRIBE_SCHEMA["parameters"]["required"] == ["task_ids", "platform", "chat_id"]
+
+
+def test_reassign_same_and_different_ready_cards(ready_task):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+    same = json.loads(kt._handle_reassign({"task_id": ready_task, "profile": "old-profile"}))
+    assert same["ok"] and same["assignee_changed"] is False
+    with kb.connect() as conn:
+        assigned = [e for e in kb.list_events(conn, ready_task) if e.kind == "assigned"]
+    assert assigned == []
+    changed = json.loads(kt._handle_reassign({"task_id": ready_task, "profile": "new-profile", "reclaim": True}))
+    assert changed["ok"] and changed["assignee_changed"] is True
+    assert changed["assignee"] == "new-profile"
+    assert changed["reclaim_requested"] is True
+    assert "reclaimed" not in changed
+
+
+def test_reassign_running_requires_reclaim_and_closes_run(ready_task):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+    with kb.connect() as conn:
+        kb.claim_task(conn, ready_task)
+        run_id = kb.latest_run(conn, ready_task).id
+    rejected = json.loads(kt._handle_reassign({"task_id": ready_task, "profile": "new"}))
+    assert rejected.get("error")
+    with kb.connect() as conn:
+        assert kb.get_task(conn, ready_task).current_run_id == run_id
+        assert kb.latest_run(conn, ready_task).ended_at is None
+    result = json.loads(kt._handle_reassign({"task_id": ready_task, "profile": "new", "reclaim": True}))
+    assert result["ok"] and result["status"] == "ready"
+    with kb.connect() as conn:
+        assert kb.latest_run(conn, ready_task).outcome == "reclaimed"
+
+
+def test_reassign_validates_and_workers_are_rejected(ready_task, monkeypatch):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+    assert json.loads(kt._handle_reassign({"task_id": ready_task})).get("error")
+    assert "reclaim must be" in json.loads(kt._handle_reassign({
+        "task_id": ready_task, "profile": "new", "reclaim": "maybe",
+    })).get("error", "")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", ready_task)
+    assert "orchestrator-only" in json.loads(kt._handle_reassign({
+        "task_id": ready_task, "profile": "new",
+    })).get("error", "")
+    with kb.connect() as conn:
+        assert kb.get_task(conn, ready_task).assignee == "old-profile"
+
+
+def test_archive_prevalidates_idempotently_and_deduplicates(ready_task):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+    with kb.connect() as conn:
+        archived = kb.create_task(conn, title="archived", assignee="worker")
+        live = kb.create_task(conn, title="live", assignee="worker")
+        kb.archive_task(conn, archived)
+    result = json.loads(kt._handle_archive({"task_ids": [archived, live, archived, live]}))
+    assert result["ok"] and result["archived"] == [live]
+    assert result["already_archived"] == [archived] and result["count"] == 2
+    with kb.connect() as conn:
+        valid = kb.create_task(conn, title="valid", assignee="worker")
+    error = json.loads(kt._handle_archive({"task_ids": [valid, "t_unknown_admin"]}))
+    assert error.get("error")
+    with kb.connect() as conn:
+        assert kb.get_task(conn, valid).status == "ready"
+
+
+def test_archive_partial_error_envelope(ready_task, monkeypatch):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+    with kb.connect() as conn:
+        first = kb.create_task(conn, title="first", assignee="worker")
+        second = kb.create_task(conn, title="second", assignee="worker")
+    original = kb.archive_task
+    def fail(conn, task_id):
+        if task_id == second:
+            raise RuntimeError("injected archive failure")
+        return original(conn, task_id)
+    monkeypatch.setattr(kb, "archive_task", fail)
+    result = json.loads(kt._handle_archive({"task_ids": [first, second]}))
+    assert result == {"ok": False, "partial": True, "archived": [first], "already_archived": [],
+                      "failed": [{"task_id": second, "error": "injected archive failure"}], "count": 2}
+
+
+@pytest.mark.parametrize("task_ids", [None, [], [""], [1], [str(i) for i in range(101)]])
+def test_archive_validates_batches(task_ids, ready_task):
+    from tools import kanban_tools as kt
+    assert json.loads(kt._handle_archive({"task_ids": task_ids})).get("error")
+
+
+def test_notify_subscribe_round_trip_default_and_idempotency(ready_task, monkeypatch):
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "cli-profile")
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+    args = {"task_ids": [ready_task], "platform": "discord", "chat_id": "chat",
+            "thread_id": "thread", "user_id": "user"}
+    first = json.loads(kt._handle_notify_subscribe(args))
+    second = json.loads(kt._handle_notify_subscribe(args))
+    assert first["ok"] and second["ok"] and len(second["subscriptions"]) == 1
+    assert second["count"] == 1
+    assert second["subscriptions"][0]["notifier_profile"] == "cli-profile"
+    with kb.connect() as conn:
+        assert len(kb.list_notify_subs(conn, ready_task)) == 1
+
+
+def test_notify_subscribe_prevalidates_exact_destination_and_partial(ready_task, monkeypatch):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+    unknown = json.loads(kt._handle_notify_subscribe({"task_ids": [ready_task, "t_unknown_notify"], "platform": "discord", "chat_id": "chat"}))
+    assert unknown.get("error")
+    with kb.connect() as conn:
+        assert kb.list_notify_subs(conn, ready_task) == []
+        first = kb.create_task(conn, title="first", assignee="worker")
+        second = kb.create_task(conn, title="second", assignee="worker")
+    original = kb.add_notify_sub
+    def fail(conn, **kwargs):
+        if kwargs["task_id"] == second:
+            raise RuntimeError("injected subscription failure")
+        return original(conn, **kwargs)
+    monkeypatch.setattr(kb, "add_notify_sub", fail)
+    result = json.loads(kt._handle_notify_subscribe({"task_ids": [first, second], "platform": "discord", "chat_id": "chat"}))
+    assert result["ok"] is False and result["partial"] is True
+    assert [s["task_id"] for s in result["subscriptions"]] == [first]
+    assert result["failed"] == [{"task_id": second, "error": "injected subscription failure"}]
+
+
+def test_notify_subscribe_validates_destination_and_worker_rejection(ready_task, monkeypatch):
+    from tools import kanban_tools as kt
+    assert json.loads(kt._handle_notify_subscribe({"task_ids": [ready_task], "platform": "", "chat_id": "chat"})).get("error")
+    assert json.loads(kt._handle_notify_subscribe({"task_ids": [ready_task], "platform": "discord", "chat_id": " "})).get("error")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", ready_task)
+    assert "orchestrator-only" in json.loads(kt._handle_notify_subscribe({
+        "task_ids": [ready_task], "platform": "discord", "chat_id": "chat",
+    })).get("error", "")
+    assert "orchestrator-only" in json.loads(kt._handle_archive({
+        "task_ids": [ready_task],
+    })).get("error", "")
+    from hermes_cli import kanban_db as kb
+
+    with kb.connect() as conn:
+        assert kb.get_task(conn, ready_task).status == "ready"
+        assert kb.list_notify_subs(conn, ready_task) == []
+
+
+def test_archive_and_notify_never_expose_delete():
+    from tools import kanban_tools as kt
+    assert "delete" not in kt.KANBAN_ARCHIVE_SCHEMA["description"].lower()
 
 
 def test_show_defaults_to_env_task_id(worker_env):

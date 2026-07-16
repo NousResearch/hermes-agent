@@ -142,3 +142,56 @@ async def test_typing_refresh_stops_before_final_delivery():
 
     assert typing_calls["before_delivery"] >= 1
     assert typing_calls["after_delivery"] == 0
+
+
+@pytest.mark.asyncio
+async def test_cancelled_processor_does_not_deliver_after_typing_stop(tmp_path):
+    adapter = _make_adapter(typing_indicator=True)
+    typing_cleanup_started = asyncio.Event()
+    release_typing_cleanup = asyncio.Event()
+
+    attachment = tmp_path / "result.pdf"
+    attachment.write_bytes(b"test attachment")
+
+    async def _handler(_event):
+        await asyncio.sleep(0)
+        return f"Stale final response\nMEDIA:{attachment}"
+
+    async def _slow_typing_refresh(chat_id, metadata=None, stop_event=None):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            typing_cleanup_started.set()
+            await release_typing_cleanup.wait()
+            raise
+
+    adapter._message_handler = _handler
+    adapter._keep_typing = _slow_typing_refresh
+    adapter._send_with_retry = AsyncMock(
+        return_value=SendResult(success=True, message_id="text")
+    )
+    adapter.send_document = AsyncMock(
+        return_value=SendResult(success=True, message_id="document")
+    )
+    adapter.filter_media_delivery_paths = lambda paths: paths
+    adapter._get_human_delay = lambda: 0
+
+    event = _make_event()
+    session_key = _sk()
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    task = asyncio.create_task(
+        adapter._process_message_background(event, session_key)
+    )
+    adapter._session_tasks[session_key] = task
+
+    await asyncio.wait_for(typing_cleanup_started.wait(), timeout=1.0)
+
+    task.cancel()
+    release_typing_cleanup.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    adapter._send_with_retry.assert_not_awaited()
+    adapter.send_document.assert_not_awaited()

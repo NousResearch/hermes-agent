@@ -870,17 +870,139 @@ def test_disk_cache_corrupt_file_falls_through(monkeypatch, tmp_path):
     assert json.loads(cache_path.read_text())["secrets"] == {"K1": "v1"}
 
 
+def test_encrypted_cache_writes_without_plaintext(monkeypatch, tmp_path):
+    """Encrypted cache stores last-good secrets without raw values on disk."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    payload = _fake_bws_payload([{"key": "K1", "value": "secret-value"}])
+
+    monkeypatch.setattr(
+        bw.subprocess,
+        "run",
+        lambda *a, **kw: mock.Mock(returncode=0, stdout=payload, stderr=""),
+    )
+    bw._reset_cache_for_tests(home)
+
+    secrets, warnings = bw.fetch_bitwarden_secrets(
+        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        cache_ttl_seconds=0, encrypted_cache_enabled=True,
+        encrypted_cache_max_stale_seconds=604800, home_path=home,
+    )
+
+    assert secrets == {"K1": "secret-value"}
+    assert warnings == []
+    assert not bw._disk_cache_path(home).exists()
+    cache_path = bw._encrypted_disk_cache_path(home)
+    assert cache_path.exists()
+    mode = stat.S_IMODE(os.stat(cache_path).st_mode)
+    assert mode == 0o600, f"expected 0o600, got 0o{mode:o}"
+    text = cache_path.read_text()
+    assert "secret-value" not in text
+    assert "0.t" not in text
+    payload_disk = json.loads(text)
+    assert set(payload_disk.keys()) == {
+        "version", "key", "fetched_at", "salt", "nonce", "ciphertext",
+    }
+
+
+def test_encrypted_cache_falls_back_on_network_error(monkeypatch, tmp_path):
+    """A fresh-enough encrypted cache is used when BWS is unreachable."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    calls = {"n": 0}
+
+    def fake_run(*a, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return mock.Mock(
+                returncode=0,
+                stdout=_fake_bws_payload([{"key": "K1", "value": "cached"}]),
+                stderr="",
+            )
+        return mock.Mock(
+            returncode=1,
+            stdout="",
+            stderr="Error: network is unreachable",
+        )
+
+    monkeypatch.setattr(bw.subprocess, "run", fake_run)
+    bw._reset_cache_for_tests(home)
+
+    first, _ = bw.fetch_bitwarden_secrets(
+        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        cache_ttl_seconds=0, encrypted_cache_enabled=True,
+        encrypted_cache_max_stale_seconds=604800, home_path=home,
+    )
+    assert first == {"K1": "cached"}
+    bw._CACHE.clear()
+
+    second, warnings = bw.fetch_bitwarden_secrets(
+        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        cache_ttl_seconds=0, encrypted_cache_enabled=True,
+        encrypted_cache_max_stale_seconds=604800, home_path=home,
+    )
+    assert second == {"K1": "cached"}
+    assert calls["n"] == 2
+    assert warnings == [
+        "Using stale encrypted Bitwarden cache after network fetching BWS secrets"
+    ]
+
+
+def test_encrypted_cache_does_not_fallback_on_auth_failure(monkeypatch, tmp_path):
+    """Auth failures must not bypass revocation by using stale secrets."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    calls = {"n": 0}
+
+    def fake_run(*a, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return mock.Mock(
+                returncode=0,
+                stdout=_fake_bws_payload([{"key": "K1", "value": "cached"}]),
+                stderr="",
+            )
+        return mock.Mock(returncode=1, stdout="", stderr="Error: invalid access token")
+
+    monkeypatch.setattr(bw.subprocess, "run", fake_run)
+    bw._reset_cache_for_tests(home)
+
+    bw.fetch_bitwarden_secrets(
+        access_token="0.t", project_id="proj-1", binary=fake_binary,
+        cache_ttl_seconds=0, encrypted_cache_enabled=True,
+        encrypted_cache_max_stale_seconds=604800, home_path=home,
+    )
+    bw._CACHE.clear()
+
+    with pytest.raises(RuntimeError, match="invalid access token"):
+        bw.fetch_bitwarden_secrets(
+            access_token="0.t", project_id="proj-1", binary=fake_binary,
+            cache_ttl_seconds=0, encrypted_cache_enabled=True,
+            encrypted_cache_max_stale_seconds=604800, home_path=home,
+        )
+
+
 def test_reset_cache_for_tests_deletes_disk_file(tmp_path):
     """_reset_cache_for_tests(home_path) must also clean disk."""
     home = tmp_path / ".hermes"
     home.mkdir()
     cache_path = bw._disk_cache_path(home)
+    encrypted_cache_path = bw._encrypted_disk_cache_path(home)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text("{}")
+    encrypted_cache_path.write_text("{}")
     assert cache_path.exists()
+    assert encrypted_cache_path.exists()
 
     bw._reset_cache_for_tests(home)
     assert not cache_path.exists()
+    assert not encrypted_cache_path.exists()
     # Idempotent
     bw._reset_cache_for_tests(home)
 

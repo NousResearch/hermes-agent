@@ -128,3 +128,66 @@ class TestBackgroundCommandAgentCleanup:
             self._run_and_join(cli, "/background do something")
 
         assert not cli._background_tasks
+
+    def test_shutdown_forwards_session_messages_when_present(self):
+        """A no-argument shutdown_memory_provider() call becomes
+        on_session_end([]) in AIAgent.shutdown_memory_provider, losing facts
+        from this background session. Forward _session_messages when it's a
+        list, mirroring GatewayRunner._cleanup_agent_resources' guarded
+        forwarding (gateway/run.py)."""
+        cli = _make_background_cli_stub()
+        calls = []
+        transcript = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "yo"}]
+
+        class FakeAgent:
+            def __init__(self, **_kwargs):
+                self._print_fn = None
+                self.thinking_callback = None
+                self._session_messages = transcript
+
+            def run_conversation(self, **_kwargs):
+                return {"final_response": "done", "messages": []}
+
+            def shutdown_memory_provider(self, messages=None):
+                calls.append(messages)
+
+            def close(self):
+                pass
+
+        with patch.object(cli_module, "AIAgent", FakeAgent), \
+             patch.object(cli_module, "_cprint"), \
+             patch.object(cli_module, "ChatConsole") as chat_console, \
+             patch("agent.auxiliary_client.cleanup_stale_async_clients"):
+            chat_console.return_value.print = MagicMock()
+            self._run_and_join(cli, "/background do something")
+
+        assert calls == [transcript]
+
+    def test_shutdown_falls_back_to_no_args_when_session_messages_absent(self):
+        """An agent stub with no _session_messages attribute must still get
+        a plain no-argument call — not crash on a missing attribute."""
+        cli = _make_background_cli_stub()
+        calls = []
+
+        class FakeAgent:
+            def __init__(self, **_kwargs):
+                self._print_fn = None
+                self.thinking_callback = None
+
+            def run_conversation(self, **_kwargs):
+                return {"final_response": "done", "messages": []}
+
+            def shutdown_memory_provider(self, messages=None):
+                calls.append(messages)
+
+            def close(self):
+                pass
+
+        with patch.object(cli_module, "AIAgent", FakeAgent), \
+             patch.object(cli_module, "_cprint"), \
+             patch.object(cli_module, "ChatConsole") as chat_console, \
+             patch("agent.auxiliary_client.cleanup_stale_async_clients"):
+            chat_console.return_value.print = MagicMock()
+            self._run_and_join(cli, "/background do something")
+
+        assert calls == [None]

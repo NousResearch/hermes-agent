@@ -1735,7 +1735,18 @@ class CLICommandsMixin:
             finally:
                 if bg_agent is not None:
                     try:
-                        bg_agent.shutdown_memory_provider()
+                        # Pass the agent's own conversation transcript so
+                        # memory providers' on_session_end hooks see the
+                        # real messages instead of the empty default — a
+                        # no-argument call becomes on_session_end([]),
+                        # losing facts from this background session.
+                        # Mirrors GatewayRunner._cleanup_agent_resources'
+                        # guarded forwarding (gateway/run.py).
+                        session_messages = getattr(bg_agent, "_session_messages", None)
+                        if isinstance(session_messages, list):
+                            bg_agent.shutdown_memory_provider(session_messages)
+                        else:
+                            bg_agent.shutdown_memory_provider()
                     except Exception:
                         pass
                     try:

@@ -1,0 +1,145 @@
+name: Refresh PR 65178 From Upstream
+
+on:
+  push:
+    branches:
+      - cursor/fix-telegram-token-lock-takeover-bb4d
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-pr-65178
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Check out contribution branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: cursor/fix-telegram-token-lock-takeover-bb4d
+          fetch-depth: 0
+
+      - name: Merge current upstream main
+        id: merge
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/NousResearch/hermes-agent.git
+          git fetch --no-tags upstream main
+
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "Branch already contains current upstream main."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          set +e
+          git merge --no-ff --no-commit upstream/main
+          merge_status=$?
+          set -e
+
+          if [[ "$merge_status" -ne 0 ]]; then
+            conflicts="$(git diff --name-only --diff-filter=U)"
+            if [[ "$conflicts" != "scripts/release.py" ]]; then
+              echo "Unexpected merge conflicts:" >&2
+              printf '%s\n' "$conflicts" >&2
+              exit 1
+            fi
+
+            # Upstream and this PR both added contributor-credit rows at the
+            # top of AUTHOR_MAP. Keep upstream's complete file, then restore
+            # this PR's credit row in deterministic order.
+            git checkout --theirs scripts/release.py
+          fi
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("scripts/release.py")
+          text = path.read_text(encoding="utf-8")
+          entry = (
+              '    "jaretbottoms@gmail.com": "jbbottoms",  '
+              '# PR #65178 (gateway: explicit cross-HERMES_HOME platform-lock takeover)\n'
+          )
+          marker = "AUTHOR_MAP = {\n"
+
+          if entry not in text:
+              if text.count(marker) != 1:
+                  raise SystemExit("AUTHOR_MAP marker is missing or ambiguous")
+              text = text.replace(marker, marker + entry, 1)
+              path.write_text(text, encoding="utf-8")
+          PY
+
+          git add scripts/release.py
+
+          unresolved="$(git diff --name-only --diff-filter=U)"
+          if [[ -n "$unresolved" ]]; then
+            echo "Unresolved merge paths remain:" >&2
+            printf '%s\n' "$unresolved" >&2
+            exit 1
+          fi
+
+          git diff --cached --check
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Install uv
+        if: steps.merge.outputs.changed == 'true'
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python 3.11
+        if: steps.merge.outputs.changed == 'true'
+        run: uv python install 3.11
+
+      - name: Install locked dependencies
+        if: steps.merge.outputs.changed == 'true'
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.11 --extra all --extra dev
+
+      - name: Verify takeover regression slices
+        if: steps.merge.outputs.changed == 'true'
+        env:
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
+        run: |
+          set -euo pipefail
+          source .venv/bin/activate
+
+          scripts/run_tests.sh \
+            tests/gateway/test_runner_startup_failures.py \
+            tests/gateway/test_stale_platform_lock_retryable.py
+
+          scripts/run_tests.sh \
+            tests/gateway/test_status.py \
+            -k 'ScopedLockTakeover or TakeoverMarker'
+
+          ruff check \
+            gateway/platforms/base.py \
+            gateway/run.py \
+            gateway/status.py \
+            scripts/release.py \
+            tests/gateway/test_runner_startup_failures.py \
+            tests/gateway/test_stale_platform_lock_retryable.py \
+            tests/gateway/test_status.py
+
+          git diff --cached --check
+
+      - name: Commit and push refreshed branch
+        if: steps.merge.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          git commit -m "Merge upstream main into PR #65178"
+          git push origin HEAD:cursor/fix-telegram-token-lock-takeover-bb4d

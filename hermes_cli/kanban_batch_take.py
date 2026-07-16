@@ -78,6 +78,18 @@ def _incomplete_parents(conn: Any, task_id: str) -> bool:
     return row is not None
 
 
+def _default_assignee() -> str:
+    """Resolve Take's immediate routing target without adding a new pool layer."""
+    try:
+        from hermes_cli.config import load_config
+        configured = ((load_config() or {}).get("kanban") or {}).get("default_assignee")
+        if isinstance(configured, str) and configured.strip():
+            return configured.strip()
+    except Exception:
+        pass
+    return "default"
+
+
 def plan_and_take(task_ids: list[str], *, timeout: int = 90) -> BatchTakeOutcome:
     """Add safe ordering edges, then promote immediately runnable tasks.
 
@@ -101,6 +113,21 @@ def plan_and_take(task_ids: list[str], *, timeout: int = 90) -> BatchTakeOutcome
                 tasks.append(task)
         if not tasks:
             return BatchTakeOutcome(False, "no eligible tasks", skipped=skipped)
+
+        # Taking work assigns every selected runnable piece before any status
+        # promotion.  The dispatcher can therefore pull ready leaves without a
+        # second operator gesture; profile/global/board caps decide when it runs.
+        assignee = _default_assignee()
+        for task in tasks:
+            if not task.assignee:
+                if not kb.assign_task(conn, task.id, assignee):
+                    skipped.append({"id": task.id, "reason": "assignment refused"})
+        tasks = [task for task in tasks if not any(
+            entry["id"] == task.id and entry["reason"] == "assignment refused"
+            for entry in skipped
+        )]
+        if not tasks:
+            return BatchTakeOutcome(False, "no tasks could be assigned", skipped=skipped)
 
         try:
             from agent.auxiliary_client import call_llm
@@ -173,3 +200,47 @@ def plan_and_take(task_ids: list[str], *, timeout: int = 90) -> BatchTakeOutcome
                         continue
                 promoted.append(task.id)
         return BatchTakeOutcome(True, edges=applied, promoted=promoted, waiting=waiting, skipped=skipped)
+
+
+def take(task_ids: list[str], *, timeout: int = 180) -> BatchTakeOutcome:
+    """The one-gesture Take v2 entry point.
+
+    Triage cards are budget-decomposed first (which also consumes calibrated
+    estimate context when the optional Zeus hook is installed).  Their inert
+    output graph, plus any already-planned selected cards, is then assigned and
+    batch-planned in one call.  A decomposer that says a card fits simply turns
+    it into the single task that gets taken.
+    """
+    ids = list(dict.fromkeys(str(task_id) for task_id in task_ids if task_id))
+    if not ids:
+        return BatchTakeOutcome(False, "ids is required")
+    targets: list[str] = []
+    skipped: list[dict[str, str]] = []
+    with kb.connect_closing() as conn:
+        triage_ids = []
+        for task_id in ids:
+            task = kb.get_task(conn, task_id)
+            if task is None:
+                skipped.append({"id": task_id, "reason": "not found"})
+            elif task.status == "triage":
+                triage_ids.append(task_id)
+            elif task.status in {"todo", "ready"}:
+                targets.append(task_id)
+            else:
+                skipped.append({"id": task_id, "reason": f"status {task.status!r} cannot be taken"})
+
+    if triage_ids:
+        from hermes_cli import kanban_decompose
+        for task_id in triage_ids:
+            outcome = kanban_decompose.decompose_task(task_id, timeout=timeout)
+            if not outcome.ok:
+                skipped.append({"id": task_id, "reason": outcome.reason})
+            elif outcome.fanout:
+                targets.extend(outcome.child_ids or [])
+            else:
+                targets.append(task_id)
+    if not targets:
+        return BatchTakeOutcome(False, "no eligible tasks", skipped=skipped)
+    outcome = plan_and_take(targets, timeout=timeout)
+    outcome.skipped = skipped + (outcome.skipped or [])
+    return outcome

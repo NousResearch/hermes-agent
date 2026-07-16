@@ -648,6 +648,9 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "icon": "",
         "color": "",
         "default_workdir": None,
+        # A board-local concurrency policy, deliberately metadata rather than
+        # a separately persisted pool entity.
+        "agent_limit": 10,
         "created_at": None,
         "archived": False,
     }
@@ -675,6 +678,7 @@ def write_board_metadata(
     color: Optional[str] = None,
     archived: Optional[bool] = None,
     default_workdir: Optional[str] = None,
+    agent_limit: Optional[int] = None,
 ) -> dict:
     """Create / update ``board.json`` for ``board``.
 
@@ -698,6 +702,14 @@ def write_board_metadata(
         meta["archived"] = bool(archived)
     if default_workdir is not None:
         meta["default_workdir"] = str(default_workdir) if default_workdir else None
+    if agent_limit is not None:
+        try:
+            parsed_limit = int(agent_limit)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("agent_limit must be a positive integer") from exc
+        if parsed_limit < 1:
+            raise ValueError("agent_limit must be a positive integer")
+        meta["agent_limit"] = parsed_limit
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
@@ -718,6 +730,7 @@ def create_board(
     icon: Optional[str] = None,
     color: Optional[str] = None,
     default_workdir: Optional[str] = None,
+    agent_limit: Optional[int] = None,
 ) -> dict:
     """Create a new board directory + DB + metadata. Idempotent.
 
@@ -735,6 +748,7 @@ def create_board(
         icon=icon,
         color=color,
         default_workdir=default_workdir,
+        agent_limit=agent_limit,
     )
     # Touch the DB so list_boards() sees it immediately.
     init_db(board=normed)
@@ -5961,6 +5975,8 @@ class DispatchResult:
     subsequent tick when the assignee has capacity. Separate bucket so
     telemetry / dashboards can show "this profile is busy" vs
     "task is genuinely stuck"."""
+    skipped_board_capped: list[str] = field(default_factory=list)
+    """Tasks deferred because the board's persisted agent_limit is full."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -7505,18 +7521,25 @@ def _dispatch_once_locked(
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
-    # Honour kanban.max_in_progress: if the board already has enough running
-    # tasks, skip spawning this tick so slow workers (local LLMs,
-    # resource-constrained hosts) can finish what they have before more tasks
-    # pile up and time out.
-    if max_in_progress is not None and ready_rows:
+    # The board pool is an additional cap to global max_in_progress. It is a
+    # counter over running tasks, not a separately persisted pool entity.
+    try:
+        board_agent_limit = int(read_board_metadata(board).get("agent_limit", 10))
+    except (TypeError, ValueError):
+        board_agent_limit = 10
+    board_agent_limit = max(1, board_agent_limit)
+    effective_max_in_progress = board_agent_limit
+    if isinstance(max_in_progress, int) and max_in_progress > 0:
+        effective_max_in_progress = min(effective_max_in_progress, max_in_progress)
+    if ready_rows:
         in_progress = conn.execute(
             "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
         ).fetchone()[0]
-        if in_progress >= max_in_progress:
+        if in_progress >= effective_max_in_progress:
+            result.skipped_board_capped.extend(row["id"] for row in ready_rows)
             return result
-        # Only spawn enough to reach the cap, respecting max_spawn too.
-        remaining = max_in_progress - in_progress
+        # Only spawn enough to reach the combined global/board cap.
+        remaining = effective_max_in_progress - in_progress
         if max_spawn is None or max_spawn > remaining:
             max_spawn = remaining
     spawned = 0
@@ -7662,6 +7685,9 @@ def _dispatch_once_locked(
             continue
         if dry_run:
             result.spawned.append((row["id"], row_assignee, ""))
+            # Count virtual spawns against every concurrency cap, including the
+            # board pool. A dry run must report the same capacity decision.
+            spawned += 1
             # Increment per-profile counter even in dry_run so the cap
             # check sees the would-be spawn on subsequent iterations.
             # Without this, dry_run reports every task as spawnable and

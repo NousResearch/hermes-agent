@@ -358,9 +358,46 @@ export const formatAbandonedClarify = (question: string, choices: string[] | nul
 
 export const flat = (r: Record<string, string[]>) => Object.values(r).flat()
 
-const COMPACT_NUMBER = new Intl.NumberFormat('en-US', { maximumFractionDigits: 1, notation: 'compact' })
+const BINARY_UNITS: [number, string][] = [
+  [1024 ** 4, 'T'],
+  [1024 ** 3, 'B'],
+  [1024 ** 2, 'M'],
+  [1024, 'k'],
+]
 
-export const fmtK = (n: number) => COMPACT_NUMBER.format(n).replace(/[KMBT]$/, s => s.toLowerCase())
+/**
+ * Format a token count with binary units (k=1024, M=1024², B=1024³).
+ * Unlike Intl.NumberFormat compact notation (which is SI/decimal), this
+ * uses binary powers so 131072 → "128k" (131072 / 1024 = 128) instead
+ * of "131.1k" (131072 / 1000 = 131.1).
+ *
+ * The lowercase "k" follows Hermes' convention: k = 1024, K = 1024 is
+ * the uppercase variant used in the CLI/TUI banner; fmtK uses lowercase
+ * for compact inline token labels like "128k tok".
+ */
+export const fmtK = (n: number): string => {
+  const abs = Math.abs(n)
+  const sign = n < 0 ? '-' : ''
+  for (const [threshold, suffix] of BINARY_UNITS) {
+    if (abs >= threshold) {
+      const scaled = abs / threshold
+      let text: string
+      if (scaled < 10) {
+        text = scaled.toFixed(2)
+      } else if (scaled < 100) {
+        text = scaled.toFixed(1)
+      } else {
+        text = scaled.toFixed(0)
+      }
+      // Remove trailing zeros after decimal point
+      if (text.includes('.')) {
+        text = text.replace(/\.?0+$/, '')
+      }
+      return `${sign}${text}${suffix}`
+    }
+  }
+  return `${n}`
+}
 
 export const pick = <T>(a: T[]) => a[Math.floor(Math.random() * a.length)]!
 

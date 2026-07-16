@@ -12945,10 +12945,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ctx_source = "detected"
 
         # Format context length for display
-        if context_length >= 1_000_000:
-            ctx_display = f"{context_length / 1_000_000:.1f}M"
-        elif context_length >= 1_000:
-            ctx_display = f"{context_length // 1_000}K"
+        if context_length >= 1_048_576:
+            ctx_display = f"{context_length / (1024 * 1024):.1f}M"
+        elif context_length >= 1024:
+            ctx_display = f"{context_length // 1024}K"
         else:
             ctx_display = str(context_length)
 

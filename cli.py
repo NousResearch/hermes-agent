@@ -120,11 +120,11 @@ def format_duration_compact(*args, **kwargs):
 def format_token_count_compact(*args, **kwargs):
     value = int(args[0] if args else kwargs.get("value", 0))
     abs_value = abs(value)
-    if abs_value < 1_000:
+    if abs_value < 1024:
         return str(value)
 
     sign = "-" if value < 0 else ""
-    units = ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K"))
+    units = ((1024**3, "B"), (1024**2, "M"), (1024, "K"))
     for threshold, suffix in units:
         if abs_value >= threshold:
             scaled = abs_value / threshold

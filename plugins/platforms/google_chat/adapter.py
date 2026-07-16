@@ -1,9 +1,9 @@
 """
 Google Chat platform adapter.
 
-Uses Google Cloud Pub/Sub (pull subscription) for inbound events and the
-Google Chat REST API for outbound messages. Pattern parallels Slack Socket
-Mode and Telegram long-polling: no public endpoint required.
+Uses authenticated HTTP callbacks or Google Cloud Pub/Sub for inbound
+events and the Google Chat REST API for outbound messages. Pub/Sub remains
+available for no-public-URL deployments.
 
 Concurrency model
 -----------------
@@ -186,6 +186,17 @@ _RETRY_BASE_DELAY = 1.0
 _RETRY_MAX_DELAY = 8.0
 _RETRY_JITTER = 0.3
 _RETRYABLE_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
+_CARD_WIDGET_TYPES = frozenset({
+    "text",
+    "text_paragraph",
+    "decorated_text",
+    "buttons",
+    "button_list",
+    "selection",
+    "selection_input",
+    "image",
+    "divider",
+})
 
 
 def _is_retryable_error(exc: BaseException) -> bool:
@@ -314,6 +325,136 @@ def _mime_for_message_type(mime: str) -> MessageType:
     if mime.startswith("video/"):
         return MessageType.VIDEO
     return MessageType.DOCUMENT
+
+
+def _required_str(mapping: Dict[str, Any], key: str, context: str) -> str:
+    value = mapping.get(key)
+    if value is None:
+        raise ValueError(f"{context}.{key} is required")
+    value = str(value).strip()
+    if not value:
+        raise ValueError(f"{context}.{key} is required")
+    return value
+
+
+def _button_to_chat(button: Dict[str, Any]) -> Dict[str, Any]:
+    text = _required_str(button, "text", "button")
+    action = _required_str(button, "action", "button")
+    raw_params = button.get("parameters") or {}
+    if not isinstance(raw_params, dict):
+        raise ValueError("button.parameters must be an object")
+    parameters = [
+        {"key": str(key), "value": str(value)}
+        for key, value in sorted(raw_params.items())
+    ]
+    return {
+        "text": text,
+        "onClick": {"action": {"function": action, "parameters": parameters}},
+    }
+
+
+def _widget_to_chat(widget: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(widget, dict):
+        raise ValueError("card widgets must be objects")
+    widget_type = str(widget.get("type") or "").strip()
+    if widget_type not in _CARD_WIDGET_TYPES:
+        raise ValueError(f"unsupported widget type: {widget_type or '<missing>'}")
+
+    if widget_type in {"text", "text_paragraph"}:
+        return {
+            "textParagraph": {
+                "text": GoogleChatAdapter.format_message(
+                    _required_str(widget, "text", "widget")
+                )
+            }
+        }
+    if widget_type == "decorated_text":
+        decorated: Dict[str, Any] = {
+            "text": GoogleChatAdapter.format_message(
+                _required_str(widget, "text", "widget")
+            ),
+            "wrapText": bool(widget.get("wrap_text", True)),
+        }
+        if widget.get("top_label"):
+            decorated["topLabel"] = str(widget["top_label"])
+        if widget.get("bottom_label"):
+            decorated["bottomLabel"] = str(widget["bottom_label"])
+        return {"decoratedText": decorated}
+    if widget_type == "divider":
+        return {"divider": {}}
+    if widget_type == "image":
+        image = {"imageUrl": _required_str(widget, "image_url", "widget")}
+        if widget.get("alt_text"):
+            image["altText"] = str(widget["alt_text"])
+        return {"image": image}
+    if widget_type in {"buttons", "button_list"}:
+        raw_buttons = widget.get("buttons") or []
+        if not isinstance(raw_buttons, list) or not raw_buttons:
+            raise ValueError("button widgets require at least one button")
+        return {"buttonList": {"buttons": [_button_to_chat(btn) for btn in raw_buttons]}}
+    if widget_type in {"selection", "selection_input"}:
+        name = _required_str(widget, "name", "widget")
+        raw_items = widget.get("items") or []
+        if not isinstance(raw_items, list) or not raw_items:
+            raise ValueError("selection widgets require at least one item")
+        items: List[Dict[str, Any]] = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                raise ValueError("selection items must be objects")
+            items.append({
+                "text": _required_str(item, "text", "selection item"),
+                "value": _required_str(item, "value", "selection item"),
+                "selected": bool(item.get("selected", False)),
+            })
+        return {
+            "selectionInput": {
+                "name": name,
+                "label": str(widget.get("label") or name),
+                "type": str(widget.get("selection_type") or "CHECK_BOX"),
+                "items": items,
+            }
+        }
+    raise ValueError(f"unsupported widget type: {widget_type}")
+
+
+def card_spec_to_cards_v2(card_spec: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(card_spec, dict):
+        raise ValueError("card must be an object")
+
+    raw_sections = card_spec.get("sections") or []
+    if not isinstance(raw_sections, list) or not raw_sections:
+        raise ValueError("card.sections must contain at least one section")
+
+    sections: List[Dict[str, Any]] = []
+    for section in raw_sections:
+        if not isinstance(section, dict):
+            raise ValueError("card sections must be objects")
+        widgets = section.get("widgets") or []
+        if not isinstance(widgets, list) or not widgets:
+            raise ValueError("card section widgets must contain at least one widget")
+        rendered: Dict[str, Any] = {"widgets": [_widget_to_chat(w) for w in widgets]}
+        if section.get("header"):
+            rendered["header"] = str(section["header"])
+        sections.append(rendered)
+
+    card: Dict[str, Any] = {"sections": sections}
+    header = card_spec.get("header")
+    if header:
+        if not isinstance(header, dict):
+            raise ValueError("card.header must be an object")
+        rendered_header: Dict[str, Any] = {
+            "title": _required_str(header, "title", "card.header")
+        }
+        if header.get("subtitle"):
+            rendered_header["subtitle"] = str(header["subtitle"])
+        if header.get("image_url"):
+            rendered_header["imageUrl"] = str(header["image_url"])
+            rendered_header["imageType"] = str(header.get("image_type") or "SQUARE")
+        if header.get("image_alt_text"):
+            rendered_header["imageAltText"] = str(header["image_alt_text"])
+        card["header"] = rendered_header
+
+    return {"cardId": str(card_spec.get("card_id") or "hermes-card"), "card": card}
 
 
 class _ThreadCountStore:
@@ -502,6 +643,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
         self._bot_user_id: Optional[str] = None  # users/{id}
         self._dedup = MessageDeduplicator()
         self._typing_messages: Dict[str, str] = {}
+        self._clarify_state: Dict[str, str] = {}
         self._shutting_down = False
         self._rate_limit_hits: Dict[str, int] = {}
         # Last-seen inbound thread name per chat_id (space). Google Chat
@@ -625,33 +767,42 @@ class GoogleChatAdapter(BasePlatformAdapter):
         )
         return credentials
 
-    def _validate_config(self) -> Tuple[str, str]:
+    def _validate_config(self) -> Tuple[str, Optional[str]]:
         """Return (project_id, subscription_path) after validation.
 
-        Raises ValueError with a sanitized message on any config problem.
+        ``subscription_path`` is ``None`` for HTTP-inbound deployments. Raises
+        ValueError with a sanitized message on any config problem.
         """
-        project_id = self.config.extra.get("project_id")
-        subscription = self.config.extra.get("subscription_name")
+        project_id = (self.config.extra.get("project_id") or "").strip()
+        subscription = (self.config.extra.get("subscription_name") or "").strip()
+        http_events_url = (self.config.extra.get("http_events_url") or "").strip()
+
+        if subscription:
+            match = _SUBSCRIPTION_PATH_RE.match(subscription)
+            if not match:
+                raise ValueError(
+                    "GOOGLE_CHAT_SUBSCRIPTION_NAME must match "
+                    "'projects/<project>/subscriptions/<sub>'."
+                )
+            subscription_project = match.group("project")
+            if project_id and subscription_project != project_id:
+                raise ValueError(
+                    "project_id in GOOGLE_CHAT_PROJECT_ID does not match the "
+                    "project embedded in GOOGLE_CHAT_SUBSCRIPTION_NAME."
+                )
+            return project_id or subscription_project, subscription
+
+        if http_events_url:
+            return project_id, None
+
         if not project_id:
             raise ValueError(
                 "GOOGLE_CHAT_PROJECT_ID (or GOOGLE_CLOUD_PROJECT) is not set."
             )
-        if not subscription:
-            raise ValueError(
-                "GOOGLE_CHAT_SUBSCRIPTION_NAME (or GOOGLE_CHAT_SUBSCRIPTION) is not set."
-            )
-        match = _SUBSCRIPTION_PATH_RE.match(subscription)
-        if not match:
-            raise ValueError(
-                "GOOGLE_CHAT_SUBSCRIPTION_NAME must match "
-                "'projects/<project>/subscriptions/<sub>'."
-            )
-        if match.group("project") != project_id:
-            raise ValueError(
-                "project_id in GOOGLE_CHAT_PROJECT_ID does not match the "
-                "project embedded in GOOGLE_CHAT_SUBSCRIPTION_NAME."
-            )
-        return project_id, subscription
+        raise ValueError(
+            "GOOGLE_CHAT_SUBSCRIPTION_NAME (or GOOGLE_CHAT_SUBSCRIPTION) is not set. "
+            "Set GOOGLE_CHAT_HTTP_EVENTS_URL for HTTP callback mode."
+        )
 
     # ------------------------------------------------------------------
     # Loop bridge helpers (thread -> asyncio loop)
@@ -862,36 +1013,37 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 "all threads as fresh)", exc_info=True,
             )
 
-        # Sanity check: subscription exists / SA has access.
-        self._subscriber = pubsub_v1.SubscriberClient(credentials=credentials)
-        try:
-            await asyncio.to_thread(
-                lambda: self._subscriber.get_subscription(
-                    request={"subscription": subscription_path}
+        if subscription_path is not None:
+            # Sanity check: subscription exists / SA has access.
+            self._subscriber = pubsub_v1.SubscriberClient(credentials=credentials)
+            try:
+                await asyncio.to_thread(
+                    lambda: self._subscriber.get_subscription(
+                        request={"subscription": subscription_path}
+                    )
                 )
-            )
-        except gax_exceptions.NotFound:
-            self._set_fatal_error(
-                code="subscription_not_found",
-                message="Pub/Sub subscription not found at configured path",
-                retryable=False,
-            )
-            return False
-        except gax_exceptions.PermissionDenied:
-            self._set_fatal_error(
-                code="subscription_permission",
-                message=(
-                    "Service Account lacks roles/pubsub.subscriber on the "
-                    "subscription"
-                ),
-                retryable=False,
-            )
-            return False
-        except Exception as exc:
-            msg = _redact_sensitive(str(exc))
-            logger.error("[GoogleChat] subscription.get failed: %s", msg)
-            self._set_fatal_error(code="subscription_check", message=msg, retryable=True)
-            return False
+            except gax_exceptions.NotFound:
+                self._set_fatal_error(
+                    code="subscription_not_found",
+                    message="Pub/Sub subscription not found at configured path",
+                    retryable=False,
+                )
+                return False
+            except gax_exceptions.PermissionDenied:
+                self._set_fatal_error(
+                    code="subscription_permission",
+                    message=(
+                        "Service Account lacks roles/pubsub.subscriber on the "
+                        "subscription"
+                    ),
+                    retryable=False,
+                )
+                return False
+            except Exception as exc:
+                msg = _redact_sensitive(str(exc))
+                logger.error("[GoogleChat] subscription.get failed: %s", msg)
+                self._set_fatal_error(code="subscription_check", message=msg, retryable=True)
+                return False
 
         # Resolve bot user_id (eager): cache first, then members.list.
         self._bot_user_id = self._load_cached_bot_id()
@@ -905,14 +1057,22 @@ class GoogleChatAdapter(BasePlatformAdapter):
                     "will resolve on first addedToSpace or member lookup"
                 )
 
-        # Start the supervisor task that runs the Pub/Sub pull with exponential
-        # backoff + jitter on transient errors, bails out after N retries.
-        self._supervisor_task = asyncio.create_task(self._run_supervisor())
+        if subscription_path is not None:
+            # Start the supervisor task that runs the Pub/Sub pull with exponential
+            # backoff + jitter on transient errors, bails out after N retries.
+            self._supervisor_task = asyncio.create_task(self._run_supervisor())
+            inbound = "pubsub"
+        else:
+            self._supervisor_task = None
+            inbound = "http"
+
         self._mark_connected()
         logger.info(
-            "[GoogleChat] Connected; project=%s, subscription=<redacted>, "
+            "[GoogleChat] Connected; project=%s, inbound=%s, subscription=%s, "
             "bot_user_id=%s, flow_control(msgs=%s, bytes=%s)",
-            project_id,
+            project_id or "<unset>",
+            inbound,
+            "<redacted>" if subscription_path else "<none>",
             self._bot_user_id or "<unresolved>",
             self._max_messages,
             self._max_bytes,
@@ -1869,6 +2029,102 @@ class GoogleChatAdapter(BasePlatformAdapter):
             return last_result
         finally:
             self.resume_typing_for_chat(chat_id)
+
+    async def send_card(
+        self,
+        chat_id: str,
+        card: Dict[str, Any],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        body: Dict[str, Any] = {"cardsV2": [card]}
+        thread_id = self._resolve_thread_id(None, metadata, chat_id=chat_id)
+        if thread_id:
+            body["thread"] = {"name": thread_id}
+        try:
+            result = await self._create_message(chat_id, body)
+            result.raw_response = result.raw_response or {"cardsV2": body["cardsV2"]}
+            return result
+        except HttpError as exc:
+            status = getattr(getattr(exc, "resp", None), "status", None)
+            return SendResult(
+                success=False,
+                error=_redact_sensitive(str(exc)),
+                retryable=status in _RETRYABLE_HTTP_STATUSES,
+            )
+        except Exception as exc:
+            logger.debug("[GoogleChat] send_card failed", exc_info=True)
+            return SendResult(
+                success=False,
+                error=_redact_sensitive(str(exc)),
+                retryable=_is_retryable_error(exc),
+            )
+
+    async def send_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[list],
+        clarify_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        if not choices:
+            return await super().send_clarify(
+                chat_id, question, choices, clarify_id, session_key, metadata
+            )
+
+        buttons: List[Dict[str, Any]] = []
+        for choice in choices:
+            choice_text = str(choice).strip()
+            if not choice_text:
+                continue
+            label = choice_text if len(choice_text) <= 80 else choice_text[:77] + "..."
+            buttons.append(
+                {
+                    "text": label,
+                    "action": "hermes_clarify",
+                    "parameters": {
+                        "clarify_id": clarify_id,
+                        "choice": choice_text,
+                    },
+                }
+            )
+        buttons.append(
+            {
+                "text": "Other / type answer",
+                "action": "hermes_clarify",
+                "parameters": {
+                    "clarify_id": clarify_id,
+                    "choice": "__other__",
+                },
+            }
+        )
+        if not buttons:
+            return await super().send_clarify(
+                chat_id, question, choices, clarify_id, session_key, metadata
+            )
+
+        card = card_spec_to_cards_v2(
+            {
+                "card_id": f"clarify-{clarify_id}",
+                "header": {"title": "Question"},
+                "sections": [
+                    {
+                        "widgets": [
+                            {"type": "text", "text": f"❓ {question}"},
+                            {"type": "buttons", "buttons": buttons},
+                        ]
+                    }
+                ],
+            }
+        )
+        result = await self.send_card(chat_id, card, metadata=metadata)
+        if result.success:
+            self._clarify_state[clarify_id] = session_key
+            return result
+        return await super().send_clarify(
+            chat_id, question, choices, clarify_id, session_key, metadata
+        )
 
     async def edit_message(
         self,
@@ -2944,15 +3200,11 @@ class GoogleChatAdapter(BasePlatformAdapter):
 
 
 def _validate_config(config: PlatformConfig) -> bool:
-    """Plugin-side config gate: require both Pub/Sub project and subscription.
-
-    Mirrors the legacy dispatch entry in ``gateway/config.py`` so the
-    registry can decide whether the platform is configured without
-    importing the legacy table.
-    """
+    """Plugin-side config gate for HTTP callback or Pub/Sub inbound modes."""
     extra = getattr(config, "extra", {}) or {}
     return bool(
-        extra.get("project_id") and extra.get("subscription_name")
+        extra.get("http_events_url")
+        or (extra.get("project_id") and extra.get("subscription_name"))
     )
 
 
@@ -2977,7 +3229,8 @@ def _check_for_registry() -> bool:
         os.getenv("GOOGLE_CHAT_SUBSCRIPTION_NAME")
         or os.getenv("GOOGLE_CHAT_SUBSCRIPTION")
     )
-    return bool(project and subscription)
+    http_events_url = os.getenv("GOOGLE_CHAT_HTTP_EVENTS_URL")
+    return bool(http_events_url or (project and subscription))
 
 
 def _is_connected(config: PlatformConfig) -> bool:
@@ -3007,12 +3260,16 @@ def _env_enablement() -> Optional[Dict[str, Any]]:
         os.getenv("GOOGLE_CHAT_SUBSCRIPTION_NAME")
         or os.getenv("GOOGLE_CHAT_SUBSCRIPTION")
     )
-    if not (project and subscription):
+    http_events_url = os.getenv("GOOGLE_CHAT_HTTP_EVENTS_URL")
+    if not (http_events_url or (project and subscription)):
         return None
-    seed: Dict[str, Any] = {
-        "project_id": project,
-        "subscription_name": subscription,
-    }
+    seed: Dict[str, Any] = {}
+    if project:
+        seed["project_id"] = project
+    if subscription:
+        seed["subscription_name"] = subscription
+    if http_events_url:
+        seed["http_events_url"] = http_events_url
     sa_json = (
         os.getenv("GOOGLE_CHAT_SERVICE_ACCOUNT_JSON")
         or os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
@@ -3295,8 +3552,6 @@ def register(ctx) -> None:
         validate_config=_validate_config,
         is_connected=_is_connected,
         required_env=[
-            "GOOGLE_CHAT_PROJECT_ID",
-            "GOOGLE_CHAT_SUBSCRIPTION_NAME",
             "GOOGLE_CHAT_SERVICE_ACCOUNT_JSON",
         ],
         install_hint="pip install 'hermes-agent[google_chat]'",

@@ -1975,8 +1975,15 @@ def resolve_runtime_provider(
         # Dual-path routing: Claude models use AnthropicBedrock SDK for full
         # feature parity (prompt caching, thinking budgets, adaptive thinking).
         # Non-Claude models use the Converse API for multi-model support.
+        #
+        # Exception: Bearer Token auth (AWS_BEARER_TOKEN_BEDROCK) is NOT
+        # supported by the AnthropicBedrock SDK (it only does SigV4 signing —
+        # a bearer-only setup fails at runtime with "could not resolve
+        # credentials from session"). Route these users through the Converse
+        # API regardless of model. Ref: #28156.
         _current_model = str(target_model or model_cfg.get("default") or "").strip()
-        if is_anthropic_bedrock_model(_current_model):
+        _has_bearer_token = bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "").strip())
+        if is_anthropic_bedrock_model(_current_model) and not _has_bearer_token:
             # Claude on Bedrock → AnthropicBedrock SDK → anthropic_messages path
             runtime = {
                 "provider": "bedrock",

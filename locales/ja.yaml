@@ -364,6 +364,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_estimated_context:  "推定コンテキスト: ~{count} トークン"
     detailed_after_first:     "_(詳細な使用状況は最初のエージェント応答後に利用可能)_"
     no_data:                  "このセッションの使用データはありません。"
+    unknown_subcommand:       "不明な /usage サブコマンド: `{args}`。`/usage` または `/usage reset [--force]` をお試しください。"
+    reset_wrong_provider:     "バンクされた使用制限リセットは openai-codex プロバイダーでのみ利用できます。まず `/model` で切り替えてください。"
 
   credits:
     not_logged_in:            "Nous Portal にログインしていません。ログインすると残高の確認とチャージができます。"

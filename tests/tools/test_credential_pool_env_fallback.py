@@ -107,6 +107,73 @@ class TestCredentialPoolSeedsFromDotEnv:
         assert active_sources == set()
         assert entries == []
 
+    def test_profile_scope_does_not_fall_back_to_process_env(
+        self, isolated_hermes_home, monkeypatch
+    ):
+        """A missing profile key must not borrow another profile's env key."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "synthetic-foreign-profile-key")
+
+        from agent import secret_scope
+        from agent.credential_pool import _seed_from_env
+
+        secret_scope.set_multiplex_active(True)
+        scope_token = secret_scope.set_secret_scope({})
+        try:
+            entries = []
+            changed, active_sources = _seed_from_env("openrouter", entries)
+        finally:
+            secret_scope.reset_secret_scope(scope_token)
+            secret_scope.set_multiplex_active(False)
+
+        assert changed is False
+        assert active_sources == set()
+        assert entries == []
+
+    def test_profile_scope_seeds_its_own_key(
+        self, isolated_hermes_home, monkeypatch
+    ):
+        """The isolation guard must still seed the active profile's key."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "synthetic-foreign-profile-key")
+
+        from agent import secret_scope
+        from agent.credential_pool import _seed_from_env
+
+        secret_scope.set_multiplex_active(True)
+        scope_token = secret_scope.set_secret_scope(
+            {"OPENROUTER_API_KEY": "synthetic-active-profile-key"}
+        )
+        try:
+            entries = []
+            changed, active_sources = _seed_from_env("openrouter", entries)
+        finally:
+            secret_scope.reset_secret_scope(scope_token)
+            secret_scope.set_multiplex_active(False)
+
+        assert changed is True
+        assert active_sources == {"env:OPENROUTER_API_KEY"}
+        assert len(entries) == 1
+        assert entries[0].access_token == "synthetic-active-profile-key"
+
+    def test_unscoped_multiplex_does_not_bypass_fail_closed_for_op_reference(
+        self, isolated_hermes_home, monkeypatch
+    ):
+        """A resolved process value must not bypass the missing-scope error."""
+        _write_env_file(
+            isolated_hermes_home,
+            OPENROUTER_API_KEY="op://Example/Profile/key",
+        )
+        monkeypatch.setenv("OPENROUTER_API_KEY", "synthetic-resolved-foreign-key")
+
+        from agent import secret_scope
+        from agent.credential_pool import _seed_from_env
+
+        secret_scope.set_multiplex_active(True)
+        try:
+            with pytest.raises(secret_scope.UnscopedSecretError):
+                _seed_from_env("openrouter", [])
+        finally:
+            secret_scope.set_multiplex_active(False)
+
     def test_dotenv_wins_over_stale_os_environ(self, isolated_hermes_home, monkeypatch):
         """Regression for #20591: a fresh key rotated into ~/.hermes/.env must
         win over a stale value inherited from os.environ (parent shell export

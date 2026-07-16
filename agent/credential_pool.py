@@ -16,7 +16,11 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import load_env
-from agent.secret_scope import get_secret as _get_secret
+from agent.secret_scope import (
+    current_secret_scope as _current_secret_scope,
+    get_secret as _get_secret,
+    is_multiplex_active as _is_multiplex_active,
+)
 from agent.credential_persistence import (
     is_borrowed_credential_source,
     sanitize_borrowed_credential_payload,
@@ -2165,6 +2169,13 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
     # processes (Codex CLI, test scripts, etc.) should not override deliberate
     # changes to the .env file.
     def _get_env_prefer_dotenv(key: str) -> str:
+        # A profile scope is authoritative. Falling through to os.environ here
+        # can seed one profile's pool with another profile's credential.
+        # Unscoped multiplex reads must also keep the secret_scope fail-closed
+        # behavior instead of bypassing it through the legacy env fallback.
+        if _current_secret_scope() is not None or _is_multiplex_active():
+            return str(_get_secret(key, "") or "").strip()
+
         env_file = load_env()
         raw = env_file.get(key, "").strip()
         env_val = os.environ.get(key, "").strip()

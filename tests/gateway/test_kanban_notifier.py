@@ -3,6 +3,7 @@ from pathlib import Path
 
 
 from gateway.config import Platform
+from gateway.kanban_watchers import _format_completed_message
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
 
@@ -13,6 +14,22 @@ class RecordingAdapter:
 
     async def send(self, chat_id, text, metadata=None):
         self.sent.append({"chat_id": chat_id, "text": text, "metadata": metadata or {}})
+
+
+def test_completed_message_is_concise_and_omits_technical_ids():
+    message = _format_completed_message(
+        "Agent Board bereinigen",
+        "PR #158 ist gemerged. Vercel Production läuft auf ff04ae4 und wurde geprüft.",
+    )
+
+    assert message == "Agent Board bereinigen fertig. PR #158 gemerged, Production geprüft."
+    assert "t_" not in message and "ff04ae4" not in message
+
+
+def test_completed_message_collapses_lines_and_strips_technical_ids():
+    message = _format_completed_message("Task t_94f38ab5\ncommit deadbeef rollout", "")
+    assert message == "Task commit rollout fertig."
+    assert len(message.splitlines()) == 1
 
 
 class DisconnectedAdapters(dict):
@@ -84,8 +101,7 @@ def test_kanban_notifier_dedupes_board_slugs_pointing_to_same_db(tmp_path, monke
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
     assert len(adapter.sent) == 1
-    assert "Kanban" in adapter.sent[0]["text"]
-    assert tid in adapter.sent[0]["text"]
+    assert adapter.sent[0]["text"] == "notify once fertig."
 
 
 def test_kanban_notifier_claim_prevents_second_watcher_send(tmp_path, monkeypatch):
@@ -103,6 +119,27 @@ def test_kanban_notifier_claim_prevents_second_watcher_send(tmp_path, monkeypatc
 
     assert len(adapter1.sent) == 1
     assert adapter2.sent == []
+
+
+def test_notification_idempotency_key_is_thread_scoped(tmp_path, monkeypatch):
+    db_path = tmp_path / "thread-scoped.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="threaded", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", thread_id="A")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", thread_id="B")
+        kb.complete_task(conn, tid, summary="done")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 2
+    assert {item["metadata"]["thread_id"] for item in adapter.sent} == {"A", "B"}
+    assert len({item["metadata"]["client_msg_id"] for item in adapter.sent}) == 2
 
 
 def test_kanban_notifier_rewinds_claim_if_adapter_disconnects(tmp_path, monkeypatch):

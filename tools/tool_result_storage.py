@@ -72,7 +72,7 @@ def _safe_result_filename(tool_use_id: str) -> str:
         changed = True
 
     if changed or len(safe_stem) > _MAX_RESULT_FILENAME_STEM:
-        digest = hashlib.sha256(raw_id.encode("utf-8")).hexdigest()[:12]
+        digest = hashlib.sha256(raw_id.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
         safe_stem = safe_stem[:_MAX_RESULT_FILENAME_STEM].rstrip("._-") or "tool_result"
         safe_stem = f"{safe_stem}_{digest}"
 

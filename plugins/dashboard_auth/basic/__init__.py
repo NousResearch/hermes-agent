@@ -101,7 +101,7 @@ _SCRYPT_SALT_BYTES = 16
 # Length of the HMAC-SHA256 digest appended as a fixed-length suffix to
 # signed tokens (no separator — binary HMAC bytes can't be confused with
 # a delimiter).
-_SIG_LEN = hashlib.sha256().digest_size
+_SIG_LEN = hashlib.sha256(usedforsecurity=False).digest_size
 
 
 LAST_SKIP_REASON: str = ""

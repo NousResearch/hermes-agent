@@ -348,7 +348,8 @@ def _safe_session_filename_component(session_id: str) -> str:
     if raw and sanitized == raw:
         return sanitized
     digest = hashlib.sha256(
-        raw.encode("utf-8", errors="surrogatepass")
+        raw.encode("utf-8", errors="surrogatepass"),
+        usedforsecurity=False,
     ).hexdigest()[:12]
     return f"{sanitized}_{digest}"
 
@@ -4937,7 +4938,7 @@ class AIAgent:
         return str(path), path
 
     def _describe_image_for_anthropic_fallback(self, image_url: str, role: str) -> str:
-        cache_key = hashlib.sha256(str(image_url or "").encode("utf-8")).hexdigest()
+        cache_key = hashlib.sha256(str(image_url or "").encode("utf-8"), usedforsecurity=False).hexdigest()
         cached = self._anthropic_image_fallback_cache.get(cache_key)
         if cached:
             return cached

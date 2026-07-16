@@ -110,7 +110,7 @@ class TeamsPipelineStore:
         if explicit_id:
             return f"id:{explicit_id}"
         canonical = json.dumps(notification, sort_keys=True, separators=(",", ":"))
-        digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        digest = hashlib.sha256(canonical.encode("utf-8"), usedforsecurity=False).hexdigest()
         return f"sha256:{digest}"
 
     def has_notification_receipt(self, receipt_key: str) -> bool:

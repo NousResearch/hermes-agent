@@ -4,6 +4,7 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
+const WSL_DETECTION_TIMEOUT_MS = 10_000
 
 let cachedDistributions: string[] | null = null
 
@@ -48,11 +49,13 @@ export function readTerminalMode(hermesHome: string): TerminalMode {
         continue
       }
 
-      if (inTerminal) {
-        const match = /^\s+windows_execution_mode\s*:\s*(.*?)\s*$/.exec(line)
-        if (match) {
-          return normalizeTerminalMode(stripYamlScalar(match[1]))
-        }
+      if (!inTerminal) {
+        continue
+      }
+
+      const match = /^\s+windows_execution_mode\s*:\s*(.*?)\s*$/.exec(line)
+      if (match) {
+        return normalizeTerminalMode(stripYamlScalar(match[1] || ''))
       }
     }
   } catch {
@@ -80,7 +83,8 @@ export function writeTerminalMode(hermesHome: string, value: unknown): TerminalM
   let modeLine = -1
 
   for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]
+    const line = lines[index] || ''
+
     if (!/^\s/.test(line)) {
       if (/^terminal\s*:\s*(?:#.*)?$/.test(line)) {
         terminalStart = index
@@ -98,7 +102,8 @@ export function writeTerminalMode(hermesHome: string, value: unknown): TerminalM
   }
 
   if (modeLine >= 0) {
-    const indent = /^\s*/.exec(lines[modeLine])?.[0] || '  '
+    const currentLine = lines[modeLine] || ''
+    const indent = /^\s*/.exec(currentLine)?.[0] || '  '
     lines[modeLine] = `${indent}windows_execution_mode: ${mode}`
   } else if (terminalStart >= 0) {
     lines.splice(terminalEnd, 0, `  windows_execution_mode: ${mode}`)
@@ -118,16 +123,20 @@ export function writeTerminalMode(hermesHome: string, value: unknown): TerminalM
 
 export function parseWslDistributions(output: unknown): string[] {
   let text = ''
+
   if (Buffer.isBuffer(output)) {
-    text = output.toString('utf16le')
+    const hasUtf16LeBom = output.length >= 2 && output[0] === 0xff && output[1] === 0xfe
+    const looksUtf16Le = output.length >= 2 && output[1] === 0
+    text = output.toString(hasUtf16LeBom || looksUtf16Le ? 'utf16le' : 'utf8')
   } else {
     text = String(output || '')
   }
+
   const seen = new Set<string>()
 
   return text
-    .split('\u0000')
-    .join('')
+    .replace(/\u0000/g, '')
+    .replace(/^\ufeff/, '')
     .split(/\r?\n/)
     .map(line => line.replace(/^\*\s*/, '').trim())
     .filter(name => {
@@ -138,7 +147,6 @@ export function parseWslDistributions(output: unknown): string[] {
       }
 
       seen.add(key)
-
       return true
     })
 }
@@ -148,6 +156,7 @@ export function detectWslDistributions(run: typeof execFileSync = execFileSync):
     const output = run('wsl.exe', ['--list', '--quiet'], {
       encoding: 'buffer' as any,
       stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: WSL_DETECTION_TIMEOUT_MS,
       windowsHide: true
     })
 
@@ -161,17 +170,19 @@ export async function detectWslDistributionsAsync(): Promise<string[]> {
   if (cachedDistributions !== null) {
     return cachedDistributions
   }
+
   try {
     const { stdout } = await execFileAsync('wsl.exe', ['--list', '--quiet'], {
       encoding: 'buffer',
+      timeout: WSL_DETECTION_TIMEOUT_MS,
       windowsHide: true
     })
     cachedDistributions = parseWslDistributions(stdout)
-    return cachedDistributions
   } catch {
     cachedDistributions = []
-    return []
   }
+
+  return cachedDistributions
 }
 
 export function clearWslDistributionCache(): void {
@@ -224,14 +235,12 @@ export function toWslPath(cwd: string, distribution?: string | null): string {
 
   const unc = /^\\\\(?:wsl\.localhost|wsl\$)\\([^\\/]+)(?:[\\/](.*))?$/i.exec(value)
 
-  if (unc) {
-    if (!distribution || unc[1].toLowerCase() === distribution.toLowerCase()) {
-      return (
-        `/${String(unc[2] || '')
-          .replace(/\\/g, '/')
-          .replace(/^\/+/, '')}`.replace(/\/$/, '') || '/'
-      )
-    }
+  if (unc && (!distribution || unc[1].toLowerCase() === distribution.toLowerCase())) {
+    return (
+      `/${String(unc[2] || '')
+        .replace(/\\/g, '/')
+        .replace(/^\/+/, '')}`.replace(/\/$/, '') || '/'
+    )
   }
 
   const drive = /^([a-zA-Z]):[\\/]*(.*)$/.exec(value)

@@ -1263,7 +1263,7 @@ def drain_truncation_warnings() -> list:
 _SKILLS_PROMPT_CACHE_MAX = 8
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
-_SKILLS_SNAPSHOT_VERSION = 1
+_SKILLS_SNAPSHOT_VERSION = 2
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1352,13 +1352,10 @@ def _build_snapshot_entry(
 ) -> dict:
     """Build a serialisable metadata dict for one skill."""
     rel_path = skill_file.relative_to(skills_dir)
-    parts = rel_path.parts
-    if len(parts) >= 2:
-        skill_name = parts[-2]
-        category = "/".join(parts[:-2]) if len(parts) > 2 else parts[0]
-    else:
-        category = "general"
-        skill_name = skill_file.parent.name
+    skill_relative_path = rel_path.parent
+    parts = skill_relative_path.parts
+    skill_name = parts[-1] if parts else skill_file.parent.name
+    category = "/".join(parts[:-1]) or "general"
 
     platforms = frontmatter.get("platforms") or []
     if isinstance(platforms, str):
@@ -1367,6 +1364,7 @@ def _build_snapshot_entry(
     return {
         "skill_name": skill_name,
         "category": category,
+        "relative_path": skill_relative_path.as_posix(),
         "frontmatter_name": str(frontmatter.get("name", skill_name)),
         "description": description,
         "platforms": [str(p).strip() for p in platforms if str(p).strip()],
@@ -1466,15 +1464,17 @@ def build_skills_system_prompt(
     Falls back to a full filesystem scan when both layers miss.
 
     External skill directories (``skills.external_dirs`` in config.yaml) are
-    scanned alongside the local ``~/.hermes/skills/`` directory.  External dirs
+    scanned alongside the local ``~/.hermes/skills/`` directory. External dirs
     are read-only — they appear in the index but new skills are always created
-    in the local dir.  Local skills take precedence when names collide.
+    in the local dir. Colliding names are rendered with exact relative paths
+    when those paths are unambiguous to ``skill_view``.
 
     ``compact_categories`` (e.g. from the coding posture — see
     agent/coding_context.py) demotes whole categories to a names-only line in
-    the rendered index. Nothing is ever hidden: every skill name stays
-    visible and loadable via ``skill_view`` / ``skills_list``; only the
-    descriptions are dropped, and a footer note explains the demotion.
+    the rendered index. Every resolvable skill stays visible; only descriptions
+    are dropped. The sole exception is a collision with no unique declared name
+    or relative path, which is omitted with a diagnostic instead of publishing
+    an identifier that ``skill_view`` must reject.
     """
     skills_dir = get_skills_dir()
     external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
@@ -1506,6 +1506,7 @@ def build_skills_system_prompt(
     snapshot = _load_skills_snapshot(skills_dir)
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
+    identifier_candidates: list[dict] = []
     category_descriptions: dict[str, str] = {}
 
     if snapshot is not None:
@@ -1517,19 +1518,24 @@ def build_skills_system_prompt(
             category = entry.get("category") or "general"
             frontmatter_name = entry.get("frontmatter_name") or skill_name
             platforms = entry.get("platforms") or []
-            if not skill_matches_platform_list(platforms):
-                continue
-            if frontmatter_name in disabled or skill_name in disabled:
-                continue
-            if not _skill_should_show(
-                entry.get("conditions") or {},
-                available_tools,
-                available_toolsets,
-            ):
-                continue
-            skills_by_category.setdefault(category, []).append(
-                (frontmatter_name, entry.get("description", ""))
+            visible = (
+                skill_matches_platform_list(platforms)
+                and frontmatter_name not in disabled
+                and skill_name not in disabled
+                and _skill_should_show(
+                    entry.get("conditions") or {},
+                    available_tools,
+                    available_toolsets,
+                )
             )
+            identifier_candidates.append({
+                "name": frontmatter_name,
+                "directory_name": skill_name,
+                "relative_path": entry.get("relative_path") or skill_name,
+                "category": category,
+                "description": entry.get("description", ""),
+                "visible": visible,
+            })
         category_descriptions = {
             str(k): str(v)
             for k, v in (snapshot.get("category_descriptions") or {}).items()
@@ -1541,20 +1547,26 @@ def build_skills_system_prompt(
             is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
             entry = _build_snapshot_entry(skill_file, skills_dir, frontmatter, desc)
             skill_entries.append(entry)
-            if not is_compatible:
-                continue
             skill_name = entry["skill_name"]
-            if entry["frontmatter_name"] in disabled or skill_name in disabled:
-                continue
-            if not _skill_should_show(
-                extract_skill_conditions(frontmatter),
-                available_tools,
-                available_toolsets,
-            ):
-                continue
-            skills_by_category.setdefault(entry["category"], []).append(
-                (entry["frontmatter_name"], entry["description"])
+            frontmatter_name = entry["frontmatter_name"]
+            visible = (
+                is_compatible
+                and frontmatter_name not in disabled
+                and skill_name not in disabled
+                and _skill_should_show(
+                    extract_skill_conditions(frontmatter),
+                    available_tools,
+                    available_toolsets,
+                )
             )
+            identifier_candidates.append({
+                "name": frontmatter_name,
+                "directory_name": skill_name,
+                "relative_path": entry["relative_path"],
+                "category": entry["category"],
+                "description": entry["description"],
+                "visible": visible,
+            })
 
         # Read category-level DESCRIPTION.md files
         for desc_file in iter_skill_index_files(skills_dir, "DESCRIPTION.md"):
@@ -1579,38 +1591,35 @@ def build_skills_system_prompt(
 
     # ── External skill directories ─────────────────────────────────────
     # Scan external dirs directly (no snapshot caching — they're read-only
-    # and typically small).  Local skills already in skills_by_category take
-    # precedence: we track seen names and skip duplicates from external dirs.
-    seen_skill_names: set[str] = set()
-    for cat_skills in skills_by_category.values():
-        for name, _desc in cat_skills:
-            seen_skill_names.add(name)
-
+    # and typically small). Keep every candidate so collisions can be resolved
+    # with the same lookup aliases accepted by skill_view.
     for ext_dir in external_dirs:
         if not ext_dir.exists():
             continue
         for skill_file in iter_skill_index_files(ext_dir, "SKILL.md"):
             try:
                 is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
-                if not is_compatible:
-                    continue
                 entry = _build_snapshot_entry(skill_file, ext_dir, frontmatter, desc)
                 skill_name = entry["skill_name"]
                 frontmatter_name = entry["frontmatter_name"]
-                if frontmatter_name in seen_skill_names:
-                    continue
-                if frontmatter_name in disabled or skill_name in disabled:
-                    continue
-                if not _skill_should_show(
-                    extract_skill_conditions(frontmatter),
-                    available_tools,
-                    available_toolsets,
-                ):
-                    continue
-                seen_skill_names.add(frontmatter_name)
-                skills_by_category.setdefault(entry["category"], []).append(
-                    (frontmatter_name, entry["description"])
+                visible = (
+                    is_compatible
+                    and frontmatter_name not in disabled
+                    and skill_name not in disabled
+                    and _skill_should_show(
+                        extract_skill_conditions(frontmatter),
+                        available_tools,
+                        available_toolsets,
+                    )
                 )
+                identifier_candidates.append({
+                    "name": frontmatter_name,
+                    "directory_name": skill_name,
+                    "relative_path": entry["relative_path"],
+                    "category": entry["category"],
+                    "description": entry["description"],
+                    "visible": visible,
+                })
             except Exception as e:
                 logger.debug("Error reading external skill %s: %s", skill_file, e)
 
@@ -1628,15 +1637,29 @@ def build_skills_system_prompt(
             except Exception as e:
                 logger.debug("Could not read external skill description %s: %s", desc_file, e)
 
+    from agent.skill_utils import resolve_skill_identifiers
+
+    omitted_ambiguous_names: set[str] = set()
+    for entry in resolve_skill_identifiers(identifier_candidates):
+        if not entry["visible"]:
+            continue
+        load_name = entry["load_name"]
+        if not load_name:
+            omitted_ambiguous_names.add(entry["name"])
+            continue
+        skills_by_category.setdefault(entry["category"], []).append(
+            (load_name, entry["description"])
+        )
+
     # Posture-driven category demotion (e.g. non-coding skills while pairing
     # on code). Demoted categories stay in the index as a single names-only
     # line — descriptions are dropped to cut noise, but every skill name
     # remains visible so memory-anchored recall ("load <name>") keeps working.
-    # NEVER remove entries entirely: agent-created skills are the model's
-    # project memory, and models don't reach for skills_list to rediscover
-    # what the index stops showing them. Match on the top-level category
-    # segment so nested categories ("social-media/twitter") are demoted with
-    # their parent.
+    # Do not remove resolvable entries: agent-created skills are the model's
+    # project memory, and models don't reach for skills_list to rediscover what
+    # the index stops showing them. Unresolvable collision groups were already
+    # diagnosed and omitted above. Match on the top-level category segment so
+    # nested categories ("social-media/twitter") are demoted with their parent.
     demoted = frozenset(
         cat for cat in skills_by_category
         if cat.split("/", 1)[0] in (compact_categories or frozenset())
@@ -1650,8 +1673,17 @@ def build_skills_system_prompt(
             "normally and load with skill_view(name) as usual.)"
         )
 
+    collision_note = ""
+    if omitted_ambiguous_names:
+        collision_note = (
+            "\n(Ambiguous skills omitted because neither their declared names nor "
+            "relative paths resolve uniquely: "
+            + ", ".join(sorted(omitted_ambiguous_names))
+            + ". Use skills_list for candidate paths and sources.)"
+        )
+
     if not skills_by_category:
-        result = ""
+        result = collision_note.strip()
     else:
         index_lines = []
         for category in sorted(skills_by_category.keys()):
@@ -1703,6 +1735,7 @@ def build_skills_system_prompt(
             "\n"
             "Only proceed without loading a skill if genuinely none are relevant to the task."
             + hidden_note
+            + collision_note
         )
 
     # ── Store in LRU cache ────────────────────────────────────────────

@@ -104,8 +104,13 @@ def get_available_skills() -> Dict[str, List[str]]:
 
     skills_by_category: Dict[str, List[str]] = {}
     for skill in all_skills:
+        load_name = skill.get("load_name") or (
+            skill["name"] if not skill.get("collision") else None
+        )
+        if not load_name:
+            continue
         category = skill.get("category") or "general"
-        skills_by_category.setdefault(category, []).append(skill["name"])
+        skills_by_category.setdefault(category, []).append(load_name)
     return skills_by_category
 
 

@@ -511,6 +511,53 @@ def get_all_skills_dirs() -> List[Path]:
     return dirs
 
 
+def resolve_skill_identifiers(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Annotate discovered skills with identifiers that ``skill_view`` can load.
+
+    ``skill_view`` resolves a local skill by its declared frontmatter name, its
+    directory name, or its path relative to a configured skills root. A name is
+    therefore safe to advertise only when exactly one candidate owns that
+    lookup alias. When a declared name collides, prefer the relative path if it
+    is unique; otherwise leave ``load_name`` unset so callers can diagnose or
+    omit the unresolvable candidate instead of advertising a broken identifier.
+
+    Each input entry must contain ``name``, ``directory_name``, and
+    ``relative_path``. The returned dictionaries are copies with ``load_name``,
+    ``collision``, and ``collision_indices`` added.
+    """
+    normalized = [dict(entry) for entry in entries]
+    alias_owners: Dict[str, Set[int]] = {}
+
+    for index, entry in enumerate(normalized):
+        aliases = {
+            str(entry.get("name") or "").strip(),
+            str(entry.get("directory_name") or "").strip(),
+            str(entry.get("relative_path") or "").strip(),
+        }
+        for alias in aliases:
+            if alias:
+                alias_owners.setdefault(alias, set()).add(index)
+
+    for index, entry in enumerate(normalized):
+        declared_name = str(entry.get("name") or "").strip()
+        relative_path = str(entry.get("relative_path") or "").strip()
+        collision_indices = sorted(alias_owners.get(declared_name, set()))
+        collision = len(collision_indices) > 1
+
+        if not collision and declared_name:
+            load_name: Optional[str] = declared_name
+        elif relative_path and len(alias_owners.get(relative_path, set())) == 1:
+            load_name = relative_path
+        else:
+            load_name = None
+
+        entry["load_name"] = load_name
+        entry["collision"] = collision
+        entry["collision_indices"] = collision_indices if collision else []
+
+    return normalized
+
+
 def normalize_skill_lookup_name(identifier: str) -> str:
     """Normalize a skill identifier to a ``skill_view()``-safe relative path.
 

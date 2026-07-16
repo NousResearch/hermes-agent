@@ -969,6 +969,7 @@ def do_list(source_filter: str = "all",
 
     for skill in sorted(all_skills, key=lambda s: (s.get("category") or "", s["name"])):
         name = skill["name"]
+        display_name = skill.get("load_name") or name
         category = skill.get("category", "")
         hub_entry = hub_installed.get(name)
 
@@ -984,6 +985,9 @@ def do_list(source_filter: str = "all",
             source_type = "local"
             source_display = "local"
             trust = "local"
+
+        if skill.get("collision") and skill.get("source"):
+            source_display = skill["source"]
 
         if source_filter != "all" and source_filter != source_type:
             continue
@@ -1006,9 +1010,21 @@ def do_list(source_filter: str = "all",
             disabled_count += 1
             status_cell = "[dim red]disabled[/]"
 
+        if skill.get("collision"):
+            if skill.get("load_name"):
+                status_cell += " [yellow](qualified)[/]"
+            else:
+                status_cell += " [bold red](ambiguous)[/]"
+
         trust_style = {"builtin": "bright_cyan", "trusted": "green", "community": "yellow", "local": "dim"}.get(trust, "dim")
         trust_label = "official" if source_display == "official" else trust
-        table.add_row(name, category, source_display, f"[{trust_style}]{trust_label}[/]", status_cell)
+        table.add_row(
+            display_name,
+            category,
+            source_display,
+            f"[{trust_style}]{trust_label}[/]",
+            status_cell,
+        )
 
     c.print(table)
     summary = f"[dim]{hub_count} hub-installed, {builtin_count} builtin, {local_count} local"

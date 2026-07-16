@@ -41,6 +41,8 @@ class _StubChild:
         hang_seconds: float = 5.0,
         subagent_id: str = "sa-0-stubabc",
         tool_schema=None,
+        session_messages=None,
+        progress_callback=None,
     ):
         self._subagent_id = subagent_id
         self._delegate_depth = 1
@@ -62,6 +64,8 @@ class _StubChild:
             {"name": "terminal", "description": "shell"},
         ]
         self._api_call_count = api_call_count
+        self._session_messages = list(session_messages or [])
+        self.tool_progress_callback = progress_callback
         self._hang = threading.Event()
         self._hang_seconds = hang_seconds
 
@@ -282,3 +286,213 @@ class TestRunSingleChildTimeoutDump:
         if logs_dir.is_dir():
             dumps = list(logs_dir.glob("subagent-timeout-*.log"))
             assert dumps == []
+
+    @staticmethod
+    def _tool_messages(outputs):
+        messages = []
+        for index, output in enumerate(outputs):
+            tool_call_id = f"tool-{index}"
+            messages.extend(
+                [
+                    {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "id": tool_call_id,
+                                "function": {
+                                    "name": "terminal",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "content": output,
+                    },
+                ]
+            )
+        return messages
+
+    def test_timeout_preserves_completed_tool_output_as_partial_tail(
+        self, hermes_home, monkeypatch
+    ):
+        child = _StubChild(
+            api_call_count=1,
+            hang_seconds=10.0,
+            session_messages=self._tool_messages(["focused test passed"]),
+        )
+
+        result = self._invoke_with_short_timeout(child, monkeypatch)
+
+        assert result["status"] == "timeout"
+        assert result["partial"] is True
+        assert result["partial_output_tail"] == [
+            {
+                "tool": "terminal",
+                "preview": "focused test passed",
+                "is_error": False,
+            }
+        ]
+
+    def test_timeout_redacts_secrets_from_partial_tail(
+        self, hermes_home, monkeypatch
+    ):
+        secret = "sk-" + ("a" * 30)
+        child = _StubChild(
+            api_call_count=1,
+            hang_seconds=10.0,
+            session_messages=self._tool_messages([f"token={secret}"]),
+        )
+
+        result = self._invoke_with_short_timeout(child, monkeypatch)
+
+        serialized_tail = str(result["partial_output_tail"])
+        assert secret not in serialized_tail
+        assert "token=" in serialized_tail
+
+    def test_timeout_partial_tail_is_bounded_by_count_and_preview_size(
+        self, hermes_home, monkeypatch
+    ):
+        child = _StubChild(
+            api_call_count=12,
+            hang_seconds=10.0,
+            session_messages=self._tool_messages(
+                [f"output-{index}:" + ("x" * 1000) for index in range(12)]
+            ),
+        )
+
+        result = self._invoke_with_short_timeout(child, monkeypatch)
+
+        tail = result["partial_output_tail"]
+        assert len(tail) == 8
+        assert all(0 < len(entry["preview"]) <= 600 for entry in tail)
+        assert tail[0]["preview"].startswith("output-4:")
+        assert tail[-1]["preview"].startswith("output-11:")
+
+    def test_timeout_without_tool_output_keeps_old_schema(
+        self, hermes_home, monkeypatch
+    ):
+        child = _StubChild(api_call_count=0, hang_seconds=10.0)
+
+        result = self._invoke_with_short_timeout(child, monkeypatch)
+
+        assert result["status"] == "timeout"
+        assert "partial" not in result
+        assert "partial_output_tail" not in result
+
+    def test_timeout_malformed_live_messages_fails_closed(
+        self, hermes_home, monkeypatch
+    ):
+        secret = "sk-" + ("m" * 30)
+        child = _StubChild(
+            api_call_count=1,
+            hang_seconds=10.0,
+            session_messages=[
+                {"role": "assistant", "tool_calls": [f"malformed-{secret}"]},
+                {"role": "tool", "content": f"must not leak {secret}"},
+            ],
+        )
+
+        result = self._invoke_with_short_timeout(child, monkeypatch)
+
+        assert result["status"] == "timeout"
+        assert "partial" not in result
+        assert "partial_output_tail" not in result
+        assert secret not in str(result)
+
+    def test_timeout_live_snapshot_error_fails_closed(
+        self, hermes_home, monkeypatch
+    ):
+        class _SnapshotErrorChild(_StubChild):
+            @property
+            def _session_messages(self):
+                raise RuntimeError("live transcript unavailable")
+
+            @_session_messages.setter
+            def _session_messages(self, value):
+                pass
+
+        child = _SnapshotErrorChild(api_call_count=1, hang_seconds=10.0)
+
+        result = self._invoke_with_short_timeout(child, monkeypatch)
+
+        assert result["status"] == "timeout"
+        assert "partial" not in result
+        assert "partial_output_tail" not in result
+
+    def test_timeout_output_tail_helper_error_fails_closed(
+        self, hermes_home, monkeypatch
+    ):
+        from tools import delegate_tool
+
+        secret = "sk-" + ("h" * 30)
+        events = []
+
+        def capture(event_type, **kwargs):
+            events.append((event_type, kwargs))
+
+        child = _StubChild(
+            api_call_count=1,
+            hang_seconds=10.0,
+            session_messages=self._tool_messages([f"must not leak {secret}"]),
+            progress_callback=capture,
+        )
+        monkeypatch.setattr(
+            delegate_tool,
+            "_extract_output_tail",
+            MagicMock(side_effect=RuntimeError("extractor failed")),
+        )
+
+        result = self._invoke_with_short_timeout(child, monkeypatch)
+
+        assert result["status"] == "timeout"
+        assert "partial" not in result
+        assert "partial_output_tail" not in result
+        complete_events = [payload for kind, payload in events if kind == "subagent.complete"]
+        assert len(complete_events) == 1
+        assert "output_tail" not in complete_events[0]
+        assert secret not in str((result, events))
+
+    def test_non_timeout_exception_never_exposes_partial_output(
+        self, hermes_home, monkeypatch
+    ):
+        class _ErrorChild(_StubChild):
+            def run_conversation(self, *args, **kwargs):
+                raise RuntimeError("provider failed")
+
+        child = _ErrorChild(
+            api_call_count=1,
+            session_messages=self._tool_messages(["completed before provider error"]),
+        )
+
+        result = self._invoke_with_short_timeout(child, monkeypatch)
+
+        assert result["status"] == "error"
+        assert "partial" not in result
+        assert "partial_output_tail" not in result
+
+    def test_timeout_progress_event_receives_only_redacted_output(
+        self, hermes_home, monkeypatch
+    ):
+        secret = "sk-" + ("a" * 30)
+        events = []
+
+        def capture(event_type, **kwargs):
+            events.append((event_type, kwargs))
+
+        child = _StubChild(
+            api_call_count=1,
+            hang_seconds=10.0,
+            session_messages=self._tool_messages([f"result with {secret}"]),
+            progress_callback=capture,
+        )
+
+        result = self._invoke_with_short_timeout(child, monkeypatch)
+
+        complete_events = [payload for kind, payload in events if kind == "subagent.complete"]
+        assert len(complete_events) == 1
+        event_tail = complete_events[0]["output_tail"]
+        assert event_tail == result["partial_output_tail"]
+        assert secret not in str(event_tail)

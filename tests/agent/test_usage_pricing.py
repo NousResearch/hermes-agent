@@ -39,6 +39,44 @@ def test_normalize_usage_openai_subtracts_cached_prompt_tokens():
     assert normalized.output_tokens == 700
 
 
+def test_normalize_usage_reads_deepseek_native_cache_hit_tokens():
+    """DeepSeek's native API (api.deepseek.com) reports context-cache hits as
+    top-level prompt_cache_hit_tokens / prompt_cache_miss_tokens (with
+    prompt_tokens = hit + miss), not OpenAI's nested
+    prompt_tokens_details.cached_tokens. Before this fix, direct DeepSeek
+    sessions always normalized to cache_read_tokens=0 — cache hits were
+    invisible in accounting and billed at the full input rate (#61871)."""
+    usage = SimpleNamespace(
+        prompt_tokens=2000,
+        completion_tokens=400,
+        prompt_cache_hit_tokens=1500,
+        prompt_cache_miss_tokens=500,
+    )
+
+    normalized = normalize_usage(usage, provider="deepseek", api_mode="chat_completions")
+
+    assert normalized.cache_read_tokens == 1500
+    # prompt_tokens includes cached; input = 2000 - 1500 = the miss bucket
+    assert normalized.input_tokens == 500
+    assert normalized.output_tokens == 400
+
+
+def test_normalize_usage_nested_details_win_over_deepseek_top_level():
+    """When a proxy forwards both shapes, the OpenAI nested value wins and
+    the DeepSeek top-level field is not double-read."""
+    usage = SimpleNamespace(
+        prompt_tokens=2000,
+        completion_tokens=100,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=900),
+        prompt_cache_hit_tokens=1500,
+    )
+
+    normalized = normalize_usage(usage, provider="deepseek", api_mode="chat_completions")
+
+    assert normalized.cache_read_tokens == 900
+    assert normalized.input_tokens == 1100
+
+
 def test_normalize_usage_openai_reads_top_level_anthropic_cache_fields():
     """Some OpenAI-compatible proxies (OpenRouter, Cline) expose
     Anthropic-style cache token counts at the top level of the usage object when

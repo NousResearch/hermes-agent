@@ -108,6 +108,30 @@ class ArticleExtractorTests(unittest.TestCase):
         self.assertTrue(any("first real paragraph" in t for t in texts))
         self.assertFalse(any("junk" in t for t in texts))  # nav + script skipped
 
+    def test_extracts_meta_image_author(self):
+        html = (b"<html><head><title>T</title>"
+                b'<meta property="og:image" content="https://cdn.example.com/hero.jpg">'
+                b'<meta name="author" content="Jane Reporter">'
+                b'<meta property="article:published_time" content="2026-07-16T10:00:00Z">'
+                b"</head><body><p>" + b"word " * 250 + b"</p></body></html>")
+        ex = server._ArticleExtractor()
+        ex.feed(html.decode())
+        self.assertEqual(ex.image, "https://cdn.example.com/hero.jpg")
+        self.assertEqual(ex.author, "Jane Reporter")
+        self.assertTrue(ex.published.startswith("2026-07-16"))
+
+    def test_live_reader_enriches_from_fixture(self):
+        html = (b"<html><head><title>Big Story</title>"
+                b'<meta property="og:image" content="https://cdn.example.com/x.jpg">'
+                b'<meta name="author" content="Reporter">'
+                b"</head><body>" + (b"<p>" + b"word " * 60 + b"</p>") * 4 + b"</body></html>")
+        import unittest.mock as mock
+        with mock.patch.object(server, "fetch_url", return_value=html):
+            doc = server.live_reader("https://news.example.com/story")
+        self.assertEqual(doc["image"], "https://cdn.example.com/x.jpg")
+        self.assertEqual(doc["author"], "Reporter")
+        self.assertGreaterEqual(doc["readingMinutes"], 1)
+
 
 class SampleFallbackTests(unittest.TestCase):
     def setUp(self):

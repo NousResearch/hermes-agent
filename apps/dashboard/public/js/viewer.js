@@ -42,7 +42,19 @@ export function openViewer({ url, title = "", summary = "", source = "", mode = 
       doc = { source: "sample", blocks: [], note: err.message };
     }
     const article = h("article.viewer-article");
+    if (doc.image) {
+      article.append(h("img.viewer-hero", {
+        src: doc.image, alt: "", loading: "lazy", referrerpolicy: "no-referrer",
+        onerror: (ev) => ev.target.remove(),
+      }));
+    }
     article.append(h("h1.viewer-title", {}, doc.title || title || host));
+    const meta = [
+      doc.author ? `By ${doc.author}` : null,
+      doc.readingMinutes ? `${doc.readingMinutes} min read` : null,
+      source || host,
+    ].filter(Boolean);
+    if (meta.length) article.append(h("div.viewer-byline.muted.small", {}, meta.join(" · ")));
     if (doc.blocks?.length) {
       for (const block of doc.blocks) {
         if (block.tag === "li") article.append(h("p.viewer-li", {}, "• " + block.text));

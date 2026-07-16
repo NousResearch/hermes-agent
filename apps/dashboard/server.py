@@ -794,12 +794,26 @@ class _ArticleExtractor(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.blocks: list[tuple[str, str]] = []
         self.title = ""
+        self.image = ""
+        self.author = ""
+        self.published = ""
         self._stack: list[str] = []
         self._buffer: list[str] = []
         self._current: str | None = None
         self._in_title = False
 
     def handle_starttag(self, tag, attrs):
+        if tag == "meta":
+            a = dict(attrs)
+            prop = (a.get("property") or a.get("name") or "").lower()
+            content = a.get("content") or ""
+            if prop == "og:image" and not self.image:
+                self.image = content
+            elif prop in ("author", "article:author") and not self.author:
+                self.author = content
+            elif prop in ("article:published_time", "og:article:published_time") and not self.published:
+                self.published = content
+            return
         if tag in self.SKIP:
             self._stack.append(tag)
         elif tag == "title" and not self.title:
@@ -846,16 +860,27 @@ def live_reader(url: str) -> dict:
     if not blocks:
         raise RuntimeError("no readable text found")
     total = 0
+    words = 0
     trimmed = []
     for tag, text in blocks:
         trimmed.append({"tag": tag, "text": text})
         total += len(text)
+        words += text.count(" ") + 1
         if total > 20000:
             break
+    image = extractor.image.strip()
+    if image and not host_is_blocked(urllib.parse.urlparse(image).hostname or ""):
+        pass  # keep only http(s) images on public hosts
+    elif image and not image.startswith("http"):
+        image = ""  # skip data:/relative
     return {
         "source": "live",
         "url": url,
         "title": WS_RE.sub(" ", extractor.title).strip() or url,
+        "image": image,
+        "author": WS_RE.sub(" ", extractor.author).strip()[:80],
+        "published": extractor.published.strip()[:32],
+        "readingMinutes": max(1, round(words / 200)),
         "blocks": trimmed,
     }
 

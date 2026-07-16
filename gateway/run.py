@@ -4381,6 +4381,53 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             depth += 1
         return depth
 
+    _BUSY_BATCH_MAX_MESSAGES = 10
+    _BUSY_BATCH_MAX_CHARS = 8000
+
+    @staticmethod
+    def _is_batchable_queued_text(event: "MessageEvent") -> bool:
+        """Only plain text may share a queued follow-up turn."""
+        if event is None or getattr(event, "message_type", None) != MessageType.TEXT:
+            return False
+        text = str(getattr(event, "text", "") or "").strip()
+        if not text or text.startswith("/"):
+            return False
+        return not bool(getattr(event, "media_urls", None))
+
+    def _batch_queued_text_events(
+        self,
+        session_key: str,
+        pending_event: Optional["MessageEvent"],
+    ) -> Optional["MessageEvent"]:
+        """Merge the next bounded run of plain-text queue entries in order."""
+        if not self._is_batchable_queued_text(pending_event):
+            return pending_event
+        overflow = (getattr(self, "_queued_events", None) or {}).get(session_key)
+        if not overflow:
+            return pending_event
+
+        texts = [str(pending_event.text or "").strip()]
+        total_chars = len(texts[0])
+        while overflow and len(texts) < self._BUSY_BATCH_MAX_MESSAGES:
+            candidate = overflow[0]
+            if not self._is_batchable_queued_text(candidate):
+                break
+            candidate_text = str(candidate.text or "").strip()
+            if total_chars + 2 + len(candidate_text) > self._BUSY_BATCH_MAX_CHARS:
+                break
+            overflow.pop(0)
+            texts.append(candidate_text)
+            total_chars += 2 + len(candidate_text)
+
+        if not overflow:
+            self._queued_events.pop(session_key, None)
+        if len(texts) > 1:
+            pending_event.text = "\n\n".join(
+                f"[Queued message {index}]\n{text}"
+                for index, text in enumerate(texts, start=1)
+            )
+        return pending_event
+
     @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
         """Return True for synthetic /goal continuation turns.
@@ -13153,6 +13200,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_db=getattr(self._session_db, "_db", self._session_db),
                     fallback_model=self._fallback_model,
                 )
+                agent._persist_reasoning = bool(
+                    cfg_get(user_config, "agent", "persist_reasoning", default=True)
+                )
                 try:
                     return agent.run_conversation(
                         user_message=enriched_prompt,
@@ -18138,6 +18188,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # opt-in so global scratch-text display does not leak into threads.
             agent.thinking_progress = _thinking_enabled
             # Store agent reference for interrupt support
+            agent._persist_reasoning = bool(
+                cfg_get(user_config, "agent", "persist_reasoning", default=True)
+            )
             agent_holder[0] = agent
             # Capture the full tool definitions for transcript logging
             tools_holder[0] = agent.tools if hasattr(agent, 'tools') else None
@@ -18638,6 +18691,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 0 if (_session_was_split or _compacted_in_place) else len(agent_history)
             )
 
+            # Collect current-turn media before the empty-response return. A
+            # terminal TTS tool intentionally returns only a delivery directive,
+            # and interrupted turns can also have completed media tools.
+            media_tags, has_voice_directive = _collect_auto_append_media_tags(
+                result.get("messages", []),
+                history_offset=len(agent_history),
+                history_media_paths=_history_media_paths,
+            )
+            if media_tags and "MEDIA:" not in (final_response or ""):
+                seen = set()
+                unique_tags = []
+                for tag in media_tags:
+                    if tag not in seen:
+                        seen.add(tag)
+                        unique_tags.append(tag)
+                if has_voice_directive:
+                    unique_tags.insert(0, "[[audio_as_voice]]")
+                media_response = "\n".join(unique_tags)
+                final_response = (
+                    f"{final_response}\n{media_response}"
+                    if final_response
+                    else media_response
+                )
+
             if not final_response:
                 final_response = _normalize_empty_agent_response(
                     result, final_response or "", history_len=len(agent_history),
@@ -18687,23 +18764,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # also the sole guard on the fallback branch taken when mid-run
             # context compression shrinks the message list below the original
             # history length, preserving the compression-safe behaviour of #160.
-            if "MEDIA:" not in final_response:
-                media_tags, has_voice_directive = _collect_auto_append_media_tags(
-                    result.get("messages", []),
-                    history_offset=len(agent_history),
-                    history_media_paths=_history_media_paths,
-                )
-
-                if media_tags:
-                    seen = set()
-                    unique_tags = []
-                    for tag in media_tags:
-                        if tag not in seen:
-                            seen.add(tag)
-                            unique_tags.append(tag)
-                    if has_voice_directive:
-                        unique_tags.insert(0, "[[audio_as_voice]]")
-                    final_response = final_response + "\n" + "\n".join(unique_tags)
             
             # Auto-generate session title after first exchange (non-blocking)
             if final_response and self._session_db:
@@ -19030,7 +19090,95 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception as _ne:
                     logger.debug("Long-running notification error: %s", _ne)
 
+        async def _notify_broker_queue():
+            """Drive one quiet Telegram queue receipt from broker state."""
+            if source.platform != Platform.TELEGRAM:
+                return
+            token = str(os.environ.get("LM_API_KEY", "") or "")
+            owner = {
+                "hermes-email": "email",
+                "hermes-travel": "travel",
+                "hermes-suno": "suno",
+                "hermes-companion": "companion",
+            }.get(token)
+            if not owner:
+                return
+
+            def _read_status():
+                from urllib.request import urlopen
+                with urlopen("http://127.0.0.1:1236/status", timeout=2.0) as response:
+                    return json.loads(response.read().decode("utf-8"))
+
+            await asyncio.sleep(8.0)
+            receipt_id = None
+            edited_wait = False
+            poll_deadline = time.monotonic() + 120.0
+            while True:
+                try:
+                    snapshot = await asyncio.to_thread(_read_status)
+                except Exception:
+                    return
+                active = snapshot.get("active") or {}
+                queued = next(
+                    (
+                        item for item in snapshot.get("queued", [])
+                        if item.get("agent") == owner
+                        and item.get("work_class") == "interactive"
+                    ),
+                    None,
+                )
+                if queued is not None:
+                    position = max(1, int(queued.get("position") or 1))
+                    elapsed = max(0, int(time.time() - float(queued.get("enqueued_at") or time.time())))
+                    text = f"Jeg har din besked. Der er {position} foran dig."
+                    update_wait_now = elapsed >= 120 and not edited_wait
+                    if update_wait_now:
+                        text = (
+                            f"Jeg har din besked. Der er {position} foran dig. "
+                            f"Ventetid: {elapsed // 60} min."
+                        )
+                    try:
+                        if receipt_id and update_wait_now:
+                            await adapter.edit_message(
+                                source.chat_id, receipt_id, text
+                            )
+                            edited_wait = True
+                        elif not receipt_id:
+                            receipt = await adapter.send(
+                                source.chat_id,
+                                text,
+                                metadata=_non_conversational_metadata(
+                                    _status_thread_metadata,
+                                    platform=source.platform,
+                                ),
+                            )
+                            if getattr(receipt, "success", False) and getattr(
+                                receipt, "message_id", None
+                            ):
+                                receipt_id = str(receipt.message_id)
+                                _cleanup_msg_ids.append(receipt_id)
+                    except Exception as exc:
+                        logger.debug("Broker queue receipt failed: %s", exc)
+                    await asyncio.sleep(2.0)
+                    continue
+                if active.get("agent") == owner:
+                    if receipt_id:
+                        try:
+                            await adapter.edit_message(
+                                source.chat_id,
+                                receipt_id,
+                                "Jeg arbejder på den nu.",
+                            )
+                        except Exception as exc:
+                            logger.debug("Broker queue admission edit failed: %s", exc)
+                    return
+                if active and time.monotonic() < poll_deadline:
+                    await asyncio.sleep(2.0)
+                    continue
+                return
+
         _notify_task = asyncio.create_task(_notify_long_running())
+        _broker_notify_task = asyncio.create_task(_notify_broker_queue())
 
         def _stream_confirmed_final_delivery(
             consumer,
@@ -19273,6 +19421,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             pending = None
             if result and adapter and session_key:
                 pending_event = _dequeue_pending_event(adapter, session_key)
+                pending_event = self._batch_queued_text_events(session_key, pending_event)
                 # /queue overflow: after consuming the adapter's "next-up"
                 # slot, promote the next queued event into it so the
                 # recursive run's drain will see it.  This keeps the slot
@@ -19562,6 +19711,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 log_task.cancel()
             interrupt_monitor.cancel()
             _notify_task.cancel()
+            _broker_notify_task.cancel()
 
             # Wait for stream consumer to finish its final edit
             if stream_task:
@@ -19606,7 +19756,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._update_runtime_status("draining")
             
             # Wait for cancelled tasks
-            for task in [progress_task, log_task, interrupt_monitor, tracking_task, _notify_task]:
+            for task in [progress_task, log_task, interrupt_monitor, tracking_task, _notify_task, _broker_notify_task]:
                 if task:
                     try:
                         await task

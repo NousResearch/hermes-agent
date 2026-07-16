@@ -4745,6 +4745,63 @@ class TestRunConversation:
         assert second_call_messages[-1]["role"] == "user"
         assert "truncated by the output length limit" in second_call_messages[-1]["content"]
 
+    def test_lmstudio_length_limit_is_terminal_without_continuation(self, agent):
+        self._setup_agent(agent)
+        agent.provider = "lmstudio"
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Bounded partial answer",
+            finish_reason="length",
+        )
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is False
+        assert result["partial"] is True
+        assert result["length_limited"] is True
+        assert result["api_calls"] == 1
+        assert result["final_response"] == "Bounded partial answer"
+        assert agent.client.chat.completions.create.call_count == 1
+
+    def test_successful_tts_tool_is_terminal(self, agent):
+        self._setup_agent(agent)
+        agent.valid_tool_names.add("text_to_speech")
+        tool_turn = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call(
+                    name="text_to_speech",
+                    arguments='{"text":"hello"}',
+                    call_id="tts-1",
+                )
+            ],
+        )
+        agent.client.chat.completions.create.return_value = tool_turn
+        tool_result = json.dumps({
+            "success": True,
+            "file_path": "C:/audio/voice.ogg",
+            "media_tag": "[[audio_as_voice]]\nMEDIA:C:/audio/voice.ogg",
+        })
+
+        with (
+            patch("run_agent.handle_function_call", return_value=tool_result),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("say hello")
+
+        assert result["completed"] is True
+        assert result["terminal_tts"] is True
+        assert result["api_calls"] == 1
+        assert "[[media_outbox:tts-1]]" in result["final_response"]
+        assert agent.client.chat.completions.create.call_count == 1
+
     def test_length_continuation_preserves_large_provider_default_output_cap(self, agent):
         """Continuation retries must not shrink a higher provider default cap."""
         self._setup_agent(agent)

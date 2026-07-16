@@ -803,7 +803,14 @@ def run_conversation(
 
             # For ALL assistant messages, pass reasoning back to the API
             # This ensures multi-turn reasoning context is preserved
-            agent._copy_reasoning_content_for_api(msg, api_msg)
+            if getattr(agent, "_persist_reasoning", True):
+                agent._copy_reasoning_content_for_api(msg, api_msg)
+            else:
+                for reasoning_field in (
+                    "reasoning_content", "reasoning_details",
+                    "codex_reasoning_items", "anthropic_content_blocks",
+                ):
+                    api_msg.pop(reasoning_field, None)
 
             # Remove 'reasoning' field - it's for trajectory storage only
             # We've copied it to 'reasoning_content' for the API above
@@ -1767,6 +1774,30 @@ def run_conversation(
 
                     _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
                     _trunc_has_tool_calls = bool(getattr(_trunc_msg, "tool_calls", None)) if _trunc_msg else False
+
+                    # Local Qwen profiles use a hard broker clamp. Hitting it
+                    # is a controlled terminal limit, not permission to hold
+                    # or immediately reacquire the shared model for synthetic
+                    # continuation prompts.
+                    if (
+                        (agent.provider or "").strip().lower() == "lmstudio"
+                        and getattr(response, "id", "") != PARTIAL_STREAM_STUB_ID
+                    ):
+                        partial_response = agent._strip_think_blocks(
+                            _trunc_content or ""
+                        ).strip()
+                        limit_error = "Response reached the configured Qwen output limit"
+                        agent._cleanup_task_resources(effective_task_id)
+                        agent._persist_session(messages, conversation_history)
+                        return {
+                            "final_response": partial_response or limit_error,
+                            "messages": messages,
+                            "api_calls": api_call_count,
+                            "completed": False,
+                            "partial": True,
+                            "error": limit_error,
+                            "length_limited": True,
+                        }
 
                     # ── Detect thinking-budget exhaustion ──────────────
                     # When the model spends ALL output tokens on reasoning
@@ -4667,7 +4698,47 @@ def run_conversation(
                     except Exception:
                         pass
 
+                _tool_result_start = len(messages)
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+
+                # A successful TTS tool call is terminal. The audio itself is
+                # the answer; another model pass can only waste the shared Qwen
+                # slot and risks replacing the media-only result with empty text.
+                _tts_ids = {
+                    tc.id for tc in assistant_message.tool_calls
+                    if tc.function.name == "text_to_speech"
+                }
+                for _tool_msg in messages[_tool_result_start:]:
+                    if (
+                        _tool_msg.get("role") != "tool"
+                        or _tool_msg.get("tool_call_id") not in _tts_ids
+                    ):
+                        continue
+                    _tts_content = _tool_msg.get("content")
+                    if not isinstance(_tts_content, str):
+                        continue
+                    try:
+                        _tts_result = json.loads(_tts_content)
+                    except (TypeError, ValueError):
+                        continue
+                    _media_tag = _tts_result.get("media_tag")
+                    if not (_tts_result.get("success") and _media_tag):
+                        continue
+                    _tts_call_id = str(_tool_msg.get("tool_call_id") or "tts")
+                    _tool_msg["content"] = json.dumps({
+                        "success": True,
+                        "delivered_tts": True,
+                        "tool_call_id": _tts_call_id,
+                    })
+                    agent._cleanup_task_resources(effective_task_id)
+                    agent._persist_session(messages, conversation_history)
+                    return {
+                        "final_response": f"[[media_outbox:{_tts_call_id}]]\n{_media_tag}",
+                        "messages": messages,
+                        "api_calls": api_call_count,
+                        "completed": True,
+                        "terminal_tts": True,
+                    }
 
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision

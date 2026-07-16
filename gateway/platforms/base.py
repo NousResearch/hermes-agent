@@ -6,13 +6,16 @@ and implement the required methods.
 """
 
 import asyncio
+import hashlib
 import inspect
 import ipaddress
+import json
 import logging
 import os
 import random
 import re
 import socket as _socket
+import sqlite3
 import subprocess
 import sys
 import time
@@ -961,6 +964,99 @@ _CACHE_DIR_IMPORT_DEFAULTS = {
 }
 
 _HERMES_HOME = get_hermes_home()
+
+_MEDIA_OUTBOX_DB = _HERMES_HOME / "media_outbox.sqlite3"
+
+
+def _media_outbox_connect() -> sqlite3.Connection:
+    _MEDIA_OUTBOX_DB.parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(str(_MEDIA_OUTBOX_DB), timeout=5.0)
+    db.execute(
+        """
+        CREATE TABLE IF NOT EXISTS media_outbox (
+            delivery_key TEXT PRIMARY KEY,
+            session_key TEXT NOT NULL,
+            tool_call_id TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            chat_id TEXT NOT NULL,
+            thread_id TEXT,
+            media_path TEXT NOT NULL,
+            is_voice INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            attempts INTEGER NOT NULL DEFAULT 0,
+            message_id TEXT,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL
+        )
+        """
+    )
+    return db
+
+
+def _media_outbox_delivery_key(session_key: str, tool_call_id: str, media_path: str) -> str:
+    path_digest = hashlib.sha256(media_path.encode("utf-8", "replace")).hexdigest()[:16]
+    return f"{session_key}:{tool_call_id}:{path_digest}"
+
+
+def _media_outbox_stage(
+    *,
+    session_key: str,
+    tool_call_id: str,
+    platform: str,
+    chat_id: str,
+    thread_id: str | None,
+    media_path: str,
+    is_voice: bool,
+) -> tuple[str, bool]:
+    key = _media_outbox_delivery_key(session_key, tool_call_id, media_path)
+    now = time.time()
+    with _media_outbox_connect() as db:
+        db.execute(
+            """
+            INSERT OR IGNORE INTO media_outbox (
+                delivery_key, session_key, tool_call_id, platform, chat_id,
+                thread_id, media_path, is_voice, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                key, session_key, tool_call_id, platform, str(chat_id),
+                str(thread_id) if thread_id else None, media_path,
+                int(is_voice), now, now,
+            ),
+        )
+        row = db.execute(
+            "SELECT status FROM media_outbox WHERE delivery_key = ?", (key,)
+        ).fetchone()
+        if not row or row[0] == "delivered":
+            return key, False
+        db.execute(
+            "UPDATE media_outbox SET attempts = attempts + 1, updated_at = ? "
+            "WHERE delivery_key = ?",
+            (now, key),
+        )
+    return key, True
+
+
+def _media_outbox_ack(delivery_key: str, message_id: str | None) -> None:
+    with _media_outbox_connect() as db:
+        db.execute(
+            "UPDATE media_outbox SET status = 'delivered', message_id = ?, "
+            "updated_at = ? WHERE delivery_key = ?",
+            (str(message_id) if message_id else None, time.time(), delivery_key),
+        )
+
+
+def _media_outbox_pending(platform: str, chat_id: str) -> list[tuple]:
+    with _media_outbox_connect() as db:
+        return db.execute(
+            """
+            SELECT delivery_key, media_path, is_voice, thread_id
+            FROM media_outbox
+            WHERE platform = ? AND chat_id = ? AND status = 'pending'
+            ORDER BY created_at
+            """,
+            (platform, str(chat_id)),
+        ).fetchall()
 _HERMES_ROOT = get_default_hermes_root()
 MEDIA_DELIVERY_ALLOW_DIRS_ENV = "HERMES_MEDIA_ALLOW_DIRS"
 MEDIA_DELIVERY_TRUST_RECENT_ENV = "HERMES_MEDIA_TRUST_RECENT_FILES"
@@ -1500,15 +1596,22 @@ def _path_lacks_deliverable_extension(path: str) -> bool:
     return not Path(path).suffix
 
 
+_MEDIA_OUTBOX_DIRECTIVE_RE = re.compile(
+    r"\[\[media_outbox:(?P<key>[^\]\r\n]+)\]\]", re.IGNORECASE
+)
+
+
 def _strip_media_tag_directives(text: str) -> str:
     """Remove MEDIA: tags and [[audio_as_voice]] / [[as_document]] markers."""
     if (
         "MEDIA:" not in text
         and "[[audio_as_voice]]" not in text
         and "[[as_document]]" not in text
+        and "[[media_outbox:" not in text.lower()
     ):
         return text
     cleaned = text.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "")
+    cleaned = _MEDIA_OUTBOX_DIRECTIVE_RE.sub("", cleaned)
 
     def _strip_extensionless(match: re.Match) -> str:
         path = _normalize_media_tag_path(match.group("path"))
@@ -4805,6 +4908,44 @@ class BasePlatformAdapter(ABC):
             max_ms = 2500
         return random.uniform(min_ms / 1000.0, max_ms / 1000.0)
 
+    async def _replay_pending_media_outbox(
+        self,
+        event: MessageEvent,
+        metadata: dict | None,
+    ) -> None:
+        """Retry durable media for this chat before processing new input."""
+        platform_name = _platform_name(self.platform)
+        try:
+            pending = _media_outbox_pending(platform_name, event.source.chat_id)
+        except Exception as exc:
+            logger.warning("[%s] Media outbox read failed: %s", self.name, exc)
+            return
+        for delivery_key, media_path, is_voice, thread_id in pending:
+            if not Path(media_path).exists():
+                logger.warning("[%s] Media outbox file is missing: %s", self.name, media_path)
+                continue
+            replay_metadata = dict(metadata or {})
+            if thread_id and not replay_metadata.get("thread_id"):
+                replay_metadata["thread_id"] = thread_id
+            try:
+                ext = Path(media_path).suffix.lower()
+                if should_send_media_as_audio(self.platform, ext, is_voice=bool(is_voice)):
+                    result = await self.send_voice(
+                        chat_id=event.source.chat_id,
+                        audio_path=media_path,
+                        metadata=replay_metadata or None,
+                    )
+                else:
+                    result = await self.send_document(
+                        chat_id=event.source.chat_id,
+                        file_path=media_path,
+                        metadata=replay_metadata or None,
+                    )
+                if getattr(result, "success", False):
+                    _media_outbox_ack(delivery_key, getattr(result, "message_id", None))
+            except Exception as exc:
+                logger.warning("[%s] Media outbox replay failed: %s", self.name, exc)
+
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         # Track delivery outcomes for the processing-complete hook
@@ -4830,6 +4971,7 @@ class BasePlatformAdapter(ABC):
         # never spawned, so no "typing…" / "is thinking…" status is shown.
         # typing_task stays None; _stop_typing_refresh already no-ops on None.
         _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+        await self._replay_pending_media_outbox(event, _thread_metadata)
         typing_task: Optional[asyncio.Task] = None
         if getattr(self.config, "typing_indicator", True):
             _keep_typing_kwargs: Dict[str, Any] = {"metadata": _thread_metadata}
@@ -4890,6 +5032,10 @@ class BasePlatformAdapter(ABC):
             if not response:
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             if response:
+                outbox_match = _MEDIA_OUTBOX_DIRECTIVE_RE.search(response)
+                outbox_tool_call_id = (
+                    outbox_match.group("key").strip() if outbox_match else None
+                )
                 # Capture [[as_document]] before extract_media strips it, so the
                 # dispatch partition below can route image-extension files
                 # through send_document instead of send_multiple_images. Used
@@ -5087,7 +5233,24 @@ class BasePlatformAdapter(ABC):
                 for media_path, is_voice in _non_image_media:
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
+                    delivery_key = None
                     try:
+                        if outbox_tool_call_id:
+                            delivery_key, should_send = _media_outbox_stage(
+                                session_key=session_key,
+                                tool_call_id=outbox_tool_call_id,
+                                platform=_platform_name(self.platform),
+                                chat_id=event.source.chat_id,
+                                thread_id=event.source.thread_id,
+                                media_path=media_path,
+                                is_voice=is_voice,
+                            )
+                            if not should_send:
+                                logger.info(
+                                    "[%s] Skipping delivered media outbox item %s",
+                                    self.name, delivery_key,
+                                )
+                                continue
                         ext = Path(media_path).suffix.lower()
                         if should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
                             media_result = await self.send_voice(
@@ -5110,6 +5273,11 @@ class BasePlatformAdapter(ABC):
 
                         if not media_result.success:
                             logger.warning("[%s] Failed to send media (%s): %s", self.name, ext, media_result.error)
+                        elif delivery_key:
+                            _media_outbox_ack(
+                                delivery_key, getattr(media_result, "message_id", None)
+                            )
+                        _record_delivery(media_result)
                     except Exception as media_err:
                         logger.warning("[%s] Error sending media: %s", self.name, media_err)
 

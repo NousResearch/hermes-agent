@@ -883,7 +883,8 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     so both the tool-call path and the final-response path share one builder.
     """
     assistant_tool_calls = getattr(assistant_message, "tool_calls", None)
-    reasoning_text = agent._extract_reasoning(assistant_message)
+    _persist_reasoning = getattr(agent, "_persist_reasoning", True)
+    reasoning_text = agent._extract_reasoning(assistant_message) if _persist_reasoning else None
     _from_structured = bool(reasoning_text)
 
     # Fallback: extract inline <think> blocks from content when no structured
@@ -954,9 +955,11 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     }
 
     raw_reasoning_content = getattr(assistant_message, "reasoning_content", None)
+    if not _persist_reasoning:
+        raw_reasoning_content = None
     if raw_reasoning_content is None and hasattr(assistant_message, "model_extra"):
         model_extra = getattr(assistant_message, "model_extra", None) or {}
-        if isinstance(model_extra, dict) and "reasoning_content" in model_extra:
+        if _persist_reasoning and isinstance(model_extra, dict) and "reasoning_content" in model_extra:
             raw_reasoning_content = model_extra["reasoning_content"]
     if raw_reasoning_content is not None:
         msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
@@ -999,7 +1002,7 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     if "reasoning_content" not in msg and reasoning_text:
         msg["reasoning_content"] = reasoning_text
 
-    if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
+    if _persist_reasoning and hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
         # Pass reasoning_details back unmodified so providers (OpenRouter,
         # Anthropic, OpenAI) can maintain reasoning continuity across turns.
         # Each provider may include opaque fields (signature, encrypted_content)
@@ -1025,13 +1028,13 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     # replay the latest assistant message unchanged. See
     # agent/transports/anthropic.py and agent/anthropic_adapter.py.
     ordered_blocks = getattr(assistant_message, "anthropic_content_blocks", None)
-    if ordered_blocks:
+    if _persist_reasoning and ordered_blocks:
         msg["anthropic_content_blocks"] = ordered_blocks
 
     # Codex Responses API: preserve encrypted reasoning items for
     # multi-turn continuity. These get replayed as input on the next turn.
     codex_items = getattr(assistant_message, "codex_reasoning_items", None)
-    if codex_items:
+    if _persist_reasoning and codex_items:
         msg["codex_reasoning_items"] = codex_items
 
     # Codex Responses API: preserve exact assistant message items (with

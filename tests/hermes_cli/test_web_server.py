@@ -3723,7 +3723,11 @@ class TestWebServerEndpoints:
         assert data["free_tier"] is True
 
     def test_recommended_default_nous_paid_uses_curated_default(self, monkeypatch):
-        """A paid Nous user gets the first curated/paid-augmented model."""
+        """A paid Nous user gets the cost-safe silent default from the list.
+
+        With no preferred catalog label present in the curated list and no
+        Anthropic frontier entries, the first curated entry is selected.
+        """
         import hermes_cli.models as models_mod
 
         monkeypatch.setattr(models_mod, "get_curated_nous_model_ids", lambda: ["top/model", "other/model"])
@@ -3733,6 +3737,12 @@ class TestWebServerEndpoints:
             models_mod, "union_with_portal_paid_recommendations",
             lambda ids, pricing, url: (ids, pricing),
         )
+        # Keep the catalog preferred out of this list so we exercise the
+        # non-frontier fallback rather than the preferred-hit branch.
+        monkeypatch.setattr(
+            models_mod, "get_preferred_silent_default_model",
+            lambda provider="openrouter": "z-ai/glm-5.2",
+        )
 
         resp = self.client.get("/api/model/recommended-default?provider=nous")
         assert resp.status_code == 200
@@ -3740,6 +3750,136 @@ class TestWebServerEndpoints:
         assert data["provider"] == "nous"
         assert data["model"] == "top/model"
         assert data["free_tier"] is False
+
+    @pytest.mark.parametrize(
+        "model_ordering, expected_model",
+        [
+            # Opus-first ordering (historical PR-branch catalog shape).
+            (
+                [
+                    "anthropic/claude-opus-4.8",
+                    "anthropic/claude-sonnet-5",
+                    "anthropic/claude-haiku-4.5",
+                ],
+                "anthropic/claude-sonnet-5",
+            ),
+            # Fable-first ordering (current origin/main catalog shape).
+            (
+                [
+                    "anthropic/claude-fable-5",
+                    "anthropic/claude-opus-4.8",
+                    "anthropic/claude-sonnet-5",
+                    "anthropic/claude-haiku-4.5",
+                ],
+                "anthropic/claude-sonnet-5",
+            ),
+            # Preferred silent default present in the list always wins,
+            # independent of relative ordering / frontiers.
+            (
+                [
+                    "anthropic/claude-fable-5",
+                    "anthropic/claude-opus-4.8",
+                    "z-ai/glm-5.2",
+                    "anthropic/claude-sonnet-5",
+                ],
+                "z-ai/glm-5.2",
+            ),
+        ],
+        ids=["opus_first", "fable_first_main", "override_beats_ordering"],
+    )
+    def test_recommended_default_nous_paid_cost_safe_policy(
+        self, monkeypatch, model_ordering, expected_model,
+    ):
+        """Regression for PR #51493 maintainer feedback (Teknium + DavidMetcalfe).
+
+        The interactive Nous recommended default must use the shared
+        cost-safe silent policy: preferred catalog label when present,
+        else first non-frontier (Opus / Fable) entry. Covers both the
+        current Fable-first catalog and a future Opus-first catalog.
+        """
+        import hermes_cli.models as models_mod
+
+        monkeypatch.setattr(
+            models_mod, "get_curated_nous_model_ids", lambda: list(model_ordering),
+        )
+        monkeypatch.setattr(models_mod, "get_pricing_for_provider", lambda provider: {})
+        monkeypatch.setattr(models_mod, "check_nous_free_tier", lambda *, force_fresh=False: False)
+        monkeypatch.setattr(
+            models_mod, "union_with_portal_paid_recommendations",
+            lambda ids, pricing, url: (ids, pricing),
+        )
+        monkeypatch.setattr(
+            models_mod, "get_preferred_silent_default_model",
+            lambda provider="openrouter": "z-ai/glm-5.2",
+        )
+
+        resp = self.client.get("/api/model/recommended-default?provider=nous")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["provider"] == "nous"
+        assert data["model"] == expected_model
+        assert data["free_tier"] is False
+
+    def test_recommended_default_nous_paid_falls_back_when_all_frontier(self, monkeypatch):
+        """If every curated entry is a frontier tier (Opus / Fable), fall
+        back to the head of the list so the picker is never empty."""
+        import hermes_cli.models as models_mod
+
+        monkeypatch.setattr(
+            models_mod, "get_curated_nous_model_ids",
+            lambda: ["anthropic/claude-fable-5", "anthropic/claude-opus-4.8"],
+        )
+        monkeypatch.setattr(models_mod, "get_pricing_for_provider", lambda provider: {})
+        monkeypatch.setattr(models_mod, "check_nous_free_tier", lambda *, force_fresh=False: False)
+        monkeypatch.setattr(
+            models_mod, "union_with_portal_paid_recommendations",
+            lambda ids, pricing, url: (ids, pricing),
+        )
+        monkeypatch.setattr(
+            models_mod, "get_preferred_silent_default_model",
+            lambda provider="openrouter": "z-ai/glm-5.2",
+        )
+
+        resp = self.client.get("/api/model/recommended-default?provider=nous")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["model"] == "anthropic/claude-fable-5"
+
+    def test_pick_silent_default_model_empty_list_returns_empty_string(self):
+        """Empty model list must return \"\" so the caller degrades gracefully."""
+        from hermes_cli.models import pick_silent_default_model
+
+        assert pick_silent_default_model([], "nous") == ""
+        assert pick_silent_default_model([], "") == ""
+        assert pick_silent_default_model([], "openrouter") == ""
+
+    def test_is_anthropic_frontier_tier(self):
+        """Unit coverage for the frontier-tier predicate used by the cost-safe
+        silent policy. Anchored on the claude- prefix so community/distill
+        slugs whose lowercase form merely contains opus are rejected."""
+        from hermes_cli.models import _is_anthropic_frontier_tier
+
+        # Opus + Fable, dash + dot, vendor-prefixed, colon-suffixed.
+        assert _is_anthropic_frontier_tier("claude-opus-4-8") is True
+        assert _is_anthropic_frontier_tier("claude-opus-4.8") is True
+        assert _is_anthropic_frontier_tier("anthropic/claude-opus-4.8") is True
+        assert _is_anthropic_frontier_tier("claude-fable-5") is True
+        assert _is_anthropic_frontier_tier("anthropic/claude-fable-5") is True
+        assert _is_anthropic_frontier_tier("anthropic/claude-fable-5:thinking") is True
+        assert _is_anthropic_frontier_tier("claude-opus-5-0") is True  # forward-compat
+
+        # Sonnet / Haiku remain non-frontier.
+        assert _is_anthropic_frontier_tier("claude-sonnet-5") is False
+        assert _is_anthropic_frontier_tier("claude-haiku-4.5") is False
+        assert _is_anthropic_frontier_tier("anthropic/claude-sonnet-4.6") is False
+
+        # Community / distill / non-Anthropic must not match.
+        assert _is_anthropic_frontier_tier("qwopus3.6-27b-coder") is False
+        assert _is_anthropic_frontier_tier("jackrong/qwopus3.6-27b-coder") is False
+        assert _is_anthropic_frontier_tier("openai/gpt-5.5") is False
+        assert _is_anthropic_frontier_tier("z-ai/glm-5.2") is False
+        assert _is_anthropic_frontier_tier("") is False
+        assert _is_anthropic_frontier_tier(None) is False
 
     def test_recommended_default_handles_failure_gracefully(self, monkeypatch):
         """Endpoint never 500s — returns empty model on internal error."""

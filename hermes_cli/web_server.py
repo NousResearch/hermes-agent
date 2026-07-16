@@ -152,9 +152,34 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     real gateway on the same HERMES_HOME — whichever process grabs the lock
     first wins the tick.
     """
-    from cron.scheduler_provider import resolve_cron_scheduler
+    from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
+    from gateway.status import is_gateway_running
 
-    provider = resolve_cron_scheduler()
+    resolved_provider = resolve_cron_scheduler()
+    if not isinstance(resolved_provider, InProcessCronScheduler):
+        _log.info(
+            "Desktop will keep a local fallback ticker while gateway owns provider %s",
+            resolved_provider.name,
+        )
+    provider = (
+        resolved_provider
+        if isinstance(resolved_provider, InProcessCronScheduler)
+        else InProcessCronScheduler()
+    )
+
+    # The gateway is authoritative whenever it exists. Re-check every loop so
+    # Desktop can yield when a gateway starts and resume standalone cron after
+    # it stops. For external providers, Desktop intentionally uses the built-in
+    # local ticker only as the failover path; it never provisions a second
+    # external scheduler. Probe failure falls back to tick-lock mediation.
+    def desktop_may_tick() -> bool:
+        try:
+            return not is_gateway_running(cleanup_stale=False)
+        except Exception:
+            _log.exception("Gateway status probe failed; Desktop cron will use tick locking")
+            return True
+
+    provider.set_tick_predicate(desktop_may_tick)
     _log.info("Desktop cron scheduler started (provider=%s, interval=%ds)", provider.name, interval)
     provider.start(stop_event, interval=interval)
 

@@ -22,6 +22,7 @@ def isolated_profiles(tmp_path, monkeypatch):
         (home / "cron").mkdir(parents=True, exist_ok=True)
         (home / "config.yaml").write_text("model: test-model\n", encoding="utf-8")
 
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
     monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: default_home)
     monkeypatch.setattr(profiles, "_get_profiles_root", lambda: profiles_root)
     return {"default": default_home, "worker_alpha": worker_home}
@@ -34,6 +35,92 @@ def _drain_queue(q):
             values.append(q.get_nowait())
         except Empty:
             return values
+
+
+@pytest.mark.parametrize("gateway_running,expected", [(True, False), (False, True)])
+def test_desktop_builtin_ticker_yields_to_gateway(
+    monkeypatch, gateway_running, expected
+):
+    from cron import scheduler_provider
+    from gateway import status as gateway_status
+    from hermes_cli import web_server
+
+    provider = scheduler_provider.InProcessCronScheduler()
+    decisions = []
+    monkeypatch.setattr(scheduler_provider, "resolve_cron_scheduler", lambda: provider)
+    monkeypatch.setattr(
+        gateway_status,
+        "is_gateway_running",
+        lambda cleanup_stale=False: gateway_running,
+    )
+    monkeypatch.setattr(
+        provider,
+        "start",
+        lambda stop_event, interval=60: decisions.append(provider._should_tick()),
+    )
+
+    web_server._start_desktop_cron_ticker(threading.Event(), interval=1)
+    assert decisions == [expected]
+
+
+def test_desktop_builtin_ticker_status_probe_failure_falls_back_to_locking(monkeypatch):
+    from cron import scheduler_provider
+    from gateway import status as gateway_status
+    from hermes_cli import web_server
+
+    provider = scheduler_provider.InProcessCronScheduler()
+    decisions = []
+    monkeypatch.setattr(scheduler_provider, "resolve_cron_scheduler", lambda: provider)
+
+    def broken_probe(cleanup_stale=False):
+        raise RuntimeError("probe unavailable")
+
+    monkeypatch.setattr(gateway_status, "is_gateway_running", broken_probe)
+    monkeypatch.setattr(
+        provider,
+        "start",
+        lambda stop_event, interval=60: decisions.append(provider._should_tick()),
+    )
+
+    web_server._start_desktop_cron_ticker(threading.Event(), interval=1)
+    assert decisions == [True]
+
+
+def test_desktop_external_provider_keeps_dynamic_builtin_failover(monkeypatch):
+    from cron import scheduler_provider
+    from gateway import status as gateway_status
+    from hermes_cli import web_server
+
+    class ExternalProvider:
+        name = "external"
+
+        def start(self, *_args, **_kwargs):
+            raise AssertionError("Desktop must not provision a second external scheduler")
+
+    decisions = []
+
+    class FallbackProvider:
+        name = "builtin"
+
+        def set_tick_predicate(self, predicate):
+            self.predicate = predicate
+
+        def start(self, _stop_event, interval=60):
+            decisions.extend([self.predicate(), self.predicate()])
+
+    states = iter([True, False])
+    monkeypatch.setattr(
+        scheduler_provider, "resolve_cron_scheduler", lambda: ExternalProvider()
+    )
+    monkeypatch.setattr(scheduler_provider, "InProcessCronScheduler", FallbackProvider)
+    monkeypatch.setattr(
+        gateway_status,
+        "is_gateway_running",
+        lambda cleanup_stale=False: next(states),
+    )
+
+    web_server._start_desktop_cron_ticker(threading.Event(), interval=1)
+    assert decisions == [False, True]
 
 
 def test_call_cron_for_profile_routes_storage_without_mutating_globals(isolated_profiles):
@@ -135,9 +222,6 @@ def test_profile_call_cannot_retarget_ticker_store_mid_write(
     default_file.write_text(json.dumps({"jobs": [default_job]}), encoding="utf-8")
     worker_file.write_text(json.dumps({"jobs": [worker_job]}), encoding="utf-8")
 
-    monkeypatch.setattr(cron_jobs, "CRON_DIR", default_cron)
-    monkeypatch.setattr(cron_jobs, "JOBS_FILE", default_file)
-    monkeypatch.setattr(cron_jobs, "OUTPUT_DIR", default_cron / "output")
     monkeypatch.setattr(
         cron_jobs,
         "compute_next_run",

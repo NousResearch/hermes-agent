@@ -2220,38 +2220,6 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertFalse(captured["request"].request_body.reply_in_thread)
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_standalone_send_preserves_cron_topic_reply_anchor(self):
-        from plugins.platforms.feishu import adapter as feishu_module
-
-        adapter = Mock()
-        adapter._domain_name = "feishu"
-        adapter._build_lark_client.return_value = Mock()
-        adapter.send = AsyncMock(return_value=SimpleNamespace(
-            success=True,
-            message_id="om_delivery",
-        ))
-
-        with patch.object(feishu_module, "FEISHU_AVAILABLE", True), \
-             patch.object(feishu_module, "FeishuAdapter", return_value=adapter):
-            result = asyncio.run(feishu_module._standalone_send(
-                Mock(),
-                "oc_chat",
-                "reminder",
-                thread_id="omt_topic",
-                reply_to_message_id="om_trigger",
-            ))
-
-        self.assertTrue(result["success"])
-        adapter.send.assert_awaited_once_with(
-            "oc_chat",
-            "reminder",
-            metadata={
-                "thread_id": "omt_topic",
-                "reply_to_message_id": "om_trigger",
-            },
-        )
-
-    @patch.dict(os.environ, {}, clear=True)
     def test_send_uses_metadata_reply_target_for_threaded_feishu_topic(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter

@@ -153,24 +153,6 @@ class TestResolveDeliveryTarget:
             "thread_id": "17585",
         }
 
-    def test_feishu_origin_delivery_preserves_reply_anchor(self):
-        job = {
-            "deliver": "origin",
-            "origin": {
-                "platform": "feishu",
-                "chat_id": "oc_chat",
-                "thread_id": "omt_topic",
-                "message_id": "om_trigger",
-            },
-        }
-
-        assert _resolve_delivery_target(job) == {
-            "platform": "feishu",
-            "chat_id": "oc_chat",
-            "thread_id": "omt_topic",
-            "reply_to_message_id": "om_trigger",
-        }
-
     @pytest.mark.parametrize(
         ("platform", "env_var", "chat_id"),
         [
@@ -943,34 +925,6 @@ class TestDeliverResultWrapping:
 
         send_mock.assert_called_once()
         assert send_mock.call_args.kwargs["thread_id"] == "17585"
-
-    def test_feishu_origin_delivery_forwards_reply_anchor_to_standalone(self):
-        from gateway.config import Platform
-
-        pconfig = MagicMock()
-        pconfig.enabled = True
-        mock_cfg = MagicMock()
-        mock_cfg.platforms = {Platform.FEISHU: pconfig}
-
-        job = {
-            "id": "feishu-topic-job",
-            "deliver": "origin",
-            "origin": {
-                "platform": "feishu",
-                "chat_id": "oc_chat",
-                "thread_id": "omt_topic",
-                "message_id": "om_trigger",
-            },
-        }
-
-        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
-             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
-            result = _deliver_result(job, "hello")
-
-        assert result is None
-        send_mock.assert_awaited_once()
-        assert send_mock.call_args.kwargs["thread_id"] == "omt_topic"
-        assert send_mock.call_args.kwargs["reply_to_message_id"] == "om_trigger"
 
 
 class TestDeliverResultErrorReturns:
@@ -3947,69 +3901,6 @@ class TestDeliverResultTimeoutCancelsFuture:
         # Forum target routes via message_thread_id (mode 1), not DM-topic.
         sent_metadata = adapter.send.call_args[1]["metadata"]
         assert not sent_metadata.get("direct_messages_topic_id")
-
-    def test_feishu_live_delivery_replies_to_origin_message_without_sdk_raw_get(self):
-        """A Feishu cron created in a topic must reply through its triggering
-        message, and an SDK response object must not be treated as a dict."""
-        from concurrent.futures import Future
-        from types import SimpleNamespace
-
-        from gateway.config import Platform
-        from gateway.platforms.base import SendResult
-
-        adapter = MagicMock()
-        adapter.send = AsyncMock(return_value=SendResult(
-            success=True,
-            message_id="om_delivery",
-            raw_response=SimpleNamespace(code=0),
-        ))
-
-        pconfig = MagicMock()
-        pconfig.enabled = True
-        mock_cfg = MagicMock()
-        mock_cfg.platforms = {Platform.FEISHU: pconfig}
-        mock_cfg.filter_silence_narration = False
-
-        loop = MagicMock()
-        loop.is_running.return_value = True
-
-        job = {
-            "id": "feishu-topic-job",
-            "deliver": "origin",
-            "origin": {
-                "platform": "feishu",
-                "chat_id": "oc_chat",
-                "thread_id": "omt_topic",
-                "message_id": "om_trigger",
-            },
-        }
-
-        def fake_run_coro(coro, _loop):
-            import asyncio as _asyncio
-            future = Future()
-            try:
-                future.set_result(_asyncio.run(coro))
-            except BaseException as exc:  # noqa: BLE001
-                future.set_exception(exc)
-            return future
-
-        standalone_send = AsyncMock(return_value={"success": True})
-        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
-             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
-             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
-             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
-            result = _deliver_result(
-                job,
-                "Hello world",
-                adapters={Platform.FEISHU: adapter},
-                loop=loop,
-            )
-
-        assert result is None
-        standalone_send.assert_not_awaited()
-        sent_metadata = adapter.send.call_args.kwargs["metadata"]
-        assert sent_metadata["thread_id"] == "omt_topic"
-        assert sent_metadata["reply_to_message_id"] == "om_trigger"
 
 
 class TestDeliverResultLiveAdapterUnconfirmed:

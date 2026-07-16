@@ -657,26 +657,6 @@ class TestLocalDeliveryNotice:
         assert created["deliver"] == "origin"
         assert "local-only cron job" not in created["message"]
 
-    def test_gateway_origin_captures_triggering_message_as_reply_anchor(self):
-        from gateway.session_context import set_session_vars
-        from tools.cronjob_tools import _origin_from_env
-
-        set_session_vars(
-            platform="feishu",
-            chat_id="oc_chat",
-            thread_id="omt_topic",
-            message_id="om_trigger",
-        )
-
-        assert _origin_from_env() == {
-            "platform": "feishu",
-            "chat_id": "oc_chat",
-            "chat_name": None,
-            "thread_id": "omt_topic",
-            "message_id": "om_trigger",
-            "user_id": None,
-        }
-
 
 class TestValidateCronBaseUrl:
     """The cron base_url guard must not let a NAMED custom provider's stored

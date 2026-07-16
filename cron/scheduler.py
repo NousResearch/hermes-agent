@@ -653,7 +653,9 @@ def _cron_creator_user_id(
     Non-empty only when ``run_as_creator`` is enabled AND the job captured its
     creator's ``user_id`` in ``origin`` (``_origin_from_env`` records it at
     create time; API/script-created jobs have no origin -> ``""`` -> unchanged
-    behaviour). The returned id is the raw platform user id (same space as the
+    behaviour). Callers pass the job's raw stored ``origin`` — deliverability
+    (platform+chat_id both present, ``_resolve_origin``) is a routing concern
+    and never gates identity. The returned id is the raw platform user id (same space as the
     allowlist); any channel-prefixing is the consuming tool's concern, exactly
     as for live messages.
     """
@@ -2725,7 +2727,6 @@ def run_job(
     if prompt is None:
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
         return True, "", SILENT_MARKER, None
-    origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
 
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
@@ -2771,7 +2772,11 @@ def run_job(
     # path. platform/chat_id deliberately stay empty — none of the consumers
     # listed above key on user_id, so this does not reintroduce the origin-chat
     # leakage they were cleared to prevent. Default off => "" => unchanged.
-    _creator_user_id = _cron_creator_user_id(job, origin)
+    # Identity reads the RAW stored origin, not the delivery-resolved one:
+    # _resolve_origin() is a routing filter that returns None unless BOTH
+    # platform and chat_id are present, but who created the job does not
+    # depend on whether its output is deliverable back to the origin chat.
+    _creator_user_id = _cron_creator_user_id(job, job.get("origin"))
     _ctx_tokens = set_session_vars(
         platform="",
         chat_id="",

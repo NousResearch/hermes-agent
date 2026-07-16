@@ -398,7 +398,8 @@ fires. For an access-scoping tool that fallback can let a scheduled job reach
 data the creator could not reach interactively.
 
 Opt-in, **default off**. Enable globally in config, or per-job via the `cronjob`
-tool's `run_as_creator` (which overrides the global setting for that one job):
+tool's `run_as_creator` parameter (accepted on `create` and `update`), which
+overrides the global setting for that one job:
 
 ```yaml
 # ~/.hermes/config.yaml
@@ -415,6 +416,14 @@ reintroduce origin-chat leakage.
 
 Notes:
 
+- **The per-job override works in both directions — and is flip-only.** An
+  explicit `run_as_creator: false` on a job forces the anonymous path even when
+  the global config is on; a job that never set the field follows the global.
+  Once stored, the field can be flipped True/False via `cronjob(action='update')`
+  but not cleared back to follow-global (omitting it on update leaves the stored
+  value untouched — the same semantics as `attach_to_session`). Jobs with the
+  field set show it in `cronjob(action='list')` output, so you can audit which
+  jobs run under a creator identity.
 - **No creator, no change.** Jobs created via the API or a script have no
   `origin`, so they keep the default anonymous cron identity regardless of this
   flag.

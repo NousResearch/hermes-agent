@@ -2685,6 +2685,17 @@ DEFAULT_CONFIG = {
         # mid-loop, never mutating the cached system prompt). Only the origin
         # chat is ever touched — fan-out / broadcast targets are never mirrored.
         "mirror_delivery": False,
+        # Run cron jobs under their creator's identity: seed the agent run's
+        # HERMES_SESSION_USER_ID from the job's stored origin.user_id, so
+        # sender-scoped tools (per-user credentials, access control, rate
+        # limits, personalization) act as the scheduling user instead of
+        # falling back to their service/anonymous path. Default False keeps
+        # the historical anonymous cron identity byte-for-byte. platform /
+        # chat_id are never seeded either way — delivery, prompt-cache and
+        # skill scoping stay cron-neutral. Per-job `run_as_creator` (set via
+        # the cronjob tool) overrides this for a single job in either
+        # direction.
+        "run_as_creator": False,
         # Maximum number of due jobs to run in parallel per tick.
         # null/0 = unbounded (limited only by thread count).
         # 1 = serial (pre-v0.9 behaviour).

@@ -1048,6 +1048,7 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    run_as_creator: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -1092,6 +1093,12 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        run_as_creator: When True, the job's agent run is seeded with the
+                creator's ``origin.user_id`` as the session user id, so
+                sender-scoped tools act as the scheduling user. When False,
+                forces the anonymous cron identity even if the global
+                ``cron.run_as_creator`` config is on. When None (default),
+                the key is not persisted and the global config decides.
 
     Returns:
         The created job dict
@@ -1124,6 +1131,7 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
+    normalized_run_as_creator = run_as_creator if isinstance(run_as_creator, bool) else None
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -1219,6 +1227,11 @@ def create_job(
     # global cron.mirror_delivery config, default off).
     if normalized_attach is not None:
         job["attach_to_session"] = normalized_attach
+    # Same explicit-only persistence for run_as_creator: absent key => the
+    # global cron.run_as_creator config decides (default off); a stored
+    # False is a per-job veto that beats a global True.
+    if normalized_run_as_creator is not None:
+        job["run_as_creator"] = normalized_run_as_creator
 
     with _jobs_lock():
         jobs = load_jobs()

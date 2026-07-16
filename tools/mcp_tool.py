@@ -3600,13 +3600,13 @@ _parallel_safe_servers: set = set()
 _session_context_forwarding_servers: set = set()
 
 _SESSION_CONTEXT_META_ENV_MAP = {
-    "hermes/platform": "HERMES_SESSION_PLATFORM",
-    "hermes/session_id": "HERMES_SESSION_ID",
-    "hermes/session_key": "HERMES_SESSION_KEY",
-    "hermes/chat_id": "HERMES_SESSION_CHAT_ID",
-    "hermes/thread_id": "HERMES_SESSION_THREAD_ID",
-    "hermes/user_id": "HERMES_SESSION_USER_ID",
-    "hermes/message_id": "HERMES_SESSION_MESSAGE_ID",
+    "com.nousresearch.hermes/platform": "HERMES_SESSION_PLATFORM",
+    "com.nousresearch.hermes/session_id": "HERMES_SESSION_ID",
+    "com.nousresearch.hermes/session_key": "HERMES_SESSION_KEY",
+    "com.nousresearch.hermes/chat_id": "HERMES_SESSION_CHAT_ID",
+    "com.nousresearch.hermes/thread_id": "HERMES_SESSION_THREAD_ID",
+    "com.nousresearch.hermes/user_id": "HERMES_SESSION_USER_ID",
+    "com.nousresearch.hermes/message_id": "HERMES_SESSION_MESSAGE_ID",
 }
 
 # Exact MCP tool-name provenance. MCP tool names are formatted as
@@ -4037,23 +4037,39 @@ def _mark_server_call_started(server: Any) -> None:
         mark_tool_call()
 
 
-def _build_session_context_meta() -> Dict[str, str]:
+def _build_session_context_meta() -> Optional[Dict[str, str]]:
     """Build MCP host-plane metadata for the current gateway invocation.
 
     The model only authors tool arguments. This metadata is attached by the
     host at dispatch time and arrives at the MCP server as request ``_meta``.
-    Values come through ``gateway.session_context`` so concurrent gateway turns
-    never read another turn's session identifiers.
+    Values come strictly from ``gateway.session_context`` ContextVars so
+    concurrent gateway turns never read another turn's process-global session
+    identifiers. An incomplete or empty context is not attested.
     """
     try:
-        from gateway.session_context import get_session_env
-    except Exception:
-        return {key: "" for key in _SESSION_CONTEXT_META_ENV_MAP}
+        from gateway.session_context import _UNSET, _VAR_MAP
+    except Exception as exc:
+        logger.warning(
+            "Unable to read gateway session ContextVars; omitting MCP session metadata: %s",
+            exc,
+        )
+        return None
 
     meta: Dict[str, str] = {}
     for meta_key, env_name in _SESSION_CONTEXT_META_ENV_MAP.items():
-        value = get_session_env(env_name, "")
+        var = _VAR_MAP.get(env_name)
+        if var is None:
+            logger.warning(
+                "Gateway session ContextVar %s is unavailable; omitting MCP session metadata",
+                env_name,
+            )
+            return None
+        value = var.get()
+        if value is _UNSET:
+            return None
         meta[meta_key] = "" if value is None else str(value)
+    if not any(meta.values()):
+        return None
     return meta
 
 
@@ -4149,7 +4165,9 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 try:
                     call_kwargs = {"arguments": args}
                     if _should_forward_session_context(server_name):
-                        call_kwargs["meta"] = _build_session_context_meta()
+                        session_meta = _build_session_context_meta()
+                        if session_meta is not None:
+                            call_kwargs["meta"] = session_meta
                     result = await server.session.call_tool(tool_name, **call_kwargs)
                 finally:
                     server._pending_call_context = None

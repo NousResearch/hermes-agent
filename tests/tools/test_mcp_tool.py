@@ -751,9 +751,9 @@ class TestToolHandler:
         mock_session.call_tool = AsyncMock(
             return_value=_make_call_result("hello world", is_error=False)
         )
-        server = _make_mock_server("mandate-edge", session=mock_session)
-        _servers["mandate-edge"] = server
-        _session_context_forwarding_servers.add(sanitize_mcp_name_component("mandate-edge"))
+        server = _make_mock_server("crm_srv", session=mock_session)
+        _servers["crm_srv"] = server
+        _session_context_forwarding_servers.add(sanitize_mcp_name_component("crm_srv"))
         tokens = set_session_vars(
             platform="discord",
             chat_id="channel-123",
@@ -765,29 +765,78 @@ class TestToolHandler:
         )
 
         try:
-            handler = _make_tool_handler("mandate-edge", "platform_submit_task", 120)
+            handler = _make_tool_handler("crm_srv", "lookup_records", 120)
             with self._patch_mcp_loop():
                 result = json.loads(handler({"task": "smoke"}))
             assert result["result"] == "hello world"
             mock_session.call_tool.assert_called_once_with(
-                "platform_submit_task",
+                "lookup_records",
                 arguments={"task": "smoke"},
                 meta={
-                    "hermes/platform": "discord",
-                    "hermes/session_id": "20260705_191621_abcd",
-                    "hermes/session_key": "agent:main:discord:thread:thread-456:thread-456",
-                    "hermes/chat_id": "channel-123",
-                    "hermes/thread_id": "thread-456",
-                    "hermes/user_id": "user-789",
-                    "hermes/message_id": "message-999",
+                    "com.nousresearch.hermes/platform": "discord",
+                    "com.nousresearch.hermes/session_id": "20260705_191621_abcd",
+                    "com.nousresearch.hermes/session_key": "agent:main:discord:thread:thread-456:thread-456",
+                    "com.nousresearch.hermes/chat_id": "channel-123",
+                    "com.nousresearch.hermes/thread_id": "thread-456",
+                    "com.nousresearch.hermes/user_id": "user-789",
+                    "com.nousresearch.hermes/message_id": "message-999",
                 },
             )
         finally:
             clear_session_vars(tokens)
-            _servers.pop("mandate-edge", None)
+            _servers.pop("crm_srv", None)
             _session_context_forwarding_servers.discard(
-                sanitize_mcp_name_component("mandate-edge")
+                sanitize_mcp_name_component("crm_srv")
             )
+
+    def test_forward_session_context_omits_meta_when_context_unbound(
+        self, monkeypatch
+    ):
+        import contextvars
+
+        from tools.mcp_tool import (
+            _make_tool_handler,
+            _servers,
+            _session_context_forwarding_servers,
+            sanitize_mcp_name_component,
+        )
+
+        monkeypatch.setenv("HERMES_SESSION_ID", "other-session")
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result("hello world", is_error=False)
+        )
+        server = _make_mock_server("crm_srv", session=mock_session)
+        _servers["crm_srv"] = server
+        _session_context_forwarding_servers.add(sanitize_mcp_name_component("crm_srv"))
+
+        try:
+            handler = _make_tool_handler("crm_srv", "lookup_records", 120)
+            with self._patch_mcp_loop():
+                result = contextvars.Context().run(handler, {"query": "recent"})
+            assert json.loads(result)["result"] == "hello world"
+            mock_session.call_tool.assert_called_once_with(
+                "lookup_records",
+                arguments={"query": "recent"},
+            )
+        finally:
+            _servers.pop("crm_srv", None)
+            _session_context_forwarding_servers.discard(
+                sanitize_mcp_name_component("crm_srv")
+            )
+
+    def test_forward_session_context_omits_all_empty_bound_context(
+        self, monkeypatch
+    ):
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools.mcp_tool import _build_session_context_meta
+
+        monkeypatch.setenv("HERMES_SESSION_ID", "other-session")
+        tokens = set_session_vars()
+        try:
+            assert _build_session_context_meta() is None
+        finally:
+            clear_session_vars(tokens)
 
     def test_mcp_error_result(self):
         from tools.mcp_tool import _make_tool_handler, _servers

@@ -14628,14 +14628,19 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
             import urllib.parse as _up
             _purl = resolve_public_url()
             if _purl:
-                public_host = (_up.urlparse(_purl).netloc or "").lower()
+                # .hostname (not .netloc) strips any port and unwraps IPv6
+                # brackets, matching what _is_accepted_host expects below.
+                public_host = (_up.urlparse(_purl).hostname or "").lower()
         except Exception:  # noqa: BLE001 — best-effort; never fail-closed on config lookup
             public_host = ""
 
     def _host_accepted(value: str) -> bool:
         if _is_accepted_host(value, bound_host):
             return True
-        if public_host and value and value.split(":", 1)[0].lower() == public_host:
+        # Reuse _is_accepted_host for the public-host comparison too, so
+        # port-stripping and IPv6 bracket handling stay consistent instead
+        # of re-implementing (and mis-implementing) them here.
+        if public_host and _is_accepted_host(value, public_host):
             return True
         return False
 

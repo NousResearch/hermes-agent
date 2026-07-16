@@ -171,6 +171,59 @@ class TestRunJobScript:
         assert success is True
         assert output == "ABSENT"
 
+    def test_script_utf8_output_not_mojibake(self, cron_env):
+        """Regression: UTF-8 stdout must round-trip, not become mojibake.
+
+        On Windows, subprocess.run(text=True) with no explicit encoding
+        decodes the child's UTF-8 stdout using the locale codepage (cp1252),
+        mangling accented/non-Latin characters. The gateway must decode as
+        UTF-8. The child writes raw UTF-8 bytes so the emission encoding is
+        unambiguous regardless of the child's own locale.
+        """
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "utf8_out.py"
+        script.write_text(
+            'import sys\n'
+            'sys.stdout.buffer.write("Relatório ✅ ação çãé\\n".encode("utf-8"))\n',
+            encoding="utf-8",
+        )
+
+        success, output = _run_job_script(str(script))
+        assert success is True
+        assert output == "Relatório ✅ ação çãé"
+
+    def test_run_job_script_decodes_with_utf8_not_text(self, cron_env, monkeypatch):
+        """subprocess.run must be called with encoding='utf-8',
+        errors='replace', and WITHOUT text=True (which defers decoding to
+        the locale codepage on Windows).
+        """
+        from cron import scheduler as sched_mod
+        from cron.scheduler import _run_job_script
+
+        captured = {}
+
+        class _Result:
+            returncode = 0
+            stdout = "Relatório ✅ ação çãé"
+            stderr = ""
+
+        def fake_run(argv, **kwargs):
+            captured.update(kwargs)
+            return _Result()
+
+        monkeypatch.setattr(sched_mod.subprocess, "run", fake_run)
+
+        script = cron_env / "scripts" / "probe.py"
+        script.write_text('print("ignored")\n', encoding="utf-8")
+
+        success, output = _run_job_script(str(script))
+
+        assert success is True
+        assert captured.get("encoding") == "utf-8"
+        assert captured.get("errors") == "replace"
+        assert "text" not in captured
+
     def test_script_empty_output(self, cron_env):
         from cron.scheduler import _run_job_script
 

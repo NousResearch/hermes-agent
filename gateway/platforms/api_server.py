@@ -3213,6 +3213,7 @@ class APIServerAdapter(BasePlatformAdapter):
         store: bool,
         session_id: str,
         gateway_session_key: Optional[str] = None,
+        history_from_store: bool = False,
     ) -> "web.StreamResponse":
         """Write an SSE stream for POST /v1/responses (OpenAI Responses API).
 
@@ -3723,6 +3724,27 @@ class APIServerAdapter(BasePlatformAdapter):
                     result,
                     final_response_text,
                 )
+                # Persist compressed messages when compression occurred and
+                # history was loaded from response_store (same logic as the
+                # non-streaming path).
+                if history_from_store and isinstance(result, dict):
+                    _result_sid = result.get("session_id")
+                    if _result_sid and _result_sid != session_id:
+                        try:
+                            from hermes_cli.config import load_config
+                            _comp_cfg = load_config().get("compression", {})
+                            if _comp_cfg.get("persist_in_response_store", True):
+                                _agent_messages = result.get("messages")
+                                if isinstance(_agent_messages, list) and _agent_messages:
+                                    logger.info(
+                                        "Compression persisted in response_store (streaming): "
+                                        "%d messages (was %d before compression)",
+                                        len(_agent_messages),
+                                        len(conversation_history) + 1,
+                                    )
+                                    full_history = list(_agent_messages)
+                        except Exception:
+                            pass
                 _persist_response_snapshot(
                     completed_env,
                     conversation_history_snapshot=full_history,
@@ -3878,12 +3900,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
 
         stored_session_id = None
+        _history_from_store = False
         if not conversation_history and previous_response_id:
             stored = self._response_store.get(previous_response_id)
             if stored is None:
                 return web.json_response(_openai_error(f"Previous response not found: {previous_response_id}"), status=404)
             conversation_history = list(stored.get("conversation_history", []))
             stored_session_id = stored.get("session_id")
+            _history_from_store = True
             # If no instructions provided, carry forward from previous
             if instructions is None:
                 instructions = stored.get("instructions")
@@ -3986,6 +4010,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 store=store,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                history_from_store=_history_from_store,
             )
 
         async def _compute_response():
@@ -4038,6 +4063,33 @@ class APIServerAdapter(BasePlatformAdapter):
             final_response,
         )
 
+        # If compression occurred during the agent run and the history was
+        # loaded from the response_store (not supplied explicitly by the
+        # client), persist the compressed messages instead of the original
+        # uncompressed chain.  This prevents repeated re-compression on
+        # subsequent requests in the same conversation.
+        _effective_session_id = session_id
+        if _history_from_store and isinstance(result, dict):
+            _result_sid = result.get("session_id")
+            if _result_sid and _result_sid != session_id:
+                # Session rotation = compression happened
+                try:
+                    from hermes_cli.config import load_config
+                    _comp_cfg = load_config().get("compression", {})
+                    if _comp_cfg.get("persist_in_response_store", True):
+                        _agent_messages = result.get("messages")
+                        if isinstance(_agent_messages, list) and _agent_messages:
+                            logger.info(
+                                "Compression persisted in response_store: "
+                                "%d messages (was %d before compression)",
+                                len(_agent_messages),
+                                len(conversation_history) + 1,
+                            )
+                            full_history = list(_agent_messages)
+                            _effective_session_id = _result_sid
+                except Exception:
+                    pass  # Fall back to default behavior
+
         # Build output items from the current turn only.  AIAgent returns a
         # full transcript in result["messages"], while older/mocked paths may
         # return only the current turn suffix.
@@ -4068,14 +4120,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 "response": response_data,
                 "conversation_history": full_history,
                 "instructions": instructions,
-                "session_id": session_id,
+                "session_id": _effective_session_id,
             })
             # Update conversation mapping so the next request with the same
             # conversation name automatically chains to this response
             if conversation:
                 self._response_store.set_conversation(conversation, response_id)
 
-        response_headers = {"X-Hermes-Session-Id": session_id}
+        response_headers = {"X-Hermes-Session-Id": _effective_session_id}
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
         return web.json_response(response_data, headers=response_headers)

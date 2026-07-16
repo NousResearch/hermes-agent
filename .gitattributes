@@ -5,6 +5,11 @@ web/package-lock.json linguist-generated=true
 # Without this, Windows checkout converts to CRLF and breaks `exec` in the
 # container entrypoint with "no such file or directory".
 *.sh        text eol=lf
+# Python sources stay LF too — Windows editors/tools that rewrite a file as
+# CRLF turn a 90-line change into a whole-file diff.
+*.py        text eol=lf
 Dockerfile  text eol=lf
 *.dockerfile text eol=lf
 docker/entrypoint.sh text eol=lf
+# .gitattributes itself must stay LF or the rules above rot silently.
+.gitattributes text eol=lf

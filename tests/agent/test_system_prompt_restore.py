@@ -230,6 +230,87 @@ class TestSilentFailureWarnings:
 
 
 # ---------------------------------------------------------------------------
+# Multiplex profile identity (Profile: line)
+# ---------------------------------------------------------------------------
+
+
+class TestProfileScopedPromptReuse:
+    """Multiplex: a stored prompt is only reusable within its own profile.
+
+    ``system_prompt.build_system_prompt_parts`` stamps ``Profile: <name>``
+    when the agent runs under a multiplex profile;
+    ``_stored_prompt_matches_runtime`` rejects a stored prompt whose Profile
+    line is absent or different. Unlike Model/Provider, absence is NOT
+    forgiven — a prompt cached before the field existed (or while profile
+    routing was broken) may carry another profile's identity.
+    """
+
+    _STORED_TRAVEL = (
+        "You are Hermes Agent.\n\n"
+        "Conversation started: Tuesday, June 16, 2026\n"
+        "Session ID: test-session-id\n"
+        "Model: test-model\n"
+        "Provider: openrouter\n"
+        "Profile: travel"
+    )
+
+    def _agent_with_profile(self, db, profile):
+        agent = _make_agent(session_db=db)
+        agent.profile = profile
+        return agent
+
+    def test_same_profile_reuses_stored_prompt(self):
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": self._STORED_TRAVEL}
+        agent = self._agent_with_profile(db, "travel")
+
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert agent._cached_system_prompt == self._STORED_TRAVEL
+        agent._build_system_prompt.assert_not_called()
+
+    def test_different_profile_rebuilds(self):
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": self._STORED_TRAVEL}
+        agent = self._agent_with_profile(db, "home")
+
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert agent._cached_system_prompt == "BUILT_PROMPT"
+        agent._build_system_prompt.assert_called_once()
+        db.update_system_prompt.assert_called_once()
+
+    def test_missing_profile_line_rebuilds_under_named_profile(self):
+        """Absence is a mismatch: pre-field prompts must not be trusted."""
+        stored = (
+            "You are Hermes Agent.\n\n"
+            "Session ID: test-session-id\n"
+            "Model: test-model\n"
+            "Provider: openrouter"
+        )
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = self._agent_with_profile(db, "travel")
+
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert agent._cached_system_prompt == "BUILT_PROMPT"
+        agent._build_system_prompt.assert_called_once()
+
+    def test_single_profile_agent_unaffected(self):
+        """agent.profile None (or absent): stored prompts reuse as before."""
+        stored = "Stored prompt without any profile line"
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = self._agent_with_profile(db, None)
+
+        _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert agent._cached_system_prompt == stored
+        agent._build_system_prompt.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Byte-stability invariant
 # ---------------------------------------------------------------------------
 

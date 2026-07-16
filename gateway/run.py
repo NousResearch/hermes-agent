@@ -1331,6 +1331,7 @@ from hermes_constants import get_hermes_home, get_hermes_home_override
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, is_truthy_value
 _hermes_home = get_hermes_home()
 
+
 # Load environment variables from ~/.hermes/.env first.
 # User-managed env files should override stale shell exports on restart.
 from dotenv import load_dotenv  # noqa: F401  # backward-compat for tests that monkeypatch this symbol
@@ -1972,11 +1973,15 @@ def _credential_pool_for_provider(provider: Optional[str]):
 
 
 def _try_resolve_fallback_provider() -> dict | None:
-    """Attempt to resolve credentials from the fallback_model/fallback_providers config."""
+    """Attempt to resolve credentials from the fallback_model/fallback_providers config.
+
+    Reads the active profile's config (``_gateway_config_home``) so a
+    secondary profile's fallback chain comes from its own config.yaml.
+    """
     from hermes_cli.runtime_provider import resolve_runtime_provider
     try:
         import yaml as _y
-        cfg_path = _hermes_home / "config.yaml"
+        cfg_path = _gateway_config_home() / "config.yaml"
         if not cfg_path.exists():
             return None
         with open(cfg_path, encoding="utf-8") as _f:
@@ -2888,6 +2893,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._busy_input_mode = self._load_busy_input_mode()
         self._busy_text_mode = self._load_busy_text_mode()
         self._restart_drain_timeout = self._load_restart_drain_timeout()
+        # __init__ runs before any per-turn profile scope exists, so these two
+        # snapshots always reflect the DEFAULT profile. Per-turn consumers go
+        # through _resolve_provider_routing() / _refresh_fallback_model(),
+        # which re-resolve against the active profile scope.
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
 
@@ -5077,10 +5086,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     @staticmethod
     def _load_provider_routing() -> dict:
-        """Load OpenRouter provider routing preferences from config.yaml."""
+        """Load OpenRouter provider routing preferences from config.yaml.
+
+        Profile-scoped: reads the active profile's config (see
+        ``_gateway_config_home``).
+        """
         try:
             import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
+            cfg_path = _gateway_config_home() / "config.yaml"
             if cfg_path.exists():
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
@@ -5089,17 +5102,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             pass
         return {}
 
+    def _resolve_provider_routing(self) -> dict:
+        """Provider routing for the ACTIVE profile scope.
+
+        ``self._provider_routing`` is resolved once in ``__init__`` — before
+        any per-turn profile scope exists — so it can only ever reflect the
+        default profile's config. During a secondary multiplex profile's turn
+        (``_profile_runtime_scope`` active), read and cache that profile's own
+        ``provider_routing`` instead. Caching per profile home mirrors the
+        init-time snapshot semantics the default profile already has.
+        """
+        home = _gateway_config_home()
+        if home == _hermes_home:
+            return self._provider_routing
+        cache = getattr(self, "_provider_routing_by_home", None)
+        if cache is None:
+            cache = self._provider_routing_by_home = {}
+        if home not in cache:
+            cache[home] = self._load_provider_routing()
+        return cache[home]
+
     @staticmethod
     def _load_fallback_model() -> list | None:
         """Load fallback provider chain from config.yaml.
 
         Returns the merged effective chain from ``fallback_providers`` plus any
         legacy ``fallback_model`` entries. ``fallback_providers`` stays first
-        when both keys are present.
+        when both keys are present. Profile-scoped: reads the active
+        profile's config (see ``_gateway_config_home``).
         """
         try:
             import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
+            cfg_path = _gateway_config_home() / "config.yaml"
             if cfg_path.exists():
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
@@ -5123,13 +5157,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         non-atomic write) keeps the last known-good chain instead of wiping a
         cached agent's working fallback for that turn.  Only a successful read
         that genuinely lacks the key clears the chain.
+
+        Profile-scoped: reads the ACTIVE profile's config
+        (``_gateway_config_home``), so a secondary multiplex profile's turn
+        refreshes that profile's own chain. The last-known-good cache is kept
+        per profile home — a single shared slot would let one profile's chain
+        leak into another's turn on a transient read failure.
+        ``self._fallback_model`` stays the default profile's slot (tests and
+        the init-time snapshot use it), so single-profile behavior and the
+        #60955 semantics are unchanged.
         """
+        home = _gateway_config_home()
+        is_default_home = home == _hermes_home
+        cache = getattr(self, "_fallback_model_by_home", None)
+        if cache is None:
+            cache = self._fallback_model_by_home = {}
+
+        def _remember(chain: list | None) -> list | None:
+            if is_default_home:
+                self._fallback_model = chain
+            else:
+                cache[home] = chain
+            return chain
+
+        def _last_known_good() -> list | None:
+            return self._fallback_model if is_default_home else cache.get(home)
+
         try:
             import yaml as _y
-            cfg_path = _hermes_home / "config.yaml"
+            cfg_path = home / "config.yaml"
             if not cfg_path.exists():
-                self._fallback_model = None
-                return self._fallback_model
+                return _remember(None)
             with open(cfg_path, encoding="utf-8") as _f:
                 cfg = _y.safe_load(_f) or {}
         except Exception:
@@ -5138,9 +5196,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "fallback_providers refresh: config.yaml read failed; "
                 "keeping last known-good chain", exc_info=True,
             )
-            return self._fallback_model
-        self._fallback_model = get_fallback_chain(cfg) or None
-        return self._fallback_model
+            return _last_known_good()
+        return _remember(get_fallback_chain(cfg) or None)
 
     @staticmethod
     def _apply_fallback_chain_to_agent(agent: Any, chain: list | None) -> None:
@@ -5899,7 +5956,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             try:
                 platform = Platform(platform_str)
-                adapter = self.adapters.get(platform)
+                # Multiplex: deliver via the session's own profile bot, not
+                # the default profile's same-platform adapter.
+                if source is not None:
+                    adapter = self._adapter_for_source(source)
+                else:
+                    adapter = self.adapters.get(platform)
                 if not adapter:
                     continue
 
@@ -7188,6 +7250,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 continue
             
             # Set up message + fatal error handlers
+            try:
+                adapter._hermes_profile_name = "default"
+            except Exception:
+                pass
             adapter.set_message_handler(self._handle_message)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
@@ -7392,7 +7458,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Build initial channel directory for send_message name resolution
         try:
             from gateway.channel_directory import build_channel_directory
-            directory = await build_channel_directory(self.adapters)
+            directory = await build_channel_directory(self.adapters, self._profile_adapters)
             ch_count = sum(len(chs) for chs in directory.get("platforms", {}).values())
             logger.info("Channel directory built: %d target(s)", ch_count)
         except Exception as e:
@@ -8054,7 +8120,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         # Rebuild channel directory with the new adapter
                         try:
                             from gateway.channel_directory import build_channel_directory
-                            await build_channel_directory(self.adapters)
+                            await build_channel_directory(self.adapters, self._profile_adapters)
                         except Exception:
                             pass
 
@@ -8717,6 +8783,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 adapter = self._create_adapter(platform, platform_config)
             if not adapter:
                 continue
+            try:
+                adapter._hermes_profile_name = profile_name
+            except Exception:
+                pass
 
             # Same-token conflict detection — refuse a duplicate poll.
             fp = self._adapter_credential_fingerprint(adapter)
@@ -8782,7 +8852,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         we don't attempt conflict detection for it).
         """
         token = None
+        cfg = getattr(adapter, "config", None)
+        cfg_token = getattr(cfg, "token", None) if cfg is not None else None
+        if isinstance(cfg_token, str) and cfg_token.strip():
+            token = cfg_token.strip()
         for attr in ("token", "bot_token", "_token", "api_token", "_bot_token"):
+            if token:
+                break
             val = getattr(adapter, attr, None)
             if isinstance(val, str) and val.strip():
                 token = val.strip()
@@ -13600,7 +13676,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent_cfg = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
 
-            pr = self._provider_routing
+            pr = self._resolve_provider_routing()
             max_iterations = _current_max_iterations()
             reasoning_config = self._resolve_session_reasoning_config(
                 source=source, model=model
@@ -18463,7 +18539,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "tools": [],
                 }
 
-            pr = self._provider_routing
+            pr = self._resolve_provider_routing()
             reasoning_config = self._resolve_session_reasoning_config(
                 source=source,
                 session_key=session_key,
@@ -18821,6 +18897,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     provider_data_collection=pr.get("data_collection"),
                     session_id=session_id,
                     platform=platform_key,
+                    profile=getattr(source, "profile", None) or None,
                     user_id=source.user_id,
                     user_id_alt=source.user_id_alt,
                     user_name=source.user_name,
@@ -20744,7 +20821,13 @@ def _run_planned_stop_watcher(
         stop_event.wait(poll_interval)
 
 
-def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop=None, interval: int = 60):
+def _start_gateway_housekeeping(
+    stop_event: threading.Event,
+    adapters=None,
+    profile_adapters=None,
+    loop=None,
+    interval: int = 60,
+):
     """Background thread for gateway-only periodic chores (NOT cron).
 
     Split out of the historical ``_start_cron_ticker`` so the cron *trigger*
@@ -20780,7 +20863,7 @@ def _start_gateway_housekeeping(stop_event: threading.Event, adapters=None, loop
                     # gateway event loop and wait briefly for completion so
                     # refresh failures are still logged via the except.
                     fut = safe_schedule_threadsafe(
-                        build_channel_directory(adapters), loop,
+                        build_channel_directory(adapters, profile_adapters), loop,
                         logger=logger,
                         log_message="Channel directory refresh scheduling error",
                     )
@@ -21371,7 +21454,11 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     housekeeping_thread = threading.Thread(
         target=_start_gateway_housekeeping,
         args=(cron_stop,),
-        kwargs={"adapters": runner.adapters, "loop": asyncio.get_running_loop()},
+        kwargs={
+            "adapters": runner.adapters,
+            "profile_adapters": getattr(runner, "_profile_adapters", None),
+            "loop": asyncio.get_running_loop(),
+        },
         daemon=True,
         name="gateway-housekeeping",
     )

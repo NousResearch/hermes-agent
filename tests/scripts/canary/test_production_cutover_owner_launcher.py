@@ -42,6 +42,26 @@ from tests.scripts.canary.test_production_cutover_initial_observe import (
 REVISION = "a" * 40
 
 
+@pytest.fixture(autouse=True)
+def _clear_process_ca_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep launcher identity tests independent of gateway import side effects."""
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    monkeypatch.delenv("REQUESTS_CA_BUNDLE", raising=False)
+
+
+@pytest.mark.parametrize("name", ["SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"])
+def test_owner_transport_rejects_custom_ca_environment(
+    name: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(name, "/untrusted/test-ca.pem")
+    with pytest.raises(
+        canary_transport.OwnerLauncherError,
+        match="custom_ca_bundle_forbidden",
+    ):
+        canary_transport._reject_custom_ca_environment()
+
+
 def _operational_receipt_key_ids() -> dict[str, str]:
     domains = (
         "adventico_email", "bitrix", "canonical", "github",

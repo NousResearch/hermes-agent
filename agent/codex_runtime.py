@@ -282,7 +282,14 @@ def _record_codex_app_server_compaction(
         # The app server has already completed a real compaction boundary. Its
         # usage update (when supplied) is therefore the same real-vs-real
         # effectiveness verdict used by the normal compression path.
-        if hasattr(compressor, "_verify_compaction_cleared_threshold"):
+        record_boundary = getattr(
+            type(compressor), "record_completed_compaction", None
+        )
+        if callable(record_boundary):
+            # Codex owns this summary. A prior Hermes deterministic-fallback
+            # flag must not leak into the native boundary's quality verdict.
+            record_boundary(compressor, used_fallback=False)
+        elif hasattr(compressor, "_verify_compaction_cleared_threshold"):
             compressor._verify_compaction_cleared_threshold = True
         if not getattr(turn, "token_usage_last", None):
             compressor.last_prompt_tokens = -1
@@ -359,7 +366,8 @@ def run_codex_app_server_turn(
         # in config, the /yolo session toggle, or --yolo / HERMES_YOLO_MODE —
         # honor that and let codex's own sandbox permission profile
         # (~/.codex/config.toml) be the policy gate instead of double-gating
-        # with a missing Hermes UI. Defaults (manual/smart/unset) preserve the
+        # with a missing Hermes UI. Defaults (manual/unset, including migrated
+        # legacy values) preserve the
         # current fail-closed behavior — this is a no-op for those users.
         auto_approve_requests = False
         try:

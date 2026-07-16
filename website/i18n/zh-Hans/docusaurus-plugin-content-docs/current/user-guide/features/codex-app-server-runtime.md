@@ -77,7 +77,7 @@ Hermes 将自身注册为 MCP server，以便 Codex 能够回调获取 Codex 自
 
 ### `/goal`（Ralph 循环）
 
-**在此运行时上可用。** 目标以会话 id 为键持久化在 `state_meta` 中，续接提示通过 `run_conversation()` 作为普通用户消息回传，Codex 原生执行下一轮次。目标判断器通过辅助客户端运行（在 config.yaml 中通过 `auxiliary.goal_judge` 配置），与当前活跃的运行时无关。判断器的"受阻，需要用户输入"裁决是 Codex 卡在审批时的干净退出路径。
+**在此运行时上可用。** 目标以会话 id 为键持久化在 `state_meta` 中，续接提示通过 `run_conversation()` 作为普通用户消息回传，Codex 原生执行下一轮次。同一个主模型通过 `todo` 工具记录 `continue`、已验证的 `complete` 或真正的 `blocked`；运行时机械应用该精确轮次结果，不使用辅助判断器。
 
 **需要注意的一点：** 每个续接提示都是一次全新的 Codex 轮次，这意味着 Codex 会从头重新评估命令审批策略。如果你在执行包含大量写操作的长期目标，预期会看到比单次会话内任务更多的审批提示。设置 `default_permissions = ":workspace"`（启用运行时时 Hermes 会自动设置）可避免简单的工作区写操作触发提示。
 
@@ -257,9 +257,6 @@ auxiliary:
     provider: openrouter
     model: google/gemini-3-flash-preview
   vision:
-    provider: openrouter
-    model: google/gemini-3-flash-preview
-  goal_judge:
     provider: openrouter
     model: google/gemini-3-flash-preview
 ```

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 import {
   Eye,
   EyeOff,
@@ -13,31 +13,25 @@ import {
   X,
   Zap,
   ChevronDown,
-  ChevronRight,
-} from "lucide-react";
-import { api } from "@/lib/api";
-import type { EnvVarInfo } from "@/lib/api";
-import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
-import { Toast } from "@nous-research/ui/ui/components/toast";
-import { useConfirmDelete } from "@nous-research/ui/hooks/use-confirm-delete";
-import { useToast } from "@nous-research/ui/hooks/use-toast";
-import { OAuthProvidersCard } from "@/components/OAuthProvidersCard";
-import { Button } from "@nous-research/ui/ui/components/button";
-import { ListItem } from "@nous-research/ui/ui/components/list-item";
-import { Spinner } from "@nous-research/ui/ui/components/spinner";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@nous-research/ui/ui/components/card";
-import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Input } from "@nous-research/ui/ui/components/input";
-import { Label } from "@nous-research/ui/ui/components/label";
-import { useI18n } from "@/i18n";
-import { usePageHeader } from "@/contexts/usePageHeader";
-import { PluginSlot } from "@/plugins";
+  ChevronRight
+} from 'lucide-react'
+import { api } from '@/lib/api'
+import type { EnvVarInfo } from '@/lib/api'
+import { DeleteConfirmDialog } from '@/components/DeleteConfirmDialog'
+import { Toast } from '@nous-research/ui/ui/components/toast'
+import { useConfirmDelete } from '@nous-research/ui/hooks/use-confirm-delete'
+import { useToast } from '@nous-research/ui/hooks/use-toast'
+import { OAuthProvidersCard } from '@/components/OAuthProvidersCard'
+import { Button } from '@nous-research/ui/ui/components/button'
+import { ListItem } from '@nous-research/ui/ui/components/list-item'
+import { Spinner } from '@nous-research/ui/ui/components/spinner'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@nous-research/ui/ui/components/card'
+import { Badge } from '@nous-research/ui/ui/components/badge'
+import { Input } from '@nous-research/ui/ui/components/input'
+import { Label } from '@nous-research/ui/ui/components/label'
+import { useI18n } from '@/i18n'
+import { usePageHeader } from '@/contexts/usePageHeader'
+import { PluginSlot } from '@/plugins'
 
 /* ------------------------------------------------------------------ */
 /*  Provider grouping                                                  */
@@ -46,52 +40,53 @@ import { PluginSlot } from "@/plugins";
 /** Map env-var key prefixes to a human-friendly provider name + ordering. */
 const PROVIDER_GROUPS: { prefix: string; name: string; priority: number }[] = [
   // Nous Portal first
-  { prefix: "NOUS_", name: "Nous Portal", priority: 0 },
+  { prefix: 'NOUS_', name: 'Nous Portal', priority: 0 },
   // Then alphabetical by display name
-  { prefix: "ANTHROPIC_", name: "Anthropic", priority: 1 },
-  { prefix: "DASHSCOPE_", name: "DashScope (Qwen)", priority: 2 },
-  { prefix: "HERMES_QWEN_", name: "DashScope (Qwen)", priority: 2 },
-  { prefix: "DEEPSEEK_", name: "DeepSeek", priority: 3 },
-  { prefix: "GOOGLE_", name: "Gemini", priority: 4 },
-  { prefix: "GEMINI_", name: "Gemini", priority: 4 },
-  { prefix: "GLM_", name: "GLM / Z.AI", priority: 5 },
-  { prefix: "ZAI_", name: "GLM / Z.AI", priority: 5 },
-  { prefix: "Z_AI_", name: "GLM / Z.AI", priority: 5 },
-  { prefix: "HF_", name: "Hugging Face", priority: 6 },
-  { prefix: "KIMI_", name: "Kimi / Moonshot", priority: 7 },
-  { prefix: "MINIMAX_CN_", name: "MiniMax (China)", priority: 9 },
-  { prefix: "MINIMAX_", name: "MiniMax", priority: 8 },
-  { prefix: "OPENCODE_GO_", name: "OpenCode Go", priority: 10 },
-  { prefix: "OPENCODE_ZEN_", name: "OpenCode Zen", priority: 11 },
-  { prefix: "OPENROUTER_", name: "OpenRouter", priority: 12 },
-  { prefix: "XIAOMI_", name: "Xiaomi MiMo", priority: 13 },
-];
+  { prefix: 'ANTHROPIC_', name: 'Anthropic', priority: 1 },
+  { prefix: 'DASHSCOPE_', name: 'DashScope (Qwen)', priority: 2 },
+  { prefix: 'HERMES_QWEN_', name: 'DashScope (Qwen)', priority: 2 },
+  { prefix: 'DEEPSEEK_', name: 'DeepSeek', priority: 3 },
+  { prefix: 'GOOGLE_', name: 'Gemini', priority: 4 },
+  { prefix: 'GEMINI_', name: 'Gemini', priority: 4 },
+  { prefix: 'GLM_', name: 'GLM / Z.AI', priority: 5 },
+  { prefix: 'ZAI_', name: 'GLM / Z.AI', priority: 5 },
+  { prefix: 'Z_AI_', name: 'GLM / Z.AI', priority: 5 },
+  { prefix: 'HF_', name: 'Hugging Face', priority: 6 },
+  { prefix: 'KIMI_', name: 'Kimi / Moonshot', priority: 7 },
+  { prefix: 'MINIMAX_CN_', name: 'MiniMax (China)', priority: 9 },
+  { prefix: 'MINIMAX_', name: 'MiniMax', priority: 8 },
+  { prefix: 'OPENCODE_GO_', name: 'OpenCode Go', priority: 10 },
+  { prefix: 'OPENCODE_ZEN_', name: 'OpenCode Zen', priority: 11 },
+  { prefix: 'OPENROUTER_', name: 'OpenRouter', priority: 12 },
+  { prefix: 'XIAOMI_', name: 'Xiaomi MiMo', priority: 13 },
+  { prefix: 'UPSTAGE_', name: 'Upstage Solar', priority: 14 }
+]
 
 function getProviderGroup(key: string): string {
   for (const g of PROVIDER_GROUPS) {
-    if (key.startsWith(g.prefix)) return g.name;
+    if (key.startsWith(g.prefix)) return g.name
   }
-  return "Other";
+  return 'Other'
 }
 
 function getProviderPriority(groupName: string): number {
-  const entry = PROVIDER_GROUPS.find((g) => g.name === groupName);
-  return entry?.priority ?? 99;
+  const entry = PROVIDER_GROUPS.find(g => g.name === groupName)
+  return entry?.priority ?? 99
 }
 
 interface ProviderGroup {
-  name: string;
-  priority: number;
-  entries: [string, EnvVarInfo][];
-  hasAnySet: boolean;
+  name: string
+  priority: number
+  entries: [string, EnvVarInfo][]
+  hasAnySet: boolean
 }
 
 const CATEGORY_META_ICONS: Record<string, typeof KeyRound> = {
   provider: Zap,
   tool: KeyRound,
   messaging: MessageSquare,
-  setting: Settings,
-};
+  setting: Settings
+}
 
 /* ------------------------------------------------------------------ */
 /*  EnvVarRow — single key edit row                                    */
@@ -109,39 +104,33 @@ function EnvVarRow({
   onReveal,
   onCancelEdit,
   clearDialogOpen = false,
-  compact = false,
+  compact = false
 }: {
-  varKey: string;
-  info: EnvVarInfo;
-  edits: Record<string, string>;
-  setEdits: React.Dispatch<React.SetStateAction<Record<string, string>>>;
-  revealed: Record<string, string>;
-  saving: string | null;
-  onSave: (key: string) => void;
-  onClear: (key: string) => void;
-  onReveal: (key: string) => void;
-  onCancelEdit: (key: string) => void;
-  clearDialogOpen?: boolean;
-  compact?: boolean;
+  varKey: string
+  info: EnvVarInfo
+  edits: Record<string, string>
+  setEdits: React.Dispatch<React.SetStateAction<Record<string, string>>>
+  revealed: Record<string, string>
+  saving: string | null
+  onSave: (key: string) => void
+  onClear: (key: string) => void
+  onReveal: (key: string) => void
+  onCancelEdit: (key: string) => void
+  clearDialogOpen?: boolean
+  compact?: boolean
 }) {
-  const { t } = useI18n();
-  const isEditing = edits[varKey] !== undefined;
-  const isRevealed = !!revealed[varKey];
-  const displayValue = isRevealed
-    ? revealed[varKey]
-    : (info.redacted_value ?? "---");
+  const { t } = useI18n()
+  const isEditing = edits[varKey] !== undefined
+  const isRevealed = !!revealed[varKey]
+  const displayValue = isRevealed ? revealed[varKey] : (info.redacted_value ?? '---')
 
   // Compact inline row for unset, non-editing keys (used inside provider groups)
   if (compact && !info.is_set && !isEditing) {
     return (
       <div className="flex items-center justify-between gap-3 py-1.5 min-w-0 overflow-hidden text-text-secondary hover:text-foreground transition-colors">
         <div className="flex items-center gap-2 min-w-0">
-          <span className="font-mono-ui text-xs">
-            {varKey}
-          </span>
-          <span className="text-xs text-text-tertiary truncate hidden sm:block">
-            {info.description}
-          </span>
+          <span className="font-mono-ui text-xs">{varKey}</span>
+          <span className="text-xs text-text-tertiary truncate hidden sm:block">{info.description}</span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {info.url && (
@@ -154,17 +143,12 @@ function EnvVarRow({
               {t.env.getKey} <ExternalLink className="h-2.5 w-2.5" />
             </a>
           )}
-          <Button
-            size="sm"
-            outlined
-            prefix={<Pencil />}
-            onClick={() => setEdits((prev) => ({ ...prev, [varKey]: "" }))}
-          >
+          <Button size="sm" outlined prefix={<Pencil />} onClick={() => setEdits(prev => ({ ...prev, [varKey]: '' }))}>
             {t.common.set}
           </Button>
         </div>
       </div>
-    );
+    )
   }
 
   // Non-compact unset row
@@ -172,12 +156,8 @@ function EnvVarRow({
     return (
       <div className="flex items-center justify-between gap-3 border border-border/50 px-4 py-2.5 min-w-0 overflow-hidden text-text-secondary hover:text-foreground transition-colors">
         <div className="flex items-center gap-3 min-w-0">
-          <Label className="font-mono-ui text-xs">
-            {varKey}
-          </Label>
-          <span className="text-xs text-text-tertiary truncate hidden sm:block">
-            {info.description}
-          </span>
+          <Label className="font-mono-ui text-xs">{varKey}</Label>
+          <span className="text-xs text-text-tertiary truncate hidden sm:block">{info.description}</span>
         </div>
         <div className="flex items-center gap-2 shrink-0">
           {info.url && (
@@ -190,17 +170,12 @@ function EnvVarRow({
               {t.env.getKey} <ExternalLink className="h-2.5 w-2.5" />
             </a>
           )}
-          <Button
-            size="sm"
-            outlined
-            prefix={<Pencil />}
-            onClick={() => setEdits((prev) => ({ ...prev, [varKey]: "" }))}
-          >
+          <Button size="sm" outlined prefix={<Pencil />} onClick={() => setEdits(prev => ({ ...prev, [varKey]: '' }))}>
             {t.common.set}
           </Button>
         </div>
       </div>
-    );
+    )
   }
 
   // Full expanded row for set keys or keys being edited
@@ -209,9 +184,7 @@ function EnvVarRow({
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2">
           <Label className="font-mono-ui text-xs">{varKey}</Label>
-          <Badge tone={info.is_set ? "success" : "outline"}>
-            {info.is_set ? t.common.set : t.env.notSet}
-          </Badge>
+          <Badge tone={info.is_set ? 'success' : 'outline'}>{info.is_set ? t.common.set : t.env.notSet}</Badge>
         </div>
         {info.url && (
           <a
@@ -229,12 +202,8 @@ function EnvVarRow({
 
       {info.tools.length > 0 && (
         <div className="flex flex-wrap gap-1">
-          {info.tools.map((tool) => (
-            <Badge
-              key={tool}
-              tone="secondary"
-              className="text-xs py-0 px-1.5"
-            >
+          {info.tools.map(tool => (
+            <Badge key={tool} tone="secondary" className="text-xs py-0 px-1.5">
               {tool}
             </Badge>
           ))}
@@ -245,12 +214,10 @@ function EnvVarRow({
         <div className="flex items-center gap-2">
           <div
             className={`flex-1 border border-border px-3 py-2 font-mono-ui text-xs ${
-              isRevealed
-                ? "bg-background text-foreground select-all"
-                : "bg-muted/30 text-muted-foreground"
+              isRevealed ? 'bg-background text-foreground select-all' : 'bg-muted/30 text-muted-foreground'
             }`}
           >
-            {info.is_set ? displayValue : "---"}
+            {info.is_set ? displayValue : '---'}
           </div>
 
           {info.is_set && (
@@ -265,12 +232,7 @@ function EnvVarRow({
             </Button>
           )}
 
-          <Button
-            size="sm"
-            outlined
-            prefix={<Pencil />}
-            onClick={() => setEdits((prev) => ({ ...prev, [varKey]: "" }))}
-          >
+          <Button size="sm" outlined prefix={<Pencil />} onClick={() => setEdits(prev => ({ ...prev, [varKey]: '' }))}>
             {info.is_set ? t.common.replace : t.common.set}
           </Button>
 
@@ -283,7 +245,7 @@ function EnvVarRow({
               onClick={() => onClear(varKey)}
               disabled={saving === varKey || clearDialogOpen}
             >
-              {saving === varKey ? "..." : t.common.clear}
+              {saving === varKey ? '...' : t.common.clear}
             </Button>
           )}
         </div>
@@ -295,15 +257,10 @@ function EnvVarRow({
             autoFocus
             type="text"
             value={edits[varKey]}
-            onChange={(e) =>
-              setEdits((prev) => ({ ...prev, [varKey]: e.target.value }))
-            }
+            onChange={e => setEdits(prev => ({ ...prev, [varKey]: e.target.value }))}
             placeholder={
               info.is_set
-                ? t.env.replaceCurrentValue.replace(
-                    "{preview}",
-                    info.redacted_value ?? "---",
-                  )
+                ? t.env.replaceCurrentValue.replace('{preview}', info.redacted_value ?? '---')
                 : t.env.enterValue
             }
             className="flex-1 font-mono-ui text-xs"
@@ -314,20 +271,15 @@ function EnvVarRow({
             prefix={<Save />}
             disabled={saving === varKey || !edits[varKey]}
           >
-            {saving === varKey ? "..." : t.common.save}
+            {saving === varKey ? '...' : t.common.save}
           </Button>
-          <Button
-            size="sm"
-            outlined
-            prefix={<X />}
-            onClick={() => onCancelEdit(varKey)}
-          >
+          <Button size="sm" outlined prefix={<X />} onClick={() => onCancelEdit(varKey)}>
             {t.common.cancel}
           </Button>
         </div>
       )}
     </div>
-  );
+  )
 }
 
 /* ------------------------------------------------------------------ */
@@ -344,40 +296,33 @@ function ProviderGroupCard({
   onClear,
   onReveal,
   onCancelEdit,
-  clearDialogOpen = false,
+  clearDialogOpen = false
 }: {
-  group: ProviderGroup;
-  edits: Record<string, string>;
-  setEdits: React.Dispatch<React.SetStateAction<Record<string, string>>>;
-  revealed: Record<string, string>;
-  saving: string | null;
-  onSave: (key: string) => void;
-  onClear: (key: string) => void;
-  onReveal: (key: string) => void;
-  onCancelEdit: (key: string) => void;
-  clearDialogOpen?: boolean;
+  group: ProviderGroup
+  edits: Record<string, string>
+  setEdits: React.Dispatch<React.SetStateAction<Record<string, string>>>
+  revealed: Record<string, string>
+  saving: string | null
+  onSave: (key: string) => void
+  onClear: (key: string) => void
+  onReveal: (key: string) => void
+  onCancelEdit: (key: string) => void
+  clearDialogOpen?: boolean
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const { t } = useI18n();
+  const [expanded, setExpanded] = useState(false)
+  const { t } = useI18n()
 
   // Separate API keys from base URLs and other settings
-  const apiKeys = group.entries.filter(
-    ([k]) => k.endsWith("_API_KEY") || k.endsWith("_TOKEN"),
-  );
-  const baseUrls = group.entries.filter(([k]) => k.endsWith("_BASE_URL"));
+  const apiKeys = group.entries.filter(([k]) => k.endsWith('_API_KEY') || k.endsWith('_TOKEN'))
+  const baseUrls = group.entries.filter(([k]) => k.endsWith('_BASE_URL'))
   const other = group.entries.filter(
-    ([k]) =>
-      !k.endsWith("_API_KEY") &&
-      !k.endsWith("_TOKEN") &&
-      !k.endsWith("_BASE_URL"),
-  );
-  const hasAnyConfigured = group.entries.some(([, info]) => info.is_set);
-  const configuredCount = group.entries.filter(
-    ([, info]) => info.is_set,
-  ).length;
+    ([k]) => !k.endsWith('_API_KEY') && !k.endsWith('_TOKEN') && !k.endsWith('_BASE_URL')
+  )
+  const hasAnyConfigured = group.entries.some(([, info]) => info.is_set)
+  const configuredCount = group.entries.filter(([, info]) => info.is_set).length
 
   // Get a representative URL for "Get key" link
-  const keyUrl = apiKeys.find(([, info]) => info.url)?.[1]?.url ?? null;
+  const keyUrl = apiKeys.find(([, info]) => info.url)?.[1]?.url ?? null
 
   return (
     <div className="border border-border">
@@ -394,7 +339,7 @@ function ProviderGroupCard({
             <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
           )}
           <span className="font-semibold text-sm tracking-wide">
-            {group.name === "Other" ? t.common.other : group.name}
+            {group.name === 'Other' ? t.common.other : group.name}
           </span>
           {hasAnyConfigured && (
             <Badge tone="success" className="text-xs">
@@ -409,15 +354,15 @@ function ProviderGroupCard({
               target="_blank"
               rel="noreferrer"
               className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
-              onClick={(e) => e.stopPropagation()}
+              onClick={e => e.stopPropagation()}
             >
               {t.env.getKey} <ExternalLink className="h-2.5 w-2.5" />
             </a>
           )}
           <span className="text-xs text-text-tertiary">
             {t.env.keysCount
-              .replace("{count}", String(group.entries.length))
-              .replace("{s}", group.entries.length !== 1 ? "s" : "")}
+              .replace('{count}', String(group.entries.length))
+              .replace('{s}', group.entries.length !== 1 ? 's' : '')}
           </span>
         </div>
       </ListItem>
@@ -480,7 +425,7 @@ function ProviderGroupCard({
         </div>
       )}
     </div>
-  );
+  )
 }
 
 /* ------------------------------------------------------------------ */
@@ -488,7 +433,7 @@ function ProviderGroupCard({
 /* ------------------------------------------------------------------ */
 
 // Mirror of the backend env-name guard (hermes_cli/config.py _ENV_VAR_NAME_RE).
-const ENV_VAR_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const ENV_VAR_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 function CustomKeysCard({
   entries,
@@ -501,26 +446,26 @@ function CustomKeysCard({
   onReveal,
   onCancelEdit,
   onAddKey,
-  clearDialogOpen = false,
+  clearDialogOpen = false
 }: {
-  entries: [string, EnvVarInfo][];
-  edits: Record<string, string>;
-  setEdits: React.Dispatch<React.SetStateAction<Record<string, string>>>;
-  revealed: Record<string, string>;
-  saving: string | null;
-  onSave: (key: string) => void;
-  onClear: (key: string) => void;
-  onReveal: (key: string) => void;
-  onCancelEdit: (key: string) => void;
-  onAddKey: (key: string) => void;
-  clearDialogOpen?: boolean;
+  entries: [string, EnvVarInfo][]
+  edits: Record<string, string>
+  setEdits: React.Dispatch<React.SetStateAction<Record<string, string>>>
+  revealed: Record<string, string>
+  saving: string | null
+  onSave: (key: string) => void
+  onClear: (key: string) => void
+  onReveal: (key: string) => void
+  onCancelEdit: (key: string) => void
+  onAddKey: (key: string) => void
+  clearDialogOpen?: boolean
 }) {
-  const { t } = useI18n();
-  const [newKey, setNewKey] = useState("");
-  const trimmed = newKey.trim().toUpperCase();
-  const alreadyEditing = edits[trimmed] !== undefined;
-  const nameValid = ENV_VAR_NAME_RE.test(trimmed);
-  const showInvalid = trimmed.length > 0 && !nameValid;
+  const { t } = useI18n()
+  const [newKey, setNewKey] = useState('')
+  const trimmed = newKey.trim().toUpperCase()
+  const alreadyEditing = edits[trimmed] !== undefined
+  const nameValid = ENV_VAR_NAME_RE.test(trimmed)
+  const showInvalid = trimmed.length > 0 && !nameValid
 
   const rowProps = {
     edits,
@@ -531,14 +476,14 @@ function CustomKeysCard({
     onClear,
     onReveal,
     onCancelEdit,
-    clearDialogOpen,
-  };
+    clearDialogOpen
+  }
 
   const handleAdd = () => {
-    if (!nameValid || alreadyEditing) return;
-    onAddKey(trimmed);
-    setNewKey("");
-  };
+    if (!nameValid || alreadyEditing) return
+    onAddKey(trimmed)
+    setNewKey('')
+  }
 
   return (
     <Card id="section-custom">
@@ -549,12 +494,10 @@ function CustomKeysCard({
         </div>
         <CardDescription>
           {t.env.customConfigured
-            .replace("{count}", String(entries.length))
-            .replace("{s}", entries.length !== 1 ? "s" : "")}
+            .replace('{count}', String(entries.length))
+            .replace('{s}', entries.length !== 1 ? 's' : '')}
         </CardDescription>
-        <CardDescription className="text-text-tertiary">
-          {t.env.customHint}
-        </CardDescription>
+        <CardDescription className="text-text-tertiary">{t.env.customHint}</CardDescription>
       </CardHeader>
 
       <CardContent className="grid gap-3 overflow-hidden pt-4">
@@ -564,41 +507,30 @@ function CustomKeysCard({
 
         {/* Add-key form */}
         <div className="grid gap-2 border border-dashed border-border p-4">
-          <Label className="text-xs font-semibold tracking-wide">
-            {t.env.addCustomKey}
-          </Label>
+          <Label className="text-xs font-semibold tracking-wide">{t.env.addCustomKey}</Label>
           <div className="flex items-start gap-2">
             <div className="flex-1">
               <Input
                 type="text"
                 value={newKey}
-                onChange={(e) => setNewKey(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleAdd();
+                onChange={e => setNewKey(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') handleAdd()
                 }}
                 placeholder={t.env.customKeyNamePlaceholder}
                 aria-label={t.env.customKeyName}
                 className="w-full font-mono-ui text-xs"
               />
-              {showInvalid && (
-                <p className="mt-1 text-xs text-destructive">
-                  {t.env.invalidKeyName}
-                </p>
-              )}
+              {showInvalid && <p className="mt-1 text-xs text-destructive">{t.env.invalidKeyName}</p>}
             </div>
-            <Button
-              size="sm"
-              prefix={<Plus />}
-              onClick={handleAdd}
-              disabled={!nameValid || alreadyEditing}
-            >
+            <Button size="sm" prefix={<Plus />} onClick={handleAdd} disabled={!nameValid || alreadyEditing}>
               {t.env.add}
             </Button>
           </div>
         </div>
       </CardContent>
     </Card>
-  );
+  )
 }
 
 /* ------------------------------------------------------------------ */
@@ -606,63 +538,58 @@ function CustomKeysCard({
 /* ------------------------------------------------------------------ */
 
 export default function EnvPage() {
-  const [vars, setVars] = useState<Record<string, EnvVarInfo> | null>(null);
-  const [edits, setEdits] = useState<Record<string, string>>({});
-  const [revealed, setRevealed] = useState<Record<string, string>>({});
-  const [saving, setSaving] = useState<string | null>(null);
-  const [showAdvanced, setShowAdvanced] = useState(true); // Show all providers by default
-  const { toast, showToast } = useToast();
-  const { t } = useI18n();
-  const { setAfterTitle } = usePageHeader();
+  const [vars, setVars] = useState<Record<string, EnvVarInfo> | null>(null)
+  const [edits, setEdits] = useState<Record<string, string>>({})
+  const [revealed, setRevealed] = useState<Record<string, string>>({})
+  const [saving, setSaving] = useState<string | null>(null)
+  const [showAdvanced, setShowAdvanced] = useState(true) // Show all providers by default
+  const { toast, showToast } = useToast()
+  const { t } = useI18n()
+  const { setAfterTitle } = usePageHeader()
 
   useEffect(() => {
     api
       .getEnvVars()
       .then(setVars)
-      .catch(() => {});
-  }, []);
+      .catch(() => {})
+  }, [])
 
   // Scroll-to sub-nav in the page header
   const sections = useMemo(() => {
     const items: { id: string; label: string }[] = [
-      { id: "section-oauth", label: "OAuth" },
-      { id: "section-providers", label: "Providers" },
-    ];
+      { id: 'section-oauth', label: 'OAuth' },
+      { id: 'section-providers', label: 'Providers' }
+    ]
     if (vars) {
-      const categories = ["tool", "messaging", "setting"];
+      const categories = ['tool', 'messaging', 'setting']
       const CATEGORY_LABELS: Record<string, string> = {
-        tool: "Tools",
-        messaging: t.common.gateway ?? "Gateway",
-        setting: "Settings",
-      };
+        tool: 'Tools',
+        messaging: t.common.gateway ?? 'Gateway',
+        setting: 'Settings'
+      }
       for (const cat of categories) {
-        const hasEntries = Object.values(vars).some(
-          (info) => info.category === cat && !info.channel_managed,
-        );
+        const hasEntries = Object.values(vars).some(info => info.category === cat && !info.channel_managed)
         if (hasEntries) {
-          items.push({ id: `section-${cat}`, label: CATEGORY_LABELS[cat] ?? cat });
+          items.push({ id: `section-${cat}`, label: CATEGORY_LABELS[cat] ?? cat })
         }
       }
       // Custom keys section is always present (it carries the add-key form).
-      items.push({ id: "section-custom", label: t.env.customTitle });
+      items.push({ id: 'section-custom', label: t.env.customTitle })
     }
-    return items;
-  }, [vars, t]);
+    return items
+  }, [vars, t])
 
   useLayoutEffect(() => {
     if (!vars) {
-      setAfterTitle(null);
-      return;
+      setAfterTitle(null)
+      return
     }
     const scrollTo = (id: string) => {
-      document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
-    };
+      document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
     setAfterTitle(
-      <nav
-        className="flex shrink-0 flex-nowrap items-center gap-1"
-        aria-label="Jump to section"
-      >
-        {sections.map((s) => (
+      <nav className="flex shrink-0 flex-nowrap items-center gap-1" aria-label="Jump to section">
+        {sections.map(s => (
           <button
             key={s.id}
             type="button"
@@ -672,116 +599,116 @@ export default function EnvPage() {
             {s.label}
           </button>
         ))}
-      </nav>,
-    );
+      </nav>
+    )
     return () => {
-      setAfterTitle(null);
-    };
-  }, [vars, sections, setAfterTitle]);
+      setAfterTitle(null)
+    }
+  }, [vars, sections, setAfterTitle])
 
   const handleSave = async (key: string) => {
-    const value = edits[key];
-    if (!value) return;
-    setSaving(key);
+    const value = edits[key]
+    if (!value) return
+    setSaving(key)
     try {
-      await api.setEnvVar(key, value);
-      setVars((prev) =>
+      await api.setEnvVar(key, value)
+      setVars(prev =>
         prev
           ? {
               ...prev,
               [key]: {
                 ...prev[key],
                 is_set: true,
-                redacted_value: value.slice(0, 4) + "..." + value.slice(-4),
-              },
+                redacted_value: value.slice(0, 4) + '...' + value.slice(-4)
+              }
             }
-          : prev,
-      );
-      setEdits((prev) => {
-        const n = { ...prev };
-        delete n[key];
-        return n;
-      });
-      setRevealed((prev) => {
-        const n = { ...prev };
-        delete n[key];
-        return n;
-      });
-      showToast(`${key} ${t.common.save.toLowerCase()}d`, "success");
+          : prev
+      )
+      setEdits(prev => {
+        const n = { ...prev }
+        delete n[key]
+        return n
+      })
+      setRevealed(prev => {
+        const n = { ...prev }
+        delete n[key]
+        return n
+      })
+      showToast(`${key} ${t.common.save.toLowerCase()}d`, 'success')
     } catch (e) {
-      showToast(`${t.config.failedToSave} ${key}: ${e}`, "error");
+      showToast(`${t.config.failedToSave} ${key}: ${e}`, 'error')
     } finally {
-      setSaving(null);
+      setSaving(null)
     }
-  };
+  }
 
   const keyClear = useConfirmDelete({
     onDelete: useCallback(
       async (key: string) => {
-        setSaving(key);
+        setSaving(key)
         try {
-          await api.deleteEnvVar(key);
-          setVars((prev) =>
+          await api.deleteEnvVar(key)
+          setVars(prev =>
             prev
               ? {
                   ...prev,
-                  [key]: { ...prev[key], is_set: false, redacted_value: null },
+                  [key]: { ...prev[key], is_set: false, redacted_value: null }
                 }
-              : prev,
-          );
-          setEdits((prev) => {
-            const n = { ...prev };
-            delete n[key];
-            return n;
-          });
-          setRevealed((prev) => {
-            const n = { ...prev };
-            delete n[key];
-            return n;
-          });
-          showToast(`${key} ${t.common.removed}`, "success");
+              : prev
+          )
+          setEdits(prev => {
+            const n = { ...prev }
+            delete n[key]
+            return n
+          })
+          setRevealed(prev => {
+            const n = { ...prev }
+            delete n[key]
+            return n
+          })
+          showToast(`${key} ${t.common.removed}`, 'success')
         } catch (e) {
-          showToast(`${t.common.failedToRemove} ${key}: ${e}`, "error");
-          throw e;
+          showToast(`${t.common.failedToRemove} ${key}: ${e}`, 'error')
+          throw e
         } finally {
-          setSaving(null);
+          setSaving(null)
         }
       },
-      [showToast, t.common.removed, t.common.failedToRemove],
-    ),
-  });
+      [showToast, t.common.removed, t.common.failedToRemove]
+    )
+  })
 
   const handleReveal = async (key: string) => {
     if (revealed[key]) {
-      setRevealed((prev) => {
-        const n = { ...prev };
-        delete n[key];
-        return n;
-      });
-      return;
+      setRevealed(prev => {
+        const n = { ...prev }
+        delete n[key]
+        return n
+      })
+      return
     }
     try {
-      const resp = await api.revealEnvVar(key);
-      setRevealed((prev) => ({ ...prev, [key]: resp.value }));
+      const resp = await api.revealEnvVar(key)
+      setRevealed(prev => ({ ...prev, [key]: resp.value }))
     } catch {
-      showToast(`${t.common.failedToReveal} ${key}`, "error");
+      showToast(`${t.common.failedToReveal} ${key}`, 'error')
     }
-  };
+  }
 
   const cancelEdit = (key: string) => {
-    setEdits((prev) => {
-      const n = { ...prev };
-      delete n[key];
-      return n;
-    });
-  };
+    setEdits(prev => {
+      const n = { ...prev }
+      delete n[key]
+      return n
+    })
+  }
 
   // Add a custom key: register an unset row in local state and open it for
   // editing. The value isn't persisted until the user types one and saves
   // (reusing the normal handleSave → PUT /api/env path); on save the backend
   // surfaces it back as a custom row, so the new entry is durable.
   const handleAddKey = (key: string) => {
-    setVars((prev) =>
+    setVars(prev =>
       prev && prev[key]
         ? prev
         : {
@@ -789,18 +716,18 @@ export default function EnvPage() {
             [key]: {
               is_set: false,
               redacted_value: null,
-              description: "",
+              description: '',
               url: null,
-              category: "custom",
+              category: 'custom',
               is_password: true,
               tools: [],
               advanced: false,
-              custom: true,
-            },
-          },
-    );
-    setEdits((prev) => ({ ...prev, [key]: "" }));
-  };
+              custom: true
+            }
+          }
+    )
+    setEdits(prev => ({ ...prev, [key]: '' }))
+  }
 
   /* ---- Build provider groups ---- */
   const { providerGroups, nonProviderGrouped, customEntries } = useMemo(() => {
@@ -808,20 +735,19 @@ export default function EnvPage() {
       return {
         providerGroups: [],
         nonProviderGrouped: [],
-        customEntries: [] as [string, EnvVarInfo][],
-      };
+        customEntries: [] as [string, EnvVarInfo][]
+      }
 
     const providerEntries = Object.entries(vars).filter(
-      ([, info]) =>
-        info.category === "provider" && (showAdvanced || !info.advanced),
-    );
+      ([, info]) => info.category === 'provider' && (showAdvanced || !info.advanced)
+    )
 
     // Group by provider
-    const groupMap = new Map<string, [string, EnvVarInfo][]>();
+    const groupMap = new Map<string, [string, EnvVarInfo][]>()
     for (const entry of providerEntries) {
-      const groupName = getProviderGroup(entry[0]);
-      if (!groupMap.has(groupName)) groupMap.set(groupName, []);
-      groupMap.get(groupName)!.push(entry);
+      const groupName = getProviderGroup(entry[0])
+      if (!groupMap.has(groupName)) groupMap.set(groupName, [])
+      groupMap.get(groupName)!.push(entry)
     }
 
     const groups: ProviderGroup[] = Array.from(groupMap.entries())
@@ -829,9 +755,9 @@ export default function EnvPage() {
         name,
         priority: getProviderPriority(name),
         entries,
-        hasAnySet: entries.some(([, info]) => info.is_set),
+        hasAnySet: entries.some(([, info]) => info.is_set)
       }))
-      .sort((a, b) => a.priority - b.priority);
+      .sort((a, b) => a.priority - b.priority)
 
     // Non-provider categories — use translated labels. Platform credentials
     // (channel_managed) are configured on the Channels page, so the messaging
@@ -839,24 +765,21 @@ export default function EnvPage() {
     // settings and relabelled accordingly.
     const CATEGORY_META_LABELS: Record<string, string> = {
       tool: t.app.nav.keys,
-      messaging: t.common.gateway ?? "Gateway",
-      setting: t.app.nav.config,
-    };
+      messaging: t.common.gateway ?? 'Gateway',
+      setting: t.app.nav.config
+    }
     const CATEGORY_META_HINTS: Record<string, string | undefined> = {
       messaging:
         t.common.gatewayHint ??
-        "Messaging platforms, the API server and webhooks are configured on the Channels page. These are gateway-wide settings (proxy/relay mode and the global allowlist).",
-    };
-    const otherCategories = ["tool", "messaging", "setting"];
-    const nonProvider = otherCategories.map((cat) => {
+        'Messaging platforms, the API server and webhooks are configured on the Channels page. These are gateway-wide settings (proxy/relay mode and the global allowlist).'
+    }
+    const otherCategories = ['tool', 'messaging', 'setting']
+    const nonProvider = otherCategories.map(cat => {
       const entries = Object.entries(vars).filter(
-        ([, info]) =>
-          info.category === cat &&
-          !info.channel_managed &&
-          (showAdvanced || !info.advanced),
-      );
-      const setEntries = entries.filter(([, info]) => info.is_set);
-      const unsetEntries = entries.filter(([, info]) => !info.is_set);
+        ([, info]) => info.category === cat && !info.channel_managed && (showAdvanced || !info.advanced)
+      )
+      const setEntries = entries.filter(([, info]) => info.is_set)
+      const unsetEntries = entries.filter(([, info]) => !info.is_set)
       return {
         label: CATEGORY_META_LABELS[cat] ?? cat,
         hint: CATEGORY_META_HINTS[cat],
@@ -864,38 +787,37 @@ export default function EnvPage() {
         category: cat,
         setEntries,
         unsetEntries,
-        totalEntries: entries.length,
-      };
-    });
+        totalEntries: entries.length
+      }
+    })
 
     // Custom keys: user-added vars the backend flagged as not in any catalog.
     // Sorted alphabetically; an in-flight (just-added, unsaved) row carries the
     // custom category locally so it shows here immediately.
     const customEntries = Object.entries(vars)
-      .filter(([, info]) => info.category === "custom" && !info.channel_managed)
-      .sort(([a], [b]) => a.localeCompare(b));
+      .filter(([, info]) => info.category === 'custom' && !info.channel_managed)
+      .sort(([a], [b]) => a.localeCompare(b))
 
     return {
       providerGroups: groups,
       nonProviderGrouped: nonProvider,
-      customEntries,
-    };
-  }, [vars, showAdvanced, t]);
+      customEntries
+    }
+  }, [vars, showAdvanced, t])
 
   if (!vars) {
     return (
       <div className="flex items-center justify-center py-24">
         <Spinner className="text-2xl text-primary" />
       </div>
-    );
+    )
   }
 
-  const totalProviders = providerGroups.length;
-  const configuredProviders = providerGroups.filter((g) => g.hasAnySet).length;
+  const totalProviders = providerGroups.length
+  const configuredProviders = providerGroups.filter(g => g.hasAnySet).length
 
-  const pendingClearKey = keyClear.pendingId;
-  const pendingKeyDescription =
-    pendingClearKey && vars ? vars[pendingClearKey]?.description : undefined;
+  const pendingClearKey = keyClear.pendingId
+  const pendingKeyDescription = pendingClearKey && vars ? vars[pendingClearKey]?.description : undefined
 
   return (
     <div className="flex flex-col gap-6">
@@ -909,7 +831,7 @@ export default function EnvPage() {
         title={t.env.confirmClearTitle}
         description={
           pendingClearKey
-            ? `${pendingClearKey}${pendingKeyDescription ? ` — ${pendingKeyDescription}` : ""}. ${t.env.confirmClearMessage}`
+            ? `${pendingClearKey}${pendingKeyDescription ? ` — ${pendingKeyDescription}` : ''}. ${t.env.confirmClearMessage}`
             : t.env.confirmClearMessage
         }
         loading={keyClear.isDeleting}
@@ -920,24 +842,15 @@ export default function EnvPage() {
           <p className="text-sm text-muted-foreground">
             {t.env.description} <code>~/.hermes/.env</code>
           </p>
-          <p className="text-xs text-text-tertiary">
-            {t.env.changesNote}
-          </p>
+          <p className="text-xs text-text-tertiary">{t.env.changesNote}</p>
         </div>
-        <Button
-          size="sm"
-          outlined
-          onClick={() => setShowAdvanced(!showAdvanced)}
-        >
+        <Button size="sm" outlined onClick={() => setShowAdvanced(!showAdvanced)}>
           {showAdvanced ? t.env.hideAdvanced : t.env.showAdvanced}
         </Button>
       </div>
 
       <div id="section-oauth">
-        <OAuthProvidersCard
-          onError={(msg) => showToast(msg, "error")}
-          onSuccess={(msg) => showToast(msg, "success")}
-        />
+        <OAuthProvidersCard onError={msg => showToast(msg, 'error')} onSuccess={msg => showToast(msg, 'success')} />
       </div>
 
       <Card id="section-providers">
@@ -948,13 +861,13 @@ export default function EnvPage() {
           </div>
           <CardDescription>
             {t.env.providersConfigured
-              .replace("{configured}", String(configuredProviders))
-              .replace("{total}", String(totalProviders))}
+              .replace('{configured}', String(configuredProviders))
+              .replace('{total}', String(totalProviders))}
           </CardDescription>
         </CardHeader>
 
         <CardContent className="grid gap-0 p-0">
-          {providerGroups.map((group) => (
+          {providerGroups.map(group => (
             <ProviderGroupCard
               key={group.name}
               group={group}
@@ -972,8 +885,8 @@ export default function EnvPage() {
         </CardContent>
       </Card>
 
-      {nonProviderGrouped.map((section) => {
-        if (section.totalEntries === 0) return null;
+      {nonProviderGrouped.map(section => {
+        if (section.totalEntries === 0) return null
 
         return (
           <EnvCategoryCard
@@ -989,7 +902,7 @@ export default function EnvPage() {
             onCancelEdit={cancelEdit}
             clearDialogOpen={keyClear.isOpen}
           />
-        );
+        )
       })}
       <CustomKeysCard
         entries={customEntries}
@@ -1006,7 +919,7 @@ export default function EnvPage() {
       />
       <PluginSlot name="env:bottom" />
     </div>
-  );
+  )
 }
 
 /* ------------------------------------------------------------------ */
@@ -1023,32 +936,32 @@ function EnvCategoryCard({
   onClear,
   onReveal,
   onCancelEdit,
-  clearDialogOpen = false,
+  clearDialogOpen = false
 }: {
   section: {
-    category: string;
-    hint?: string;
-    icon: React.ComponentType<{ className?: string }>;
-    label: string;
-    setEntries: [string, EnvVarInfo][];
-    totalEntries: number;
-    unsetEntries: [string, EnvVarInfo][];
-  };
-  edits: Record<string, string>;
-  setEdits: React.Dispatch<React.SetStateAction<Record<string, string>>>;
-  revealed: Record<string, string>;
-  saving: string | null;
-  onSave: (key: string) => void;
-  onClear: (key: string) => void;
-  onReveal: (key: string) => void;
-  onCancelEdit: (key: string) => void;
-  clearDialogOpen?: boolean;
+    category: string
+    hint?: string
+    icon: React.ComponentType<{ className?: string }>
+    label: string
+    setEntries: [string, EnvVarInfo][]
+    totalEntries: number
+    unsetEntries: [string, EnvVarInfo][]
+  }
+  edits: Record<string, string>
+  setEdits: React.Dispatch<React.SetStateAction<Record<string, string>>>
+  revealed: Record<string, string>
+  saving: string | null
+  onSave: (key: string) => void
+  onClear: (key: string) => void
+  onReveal: (key: string) => void
+  onCancelEdit: (key: string) => void
+  clearDialogOpen?: boolean
 }) {
-  const noneConfigured = section.setEntries.length === 0;
-  const [showAll, setShowAll] = useState(noneConfigured);
-  const { t } = useI18n();
-  const Icon = section.icon;
-  const hasContent = section.setEntries.length > 0 || showAll;
+  const noneConfigured = section.setEntries.length === 0
+  const [showAll, setShowAll] = useState(noneConfigured)
+  const { t } = useI18n()
+  const Icon = section.icon
+  const hasContent = section.setEntries.length > 0 || showAll
   const rowProps = {
     edits,
     setEdits,
@@ -1058,14 +971,12 @@ function EnvCategoryCard({
     onClear,
     onReveal,
     onCancelEdit,
-    clearDialogOpen,
-  };
+    clearDialogOpen
+  }
 
   return (
     <Card id={`section-${section.category}`}>
-      <CardHeader
-        className={`bg-card${hasContent ? " border-b border-border" : ""}`}
-      >
+      <CardHeader className={`bg-card${hasContent ? ' border-b border-border' : ''}`}>
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
             <Icon className="h-5 w-5 shrink-0 text-muted-foreground" />
@@ -1075,7 +986,7 @@ function EnvCategoryCard({
           {section.unsetEntries.length > 0 && (
             <button
               type="button"
-              onClick={() => setShowAll((open) => !open)}
+              onClick={() => setShowAll(open => !open)}
               aria-expanded={showAll}
               className="shrink-0 cursor-pointer border-0 bg-transparent p-0 font-mondwest text-xs tracking-[0.08em] text-text-secondary transition-colors hover:text-foreground"
             >
@@ -1085,15 +996,10 @@ function EnvCategoryCard({
         </div>
 
         <CardDescription>
-          {section.setEntries.length} {t.common.of} {section.totalEntries}{" "}
-          {t.common.configured}
+          {section.setEntries.length} {t.common.of} {section.totalEntries} {t.common.configured}
         </CardDescription>
 
-        {section.hint && (
-          <CardDescription className="text-text-tertiary">
-            {section.hint}
-          </CardDescription>
-        )}
+        {section.hint && <CardDescription className="text-text-tertiary">{section.hint}</CardDescription>}
       </CardHeader>
 
       {hasContent && (
@@ -1103,11 +1009,9 @@ function EnvCategoryCard({
           ))}
 
           {showAll &&
-            section.unsetEntries.map(([key, info]) => (
-              <EnvVarRow key={key} varKey={key} info={info} {...rowProps} />
-            ))}
+            section.unsetEntries.map(([key, info]) => <EnvVarRow key={key} varKey={key} info={info} {...rowProps} />)}
         </CardContent>
       )}
     </Card>
-  );
+  )
 }

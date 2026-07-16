@@ -164,6 +164,12 @@ class ResponsesApiTransport(ProviderTransport):
                 reasoning_effort = reasoning_config["effort"]
 
         _effort_clamp = {"minimal": "low"}
+        if "gpt-5.6" in (model or "").lower():
+            # Ultra is the Codex product tier; the Responses API wire value is max.
+            _effort_clamp["ultra"] = "max"
+        if params.get("is_xai_responses", False):
+            # xAI Responses tops out at high; keep generic stronger values usable.
+            _effort_clamp.update({"xhigh": "high", "max": "high", "ultra": "high"})
         reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
 
         response_tools = _responses_tools(tools)
@@ -429,15 +435,27 @@ class ResponsesApiTransport(ProviderTransport):
     def validate_response(self, response: Any) -> bool:
         """Check Codex Responses API response has valid output structure.
 
-        Returns True only if response.output is a non-empty list.
-        Does NOT check output_text fallback — the caller handles that
-        with diagnostic logging for stream backfill recovery.
+        Returns True only if response.output is a non-empty list. Also treats
+        terminal content-filter incomplete responses as valid: the Responses API
+        may return status=incomplete with incomplete_details.reason='content_filter'
+        and no output items. That is a provider refusal signal, not a malformed
+        response, and must reach normalization so the agent loop can use the
+        content-policy / fallback path instead of invalid-response retries.
+
+        Does NOT check output_text fallback — the caller handles that with
+        diagnostic logging for stream backfill recovery.
         """
         if response is None:
             return False
         output = getattr(response, "output", None)
         if not isinstance(output, list) or not output:
-            return False
+            status = str(getattr(response, "status", "") or "").strip().lower()
+            incomplete_details = getattr(response, "incomplete_details", None)
+            if isinstance(incomplete_details, dict):
+                reason = str(incomplete_details.get("reason") or "").strip().lower()
+            else:
+                reason = str(getattr(incomplete_details, "reason", "") or "").strip().lower()
+            return status == "incomplete" and reason == "content_filter"
         return True
 
     def preflight_kwargs(

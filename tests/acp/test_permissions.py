@@ -23,6 +23,7 @@ def _invoke_callback(
     outcome,
     *,
     allow_permanent=True,
+    legacy_callback_kwargs=None,
     timeout=60.0,
     use_prompt_path=False,
 ):
@@ -52,6 +53,7 @@ def _invoke_callback(
                 "rm -rf /",
                 "dangerous command",
                 allow_permanent=allow_permanent,
+                **(legacy_callback_kwargs or {}),
             )
 
     scheduled["coro"].close()
@@ -114,6 +116,18 @@ class TestApprovalBridge:
 
         assert result == "session"
         assert option_ids == ["allow_once", "allow_session", "deny", "deny_always"]
+
+    def test_unknown_legacy_callback_metadata_does_not_change_owner_options(self):
+        result, kwargs, _, _, _ = _invoke_callback(
+            AllowedOutcome(option_id="allow_session", outcome="selected"),
+            allow_permanent=False,
+            legacy_callback_kwargs={"retired_hint": True},
+        )
+
+        assert result == "session"
+        assert [option.option_id for option in kwargs["options"]] == [
+            "allow_once", "allow_session", "deny", "deny_always",
+        ]
 
     def test_reject_always_outcome_denies_without_changing_policy(self):
         result, kwargs, _, _, _ = _invoke_callback(

@@ -10,27 +10,29 @@
  */
 
 export interface EffortOption {
-  value: string;
-  label: string;
+  value: string
+  label: string
 }
 
 export const EFFORT_OPTIONS: ReadonlyArray<EffortOption> = [
-  { value: "none", label: "Off (no thinking)" },
-  { value: "minimal", label: "Minimal" },
-  { value: "low", label: "Low" },
-  { value: "medium", label: "Medium" },
-  { value: "high", label: "High" },
-  { value: "xhigh", label: "Max" },
-];
+  { value: 'none', label: 'Off (no thinking)' },
+  { value: 'minimal', label: 'Minimal' },
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+  { value: 'xhigh', label: 'Extra High' },
+  { value: 'max', label: 'Max' },
+  { value: 'ultra', label: 'Ultra' }
+]
 
-export const VALID_EFFORTS: ReadonlySet<string> = new Set(
-  EFFORT_OPTIONS.map((o) => o.value),
-);
+export const VALID_EFFORTS: ReadonlySet<string> = new Set(EFFORT_OPTIONS.map(o => o.value))
 
 /** Normalize a raw `agent.reasoning_effort` config value to a selectable
  *  option. Empty/unknown → `medium` (Hermes' default when unset). */
 export function normalizeEffort(raw: unknown): string {
-  const value = String(raw ?? "").trim().toLowerCase();
-  if (!value) return "medium";
-  return VALID_EFFORTS.has(value) ? value : "medium";
+  const value = String(raw ?? '')
+    .trim()
+    .toLowerCase()
+  if (!value) return 'medium'
+  return VALID_EFFORTS.has(value) ? value : 'medium'
 }

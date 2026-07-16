@@ -15,6 +15,14 @@ const CMD_PREVIEW_LINES = 10
 
 type ApprovalChoice = 'always' | 'deny' | 'once' | 'session'
 
+export function approvalOptions(req: ApprovalReq): readonly ApprovalChoice[] {
+  if (req.choices) {
+    return req.choices.filter((choice): choice is ApprovalChoice => APPROVAL_OPTS.includes(choice as ApprovalChoice))
+  }
+
+  return req.allowPermanent === false ? APPROVAL_OPTS_NO_ALWAYS : APPROVAL_OPTS
+}
+
 type ApprovalKey = {
   downArrow?: boolean
   escape?: boolean
@@ -68,7 +76,7 @@ export function approvalAction(
 
 export function ApprovalPrompt({ cols = 80, onChoice, req, t }: ApprovalPromptProps) {
   const [sel, setSel] = useState(0)
-  const opts = req.allowPermanent === false ? APPROVAL_OPTS_NO_ALWAYS : APPROVAL_OPTS
+  const opts = approvalOptions(req)
 
   useInput((ch, key) => {
     const action = approvalAction(ch, key, sel, opts)

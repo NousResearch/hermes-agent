@@ -106,6 +106,47 @@ class TestTelegramExecApproval:
         assert kwargs["reply_markup"] is not None  # InlineKeyboardMarkup
 
     @pytest.mark.asyncio
+    async def test_non_permanent_approval_preserves_session_choice(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
+        buttons = []
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.InlineKeyboardButton",
+            lambda text, callback_data: buttons.append((text, callback_data)) or (text, callback_data),
+        )
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.InlineKeyboardMarkup", lambda rows: rows
+        )
+
+        await adapter.send_exec_approval(
+            chat_id="12345", command="rm -rf /", session_key="s",
+            allow_permanent=False,
+        )
+
+        labels = [label for label, _ in buttons]
+        assert labels == ["✅ Allow Once", "✅ Session", "❌ Deny"]
+
+    @pytest.mark.asyncio
+    async def test_permanent_approval_includes_always_choice(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
+        buttons = []
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.InlineKeyboardButton",
+            lambda text, callback_data: buttons.append(text) or text,
+        )
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.InlineKeyboardMarkup", lambda rows: rows
+        )
+
+        await adapter.send_exec_approval(
+            chat_id="12345", command="curl example.test", session_key="s",
+            allow_permanent=True,
+        )
+
+        assert buttons == ["✅ Allow Once", "✅ Session", "✅ Always", "❌ Deny"]
+
+    @pytest.mark.asyncio
     async def test_stores_approval_state(self):
         adapter = _make_adapter()
         mock_msg = MagicMock()

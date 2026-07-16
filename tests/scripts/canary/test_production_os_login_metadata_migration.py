@@ -27,6 +27,13 @@ OWNER_SUBJECT = "a" * 64
 OWNER_ACCOUNT = "owner@example.com"
 
 
+@pytest.fixture(autouse=True)
+def _clear_process_ca_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep launcher identity tests independent of gateway import side effects."""
+    monkeypatch.delenv("SSL_CERT_FILE", raising=False)
+    monkeypatch.delenv("REQUESTS_CA_BUNDLE", raising=False)
+
+
 def test_production_target_does_not_depend_on_canary_project_identity() -> None:
     source = Path(migration.__file__).read_text(encoding="utf-8")
     assert "DEDICATED_CANARY_PROJECT_NUMBER" not in source

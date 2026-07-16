@@ -48,6 +48,12 @@ def test_session_search_no_longer_appears_in_auxiliary_model_config():
     assert "session_search" not in {key for key, _name, _desc in _AUX_TASKS}
 
 
+def test_approval_authority_never_appears_as_an_auxiliary_model_task():
+    """An auxiliary model must not be selectable as an authorization source."""
+    assert "approval" not in DEFAULT_CONFIG["auxiliary"]
+    assert "approval" not in {key for key, _name, _desc in _AUX_TASKS}
+
+
 def test_aux_tasks_keys_all_exist_in_default_config():
     """Every task the menu offers must be defined in DEFAULT_CONFIG."""
     aux_keys = {k for k, _name, _desc in _AUX_TASKS}

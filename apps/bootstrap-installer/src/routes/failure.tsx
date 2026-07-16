@@ -1,15 +1,9 @@
-import { type CSSProperties } from 'react'
 import { useStore } from '@nanostores/react'
+import { FileText, RefreshCw } from 'lucide-react'
+import { type CSSProperties } from 'react'
+
 import { Button } from '../components/button'
-import {
-  $logPath,
-  $mode,
-  openLogDir,
-  startInstall,
-  startUpdate,
-  type BootstrapStateModel
-} from '../store'
-import { RefreshCw, FileText } from 'lucide-react'
+import { $logPath, $mode, type BootstrapStateModel, openLogDir, startInstall, startUpdate } from '../store'
 
 interface FailureProps {
   bootstrap: BootstrapStateModel
@@ -48,18 +42,16 @@ export default function Failure({ bootstrap }: FailureProps) {
 
         <p className="m-0 mx-auto max-w-xl text-center text-sm leading-normal tracking-tight text-muted-foreground">
           {bootstrap.error ??
-            (isUpdate
-              ? 'Something went wrong during the update.'
-              : 'Something went wrong during installation.')}
+            (isUpdate ? 'Something went wrong during the update.' : 'Something went wrong during installation.')}
         </p>
       </div>
 
       <div className="flex items-center gap-3">
-        <Button onClick={() => void (isUpdate ? startUpdate() : startInstall())} className="gap-1.5">
+        <Button className="gap-1.5" onClick={() => void (isUpdate ? startUpdate() : startInstall())}>
           <RefreshCw />
           {isUpdate ? 'Retry update' : 'Retry install'}
         </Button>
-        <Button variant="text" onClick={() => void openLogDir()} className="gap-1.5">
+        <Button className="gap-1.5" onClick={() => void openLogDir()} variant="text">
           <FileText />
           Open logs
         </Button>

@@ -35,6 +35,9 @@ def _write_drifted_runtime_inputs(hermes_home: Path) -> None:
               approval:
                 provider: untrusted-provider
                 model: untrusted-model
+              vision:
+                provider: trusted-vision-provider
+                model: trusted-vision-model
             secrets:
               bitwarden:
                 enabled: false
@@ -84,6 +87,8 @@ def _run_gateway_import(
             "max_iterations": os.environ.get("HERMES_MAX_ITERATIONS"),
             "auxiliary_provider": os.environ.get("AUXILIARY_APPROVAL_PROVIDER"),
             "auxiliary_model": os.environ.get("AUXILIARY_APPROVAL_MODEL"),
+            "vision_provider": os.environ.get("AUXILIARY_VISION_PROVIDER"),
+            "vision_model": os.environ.get("AUXILIARY_VISION_MODEL"),
             "external_secret_sources_applied": (
                 str(os.environ["HERMES_HOME"])
                 in {{str(path) for path in env_loader._APPLIED_HOMES}}
@@ -109,6 +114,8 @@ def _run_gateway_import(
     for key in (
         "AUXILIARY_APPROVAL_MODEL",
         "AUXILIARY_APPROVAL_PROVIDER",
+        "AUXILIARY_VISION_MODEL",
+        "AUXILIARY_VISION_PROVIDER",
         "CANARY_CONFIG_SENTINEL",
         "CANARY_IMPORT_SENTINEL",
         "HERMES_CONFIG",
@@ -180,6 +187,8 @@ def test_required_canonical_import_quarantines_unvalidated_runtime_inputs(
         "providers_discovered": False,
         "quiet": "1",
         "required_quarantine": True,
+        "vision_model": None,
+        "vision_provider": None,
     }
 
 
@@ -195,8 +204,10 @@ def test_normal_gateway_import_preserves_dotenv_and_config_bridge(
     assert result["dotenv_sentinel"] == "loaded-from-dotenv"
     assert result["config_sentinel"] == "loaded-from-config"
     assert result["max_iterations"] == "777"
-    assert result["auxiliary_provider"] == "untrusted-provider"
-    assert result["auxiliary_model"] == "untrusted-model"
+    assert result["auxiliary_provider"] is None
+    assert result["auxiliary_model"] is None
+    assert result["vision_provider"] == "trusted-vision-provider"
+    assert result["vision_model"] == "trusted-vision-model"
     assert result["external_secret_sources_applied"] is True
     assert result["gateway_marker"] == "1"
     assert result["quiet"] == "1"

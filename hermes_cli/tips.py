@@ -205,7 +205,7 @@ TIPS = [
 
     # --- Security ---
     "Dangerous command approval has 4 tiers: once, session, always (permanent allowlist), deny.",
-    "Smart approval mode uses an LLM to auto-approve safe commands and flag dangerous ones.",
+    "Dangerous commands require explicit owner approval unless approvals.mode is set to off.",
     "SSRF protection blocks private networks, loopback, link-local, and cloud metadata addresses.",
     "Tirith pre-exec scanning detects homograph URL spoofing and pipe-to-interpreter patterns.",
     "MCP subprocesses receive a filtered environment — only safe system vars pass through.",
@@ -432,7 +432,7 @@ TIPS = [
     "hermes chat --source tool tags programmatic chats so they don't clutter hermes sessions list.",
     'hermes dump --show-keys includes redacted API key fingerprints for deeper support debugging.',
     'hermes sessions rename <ID> "new title" renames any past session; hermes sessions delete <ID> removes one.',
-    'hermes import restores a session export or profile archive produced by sessions export or profile export.',
+    'hermes import restores a full Hermes backup zip; session JSON/JSONL exports import from the dashboard Sessions page.',
     'hermes fallback manages the fallback_model chain interactively — no hand-editing config.yaml.',
     'hermes pairing rotates the DM pairing token — the first messager after rotation claims access to the bot.',
     'hermes setup walks first-time users through provider, keys, and platform wiring in one interactive flow.',

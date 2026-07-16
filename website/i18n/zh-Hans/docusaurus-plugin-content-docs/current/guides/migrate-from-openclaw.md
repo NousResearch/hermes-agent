@@ -150,7 +150,7 @@ TTS 设置从 OpenClaw 配置的**两个**位置读取，优先级如下：
 
 | 内容 | OpenClaw 路径 | Hermes 路径 | 备注 |
 |------|-------------|-------------|-------|
-| 审批模式 | `approvals.exec.mode` | `config.yaml` → `approvals.mode` | "auto"→"off"，"always"→"manual"，"smart"→"smart" |
+| 审批模式 | `approvals.exec.mode` | `config.yaml` → `approvals.mode` | "auto"→"off"，"always"→"manual"，"smart"→"manual" |
 | 命令白名单 | `exec-approvals.json` | `config.yaml` → `command_allowlist` | 模式合并并去重 |
 | 浏览器 CDP URL | `browser.cdpUrl` | `config.yaml` → `browser.cdp_url` | |
 | 浏览器无头模式 | `browser.headless` | `config.yaml` → `browser.headless` | |

@@ -335,6 +335,8 @@ def build_semantic_config_contract(
             "keyword_routing_guards_enabled": False,
             "external_semantic_dispatchers_enabled": False,
             "auxiliary_semantic_authority": False,
+            "auxiliary_approval_authority": False,
+            "retired_semantic_auxiliary_tasks_present": False,
         },
         "model_route": {
             "provider": "openai-codex",
@@ -373,6 +375,7 @@ def build_semantic_config_contract(
     if gateway_config is not None:
         model = gateway_config.get("model")
         agent = gateway_config.get("agent")
+        auxiliary = gateway_config.get("auxiliary")
         goals = gateway_config.get("goals")
         kanban = gateway_config.get("kanban")
         canonical_brain = gateway_config.get("canonical_brain")
@@ -389,6 +392,13 @@ def build_semantic_config_contract(
                 "enabled": True,
                 "max_effort": contract["adaptive_effort"]["max_effort"],
             }
+            or not isinstance(auxiliary, Mapping)
+            or {
+                "approval",
+                "goal_judge",
+                "triage_specifier",
+                "kanban_decomposer",
+            }.intersection(auxiliary)
             or goals != {"max_turns": 0}
             or kanban
             != {

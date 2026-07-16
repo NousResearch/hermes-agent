@@ -126,3 +126,59 @@ class TestApprovalCommandWiring:
         from gateway.platforms import api_server
 
         self._assert_redacts_then_uses(api_server, "_approval_notify", "put_nowait")
+
+    def test_chat_platform_threads_manual_approval_capabilities_to_adapter(self):
+        """The gateway must preserve the mechanical permanent-choice flag."""
+        import ast
+        import inspect
+        import gateway.run as run
+
+        tree = ast.parse(inspect.getsource(run))
+        notify = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "_approval_notify_sync"
+        )
+        call = next(
+            node for node in ast.walk(notify)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "send_exec_approval"
+        )
+        keywords = {kw.arg: kw.value for kw in call.keywords}
+        value = keywords["allow_permanent"]
+        assert isinstance(value, ast.Call)
+        assert isinstance(value.func, ast.Attribute) and value.func.attr == "get"
+        assert isinstance(value.args[0], ast.Constant)
+        assert value.args[0].value == "allow_permanent"
+        assert isinstance(value.args[1], ast.Constant)
+        assert value.args[1].value is True
+        assert set(keywords) == {
+            "chat_id",
+            "command",
+            "session_key",
+            "description",
+            "metadata",
+            "allow_permanent",
+        }
+
+
+class TestApprovalTextFallbackContract:
+    def test_restricted_prompt_preserves_session_choice(self):
+        from gateway.run import _format_exec_approval_fallback
+
+        text = _format_exec_approval_fallback(
+            "curl https://example.test", "content warning", "!",
+            allow_permanent=False,
+        )
+        assert "`!approve session`" in text
+        assert "approve always" not in text
+
+    def test_manual_prompt_preserves_all_choices(self):
+        from gateway.run import _format_exec_approval_fallback
+
+        text = _format_exec_approval_fallback(
+            "rm -rf /", "dangerous deletion", "/",
+            allow_permanent=True,
+        )
+        assert "`/approve session`" in text
+        assert "`/approve always`" in text

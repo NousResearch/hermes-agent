@@ -234,10 +234,10 @@ export const BUILTIN_PERSONALITIES = [
 // backend schema only declares a string type.
 export const ENUM_OPTIONS: Record<string, string[]> = {
   'agent.image_input_mode': ['auto', 'native', 'text'],
-  'approvals.mode': ['manual', 'smart', 'off'],
+  'approvals.mode': ['manual', 'off'],
   'code_execution.mode': ['project', 'strict'],
   'context.engine': ['compressor', 'default', 'custom'],
-  'delegation.reasoning_effort': ['', 'minimal', 'low', 'medium', 'high', 'xhigh'],
+  'delegation.reasoning_effort': ['', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
   'memory.provider': ['', 'builtin', 'hindsight', 'honcho'],
   // Terminal execution backends — kept in sync with the dispatch ladder in
   // tools/terminal_tool.py::_create_environment (local/docker/singularity/

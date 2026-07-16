@@ -75,6 +75,16 @@ class TestCodexBuildKwargs:
         )
         assert kw.get("reasoning", {}).get("effort") == "high"
 
+    @pytest.mark.parametrize("effort, wire_effort", [("max", "max"), ("ultra", "max")])
+    def test_extended_reasoning_efforts_use_api_wire_value(self, transport, effort, wire_effort):
+        kw = transport.build_kwargs(
+            model="gpt-5.6-sol",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            reasoning_config={"enabled": True, "effort": effort},
+        )
+        assert kw.get("reasoning", {}).get("effort") == wire_effort
+
     def test_reasoning_disabled(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
@@ -414,6 +424,17 @@ class TestCodexBuildKwargs:
         # full history.
         assert "reasoning.encrypted_content" in kw.get("include", [])
 
+    @pytest.mark.parametrize("effort", ["xhigh", "max", "ultra"])
+    def test_xai_stronger_generic_efforts_clamp_to_high(self, transport, effort):
+        kw = transport.build_kwargs(
+            model="grok-4.3",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            is_xai_responses=True,
+            reasoning_config={"enabled": True, "effort": effort},
+        )
+        assert kw.get("reasoning") == {"effort": "high"}
+
     def test_xai_injects_native_web_search_when_client_web_search_present(self, transport):
         """xAI path swaps a client-side ``web_search`` function for xAI's
         native server-side ``web_search`` built-in so grok server-side search
@@ -663,6 +684,34 @@ class TestCodexValidateResponse:
         """validate_response is strict — output_text doesn't make it valid.
         The caller handles output_text fallback with diagnostic logging."""
         r = SimpleNamespace(output=None, output_text="Some text")
+        assert transport.validate_response(r) is False
+
+    def test_empty_output_content_filter_incomplete_is_valid(self, transport):
+        r = SimpleNamespace(
+            status="incomplete",
+            incomplete_details=SimpleNamespace(reason="content_filter"),
+            output=[],
+            output_text="",
+        )
+        assert transport.validate_response(r) is True
+
+    def test_empty_output_content_filter_dict_incomplete_is_valid(self, transport):
+        r = SimpleNamespace(
+            status=" incomplete ",
+            incomplete_details={"reason": " content_filter "},
+            output=[],
+            output_text="",
+        )
+        assert transport.validate_response(r) is True
+
+    @pytest.mark.parametrize("reason", ["max_output_tokens", "length", "", None])
+    def test_empty_output_other_incomplete_reasons_remain_invalid(self, transport, reason):
+        r = SimpleNamespace(
+            status="incomplete",
+            incomplete_details=SimpleNamespace(reason=reason),
+            output=[],
+            output_text="",
+        )
         assert transport.validate_response(r) is False
 
 

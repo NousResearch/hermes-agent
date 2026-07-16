@@ -735,7 +735,6 @@ $ hermes model
 [ ] web_extract          currently: auto / main model
 [ ] title_generation     currently: openrouter / google/gemini-3-flash-preview
 [ ] compression          currently: auto / main model
-[ ] approval             currently: auto / main model
 [ ] triage_specifier     currently: auto / main model
 [ ] kanban_decomposer    currently: auto / main model
 [ ] profile_describer    currently: auto / main model
@@ -802,14 +801,6 @@ auxiliary:
     api_key: ""
     timeout: 360               # 秒（6 分钟）—— 每次尝试的 LLM 摘要
 
-  # 危险命令审批分类器
-  approval:
-    provider: "auto"
-    model: ""
-    base_url: ""
-    api_key: ""
-    timeout: 30                # 秒
-
   # 上下文压缩超时（与 compression.* 配置分开）
   compression:
     timeout: 120               # 秒 —— 压缩摘要长对话，需要更多时间
@@ -851,7 +842,7 @@ auxiliary:
 ```
 
 :::tip
-每个辅助任务都有可配置的 `timeout`（秒）。默认值：vision 120s、web_extract 360s、approval 30s、compression 120s。如果您为辅助任务使用慢速本地模型，请增加这些值。Vision 还有单独的 `download_timeout`（默认 30s）用于 HTTP 图像下载 —— 对于慢速连接或自托管图像服务器，请增加此值。
+每个辅助任务都有可配置的 `timeout`（秒）。默认值包括 vision 120s、web_extract 360s 和 compression 120s。如果您为辅助任务使用慢速本地模型，请增加这些值。Vision 还有单独的 `download_timeout`（默认 30s）用于 HTTP 图像下载 —— 对于慢速连接或自托管图像服务器，请增加此值。
 :::
 
 :::info
@@ -884,7 +875,7 @@ auxiliary:
 | `model` | 该 provider 的模型名称 |
 | `base_url` | （可选）自定义 OpenAI 兼容端点 |
 
-`fallback_chain` 适用于任何辅助任务 —— `compression`、`vision`、`web_extract`、`approval`、`skills_hub`、`mcp` 等。
+`fallback_chain` 适用于任何辅助任务 —— `compression`、`vision`、`web_extract`、`skills_hub`、`mcp` 等。
 
 ### OpenRouter 路由和辅助任务的 Pareto Code
 
@@ -1044,13 +1035,13 @@ auxiliary:
 
 ```yaml
 agent:
-  reasoning_effort: ""   # 提供商默认值。选项：none、minimal、low、medium、high、xhigh、max
+  reasoning_effort: ""   # 提供商/模型默认值。选项：none、minimal、low、medium、high、xhigh、max、ultra
   adaptive_reasoning:
     enabled: true
-    max_effort: "xhigh"
+    max_effort: "max"
 ```
 
-未设置时，现有提供商保留其历史默认值（标准路径为 `medium`）。只有精确匹配的 GPT-5.6 Responses 路径使用模型门控的质量优先基线 `high`，不会改变其他模型的默认值。对于此路径，模型可以通过现有的 `todo` 工具为当前轮次中的后续调用请求更深的推理。Hermes 不在模型外部分类任务或选择推理等级；运行时代码只验证操作者设置的基线和上限。默认自适应上限是 `xhigh`，`max` 必须在生产后端验证并显式启用。自适应 Pro 模式在其精确端点契约完成 canary 验证之前不会传输。该请求在当前轮次结束时失效。
+未设置时，现有提供商保留其历史默认值（标准路径为 `medium`）。只有精确匹配的 GPT-5.6 Responses 路径使用模型门控的质量优先基线 `high`，不会改变其他模型的默认值。对于此路径，模型可以通过现有的 `todo` 工具为当前轮次中的后续调用请求更深的推理。Hermes 不在模型外部分类任务或选择推理等级；运行时代码只验证操作者设置的基线和上限。GPT-5.6 Sol 的默认自适应上限是 `max`；能力门控会在其他模型和传输路径中忽略此自适应设置。自适应 Pro 模式在其精确端点契约完成 canary 验证之前不会传输。该请求在当前轮次结束时失效。
 
 您也可以在运行时使用 `/reasoning` 命令更改推理努力程度：
 
@@ -1581,22 +1572,21 @@ security:
 
 策略缓存 30 秒，因此配置更改无需重启即可快速生效。
 
-## 智能审批
+## 危险命令审批
 
 控制 Hermes 如何处理潜在危险命令：
 
 ```yaml
 approvals:
-  mode: manual   # manual | smart | off
+  mode: manual   # manual | off
 ```
 
 | 模式 | 行为 |
 |------|----------|
 | `manual`（默认） | 在执行任何被标记的命令之前提示用户。在 CLI 中显示交互式审批对话框。在消息中排队待处理的审批请求。 |
-| `smart` | 使用辅助 LLM 评估被标记的命令是否真正危险。低风险命令以会话级持久性自动批准。真正有风险的命令升级给用户。 |
 | `off` | 跳过所有审批检查。等同于 `HERMES_YOLO_MODE=true`。**谨慎使用。** |
 
-智能模式对于减少审批疲劳特别有用 —— 它让 agent 在安全操作上更自主地工作，同时仍然捕获真正破坏性的命令。
+旧配置中的 `approvals.mode: smart` 会迁移为 `manual`。授权仍由用户作出，不会委托给辅助 LLM。
 
 :::warning
 设置 `approvals.mode: off` 会禁用终端命令的所有安全检查。仅在受信任的沙箱环境中使用。

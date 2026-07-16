@@ -197,7 +197,6 @@ The terminal tool integrates a dangerous-command approval system defined in `too
 3. **Approval prompt** — if a match is found:
    - **CLI mode** — an interactive prompt asks the user to approve, deny, or allow permanently
    - **Gateway mode** — an async approval callback sends the request to the messaging platform
-   - **Smart approval** — optionally, an auxiliary LLM can auto-approve low-risk commands that match patterns (e.g., `rm -rf node_modules/` is safe but matches "recursive delete")
 
 4. **Session state** — approvals are tracked per-session. Once you approve "recursive delete" for a session, subsequent `rm -rf` commands don't re-prompt.
 

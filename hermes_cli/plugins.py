@@ -39,6 +39,7 @@ import importlib.util
 import inspect
 import logging
 import os
+import re
 import sys
 import threading
 import types
@@ -172,8 +173,8 @@ VALID_HOOKS: Set[str] = {
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
-    # command needs user approval -- fires BOTH for CLI-interactive prompts
-    # and for gateway/ACP approvals (Telegram, Discord, Slack, TUI, etc.).
+    # command needs an approval decision -- fires for CLI-interactive prompts,
+    # and gateway/ACP owner approvals.
     # Observers only: return values are ignored. Plugins cannot veto or
     # pre-answer an approval from these hooks (use pre_tool_call to block
     # a tool before it reaches approval).
@@ -1059,7 +1060,7 @@ class PluginContext:
         """Register a plugin-defined auxiliary LLM task.
 
         Auxiliary tasks are LLM-backed side jobs (vision analysis, web extraction,
-        compression, smart-approval, etc.) that route through ``auxiliary_client.py``.
+        compression, etc.) that route through ``auxiliary_client.py``.
         Each task has its own ``auxiliary.<key>`` config block where users can
         pin a provider/model independent of the main chat model.
 
@@ -1105,20 +1106,25 @@ class PluginContext:
                 f"Plugin '{self.manifest.name}' tried to register auxiliary task "
                 f"with invalid key {key!r}"
             )
-        if not all(c.isalnum() or c == "_" for c in key):
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", key):
             raise ValueError(
                 f"Plugin '{self.manifest.name}' auxiliary task key {key!r} "
-                f"must contain only alphanumeric characters and underscores"
+                "must be ASCII lowercase snake_case"
             )
 
         # Lazy import to avoid circular: hermes_cli.main imports plugins indirectly
         from hermes_cli.main import _AUX_TASKS as _BUILTIN_AUX_TASKS
 
         builtin_keys = {k for k, _name, _desc in _BUILTIN_AUX_TASKS}
-        if key in builtin_keys:
+        # ``approval`` is deliberately not an auxiliary model task: owner
+        # authorization is a deterministic authority boundary.  Keep the
+        # legacy name reserved so a plugin cannot recreate a model-authored
+        # approval path under the old configuration key.
+        reserved_keys = builtin_keys | {"approval"}
+        if key in reserved_keys:
             raise ValueError(
                 f"Plugin '{self.manifest.name}' cannot register auxiliary task "
-                f"{key!r} — that key is reserved for a built-in task. "
+                f"{key!r} — that key is reserved by Hermes. "
                 f"Pick a plugin-namespaced key (e.g. '{self.manifest.name}_{key}')."
             )
 

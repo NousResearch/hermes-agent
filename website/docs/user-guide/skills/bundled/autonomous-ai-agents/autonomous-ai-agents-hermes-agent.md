@@ -286,7 +286,7 @@ The registry of record is `hermes_cli/commands.py` — every consumer
 /config              Show config (CLI)
 /model [name]        Show or change model
 /personality [name]  Set personality
-/reasoning [level]   Set reasoning (none|minimal|low|medium|high|xhigh|show|hide)
+/reasoning [level]   Set reasoning (none|minimal|low|medium|high|xhigh|max|ultra|show|hide)
 /verbose             Cycle: off → new → all → verbose
 /voice [on|off|tts]  Voice mode
 /yolo                Toggle approval bypass
@@ -492,16 +492,17 @@ hermes config set privacy.redact_pii false   # disable (default)
 
 ### Command approval prompts
 
-By default (`approvals.mode: manual`), Hermes prompts the user before running shell commands flagged as destructive (`rm -rf`, `git reset --hard`, etc.). The modes are:
+By default (`approvals.mode: manual`), Hermes asks the owner to approve shell commands flagged as destructive (`rm -rf`, `git reset --hard`, etc.). Authorization is never delegated to an auxiliary model. The modes are:
 
-- `manual` — always prompt (default)
-- `smart` — use an auxiliary LLM to auto-approve low-risk commands, prompt on high-risk
+- `manual` — always prompt the owner (default)
 - `off` — skip all approval prompts (equivalent to `--yolo`)
 
 ```bash
-hermes config set approvals.mode smart       # recommended middle ground
+hermes config set approvals.mode manual      # owner-driven approval (default)
 hermes config set approvals.mode off         # bypass everything (not recommended)
 ```
+
+Legacy `approvals.mode: smart` values are migrated to `manual`.
 
 Per-invocation bypass without changing config:
 - `hermes --yolo …`

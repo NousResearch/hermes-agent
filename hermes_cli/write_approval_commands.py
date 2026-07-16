@@ -23,7 +23,10 @@ from tools import write_approval as wa
 
 def _fmt_state(subsystem: str) -> str:
     on = wa.write_approval_enabled(subsystem)
-    return f"{subsystem}.write_approval = {'on' if on else 'off'}"
+    state = "on" if on else "off"
+    if on and subsystem == wa.MEMORY:
+        state += f" ({wa.write_approval_mode(subsystem)})"
+    return f"{subsystem}.write_approval = {state}"
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +145,9 @@ def _apply_one(subsystem: str, rec, memory_store):
     payload = rec.get("payload", {})
     try:
         if subsystem == wa.MEMORY:
+            if payload.get("provider"):
+                result = wa.apply_external_pending(payload)
+                return bool(result.get("success")), result.get("error", "")
             if memory_store is None:
                 return False, "memory store unavailable"
             from tools.memory_tool import apply_memory_pending

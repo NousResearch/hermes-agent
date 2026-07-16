@@ -218,6 +218,11 @@ class Mem0MemoryProvider(MemoryProvider):
         self._sync_lock = threading.Lock()
         self._prefetch_lock = threading.Lock()
         self._atexit_registered = False
+        try:
+            from tools.write_approval import register_external_pending_applier
+            register_external_pending_applier("mem0", self._apply_pending_write)
+        except Exception:
+            logger.debug("Could not register Mem0 pending-write applier", exc_info=True)
 
     @property
     def name(self) -> str:
@@ -510,6 +515,75 @@ class Mem0MemoryProvider(MemoryProvider):
             self._sync_thread = threading.Thread(target=_sync, daemon=True, name="mem0-sync")
             self._sync_thread.start()
 
+    def _write_gate(self, action: str, payload: Dict[str, Any], *, summary: str, detail: str = "") -> str | None:
+        """Scan and approval-gate all persistent Mem0 mutations."""
+        content = payload.get("content") or payload.get("text") or ""
+        if content:
+            try:
+                from tools.memory_tool import _scan_memory_content
+                scan_error = _scan_memory_content(content)
+            except Exception as exc:
+                logger.error("Mem0 content scan unavailable; blocking write: %s", exc)
+                scan_error = "Memory write blocked because the threat scanner was unavailable."
+            if scan_error:
+                return json.dumps({"error": scan_error, "stored": False}, ensure_ascii=False)
+
+        try:
+            from tools.write_approval import evaluate_gate, stage_write, current_origin
+            decision = evaluate_gate(
+                "memory", inline_summary=summary, inline_detail=detail or summary,
+            )
+            if decision.allow:
+                return None
+            if decision.blocked:
+                return json.dumps({"error": decision.message, "stored": False}, ensure_ascii=False)
+            pending = stage_write(
+                "memory",
+                {"provider": "mem0", "action": action, **payload},
+                summary=summary,
+                origin=current_origin(),
+            )
+            return json.dumps({
+                "result": decision.message,
+                "stored": False,
+                "pending_id": pending.get("id"),
+            }, ensure_ascii=False)
+        except Exception as exc:
+            logger.error("Mem0 write approval gate failed closed: %s", exc, exc_info=True)
+            return json.dumps({
+                "error": "Mem0 write blocked because the approval gate failed.",
+                "stored": False,
+            }, ensure_ascii=False)
+
+    def _apply_pending_write(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply a previously approved Mem0 mutation without re-staging it."""
+        if self._backend is None or self._is_breaker_open():
+            return {"success": False, "error": "Mem0 backend unavailable."}
+        action = payload.get("action")
+        try:
+            if action == "add":
+                result = self._backend.add(
+                    [{"role": "user", "content": payload.get("content", "")}],
+                    user_id=self._user_id,
+                    agent_id=self._agent_id,
+                    infer=False,
+                    metadata=self._write_metadata(),
+                )
+            elif action == "update":
+                result = self._backend.update(payload.get("memory_id", ""), payload.get("text", ""))
+            elif action == "delete":
+                result = self._backend.delete(payload.get("memory_id", ""))
+            else:
+                return {"success": False, "error": f"Unknown staged Mem0 action '{action}'."}
+            self._record_success()
+            return {"success": True, "result": result}
+        except Exception as exc:
+            self._record_failure()
+            return {
+                "success": False,
+                "error": self._format_error("Failed to apply approved Mem0 write", exc),
+            }
+
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [SEARCH_SCHEMA, ADD_SCHEMA, UPDATE_SCHEMA, DELETE_SCHEMA]
 
@@ -557,6 +631,12 @@ class Mem0MemoryProvider(MemoryProvider):
             content = args.get("content", "")
             if not content:
                 return tool_error("Missing required parameter: content")
+            gated = self._write_gate(
+                "add", {"content": content},
+                summary=f"Add Mem0 fact: {content}", detail=content,
+            )
+            if gated is not None:
+                return gated
             try:
                 result = self._backend.add(
                     [{"role": "user", "content": content}],
@@ -581,6 +661,12 @@ class Mem0MemoryProvider(MemoryProvider):
                 return tool_error("Missing required parameter: memory_id")
             if not text:
                 return tool_error("Missing required parameter: text")
+            gated = self._write_gate(
+                "update", {"memory_id": memory_id, "text": text},
+                summary=f"Update Mem0 memory {memory_id}", detail=text,
+            )
+            if gated is not None:
+                return gated
             try:
                 result = self._backend.update(memory_id, text)
                 self._record_success()
@@ -595,6 +681,12 @@ class Mem0MemoryProvider(MemoryProvider):
             memory_id = args.get("memory_id", "")
             if not memory_id:
                 return tool_error("Missing required parameter: memory_id")
+            gated = self._write_gate(
+                "delete", {"memory_id": memory_id},
+                summary=f"Delete Mem0 memory {memory_id}", detail=memory_id,
+            )
+            if gated is not None:
+                return gated
             try:
                 result = self._backend.delete(memory_id)
                 self._record_success()

@@ -216,6 +216,7 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
   write_approval: false     # false = write freely (default) | true = require approval
+  write_approval_mode: manual  # manual (default) | smart
 ```
 
 ## Controlling memory writes (`write_approval`)
@@ -244,6 +245,26 @@ Review staged writes from the CLI or any messaging platform:
 This is the answer to "the agent saved a wrong assumption about me": set
 `write_approval: true`, and every save — especially the unprompted background
 ones — waits for your yes/no before it ever enters your profile.
+
+### Smart memory approval
+
+To let the auxiliary approval model decide clear cases while retaining a
+fail-closed human fallback:
+
+```yaml
+memory:
+  write_approval: true
+  write_approval_mode: smart
+```
+
+The smart judge approves only clear durable preferences, corrections, stable
+environment facts, and reusable conventions. It denies clearly unsuitable
+content such as transient task state, secrets, instructions, and raw dumps.
+Uncertainty, malformed model output, timeout, or provider failure stages the
+write under `/memory pending`; it never silently approves on failure. The
+normal memory threat scanner still runs before the judge. The configured
+`auxiliary.approval` model is used, and the same policy covers built-in memory
+and external providers that use Hermes' shared write gate, including Mem0.
 
 ## Background review notifications (`display.memory_notifications`)
 

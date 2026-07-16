@@ -109,6 +109,29 @@ class TestMem0V3Tools:
         result = json.loads(provider.handle_tool_call("mem0_add", {}))
         assert "error" in result
 
+    @pytest.mark.parametrize(
+        ("verdict", "backend_calls", "result_key"),
+        [("approve", 1, "event_id"), ("deny", 0, "error"), ("escalate", 0, "pending_id")],
+    )
+    def test_add_uses_shared_smart_memory_gate(
+        self, monkeypatch, tmp_path, verdict, backend_calls, result_key
+    ):
+        from tools import write_approval as wa
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(wa, "write_approval_enabled", lambda subsystem: subsystem == wa.MEMORY)
+        monkeypatch.setattr(wa, "write_approval_mode", lambda subsystem: "smart")
+        monkeypatch.setattr(wa, "_smart_judge_memory_write", lambda *_: verdict)
+
+        backend = FakeBackend()
+        provider = self._make_provider(monkeypatch, backend)
+        result = json.loads(provider.handle_tool_call(
+            "mem0_add", {"content": "User prefers concise replies"}
+        ))
+
+        assert len(backend.captured) == backend_calls
+        assert result_key in result
+
     def test_old_tool_names_return_unknown(self, monkeypatch):
         backend = FakeBackend()
         provider = self._make_provider(monkeypatch, backend)

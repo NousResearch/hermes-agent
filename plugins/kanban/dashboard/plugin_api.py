@@ -810,6 +810,16 @@ class UpdateTaskBody(BaseModel):
     body: Optional[str] = None
     result: Optional[str] = None
     block_reason: Optional[str] = None
+    # Typed block reason (one of kanban_db.VALID_BLOCK_KINDS) forwarded to
+    # block_task when status transitions to 'blocked'.
+    block_kind: Optional[str] = None
+    # Optional typed protected-merge-verifier evidence recorded at block
+    # time — the block-side twin of ``intent`` below. Must be a structured
+    # object (pydantic rejects non-object JSON with a 422); free-text
+    # claims are never parsed. Only accepted with status='blocked' and
+    # block_kind='needs_input', and validated exclusively through
+    # kanban_db.parse_protected_merge_verifier_evidence.
+    block_evidence: Optional[dict] = None
     # Structured handoff fields — forwarded to complete_task when status
     # transitions to 'done'. Dashboard parity with ``hermes kanban
     # complete --summary ... --metadata ...``.
@@ -834,6 +844,43 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
         if task is None:
             raise HTTPException(status_code=404, detail=f"task {task_id} not found")
 
+        # --- typed block fields: validate BEFORE any write ----------------
+        # A malformed block_kind/block_evidence must reject the WHOLE
+        # request (including an assignee change riding along) with no
+        # mutation — never silently dropped.
+        if (
+            payload.block_kind is not None
+            and payload.block_kind not in kanban_db.VALID_BLOCK_KINDS
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"unknown block_kind {payload.block_kind!r}; must be one "
+                    f"of {sorted(kanban_db.VALID_BLOCK_KINDS)}"
+                ),
+            )
+        parsed_evidence = None
+        if payload.block_evidence is not None:
+            if payload.status != "blocked":
+                raise HTTPException(
+                    status_code=400,
+                    detail="block_evidence is only accepted with status='blocked'",
+                )
+            if payload.block_kind != "needs_input":
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "block_evidence is protected-merge verifier material "
+                        "and requires block_kind='needs_input'"
+                    ),
+                )
+            try:
+                parsed_evidence = kanban_db.parse_protected_merge_verifier_evidence(
+                    payload.block_evidence
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=f"block_evidence: {e}")
+
         # --- assignee ----------------------------------------------------
         if payload.assignee is not None:
             try:
@@ -857,7 +904,15 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     metadata=payload.metadata,
                 )
             elif s == "blocked":
-                ok = kanban_db.block_task(conn, task_id, reason=payload.block_reason)
+                ok = kanban_db.block_task(
+                    conn, task_id,
+                    reason=payload.block_reason,
+                    kind=payload.block_kind,
+                    evidence=(
+                        parsed_evidence.to_block_evidence()
+                        if parsed_evidence is not None else None
+                    ),
+                )
             elif s == "scheduled":
                 ok = kanban_db.schedule_task(conn, task_id, reason=payload.block_reason)
             elif s == "ready":

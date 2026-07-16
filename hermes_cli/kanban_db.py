@@ -915,6 +915,13 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Verified-recovery contract for a verification-only dispatch. Set IN
+    # MEMORY by the dispatcher, atomically from the guard decision that
+    # consumed a protected-merge-verifier bypass token — never persisted to
+    # the tasks table and never inferred from comments after the fact.
+    # ``None`` (always, for ordinary tasks) = unrestricted normal worker;
+    # a dict = ``_default_spawn`` takes the verification-only path.
+    verification_contract: Optional[dict] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1274,6 +1281,27 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+-- Durable, fail-closed authorization channel for a future verifier result.
+-- Stage 1 only persists and transitions these records; it does not spawn a
+-- verifier or attach an OS transport. Older binaries ignore this additive
+-- table, so reverting this feature leaves pending rows inert and ordinary
+-- worker dispatch unchanged.
+CREATE TABLE IF NOT EXISTS verifier_result_authorizations (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id     TEXT NOT NULL,
+    run_id      INTEGER NOT NULL,
+    claim_lock  TEXT NOT NULL,
+    contract_id TEXT NOT NULL,
+    pr_url      TEXT NOT NULL,
+    nonce_digest TEXT NOT NULL,
+    state       TEXT NOT NULL,
+    reason_code TEXT NOT NULL,
+    created_at  INTEGER NOT NULL,
+    updated_at  INTEGER NOT NULL,
+    CHECK (state IN ('authorized', 'reserved', 'started', 'consumed',
+                    'applied', 'failed', 'reconciled'))
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
@@ -1284,6 +1312,11 @@ CREATE INDEX IF NOT EXISTS idx_runs_task             ON task_runs(task_id, start
 CREATE INDEX IF NOT EXISTS idx_runs_status           ON task_runs(status);
 CREATE INDEX IF NOT EXISTS idx_attachments_task      ON task_attachments(task_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_notify_task           ON kanban_notify_subs(task_id);
+CREATE INDEX IF NOT EXISTS idx_verifier_authorizations_run
+    ON verifier_result_authorizations(run_id, state);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_verifier_authorizations_one_active_contract
+    ON verifier_result_authorizations(task_id, contract_id)
+    WHERE state IN ('authorized', 'reserved', 'started', 'consumed');
 """
 
 
@@ -2365,6 +2398,185 @@ def write_txn(conn: sqlite3.Connection):
         # Post-commit file-length check: header page_count must match actual file pages.
         # A discrepancy means a torn-extend — raise now rather than silently corrupt.
         _check_file_length_invariant(conn)
+
+
+# ---------------------------------------------------------------------------
+# Durable verifier-result authorization channel
+# ---------------------------------------------------------------------------
+
+_VERIFIER_ACTIVE_STATES = frozenset({"authorized", "reserved", "started", "consumed"})
+_VERIFIER_TRANSITIONS = {
+    "reserve": ("authorized", "reserved"),
+    "start": ("reserved", "started"),
+    "consume": ("started", "consumed"),
+    "apply": ("consumed", "applied"),
+    "fail": ("authorized", "failed"),
+    "reconcile": ("reserved", "reconciled"),
+}
+
+
+@dataclass(frozen=True)
+class VerifierAuthorization:
+    """A verifier channel transition result with a non-secret reason code."""
+
+    id: int
+    state: str
+    reason: str
+
+
+def _nonce_digest(nonce: str) -> str:
+    return hashlib.sha256(nonce.encode("utf-8")).hexdigest()
+
+
+def _authorization_binding_reason(
+    conn: sqlite3.Connection,
+    row: sqlite3.Row,
+    *,
+    task_id: str,
+    run_id: int,
+    claim_lock: str,
+    contract_id: str,
+    pr_url: str,
+    nonce: str,
+) -> Optional[str]:
+    """Return a stable mismatch/staleness code without exposing the nonce."""
+    expected = {
+        "task_id": task_id,
+        "run_id": run_id,
+        "claim_lock": claim_lock,
+        "contract_id": contract_id,
+        "pr_url": pr_url,
+        "nonce_digest": _nonce_digest(nonce),
+    }
+    for field, value in expected.items():
+        if row[field] != value:
+            return f"binding_mismatch:{field.removesuffix('_digest')}"
+    run = conn.execute(
+        "SELECT status, claim_lock FROM task_runs WHERE id = ? AND task_id = ?",
+        (run_id, task_id),
+    ).fetchone()
+    if run is None or run["status"] != "running" or run["claim_lock"] != claim_lock:
+        return "stale_run"
+    task = conn.execute(
+        "SELECT current_run_id, claim_lock FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if task is None or task["current_run_id"] != run_id or task["claim_lock"] != claim_lock:
+        return "stale_claim"
+    return None
+
+
+def _authorization_result(row: sqlite3.Row, reason: str) -> VerifierAuthorization:
+    return VerifierAuthorization(id=int(row["id"]), state=row["state"], reason=reason)
+
+
+def authorize_verifier_result(
+    conn: sqlite3.Connection, *, task_id: str, run_id: int, claim_lock: str,
+    contract_id: str, pr_url: str, nonce: str,
+) -> VerifierAuthorization:
+    """Create one active authorization or return its idempotent outcome.
+
+    This is deliberately independent from process/transport code. The live
+    task/run claim is checked under the same write transaction as the insert;
+    a stale worker cannot mint an authorization after it loses its claim.
+    """
+    if not all(isinstance(value, str) and value for value in (task_id, claim_lock, contract_id, pr_url, nonce)):
+        raise ValueError("verifier authorization binding fields must be non-empty strings")
+    now = int(time.time())
+    with write_txn(conn):
+        task_row = conn.execute(
+            "SELECT current_run_id, claim_lock FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        run_row = conn.execute(
+            "SELECT status, claim_lock FROM task_runs WHERE id = ? AND task_id = ?",
+            (run_id, task_id),
+        ).fetchone()
+        if (
+            task_row is None or run_row is None or task_row["current_run_id"] != run_id
+            or task_row["claim_lock"] != claim_lock or run_row["status"] != "running"
+            or run_row["claim_lock"] != claim_lock
+        ):
+            return VerifierAuthorization(0, "denied", "stale_claim")
+        existing = conn.execute(
+            "SELECT * FROM verifier_result_authorizations WHERE task_id = ? AND contract_id = ? "
+            "AND state IN ('authorized', 'reserved', 'started', 'consumed')",
+            (task_id, contract_id),
+        ).fetchone()
+        if existing is not None:
+            exact = _authorization_binding_reason(
+                conn, existing, task_id=task_id, run_id=run_id, claim_lock=claim_lock,
+                contract_id=contract_id, pr_url=pr_url, nonce=nonce,
+            )
+            return _authorization_result(
+                existing, "idempotent_retry" if exact is None else "active_authorization_exists",
+            )
+        cursor = conn.execute(
+            "INSERT INTO verifier_result_authorizations "
+            "(task_id, run_id, claim_lock, contract_id, pr_url, nonce_digest, state, reason_code, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, 'authorized', 'authorized', ?, ?)",
+            (task_id, run_id, claim_lock, contract_id, pr_url, _nonce_digest(nonce), now, now),
+        )
+        authorization_id = cursor.lastrowid
+        assert authorization_id is not None
+        _append_event(conn, task_id, "verifier_authorization", {"authorization_id": authorization_id, "state": "authorized"}, run_id=run_id)
+        return VerifierAuthorization(int(authorization_id), "authorized", "authorized")
+
+
+def _transition_verifier_result(
+    conn: sqlite3.Connection, *, authorization_id: int, action: str, task_id: str,
+    run_id: int, claim_lock: str, contract_id: str, pr_url: str, nonce: str,
+) -> VerifierAuthorization:
+    expected_state, next_state = _VERIFIER_TRANSITIONS[action]
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT * FROM verifier_result_authorizations WHERE id = ?", (authorization_id,)
+        ).fetchone()
+        if row is None:
+            return VerifierAuthorization(authorization_id, "missing", "authorization_not_found")
+        mismatch = _authorization_binding_reason(
+            conn, row, task_id=task_id, run_id=run_id, claim_lock=claim_lock,
+            contract_id=contract_id, pr_url=pr_url, nonce=nonce,
+        )
+        if mismatch is not None:
+            return _authorization_result(row, mismatch)
+        if row["state"] == next_state:
+            return _authorization_result(row, "idempotent_retry")
+        if row["state"] in {"applied", "failed", "reconciled"}:
+            return _authorization_result(row, f"already_{row['state']}")
+        if row["state"] != expected_state:
+            return _authorization_result(row, f"invalid_transition:{row['state']}->{next_state}")
+        cursor = conn.execute(
+            "UPDATE verifier_result_authorizations SET state = ?, reason_code = ?, updated_at = ? "
+            "WHERE id = ? AND state = ?",
+            (next_state, action, int(time.time()), authorization_id, expected_state),
+        )
+        if cursor.rowcount != 1:
+            return _authorization_result(row, "compare_and_swap_failed")
+        _append_event(conn, task_id, "verifier_authorization", {"authorization_id": authorization_id, "state": next_state}, run_id=run_id)
+        return VerifierAuthorization(authorization_id, next_state, action)
+
+
+def reserve_verifier_result(conn: sqlite3.Connection, *, authorization_id: int, **binding: Any) -> VerifierAuthorization:
+    return _transition_verifier_result(conn, authorization_id=authorization_id, action="reserve", **binding)
+
+
+def start_verifier_result(conn: sqlite3.Connection, *, authorization_id: int, **binding: Any) -> VerifierAuthorization:
+    return _transition_verifier_result(conn, authorization_id=authorization_id, action="start", **binding)
+
+
+def consume_verifier_result(conn: sqlite3.Connection, *, authorization_id: int, **binding: Any) -> VerifierAuthorization:
+    return _transition_verifier_result(conn, authorization_id=authorization_id, action="consume", **binding)
+
+
+def apply_verifier_result(conn: sqlite3.Connection, *, authorization_id: int, **binding: Any) -> VerifierAuthorization:
+    return _transition_verifier_result(conn, authorization_id=authorization_id, action="apply", **binding)
+
+
+def fail_verifier_result(conn: sqlite3.Connection, *, authorization_id: int, **binding: Any) -> VerifierAuthorization:
+    return _transition_verifier_result(conn, authorization_id=authorization_id, action="fail", **binding)
+
+
+def reconcile_verifier_result(conn: sqlite3.Connection, *, authorization_id: int, **binding: Any) -> VerifierAuthorization:
+    return _transition_verifier_result(conn, authorization_id=authorization_id, action="reconcile", **binding)
 
 
 # ---------------------------------------------------------------------------
@@ -4913,8 +5125,16 @@ def block_task(
     so a later :func:`unblock_task` call carrying a
     :class:`ProtectedMergeVerifierIntent` can validate that the caller is
     unblocking against the SAME PR/head/base that actually triggered the
-    block, rather than trusting an unrelated approval. Ignored (not stored)
-    for the ``dependency`` and loop-detected/``triage`` routes.
+    block, rather than trusting an unrelated approval. It is therefore only
+    accepted with ``kind="needs_input"`` (the one kind the verifier bypass
+    validates against) — a non-dict / non-serializable ``evidence``, or one
+    supplied with any other kind, raises ``ValueError`` BEFORE any mutation.
+
+    Every block transition (including the ``dependency`` and
+    loop-detected/``triage`` routes) clears any previously stored
+    ``block_evidence``: evidence describes exactly one block, and letting it
+    survive an unrelated re-block would let a later verifier intent validate
+    against a block that was never about that PR.
 
     Every routing branch below also clears any pending ``guard_bypass``
     token. A bypass granted by a prior ``unblock_task(intent=...)`` call
@@ -4953,6 +5173,25 @@ def block_task(
         raise ValueError(
             f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
         )
+    # Validate evidence BEFORE opening the txn: a wrong-kind or malformed
+    # payload must never partially mutate the row it failed to qualify for.
+    evidence_json: Optional[str] = None
+    if evidence:
+        if kind != "needs_input":
+            raise ValueError(
+                "block evidence is protected-merge verifier material and is "
+                f"only supported with kind='needs_input'; got kind={kind!r}"
+            )
+        if not isinstance(evidence, dict):
+            raise ValueError(
+                f"block evidence must be a dict, got {type(evidence).__name__}"
+            )
+        try:
+            evidence_json = json.dumps(evidence, sort_keys=True)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"block evidence must be JSON-serializable: {exc}"
+            ) from exc
     routed_to = "blocked"
     recurrences = 0
     with write_txn(conn):
@@ -4983,6 +5222,7 @@ def block_task(
                        claim_expires = NULL,
                        worker_pid    = NULL,
                        block_kind    = ?,
+                       block_evidence = NULL,
                        guard_bypass  = NULL
                  WHERE id = ?
                    AND status IN ('running', 'ready')
@@ -5038,6 +5278,7 @@ def block_task(
                        worker_pid    = NULL,
                        block_kind    = ?,
                        block_recurrences = ?,
+                       block_evidence = NULL,
                        guard_bypass  = NULL
                  WHERE id = ?
                    AND status IN ('running', 'ready')
@@ -5068,6 +5309,9 @@ def block_task(
             )
             routed_to = "triage"
         else:
+            # block_evidence is REPLACED (new evidence or NULL) on every
+            # transition into the blocked bucket — stale evidence from an
+            # earlier block must never describe this one.
             if expected_run_id is None:
                 cur = conn.execute(
                     """
@@ -5078,11 +5322,12 @@ def block_task(
                            worker_pid    = NULL,
                            block_kind    = ?,
                            block_recurrences = ?,
+                           block_evidence = ?,
                            guard_bypass  = NULL
                      WHERE id = ?
                        AND status IN ('running', 'ready')
                     """,
-                    (kind, recurrences, task_id),
+                    (kind, recurrences, evidence_json, task_id),
                 )
             else:
                 cur = conn.execute(
@@ -5094,20 +5339,16 @@ def block_task(
                            worker_pid    = NULL,
                            block_kind    = ?,
                            block_recurrences = ?,
+                           block_evidence = ?,
                            guard_bypass  = NULL
                      WHERE id = ?
                        AND status IN ('running', 'ready')
                        AND current_run_id = ?
                     """,
-                    (kind, recurrences, task_id, int(expected_run_id)),
+                    (kind, recurrences, evidence_json, task_id, int(expected_run_id)),
                 )
             if cur.rowcount != 1:
                 return False
-            if evidence:
-                conn.execute(
-                    "UPDATE tasks SET block_evidence = ? WHERE id = ?",
-                    (json.dumps(evidence, sort_keys=True), task_id),
-                )
             run_id = _end_run(
                 conn, task_id,
                 outcome="blocked", status="blocked",
@@ -5326,6 +5567,84 @@ def parse_protected_merge_verifier_intent(
     )
 
 
+@dataclass(frozen=True)
+class ProtectedMergeVerifierEvidence:
+    """Typed block-time evidence for a protected-merge verification block.
+
+    The block-side twin of :class:`ProtectedMergeVerifierIntent`: where the
+    intent carries what a human APPROVED at unblock time, this carries what
+    the worker OBSERVED at block time — which PR, which head commit and base
+    branch the block is actually about. ``to_block_evidence`` emits the
+    exact ``{"pr_url", "head", "base"}`` dict :func:`block_task` stores and
+    :func:`_validate_merge_verifier_bypass` later matches an intent against.
+    """
+
+    pr_url: str
+    head: str
+    base: str
+    kind: str = "protected_merge_verifier"
+
+    def to_block_evidence(self) -> dict:
+        return {"pr_url": self.pr_url, "head": self.head, "base": self.base}
+
+
+_EVIDENCE_REQUIRED_FIELDS = ("pr_url", "head", "base")
+
+
+def parse_protected_merge_verifier_evidence(
+    data: Any,
+) -> "ProtectedMergeVerifierEvidence":
+    """Parse and validate an untrusted value into typed block evidence.
+
+    This is the ONLY supported way external surfaces (the CLI's
+    ``block --evidence``, the ``kanban_block`` tool's ``evidence`` input,
+    the dashboard's ``block_evidence`` PATCH field) may construct the
+    ``evidence`` payload forwarded to :func:`block_task` — always from a
+    structured JSON object carrying an explicit discriminator
+    (``"kind": "protected_merge_verifier"``, or omitted, which defaults to
+    it), never by parsing free text. Raises ``ValueError`` with an
+    actionable message on anything malformed; callers translate that into
+    their own surface-appropriate error response (CLI stderr + exit code,
+    tool_error JSON, HTTP 400) BEFORE any mutation.
+
+    Unlike the intent parser, unknown fields are rejected rather than
+    ignored: evidence is recorded verbatim on the task row and audited
+    later, so silently dropping (or silently storing) fields the contract
+    doesn't define would corrupt what the bypass validation is trusted to
+    compare — default deny.
+    """
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"block evidence must be a JSON object, got {type(data).__name__}"
+        )
+    kind = data.get("kind", "protected_merge_verifier")
+    if kind != "protected_merge_verifier":
+        raise ValueError(
+            f"unknown block evidence kind {kind!r}; only "
+            "'protected_merge_verifier' is supported"
+        )
+    unknown = sorted(set(data) - {"kind", *_EVIDENCE_REQUIRED_FIELDS})
+    if unknown:
+        raise ValueError(
+            f"block evidence has unsupported field(s): {', '.join(unknown)}; "
+            "supported fields are pr_url, head, base (and the optional "
+            "'kind' discriminator)"
+        )
+    missing = [
+        f for f in _EVIDENCE_REQUIRED_FIELDS
+        if not (isinstance(data.get(f), str) and data.get(f).strip())
+    ]
+    if missing:
+        raise ValueError(
+            f"block evidence missing required field(s): {', '.join(missing)}"
+        )
+    return ProtectedMergeVerifierEvidence(
+        pr_url=data["pr_url"].strip(),
+        head=data["head"].strip(),
+        base=data["base"].strip(),
+    )
+
+
 def _validate_merge_verifier_bypass(
     conn: sqlite3.Connection,
     task_id: str,
@@ -5391,6 +5710,42 @@ def _validate_merge_verifier_bypass(
     }
 
 
+def _canonical_pr_url(url: Any) -> Optional[str]:
+    """Canonical form for PR-URL equality checks, or ``None`` when ``url``
+    isn't a usable string.
+
+    GitHub hosts / owners / repos are case-insensitive and a trailing slash
+    is cosmetic, so lowercase + strip whitespace and trailing slashes. No
+    other normalization — anything beyond that is a DIFFERENT URL and must
+    compare unequal (default deny).
+    """
+    if not isinstance(url, str):
+        return None
+    canonical = url.strip().rstrip("/").lower()
+    return canonical or None
+
+
+def _bypass_payload_matches(
+    payload: Any, *, guard: str, pr_url: Optional[str]
+) -> bool:
+    """Shared predicate for :func:`_has_pending_guard_bypass` /
+    :func:`_consume_guard_bypass`: the stored token must name the same
+    ``guard`` AND, when ``pr_url`` is given, carry a verified contract whose
+    ``pr_url`` canonically equals it. A token whose contract targets a
+    different PR does NOT match — it stays pending for the PR it was
+    actually verified against.
+    """
+    if not isinstance(payload, dict) or payload.get("guard") != guard:
+        return False
+    if pr_url is None:
+        return True
+    contract = payload.get("contract")
+    if not isinstance(contract, dict):
+        return False
+    want = _canonical_pr_url(pr_url)
+    return want is not None and want == _canonical_pr_url(contract.get("pr_url"))
+
+
 def _grant_guard_bypass(
     conn: sqlite3.Connection, task_id: str, *, guard: str, contract: dict
 ) -> None:
@@ -5422,9 +5777,14 @@ def _grant_guard_bypass(
 
 
 def _has_pending_guard_bypass(
-    conn: sqlite3.Connection, task_id: str, *, guard: str
+    conn: sqlite3.Connection, task_id: str, *, guard: str,
+    pr_url: Optional[str] = None,
 ) -> bool:
     """Read-only check: is a pending, guard-matching bypass token present?
+
+    ``pr_url`` (when given) additionally requires the token's verified
+    contract to target that exact PR URL (canonical comparison) — a bypass
+    verified against one PR must not read as pending for a different one.
 
     Never mutates state -- safe to call from a dry-run preview. Used both
     as the cheap pre-check inside :func:`_consume_guard_bypass` (skip
@@ -5440,14 +5800,26 @@ def _has_pending_guard_bypass(
         payload = json.loads(row["guard_bypass"])
     except (TypeError, ValueError):
         return False
-    return isinstance(payload, dict) and payload.get("guard") == guard
+    return _bypass_payload_matches(payload, guard=guard, pr_url=pr_url)
 
 
 def _consume_guard_bypass(
-    conn: sqlite3.Connection, task_id: str, *, guard: str
-) -> bool:
+    conn: sqlite3.Connection, task_id: str, *, guard: str,
+    pr_url: Optional[str] = None,
+) -> Optional[dict]:
     """Consume a pending bypass for ``guard`` if one is pending; return
-    whether one was consumed.
+    the exact consumed payload, or ``None`` when nothing was consumed.
+
+    Returning the payload (not a bool) lets the consuming guard decision
+    carry the verified contract atomically into the dispatch that acts on
+    it — and lets a failed dispatch restore the token verbatim via
+    :func:`_restore_guard_bypass`.
+
+    ``pr_url`` (when given) is the URL extracted from the exact comment that
+    tripped the guard: the token is only consumed when its verified contract
+    ``pr_url`` canonically equals it. A mismatch consumes NOTHING — the
+    token stays pending for the PR it was actually verified against and the
+    caller falls back to the default, protective guard reason.
 
     Opens its own txn: unlike ``_grant_guard_bypass`` (called from within
     ``unblock_task``'s existing txn), this is called from
@@ -5466,25 +5838,48 @@ def _consume_guard_bypass(
     Callers that must not mutate state (dry-run previews) should call
     :func:`_has_pending_guard_bypass` instead -- never this function.
     """
-    if not _has_pending_guard_bypass(conn, task_id, guard=guard):
-        return False
+    if not _has_pending_guard_bypass(conn, task_id, guard=guard, pr_url=pr_url):
+        return None
     with write_txn(conn):
         row = conn.execute(
             "SELECT guard_bypass FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if row is None or not row["guard_bypass"]:
-            return False
+            return None
         try:
             payload = json.loads(row["guard_bypass"])
         except (TypeError, ValueError):
             payload = None
-        if not isinstance(payload, dict) or payload.get("guard") != guard:
-            return False
+        if not _bypass_payload_matches(payload, guard=guard, pr_url=pr_url):
+            return None
         conn.execute(
             "UPDATE tasks SET guard_bypass = NULL WHERE id = ?", (task_id,),
         )
         _append_event(conn, task_id, "guard_bypass_consumed", payload)
-    return True
+    return payload
+
+
+def _restore_guard_bypass(
+    conn: sqlite3.Connection, task_id: str, payload: dict,
+) -> None:
+    """Re-arm a bypass token consumed by a guard decision whose dispatch
+    never actually started a worker (claim race, workspace or spawn
+    failure).
+
+    Writes back the EXACT consumed payload and appends a
+    ``guard_bypass_restored`` audit event — the verified recovery is not
+    lost to a transient failure, and the re-armed token remains one-shot.
+    Restores only into an empty slot: a newer grant made in the window is
+    never clobbered (in that case the restore is a silent no-op).
+    """
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE tasks SET guard_bypass = ? "
+            "WHERE id = ? AND guard_bypass IS NULL",
+            (json.dumps(payload, sort_keys=True), task_id),
+        )
+        if cur.rowcount == 1:
+            _append_event(conn, task_id, "guard_bypass_restored", payload)
 
 
 def unblock_task(
@@ -7644,8 +8039,11 @@ def check_respawn_guard(
         ``active_pr`` is the default here with ONE exception: a pending,
         validated respawn-guard bypass (granted by ``unblock_task`` via a
         :class:`ProtectedMergeVerifierIntent` — see the module comment
-        above that class) is consumed right here and lifts the guard for
-        this single call only. Every other call, including the very next
+        above that class) whose verified contract ``pr_url`` canonically
+        equals the URL in the matched comment is consumed right here and
+        lifts the guard for this single call only. A bypass verified for a
+        DIFFERENT PR than the one the comment references neither lifts the
+        guard nor is consumed. Every other call, including the very next
         one after a subsequent claim/run, sees the unmodified ``active_pr``
         guard again.
 
@@ -7654,12 +8052,27 @@ def check_respawn_guard(
     reset the task to ``ready`` only after verifying the lock is
     genuinely dead (no live PID on this host).
     """
+    reason, _consumed = _check_respawn_guard(conn, task_id, dry_run=dry_run)
+    return reason
+
+
+def _check_respawn_guard(
+    conn: sqlite3.Connection, task_id: str, *, dry_run: bool = False,
+) -> tuple[Optional[str], Optional[dict]]:
+    """Body of :func:`check_respawn_guard`, returning ``(reason, consumed)``.
+
+    ``consumed`` is the exact guard-bypass payload this decision consumed
+    (``None`` in every other case, including dry runs). The dispatcher
+    needs it so the verified contract flows atomically from the consuming
+    guard decision into the claimed task, and so a claim/spawn failure can
+    restore the token verbatim via :func:`_restore_guard_bypass`.
+    """
     row = conn.execute(
         "SELECT last_failure_error FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
-        return None
+        return None, None
 
     now = int(time.time())
 
@@ -7688,21 +8101,21 @@ def check_respawn_guard(
             # Cooldown disabled — respawn immediately, and skip the
             # blocker_auth regex so the stamped rate-limit text doesn't
             # re-trap the task.
-            return None
+            return None, None
         ended_at = latest_run["ended_at"]
         if ended_at is not None and (now - int(ended_at)) < rl_cooldown:
-            return "rate_limit_cooldown"
+            return "rate_limit_cooldown", None
         # Cooldown elapsed — allow the respawn. Return early so the
         # blocker_auth check below doesn't catch the rate-limit text we
         # stamped on the task; this path intentionally retries forever
         # (cheaply, spaced by the cooldown) until quota returns or a real
         # crash/completion supersedes it.
-        return None
+        return None, None
 
     # 2. Quota / auth blocker: retrying immediately will not help.
     err = row["last_failure_error"]
     if err and _RESPAWN_BLOCKER_RE.search(err):
-        return "blocker_auth"
+        return "blocker_auth", None
 
     # 3. Completed run within guard window — proof of recent success.
     #    Exception: an explicit re-queue AFTER that success (an operator
@@ -7727,28 +8140,43 @@ def check_respawn_guard(
             (task_id, completed_at),
         ).fetchone()
         if not requeued_after:
-            return "recent_success"
+            return "recent_success", None
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
-    for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
-        (task_id, pr_cutoff),
-    ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            # A validated protected-merge-verifier bypass gets exactly one
-            # free pass here, then is gone — see the module comment above
-            # ProtectedMergeVerifierIntent. dry_run previews whether the
-            # bypass WOULD lift the guard without spending it.
-            if dry_run:
-                if _has_pending_guard_bypass(conn, task_id, guard="active_pr"):
-                    return None
-                return "active_pr"
-            if _consume_guard_bypass(conn, task_id, guard="active_pr"):
-                return None
-            return "active_pr"
+    matched_pr_urls = [
+        match.group(0)
+        for c in conn.execute(
+            "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+            (task_id, pr_cutoff),
+        ).fetchall()
+        if c["body"]
+        for match in [_RESPAWN_GUARD_PR_URL_RE.search(c["body"])]
+        if match is not None
+    ]
+    for matched_pr_url in matched_pr_urls:
+        # A validated protected-merge-verifier bypass gets exactly one
+        # free pass here, then is gone — see the module comment above
+        # ProtectedMergeVerifierIntent. The bypass only applies to the PR
+        # the human actually verified: its contract pr_url must canonically
+        # equal the URL in THIS matched comment. Any other PR is a mismatch
+        # — default deny, token left unconsumed for the PR it does cover.
+        # dry_run previews whether the bypass WOULD lift the guard without
+        # spending it.
+        if dry_run:
+            if _has_pending_guard_bypass(
+                conn, task_id, guard="active_pr", pr_url=matched_pr_url,
+            ):
+                return None, None
+            continue
+        consumed = _consume_guard_bypass(
+            conn, task_id, guard="active_pr", pr_url=matched_pr_url,
+        )
+        if consumed is not None:
+            return None, consumed
+        continue
 
-    return None
+    return ("active_pr", None) if matched_pr_urls else (None, None)
 
 
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
@@ -8107,7 +8535,9 @@ def _dispatch_once_locked(
         # still trips the auto-block circuit breaker after failure_limit
         # consecutive failures, so a persistent auth error eventually
         # blocks via the normal path rather than on first occurrence.
-        guard_reason = check_respawn_guard(conn, row["id"], dry_run=dry_run)
+        guard_reason, consumed_bypass = _check_respawn_guard(
+            conn, row["id"], dry_run=dry_run,
+        )
         if guard_reason is not None:
             result.respawn_guarded.append((row["id"], guard_reason))
             # Emit an event so operators can see why the task was
@@ -8154,7 +8584,18 @@ def _dispatch_once_locked(
             continue
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
+            # The guard decision above consumed the one-shot bypass, but no
+            # worker will start this tick — restore the exact token so the
+            # verified recovery isn't lost to a transient claim race.
+            if consumed_bypass is not None:
+                _restore_guard_bypass(conn, row["id"], consumed_bypass)
             continue
+        # Carry the verified contract atomically from the consuming guard
+        # decision into the claimed task: the spawn boundary branches on
+        # this typed signal (verification-only worker), never on a
+        # re-reading of comments after the fact.
+        if consumed_bypass is not None:
+            claimed.verification_contract = consumed_bypass.get("contract")
         try:
             resolved_branch_name = None
             if claimed.workspace_kind == "worktree":
@@ -8162,6 +8603,8 @@ def _dispatch_once_locked(
             else:
                 workspace = resolve_workspace(claimed, board=board)
         except Exception as exc:
+            if consumed_bypass is not None:
+                _restore_guard_bypass(conn, claimed.id, consumed_bypass)
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
                 failure_limit=failure_limit,
@@ -8207,6 +8650,11 @@ def _dispatch_once_locked(
                     _per_profile_running.get(claimed.assignee, 0) + 1
                 )
         except Exception as exc:
+            # The worker never started — restore the exact consumed
+            # one-shot bypass token so the verified recovery isn't lost
+            # to a spawn failure.
+            if consumed_bypass is not None:
+                _restore_guard_bypass(conn, claimed.id, consumed_bypass)
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),
                 failure_limit=failure_limit,
@@ -8667,6 +9115,34 @@ def _default_spawn(
     # what the tool reads — set it explicitly here so comments are
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
+
+    if task.verification_contract is not None:
+        # Verification-only worker: run against FRESH temporary kanban-DB
+        # isolation, never the real board pins set above. Fail closed —
+        # if the isolation root cannot be created, refuse to spawn a
+        # worker wired to the real board.
+        import tempfile
+        contract = task.verification_contract
+        try:
+            iso_home = tempfile.mkdtemp(prefix=f"hermes-kanban-verify-{task.id}-")
+        except OSError as exc:
+            raise RuntimeError(
+                "cannot establish fresh kanban-DB isolation for "
+                f"verification-only worker of task {task.id}: {exc}"
+            )
+        env["HERMES_KANBAN_HOME"] = iso_home
+        env["HERMES_KANBAN_DB"] = str(Path(iso_home) / "kanban.db")
+        env["HERMES_KANBAN_WORKSPACES_ROOT"] = str(Path(iso_home) / "workspaces")
+        env["HERMES_KANBAN_VERIFY_ONLY"] = "1"
+        env["HERMES_KANBAN_VERIFY_PR_URL"] = str(contract.get("pr_url") or "")
+        env["HERMES_KANBAN_VERIFY_HEAD"] = str(contract.get("approved_head") or "")
+        env["HERMES_KANBAN_VERIFY_BASE"] = str(contract.get("approved_base") or "")
+        prompt = (
+            f"verification-only run for kanban task {task.id}: verify PR "
+            f"{contract.get('pr_url')} at approved head "
+            f"{contract.get('approved_head')} against base "
+            f"{contract.get('approved_base')}. Do not perform any other work."
+        )
 
     # A worker must NEVER boot the interactive TUI: an inherited HERMES_TUI=1
     # or a `display.interface: tui` in the profile's config would send the

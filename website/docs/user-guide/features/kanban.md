@@ -268,7 +268,7 @@ hermes kanban block    t_abc "need input" --ids t_def t_hij
 | `kanban_show` | Read the current task (title, body, prior attempts, parent handoffs, comments, full pre-formatted `worker_context`). Defaults to the env's task id. | — |
 | `kanban_list` | List task summaries with filters for `assignee`, `status`, `tenant`, archived visibility, and limit. Intended for orchestrators discovering board work. | — |
 | `kanban_complete` | Finish with `summary` + `metadata` structured handoff. | at least one of `summary` / `result` |
-| `kanban_block` | Stop work and route by why: `kind=dependency` (waits in `todo`, auto-resumes), `needs_input`/`capability`/`transient` (surface to a human). Repeated same-kind re-blocks auto-escalate to `triage`. | `reason` |
+| `kanban_block` | Stop work and route by why: `kind=dependency` (waits in `todo`, auto-resumes), `needs_input`/`capability`/`transient` (surface to a human). Repeated same-kind re-blocks auto-escalate to `triage`. With `kind=needs_input`, optional structured `block_evidence` records which PR/head/base a protected-merge verification block is about — see [Typed verifier recovery](#typed-verifier-recovery-protected_merge_verifier). | `reason` |
 | `kanban_heartbeat` | Signal liveness during long operations. Pure side-effect. | — |
 | `kanban_comment` | Append a durable note to the task thread. | `task_id`, `body` |
 | `kanban_create` | (Orchestrators) fan out into child tasks with an `assignee`, optional `parents`, `skills`, etc. | `title`, `assignee` |
@@ -568,7 +568,7 @@ All routes are mounted under `/api/plugins/kanban/` and protected by the dashboa
 | `GET` | `/board?tenant=<name>&include_archived=…` | Full board grouped by status column, plus tenants + assignees for filter dropdowns |
 | `GET` | `/tasks/:id` | Task + comments + events + links |
 | `POST` | `/tasks` | Create (wraps `kanban_db.create_task`, accepts `triage: bool` and `parents: [id, …]`) |
-| `PATCH` | `/tasks/:id` | Status / assignee / priority / title / body / result |
+| `PATCH` | `/tasks/:id` | Status / assignee / priority / title / body / result. Blocking accepts typed `block_kind` and (with `block_kind='needs_input'`) structured `block_evidence`; malformed values 400 with no mutation |
 | `POST` | `/tasks/bulk` | Apply the same patch (status / archive / assignee / priority) to every id in `ids`. Per-id failures reported without aborting siblings |
 | `POST` | `/tasks/:id/comments` | Append a comment |
 | `POST` | `/tasks/:id/specify` | Run the triage specifier — auxiliary LLM fleshes out the task body and promotes it from `triage` to `todo`. Returns `{ok, task_id, reason, new_title}`; `ok=false` with a human-readable reason on "not in triage" / no aux client / LLM error is a 200, not a 4xx |
@@ -660,7 +660,8 @@ hermes kanban comment <id> "<text>" [--author NAME]
 
 # Bulk verbs — accept multiple ids:
 hermes kanban complete <id>... [--result "..."]
-hermes kanban block <id> "<reason>" [--ids <id>...]
+hermes kanban block <id> "<reason>" [--ids <id>...] [--kind KIND]
+        [--evidence <JSON>]                            # single id + --kind needs_input only
 hermes kanban unblock <id>...
 hermes kanban archive <id>...
 
@@ -721,11 +722,37 @@ hermes kanban create "nightly backup audit" \
 
 The dispatcher refuses to re-spawn a ready task when it hit a quota/auth/429 error on the previous run (`blocker_auth`), or completed a run successfully within the guard window (`recent_success`), or a recent task comment links to a GitHub PR (`active_pr`). This prevents repeat worker storms on the same bug or task while a human catches up. See the `respawn_guarded` row in the [event reference](#event-reference).
 
-`active_pr` remains the default even after an ordinary unblock. The only exception is an explicit, one-shot recovery for a typed `protected_merge_verifier`: unblock a single blocked task with a structured `intent` containing `kind: "protected_merge_verifier"`, the immutable `pr_url`, `approved_head`, and `approved_base`, plus `readiness_evidence: {"ready": true}`. The kernel grants the exception only when those values exactly match evidence recorded for a prior `needs_input` block with a terminal blocked run. It never infers approval from a comment such as “merged”, never polls GitHub, and never merges, deploys, or changes a protected branch.
+`active_pr` remains the default even after an ordinary unblock. The only exception is the typed verifier recovery described next.
 
-The intent is consumed by the first matching `active_pr` guard check; later retries remain guarded unless a new human verification supplies a new typed intent. Malformed, unknown, incomplete, stale, or mismatched intents are rejected before an unblock mutates the task on the CLI, dashboard, and `kanban_unblock` tool surfaces. Existing boards migrate additively with no pending bypasses, so legacy tasks retain their previous guard behavior.
+### Typed verifier recovery (`protected_merge_verifier`)
 
-Roll out this exception only for verified protected-merge tasks and watch `guard_bypass_granted`, `guard_bypass_consumed`, and `respawn_guarded` events. Repeated identical guard events are coalesced to avoid tick-level audit spam. To roll back, stop submitting typed intents; pending or legacy tasks continue under the normal `active_pr` guard without a destructive schema rollback.
+The full recovery flow has two halves — typed evidence recorded at **block** time, and a typed intent validated at **unblock** time — plus a verification-only re-dispatch. Everything is default-deny: free-text claims (a comment saying "merged") are never parsed, GitHub is never polled, and the kernel never merges, deploys, or changes a protected branch.
+
+**1. Record evidence when the worker blocks.** A protected-merge verification block records *which* PR/head/base it is about, as a structured object with the contract `{"kind": "protected_merge_verifier", "pr_url": ..., "head": ..., "base": ...}` (the `kind` discriminator is optional and defaults to `protected_merge_verifier`; all three fields are required non-empty strings; unknown fields are rejected). Evidence is only accepted with the `needs_input` block kind and on a single task — never a bulk block — and all three surfaces validate it through the same parser *before any mutation*:
+
+```bash
+# CLI (also /kanban block …)
+hermes kanban block t_abcd "awaiting human merge verification" \
+    --kind needs_input \
+    --evidence '{"kind":"protected_merge_verifier","pr_url":"https://github.com/o/r/pull/7","head":"abc123","base":"main"}'
+```
+
+- **Tool surface** — `kanban_block(reason=..., kind="needs_input", block_evidence={...})`.
+- **Dashboard** — `PATCH /api/plugins/kanban/tasks/:id` with `status="blocked"`, `block_kind="needs_input"`, and a structured `block_evidence` object. A malformed payload rejects the whole request (HTTP 400) with no mutation.
+
+Every transition into `blocked` replaces or clears any previously stored evidence — evidence describes exactly one block, so a later verifier intent can never validate against an unrelated earlier block.
+
+**2. Human verifies, then unblocks with a typed intent.** Unblock the single blocked task with a structured `intent` containing `kind: "protected_merge_verifier"`, the immutable `pr_url`, `approved_head`, and `approved_base`, plus `readiness_evidence: {"ready": true}`. The kernel grants a one-shot `active_pr` bypass token only when those values exactly match the evidence recorded for the prior `needs_input` block with a terminal blocked run. Malformed, unknown, incomplete, stale, or mismatched intents are rejected before the unblock mutates the task, on the CLI, dashboard, and `kanban_unblock` tool surfaces alike.
+
+**3. One-shot, exact-PR consumption.** The pending bypass is consumed only by an `active_pr` guard check whose matched comment references the *same* PR URL as the verified contract (canonical comparison: case, whitespace, and a trailing slash are cosmetic; anything else is a different URL). A comment referencing a different PR neither lifts the guard nor spends the token — it stays pending for the PR it was verified against. Once consumed, the very next guard check is back to default-deny; later retries need a fresh human verification.
+
+**4. Verification-only isolated dispatch.** The dispatch that consumes the bypass does **not** spawn an ordinary worker. The verified contract flows atomically from the guard decision into the spawn, which runs a verification-only worker in a fresh temporary kanban-DB isolation root (`HERMES_KANBAN_VERIFY_ONLY=1` plus the contract's PR URL / approved head / approved base in env) — never wired to the real board. If the isolation root can't be created, the spawn fails closed rather than starting a normal worker.
+
+**5. Failure rollback.** If the consuming dispatch never actually starts a worker — claim race, workspace mount failure, spawn failure — the exact consumed token is restored verbatim (audited as `guard_bypass_restored`), so a verified recovery isn't lost to a transient failure. The restored token is still one-shot, and the restore never clobbers a newer grant.
+
+**Compatibility and rollout.** No config keys, deployment steps, or restarts are involved — the feature is live as soon as the code ships. Existing boards migrate additively with no pending bypasses, so legacy tasks retain their previous `active_pr` guard behavior, and tasks blocked without evidence behave exactly as before.
+
+**Observability.** Watch `guard_bypass_granted`, `guard_bypass_consumed`, `guard_bypass_restored`, and `respawn_guarded` in the [event reference](#event-reference); repeated identical guard events are coalesced to avoid tick-level audit spam. **Rollback:** stop submitting typed evidence/intents (pending and legacy tasks continue under the normal `active_pr` guard), or revert the implementation — no destructive schema rollback is needed.
 
 ### Drag-to-delete and bulk delete (dashboard)
 
@@ -926,7 +953,8 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 | `block_loop_detected` | `{reason, kind, recurrences, limit}` | A task was unblocked and re-blocked for the same reason `BLOCK_RECURRENCE_LIMIT` times (default 2). Instead of landing in `blocked` again — where a cron would keep unblocking it — it routes to `triage` for a human decision, breaking the unblock↔re-block loop. |
 | `unblocked` | — | `blocked → ready` (or `todo` if parents are still open), either manually or via `/unblock`. Resets the dispatcher's `consecutive_failures` but deliberately preserves `block_recurrences` so the loop breaker keeps its memory. `run_id` is `NULL`. A typed protected-merge-verifier intent may separately record a one-shot bypass grant. |
 | `guard_bypass_granted` | `{guard, contract}` | A validated typed protected-merge-verifier unblock granted one future bypass of the named guard. The contract records immutable PR/head/base and readiness evidence; it does not verify, merge, deploy, or alter branches. |
-| `guard_bypass_consumed` | `{guard, contract}` | The matching guard consumed its pending one-shot bypass. A later guard check returns to normal default-deny behavior. |
+| `guard_bypass_consumed` | `{guard, contract}` | The matching guard consumed its pending one-shot bypass — only when the tripping comment references the contract's exact PR URL. A later guard check returns to normal default-deny behavior. |
+| `guard_bypass_restored` | `{guard, contract}` | A consumed bypass was re-armed verbatim because the dispatch that consumed it never started a worker (claim race, workspace or spawn failure). Still one-shot; never clobbers a newer grant. |
 | `archived` | — | Hidden from the default board. If the task was still running, carries the `run_id` of the run that was reclaimed as a side effect. |
 
 **Edits** (human-driven changes that aren't transitions):

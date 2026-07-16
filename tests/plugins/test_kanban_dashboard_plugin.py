@@ -8,6 +8,7 @@ REST surface without spinning up the whole dashboard.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -2662,3 +2663,251 @@ def test_dashboard_parent_notice_and_child_results_use_detail_links():
     assert "t.link_counts" not in detail
     assert "Child Results" in detail
     assert "props.data.child_results" in detail
+
+
+# ---------------------------------------------------------------------------
+# PATCH /tasks/:id status=blocked + block_kind/block_evidence — typed
+# protected-merge verifier evidence at block time (block-side twin of the
+# intent plumbing above; reuses merge_verifier_client)
+# ---------------------------------------------------------------------------
+
+def _valid_evidence_payload(**overrides) -> dict:
+    payload = {
+        "kind": "protected_merge_verifier",
+        "pr_url": _PR_URL,
+        "head": _HEAD_SHA,
+        "base": _BASE_BRANCH,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _seed_running_task(db_path, assignee="alice") -> str:
+    conn = kb.connect(db_path=db_path)
+    try:
+        tid = kb.create_task(conn, title="merge task", assignee=assignee)
+        kb.claim_task(conn, tid)
+        return tid
+    finally:
+        conn.close()
+
+
+def _stored_block_evidence(db_path, tid: str):
+    conn = kb.connect(db_path=db_path)
+    try:
+        return conn.execute(
+            "SELECT block_evidence FROM tasks WHERE id = ?", (tid,),
+        ).fetchone()["block_evidence"]
+    finally:
+        conn.close()
+
+
+def test_patch_block_with_valid_evidence_records_and_dispatches(merge_verifier_client):
+    """block_evidence forwarded through the PATCH surface must land in
+    block_evidence in the exact canonical shape a later PATCH status=ready
+    + intent validates a respawn-guard bypass against."""
+    client, db_path = merge_verifier_client
+    tid = _seed_running_task(db_path)
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{tid}",
+        json={
+            "status": "blocked",
+            "block_reason": "verify merge",
+            "block_kind": "needs_input",
+            "block_evidence": _valid_evidence_payload(),
+        },
+    )
+    assert r.status_code == 200
+    assert r.json()["task"]["status"] == "blocked"
+
+    assert json.loads(_stored_block_evidence(db_path, tid)) == {
+        "pr_url": _PR_URL, "head": _HEAD_SHA, "base": _BASE_BRANCH,
+    }
+
+    conn = kb.connect(db_path=db_path)
+    try:
+        kb.add_comment(conn, tid, "worker", f"Opened {_PR_URL}")
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+    finally:
+        conn.close()
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{tid}",
+        json={"status": "ready", "intent": _valid_intent_payload()},
+    )
+    assert r.status_code == 200
+    conn = kb.connect(db_path=db_path)
+    try:
+        assert kb.check_respawn_guard(conn, tid) is None  # bypass consumed
+    finally:
+        conn.close()
+
+
+def test_patch_block_without_evidence_preserves_default_behavior(merge_verifier_client):
+    """Default compatibility: PATCH status=blocked without the new fields
+    behaves exactly as before this feature existed."""
+    client, db_path = merge_verifier_client
+    tid = _seed_running_task(db_path)
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{tid}",
+        json={"status": "blocked", "block_reason": "need input"},
+    )
+    assert r.status_code == 200
+    assert r.json()["task"]["status"] == "blocked"
+    assert _stored_block_evidence(db_path, tid) is None
+
+
+@pytest.mark.parametrize("kind", ["capability", None], ids=["capability", "omitted"])
+def test_patch_block_evidence_requires_needs_input_kind(merge_verifier_client, kind):
+    client, db_path = merge_verifier_client
+    tid = _seed_running_task(db_path)
+
+    payload = {
+        "status": "blocked",
+        "block_reason": "x",
+        "block_evidence": _valid_evidence_payload(),
+    }
+    if kind is not None:
+        payload["block_kind"] = kind
+    r = client.patch(f"/api/plugins/kanban/tasks/{tid}", json=payload)
+    assert r.status_code == 400
+    assert "block_evidence" in r.json()["detail"].lower()
+
+    conn = kb.connect(db_path=db_path)
+    try:
+        assert kb.get_task(conn, tid).status == "running"  # unmutated
+    finally:
+        conn.close()
+    assert _stored_block_evidence(db_path, tid) is None
+
+
+def test_patch_block_unknown_block_kind_rejected(merge_verifier_client):
+    client, db_path = merge_verifier_client
+    tid = _seed_running_task(db_path)
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{tid}",
+        json={"status": "blocked", "block_kind": "not_a_real_kind"},
+    )
+    assert r.status_code == 400
+    conn = kb.connect(db_path=db_path)
+    try:
+        assert kb.get_task(conn, tid).status == "running"
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    "bad,expect",
+    [
+        pytest.param(f"PR {_PR_URL} approved, trust me", (400, 422),
+                     id="free-text"),
+        pytest.param({"kind": "not_a_real_kind", "pr_url": _PR_URL,
+                      "head": _HEAD_SHA, "base": _BASE_BRANCH}, (400,),
+                     id="unknown-kind"),
+        pytest.param({"pr_url": _PR_URL, "head": _HEAD_SHA}, (400,),
+                     id="missing-base"),
+        pytest.param(["pr_url", "head", "base"], (400, 422), id="json-array"),
+    ],
+)
+def test_patch_block_rejects_malformed_evidence_without_mutating(
+    merge_verifier_client, bad, expect,
+):
+    client, db_path = merge_verifier_client
+    tid = _seed_running_task(db_path)
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{tid}",
+        json={
+            "status": "blocked",
+            "block_reason": "x",
+            "block_kind": "needs_input",
+            "block_evidence": bad,
+        },
+    )
+    assert r.status_code in expect
+
+    conn = kb.connect(db_path=db_path)
+    try:
+        assert kb.get_task(conn, tid).status == "running"
+    finally:
+        conn.close()
+    assert _stored_block_evidence(db_path, tid) is None
+
+
+def test_patch_block_evidence_requires_blocked_status(merge_verifier_client):
+    """block_evidence rides ONLY on a status='blocked' transition — sending
+    it with any other (or no) status change is a caller bug and must be
+    rejected, not silently dropped."""
+    client, db_path = merge_verifier_client
+    tid = _seed_running_task(db_path)
+
+    for payload in (
+        {"block_kind": "needs_input", "block_evidence": _valid_evidence_payload()},
+        {"status": "todo", "block_kind": "needs_input",
+         "block_evidence": _valid_evidence_payload()},
+    ):
+        r = client.patch(f"/api/plugins/kanban/tasks/{tid}", json=payload)
+        assert r.status_code == 400
+        assert "block_evidence" in r.json()["detail"].lower()
+
+    conn = kb.connect(db_path=db_path)
+    try:
+        assert kb.get_task(conn, tid).status == "running"
+    finally:
+        conn.close()
+    assert _stored_block_evidence(db_path, tid) is None
+
+
+def test_patch_block_malformed_evidence_rejected_before_any_mutation(merge_verifier_client):
+    """A PATCH combining a legitimate field change (assignee) with malformed
+    evidence must reject the WHOLE request before mutating anything —
+    validation runs ahead of every write in the handler."""
+    client, db_path = merge_verifier_client
+    tid = _seed_running_task(db_path)
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{tid}",
+        json={
+            "assignee": "mallory",
+            "status": "blocked",
+            "block_kind": "needs_input",
+            "block_evidence": {"pr_url": _PR_URL, "head": _HEAD_SHA},
+        },
+    )
+    assert r.status_code == 400
+
+    conn = kb.connect(db_path=db_path)
+    try:
+        task = kb.get_task(conn, tid)
+        assert task.status == "running"
+        assert task.assignee == "alice"  # assignee write never happened
+    finally:
+        conn.close()
+
+
+def test_patch_block_evidence_respects_board_scope(merge_verifier_client):
+    """Board scoping (`?board=`) is validated before the evidence path can
+    touch anything — an unknown board 404s with no mutation."""
+    client, db_path = merge_verifier_client
+    tid = _seed_running_task(db_path)
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{tid}",
+        params={"board": "no-such-board"},
+        json={
+            "status": "blocked",
+            "block_kind": "needs_input",
+            "block_evidence": _valid_evidence_payload(),
+        },
+    )
+    assert r.status_code == 404
+
+    conn = kb.connect(db_path=db_path)
+    try:
+        assert kb.get_task(conn, tid).status == "running"
+    finally:
+        conn.close()
+    assert _stored_block_evidence(db_path, tid) is None

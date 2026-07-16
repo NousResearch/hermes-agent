@@ -688,6 +688,27 @@ def _handle_block(args: dict, **kw) -> str:
     reason = redact_sensitive_text(str(reason), force=True)
     kind = args.get("kind")
     board = args.get("board")
+    # Optional typed protected-merge-verifier evidence (block-side twin of
+    # kanban_unblock's `intent`). Validated through the ONE shared
+    # kanban_db parser -- never free-text parsed -- BEFORE connecting, so a
+    # malformed or mis-kinded payload fails fast without any mutation.
+    # Only kind='needs_input' blocks are what the verifier bypass later
+    # validates against, so evidence with any other kind is rejected here.
+    raw_evidence = args.get("block_evidence")
+    evidence = None
+    if raw_evidence is not None:
+        if kind != "needs_input":
+            return tool_error(
+                "kanban_block: block_evidence is only accepted with "
+                f"kind='needs_input' (got {kind!r})"
+            )
+        from hermes_cli import kanban_db as _kb
+        try:
+            evidence = _kb.parse_protected_merge_verifier_evidence(
+                raw_evidence
+            ).to_block_evidence()
+        except ValueError as e:
+            return tool_error(f"kanban_block: block_evidence: {e}")
     try:
         kb, conn = _connect(board=board)
         if kind is not None and kind not in kb.VALID_BLOCK_KINDS:
@@ -725,6 +746,7 @@ def _handle_block(args: dict, **kw) -> str:
                 reason=reason,
                 kind=kind,
                 expected_run_id=_worker_run_id(tid),
+                evidence=evidence,
             )
             if not ok:
                 return tool_error(
@@ -1566,6 +1588,31 @@ KANBAN_BLOCK_SCHEMA = {
                     "resumes automatically; the others surface to a human. "
                     "Omit only if none apply."
                 ),
+            },
+            "block_evidence": {
+                "type": "object",
+                "description": (
+                    "Optional typed protected-merge-verifier evidence "
+                    "recording WHICH PR/head/base this block is about, so a "
+                    "later kanban_unblock intent can be validated against "
+                    "it. Must be a structured object: "
+                    "{\"kind\": \"protected_merge_verifier\", \"pr_url\": "
+                    "..., \"head\": ..., \"base\": ...}. Free-text claims "
+                    "are never parsed or accepted — pass the structured "
+                    "object or omit this field entirely. Only accepted with "
+                    "kind='needs_input'; supplying it with any other kind "
+                    "is an error."
+                ),
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["protected_merge_verifier"],
+                    },
+                    "pr_url": {"type": "string"},
+                    "head": {"type": "string"},
+                    "base": {"type": "string"},
+                },
+                "required": ["pr_url", "head", "base"],
             },
             "board": _board_schema_prop(),
         },

@@ -41,7 +41,7 @@ automatically.
 
 ## Prerequisites
 
-- **Node.js 18.17 or newer** on PATH (`node --version`)
+- **Node.js 20 or newer** on PATH (`node --version`)
 - For managed cloud mode, a [Photon account][app] and a phone number that can
   receive iMessage
 - For local mode, a Mac signed in to Messages with Full Disk Access granted to
@@ -58,8 +58,13 @@ Apple ID and you want messages to send through that local Messages.app
 account instead of Photon's managed/shared line pool:
 
 ```bash
-PHOTON_IMESSAGE_MODE=local
 PHOTON_ALLOWED_USERS=+15551234567
+```
+
+```yaml
+# ~/.hermes/config.yaml
+photon:
+  imessage_mode: local
 ```
 
 Local mode uses Spectrum's open-source macOS Messages path
@@ -80,7 +85,7 @@ hermes photon install-sidecar
 hermes gateway start
 ```
 
-Cloud mode remains the default when `PHOTON_IMESSAGE_MODE` is unset.
+Cloud mode remains the default when `photon.imessage_mode` is unset.
 
 Either run the unified gateway wizard and pick **Photon iMessage**:
 
@@ -221,7 +226,7 @@ Common issues:
 - **`No iMessage line assigned yet`** — Spectrum is enabled but no line
   has been provisioned; re-run `hermes photon setup` or check the
   [dashboard][app].
-- **Sidecar won't start** — confirm `node --version` is 18.17+ and that
+- **Sidecar won't start** — confirm `node --version` is 20+ and that
   `hermes photon install-sidecar` completed without errors.
 
 ## Limits today
@@ -248,7 +253,6 @@ Common issues:
 | `PHOTON_SIDECAR_PORT`     | `8789`             | Loopback port for the sidecar control + inbound channel |
 | `PHOTON_SIDECAR_AUTOSTART`| `true`             | Whether the adapter spawns the sidecar     |
 | `PHOTON_NODE_BIN`         | `which node`       | Override the Node binary path              |
-| `PHOTON_IMESSAGE_MODE`    | `cloud`            | `cloud` for managed Photon, `local` for the open-source macOS Messages path |
 | `PHOTON_HOME_CHANNEL`     | (unset)            | Default space id for cron / notifications  |
 | `PHOTON_HOME_CHANNEL_NAME`| (unset)            | Human label for the home channel           |
 | `PHOTON_ALLOWED_USERS`    | (unset)            | Comma-separated E.164 allowlist            |
@@ -257,6 +261,12 @@ Common issues:
 | `PHOTON_MENTION_PATTERNS` | Hermes wake words  | JSON list / comma / newline regex patterns for group mentions |
 | `PHOTON_DASHBOARD_HOST`   | `app.photon.codes` | Override the dashboard / device-login host |
 | `PHOTON_SPECTRUM_HOST`    | `spectrum.photon.codes` | Override the Spectrum API host |
+
+## Config.yaml
+
+| Key                    | Default | Notes                                      |
+|------------------------|---------|--------------------------------------------|
+| `photon.imessage_mode` | `cloud` | `cloud` for managed Photon, `local` for the open-source macOS Messages path. The adapter bridges this to `PHOTON_IMESSAGE_MODE` only for the local sidecar process. |
 
 [photon]: https://photon.codes/
 [app]: https://app.photon.codes/

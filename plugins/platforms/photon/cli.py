@@ -369,7 +369,7 @@ def _install_sidecar() -> int:
     npm = shutil.which("npm") or "npm"
     if not shutil.which(npm):
         print(
-            "npm is not on PATH. Install Node.js 18+ (https://nodejs.org/) "
+            "npm is not on PATH. Install Node.js 20+ (https://nodejs.org/) "
             "and re-run.",
             file=sys.stderr,
         )

@@ -115,7 +115,6 @@ All env vars are documented in `plugin.yaml`. The most important:
 | `PHOTON_PROJECT_SECRET`   | from .env / auth.json      | Project secret                       |
 | `PHOTON_SIDECAR_PORT`     | 8789                       | Loopback port for the sidecar        |
 | `PHOTON_SIDECAR_AUTOSTART`| true                       | Spawn the sidecar on connect         |
-| `PHOTON_IMESSAGE_MODE`    | cloud                      | `cloud` for managed Photon, `local` for Spectrum's open-source macOS Messages path |
 | `PHOTON_DASHBOARD_HOST`   | https://app.photon.codes   | Dashboard API host                   |
 | `PHOTON_SPECTRUM_HOST`    | https://spectrum.photon.codes | Spectrum API host                 |
 | `PHOTON_HOME_CHANNEL`     | your number (set by setup) | Default space for cron delivery — a space id, or a bare E.164 number (resolved to a DM) |
@@ -125,6 +124,10 @@ All env vars are documented in `plugin.yaml`. The most important:
 | `PHOTON_TELEMETRY`        | false                      | Spectrum SDK telemetry — toggle with `hermes photon telemetry on\|off` (restart the gateway to apply) |
 | `PHOTON_MARKDOWN`         | true                       | Send agent replies as markdown (iMessage renders natively). `false` strips formatting to plain text |
 | `PHOTON_REACTIONS`        | false                      | Tapback 👀/👍/👎 as processing status; tapbacks on bot messages reach the agent as `reaction:added:<emoji>` |
+
+Behavioral settings live in `~/.hermes/config.yaml`. Set
+`photon.imessage_mode: local` to use Spectrum's open-source macOS Messages
+path; the adapter exports `PHOTON_IMESSAGE_MODE` only to the sidecar process.
 
 ## Attachments & limitations
 

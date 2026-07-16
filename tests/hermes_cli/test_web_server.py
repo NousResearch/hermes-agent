@@ -2038,6 +2038,23 @@ class TestWebServerEndpoints:
         assert resp.status_code == 400
         assert "cloud, local" in resp.json()["detail"]
 
+    def test_update_messaging_platform_saves_photon_mode_to_config(self):
+        from hermes_cli.config import load_config, load_env
+
+        resp = self.client.put(
+            "/api/messaging/platforms/photon",
+            json={"env": {"PHOTON_IMESSAGE_MODE": "local"}},
+        )
+
+        assert resp.status_code == 200
+        assert load_config()["photon"]["imessage_mode"] == "local"
+        assert "PHOTON_IMESSAGE_MODE" not in load_env()
+
+        status = self.client.get("/api/messaging/platforms").json()["platforms"]
+        photon = next(platform for platform in status if platform["id"] == "photon")
+        mode = next(field for field in photon["env_vars"] if field["key"] == "PHOTON_IMESSAGE_MODE")
+        assert mode["value"] == "local"
+
     def test_update_messaging_platform_saves_slack_allowed_users(self):
         from hermes_cli.config import load_env
 

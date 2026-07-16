@@ -37,6 +37,7 @@ requires_env:
       values: [cloud]
 optional_env:
   - name: PHOTON_IMESSAGE_MODE
+    config_key: photon.imessage_mode
     description: "Use managed Photon cloud delivery or this Mac's signed-in Messages account"
     prompt: "iMessage connection"
     password: false

@@ -168,6 +168,54 @@ def _imessage_mode(extra: Optional[dict] = None) -> str:
     return "cloud"
 
 
+def _apply_yaml_config(yaml_cfg: dict, photon_cfg: dict) -> Optional[dict]:
+    """Bridge Photon behavior settings from config.yaml into PlatformConfig.extra.
+
+    Runtime credentials still live in .env/auth.json, but the iMessage delivery
+    mode is behavioral configuration.  Support the concise top-level form:
+
+        photon:
+          imessage_mode: local
+
+    and the generic platform form:
+
+        platforms:
+          photon:
+            extra:
+              imessage_mode: local
+    """
+    candidates: list[Any] = []
+
+    if isinstance(photon_cfg, dict):
+        if "imessage_mode" in photon_cfg:
+            candidates.append(photon_cfg.get("imessage_mode"))
+        extra = photon_cfg.get("extra")
+        if isinstance(extra, dict) and "imessage_mode" in extra:
+            candidates.append(extra.get("imessage_mode"))
+
+    for section_name in ("gateway", "platforms"):
+        section = yaml_cfg.get(section_name)
+        platforms = section.get("platforms") if section_name == "gateway" and isinstance(section, dict) else section
+        if not isinstance(platforms, dict):
+            continue
+        nested = platforms.get("photon")
+        if not isinstance(nested, dict):
+            continue
+        if "imessage_mode" in nested:
+            candidates.append(nested.get("imessage_mode"))
+        extra = nested.get("extra")
+        if isinstance(extra, dict) and "imessage_mode" in extra:
+            candidates.append(extra.get("imessage_mode"))
+
+    if not candidates:
+        return None
+
+    # Top-level ``photon:`` is the most explicit user-facing shape and should
+    # win over nested fallback config when both are present.
+    mode = _imessage_mode({"imessage_mode": candidates[0]})
+    return {"imessage_mode": mode}
+
+
 def _env_enablement() -> Optional[dict]:
     """Seed PlatformConfig.extra from env so env-only setups appear in status.
 
@@ -1700,6 +1748,7 @@ def register(ctx) -> None:
         # channel — same unified onboarding wizard, no Photon-only detour.
         setup_fn=_cli.gateway_setup,
         env_enablement_fn=_env_enablement,
+        apply_yaml_config_fn=_apply_yaml_config,
         cron_deliver_env_var="PHOTON_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send,
         allowed_users_env="PHOTON_ALLOWED_USERS",

@@ -8105,6 +8105,7 @@ def _inject_platform_plugin_env_vars() -> None:
                     "default": meta.get("default"),
                     "options": meta.get("options") or [],
                     "visible_when": meta.get("visible_when"),
+                    "config_key": meta.get("config_key"),
                 }
     except Exception:
         pass

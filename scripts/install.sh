@@ -414,10 +414,12 @@ resolve_install_layout() {
         return 0
     fi
 
-    # Root on Linux: prefer FHS layout unless a legacy install already exists.
-    # macOS root installs keep the legacy layout because /usr/local/ on macOS
-    # is Homebrew territory and we don't want to fight that.
-    if [ "$OS" = "linux" ] && [ "$(id -u)" -eq 0 ]; then
+    # Root on Linux/FreeBSD: prefer FHS layout unless a legacy install already
+    # exists (/usr/local/lib is the conventional home for ports-installed
+    # software on FreeBSD too). macOS root installs keep the legacy layout
+    # because /usr/local/ on macOS is Homebrew territory and we don't want to
+    # fight that.
+    if { [ "$OS" = "linux" ] || [ "$OS" = "freebsd" ]; } && [ "$(id -u)" -eq 0 ]; then
         if [ -d "$HERMES_HOME/hermes-agent/.git" ]; then
             INSTALL_DIR="$HERMES_HOME/hermes-agent"
             log_info "Existing install detected at $INSTALL_DIR — keeping legacy layout"
@@ -433,7 +435,7 @@ resolve_install_layout() {
         # python.  See #21457.
         export UV_PYTHON_INSTALL_DIR="${UV_PYTHON_INSTALL_DIR:-/usr/local/share/uv/python}"
         export UV_PYTHON_BIN_DIR="${UV_PYTHON_BIN_DIR:-/usr/local/share/uv/bin}"
-        log_info "Root install on Linux — using FHS layout"
+        log_info "Root install on $OS — using FHS layout"
         log_info "  Code:    $INSTALL_DIR"
         log_info "  Command: /usr/local/bin/hermes"
         log_info "  Data:    $HERMES_HOME (unchanged)"
@@ -523,6 +525,11 @@ detect_os() {
             OS="macos"
             DISTRO="macos"
             ;;
+        FreeBSD*)
+            OS="freebsd"
+            DISTRO="freebsd"
+            DISTRO_VERSION=""
+            ;;
         CYGWIN*|MINGW*|MSYS*)
             OS="windows"
             DISTRO="windows"
@@ -561,6 +568,36 @@ install_uv() {
         UV_CMD="$_managed_uv"
         UV_VERSION=$($UV_CMD --version 2>/dev/null)
         log_success "Managed uv found ($UV_VERSION)"
+        return 0
+    fi
+
+    # FreeBSD: the astral.sh installer ships no FreeBSD binary, so satisfy the
+    # managed-uv contract by linking a system uv (pkg) into $HERMES_HOME/bin/uv
+    # instead of downloading one. hermes_cli/managed_uv.py mirrors this, so
+    # install.sh and `hermes update` still resolve the exact same path.
+    if [ "$OS" = "freebsd" ]; then
+        local _sys_uv
+        _sys_uv="$(command -v uv 2>/dev/null || true)"
+        if [ -z "$_sys_uv" ]; then
+            log_info "Installing uv via pkg..."
+            if [ "$(id -u)" -eq 0 ]; then
+                pkg install -y uv >/dev/null 2>&1 || true
+            elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+                sudo pkg install -y uv >/dev/null 2>&1 || true
+            fi
+            _sys_uv="$(command -v uv 2>/dev/null || true)"
+        fi
+        if [ -z "$_sys_uv" ]; then
+            log_error "Could not install uv on FreeBSD (astral.sh ships no FreeBSD binary)."
+            log_info "Install it, then re-run this installer:"
+            log_info "  sudo pkg install uv"
+            exit 1
+        fi
+        mkdir -p "$HERMES_HOME/bin"
+        ln -sf "$_sys_uv" "$_managed_uv"
+        UV_CMD="$_managed_uv"
+        UV_VERSION=$($UV_CMD --version 2>/dev/null)
+        log_success "Managed uv linked to system uv ($UV_VERSION)"
         return 0
     fi
 
@@ -645,7 +682,13 @@ check_python() {
         log_success "Python installed: $PYTHON_FOUND_VERSION"
     else
         log_error "Failed to install Python $PYTHON_VERSION"
-        log_info "Install Python $PYTHON_VERSION manually, then re-run this script"
+        if [ "$OS" = "freebsd" ]; then
+            # uv's python-build-standalone downloads have no FreeBSD builds —
+            # a system Python from pkg is the supported source.
+            log_info "  sudo pkg install python${PYTHON_VERSION//./}"
+        else
+            log_info "Install Python $PYTHON_VERSION manually, then re-run this script"
+        fi
         exit 1
     fi
 }
@@ -713,6 +756,16 @@ attempt_install_git() {
             command -v git >/dev/null 2>&1 && return 0
             return 1
             ;;
+        freebsd)
+            local sudo_cmd=""
+            if [ "$(id -u 2>/dev/null || echo 1000)" -ne 0 ]; then
+                command -v sudo >/dev/null 2>&1 && sudo_cmd="sudo"
+            fi
+            log_info "Installing Git via pkg..."
+            $sudo_cmd pkg install -y git >/dev/null 2>&1 || true
+            command -v git >/dev/null 2>&1 && return 0
+            return 1
+            ;;
     esac
     return 1
 }
@@ -768,6 +821,9 @@ check_git() {
             ;;
         android)
             log_info "  pkg install git"
+            ;;
+        freebsd)
+            log_info "  sudo pkg install git"
             ;;
         macos)
             log_info "  xcode-select --install"
@@ -837,6 +893,28 @@ install_node() {
             HAS_NODE=true
         else
             log_warn "Failed to install Node.js via pkg"
+            HAS_NODE=false
+        fi
+        return 0
+    fi
+
+    # FreeBSD: nodejs.org ships no FreeBSD tarballs — install from pkg instead.
+    # (Must come before the arch mapping below: FreeBSD's `uname -m` says
+    # "amd64", which the tarball path doesn't recognize.)
+    if [ "$OS" = "freebsd" ]; then
+        log_info "Installing Node.js via pkg..."
+        local _node_ok=false
+        if [ "$(id -u)" -eq 0 ]; then
+            pkg install -y node npm >/dev/null 2>&1 && _node_ok=true
+        elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+            sudo pkg install -y node npm >/dev/null 2>&1 && _node_ok=true
+        fi
+        if [ "$_node_ok" = true ] && command -v node >/dev/null 2>&1; then
+            log_success "Node.js $(node --version 2>/dev/null) installed via pkg"
+            HAS_NODE=true
+        else
+            log_warn "Could not auto-install Node.js on FreeBSD"
+            log_info "Install manually: sudo pkg install node npm"
             HAS_NODE=false
         fi
         return 0
@@ -1059,12 +1137,13 @@ install_system_packages() {
         return 0
     fi
 
-    # ── Linux: resolve package manager command ──
+    # ── Linux/FreeBSD: resolve package manager command ──
     local pkg_install=""
     case "$DISTRO" in
         ubuntu|debian) pkg_install="apt install -y"   ;;
         fedora)        pkg_install="dnf install -y"   ;;
         arch)          pkg_install="pacman -S --noconfirm" ;;
+        freebsd)       pkg_install="pkg install -y"   ;;
     esac
 
     if [ -n "$pkg_install" ]; then
@@ -1163,6 +1242,9 @@ show_manual_install_hint() {
             ;;
         android)
             log_info "  pkg install $pkg"
+            ;;
+        freebsd)
+            log_info "  sudo pkg install $pkg"
             ;;
         macos) log_info "  brew install $pkg" ;;
     esac
@@ -2213,6 +2295,12 @@ install_node_deps() {
                         log_warn "Playwright browser installation failed — install dependencies above and retry."
                     }
                     ;;
+                freebsd)
+                    log_warn "Playwright ships no FreeBSD browser builds — skipping bundled Chromium install."
+                    log_info "To enable browser tools, install Chromium from packages and point Hermes at it:"
+                    log_info "  sudo pkg install chromium"
+                    log_info "  export AGENT_BROWSER_EXECUTABLE_PATH=/usr/local/bin/chromium"
+                    ;;
                 *)
                     log_warn "Playwright does not support automatic dependency installation on $DISTRO."
                     log_info "Install Chromium/browser system dependencies for your distribution, then run:"
@@ -2513,6 +2601,10 @@ ensure_browser() {
                     ;;
                 fedora|rhel|centos)
                     log_info "Try: sudo dnf install -y chromium"
+                    ;;
+                freebsd)
+                    log_info "Try: sudo pkg install chromium"
+                    log_info "Then: export AGENT_BROWSER_EXECUTABLE_PATH=/usr/local/bin/chromium"
                     ;;
             esac
         }

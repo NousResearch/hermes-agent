@@ -58,6 +58,17 @@ If you already have Git installed, the installer detects it and uses that instea
 >
 > **Windows:** Native Windows is fully supported — the PowerShell one-liner above installs everything. If you'd rather use WSL2, the Linux command works there too. Native Windows install lives under `%LOCALAPPDATA%\hermes`; WSL2 installs under `~/.hermes` as on Linux.
 
+### FreeBSD (community port)
+
+FreeBSD is a community-maintained [Tier 2 platform](https://hermes-agent.nousresearch.com/docs/getting-started/platform-support#tier-2). Install `bash`, then run the standard installer — it detects FreeBSD and pulls all dependencies from `pkg`:
+
+```sh
+pkg install bash
+bash -c "$(curl -fsSL https://hermes-agent.nousresearch.com/install.sh)"
+```
+
+Authenticate with an API key (`hermes model`) rather than `claude setup-token` (a Linux/macOS binary), and enable browser tools by pointing `AGENT_BROWSER_EXECUTABLE_PATH` at a `pkg`-installed Chromium. Full details — rc.d service, browser setup, caveats — are in the [FreeBSD install guide](https://hermes-agent.nousresearch.com/docs/getting-started/installation#freebsd).
+
 After installation:
 
 ```bash

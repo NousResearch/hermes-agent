@@ -34,6 +34,7 @@ PRs will be accepted to fix issues with them, but they will take precedence belo
 | ------------------------------ | -------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | **Android (Termux)** (aarch64) | [`install.sh`](./installation.md#linux--macos--wsl2--android-termux) | A few features are [not available](./termux.md#known-limitations-on-phones). |
 | **Nix** (MacOS, Linux, NixOS)  | [`install.sh`](./nix-setup.md)                                       | Breaks often due to node.js packaging woes. Best of luck~! &lt;3             |
+| **FreeBSD** (amd64)            | [`install.sh`](./installation.md#freebsd)                            | Community port. Dependencies come from `pkg`. Browser tools (Playwright/Chromium) are not available — install `chromium` from packages and set `AGENT_BROWSER_EXECUTABLE_PATH` to enable them. |
 
 ## Unsupported
 

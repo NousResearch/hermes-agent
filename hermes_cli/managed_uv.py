@@ -210,6 +210,8 @@ def _install_uv(target: Path) -> None:
 
     if system == "Windows":
         _install_uv_windows(env)
+    elif system == "FreeBSD":
+        _install_uv_freebsd(target)
     else:
         _install_uv_posix(env)
 
@@ -236,6 +238,26 @@ def _install_uv_posix(env: dict[str, str]) -> None:
             os.unlink(installer_path)
         except OSError:
             pass
+
+
+def _install_uv_freebsd(target: Path) -> None:
+    """Link a system uv into the managed location.
+
+    The astral standalone installer ships no FreeBSD binaries, so the managed
+    contract (a working uv at ``$HERMES_HOME/bin/uv``) is satisfied by
+    symlinking a system uv — ``pkg install uv`` — into place instead of
+    downloading one. install.sh does the same on FreeBSD, so both bootstrap
+    paths resolve the identical binary.
+    """
+    system_uv = shutil.which("uv")
+    if not system_uv:
+        raise FileNotFoundError(
+            "No system uv found on FreeBSD (the astral.sh installer ships no "
+            "FreeBSD binary). Install it first: sudo pkg install uv"
+        )
+    if target.is_symlink() or target.exists():
+        target.unlink()
+    target.symlink_to(system_uv)
 
 
 def _install_uv_windows(env: dict[str, str]) -> None:

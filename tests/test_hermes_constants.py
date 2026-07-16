@@ -20,6 +20,7 @@ from hermes_constants import (
     hermes_managed_node_tree_present,
     iter_hermes_node_dirs,
     is_container,
+    is_freebsd,
     node_tool_runnable,
     parse_reasoning_effort,
     secure_parent_dir,
@@ -1170,3 +1171,18 @@ class TestWslPathTranslation:
         assert hermes_constants.translate_cwd_for_wsl_backend(r"\\wsl.localhost\Ubuntu\home\alex") == "/home/alex"
         # Already-POSIX paths pass through untouched.
         assert hermes_constants.translate_cwd_for_wsl_backend("/home/alex") == "/home/alex"
+
+
+class TestIsFreeBSD:
+    def test_true_on_versioned_platform_string(self, monkeypatch):
+        # sys.platform carries the build-time major version on FreeBSD
+        # ("freebsd13", "freebsd14", ...), so the check must be a prefix match.
+        import sys
+        monkeypatch.setattr(sys, "platform", "freebsd14")
+        assert is_freebsd() is True
+
+    def test_false_on_linux_and_darwin(self, monkeypatch):
+        import sys
+        for platform in ("linux", "darwin", "win32"):
+            monkeypatch.setattr(sys, "platform", platform)
+            assert is_freebsd() is False

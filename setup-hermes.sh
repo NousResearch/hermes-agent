@@ -291,6 +291,8 @@ else
                     sudo apt install -y ripgrep && INSTALLED=true
                 elif command -v dnf &> /dev/null; then
                     sudo dnf install -y ripgrep && INSTALLED=true
+                elif [ "$(uname -s)" = "FreeBSD" ] && command -v pkg &> /dev/null; then
+                    sudo pkg install -y ripgrep && INSTALLED=true
                 fi
             fi
 
@@ -315,6 +317,7 @@ else
             else
                 echo "    sudo apt install ripgrep     # Debian/Ubuntu"
                 echo "    brew install ripgrep         # macOS"
+                echo "    sudo pkg install ripgrep     # FreeBSD"
                 echo "    cargo install ripgrep        # With Rust (no sudo)"
             fi
             echo "    https://github.com/BurntSushi/ripgrep#installation"

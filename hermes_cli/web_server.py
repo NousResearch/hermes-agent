@@ -17205,8 +17205,8 @@ def _maybe_open_browser(
 ) -> None:
     """Open the dashboard URL in the user's browser if appropriate.
 
-    Skips on headless Linux (no ``DISPLAY`` / ``WAYLAND_DISPLAY``) to avoid
-    TUI browsers (links, lynx) that would SIGHUP the server process.
+    Skips on headless Linux/FreeBSD (no ``DISPLAY`` / ``WAYLAND_DISPLAY``) to
+    avoid TUI browsers (links, lynx) that would SIGHUP the server process.
     Maps ``0.0.0.0`` / ``::`` binds to ``127.0.0.1`` so the browser opens
     a reachable URL.
     """
@@ -17215,15 +17215,17 @@ def _maybe_open_browser(
 
     import webbrowser
 
+    from hermes_constants import is_freebsd
+
     _has_display = (
-        sys.platform != "linux"
+        not (sys.platform == "linux" or is_freebsd())
         or bool(os.environ.get("DISPLAY"))
         or bool(os.environ.get("WAYLAND_DISPLAY"))
     )
     if not _has_display:
         _log.debug(
             "Skipping browser-open: no DISPLAY or WAYLAND_DISPLAY detected "
-            "(headless Linux). Pass --no-open to suppress this detection."
+            "(headless Linux/FreeBSD). Pass --no-open to suppress this detection."
         )
         return
 

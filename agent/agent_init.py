@@ -1561,7 +1561,14 @@ def init_agent(
     agent._memory_nudge_interval = 10
     agent._turns_since_memory = 0
     agent._iters_since_skill = 0
-    if not skip_memory:
+    # A flush/background agent may pass skip_memory=True to avoid spinning up an
+    # external memory *provider*, but if the caller also explicitly enables the
+    # "memory" toolset it still needs the built-in file-backed store — otherwise
+    # the memory tool dispatches with store=None and every call fails (#65429).
+    # So the built-in store is created unless memory is globally disabled, while
+    # the external-provider block below stays gated on skip_memory.
+    _memory_toolset_requested = "memory" in (agent.enabled_toolsets or [])
+    if not skip_memory or _memory_toolset_requested:
         try:
             mem_config = _agent_cfg.get("memory", {})
             agent._memory_enabled = mem_config.get("memory_enabled", False)

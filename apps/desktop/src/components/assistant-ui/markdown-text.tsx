@@ -237,6 +237,10 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   const mediaPath = mediaPathFromMarkdownHref(href)
 
   if (mediaPath) {
+    const kind = mediaKind(mediaPath)
+    if (kind === 'image' || kind === 'video') {
+      return <SmartMedia src={mediaPath} />
+    }
     return <MediaAttachment path={mediaPath} />
   }
 

@@ -7,7 +7,7 @@ import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { mediaKind, mediaName, mediaStreamUrl } from '@/lib/media'
 
-export interface SmartMediaProps {
+export interface SmartMediaProps extends Omit<ComponentProps<'img'>, 'src' | 'alt' | 'className'> {
   src: string
   alt?: string
   className?: string
@@ -40,7 +40,7 @@ function ErrorFallback({ name, onRetry }: { name: string; onRetry: () => void })
   )
 }
 
-export function SmartMedia({ src, alt, className, containerClassName }: SmartMediaProps) {
+export function SmartMedia({ src, alt, className, containerClassName, ...imgProps }: SmartMediaProps) {
   const kind = mediaKind(src)
   const name = mediaName(src)
   const [loaded, setLoaded] = useState(false)
@@ -56,8 +56,17 @@ export function SmartMedia({ src, alt, className, containerClassName }: SmartMed
 
   const handleLoad = useCallback(() => setLoaded(true), [])
   const handleError = useCallback(() => setFailed(true), [])
+  const handleRetry = useCallback(() => { setFailed(false); setLoaded(false) }, [])
 
   if (isImage) {
+    if (failed) {
+      return (
+        <span className={cn('block', containerClassName)}>
+          <ErrorFallback name={name} onRetry={handleRetry} />
+        </span>
+      )
+    }
+
     return (
       <>
         <span className={cn('block', containerClassName)}>
@@ -73,6 +82,7 @@ export function SmartMedia({ src, alt, className, containerClassName }: SmartMed
             src={src}
             style={!loaded ? { opacity: 0 } : undefined}
             onClick={() => setLightboxOpen(true)}
+            {...imgProps}
           />
         </span>
         <Dialog open={lightboxOpen} onOpenChange={setLightboxOpen}>
@@ -93,7 +103,7 @@ export function SmartMedia({ src, alt, className, containerClassName }: SmartMed
       <span className={cn('my-3 block max-w-2xl rounded-xl border border-border bg-muted/35 p-3', containerClassName)}>
         {!loaded && !failed && <LoadingSpinner />}
         {failed ? (
-          <ErrorFallback name={name} onRetry={() => { setFailed(false); setLoaded(false) }} />
+          <ErrorFallback name={name} onRetry={handleRetry} />
         ) : (
           <video
             className="block max-h-112 w-full rounded-lg bg-black"

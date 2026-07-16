@@ -6,6 +6,7 @@ turns existing lifecycle state into one concise English status card.
 
 from __future__ import annotations
 
+from datetime import datetime
 import re
 import time
 from typing import Any, cast
@@ -121,6 +122,11 @@ def _compact_elapsed(age: int | None) -> str:
     if minutes:
         return f"{minutes}m" + (f" {seconds}s" if seconds else "")
     return f"{seconds}s"
+
+
+def _updated_at_line(now: int) -> str:
+    """Human-visible render time; makes a stalled status surface obvious."""
+    return f"🕒 Updated: {datetime.fromtimestamp(now).astimezone().strftime('%H:%M')}"
 
 
 def _first_timestamp(timeline: list[Any], kinds: set[str], fallback: Any = None) -> Any:
@@ -336,6 +342,7 @@ def render_kanban_status_card(
     metrics = _metrics(task, timeline, status, now, current_run)
     if metrics:
         lines.extend(("", *metrics))
+    lines.extend(("", _updated_at_line(now)))
     return "\n".join(lines)
 
 
@@ -442,7 +449,7 @@ def render_kanban_active_task_index(
     """
     now = int(time.time()) if now is None else int(now)
     if not items:
-        return "📌 Active tasks\n\n✅ No active tasks"
+        return "📌 Active tasks\n\n✅ No active tasks\n\n" + _updated_at_line(now)
     grouped: dict[str, list[tuple[int, int, str, str]]] = {}
     for item in items:
         board_name, task, timeline, parents = item[:4]
@@ -457,4 +464,4 @@ def render_kanban_active_task_index(
         count = len(board_items)
         task_word = "task" if count == 1 else "tasks"
         sections.append(f"📌 {board_name} · {count} {task_word}\n\n" + "\n\n".join(item[3] for item in board_items))
-    return "\n\n".join(sections)
+    return "\n\n".join((*sections, _updated_at_line(now)))

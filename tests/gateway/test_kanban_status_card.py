@@ -1,8 +1,12 @@
 from types import SimpleNamespace
+import re
 
 import pytest
 
-from gateway.kanban_status_card import render_kanban_status_card
+from gateway.kanban_status_card import (
+    render_kanban_active_task_index,
+    render_kanban_status_card,
+)
 from hermes_cli.kanban_db import CurrentRunProgress, Event
 from hermes_cli.kanban_status_timing import (
     format_elapsed_age,
@@ -68,6 +72,15 @@ def test_running_card_with_no_progress_uses_stale_progress_status_and_three_inde
     assert "🟢 under 15s · 🛠 unavailable · ⏱️ under 15s" in text
     assert "📍 Этап:" not in text
     assert "receipt" not in text
+    assert re.search(r"🕒 Updated: \d{2}:\d{2}$", text)
+
+
+def test_active_index_has_one_render_time_footer():
+    text = render_kanban_active_task_index(
+        [("Planner", _task(), [_event("claimed")], [])], now=1,
+    )
+    assert text.count("🕒 Updated:") == 1
+    assert re.search(r"🕒 Updated: \d{2}:\d{2}$", text)
 
 
 def test_running_card_uses_current_run_substantive_progress_clock():
@@ -137,7 +150,7 @@ def test_accepted_card_is_edited_to_reviewer_acceptance_not_terminal_ping():
 
     assert text == (
         "🗂 Internal notifier architecture cleanup · t_card\n\n✅ Accepted by reviewer\n\n"
-        "🧭 Now:\nReview complete.\n\n⏱ Completed in: 0m"
+        "🧭 Now:\nReview complete.\n\n⏱ Completed in: 0m\n\n🕒 Updated: 00:00"
     )
     assert "Готово — к твоему ревью" not in text
     assert "📍 Этап:" not in text

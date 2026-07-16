@@ -8,6 +8,7 @@ __pycache__/
 .venv
 .vscode/
 .env
+/.hermes-launcher/
 .op.env
 .env.local
 .env.development.local

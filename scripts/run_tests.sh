@@ -39,15 +39,24 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ── Activate venv ───────────────────────────────────────────────────────────
 VENV=""
-for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
+for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv"; do
   if [ -f "$candidate/bin/activate" ]; then
     VENV="$candidate"
     break
   fi
 done
 
+# Deprecated third fallback: shared venv at $HOME/.hermes/hermes-agent/venv.
+# This is update-boundary skew wearing a dev hat (§2.5.1). Removal is a
+# phase-5 sunset item; for now, warn and use it if nothing else is found.
+if [ -z "$VENV" ] && [ -f "$HOME/.hermes/hermes-agent/venv/bin/activate" ]; then
+  VENV="$HOME/.hermes/hermes-agent/venv"
+  echo "warn: using shared venv at $VENV (deprecated — run 'hermes dev sync' to create a per-checkout .venv)" >&2
+fi
+
 if [ -z "$VENV" ]; then
   echo "error: no virtualenv found in $REPO_ROOT/.venv or $REPO_ROOT/venv" >&2
+  echo "  fix: hermes dev sync    (creates a per-checkout .venv)" >&2
   exit 1
 fi
 

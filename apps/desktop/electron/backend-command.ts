@@ -12,6 +12,43 @@
 // These helpers are pure so they can be unit-tested without Electron.
 
 /**
+ * The two install shapes the desktop app can run against.
+ *
+ * - `'slot'` — a managed install under `$HERMES_HOME`. The stable launcher
+ *   (`$HERMES_HOME/bin/hermes`) resolves `current.txt` and the env, so the
+ *   backend is ALWAYS `hermes serve …` — no source sniffing or venv-path
+ *   assembly needed for the child.
+ * - `'checkout'` — a source tree (dev run or a git checkout install). The
+ *   runtime may predate `serve`, so we still sniff `sourceDeclaresServe` and
+ *   fall back to `dashboard --no-open` when needed.
+ */
+export type BackendInstallType = 'slot' | 'checkout'
+
+/**
+ * The resolved spawn configuration: whether to probe the runtime for `serve`
+ * support before launching, or trust it unconditionally.
+ */
+export interface BackendSpawnConfig {
+  /** When true, always use `serve` — skip the `sourceDeclaresServe` sniff. */
+  alwaysServe: boolean
+}
+
+/**
+ * Pure routing decision: given the install type, decide whether the backend
+ * spawn needs the legacy `serve`-support sniff (checkout) or can always
+ * launch `serve` directly (slot).
+ *
+ * Slot installs use the stable launcher which resolves `current.txt` and the
+ * venv — the child is always `hermes serve …`, so sniffing is unnecessary and
+ * the `dashboardFallbackArgs` rewrite never applies on this path. Checkout
+ * installs may still run an older runtime, so keep the sniff (legacy checkouts
+ * exist until sunset).
+ */
+export function routeBackendSpawn(installType: BackendInstallType): BackendSpawnConfig {
+  return { alwaysServe: installType === 'slot' }
+}
+
+/**
  * Build the canonical headless backend argv (always `serve`).
  * @param {string} [profile] optional Hermes profile to pin via `--profile`.
  */

@@ -38,6 +38,7 @@ jobs:
     outputs:
       python: ${{ steps.classify.outputs.python }}
       frontend: ${{ steps.classify.outputs.frontend }}
+      rust: ${{ steps.classify.outputs.rust }}
       site: ${{ steps.classify.outputs.site }}
       scan: ${{ steps.classify.outputs.scan }}
       deps: ${{ steps.classify.outputs.deps }}
@@ -77,6 +78,12 @@ jobs:
     needs: detect
     if: needs.detect.outputs.frontend == 'true'
     uses: ./.github/workflows/js-tests.yml
+
+  rust-tests:
+    name: Rust tests
+    needs: detect
+    if: needs.detect.outputs.rust == 'true'
+    uses: ./.github/workflows/rust-tests.yml
 
   docs-site:
     name: Docs Site
@@ -142,6 +149,7 @@ jobs:
       - tests
       - lint
       - js-tests
+      - rust-tests
       - docs-site
       - history-check
       - contributor-check

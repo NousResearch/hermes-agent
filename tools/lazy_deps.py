@@ -67,6 +67,7 @@ Adding a new backend:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -837,6 +838,10 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
             "(may require Python restart)"
         )
 
+    # Record this feature in the data-dir activation ledger so it survives
+    # venv replacement (hermes update swapping in a fresh slot).
+    record_feature(feature, via="ensure")
+
     logger.info("Lazy install complete for feature %r", feature)
 
 
@@ -968,3 +973,220 @@ def ensure_and_bind(
 
     target_globals.update(bindings)
     return True
+
+
+# =============================================================================
+# Data-dir activation ledger
+#
+# ``$HERMES_HOME/state/features.json`` persists which lazy features the user
+# has ever activated.  This survives venv replacement (``hermes update``
+# swapping in a fresh slot) so the new venv knows which backends to
+# re-install.  The ledger REPLACES the probe-based ``active_features()``
+# discovery for the update refresh path (see task 5.2); ``active_features()``
+# is kept for the one-time migration seed and backward compatibility.
+#
+# Schema (v1)::
+#
+#     {"schema": 1, "features": {
+#         "memory.honcho": {"activated_at": "2025-01-01T00:00:00", "via": "ensure"},
+#     }}
+# =============================================================================
+
+_LEDGER_SCHEMA_VERSION = 1
+_LEDGER_FILENAME = "features.json"
+_LEDGER_PENDING_FILENAME = "features.pending.json"
+_LEDGER_MIGRATION_VIA = "venv-probe-migration"
+
+
+def _hermes_home() -> Path:
+    """Return ``$HERMES_HOME`` as a Path (resolving via hermes_constants).
+
+    Falls back to ``os.environ`` if hermes_constants is unavailable (e.g.
+    during early bootstrap).
+    """
+    try:
+        from hermes_constants import get_hermes_home
+        return Path(get_hermes_home())
+    except Exception:
+        val = os.environ.get("HERMES_HOME", "").strip()
+        if val:
+            return Path(val)
+        return Path.home() / ".hermes"
+
+
+def _ledger_path() -> Path:
+    """Return the path to ``$HERMES_HOME/state/features.json``."""
+    return _hermes_home() / "state" / _LEDGER_FILENAME
+
+
+def _ledger_pending_path() -> Path:
+    """Return the path to ``$HERMES_HOME/state/features.pending.json``."""
+    return _hermes_home() / "state" / _LEDGER_PENDING_FILENAME
+
+
+def _read_ledger() -> dict:
+    """Read and return the ledger dict, or an empty-shaped dict if absent.
+
+    Never raises — a corrupt or missing file is treated as empty.
+    """
+    path = _ledger_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or "features" not in data:
+            return {"schema": _LEDGER_SCHEMA_VERSION, "features": {}}
+        return data
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {"schema": _LEDGER_SCHEMA_VERSION, "features": {}}
+
+
+def _write_ledger(data: dict) -> None:
+    """Atomically write the ledger dict to disk (tmp + replace)."""
+    path = _ledger_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(
+        json.dumps(data, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(tmp, path)
+
+
+def _seed_ledger_from_probe() -> list[str]:
+    """One-time migration: seed the ledger from the venv probe + pending file.
+
+    Called when ``features.json`` is absent.  Runs ``active_features()``
+    (the venv probe) and ``features.pending.json`` (written by phase-2
+    adopt), merges both into a new ledger, and returns the feature names.
+    """
+    features: dict[str, dict] = {}
+    now = _now_iso()
+
+    # 1. Venv probe
+    for feat in active_features():
+        features[feat] = {"activated_at": now, "via": _LEDGER_MIGRATION_VIA}
+
+    # 2. Pending file (written by phase-2 adopt)
+    pending_path = _ledger_pending_path()
+    if pending_path.exists():
+        try:
+            pending = json.loads(pending_path.read_text(encoding="utf-8"))
+            if isinstance(pending, dict):
+                for feat, entry in (pending.get("features") or {}).items():
+                    if isinstance(entry, dict):
+                        features[feat] = entry
+        except (json.JSONDecodeError, OSError):
+            pass
+        # Consume (remove) the pending file
+        try:
+            pending_path.unlink()
+        except OSError:
+            pass
+
+    data = {"schema": _LEDGER_SCHEMA_VERSION, "features": features}
+    _write_ledger(data)
+    return list(features.keys())
+
+
+def _now_iso() -> str:
+    """Return an ISO-8601 timestamp for the current UTC time."""
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
+def record_feature(name: str, via: str) -> None:
+    """Write or update a feature entry in the activation ledger.
+
+    ``name`` is the feature key (e.g. ``"memory.honcho"``).
+    ``via`` is a short string describing how it was activated
+    (e.g. ``"ensure"``, ``"manual"``, ``"venv-probe-migration"``).
+
+    The write is atomic (tmp file + ``os.replace``).  Never raises on I/O
+    errors — a failed ledger write is logged but does not block the caller.
+    """
+    try:
+        data = _read_ledger()
+        data["features"][name] = {"activated_at": _now_iso(), "via": via}
+        _write_ledger(data)
+    except Exception as e:
+        logger.debug("Failed to record feature %r in ledger: %s", name, e)
+
+
+def ledger_features() -> list[str]:
+    """Return the list of feature names recorded in the activation ledger.
+
+    On first call when the state file is absent, seeds the ledger from the
+    venv probe (``active_features()``) and ``features.pending.json``, then
+    returns the seeded names.  Subsequent calls just read the file.
+    """
+    path = _ledger_path()
+    if not path.exists():
+        return _seed_ledger_from_probe()
+    return list(_read_ledger().get("features", {}).keys())
+
+
+def remove_feature(name: str) -> None:
+    """Remove a feature from the activation ledger.
+
+    No-op if the feature is not present or the ledger doesn't exist.
+    """
+    path = _ledger_path()
+    if not path.exists():
+        return
+    try:
+        data = _read_ledger()
+        if name in data.get("features", {}):
+            del data["features"][name]
+            _write_ledger(data)
+    except Exception as e:
+        logger.debug("Failed to remove feature %r from ledger: %s", name, e)
+
+
+def apply_ledger(venv_python: str | None = None) -> dict[str, str]:
+    """Re-run ``ensure()`` for every feature in the activation ledger.
+
+    Returns a ``{feature: status}`` map mirroring
+    :func:`refresh_active_features`:
+        ``"current"``   — pins already satisfied, no install run
+        ``"refreshed"`` — pins were stale, reinstall succeeded
+        ``"failed: <reason>"`` — install attempt failed
+        ``"skipped: <reason>"`` — gated off (config, platform, etc.)
+
+    ``venv_python`` is accepted for API compatibility with the updater's
+    post-flip call (it may pass the new slot's Python path); the current
+    implementation runs ``ensure()`` against the active interpreter.
+
+    Never raises — install failures are recorded as ``"failed:"`` statuses
+    so an update flip is never blocked by an optional extra.
+    """
+    results: dict[str, str] = {}
+    for feature in ledger_features():
+        if feature not in LAZY_DEPS:
+            # Feature was removed from the allowlist since activation.
+            results[feature] = "skipped: feature removed from LAZY_DEPS"
+            continue
+
+        missing = feature_missing(feature)
+        if not missing:
+            results[feature] = "current"
+            continue
+
+        unsupported = _unsupported_feature_reason(feature)
+        if unsupported:
+            results[feature] = f"skipped: {unsupported}"
+            continue
+
+        try:
+            ensure(feature, prompt=False)
+            results[feature] = "refreshed"
+        except FeatureUnavailable as e:
+            if (
+                "lazy installs disabled" in str(e)
+                or "declined" in str(e)
+                or e.reason.startswith("unsupported ")
+            ):
+                results[feature] = f"skipped: {e.reason}"
+            else:
+                results[feature] = f"failed: {e.reason}"
+        except Exception as e:
+            results[feature] = f"failed: {e}"
+    return results

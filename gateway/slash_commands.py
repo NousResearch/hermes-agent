@@ -4558,6 +4558,11 @@ class GatewaySlashCommandsMixin:
         survives the gateway restart that ``hermes update`` may trigger. Marker
         files are written so either the current gateway process or the next one
         can notify the user when the update finishes.
+
+        Subcommand: ``/update adopt [--source <url>]`` spawns ``hermes adopt
+        --yes`` (with optional ``--source``) using the same detached-spawn
+        machinery. The adopt command switches a legacy checkout to managed
+        releases.
         """
         from gateway.run import _hermes_home, _resolve_hermes_bin
         import json
@@ -4565,6 +4570,23 @@ class GatewaySlashCommandsMixin:
         import subprocess
         from datetime import datetime
         from hermes_cli.config import is_managed, format_managed_message
+
+        # Parse subcommand: /update adopt [--source <url>]
+        raw_text = event.text.strip()
+        parts = raw_text.split(None, 2)  # ['/update', 'adopt', rest...]
+        is_adopt = len(parts) >= 2 and parts[1].lower() == "adopt"
+        adopt_source = None
+        if is_adopt and len(parts) >= 3:
+            rest = parts[2].strip()
+            if rest.startswith("--source"):
+                # Parse --source <url> or --source=<url>
+                rest_parts = rest.split(None, 1)
+                if len(rest_parts) >= 2:
+                    adopt_source = rest_parts[1].strip()
+                elif rest.startswith("--source="):
+                    adopt_source = rest.split("=", 1)[1].strip()
+            elif rest.startswith("--source="):
+                adopt_source = rest.split("=", 1)[1].strip()
 
         # Block non-messaging platforms (API server, webhooks, ACP)
         platform = event.source.platform
@@ -4592,9 +4614,19 @@ class GatewaySlashCommandsMixin:
         if not hermes_cmd:
             return t("gateway.update.hermes_cmd_not_found")
 
-        pending_path = _hermes_home / ".update_pending.json"
-        output_path = _hermes_home / ".update_output.txt"
-        exit_code_path = _hermes_home / ".update_exit_code"
+        # Choose the subcommand to spawn
+        if is_adopt:
+            subcmd_args = ["adopt", "--yes"]
+            if adopt_source:
+                subcmd_args += ["--source", adopt_source]
+            marker_prefix = ".adopt"
+        else:
+            subcmd_args = ["update", "--gateway"]
+            marker_prefix = ".update"
+
+        pending_path = _hermes_home / f"{marker_prefix}_pending.json"
+        output_path = _hermes_home / f"{marker_prefix}_output.txt"
+        exit_code_path = _hermes_home / f"{marker_prefix}_exit_code"
         session_key = self._session_key_for_source(event.source)
         pending = {
             "platform": event.source.platform.value,
@@ -4613,15 +4645,7 @@ class GatewaySlashCommandsMixin:
         _tmp_pending.replace(pending_path)
         exit_code_path.unlink(missing_ok=True)
 
-        # Spawn `hermes update --gateway` detached so it survives gateway restart.
-        # --gateway enables file-based IPC for interactive prompts (stash
-        # restore, config migration) so the gateway can forward them to the
-        # user instead of silently skipping them.
-        # Use setsid for portable session detach (works under system services
-        # where systemd-run --user fails due to missing D-Bus session).
-        # PYTHONUNBUFFERED ensures output is flushed line-by-line so the
-        # gateway can stream it to the messenger in near-real-time.
-        # Spawn `hermes update --gateway` detached so it survives gateway restart.
+        # Spawn detached so it survives gateway restart.
         # --gateway enables file-based IPC for interactive prompts (stash
         # restore, config migration) so the gateway can forward them to the
         # user instead of silently skipping them.
@@ -4630,13 +4654,13 @@ class GatewaySlashCommandsMixin:
         # PYTHONUNBUFFERED ensures output is flushed line-by-line so the
         # gateway can stream it to the messenger in near-real-time.
         #
-        # Windows: no bash/setsid chain.  Run `hermes update --gateway`
-        # directly via sys.executable; redirect stdout/stderr to the same
-        # output files via Popen file handles; write the exit code in a
-        # follow-up write.  A tiny Python watcher would be cleaner but
-        # we're already inside gateway/run.py's update path which is async,
-        # so the simplest correct thing is: launch an inline Python helper
-        # that runs the command and writes both outputs.
+        # Windows: no bash/setsid chain.  Run the command directly via
+        # sys.executable; redirect stdout/stderr to the same output files via
+        # Popen file handles; write the exit code in a follow-up write.  A tiny
+        # Python watcher would be cleaner but we're already inside
+        # gateway/run.py's update path which is async, so the simplest correct
+        # thing is: launch an inline Python helper that runs the command and
+        # writes both outputs.
         try:
             if sys.platform == "win32":
                 import textwrap
@@ -4663,7 +4687,7 @@ class GatewaySlashCommandsMixin:
                     [
                         sys.executable, "-c", helper,
                         str(output_path), str(exit_code_path),
-                        *hermes_cmd, "update", "--gateway",
+                        *hermes_cmd, *subcmd_args,
                     ],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
@@ -4671,20 +4695,21 @@ class GatewaySlashCommandsMixin:
                 )
             else:
                 hermes_cmd_str = " ".join(shlex.quote(part) for part in hermes_cmd)
-                update_cmd = (
-                    f"PYTHONUNBUFFERED=1 {hermes_cmd_str} update --gateway"
+                subcmd_str = " ".join(shlex.quote(part) for part in subcmd_args)
+                spawn_cmd = (
+                    f"PYTHONUNBUFFERED=1 {hermes_cmd_str} {subcmd_str}"
                     f" > {shlex.quote(str(output_path))} 2>&1; "
                     # Avoid `status=$?`: `status` is a read-only special parameter
                     # in zsh, and this command string is copied/reused in macOS/zsh
                     # operator wrappers. Keep the template zsh-safe even though this
                     # specific subprocess currently runs under bash.
-                    f"rc=$?; printf '%s' \"$rc\" > {shlex.quote(str(exit_code_path))}"
+                    f"rc=$?; printf '%s' \\\"$rc\\\" > {shlex.quote(str(exit_code_path))}"
                 )
                 setsid_bin = shutil.which("setsid")
                 if setsid_bin:
                     # Preferred: setsid creates a new session, fully detached
                     subprocess.Popen(
-                        [setsid_bin, "bash", "-c", update_cmd],
+                        [setsid_bin, "bash", "-c", spawn_cmd],
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                         start_new_session=True,
@@ -4692,7 +4717,7 @@ class GatewaySlashCommandsMixin:
                 else:
                     # Fallback: start_new_session=True calls os.setsid() in child
                     subprocess.Popen(
-                        ["bash", "-c", update_cmd],
+                        ["bash", "-c", spawn_cmd],
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                         start_new_session=True,
@@ -4703,4 +4728,6 @@ class GatewaySlashCommandsMixin:
             return t("gateway.update.start_failed", error=e)
 
         self._schedule_update_notification_watch()
+        if is_adopt:
+            return t("gateway.update.starting_adopt")
         return t("gateway.update.starting")

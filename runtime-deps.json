@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "python": {
+    "version": "3.11",
+    "source": "uv"
+  },
+  "node": {
+    "version": "22",
+    "floor": "^20.19 || >=22.12",
+    "floor_reason": "vite8 needs node:util.styleText"
+  },
+  "uv": {
+    "channel": "latest-stable"
+  },
+  "chromium": {
+    "source": "playwright",
+    "on_demand": true
+  },
+  "ffmpeg": {
+    "on_demand": true
+  },
+  "ripgrep": {
+    "bundled": true
+  }
+}

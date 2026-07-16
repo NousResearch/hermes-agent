@@ -73,4 +73,16 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         default=False,
         help="Windows: mutate the venv even while other processes are running from its interpreter (desktop backend, gateway, terminals). Those processes keep native .pyd files locked, so the dependency sync will likely fail partway and strand the install half-updated. Use only if you know the detected holders are false positives.",
     )
+    update_parser.add_argument(
+        "--in-place",
+        action="store_true",
+        default=False,
+        help="Force the legacy in-place update flow (autostash) instead of the worktree-based update. Use this when you want to update the current checkout directly rather than creating a new worktree.",
+    )
+    update_parser.add_argument(
+        "--no-adopt",
+        action="store_true",
+        default=False,
+        help="Skip auto-adopt to managed slots. By default, 'hermes update' on a pristine clean-main checkout switches you to bundled managed slots. Use --no-adopt to keep the legacy git-pull flow.",
+    )
     update_parser.set_defaults(func=cmd_update)

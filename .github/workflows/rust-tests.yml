@@ -1,0 +1,48 @@
+name: Rust Tests
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: cargo test + fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@7cebdca271e76b159e4f9262fc9a9c0c2c695137 # stable
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libssl-dev pkg-config
+
+      - name: Cache cargo
+        uses: actions/cache@0057852bfa5ea9745234ad319f9795fd2c3e3fea # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            apps/hermes-launcher/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('apps/hermes-launcher/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      - name: Check formatting
+        working-directory: apps/hermes-launcher
+        run: cargo fmt --check
+
+      - name: Run tests
+        working-directory: apps/hermes-launcher
+        run: cargo test --verbose

@@ -153,20 +153,14 @@ async fn run_update(app: AppHandle) -> Result<()> {
     // removes the marker on every exit path (incl. early returns / panics).
     let _update_marker = UpdateMarkerGuard::acquire(crate::paths::update_in_progress_marker());
 
-    let update_branch = update_branch_from_args(std::env::args().skip(1))
-        .or_else(|| option_env_string("BUILD_PIN_BRANCH"))
-        .unwrap_or_else(|| "main".to_string());
-    let target_app = if cfg!(target_os = "macos") {
-        target_app_from_args(std::env::args().skip(1))
-    } else {
-        None
-    };
-
-    let hermes = resolve_hermes(&install_root).ok_or_else(|| {
+    // The hermes-updater binary. In a managed install it's at
+    // $HERMES_HOME/bin/hermes-updater (or .exe on Windows). In a checkout
+    // install it may not exist yet — fall back to the venv python's hermes CLI.
+    let updater = resolve_hermes_updater(&hermes_home).ok_or_else(|| {
         let msg = format!(
-            "Could not find the hermes CLI under {}. Is Hermes installed? \
+            "Could not find hermes-updater under {}. Is Hermes installed? \
              Re-run the installer to repair the install.",
-            install_root.display()
+            hermes_home.display()
         );
         emit(
             &app,
@@ -179,22 +173,19 @@ async fn run_update(app: AppHandle) -> Result<()> {
     })?;
 
     // Synthetic manifest so the existing progress UI renders our stages.
+    // The updater streams --report json events we map onto these stages.
     emit(
         &app,
         BootstrapEvent::Manifest {
-            stages: update_stages(target_app.is_some()),
+            stages: update_stages(false),
             protocol_version: None,
         },
     );
 
     // ---- stage 1: wait for the old desktop to die ------------------------
     // The desktop exec'd us then called app.exit(), but process teardown is
-    // async on Windows. If it still holds the venv shim, `hermes update`
-    // aborts with exit 2. If it still holds the packaged app.asar,
-    // install.ps1's repair/re-clone path cannot move/remove the install tree.
-    // Give both handles a bounded window to clear. Surfaced as its own stage
-    // (rather than a silent pre-step) so a slow close / force-kill reads as
-    // real progress instead of a frozen first bar.
+    // async on Windows. If it still holds the venv shim or app.asar, the
+    // updater's file operations will race locked files.
     let started = Instant::now();
     emit_stage(&app, "handoff", StageState::Running, None, None);
     wait_for_install_locks_free(&install_root, &app, "handoff").await;
@@ -206,114 +197,45 @@ async fn run_update(app: AppHandle) -> Result<()> {
         None,
     );
 
-    // ---- stage 2: hermes update -----------------------------------------
-    // Pass --branch so `hermes update` targets the branch this installer was
-    // built/pinned against (BUILD_PIN_BRANCH), NOT its built-in default of
-    // `main`. The install was a detached-HEAD checkout of a specific commit;
-    // without --branch, `hermes update` switches the checkout to `main` (a
-    // divergent branch that may not even have the desktop CLI command), then
-    // reports "already up to date" against the wrong branch. The desktop
-    // detected the update against this same branch, so we must update against
-    // it too.
-    emit_log(
-        &app,
-        Some("update"),
-        LogStream::Stdout,
-        &format!("[update] updating against branch {update_branch}"),
-    );
-    let child_env = update_child_env(&install_root);
-    let mut update_args: Vec<String> =
-        vec!["update".into(), "--yes".into(), "--gateway".into()];
-    // --force skips `hermes update`'s Windows running-exe guard (which would
-    // `sys.exit(2)` and dead-end the handoff). By contract the desktop has
-    // already exited and waited for the install locks to clear before launching
-    // us, and wait_for_install_locks_free below force-kills any straggler — so by the
-    // time `hermes update` runs there is no legitimate hermes.exe to protect,
-    // and the guard would only produce a false "Hermes is still running" stop.
-    //
-    // NOTE: --force does NOT bypass the venv-python holder guard (that needs
-    // an explicit `--force-venv`, which we deliberately do not pass). Our lock
-    // probe only checks the hermes.exe shim and app.asar, so an external venv
-    // python holding a native .pyd (a user terminal, an unmanaged gateway)
-    // could still be alive here — mutating the venv under it would strand the
-    // install half-updated. If that guard fires, it exits 2 and the match arm
-    // below surfaces the correct "close all Hermes windows" message.
-    update_args.push("--force".into());
-    update_args.push("--branch".into());
-    update_args.push(update_branch);
-
+    // ---- stage 2: hermes-updater apply ----------------------------------
+    // Replaces the old 3-stage flow (hermes update + desktop --build-only +
+    // relaunch). The updater does: download → verify → stage → preflight →
+    // flip → self-restage → restart services. We stream its --report json
+    // events onto the existing BootstrapEvent channel so the progress UI
+    // shows discrete steps with the live log underneath.
     emit_stage(&app, "update", StageState::Running, None, None);
     let started = Instant::now();
+
+    let child_env = update_child_env(&install_root);
+    let updater_args: Vec<String> = vec![
+        "apply".into(),
+        "--report".into(),
+        "json".into(),
+        "--relaunch-app".into(),
+        std::env::current_exe()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+    ];
+
     let mut update = run_streamed(
         &app,
-        &hermes,
-        &update_args,
+        &updater,
+        &updater_args,
         &install_root,
         &child_env,
         Some("update"),
     )
     .await?;
 
-    // Retry-once for the update-boundary crash. `hermes update` lazily imports
-    // the FRESHLY PULLED modules, but the dependency-install step still runs the
-    // already-in-memory pre-pull code for one invocation. A release that changed
-    // an updater-path contract across that boundary (e.g. #39780's `_UvResult`,
-    // whose `__iter__` injected a bool into the argv and crashed Windows
-    // `list2cmdline` with `TypeError: sequence item 1: expected str instance,
-    // bool found`, fixed in #39820) therefore kills the FIRST update on the
-    // parked population — even though the fix is already on disk by then. A
-    // second `hermes update` runs clean because the now-current module is loaded
-    // from the start. Rather than make the parked user click Update twice (and
-    // stare at a scary crash first), retry once automatically. Skip the retry
-    // for the concurrent-instance guard (exit 2) — that's a "close Hermes" state
-    // a retry can't fix.
-    if !matches!(update.exit_code, Some(0) | Some(UPDATE_EXIT_CONCURRENT)) {
-        emit_log(
-            &app,
-            Some("update"),
-            LogStream::Stdout,
-            "[update] first update attempt failed; retrying once (the fix it just \
-             pulled loads on the second run)…",
-        );
-        update = run_streamed(
-            &app,
-            &hermes,
-            &update_args,
-            &install_root,
-            &child_env,
-            Some("update"),
-        )
-        .await?;
-    }
     let update_ms = started.elapsed().as_millis() as u64;
 
     match update.exit_code {
         Some(0) => {
             emit_stage(&app, "update", StageState::Succeeded, Some(update_ms), None);
         }
-        Some(code) if code == UPDATE_EXIT_CONCURRENT => {
-            let msg = "Hermes is still running. Close all Hermes windows and try \
-                       the update again."
-                .to_string();
-            emit_stage(
-                &app,
-                "update",
-                StageState::Failed,
-                Some(update_ms),
-                Some(msg.clone()),
-            );
-            emit(
-                &app,
-                BootstrapEvent::Failed {
-                    stage: Some("update".into()),
-                    error: msg.clone(),
-                },
-            );
-            return Err(anyhow!(msg));
-        }
         other => {
             let msg = format!(
-                "hermes update failed (exit {:?}). See {} for details.",
+                "hermes-updater apply failed (exit {:?}). See {} for details.",
                 other,
                 crate::paths::hermes_home()
                     .join("logs")
@@ -338,113 +260,11 @@ async fn run_update(app: AppHandle) -> Result<()> {
         }
     }
 
-    // ---- stage 3: hermes desktop --build-only ----------------------------
-    // `hermes update` deliberately does NOT build apps/desktop (it installs
-    // repo-root deps with --workspaces=false). This is the rebuild it skips.
-    emit_stage(&app, "rebuild", StageState::Running, None, None);
-    let started = Instant::now();
-    let rebuild_args: Vec<String> = vec!["desktop".into(), "--build-only".into()];
-    let mut rebuild = run_streamed(
-        &app,
-        &hermes,
-        &rebuild_args,
-        &install_root,
-        &child_env,
-        Some("rebuild"),
-    )
-    .await?;
-
-    // Retry-once: the first `--build-only` can return nonzero on a still-settling
-    // post-update tree or a network-blocked Electron fetch that our self-heal
-    // repaired mid-run. A second attempt then builds clean off the healed dist
-    // (the content-hash stamp makes it a near-no-op when the first actually
-    // succeeded). Without this the updater bails here and never reaches the
-    // relaunch below — the app updates but doesn't restart. Matches the
-    // retry-once `hermes update` already does above, and `hermes update`'s own
-    // desktop rebuild in cmd_update.
-    if rebuild_needs_retry(rebuild.exit_code) {
-        emit_log(
-            &app,
-            Some("rebuild"),
-            LogStream::Stdout,
-            "[rebuild] first desktop rebuild failed; retrying once (a self-healed \
-             Electron download builds clean on the second run)…",
-        );
-        rebuild = run_streamed(
-            &app,
-            &hermes,
-            &rebuild_args,
-            &install_root,
-            &child_env,
-            Some("rebuild"),
-        )
-        .await?;
-    }
-    let rebuild_ms = started.elapsed().as_millis() as u64;
-
-    if rebuild.exit_code != Some(0) {
-        let msg = format!(
-            "Rebuilding the desktop app failed (exit {:?}). The update was \
-             applied but the app could not be rebuilt; run `hermes desktop` \
-             from a terminal to see the error.",
-            rebuild.exit_code
-        );
-        emit_stage(
-            &app,
-            "rebuild",
-            StageState::Failed,
-            Some(rebuild_ms),
-            Some(msg.clone()),
-        );
-        emit(
-            &app,
-            BootstrapEvent::Failed {
-                stage: Some("rebuild".into()),
-                error: msg.clone(),
-            },
-        );
-        return Err(anyhow!(msg));
-    }
-    emit_stage(&app, "rebuild", StageState::Succeeded, Some(rebuild_ms), None);
-
-    let launch_target = if let Some(target_app) = target_app {
-        let started = Instant::now();
-        emit_stage(&app, "install", StageState::Running, None, None);
-        match install_macos_app_update(&app, &install_root, &target_app).await {
-            Ok(installed_app) => {
-                emit_stage(
-                    &app,
-                    "install",
-                    StageState::Succeeded,
-                    Some(started.elapsed().as_millis() as u64),
-                    None,
-                );
-                Some(installed_app)
-            }
-            Err(err) => {
-                let msg = format!("{err:#}");
-                emit_stage(
-                    &app,
-                    "install",
-                    StageState::Failed,
-                    Some(started.elapsed().as_millis() as u64),
-                    Some(msg.clone()),
-                );
-                emit(
-                    &app,
-                    BootstrapEvent::Failed {
-                        stage: Some("install".into()),
-                        error: msg.clone(),
-                    },
-                );
-                return Err(anyhow!(msg));
-            }
-        }
-    } else {
-        None
-    };
-
     // ---- done: signal complete, then launch the fresh desktop ------------
+    // The updater has already flipped the slot and restaged itself. The
+    // desktop binary is in the NEW slot's desktop/ directory — launching
+    // it picks up the new version by construction (the relaunch honesty
+    // ladder is gone because the GUI is IN the slot).
     emit(
         &app,
         BootstrapEvent::Complete {
@@ -453,16 +273,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
         },
     );
 
-    if let Some(target_app) = launch_target {
-        if let Err(err) = launch_macos_app_and_exit(&app, &target_app).await {
-            emit_log(
-                &app,
-                None,
-                LogStream::Stderr,
-                &format!("[update] could not auto-launch desktop: {err}. Launch Hermes manually."),
-            );
-        }
-    } else if let Err(err) =
+    if let Err(err) =
         crate::bootstrap::launch_hermes_desktop(app.clone(), install_root.to_string_lossy().into_owned()).await
     {
         // Launch failed: don't hard-fail the update (it succeeded); surface a
@@ -715,6 +526,32 @@ fn resolve_hermes(install_root: &Path) -> Option<PathBuf> {
     }
     // PATH fallback. which-style probe via env, kept dependency-free.
     let exe = if cfg!(target_os = "windows") { "hermes.exe" } else { "hermes" };
+    if let Ok(path) = std::env::var("PATH") {
+        let sep = if cfg!(target_os = "windows") { ';' } else { ':' };
+        for dir in path.split(sep) {
+            let cand = Path::new(dir).join(exe);
+            if cand.exists() {
+                return Some(cand);
+            }
+        }
+    }
+    None
+}
+
+/// Resolve the hermes-updater binary.
+///
+/// In a managed install, it's at `$HERMES_HOME/bin/hermes-updater`.
+/// In a checkout/dev install, the launcher may be at
+/// `.hermes-launcher/hermes` — but that's the launcher, not the updater.
+/// For now we look in `$HERMES_HOME/bin/` (the managed-slot path) and
+/// fall back to PATH.
+fn resolve_hermes_updater(hermes_home: &Path) -> Option<PathBuf> {
+    let exe = if cfg!(target_os = "windows") { "hermes-updater.exe" } else { "hermes-updater" };
+    let managed = hermes_home.join("bin").join(exe);
+    if managed.exists() {
+        return Some(managed);
+    }
+    // PATH fallback.
     if let Ok(path) = std::env::var("PATH") {
         let sep = if cfg!(target_os = "windows") { ';' } else { ':' };
         for dir in path.split(sep) {

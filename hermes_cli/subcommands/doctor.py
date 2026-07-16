@@ -23,6 +23,16 @@ def build_doctor_parser(subparsers, *, cmd_doctor: Callable) -> None:
         "--fix", action="store_true", help="Attempt to fix issues automatically"
     )
     doctor_parser.add_argument(
+        "--preflight",
+        action="store_true",
+        help=(
+            "Run pre-activation checks for the updater's slot activation gate. "
+            "Checks core imports, config parsing, config version migration, "
+            "and artifact root resolution. Prints JSON report and exits 0 if "
+            "all checks pass, 1 otherwise."
+        ),
+    )
+    doctor_parser.add_argument(
         "--ack",
         metavar="ADVISORY_ID",
         default=None,

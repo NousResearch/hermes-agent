@@ -259,12 +259,18 @@ export interface HermesTerminalExit {
   signal: string | null
 }
 
+export type DesktopInstallType = 'slot' | 'checkout' | 'unknown'
+
 export interface DesktopVersionInfo {
   appVersion: string
   electronVersion: string
   nodeVersion: string
   platform: string
   hermesRoot: string
+  /** How the running app's backend was resolved. Slot = managed install
+   *  under $HERMES_HOME (stable launcher). Checkout = source tree (dev run
+   *  or git checkout install). Unknown = not yet resolved. */
+  installType?: DesktopInstallType
 }
 
 export type DesktopUninstallMode = 'full' | 'gui' | 'lite'

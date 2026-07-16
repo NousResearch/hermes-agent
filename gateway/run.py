@@ -2519,6 +2519,31 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
     return None
 
 
+def _adopt_hint_for_update() -> str:
+    """Return the adoption hint string for a successful update notification.
+
+    Checks ``detect_legacy_install()`` from ``hermes_cli.adoption`` — if the
+    current checkout is a pristine legacy install, returns a one-line hint
+    telling the user they can switch to managed releases.
+
+    Crash-proof: any exception returns an empty string so the update
+    notification always succeeds.
+    """
+    try:
+        from hermes_cli.adoption import detect_legacy_install
+
+        project_root = Path(__file__).parent.parent.resolve()
+        info = detect_legacy_install(project_root, _hermes_home)
+        if info is not None and info.pristine:
+            return (
+                "\n\nThis install can switch to managed releases — "
+                "run `hermes adopt` or reply `/update adopt`."
+            )
+    except Exception:
+        pass
+    return ""
+
+
 def _parse_session_key(session_key: str) -> "dict | None":
     """Parse a session key into its component parts.
 
@@ -7406,6 +7431,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             for path in (
                 _hermes_home / ".update_pending.json",
                 _hermes_home / ".update_pending.claimed.json",
+                _hermes_home / ".adopt_pending.json",
+                _hermes_home / ".adopt_pending.claimed.json",
             )
         ):
             self._schedule_update_notification_watch()
@@ -14715,11 +14742,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         update process when it needs user input) and forwards the prompt to
         the messenger.  The user's next message is intercepted by
         ``_handle_message`` and written to ``.update_response``.
+
+        Also watches ``.adopt_*`` marker files (from ``/update adopt``) using
+        the same streaming + notification logic.
         """
-        pending_path = _hermes_home / ".update_pending.json"
-        claimed_path = _hermes_home / ".update_pending.claimed.json"
-        output_path = _hermes_home / ".update_output.txt"
-        exit_code_path = _hermes_home / ".update_exit_code"
+        # Auto-detect which marker set is active: adopt or update.
+        # Adopt markers take priority so a concurrent adopt doesn't get
+        # confused with a stale update.
+        adopt_pending = _hermes_home / ".adopt_pending.json"
+        adopt_claimed = _hermes_home / ".adopt_pending.claimed.json"
+        if adopt_pending.exists() or adopt_claimed.exists():
+            _prefix = ".adopt"
+        else:
+            _prefix = ".update"
+
+        pending_path = _hermes_home / f"{_prefix}_pending.json"
+        claimed_path = _hermes_home / f"{_prefix}_pending.claimed.json"
+        output_path = _hermes_home / f"{_prefix}_output.txt"
+        exit_code_path = _hermes_home / f"{_prefix}_exit_code"
         prompt_path = _hermes_home / ".update_prompt.json"
 
         loop = asyncio.get_running_loop()
@@ -14827,15 +14867,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     exit_code_raw = exit_code_path.read_text().strip() or "1"
                     exit_code = int(exit_code_raw)
                     if exit_code == 0:
-                        await adapter.send(
-                            chat_id,
-                            "✅ Hermes update finished.",
-                            metadata=_non_conversational_metadata(metadata, platform=platform),
-                        )
+                        if _prefix == ".adopt":
+                            await adapter.send(
+                                chat_id,
+                                "✅ Hermes adoption finished.",
+                                metadata=_non_conversational_metadata(metadata, platform=platform),
+                            )
+                        else:
+                            adopt_hint = _adopt_hint_for_update()
+                            await adapter.send(
+                                chat_id,
+                                "✅ Hermes update finished." + adopt_hint,
+                                metadata=_non_conversational_metadata(metadata, platform=platform),
+                            )
                     else:
+                        label = "adoption" if _prefix == ".adopt" else "update"
                         await adapter.send(
                             chat_id,
-                            "❌ Hermes update failed (exit code {}).".format(exit_code),
+                            f"❌ Hermes {label} failed (exit code {exit_code}).",
                             metadata=_non_conversational_metadata(metadata, platform=platform),
                         )
                     logger.info("Update finished (exit=%s), notified %s", exit_code, session_key)
@@ -14922,9 +14971,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             exit_code_path.write_text("124")
             await _flush_buffer()
             try:
+                label = "adoption" if _prefix == ".adopt" else "update"
                 await adapter.send(
                     chat_id,
-                    "❌ Hermes update timed out after 30 minutes.",
+                    f"❌ Hermes {label} timed out after 30 minutes.",
                     metadata=_non_conversational_metadata(metadata, platform=platform),
                 )
             except Exception:
@@ -14944,11 +14994,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         This is the legacy notification path used when the streaming watcher
         cannot resolve the adapter (e.g. after a gateway restart where the
         platform hasn't reconnected yet).
+
+        Also handles ``.adopt_*`` marker files from ``/update adopt``.
         """
-        pending_path = _hermes_home / ".update_pending.json"
-        claimed_path = _hermes_home / ".update_pending.claimed.json"
-        output_path = _hermes_home / ".update_output.txt"
-        exit_code_path = _hermes_home / ".update_exit_code"
+        # Auto-detect which marker set is active: adopt or update.
+        adopt_pending = _hermes_home / ".adopt_pending.json"
+        adopt_claimed = _hermes_home / ".adopt_pending.claimed.json"
+        if adopt_pending.exists() or adopt_claimed.exists():
+            _prefix = ".adopt"
+        else:
+            _prefix = ".update"
+
+        pending_path = _hermes_home / f"{_prefix}_pending.json"
+        claimed_path = _hermes_home / f"{_prefix}_pending.claimed.json"
+        output_path = _hermes_home / f"{_prefix}_output.txt"
+        exit_code_path = _hermes_home / f"{_prefix}_exit_code"
 
         if not pending_path.exists() and not claimed_path.exists():
             return False
@@ -15020,17 +15080,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 # Strip ANSI escape codes for clean display
                 output = re.sub(r'\x1b\[[0-9;]*m', '', output).strip()
+                _is_adopt = _prefix == ".adopt"
                 if output:
                     if len(output) > 3500:
                         output = "…" + output[-3500:]
                     if exit_code == 0:
-                        msg = f"✅ Hermes update finished.\n\n```\n{output}\n```"
+                        if _is_adopt:
+                            msg = f"✅ Hermes adoption finished.\n\n```\n{output}\n```"
+                        else:
+                            adopt_hint = _adopt_hint_for_update()
+                            msg = f"✅ Hermes update finished.{adopt_hint}\n\n```\n{output}\n```"
                     else:
-                        msg = f"❌ Hermes update failed.\n\n```\n{output}\n```"
+                        _label = "adoption" if _is_adopt else "update"
+                        msg = f"❌ Hermes {_label} failed.\n\n```\n{output}\n```"
                 elif exit_code == 0:
-                    msg = "✅ Hermes update finished successfully."
+                    if _is_adopt:
+                        msg = "✅ Hermes adoption finished successfully."
+                    else:
+                        adopt_hint = _adopt_hint_for_update()
+                        msg = "✅ Hermes update finished successfully." + adopt_hint
                 else:
-                    msg = "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
+                    if _is_adopt:
+                        msg = "❌ Hermes adoption failed. Check the gateway logs or run `hermes adopt` manually for details."
+                    else:
+                        msg = "❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details."
                 await adapter.send(
                     chat_id,
                     msg,

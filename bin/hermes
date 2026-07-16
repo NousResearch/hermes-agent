@@ -1,0 +1,42 @@
+#!/bin/sh
+# bin/hermes — in-repo launcher stub for ejected (source checkout) mode.
+#
+# When dev sync (task 3.2) has installed the native launcher at
+# .hermes-launcher/hermes, this stub execs it. Otherwise it falls back to
+# execing .venv/bin/python -m hermes_cli.main directly with inline env
+# hygiene (unset PYTHONPATH/PYTHONHOME so the checkout's modules don't
+# shadow the venv's site-packages).
+#
+# In BUNDLES, bin/hermes is the real native binary (phase 1).
+#
+# See docs/updater-world.md §2.5.1.
+
+# --- env hygiene ---
+unset PYTHONPATH
+unset PYTHONHOME
+export UV_NO_CONFIG=1
+
+DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$DIR/.." && pwd)"
+
+# --- try native launcher (installed by dev sync) ---
+NATIVE="$REPO_ROOT/.hermes-launcher/hermes"
+if [ -x "$NATIVE" ]; then
+    exec "$NATIVE" "$@"
+fi
+
+# --- fallback: exec venv python directly ---
+VENV_PYTHON="$REPO_ROOT/.venv/bin/python"
+if [ ! -x "$VENV_PYTHON" ]; then
+    VENV_PYTHON="$REPO_ROOT/venv/bin/python"
+fi
+
+if [ ! -x "$VENV_PYTHON" ]; then
+    echo "hermes: this tree's virtualenv is missing or broken." >&2
+    echo "  tree: $REPO_ROOT" >&2
+    echo "  fix:  hermes dev sync        (source checkout)" >&2
+    exit 3
+fi
+
+export VIRTUAL_ENV="$(dirname "$(dirname "$VENV_PYTHON")")"
+exec "$VENV_PYTHON" -m hermes_cli.main "$@"

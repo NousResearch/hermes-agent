@@ -1,0 +1,68 @@
+[package]
+name = "hermes-launcher"
+version = "0.1.0"
+description = "Hermes launcher + updater — resolves the active tree, sets up env, execs the venv python. Same crate handles install/apply/rollback for managed slots."
+authors = ["Nous Research <info@nousresearch.com>"]
+edition = "2021"
+rust-version = "1.77"
+
+# The binary is named `hermes`. When invoked as `hermes-updater` (argv[0]
+# sniff, busybox-style), the updater verbs are the default namespace.
+[[bin]]
+name = "hermes"
+path = "src/main.rs"
+
+[dependencies]
+# CLI parsing
+clap = { version = "4", features = ["derive"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Serialization (manifest.json, .sig files)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# HTTP for release fetching
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Hashing (manifest verification)
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+
+# Ed25519 signature verification (manifest.json.sig)
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Paths
+dirs = "5"
+
+# Platform (POSIX fsync, signals, kill)
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.29", features = ["fs"] }
+libc = "0.2"
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_Storage_FileSystem",
+] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+# Small binary: LTO + size-opt + single codegen unit.
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

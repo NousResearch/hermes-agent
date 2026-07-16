@@ -34,7 +34,8 @@ from __future__ import annotations
 import os
 import sys
 
-_FRONTEND = ("ui-tui/", "web/", "apps/")  # TS typecheck-matrix packages
+_FRONTEND = ("ui-tui/", "web/", "apps/desktop", "apps/shared")  # TS typecheck-matrix packages
+_RUST = ("apps/hermes-launcher/",)  # Rust crate (launcher + updater)
 _ROOT_NPM = {"package.json", "package-lock.json"}  # shifts every package's tree
 _DOCKER_META = ("docker/", ".hadolint.yml", "Dockerfile") # docker setup
 _SITE = ("website/", "skills/", "optional-skills/")  # docs site + skill pages
@@ -95,6 +96,7 @@ def classify(files: list[str]) -> dict[str, bool]:
         "python": any(not _py_irrelevant(f) for f in files),
         "docker_meta":  any(f.startswith(_DOCKER_META) for f in files),
         "frontend": any(f.startswith(_FRONTEND) or f in _ROOT_NPM for f in files),
+        "rust": any(f.startswith(_RUST) for f in files),
         "site": any(f.startswith(_SITE) for f in files),
         "scan": any(_is_scan(f) for f in files),
         "deps": any(f == "pyproject.toml" for f in files),
@@ -105,6 +107,7 @@ def classify(files: list[str]) -> dict[str, bool]:
         ret["python"] = True
         ret["docker_meta"] = True
         ret["frontend"] = True
+        ret["rust"] = True
         ret["site"] = True
         ret["scan"] = True
         ret["deps"] = True

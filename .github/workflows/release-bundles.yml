@@ -1,0 +1,185 @@
+name: Release Bundle Build
+
+on:
+  # Stable: tag push (v1.2.3)
+  push:
+    tags:
+      - "v*"
+  # Nightly: daily cron
+  schedule:
+    - cron: "0 2 * * *"  # 2:00 UTC daily
+  # Manual trigger (for testing)
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "Release channel (nightly or stable)"
+        required: false
+        default: "nightly"
+
+permissions:
+  contents: write  # needed for creating releases
+
+# Concurrency: only one release build per ref at a time.
+concurrency:
+  group: release-bundles-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PYTHON_VERSION: "3.11"
+  NODE_VERSION: "22"
+  MIN_UPDATER_VERSION: "0.1.0"
+
+jobs:
+  build:
+    name: Build bundle (${{ matrix.platform }})
+    if: github.repository == 'NousResearch/hermes-agent'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-latest
+            os: linux
+            arch: x64
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            os: linux
+            arch: arm64
+          - platform: darwin-arm64
+            runner: macos-14
+            os: darwin
+            arch: arm64
+          - platform: win-x64
+            runner: windows-2022
+            os: win
+            arch: x64
+
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"  # for running write-manifest.py; the bundle uses its own 3.11
+
+      - name: Install uv
+        shell: bash
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+            CHANNEL="stable"
+          elif [[ "${{ github.event_name }}" == "schedule" ]]; then
+            VERSION="$(date -u +%Y.%m.%d)"
+            CHANNEL="nightly"
+          else
+            VERSION="$(date -u +%Y.%m.%d).$(echo "${{ github.run_number }}" | tail -c3)"
+            CHANNEL="${{ github.event.inputs.channel || 'nightly' }}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "channel=$CHANNEL" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION, Channel: $CHANNEL"
+
+      - name: Build bundle
+        shell: bash
+        run: |
+          bash scripts/release/build-bundle.sh \
+            --out dist/bundle \
+            --no-desktop  # phase 0: no desktop build in CI yet
+
+      - name: Write and sign manifest
+        shell: bash
+        run: |
+          # Write manifest.json with file hashes
+          python scripts/release/write-manifest.py \
+            --bundle-dir dist/bundle \
+            --version "${{ steps.version.outputs.version }}" \
+            --channel "${{ steps.version.outputs.channel }}" \
+            --git-sha "${{ github.sha }}" \
+            --platform "${{ matrix.platform }}"
+
+          # Sign if the Ed25519 secret key is available
+          if [ -n "$HERMES_SIGNING_KEY" ]; then
+            python scripts/release/write-manifest.py \
+              --bundle-dir dist/bundle \
+              --signing-key "$HERMES_SIGNING_KEY" \
+              --version "${{ steps.version.outputs.version }}" \
+              --channel "${{ steps.version.outputs.channel }}" \
+              --git-sha "${{ github.sha }}" \
+              --platform "${{ matrix.platform }}"
+          else
+            echo "::warning::HERMES_SIGNING_KEY not set — unsigned bundle"
+          fi
+        env:
+          HERMES_SIGNING_KEY: ${{ secrets.HERMES_SIGNING_KEY }}
+
+      - name: Smoke test — bundle boots
+        shell: bash
+        run: |
+          set -e
+          # Verify the bundle's venv has core imports
+          dist/bundle/bin/hermes --version || true  # may fail if no terminal
+          dist/bundle/runtime/venv/bin/python -c "import hermes_cli, run_agent, model_tools; print('SMOKE_TEST_OK')"
+
+      - name: Smoke test — manifest verifies
+        shell: bash
+        run: |
+          python scripts/release/write-manifest.py --verify --bundle-dir dist/bundle
+
+      - name: Create bundle archive
+        shell: bash
+        run: |
+          cd dist
+          if [[ "${{ matrix.os }}" == "win" ]]; then
+            7z a -tzip "hermes-${{ steps.version.outputs.version }}-${{ matrix.platform }}.zip" bundle/
+            echo "artifact=dist/hermes-${{ steps.version.outputs.version }}-${{ matrix.platform }}.zip" >> $GITHUB_OUTPUT
+          else
+            tar --zstd -cf "hermes-${{ steps.version.outputs.version }}-${{ matrix.platform }}.tar.zst" -C dist bundle/
+            echo "artifact=hermes-${{ steps.version.outputs.version }}-${{ matrix.platform }}.tar.zst" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae7c1c64a875d1fc6a0a # v7
+        with:
+          name: hermes-${{ steps.version.outputs.version }}-${{ matrix.platform }}
+          path: dist/hermes-${{ steps.version.outputs.version }}-${{ matrix.platform }}.*
+          retention-days: 30
+
+      - name: Upload to GitHub Releases (tag only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --generate-notes \
+            "dist/hermes-${{ steps.version.outputs.version }}-${{ matrix.platform }}.*"
+
+      - name: Upload to nightly prerelease (schedule only)
+        if: github.event_name == 'schedule'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Create or update the rolling nightly prerelease
+          gh release create hermes-nightly \
+            --prerelease \
+            --title "Hermes Nightly (${{ steps.version.outputs.version }})" \
+            --notes "Automated nightly build for ${{ steps.version.outputs.version }}.
+          Built from commit ${{ github.sha }}.
+          Platform: ${{ matrix.platform }}" \
+            "dist/hermes-${{ steps.version.outputs.version }}-${{ matrix.platform }}.*" \
+            || \
+          gh release upload hermes-nightly \
+            --clobber \
+            "dist/hermes-${{ steps.version.outputs.version }}-${{ matrix.platform }}.*"

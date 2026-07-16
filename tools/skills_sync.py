@@ -28,7 +28,12 @@ import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
+from hermes_constants import (
+    bundled_skills_dir,
+    get_bundled_skills_dir,
+    get_hermes_home,
+    get_optional_skills_dir,
+)
 from agent.skill_utils import is_excluded_skill_path
 from typing import Dict, List, Optional, Set, Tuple
 from utils import atomic_replace
@@ -54,10 +59,11 @@ def _get_bundled_dir() -> Path:
     """Locate the bundled skills/ directory.
 
     Checks HERMES_BUNDLED_SKILLS env var first (set by Nix wrapper),
-    then a wheel-installed data dir, then falls back to the relative
-    path from this source file.
+    then a wheel-installed data dir, then falls back to the slot-aware
+    artifact root resolver (which finds app/skills in a slot or
+    skills/ in a checkout).
     """
-    return get_bundled_skills_dir(Path(__file__).parent.parent / "skills")
+    return get_bundled_skills_dir(bundled_skills_dir())
 
 
 def _get_optional_dir() -> Path:

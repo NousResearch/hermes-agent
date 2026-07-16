@@ -7,7 +7,99 @@ FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df228
 # our Debian 13 (trixie, glibc 2.41) runtime.  Bumping to a new Node major
 # is a one-line ARG change; see #4977.
 FROM node:22-bookworm-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732 AS node_source
-FROM debian:13.4
+
+# ---------- Phase 5 Task 5.3: release-bundle fetch stage (§2.12) ----------
+# The image is a thin wrapper around the same release bundle everyone else
+# gets. CI passes HERMES_BUNDLE_URL + HERMES_BUNDLE_SHA256; the stage
+# downloads the bundle, verifies its sha256, and unpacks it. When the
+# bundle is absent (local `docker build` without the build-args, or network
+# is unavailable), the build falls back to the full git-clone path below so
+# the image always builds.
+#
+# The bundle layout (docs/updater-world.md §2.1) is:
+#   bin/hermes, runtime/{python,venv,node}, app/, ui/{tui,web}/dist
+# It unpacks to /opt/hermes as a single baked slot. The manifest.json
+# inside the bundle carries per-file hashes; if manifest.json.sig is
+# present, the Ed25519 signature is checked too (best-effort: requires
+# PyNaCl in the fetcher image; if absent, hash verification still gates).
+FROM debian:13.4 AS bundle_fetcher
+ARG TARGETARCH
+ARG HERMES_BUNDLE_URL=""
+ARG HERMES_BUNDLE_SHA256=""
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl xz-utils zstd ca-certificates python3 && \
+    rm -rf /var/lib/apt/lists/*
+# Fetch + verify. The marker file /opt/hermes/.bundle_ok signals success
+# to the final stage; its absence triggers the git-clone fallback.
+# /opt/hermes is always created (even when no URL) so COPY --from succeeds.
+RUN set -eu; \
+    mkdir -p /opt/hermes; \
+    if [ -z "${HERMES_BUNDLE_URL}" ]; then \
+        echo "HERMES_BUNDLE_URL not set — will fall back to git-clone build"; \
+        exit 0; \
+    fi; \
+    echo "Fetching bundle from ${HERMES_BUNDLE_URL}..."; \
+    curl -fsSL --retry 3 -o /tmp/bundle.tar.zst "${HERMES_BUNDLE_URL}"; \
+    if [ -n "${HERMES_BUNDLE_SHA256}" ]; then \
+        printf '%s  %s\n' "${HERMES_BUNDLE_SHA256}" /tmp/bundle.tar.zst > /tmp/bundle.sha256; \
+        sha256sum -c /tmp/bundle.sha256; \
+        echo "sha256 verified OK"; \
+    fi; \
+    zstd -d /tmp/bundle.tar.zst -o /tmp/bundle.tar 2>/dev/null || \
+        xz -d /tmp/bundle.tar.zst -o /tmp/bundle.tar 2>/dev/null || \
+        { echo "Unknown compression — trying as plain tar"; cp /tmp/bundle.tar.zst /tmp/bundle.tar; }; \
+    tar -C /opt/hermes -xpf /tmp/bundle.tar; \
+    rm -f /tmp/bundle.tar /tmp/bundle.tar.zst /tmp/bundle.sha256; \
+    # Verify the bundle manifest hashes if present (best-effort)
+    if [ -f /opt/hermes/manifest.json ]; then \
+        python3 -c " \
+import json, hashlib, os, sys; \
+bundle='/opt/hermes'; \
+m=json.load(open(f'{bundle}/manifest.json')); \
+errors=[]; \
+for rel, expected in m.get('files',{}).items(): \
+    p=os.path.join(bundle, rel); \
+    if not os.path.exists(p): errors.append(f'missing: {rel}'); continue; \
+    actual='sha256:'+hashlib.sha256(open(p,'rb').read()).hexdigest(); \
+    if actual != expected: errors.append(f'tampered: {rel}'); \
+if errors: print('\\n'.join(errors)); sys.exit(1); \
+print(f'manifest verified: {len(m.get(\"files\",{}))} files OK'); \
+" || { echo "manifest verification FAILED"; exit 1; }; \
+    fi; \
+    # Best-effort Ed25519 signature check if manifest.json.sig exists
+    if [ -f /opt/hermes/manifest.json.sig ]; then \
+        python3 -c " \
+import json, sys; \
+try: import nacl.signing, nacl.exceptions, base64; \
+except ImportError: print('PyNaCl not in fetcher — skipping sig verify'); sys.exit(0); \
+bundle='/opt/hermes'; \
+mb=open(f'{bundle}/manifest.json','rb').read(); \
+sig=json.load(open(f'{bundle}/manifest.json.sig')); \
+vk=nacl.signing.VerifyKey(base64.b64decode(sig['pubkey'])); \
+try: vk.verify(mb, base64.b64decode(sig['signature'])); print('signature verified OK'); \
+except nacl.exceptions.BadSignatureError: print('signature verification FAILED'); sys.exit(1); \
+" || { echo "signature verification FAILED"; exit 1; }; \
+    fi; \
+    # Create the single baked slot: current.txt names the version
+    BUNDLE_VERSION="unknown"; \
+    if [ -f /opt/hermes/manifest.json ]; then \
+        BUNDLE_VERSION=$(python3 -c "import json; print(json.load(open('/opt/hermes/manifest.json')).get('version','unknown'))" 2>/dev/null || echo "unknown"); \
+    fi; \
+    mkdir -p /opt/data; \
+    printf '%s\n' "${BUNDLE_VERSION}" > /opt/hermes/current.txt; \
+    # Bake the docker install-method stamp (same as the git-clone path)
+    printf 'docker\n' > /opt/hermes/.install_method; \
+    # Ensure the exec shim is in place
+    if [ ! -f /opt/hermes/bin/hermes ] && [ -f /opt/hermes/docker/hermes-exec-shim.sh ]; then \
+        mkdir -p /opt/hermes/bin && \
+        cp /opt/hermes/docker/hermes-exec-shim.sh /opt/hermes/bin/hermes && \
+        chmod 0755 /opt/hermes/bin/hermes; \
+    fi; \
+    touch /opt/hermes/.bundle_ok; \
+    echo "Bundle unpacked to /opt/hermes (version=${BUNDLE_VERSION})"
+
+# ---------- Final stage: bundle OR git-clone fallback ----------
+FROM debian:13.4 AS final
 
 # Disable Python stdout buffering to ensure logs are printed immediately.
 # Do not write .pyc files at runtime: /opt/hermes is immutable in the
@@ -226,6 +318,56 @@ RUN mkdir -p /opt/hermes/bin && \
 # the data volume. Each supervised service then drops to the hermes user via
 # `s6-setuidgid hermes` in its run script. If HERMES_UID is unset, services
 # run as the default hermes user (UID 10000).
+
+# ---------- Phase 5 Task 5.3: release-bundle replacement (§2.12) ----------
+# If the bundle_fetcher stage successfully fetched + verified a release
+# bundle (marked by /opt/hermes/.bundle_ok), replace the git-clone-built
+# /opt/hermes with the bundle content. The bundle is the canonical
+# artifact — one build pipeline feeds releases AND images, so the image
+# can't drift from the release. When no bundle was fetched (local build,
+# no HERMES_BUNDLE_URL), this is a no-op and the git-clone tree above is
+# what ships.
+#
+# We use a multi-line RUN (not COPY --from) so we can atomically swap the
+# directory: move the git-clone tree aside, move the bundle in, then remove
+# the old tree. This avoids partial-state if the build is interrupted.
+COPY --from=bundle_fetcher /opt/hermes /opt/hermes-bundle
+RUN set -eu; \
+    if [ -f /opt/hermes-bundle/.bundle_ok ]; then \
+        echo "Release bundle available — replacing git-clone tree with bundle"; \
+        mv /opt/hermes /opt/hermes-gitclone; \
+        mv /opt/hermes-bundle /opt/hermes; \
+        rm -rf /opt/hermes-gitclone; \
+        # Ensure exec shim + stamp are in place (bundle_fetcher does this too,
+        # but re-assert for safety in case the bundle layout differs)
+        mkdir -p /opt/hermes/bin && \
+        if [ -f /opt/hermes/docker/hermes-exec-shim.sh ]; then \
+            cp /opt/hermes/docker/hermes-exec-shim.sh /opt/hermes/bin/hermes && \
+            chmod 0755 /opt/hermes/bin/hermes; \
+        fi; \
+        printf 'docker\n' > /opt/hermes/.install_method; \
+        echo "Bundle installed to /opt/hermes"; \
+    else \
+        echo "No release bundle — keeping git-clone build"; \
+        rm -rf /opt/hermes-bundle; \
+    fi
+
+# ---------- Container infrastructure scripts ----------
+# The docker/ directory (stage2-hook.sh, main-wrapper.sh, hermes-exec-shim.sh,
+# s6-rc.d/, cont-init.d/) is container infrastructure, NOT part of the release
+# bundle. Always COPY it from the build context so the entrypoint, s6 hooks,
+# and exec shim are present whether the image was built from a bundle or the
+# git-clone fallback. In the git-clone path this is a no-op (COPY . . above
+# already placed docker/), but for the bundle path this is essential.
+COPY --link --chmod=a+rX,go-w docker/ /opt/hermes/docker/
+
+# Ensure the exec shim is wired at /opt/hermes/bin/hermes. In the git-clone
+# path this was already done above; in the bundle path the docker/ COPY above
+# just provided the source. Re-assert in both cases (idempotent).
+RUN mkdir -p /opt/hermes/bin && \
+    cp /opt/hermes/docker/hermes-exec-shim.sh /opt/hermes/bin/hermes && \
+    chmod 0755 /opt/hermes/bin/hermes && \
+    printf 'docker\n' > /opt/hermes/.install_method
 
 # ---------- Bake build-time git revision ----------
 # .dockerignore excludes .git, so `git rev-parse HEAD` from inside the

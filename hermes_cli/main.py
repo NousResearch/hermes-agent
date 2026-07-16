@@ -305,6 +305,9 @@ from hermes_cli.subcommands.config import build_config_parser
 from hermes_cli.subcommands.console import build_console_parser
 from hermes_cli.subcommands.version import build_version_parser
 from hermes_cli.subcommands.update import build_update_parser
+from hermes_cli.subcommands.adopt import build_adopt_parser
+from hermes_cli.subcommands.dev import build_dev_parser
+from hermes_cli.subcommands.eject import build_eject_parser
 from hermes_cli.subcommands.uninstall import build_uninstall_parser
 from hermes_cli.subcommands.dashboard import build_dashboard_parser
 from hermes_cli.subcommands.gui import build_gui_parser
@@ -313,6 +316,7 @@ from hermes_cli.subcommands.prompt_size import build_prompt_size_parser
 from hermes_cli.subcommands.memory import build_memory_parser
 from hermes_cli.subcommands.acp import build_acp_parser
 from hermes_cli.subcommands.tools import build_tools_parser
+from hermes_cli.subcommands.features import build_features_parser
 from hermes_cli.subcommands.insights import build_insights_parser
 from hermes_cli.subcommands.skills import build_skills_parser
 from hermes_cli.subcommands.pairing import build_pairing_parser
@@ -338,8 +342,13 @@ def _require_tty(command_name: str) -> None:
         sys.exit(1)
 
 
-# Add project root to path
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+# Add project root to path.
+# In a checkout, this is the repo root (same as Path(__file__).parent.parent).
+# In a slot (managed bundle), this is the bundle root (where manifest.json lives).
+# get_artifact_root() walks up from __file__ to find the right directory.
+from hermes_constants import get_artifact_root as _get_artifact_root
+
+PROJECT_ROOT = _get_artifact_root()
 sys.path.insert(0, str(PROJECT_ROOT))
 
 
@@ -2015,6 +2024,15 @@ def _launch_tui(
     accept_hooks: bool = False,
 ):
     """Replace current process with the TUI."""
+    # ── Launch-time staleness refusal (phase 3, task 3.3) ────────────
+    # In a checkout, refuse when the TUI dist is stale.  --tui-dev (tsx)
+    # bypasses the check because it runs TypeScript sources directly.
+    _check_surface_staleness(
+        "tui",
+        lambda: _tui_stamp_for_check(PROJECT_ROOT),
+        skip_build=tui_dev,
+    )
+
     tui_dir = PROJECT_ROOT / "ui-tui"
 
     import tempfile
@@ -4328,6 +4346,14 @@ def cmd_hooks(args):
 
 def cmd_doctor(args):
     """Check configuration and dependencies."""
+    # --preflight: run pre-activation checks for the updater's slot gate.
+    # This is invoked by the Rust updater against a STAGED slot before the
+    # atomic flip. Prints JSON report, exits 0/1.
+    if getattr(args, "preflight", False):
+        from hermes_cli.subcommands.doctor_preflight import run_preflight_cli
+
+        sys.exit(run_preflight_cli())
+
     from hermes_cli.doctor import run_doctor
 
     run_doctor(args)
@@ -5623,12 +5649,137 @@ def _desktop_launch_options() -> tuple[list[str], str]:
     return flags, disable_gpu
 
 
+# ---------------------------------------------------------------------------
+# Launch-time staleness refusal (phase 3, task 3.3)
+#
+# In a checkout, launching an app surface (desktop / TUI / web) checks the
+# relevant ArtifactStamp from dev_sync.  When the build is stale or missing,
+# the launch is refused with instructions instead of surprise-building.
+# In a slot (managed bundle), no check runs — bundle artifacts are always
+# current by construction.
+# ---------------------------------------------------------------------------
+
+def _stamp_relative_time(stamp_file: Path) -> str:
+    """Return a human-friendly relative time for the stamp's builtAt field.
+
+    Reads the ``builtAt`` ISO-8601 timestamp from *stamp_file* and returns
+    a short string like ``"2 hours ago"`` or ``"never"`` when the stamp
+    is missing or unreadable.
+    """
+    try:
+        data = json.loads(stamp_file.read_text(encoding="utf-8"))
+        built_at = data.get("builtAt", "")
+        if not built_at:
+            return "never"
+        from datetime import datetime, timezone
+
+        dt = datetime.fromisoformat(built_at)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        delta = now - dt
+        seconds = int(delta.total_seconds())
+        if seconds < 0:
+            return "just now"
+        if seconds < 60:
+            return f"{seconds}s ago"
+        if seconds < 3600:
+            return f"{seconds // 60}m ago"
+        if seconds < 86400:
+            return f"{seconds // 3600}h ago"
+        return f"{seconds // 86400}d ago"
+    except Exception:
+        return "never"
+
+
+def _check_surface_staleness(
+    surface: str,
+    stamp_factory,
+    *,
+    skip_build: bool = False,
+) -> None:
+    """Refuse to launch *surface* when the build is stale (exit 4).
+
+    Parameters
+    ----------
+    surface
+        Human-readable surface name for the message (``"desktop"``,
+        ``"tui"``, ``"web"``).
+    stamp_factory
+        Callable that returns an :class:`~hermes_cli.dev_sync.ArtifactStamp`
+        for this surface, given the current ``PROJECT_ROOT``.  In tests
+        this is mocked.
+    skip_build
+        When True (``--build`` / ``--skip-build`` / ``--force-build`` /
+        ``--tui-dev``), the check is bypassed — the caller is explicitly
+        opting into a build-then-launch or already-managed path.
+
+    In a **slot** (has ``manifest.json``), the check is skipped entirely.
+    """
+    # Slots: bundle artifacts are always current by construction.
+    if (PROJECT_ROOT / "manifest.json").is_file():
+        return
+
+    # Caller asked to build / skip the check.
+    if skip_build:
+        return
+
+    stamp = stamp_factory()
+    if not stamp.needs_build():
+        return  # Fresh — launch normally.
+
+    rel_time = _stamp_relative_time(stamp.stamp_file)
+    print(
+        f"{surface} build is behind the source tree (last built {rel_time}).\n"
+        f"  run: hermes dev sync            # rebuild what changed\n"
+        f"  or:  hermes {surface} --build     # build now and launch"
+    )
+    sys.exit(4)
+
+
+def _desktop_stamp_for_check(tree_root: Path):
+    """Return the dev_sync ArtifactStamp for the desktop surface."""
+    from hermes_cli.dev_sync import _desktop_stamp
+
+    return _desktop_stamp(tree_root)
+
+
+def _tui_stamp_for_check(tree_root: Path):
+    """Return the dev_sync ArtifactStamp for the TUI surface."""
+    from hermes_cli.dev_sync import _tui_stamp
+
+    return _tui_stamp(tree_root)
+
+
+def _web_stamp_for_check(tree_root: Path):
+    """Return the dev_sync ArtifactStamp for the web surface."""
+    from hermes_cli.dev_sync import _web_stamp
+
+    return _web_stamp(tree_root)
+
+
 def cmd_gui(args: argparse.Namespace):
     """Build and launch the native Electron desktop GUI."""
     desktop_dir = PROJECT_ROOT / "apps" / "desktop"
     if not (desktop_dir / "package.json").exists():
         print(f"Desktop GUI source not found at: {desktop_dir}")
         sys.exit(1)
+
+    # ── Launch-time staleness refusal (phase 3, task 3.3) ────────────
+    # In a checkout, refuse with instructions when the desktop build is
+    # stale or missing — instead of surprise-building.  --build /
+    # --skip-build / --force-build / --build-only all bypass the check.
+    _check_surface_staleness(
+        "desktop",
+        lambda: _desktop_stamp_for_check(PROJECT_ROOT),
+        skip_build=(
+            getattr(args, "build", False)
+            or getattr(args, "skip_build", False)
+            or getattr(args, "force_build", False)
+            or getattr(args, "build_only", False)
+            or getattr(args, "source", False)
+        ),
+    )
 
     try:
         from hermes_logging import setup_logging as _setup_logging_gui
@@ -7632,23 +7783,13 @@ def _refresh_active_lazy_features() -> None:
         logger.debug("Lazy refresh skipped (import failed): %s", exc)
         return
 
+    # Phase 5 task 5.2: the ledger REPLACES the probe-based refresh.
+    # apply_ledger reads features.json (seeded from the venv probe on first
+    # call) and reinstalls each feature under the current pins. The symbol
+    # + signature are frozen in updater_compat.py — only internals change.
     try:
-        active = lazy_deps.active_features()
+        results = lazy_deps.apply_ledger(sys.executable)
     except Exception as exc:
-        logger.debug("Lazy refresh skipped (active_features failed): %s", exc)
-        return
-
-    if not active:
-        return
-
-    print()
-    print(f"→ Refreshing {len(active)} active lazy backend(s)...")
-
-    try:
-        results = lazy_deps.refresh_active_features(prompt=False)
-    except Exception as exc:
-        # refresh_active_features is documented as never-raise, but defend
-        # the update flow against future regressions.
         print(f"  ⚠ Lazy refresh failed unexpectedly: {exc}")
         return
 
@@ -9406,6 +9547,26 @@ def _discard_lockfile_churn(git_cmd, repo_root):
         pass
 
 
+def cmd_adopt(args):
+    """Switch this install to managed releases (slot-based).
+
+    Delegates to ``hermes_cli.subcommands.adopt.cmd_adopt``.
+    """
+    from hermes_cli.subcommands.adopt import cmd_adopt as _cmd_adopt_impl
+
+    _cmd_adopt_impl(args)
+
+
+def cmd_eject(args):
+    """Switch from a managed slot to a source checkout.
+
+    Delegates to ``hermes_cli.subcommands.eject.cmd_eject``.
+    """
+    from hermes_cli.subcommands.eject import cmd_eject as _cmd_eject_impl
+
+    _cmd_eject_impl(args)
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version.
 
@@ -9577,6 +9738,68 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if concurrent:
                 print(_format_concurrent_instances_message(concurrent, scripts_dir))
                 sys.exit(2)
+
+    # Worktree-based update for ejected/dev checkouts with dirty trees.
+    # When the tree is a checkout (not a slot) and git worktree is viable,
+    # route to the worktree-based flow instead of the legacy autostash dance.
+    # --in-place forces the legacy flow.
+    _in_place = bool(getattr(args, "in_place", False))
+    if not _in_place and git_dir.exists():
+        # ── Auto-adopt: pristine clean-main checkouts → bundled slots ──
+        # If the checkout is pristine (clean tree, official origin, on main,
+        # no local commits ahead), auto-adopt to managed slots instead of
+        # git-pulling. This is the "usurp the old update mechanism" path:
+        # running `hermes update` on a clean checkout flips you to bundled.
+        # --in-place or --no-adopt forces the legacy git flow.
+        _no_adopt = bool(getattr(args, "no_adopt", False))
+        if not _no_adopt:
+            try:
+                from hermes_cli.adoption import detect_legacy_install
+                from hermes_constants import get_hermes_home
+
+                _legacy = detect_legacy_install(PROJECT_ROOT, get_hermes_home())
+                if _legacy is not None and _legacy.pristine:
+                    print("→ This is a pristine checkout on main.")
+                    print("  Switching to managed release bundles (hermes adopt).")
+                    print("  The old git-checkout flow is available via --in-place.")
+                    print()
+
+                    # Route to adopt: fetch updater, exec it, never return.
+                    from hermes_cli.subcommands.adopt import cmd_adopt
+
+                    class _AdoptArgs:
+                        yes = True
+                        yes_dirty = False
+                        source = None
+                        dir = None
+
+                    cmd_adopt(_AdoptArgs())
+                    return  # never reached — cmd_adopt execs the updater
+            except SystemExit:
+                raise
+            except Exception as exc:
+                logger.debug("Auto-adopt check failed (non-fatal): %s", exc)
+
+        from hermes_cli.dev_update import should_use_worktree_update, run_dev_update
+
+        if should_use_worktree_update(PROJECT_ROOT, in_place=False):
+            _branch = _resolve_update_branch(args)
+            _result = run_dev_update(
+                PROJECT_ROOT,
+                _branch,
+                in_place=False,
+                input_fn=gw_input_fn,
+            )
+            if _result.success:
+                _invalidate_update_cache()
+                return
+            if _result.fell_back:
+                # Worktree creation failed — fall through to the legacy
+                # autostash flow below (don't return).
+                print("→ Continuing with legacy in-place update...")
+            else:
+                # Cancelled or merge conflict — stop here.
+                return
 
     # Pre-update backup — runs before any git/file mutation so users can
     # always roll back to the exact state they had before this update.
@@ -12095,6 +12318,21 @@ def cmd_dashboard(args):
     # build gate, and start_server.
     _headless_backend = getattr(args, "headless_backend", False)
 
+    # ── Launch-time staleness refusal (phase 3, task 3.3) ────────────
+    # In a checkout, refuse when the web dist is stale.  Skipped for:
+    #   - headless `serve` (no SPA)
+    #   - --skip-build (caller manages the build)
+    #   - HERMES_WEB_DIST set (caller-provided dist)
+    _check_surface_staleness(
+        "web",
+        lambda: _web_stamp_for_check(PROJECT_ROOT),
+        skip_build=(
+            _headless_backend
+            or getattr(args, "skip_build", False)
+            or "HERMES_WEB_DIST" in os.environ
+        ),
+    )
+
     # ── Unified profile launch routing ────────────────────────────────
     # The dashboard is a MACHINE management surface: it can read/write any
     # profile via the per-request ?profile= scoping. Running one dashboard
@@ -12847,6 +13085,51 @@ def cmd_tools(args):
         tools_command(args)
 
 
+def cmd_features(args):
+    """Handle ``hermes features`` subcommands."""
+    from tools.lazy_deps import (
+        LAZY_DEPS,
+        apply_ledger,
+        ledger_features,
+        remove_feature,
+    )
+
+    action = getattr(args, "features_action", None)
+
+    if action == "disable":
+        remove_feature(args.name)
+        print(f"Removed {args.name!r} from the activation ledger.")
+        return
+
+    if action == "apply-ledger":
+        results = apply_ledger(getattr(args, "venv_python", None))
+        if getattr(args, "as_json", False):
+            import json
+            print(json.dumps(results, indent=2, sort_keys=True))
+        else:
+            if not results:
+                print("No features in the activation ledger.")
+                return
+            print(f"{'Feature':<35} {'Result'}")
+            print("-" * 60)
+            for feat, status in sorted(results.items()):
+                print(f"{feat:<35} {status}")
+        return
+
+    # Default: list (also for explicit "list" action)
+    features = ledger_features()
+    if not features:
+        print("No features in the activation ledger.")
+        return
+    print(f"{'Feature':<35} {'Status'}")
+    print("-" * 50)
+    for feat in sorted(features):
+        from tools.lazy_deps import feature_missing
+        installed = feat in LAZY_DEPS and not feature_missing(feat)
+        status = "installed" if installed else "missing"
+        print(f"{feat:<35} {status}")
+
+
 def cmd_insights(args):
     try:
         from hermes_state import SessionDB
@@ -12939,6 +13222,18 @@ def main():
         return
     if _try_termux_fast_cli_launch():
         return
+
+    # ── Adoption offer (hop 2) ──────────────────────────────────────
+    # Detects legacy git-checkout installs and offers to switch to managed
+    # release bundles. Crash-proof: any error logs and continues. Runs
+    # before heavy imports so a stale venv doesn't prevent the offer.
+    try:
+        from hermes_constants import get_hermes_home
+        from hermes_cli.adoption_offer import offer_adoption
+        home = get_hermes_home()
+        offer_adoption(home, PROJECT_ROOT, adopt_mode="prompt", is_interactive=bool(sys.stdin.isatty()))
+    except Exception:
+        pass
 
     from hermes_cli._parser import build_top_level_parser
 
@@ -13407,6 +13702,11 @@ def main():
     # tools command  (parser built in hermes_cli/subcommands/tools.py)
     # =========================================================================
     build_tools_parser(subparsers, cmd_tools=cmd_tools)
+
+    # =========================================================================
+    # features command  (parser built in hermes_cli/subcommands/features.py)
+    # =========================================================================
+    build_features_parser(subparsers, cmd_features=cmd_features)
 
     # =========================================================================
     # computer-use command — manage Computer Use (cua-driver) on macOS
@@ -14674,6 +14974,16 @@ def main():
     # update command  (parser built in hermes_cli/subcommands/update.py)
     # =========================================================================
     build_update_parser(subparsers, cmd_update=cmd_update)
+
+    # =========================================================================
+    # adopt command  (parser built in hermes_cli/subcommands/adopt.py)
+    # =========================================================================
+    build_adopt_parser(subparsers, cmd_adopt=cmd_adopt)
+
+    # =========================================================================
+    # eject command  (parser built in hermes_cli/subcommands/eject.py)
+    # =========================================================================
+    build_eject_parser(subparsers, cmd_eject=cmd_eject)
 
     # =========================================================================
     # uninstall command  (parser built in hermes_cli/subcommands/uninstall.py)

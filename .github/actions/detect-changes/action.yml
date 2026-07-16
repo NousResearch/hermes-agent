@@ -12,6 +12,9 @@ outputs:
   frontend:
     description: Run the TypeScript testing matrix + desktop build.
     value: ${{ steps.classify.outputs.frontend }}
+  rust:
+    description: Run cargo test + cargo fmt for the hermes-launcher crate.
+    value: ${{ steps.classify.outputs.rust }}
   docker_meta:
     description: Docker setup and meta files have changed.
     value: ${{ steps.classify.outputs.docker_meta }}

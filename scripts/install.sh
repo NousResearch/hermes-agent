@@ -80,6 +80,9 @@ STAGE_NAME=""
 JSON_OUTPUT=false
 NON_INTERACTIVE=false
 INCLUDE_DESKTOP=false
+BUNDLE_MODE=true
+BUNDLE_SOURCE=""
+SOURCE_MODE=false
 
 # Detect non-interactive mode (e.g. curl | bash)
 # When stdin is not a terminal, read -p will fail with EOF,
@@ -137,6 +140,20 @@ while [[ $# -gt 0 ]]; do
             INCLUDE_DESKTOP=true
             shift
             ;;
+        --bundle)
+            BUNDLE_MODE=true
+            SOURCE_MODE=false
+            shift
+            ;;
+        --source)
+            BUNDLE_MODE=false
+            SOURCE_MODE=true
+            shift
+            ;;
+        --bundle-source)
+            BUNDLE_SOURCE="$2"
+            shift 2
+            ;;
         --dir)
             INSTALL_DIR="$2"
             INSTALL_DIR_EXPLICIT=true
@@ -173,6 +190,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --json         Print a JSON result frame for --stage"
             echo "  --non-interactive  Skip stages that require user input"
             echo "  --include-desktop  Also build the desktop app (apps/desktop -> Hermes.app)"
+            echo "  --bundle       Fast path: download hermes-updater + managed bundle (no clone/venv/deps)"
+            echo "  --bundle-source URL  Release source for --bundle (default: GitHub Releases)"
             echo "  --dir PATH     Installation directory"
             echo "                   default (non-root):  ~/.hermes/hermes-agent"
             echo "                   default (root, Linux): /usr/local/lib/hermes-agent"
@@ -3120,6 +3139,76 @@ main() {
     echo "git" > "$INSTALL_DIR/.install_method"
 }
 
+# ─── Bundle mode: download updater + managed bundle ────────────────────
+# Phase 1 task 1.8: new installs can opt into the bundle world.
+# Skips clone/venv/deps entirely — downloads hermes-updater, runs install.
+bundle_mode() {
+    print_banner
+    detect_os
+
+    log_info "Bundle install mode — no local building required."
+
+    # Ensure HERMES_HOME exists
+    mkdir -p "$HERMES_HOME/bin"
+
+    # Determine the release source
+    local source_url="${BUNDLE_SOURCE:-https://github.com/NousResearch/hermes-agent/releases}"
+
+    # Detect platform for the updater binary
+    local arch=$(uname -m)
+    local plat_arch
+    case "$arch" in
+        x86_64)        plat_arch="x64"    ;;
+        aarch64|arm64) plat_arch="arm64"  ;;
+        *) log_error "Unsupported architecture: $arch"; exit 1 ;;
+    esac
+    local plat_os
+    case "$(uname -s)" in
+        Linux)  plat_os="linux"  ;;
+        Darwin) plat_os="darwin" ;;
+        *) log_error "Bundle install not yet supported on this OS"; exit 1 ;;
+    esac
+    local platform="${plat_os}-${plat_arch}"
+
+    # Download the hermes-updater binary
+    local updater_url="${source_url}/latest/download/hermes-updater-${platform}"
+    local updater_path="$HERMES_HOME/bin/hermes-updater"
+    log_info "Downloading hermes-updater ($platform)..."
+    if ! curl -fsSL "$updater_url" -o "$updater_path"; then
+        log_error "Failed to download hermes-updater from $updater_url"
+        log_info "The bundle may not be available for $platform yet."
+        log_info "Try a source install instead: bash scripts/install.sh (without --bundle)"
+        exit 1
+    fi
+    chmod +x "$updater_path"
+    log_success "hermes-updater downloaded."
+
+    # Run the updater's install verb
+    local source_flag=""
+    if [ -n "$BUNDLE_SOURCE" ]; then
+        source_flag="--source $BUNDLE_SOURCE"
+    fi
+
+    log_info "Installing Hermes bundle..."
+    if ! "$updater_path" install --channel stable $source_flag; then
+        log_error "hermes-updater install failed"
+        exit 1
+    fi
+
+    # Symlink the command link dir at the stable launcher
+    local link_dir
+    link_dir=$(get_command_link_dir 2>/dev/null || echo "$HOME/.local/bin")
+    local launcher="$HERMES_HOME/bin/hermes"
+    if [ -x "$launcher" ]; then
+        ln -sf "$launcher" "$link_dir/hermes"
+        log_success "hermes command linked at $link_dir/hermes"
+    fi
+
+    log_success "Bundle install complete!"
+    log_info "  Run: hermes --version  to verify."
+    log_info "  Run: hermes setup       to configure providers."
+}
+
 if [ "$MANIFEST_MODE" = true ]; then
     emit_manifest
 elif [ -n "$STAGE_NAME" ]; then
@@ -3128,6 +3217,8 @@ elif [ -n "$ENSURE_DEPS" ]; then
     ensure_mode
 elif [ "$POSTINSTALL_MODE" = true ]; then
     postinstall_mode
+elif [ "$BUNDLE_MODE" = true ]; then
+    bundle_mode
 else
     main
 fi

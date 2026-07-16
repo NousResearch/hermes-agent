@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import { dashboardFallbackArgs, serveBackendArgs, sourceDeclaresServe } from './backend-command'
+import { dashboardFallbackArgs, routeBackendSpawn, serveBackendArgs, sourceDeclaresServe } from './backend-command'
 
 test('serveBackendArgs builds a headless serve invocation', () => {
   assert.deepEqual(serveBackendArgs(), ['serve', '--host', '127.0.0.1', '--port', '0'])
@@ -10,6 +10,16 @@ test('serveBackendArgs builds a headless serve invocation', () => {
 
 test('serveBackendArgs pins a profile when provided', () => {
   assert.deepEqual(serveBackendArgs('worker'), ['--profile', 'worker', 'serve', '--host', '127.0.0.1', '--port', '0'])
+})
+
+test('routeBackendSpawn: slot installs always use serve (no sniffing)', () => {
+  const config = routeBackendSpawn('slot')
+  assert.equal(config.alwaysServe, true)
+})
+
+test('routeBackendSpawn: checkout installs keep the serve-support sniff', () => {
+  const config = routeBackendSpawn('checkout')
+  assert.equal(config.alwaysServe, false)
 })
 
 test('dashboardFallbackArgs rewrites serve -> dashboard --no-open, keeping the -m prefix', () => {

@@ -648,6 +648,72 @@ def display_hermes_home() -> str:
         return str(home)
 
 
+def get_artifact_root() -> Path:
+    """Root directory for repo-shipped assets (skills/, ui/, app source).
+
+    In a **slot** (managed bundle): the bundle root — walk up from this
+    file's location to the first directory containing ``manifest.json``.
+    Code lives in ``runtime/venv/site-packages`` while assets live at
+    ``<root>/app/``, ``<root>/ui/tui/dist``, ``<root>/ui/web/dist``, etc.
+
+    In a **checkout** (editable/source): the repo root — the directory
+    containing ``pyproject.toml`` + ``.git``. This is exactly what today's
+    ``PROJECT_ROOT = Path(__file__).parent.parent`` resolves to.
+
+    The slot-vs-checkout distinction is load-bearing: an editable install's
+    ``__file__`` lives in the checkout, so ``parent.parent`` IS the repo
+    root. A non-editable slot install's ``__file__`` lives in site-packages,
+    so ``parent.parent`` is some ``lib/pythonX.Y/`` directory — NOT where
+    assets are. This resolver closes that gap.
+    """
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        if (parent / "manifest.json").is_file():
+            return parent
+        if (parent / "pyproject.toml").is_file():
+            return parent
+    # Fallback: behave like the old PROJECT_ROOT (repo root in a checkout,
+    # or the package parent in an unknown layout — better than crashing).
+    return here.parent.parent
+
+
+def bundled_skills_dir() -> Path:
+    """Directory containing repo-shipped bundled skills.
+
+    Slot: ``<artifact_root>/app/skills``
+    Checkout: ``<artifact_root>/skills``
+    """
+    root = get_artifact_root()
+    if (root / "manifest.json").is_file():
+        return root / "app" / "skills"
+    return root / "skills"
+
+
+def web_dist_dir() -> Path:
+    """Directory containing the pre-built web dashboard SPA.
+
+    Slot: ``<artifact_root>/ui/web/dist``
+    Checkout: ``<artifact_root>/hermes_cli/web_dist`` (Vite builds here per
+    ``vite.config.ts`` ``outDir: "../hermes_cli/web_dist"``)
+    """
+    root = get_artifact_root()
+    if (root / "manifest.json").is_file():
+        return root / "ui" / "web" / "dist"
+    return root / "hermes_cli" / "web_dist"
+
+
+def tui_dist_dir() -> Path:
+    """Directory containing the pre-built TUI (Ink) bundle.
+
+    Slot: ``<artifact_root>/ui/tui/dist``
+    Checkout: ``<artifact_root>/ui-tui/dist`` (dev build output location)
+    """
+    root = get_artifact_root()
+    if (root / "manifest.json").is_file():
+        return root / "ui" / "tui" / "dist"
+    return root / "ui-tui" / "dist"
+
+
 def secure_parent_dir(path: Path) -> None:
     """Chmod ``0o700`` on the parent directory of *path*, but only if safe.
 

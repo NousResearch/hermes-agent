@@ -11,7 +11,8 @@ import type {
   DesktopUpdateProgress,
   DesktopUpdateStage,
   DesktopUpdateStatus,
-  DesktopVersionInfo
+  DesktopVersionInfo,
+  DesktopInstallType
 } from '@/global'
 import { checkHermesUpdate, getActionStatus, updateHermes } from '@/hermes'
 import { translateNow } from '@/i18n'
@@ -43,6 +44,38 @@ const IDLE: UpdateApplyState = {
 }
 
 export const $desktopVersion = atom<DesktopVersionInfo | null>(null)
+
+/**
+ * The running app's install type, derived from `$desktopVersion.installType`
+ * (set by the Electron main process via the `hermes:version` IPC).  The
+ * renderer never probes the filesystem — it trusts the main process's
+ * classification.  `'unknown'` until the first `refreshDesktopVersion()` call
+ * resolves.
+ */
+export const $installType = atom<DesktopInstallType>('unknown')
+
+/**
+ * Pure labeling decision: given the install type, return the i18n key for the
+ * update overlay's install-label badge.  Checkout builds are labeled "source
+ * install" and the apply button drives the phase-3 worktree flow.  Slot builds
+ * show no badge (the normal managed-install path).
+ *
+ * Returns `null` when no badge should be shown (slot / unknown).
+ */
+export function resolveInstallLabel(installType: DesktopInstallType): string | null {
+  if (installType === 'checkout') {
+    return 'updates.sourceInstallLabel'
+  }
+
+  return null
+}
+
+/** Whether the apply button should drive the dev-shell worktree flow
+ *  (`hermes update` streaming) instead of the updater handoff. */
+export function isSourceInstall(installType: DesktopInstallType): boolean {
+  return installType === 'checkout'
+}
+
 export const $updateApply = atom<UpdateApplyState>(IDLE)
 export const $updateChecking = atom<boolean>(false)
 export const $updateOverlayOpen = atom<boolean>(false)
@@ -272,6 +305,7 @@ export async function refreshDesktopVersion(): Promise<DesktopVersionInfo | null
 
     if (next) {
       $desktopVersion.set(next)
+      $installType.set(next.installType ?? 'unknown')
     }
 
     return next ?? null

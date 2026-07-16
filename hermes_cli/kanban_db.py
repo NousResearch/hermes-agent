@@ -8236,11 +8236,10 @@ def _default_spawn(
             "`hermes` executable not found on PATH. "
             "Install Hermes Agent or activate its venv before running the kanban dispatcher."
         )
-    # NOTE: we intentionally do NOT close log_f here — we want Popen's
-    # child process to keep writing after this function returns.  The
-    # handle is kept alive by the child's inheritance.  The parent's
-    # reference goes out of scope and is GC'd, but the OS-level FD stays
-    # open in the child until the child exits.
+    # Popen duplicated/inherited the handle for the child. Release the
+    # parent copy immediately so long-lived Windows dispatchers do not leak
+    # one handle per spawned worker.
+    log_f.close()
     return proc.pid
 
 

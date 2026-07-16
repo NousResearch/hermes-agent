@@ -115,6 +115,21 @@ class MetadataEditProgressCaptureAdapter(ProgressCaptureAdapter):
         return SendResult(success=True, message_id=message_id)
 
 
+class FailingTransformedFinalAdapter(MetadataEditProgressCaptureAdapter):
+    """Fail only the plugin-transformed fresh final delivery attempt."""
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        if "[plugin appended this]" not in content:
+            return await super().send(chat_id, content, reply_to, metadata)
+        self.sent.append({
+            "chat_id": chat_id,
+            "content": content,
+            "reply_to": reply_to,
+            "metadata": metadata,
+        })
+        return SendResult(success=False, error="simulated transformed delivery failure")
+
+
 class NonEditingProgressCaptureAdapter(ProgressCaptureAdapter):
     SUPPORTS_MESSAGE_EDITING = False
 
@@ -1040,12 +1055,10 @@ class TransformedStreamAgent:
 
 
 @pytest.mark.asyncio
-async def test_transformed_response_edits_streamed_message_in_place(monkeypatch, tmp_path):
-    """When a transform_llm_output hook modifies the response after streaming,
-    the gateway must edit the existing streamed message in place with the full
-    transformed content (so plugins like content filters / appenders reach the
-    user) and still mark already_sent=True (no duplicate send).
-    """
+async def test_transformed_response_uses_confirmed_fresh_delivery(
+    monkeypatch, tmp_path
+):
+    """A plugin-transformed final is freshly sent with topic metadata."""
     adapter, result = await _run_with_agent(
         monkeypatch,
         tmp_path,
@@ -1062,13 +1075,51 @@ async def test_transformed_response_edits_streamed_message_in_place(monkeypatch,
         adapter_cls=MetadataEditProgressCaptureAdapter,
     )
 
-    # Final delivery happened (no duplicate send fallback).
     assert result.get("already_sent") is True
-    # The transformed final text reached the user — appended portion is present
-    # in an edit_message call (not just in the streamed sends).
-    edited_texts = [e["content"] for e in adapter.edits]
-    assert any("[plugin appended this]" in text for text in edited_texts), (
-        f"expected transformed text in adapter.edits, got: {edited_texts!r}"
+    transformed_sends = [
+        call for call in adapter.sent
+        if "[plugin appended this]" in call["content"]
+    ]
+    assert len(transformed_sends) == 1
+    assert transformed_sends[0]["metadata"]["thread_id"] == "$thread"
+    assert not any(
+        "[plugin appended this]" in edit["content"]
+        for edit in adapter.edits
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_transformed_fresh_delivery_leaves_fallback_enabled(
+    monkeypatch, tmp_path
+):
+    """A failed transformed send must not suppress normal final delivery."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        TransformedStreamAgent,
+        session_id="sess-transformed-stream-failure",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
+        },
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+        adapter_cls=FailingTransformedFinalAdapter,
+    )
+
+    assert result.get("already_sent") is not True
+    assert result["final_response"].endswith("[plugin appended this]")
+    transformed_attempts = [
+        call for call in adapter.sent
+        if "[plugin appended this]" in call["content"]
+    ]
+    assert len(transformed_attempts) == 1
+    assert transformed_attempts[0]["metadata"]["thread_id"] == "$thread"
+    assert not any(
+        "[plugin appended this]" in edit["content"]
+        for edit in adapter.edits
     )
 
 

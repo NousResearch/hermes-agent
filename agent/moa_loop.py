@@ -120,11 +120,54 @@ _REFERENCE_SYSTEM_PROMPT = (
 
 
 
-def _slot_label(slot: dict[str, str]) -> str:
-    return f"{(slot.get('provider') or '').strip()}:{(slot.get('model') or '').strip()}"
+def _slot_label(slot: dict[str, Any]) -> str:
+    label = f"{(slot.get('provider') or '').strip()}:{(slot.get('model') or '').strip()}"
+    effort = str(slot.get("reasoning_effort") or "").strip()
+    return f"{label}[reasoning={effort}]" if effort else label
 
 
-def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
+def _slot_reasoning_config(slot: dict[str, Any]) -> dict[str, Any] | None:
+    """Translate optional per-MoA-slot reasoning_effort into runtime config."""
+    effort = slot.get("reasoning_effort")
+    try:
+        from hermes_constants import parse_reasoning_effort
+
+        return parse_reasoning_effort(effort)
+    except Exception:  # pragma: no cover - defensive; bad config must not break MoA
+        return None
+
+
+def _aggregator_reasoning_config(aggregator: dict[str, Any]) -> dict[str, Any] | None:
+    """Resolve the aggregator's reasoning config: slot > per-model > global.
+
+    The aggregator is MoA's ACTING model, so when its slot doesn't pin a
+    reasoning_effort it must resolve exactly like any other acting model:
+    through the shared chokepoint (``resolve_reasoning_config``), which
+    applies ``agent.reasoning_overrides`` for the slot's model first, then
+    the global ``agent.reasoning_effort``. Without this the main loop's
+    reasoning gates (keyed to the virtual ``moa://local`` identity) never
+    fire, so the aggregator silently ran at the backend default (#64187).
+
+    Reference advisors intentionally do NOT get this fallback: they are side
+    calls (like auxiliary tasks), and inheriting a global ``xhigh`` into every
+    advisor fan-out would silently multiply cost. Their depth is slot-or-
+    provider-default only.
+    """
+    cfg = _slot_reasoning_config(aggregator)
+    if cfg is not None:
+        return cfg
+    try:
+        from hermes_cli.config import load_config
+        from hermes_constants import resolve_reasoning_config
+
+        return resolve_reasoning_config(
+            load_config() or {}, str(aggregator.get("model") or "")
+        )
+    except Exception:  # pragma: no cover - defensive; bad config must not break MoA
+        return None
+
+
+def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
     """Resolve a reference/aggregator slot to real runtime call kwargs.
 
     A MoA slot is just a model selection — it must be called the same way any
@@ -276,6 +319,7 @@ def _run_reference(
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
+            reasoning_config=_slot_reasoning_config(slot),
             **runtime,
         )
         usage = CanonicalUsage()
@@ -360,6 +404,12 @@ def _run_references_parallel(
     results: list[tuple[str, str, Any] | None] = [None] * len(reference_models)
     futures = {}
     workers = min(_MAX_REFERENCE_WORKERS, len(reference_models))
+    # Reference slots run on bare executor threads, which start with an empty
+    # contextvars.Context — propagate the parent turn's context (approval
+    # callbacks + the Nous Portal conversation tag) into each worker so
+    # advisor calls attribute to the same conversation as the acting turn.
+    from tools.thread_context import propagate_context_to_thread
+
     with ThreadPoolExecutor(max_workers=workers) as executor:
         for idx, slot in enumerate(reference_models):
             if slot.get("provider") == "moa":
@@ -371,7 +421,7 @@ def _run_references_parallel(
                 continue
             futures[
                 executor.submit(
-                    _run_reference,
+                    propagate_context_to_thread(_run_reference),
                     slot,
                     ref_messages,
                     temperature=temperature,
@@ -491,7 +541,7 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if role == "system":
             continue
         if role == "user":
-            if not text.strip() and content not in (None, "", []):
+            if not text.strip() and isinstance(content, list) and content:
                 # Structured content with no extractable text (e.g. an
                 # image-only turn). Emitting an empty user message would be
                 # dropped/rejected by strict providers (Anthropic 400s on
@@ -499,10 +549,24 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 # mode), and silently skipping the turn would break
                 # user/assistant alternation in the advisory view. Substitute
                 # a placeholder so the reference knows a non-text turn
-                # happened.
+                # happened. Only structured content qualifies — an empty or
+                # whitespace-only STRING turn carries nothing and is dropped
+                # below instead.
                 text = "[user sent non-text content (e.g. an image attachment)]"
-            if text.strip():
-                last_user_content = text
+            if not text.strip():
+                # Genuinely empty user turn (content="" / None). It carries
+                # nothing advisory, and strict providers (Kimi/Moonshot, ZAI,
+                # and others that enforce non-empty user content) reject it
+                # with 400 "message ... with role 'user' must not be empty" —
+                # the same way the assistant branch below drops turns with no
+                # parts. Lenient providers (DeepSeek) accept the empty turn,
+                # which is why a MoA fan-out would fail on one reference and
+                # pass on another for the identical rendered view. The
+                # advisory view is already not strictly alternating (adjacent
+                # assistant turns occur in every tool loop), so dropping a
+                # contentless turn is safe.
+                continue
+            last_user_content = text
             rendered.append({"role": "user", "content": text})
         elif role == "assistant":
             parts: list[str] = []
@@ -666,6 +730,7 @@ def aggregate_moa_context(
             messages=agg_messages,
             temperature=aggregator_temperature,
             max_tokens=max_tokens,
+            reasoning_config=_aggregator_reasoning_config(aggregator),
             **agg_runtime,
         )
         synthesis = _extract_text(response)
@@ -1060,6 +1125,7 @@ class MoAChatCompletions:
             max_tokens=agg_kwargs.get("max_tokens"),
             tools=agg_kwargs.get("tools"),
             extra_body=agg_kwargs.get("extra_body"),
+            reasoning_config=_aggregator_reasoning_config(aggregator),
             **stream_kwargs,
             **_slot_runtime(aggregator),
         )

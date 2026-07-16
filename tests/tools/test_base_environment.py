@@ -6,7 +6,7 @@ init_session() failure handling, and the CWD marker contract.
 
 from unittest.mock import MagicMock
 
-from tools.environments.base import BaseEnvironment
+from tools.environments.base import BaseEnvironment, _BoundedOutputCollector
 
 
 class _TestableEnv(BaseEnvironment):
@@ -22,6 +22,41 @@ class _TestableEnv(BaseEnvironment):
         pass
 
 
+class TestBoundedOutputCollector:
+    def test_large_stream_retains_bounded_head_and_tail(self):
+        collector = _BoundedOutputCollector(1_000)
+        collector.append("HEAD-SENTINEL\n")
+        for _ in range(2_000):
+            collector.append("x" * 4_096)
+        collector.append("\nTAIL-SENTINEL")
+
+        rendered = collector.render()
+
+        assert collector.total_chars > 8_000_000
+        assert collector.buffered_chars <= 1_000
+        assert len(rendered) <= 1_000
+        assert rendered.startswith("HEAD-SENTINEL")
+        assert rendered.endswith("TAIL-SENTINEL")
+        assert "[OUTPUT TRUNCATED" in rendered
+
+    def test_small_stream_is_unchanged(self):
+        collector = _BoundedOutputCollector(100)
+        collector.append("hello ")
+        collector.append("world")
+
+        assert collector.render() == "hello world"
+
+    def test_required_status_suffix_stays_inside_limit(self):
+        collector = _BoundedOutputCollector(120)
+        collector.append("A" * 10_000)
+
+        rendered = collector.render(suffix="\n[Command timed out after 1s]")
+
+        assert len(rendered) <= 120
+        assert rendered.endswith("[Command timed out after 1s]")
+        assert "[OUTPUT TRUNCATED" in rendered
+
+
 class TestWrapCommand:
     def test_basic_shape(self):
         env = _TestableEnv()
@@ -33,7 +68,8 @@ class TestWrapCommand:
         assert "eval 'echo hello'" in wrapped
         assert "__hermes_ec=$?" in wrapped
         assert "export -p >" in wrapped
-        assert "pwd -P >" in wrapped
+        # cwd travels via the stdout marker only — no temp-file write.
+        assert "pwd -P >" not in wrapped
         assert env._cwd_marker in wrapped
         assert "exit $__hermes_ec" in wrapped
 
@@ -322,7 +358,9 @@ class TestSnapshotFileModes:
 
             assert stat.S_IMODE(user_file.stat().st_mode) == 0o644
             assert stat.S_IMODE(Path(env._snapshot_path).stat().st_mode) == 0o600
-            assert stat.S_IMODE(Path(env._cwd_file).stat().st_mode) == 0o600
+            # The cwd temp file is no longer written (cwd travels via the
+            # stdout marker for every backend) — nothing to leak on disk.
+            assert not Path(env._cwd_file).exists()
         finally:
             os.umask(old_umask)
 

@@ -11,7 +11,7 @@ import { activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
 import { setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
 import { requestFreshSession } from '@/store/profile'
-import { $selectedStoredSessionId, $sessions, workspaceCwdForNewSession } from '@/store/session'
+import { $selectedStoredSessionId, $sessions, sessionMatchesStoredId, workspaceCwdForNewSession } from '@/store/session'
 import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
 // First-class, per-profile Projects (named, multi-folder workspaces). State is
@@ -585,7 +585,7 @@ function openSessionBelongsToProject(projectId: string, projects: ProjectInfo[])
     return false
   }
 
-  const open = $sessions.get().find(s => s.id === openId || s._lineage_root_id === openId)
+  const open = $sessions.get().find(s => sessionMatchesStoredId(s, openId))
 
   return Boolean(open && liveSessionProjectId(open, projects) === projectId)
 }

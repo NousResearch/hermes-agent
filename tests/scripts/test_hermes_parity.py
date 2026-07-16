@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 from io import StringIO
 from pathlib import Path
 
-from scripts.hermes_parity import bisect, buckets, cli, forkdelta, gates, gitops, lint_merge_traps, lint_unbound, state
+from scripts.hermes_parity import bisect, buckets, catchup, cli, forkdelta, gates, gitops, lint_manifest, lint_merge_traps, lint_unbound, state
 
 
 def _git(repo: Path, *args: str, check: bool = True) -> str:
@@ -141,11 +142,63 @@ def test_state_atomic_write_and_tree_sha_invalidation(tmp_path: Path) -> None:
 
 
 def test_bisect_classification_matrix() -> None:
-    assert bisect.classify_results(baseline=True, merge=True) == bisect.Classification.ORDER_POLLUTION
+    assert bisect.classify_results(baseline=True, merge=True) == bisect.Classification.CLEAN
     assert bisect.classify_results(baseline=True, merge=False) == bisect.Classification.REGRESSION
-    assert bisect.classify_results(baseline=False, merge=True) == bisect.Classification.INHERITED_FLAKY
-    assert bisect.classify_results(baseline=False, merge=False) == bisect.Classification.INHERITED_FLAKY
+    assert bisect.classify_results(baseline=False, merge=True) == bisect.Classification.FIXED_BY_MERGE
+    assert bisect.classify_results(baseline=False, merge=False) == bisect.Classification.INHERITED
     assert bisect.classify_results(baseline=bisect.TestOutcome.ABSENT, merge=False) == bisect.Classification.UPSTREAM_TEST
+
+
+def test_bisect_six_fixture_corpus_with_stability_and_dep_bump(tmp_path: Path) -> None:
+    (tmp_path / "base").mkdir()
+    (tmp_path / "merge").mkdir()
+    baseline_repo = _repo(tmp_path / "base")
+    merge_repo = _repo(tmp_path / "merge")
+    counter = tmp_path / "counter.txt"
+    counter_lock = threading.Lock()
+    verdicts = {
+        "clean": (bisect.TestOutcome.PASS, bisect.TestOutcome.PASS),
+        "regression": (bisect.TestOutcome.PASS, bisect.TestOutcome.FAIL),
+        "fixed": (bisect.TestOutcome.FAIL, bisect.TestOutcome.PASS),
+        "inherited": (bisect.TestOutcome.FAIL, bisect.TestOutcome.FAIL),
+        "dep": (bisect.TestOutcome.PASS, bisect.TestOutcome.FAIL),
+    }
+
+    def runner(repo: Path, tests: tuple[str, ...]) -> bisect.PytestRun:
+        test = tests[0]
+        if test == "nondeterministic":
+            with counter_lock:
+                current = int(counter.read_text(encoding="utf-8")) if counter.exists() else 0
+                counter.write_text(str(current + 1), encoding="utf-8")
+            outcome = bisect.TestOutcome.PASS if current % 2 == 0 else bisect.TestOutcome.FAIL
+            return bisect.PytestRun(outcome, f"{repo} token=SECRET")
+        baseline, merge = verdicts[test]
+        return bisect.PytestRun(baseline if repo == baseline_repo else merge, f"{repo} output")
+
+    def dep_runner(repo: Path, tests: tuple[str, ...]) -> bisect.PytestRun:
+        return bisect.PytestRun(bisect.TestOutcome.FAIL, "dep bumped")
+
+    expected = {
+        "clean": bisect.Classification.CLEAN,
+        "regression": bisect.Classification.REGRESSION,
+        "fixed": bisect.Classification.FIXED_BY_MERGE,
+        "inherited": bisect.Classification.INHERITED,
+        "nondeterministic": bisect.Classification.NONDETERMINISTIC,
+        "dep": bisect.Classification.REGRESSION_DEP,
+    }
+    results = {
+        name: bisect.classify_one(
+            baseline_repo=baseline_repo,
+            merge_repo=merge_repo,
+            test=name,
+            runner=runner,
+            dep_runner=dep_runner if name == "dep" else None,
+        ).classification
+        for name in expected
+    }
+
+    assert results == expected
+    assert bisect.scrub_output(f"{tmp_path}/venv leaked", home=tmp_path) == ["$HOME/venv leaked"]
 
 
 def test_bisect_uses_injected_runner() -> None:
@@ -163,10 +216,8 @@ def test_bisect_uses_injected_runner() -> None:
     )
 
     assert result.classification == bisect.Classification.REGRESSION
-    assert sorted(calls, key=lambda item: str(item[0]))[:2] == [
-        (Path("/tmp/baseline"), ("tests/x.py::test_y",)),
-        (Path("/tmp/merge"), ("tests/x.py::test_y",)),
-    ]
+    assert calls.count((Path("/tmp/baseline"), ("tests/x.py::test_y",))) == 3
+    assert calls.count((Path("/tmp/merge"), ("tests/x.py::test_y",))) == 3
 
 
 def test_bisect_demotes_regression_that_passes_on_rerun() -> None:
@@ -186,7 +237,7 @@ def test_bisect_demotes_regression_that_passes_on_rerun() -> None:
         runner=runner,
     )
 
-    assert result.classification == bisect.Classification.FLAKY
+    assert result.classification == bisect.Classification.REGRESSION_FLAKY
 
 
 def test_parse_pytest_outcome_detects_absent_baseline() -> None:
@@ -307,6 +358,160 @@ def test_forkdelta_trigger_is_merge_touched_not_full_fork_delta(tmp_path: Path) 
 
     assert "fork_only_dropped.py" in report.uncovered_paths
     assert "fork_only_kept.py" not in report.uncovered_paths
+
+
+def test_lint_manifest_path_nodeid_and_vacuous_floor(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    (repo / "pkg.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (repo / "tests").mkdir()
+    (repo / "tests" / "test_pkg.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+    base = _commit(repo, "base")
+    _git(repo, "checkout", "-b", "fork-main")
+    (repo / "fork_only.py").write_text("fork\n", encoding="utf-8")
+    _commit(repo, "fork")
+    manifest = repo / "docs" / "sync" / "fork-features.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(
+        json.dumps([
+            {
+                "feature": "broken",
+                "tests": ["tests/test_pkg.py::test_ok"],
+                "paths": ["missing/**/*.py"],
+                "why": "contract",
+            }
+        ]),
+        encoding="utf-8",
+    )
+
+    broken = lint_manifest.lint_manifest(repo, base=base, fork_ref="fork-main", touched_paths={"fork_only.py"})
+    assert any("matches zero files" in error for error in broken.errors)
+
+    manifest.write_text(
+        json.dumps([
+            {
+                "feature": "vacuous",
+                "tests": ["tests/test_pkg.py::test_ok"],
+                "paths": ["pkg.py"],
+                "why": "contract",
+            }
+        ]),
+        encoding="utf-8",
+    )
+    vacuous = lint_manifest.lint_manifest(repo, base=base, fork_ref="fork-main", touched_paths={"fork_only.py"})
+    assert any("vacuous forkdelta coverage" in error for error in vacuous.errors)
+    assert lint_manifest.lint_manifest(repo, base=base, fork_ref="fork-main", touched_paths={"fork_only.py"}, vacuous_ok=True).ok
+
+
+def test_catchup_selects_closure_tests_and_reports_coverage_map(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    (repo / "app").mkdir()
+    (repo / "tests").mkdir()
+    (repo / "app" / "__init__.py").write_text("", encoding="utf-8")
+    (repo / "app" / "api.py").write_text("def value(arg):\n    return arg\n", encoding="utf-8")
+    (repo / "app" / "caller.py").write_text("from app.api import value\n\ndef call():\n    return value()\n", encoding="utf-8")
+    (repo / "tests" / "test_caller.py").write_text("from app.caller import call\n\ndef test_call():\n    assert call() is None\n", encoding="utf-8")
+    _commit(repo, "fixture")
+
+    selected, coverage = catchup.select_tests(repo, ["app/api.py"], [])
+    proc = subprocess.run(
+        ["python3.11", "-m", "pytest", *selected, "-q", "-o", "addopts=", "-p", "no:randomly"],
+        cwd=repo,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+    report = catchup.format_report(
+        catchup.CatchupReport(("app/api.py", "untested.py"), selected, {**coverage, "untested.py": ()}, ("untested.py",), ())
+    )
+
+    assert "tests/test_caller.py" in selected
+    assert proc.returncode != 0
+    assert "app/api.py: tests/test_caller.py" in report
+    assert "untested.py: UNTESTED-BY-CATCHUP" in report
+
+
+def test_catchup_resolves_init_reexport_closure(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    (repo / "pkg").mkdir()
+    (repo / "tests").mkdir()
+    (repo / "pkg" / "__init__.py").write_text("from .target import func\n", encoding="utf-8")
+    (repo / "pkg" / "target.py").write_text("def func(arg):\n    return arg\n", encoding="utf-8")
+    (repo / "caller.py").write_text("from pkg import func\n\ndef call():\n    return func()\n", encoding="utf-8")
+    (repo / "tests" / "test_reexport.py").write_text("from caller import call\n\ndef test_call():\n    assert call() is None\n", encoding="utf-8")
+    _commit(repo, "fixture")
+
+    selected, _coverage = catchup.select_tests(repo, ["pkg/target.py"], [])
+
+    assert "tests/test_reexport.py" in selected
+
+
+def test_catchup_refuses_more_than_max_commits(monkeypatch, tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(catchup.gitops, "fetch", lambda repo, remote: None)
+    monkeypatch.setattr(catchup.gitops, "ahead_behind", lambda repo, left, right: (0, 51))
+
+    try:
+        catchup.run_catchup(repo, max_commits=50)
+    except gitops.GitError as exc:
+        assert "refuses 51 commits" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("expected refusal")
+
+
+def test_ack_from_file_and_vacuous_ack_are_distinct(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+    _commit(repo, "seed")
+    state.save_state(repo, state.ParityState(tree_sha=gitops.tree_sha(repo), data={"gates": {}}))
+    ack_file = tmp_path / "acks.txt"
+    ack_file.write_text("tabbed.py\tper-path reason\nbare.py\n", encoding="utf-8")
+
+    assert cli.main(["ack", "--worktree", str(repo), "--from-file", str(ack_file)]) == 2
+    assert cli.main(["ack", "--worktree", str(repo), "--from-file", str(ack_file), "--reason", "bulk reason"]) == 0
+    assert state.acked_paths(repo) == {"tabbed.py", "bare.py"}
+    assert not state.has_vacuous_ack(repo)
+    assert cli.main(["ack", "--worktree", str(repo), "--vacuous-ok", "--reason", "reviewed empty coverage"]) == 0
+    assert state.has_vacuous_ack(repo)
+
+
+def test_forkdelta_emit_uncovered_is_snapshot_not_live_ack(tmp_path: Path, capsys) -> None:
+    repo = _repo(tmp_path)
+    (repo / "base.py").write_text("base\n", encoding="utf-8")
+    base = _commit(repo, "base")
+    _git(repo, "checkout", "-b", "fork-main")
+    (repo / "old.py").write_text("old\n", encoding="utf-8")
+    _commit(repo, "fork old")
+    manifest = repo / "docs" / "sync" / "fork-features.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(json.dumps([]), encoding="utf-8")
+    state.save_state(repo, state.ParityState(tree_sha=gitops.tree_sha(repo), data={"gates": {}}))
+    assert cli.main(["forkdelta", "--worktree", str(repo), "--base", base, "--fork-ref", "fork-main", "--emit-uncovered"]) == 0
+    snapshot = capsys.readouterr().out.strip().splitlines()
+    (repo / "new.py").write_text("new\n", encoding="utf-8")
+    _commit(repo, "fork new")
+    review = tmp_path / "reviewed.txt"
+    review.write_text("\n".join(snapshot), encoding="utf-8")
+
+    assert cli.main(["ack", "--worktree", str(repo), "--from-file", str(review), "--reason", "reviewed snapshot"]) == 0
+    assert state.acked_paths(repo) == {"old.py"}
+
+
+def test_tests_stage_skip_exit_jsonl_and_finish_not_satisfied(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "run_tests.sh").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (repo / "file.txt").write_text("one\n", encoding="utf-8")
+    _commit(repo, "one")
+    state.save_state(repo, state.ParityState(tree_sha=gitops.tree_sha(repo), data={"gates": {}}))
+
+    results = gates.run_gates(repo, stage="tests")
+    payload = json.loads((repo / "gates.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+
+    assert results[0].status == "SKIP"
+    assert payload["gate"] == "tests"
+    assert payload["status"] == "SKIP"
+    assert not cli._all_gates_green(repo)
 
 
 def test_merge_trap_dead_code_after_return() -> None:

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Sequence
 
-from . import forkdelta, gitops, lint_merge_traps, lint_unbound, state
+from . import forkdelta, gitops, lint_manifest, lint_merge_traps, lint_unbound, state
 
 
 @dataclass(frozen=True)
@@ -24,6 +24,7 @@ class GateResult:
     metadata: dict[str, object] = field(default_factory=dict)
     repro: str = ""
     skipped: bool = False
+    status: str | None = None
 
 
 GateFn = Callable[[Path], GateResult]
@@ -35,6 +36,7 @@ def _record(worktree: Path, result: GateResult) -> None:
         "ts": time.time(),
         "gate": result.name,
         "passed": result.passed,
+        "status": result.status or ("SKIP" if result.skipped else ("PASS" if result.passed else "FAIL")),
         "detail": result.detail,
         "seconds": result.seconds,
         "metadata": result.metadata,
@@ -126,6 +128,12 @@ def gate_manifest_forkdelta(repo: Path, *, base: str | None, fork_ref: str) -> G
         )
         acked = state.acked_paths(repo)
         report = forkdelta.compute_fork_delta(repo, base=resolved_base, fork_ref=fork_ref, touched_paths=touched)
+        lint = lint_manifest.lint_manifest(
+            repo,
+            base=resolved_base,
+            fork_ref=fork_ref,
+            touched_paths=touched,
+        )
         uncovered = [path for path in report.uncovered_paths if path not in acked]
         acknowledged = [path for path in report.uncovered_paths if path in acked]
         tests = forkdelta.manifest_nodeids(manifest)
@@ -153,10 +161,10 @@ def gate_manifest_forkdelta(repo: Path, *, base: str | None, fork_ref: str) -> G
                 stderr=subprocess.STDOUT,
                 check=False,
             )
-        passed = not uncovered and (test_proc is None or test_proc.returncode == 0)
+        passed = lint.ok and not uncovered and (test_proc is None or test_proc.returncode == 0)
         return (
             passed,
-            f"{len(report.covered_paths)} covered, {len(uncovered)} uncovered, {len(acknowledged)} acknowledged path(s)",
+            f"{len(report.covered_paths)} covered, {len(uncovered)} uncovered, {len(acknowledged)} acknowledged path(s), {len(lint.errors)} lint error(s)",
             {
                 "base": report.base,
                 "fork_ref": report.fork_ref,
@@ -165,18 +173,31 @@ def gate_manifest_forkdelta(repo: Path, *, base: str | None, fork_ref: str) -> G
                 "acknowledged": acknowledged,
                 "manifest_tests": tests,
                 "manifest_test_exit": None if test_proc is None else test_proc.returncode,
+                "lint_errors": list(lint.errors[:50]),
             },
         )
 
     return _timed("manifest+forkdelta", "python3.11 -m hermes_parity gates --stage manifest+forkdelta", run)
 
 
-def gate_tests(repo: Path, *, tests: Sequence[str]) -> GateResult:
+def gate_tests(repo: Path, *, tests: Sequence[str], full: bool = False) -> GateResult:
+    if not tests and not full:
+        return GateResult(
+            "tests",
+            False,
+            "SKIPPED (no corpus; run scripts/run_tests.sh for the full suite)",
+            0.0,
+            {"status": "SKIP"},
+            "scripts/run_tests.sh",
+            skipped=True,
+            status="SKIP",
+        )
+
     def run() -> tuple[bool, str, dict[str, object]]:
         script = repo / "scripts" / "run_tests.sh"
         if not script.exists():
             return False, "scripts/run_tests.sh missing", {}
-        args = [str(script), *(tests or ["tests/scripts/test_hermes_parity.py"])]
+        args = [str(script), *tests]
         proc = subprocess.run(
             args,
             cwd=repo,
@@ -225,6 +246,7 @@ def run_gates(
     repo: Path,
     *,
     fast: bool = False,
+    full: bool = False,
     stage: str | None = None,
     resume: bool = False,
     strict: bool = False,
@@ -238,7 +260,7 @@ def run_gates(
         "imports": lambda: gate_imports(repo),
         "traps": lambda: gate_unbound(repo, strict=strict),
         "manifest+forkdelta": lambda: gate_manifest_forkdelta(repo, base=base, fork_ref=fork_ref),
-        "tests": lambda: gate_tests(repo, tests=tests),
+        "tests": lambda: gate_tests(repo, tests=tests, full=full),
         "linuxonly": lambda: gate_linuxonly(repo),
     }
     results: list[GateResult] = []

@@ -1,4 +1,4 @@
-"""Focused contracts for future state-store backend activation."""
+"""Focused contracts for state-store backend resolution and activation."""
 
 from dataclasses import FrozenInstanceError
 
@@ -12,12 +12,12 @@ from hermes_cli.config import (
 from hermes_state import SCHEMA_SQL, SessionDB
 from state_store import (
     SCHEMA_V22_MANIFEST,
-    StateStoreBackendNotActivatedError,
     StateStoreConfigurationError,
     resolve_state_store,
     schema_v22_manifest_parity,
     sqlite_relational_table_names,
 )
+from state_store.postgres import PostgresConfigurationError
 
 
 def _postgres_config() -> dict:
@@ -72,7 +72,7 @@ def test_for_home_loads_target_config_without_ambient_profile_state(tmp_path, mo
     )
     monkeypatch.setenv("HERMES_HOME", str(ambient_home))
 
-    with pytest.raises(StateStoreBackendNotActivatedError):
+    with pytest.raises(PostgresConfigurationError):
         SessionDB.for_home(target_home)
 
     assert not (target_home / "state.db").exists()
@@ -323,7 +323,7 @@ def test_postgres_configuration_never_implicitly_falls_back_to_sqlite(tmp_path):
     assert spec.backend == "postgres"
     assert spec.sqlite_path == tmp_path / "state.db"
 
-    with pytest.raises(StateStoreBackendNotActivatedError) as exc_info:
+    with pytest.raises(PostgresConfigurationError) as exc_info:
         SessionDB.for_home(tmp_path, config=_postgres_config())
 
     assert "postgresql://" not in str(exc_info.value).lower()

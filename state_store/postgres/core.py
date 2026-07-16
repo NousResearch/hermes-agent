@@ -460,6 +460,7 @@ class PostgresStateStore:
             if self._pool is None:
                 raise AssertionError("PostgreSQL pool was not created")
             pool = self._pool
+        operation_started = False
         try:
             with pool.connection() as connection:
                 with connection.transaction():
@@ -468,10 +469,13 @@ class PostgresStateStore:
                         read_only=bool(effective_read_only),
                         configure_search_path=configure_search_path,
                     )
+                    operation_started = True
                     yield connection
         except PostgresStateStoreError:
             raise
-        except Exception:
+        except Exception as exc:
+            if operation_started and not self._is_driver_exception(exc):
+                raise
             raise PostgresConnectionError(
                 "PostgreSQL state operation failed"
             ) from None
@@ -851,6 +855,19 @@ class PostgresStateStore:
 
         return self.migrate(include_telegram=True)
 
+    def ensure_search_schema(self) -> None:
+        """Create the derived PostgreSQL full-text and trigram search schema."""
+
+        if self.spec.read_only:
+            raise PostgresReadOnlyError(
+                "Cannot create search indexes in a read-only PostgreSQL state store"
+            )
+        from state_store.postgres.search_ddl import search_capability_setup_sql
+
+        with self.transaction(read_only=False) as connection:
+            for statement in search_capability_setup_sql():
+                connection.execute(statement)
+
     def health_report(self) -> PostgresHealthReport:
         """Return connection/schema capability data without leaking DSN details."""
 
@@ -876,6 +893,17 @@ class PostgresStateStore:
                     (f"{self._schema}.telegram_dm_topic_bindings",),
                 ).fetchone()
                 capabilities["telegram_schema"] = self._row_value(telegram_rows) is not None
+                search_rows = connection.execute(
+                    "SELECT to_regclass(%s), to_regclass(%s), to_regclass(%s)",
+                    (
+                        f"{self._schema}.idx_messages_search_vector_gin",
+                        f"{self._schema}.idx_messages_search_document_trgm",
+                        f"{self._schema}.idx_sessions_id_trgm",
+                    ),
+                ).fetchone()
+                capabilities["full_text_search"] = bool(
+                    search_rows and all(value is not None for value in search_rows)
+                )
                 return PostgresHealthReport(
                     available=True,
                     schema=self._schema,
@@ -1025,6 +1053,13 @@ class PostgresStateStore:
         while normalized.startswith("(") and normalized.endswith(")"):
             normalized = normalized[1:-1].strip()
         return normalized
+
+    @staticmethod
+    def _is_driver_exception(exc: BaseException) -> bool:
+        module = type(exc).__module__
+        return module == "psycopg" or module.startswith(
+            ("psycopg.", "psycopg_pool.")
+        )
 
     @staticmethod
     def _load_psycopg() -> Any:

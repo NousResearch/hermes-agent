@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-POSTGRES_SEARCH_CAPABILITY = "postgres_search"
+POSTGRES_SEARCH_CAPABILITY = "full_text_search"
 SEARCH_VECTOR_COLUMN = "search_vector"
 
 # Keep this expression byte-identical between the generated vector, trigram
@@ -14,7 +14,7 @@ SEARCH_DOCUMENT_EXPRESSION = (
 )
 
 SEARCH_CAPABILITY_SETUP_SQL = (
-    "CREATE EXTENSION IF NOT EXISTS pg_trgm",
+    "CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public",
     f"""
     ALTER TABLE messages
     ADD COLUMN IF NOT EXISTS {SEARCH_VECTOR_COLUMN} tsvector
@@ -28,11 +28,11 @@ SEARCH_CAPABILITY_SETUP_SQL = (
     """,
     f"""
     CREATE INDEX IF NOT EXISTS idx_messages_search_document_trgm
-    ON messages USING GIN (({SEARCH_DOCUMENT_EXPRESSION}) gin_trgm_ops)
+    ON messages USING GIN (({SEARCH_DOCUMENT_EXPRESSION}) public.gin_trgm_ops)
     """,
     """
     CREATE INDEX IF NOT EXISTS idx_sessions_id_trgm
-    ON sessions USING GIN (id gin_trgm_ops)
+    ON sessions USING GIN (id public.gin_trgm_ops)
     """,
 )
 

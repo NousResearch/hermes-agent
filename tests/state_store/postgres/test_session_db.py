@@ -115,6 +115,9 @@ class FakeLifecycleStore:
         if self.migrate_error is not None:
             raise self.migrate_error
 
+    def ensure_search_schema(self) -> None:
+        self.calls.append("ensure_search_schema")
+
     def health_report(self) -> Any:
         self.calls.append("health_report")
         return SimpleNamespace(
@@ -272,7 +275,7 @@ def test_postgres_session_db_writable_factory_migrates_then_validates() -> None:
         state_store_factory=factory,
     )
 
-    assert lifecycle.calls == ["migrate", "health_report"]
+    assert lifecycle.calls == ["migrate", "ensure_search_schema", "health_report"]
     assert factory_calls == [(
         _spec(),
         {"HERMES_TEST_POSTGRES_DSN": "postgresql://ignored"},

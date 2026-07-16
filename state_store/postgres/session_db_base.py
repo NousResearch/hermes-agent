@@ -49,7 +49,7 @@ class PostgresSessionDBBase:
         self,
         operation: Callable[[Any], T],
         *,
-        read_only: Optional[bool] = None,
+        read_only: Optional[bool] = False,
     ) -> T:
         """Run one internal operation without exposing a connection to callers."""
 

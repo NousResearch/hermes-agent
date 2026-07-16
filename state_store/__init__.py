@@ -1,9 +1,4 @@
-"""Behavior-neutral state-store contracts.
-
-This package describes which state backend a profile intends to use. Runtime
-storage remains SQLite until a later production PostgreSQL implementation
-consumes the PostgreSQL spec.
-"""
+"""Durable state-store resolution contracts and backend implementations."""
 
 from state_store.resolver import (
     StateStoreBackendNotActivatedError,

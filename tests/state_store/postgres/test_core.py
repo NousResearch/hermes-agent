@@ -64,12 +64,14 @@ class FakeConnection:
         *,
         schema_version: int | None = None,
         telegram_exists: bool = False,
+        search_exists: bool = False,
         shape: str = "current",
         apply_upgrades: bool = True,
         apply_indexes: bool = True,
     ) -> None:
         self.schema_version = schema_version
         self.telegram_exists = telegram_exists
+        self.search_exists = search_exists
         self.apply_upgrades = apply_upgrades
         self.apply_indexes = apply_indexes
         self.queries: list[tuple[str, Any]] = []
@@ -245,6 +247,10 @@ class FakeConnection:
                 )
             )
         if normalized.startswith("SELECT to_regclass"):
+            if params and len(params) == 3:
+                return FakeCursor(
+                    tuple(params) if self.search_exists else (None, None, None)
+                )
             return FakeCursor(
                 ("tenant_state.telegram_dm_topic_bindings",)
                 if self.telegram_exists
@@ -302,6 +308,10 @@ class FakeConnection:
         for statement in CORE_INDEXES + TELEGRAM_INDEXES:
             if query == statement and self.apply_indexes:
                 self.indexes.add(_index_name(statement))
+        from state_store.postgres.search_ddl import SEARCH_CAPABILITY_SETUP_SQL
+
+        if query in SEARCH_CAPABILITY_SETUP_SQL:
+            self.search_exists = True
         return FakeCursor()
 
     def transaction(self) -> FakeTransaction:
@@ -707,6 +717,17 @@ def test_read_only_migrations_fail_and_health_reports_capabilities() -> None:
         "read_only": True,
         "full_text_search": False,
     }
+
+
+def test_search_schema_is_explicit_and_reported_by_health() -> None:
+    connection = FakeConnection(schema_version=SCHEMA_VERSION)
+    store, _ = make_store(connection)
+
+    store.ensure_search_schema()
+    report = store.health_report()
+
+    assert report.available
+    assert report.capabilities["full_text_search"] is True
 
 
 @pytest.mark.parametrize("schema", ["_tenant_state", "a", "x" * 63])

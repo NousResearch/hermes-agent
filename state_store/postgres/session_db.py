@@ -62,6 +62,7 @@ class PostgresSessionDB(
                     )
             else:
                 state_store.migrate()
+                state_store.ensure_search_schema()
                 report = state_store.health_report()
                 if not report.available or not report.capabilities.get(
                     "core_schema",

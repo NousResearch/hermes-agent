@@ -7947,24 +7947,72 @@ class TelegramAdapter(BasePlatformAdapter):
         key = self._text_batch_key(event)
         existing = self._pending_text_batches.get(key)
         chunk_len = len(event.text or "")
-        replaces_pending_edit = (
-            existing is not None
-            and bool(event.metadata.get("is_edit"))
-            and event.message_id is not None
-            and str(existing.message_id) == str(event.message_id)
-        )
-        if existing is None or replaces_pending_edit:
+        event_message_id = str(event.message_id) if event.message_id is not None else None
+        if existing is None:
             event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            event._text_batch_chunks = [  # type: ignore[attr-defined]
+                (
+                    event_message_id,
+                    event.text or "",
+                    list(event.media_urls),
+                    list(event.media_types),
+                )
+            ]
             self._pending_text_batches[key] = event
         else:
-            # Append text from the follow-up chunk
-            if event.text:
-                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
-            existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
-            # Merge any media that might be attached
-            if event.media_urls:
-                existing.media_urls.extend(event.media_urls)
-                existing.media_types.extend(event.media_types)
+            chunks = list(  # type: ignore[attr-defined]
+                getattr(
+                    existing,
+                    "_text_batch_chunks",
+                    [
+                        (
+                            str(existing.message_id) if existing.message_id is not None else None,
+                            existing.text or "",
+                            list(existing.media_urls),
+                            list(existing.media_types),
+                        )
+                    ],
+                )
+            )
+            edited_chunk = False
+            if bool(event.metadata.get("is_edit")) and event_message_id is not None:
+                for index, (message_id, _text, _media_urls, _media_types) in enumerate(chunks):
+                    if message_id == event_message_id:
+                        edited_chunk = True
+                        if len(chunks) == 1:
+                            event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+                            event._text_batch_chunks = [  # type: ignore[attr-defined]
+                                (
+                                    message_id,
+                                    event.text or "",
+                                    list(event.media_urls),
+                                    list(event.media_types),
+                                )
+                            ]
+                            self._pending_text_batches[key] = event
+                        else:
+                            chunks[index] = (
+                                message_id,
+                                event.text or "",
+                                list(event.media_urls),
+                                list(event.media_types),
+                            )
+                        break
+            if not edited_chunk:
+                chunks.append(
+                    (
+                        event_message_id,
+                        event.text or "",
+                        list(event.media_urls),
+                        list(event.media_types),
+                    )
+                )
+            if self._pending_text_batches[key] is existing:
+                existing._text_batch_chunks = chunks  # type: ignore[attr-defined]
+                existing.text = "\n".join(text for _message_id, text, _urls, _types in chunks if text)
+                existing.media_urls = [url for _id, _text, urls, _types in chunks for url in urls]
+                existing.media_types = [media_type for _id, _text, _urls, types in chunks for media_type in types]
+                existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
 
         # Cancel any pending flush and restart the timer
         prior_task = self._pending_text_batch_tasks.get(key)

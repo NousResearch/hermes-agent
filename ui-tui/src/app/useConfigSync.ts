@@ -43,9 +43,15 @@ export const normalizeBusyInputMode = (raw: unknown): BusyInputMode => {
     return TUI_BUSY_DEFAULT
   }
 
-  const v = raw.trim().toLowerCase() as BusyInputMode
+  const v = raw.trim().toLowerCase()
 
-  return BUSY_MODES.has(v) ? v : TUI_BUSY_DEFAULT
+  // `hybrid` relies on messaging edited-message identity. Ink has no such
+  // signal, so preserve hybrid's normal-input behavior: queue.
+  if (v === 'hybrid') {
+    return 'queue'
+  }
+
+  return BUSY_MODES.has(v as BusyInputMode) ? (v as BusyInputMode) : TUI_BUSY_DEFAULT
 }
 
 const INDICATOR_STYLE_SET: ReadonlySet<IndicatorStyle> = new Set(INDICATOR_STYLES)

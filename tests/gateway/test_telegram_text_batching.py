@@ -79,6 +79,77 @@ class TestTextBatching:
         await asyncio.gather(task, return_exceptions=True)
 
     @pytest.mark.asyncio
+    async def test_edit_replaces_later_chunk_without_duplicating_batch(self):
+        adapter = _make_adapter()
+        first = _make_event("first chunk")
+        first.message_id = "77"
+        second = _make_event("draft second chunk")
+        second.message_id = "78"
+        edited_second = _make_event("corrected second chunk")
+        edited_second.message_id = "78"
+        edited_second.metadata["is_edit"] = True
+
+        adapter._enqueue_text_event(first)
+        adapter._enqueue_text_event(second)
+        adapter._enqueue_text_event(edited_second)
+
+        pending = next(iter(adapter._pending_text_batches.values()))
+        assert pending is first
+        assert pending.text == "first chunk\ncorrected second chunk"
+        assert "draft second chunk" not in pending.text
+        task = next(iter(adapter._pending_text_batch_tasks.values()))
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_edit_replaces_first_chunk_without_dropping_later_chunk(self):
+        adapter = _make_adapter()
+        first = _make_event("draft first chunk")
+        first.message_id = "77"
+        second = _make_event("second chunk")
+        second.message_id = "78"
+        edited_first = _make_event("corrected first chunk")
+        edited_first.message_id = "77"
+        edited_first.metadata["is_edit"] = True
+
+        adapter._enqueue_text_event(first)
+        adapter._enqueue_text_event(second)
+        adapter._enqueue_text_event(edited_first)
+
+        pending = next(iter(adapter._pending_text_batches.values()))
+        assert pending is first
+        assert pending.text == "corrected first chunk\nsecond chunk"
+        task = next(iter(adapter._pending_text_batch_tasks.values()))
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_edit_replaces_chunk_media_without_duplicating_attachment(self):
+        adapter = _make_adapter()
+        first = _make_event("draft first chunk")
+        first.message_id = "77"
+        first.media_urls = ["/tmp/replied-photo.jpg"]
+        first.media_types = ["image"]
+        second = _make_event("second chunk")
+        second.message_id = "78"
+        edited_first = _make_event("corrected first chunk")
+        edited_first.message_id = "77"
+        edited_first.metadata["is_edit"] = True
+        edited_first.media_urls = ["/tmp/replied-photo.jpg"]
+        edited_first.media_types = ["image"]
+
+        adapter._enqueue_text_event(first)
+        adapter._enqueue_text_event(second)
+        adapter._enqueue_text_event(edited_first)
+
+        pending = next(iter(adapter._pending_text_batches.values()))
+        assert pending.media_urls == ["/tmp/replied-photo.jpg"]
+        assert pending.media_types == ["image"]
+        task = next(iter(adapter._pending_text_batch_tasks.values()))
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    @pytest.mark.asyncio
     async def test_text_handler_marks_telegram_edit_metadata(self):
         adapter = _make_adapter()
         adapter._is_user_authorized_from_message = lambda message: True

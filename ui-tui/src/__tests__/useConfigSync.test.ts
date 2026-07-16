@@ -231,6 +231,11 @@ describe('normalizeBusyInputMode', () => {
     expect(normalizeBusyInputMode('STEER')).toBe('steer')
   })
 
+  it('maps gateway-only hybrid behavior to queue in the TUI', () => {
+    expect(normalizeBusyInputMode('hybrid')).toBe('queue')
+    expect(normalizeBusyInputMode(' HYBRID ')).toBe('queue')
+  })
+
   it('defaults to queue for missing/unknown values (TUI-only override)', () => {
     // CLI / messaging adapters keep `interrupt` as the framework default
     // (see hermes_cli/config.py + tui_gateway/server.py::_load_busy_input_mode);

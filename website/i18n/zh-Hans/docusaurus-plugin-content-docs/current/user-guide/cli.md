@@ -253,11 +253,12 @@ personalities:
 | `"interrupt"`（默认） | 你的消息中断当前操作并立即处理 |
 | `"queue"` | 你的消息被静默排队，在 agent 完成后作为下一轮发送 |
 | `"steer"` | 你的消息通过 `/steer` 注入当前运行，在下一次工具调用后到达 agent——不中断，不开启新轮次 |
+| `"hybrid"` | 消息网关会将启动当前轮次的消息编辑作为 steer，其他输入排队；CLI/TUI 没有消息编辑标识，因此按 `"queue"` 处理 |
 
 ```yaml
 # ~/.hermes/config.yaml
 display:
-  busy_input_mode: "steer"   # 或 "queue" 或 "interrupt"（默认）
+  busy_input_mode: "steer"   # 或 "queue"、"hybrid" 或 "interrupt"（默认）
 ```
 
 `"queue"` 模式适合在不意外取消进行中工作的情况下准备后续消息。`"steer"` 模式适合在不中断的情况下在任务执行中途重定向 agent——例如在它还在编辑代码时说"顺便也检查一下测试"。未知值会回退到 `"interrupt"`。

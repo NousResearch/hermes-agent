@@ -32,8 +32,6 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import List, Optional, Tuple
 
-from agent.skill_utils import is_excluded_skill_path
-
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 # Directories bootstrapped inside every new profile
@@ -733,21 +731,84 @@ def _check_gateway_running(profile_dir: Path) -> bool:
 # recurses the entire skill tree (each skill carries references/scripts/assets
 # sub-trees); the default profile alone has ~270 skills, and ``list_profiles``
 # calls this for EVERY profile (16+), so an uncached scan costs ~6s — long
-# enough that the desktop's per-request backend calls time out and the sidebar
-# renders "全部智能体 0". We cache the count keyed by the skills dir, invalidated
-# when the dir tree's signature (skills_dir + immediate category dirs mtimes)
-# changes (catches skill add/remove) or after a short TTL (catches deep edits).
-_SKILL_COUNT_CACHE: dict[str, tuple[float, float, int]] = {}
+# per-request backend calls time out and the sidebar renders "全部智能体 0".
+# -----------------------------------------------------------------------
+# _count_skills — profile-list card skill count.
+#
+# `list_profiles` invokes this for every profile; with 16+ profiles an
+# uncached full scan is ~6s, long enough that the desktop's per-request
+# backend calls time out and the sidebar renders "全部智能体 0".
+#
+# The count must mirror GET /api/skills?profile=<name> exactly so the
+# profile-list card and the Skills dashboard agree. That endpoint calls
+# `tools.skills_tool._find_all_skills(skip_disabled=True)` from inside a
+# `_profile_scope`, which scopes (a) the active HERMES_HOME so
+# `load_config()` reads the requested profile's `config.yaml`, and (b) the
+# `SKILLS_DIR` module attribute. To match that contract without going
+# through `_profile_scope` (which mutates process-global module attrs and
+# would break concurrent list operations in a long-lived runtime), this
+# path instead:
+#
+#   1. Reads `profile_dir/config.yaml` directly for `skills.external_dirs`
+#      and `skills.disabled` — that's the same data
+#      `get_external_skills_dirs()` resolves from `load_config()`,
+#      just from a profile-scoped file rather than the active config.
+#   2. Delegates the filter chain to
+#      `tools.skills_tool._collect_skills_from_dirs`, which applies the
+#      same exclusion / platform / environment / dedup / disabled filters
+#      as the cached `_find_all_skills` loop, but bypasses the
+#      process-global `_SKILLS_CACHE`. The cache slot is keyed only by
+#      skip/disabled state and would risk a false-hit across profiles
+#      that happen to share the same `disabled` set and scan dirs.
+#
+# The cache (signature + TTL) is kept — invalidation now also includes
+# `config.yaml` mtime and the mtime of every `external_dirs` entry, so an
+# edit to external_dirs (no mtime bump on `skills/`) is also caught.
+# -----------------------------------------------------------------------
+_SKILL_COUNT_CACHE: "dict[Tuple[str, str], tuple]" = {}
 _SKILL_COUNT_TTL_SECONDS = 30.0
 
 
-def _skills_dir_signature(skills_dir: Path) -> float:
-    """Cheap change-signature for a skills tree.
+def _skills_count_signature(profile_dir: Path, external_dirs: List[Path], disabled) -> tuple:
+    """Composite change-signature for a profile's count.
 
-    Max mtime of ``skills_dir`` and its immediate children (category dirs).
-    Adding/removing a category bumps ``skills_dir``'s mtime; adding/removing a
-    skill inside a category bumps that category dir's mtime. One ``scandir``
-    (not a recursive walk) keeps this O(#categories), not O(#files).
+    Cheap: at most one scandir on the local skills dir plus O(#external)
+    stats. Includes (a) ``profile_dir/config.yaml`` mtime — covers writes
+    to ``skills.external_dirs`` or ``skills.disabled`` (config-only
+    changes that don't bump the skills tree mtime), (b) the local skills
+    dir + immediate category dirs mtime (existing behaviour), and (c)
+    each external dir's mtime (covers edits to an external skills pool
+    that don't touch the local tree).
+    """
+    skills_dir = profile_dir / "skills"
+    # Local skills signature — same scan as the old _skills_dir_signature,
+    # but expressed as a hash-friendly subpart for the composite signature.
+    try:
+        local_sig = _skills_dir_signature_inner(skills_dir)
+    except Exception:
+        local_sig = 0.0
+    # config.yaml mtime.
+    config_path = profile_dir / "config.yaml"
+    try:
+        config_mtime = config_path.stat().st_mtime if config_path.exists() else 0.0
+    except OSError:
+        config_mtime = 0.0
+    # External dirs mtime (each, in order, so reordering produces a new sig).
+    ext_sig = []
+    for d in external_dirs:
+        try:
+            ext_sig.append((str(d), d.stat().st_mtime if d.exists() else 0.0))
+        except OSError:
+            ext_sig.append((str(d), 0.0))
+    return (local_sig, config_mtime, tuple(ext_sig), frozenset(disabled))
+
+
+def _skills_dir_signature_inner(skills_dir: Path) -> float:
+    """Max mtime of skills_dir + its immediate category subdirs.
+
+    O(#categories) — one scandir, no recursive walk. Public via
+    ``_skills_count_signature``; module-level alias
+    ``_skills_dir_signature`` preserved for any direct callers.
     """
     try:
         sig = skills_dir.stat().st_mtime
@@ -768,14 +829,141 @@ def _skills_dir_signature(skills_dir: Path) -> float:
     return sig
 
 
+# Back-compat shim — some external callers (e.g. test fixtures) reference
+# the previous name.
+_skills_dir_signature = _skills_dir_signature_inner
+
+
+def _load_profile_external_dirs(profile_dir: Path) -> List[Path]:
+    """Read ``skills.external_dirs`` from a profile's ``config.yaml``.
+
+    Returns validated ``Path`` objects — entries that don't exist or that
+    resolve to the local skills dir are skipped (mirrors
+    ``agent.skill_utils.get_external_skills_dirs``'s validation). A
+    missing or unreadable config yields ``[]`` (not an error), so a brand-
+    new profile or a corrupt config never breaks ``hermes profile list``.
+    """
+    config_path = profile_dir / "config.yaml"
+    if not config_path.is_file():
+        return []
+    try:
+        import yaml as _yaml  # local import — keeps profiles.py import-time lean
+    except ImportError:
+        return []
+    try:
+        parsed = _yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(parsed, dict):
+        return []
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return []
+    raw_dirs = skills_cfg.get("external_dirs")
+    if not raw_dirs:
+        return []
+    if isinstance(raw_dirs, str):
+        raw_dirs = [raw_dirs]
+    if not isinstance(raw_dirs, list):
+        return []
+
+    local_skills = (profile_dir / "skills").resolve()
+    seen: set = set()
+    result: List[Path] = []
+    for entry in raw_dirs:
+        entry = str(entry).strip()
+        if not entry:
+            continue
+        expanded = os.path.expanduser(os.path.expandvars(entry))
+        p = Path(expanded)
+        if not p.is_absolute():
+            # Resolve relative paths against the profile's HERMES_HOME —
+            # mirrors ``get_external_skills_dirs``'s contract.
+            p = (profile_dir / p).resolve()
+        else:
+            p = p.resolve()
+        if p == local_skills:
+            continue
+        if p in seen:
+            continue
+        if p.is_dir():
+            seen.add(p)
+            result.append(p)
+    return result
+
+
+def _load_profile_disabled_skills(profile_dir: Path) -> set:
+    """Read ``skills.disabled`` from a profile's ``config.yaml``.
+
+    Returns a ``set`` of skill names. Missing / unreadable / non-dict
+    config yields ``set()`` (matches ``agent.skill_utils`` semantics).
+    Platform-scoped disabling (``skills.platform_disabled.<os>``) is
+    intentionally not read here: this is the CLI profile-list count,
+    which mirrors ``GET /api/skills``'s *global* disabled union and
+    ignores the active OS. Keeping the contract symmetric avoids the
+    count fluctuating based on which platform ``hermes profile list``
+    happens to run on.
+    """
+    config_path = profile_dir / "config.yaml"
+    if not config_path.is_file():
+        return set()
+    try:
+        import yaml as _yaml  # local import — keeps profiles.py import-time lean
+    except ImportError:
+        return set()
+    try:
+        parsed = _yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+    if not isinstance(parsed, dict):
+        return set()
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return set()
+    raw = skills_cfg.get("disabled")
+    if not raw:
+        return set()
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return set()
+    return {str(n).strip() for n in raw if str(n).strip()}
+
+
 def _count_skills(profile_dir: Path) -> int:
-    """Count installed skills in a profile (cached by skills-dir signature)."""
+    """Count installable skills in a profile (matches /api/skills contract).
+
+    Returns the total count of skill records that ``GET /api/skills?
+    profile=<name>`` would expose: includes local ``skills/`` entries
+    unioned with that profile's ``skills.external_dirs``, applies the
+    standard exclusion / ``platforms`` / ``environments`` / dedup
+    filters, and is cached per-process for
+    ``_SKILL_COUNT_TTL_SECONDS`` seconds (invalidated by directory or
+    config mtime changes — see :func:`_skills_count_signature`).
+
+    The ``disabled`` set is **not** applied here: ``/api/skills`` returns
+    a list whose length includes disabled skills (each annotated with
+    ``enabled: false`` by the route handler), so the count must match.
+    """
+
+    # Local import keeps profiles.py import-time lean and avoids a
+    # circular import through tools.skills_tool ↔ hermes_cli.profiles.
+    from tools.skills_tool import _collect_skills_from_dirs
+
     skills_dir = profile_dir / "skills"
     if not skills_dir.is_dir():
         return 0
 
-    key = str(skills_dir)
-    signature = _skills_dir_signature(skills_dir)
+    external_dirs = _load_profile_external_dirs(profile_dir)
+    # Disabled is NOT passed to the filter (kept only as a cache-key
+    # component so that toggling skills.disabled invalidates the cache
+    # without affecting the count). Pass an empty set; this matches the
+    # behaviour of ``_find_all_skills(skip_disabled=True)`` that
+    # ``/api/skills`` calls — disabled skills are labeled, not omitted.
+    key = (str(profile_dir), str(skills_dir))
+    signature = _skills_count_signature(
+        profile_dir, external_dirs, _load_profile_disabled_skills(profile_dir),
+    )
     now = time.time()
     cached = _SKILL_COUNT_CACHE.get(key)
     if (
@@ -785,11 +973,9 @@ def _count_skills(profile_dir: Path) -> int:
     ):
         return cached[2]
 
-    count = 0
-    for md in skills_dir.rglob("SKILL.md"):
-        if is_excluded_skill_path(md):
-            continue
-        count += 1
+    dirs_to_scan = [skills_dir] + external_dirs
+    skills = _collect_skills_from_dirs(dirs_to_scan, disabled=set())
+    count = len(skills)
     _SKILL_COUNT_CACHE[key] = (signature, now, count)
     return count
 

@@ -1896,3 +1896,214 @@ class TestProfilesToServe:
     def test_on_no_named_profiles_returns_just_default(self, profile_env):
         serve = profiles_to_serve(multiplex=True)
         assert [n for n, _ in serve] == ["default"]
+
+
+# ===================================================================
+# Parity tests: profile-list skill_count must equal GET /api/skills?profile=
+# (regression for PR #51708 / issue #51707)
+#
+# The profile-list card skill_count previously diverged from the
+# web-dashboard /api/skills count because the CLI used a raw `rglob` scan
+# with a different exclusion rule than /api/skills. These tests exercise the
+# parity contract directly: build profiles with overlapping + unique
+# skills, including a disabled, a duplicate, and a profile-scoped external
+# pool, then assert that ``_count_skills`` returns the same count that
+# ``GET /api/skills?profile=<name>`` returns for the same fixtures.
+# ===================================================================
+
+
+def _write_skill(skill_dir: Path, *, name: str, description: str = "test skill",
+                 body: str = "Body", platforms=None) -> None:
+    """Write a minimal SKILL.md with YAML frontmatter."""
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    plat = f"\nplatforms: {platforms}" if platforms else ""
+    skill_dir.joinpath("SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {description}{plat}\n---\n{body}\n",
+        encoding="utf-8",
+    )
+
+
+def _write_profile_config(profile_dir: Path, *,
+                          external_dirs=None,
+                          disabled=None) -> None:
+    """Write a profile's config.yaml with optional skills.external_dirs +
+    skills.disabled entries."""
+    cfg: dict = {"skills": {}}
+    if external_dirs:
+        cfg["skills"]["external_dirs"] = [str(p) for p in external_dirs]
+    if disabled:
+        cfg["skills"]["disabled"] = list(disabled)
+    profile_dir.joinpath("config.yaml").write_text(
+        yaml.safe_dump(cfg), encoding="utf-8"
+    )
+
+
+class TestCountSkillsMatchesApiSkills:
+    """``_count_skills`` must match GET /api/skills?profile=.
+
+    These tests deliberately exercise both the CLI helper and the live
+    FastAPI route in the same test so the two cannot drift apart in
+    future maintenance.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_caches(self):
+        """Bust both the CLI's per-profile count cache and the dashboard's
+        shared ``_SKILLS_CACHE`` so each test sees fresh data."""
+        from tools import skills_tool
+        profiles._SKILL_COUNT_CACHE.clear()
+        skills_tool._SKILLS_CACHE.clear()
+        yield
+        profiles._SKILL_COUNT_CACHE.clear()
+        skills_tool._SKILLS_CACHE.clear()
+
+    def _web_client(self, tmp_path, monkeypatch):
+        """Build a starlette TestClient whose state DB lives under the test
+        HERMES_HOME and whose session header matches the real dashboard."""
+        try:
+            from starlette.testclient import TestClient  # noqa: F401
+        except ImportError:
+            pytest.skip("starlette/fastapi not installed")
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_server import (
+            app, _SESSION_HEADER_NAME, _SESSION_TOKEN,
+        )
+        monkeypatch.setattr(
+            hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db",
+        )
+        client = TestClient(app)
+        client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+        return client
+
+    def _api_count(self, client, profile_name: str) -> int:
+        """GET /api/skills?profile=<name> → len(payload)."""
+        resp = client.get(f"/api/skills?profile={profile_name}")
+        assert resp.status_code == 200, resp.text
+        return len(resp.json())
+
+    def _make_hermes_env(self, tmp_path, monkeypatch):
+        """Mirror the profile_env fixture: redirect Path.home() and
+        HERMES_HOME into tmp_path/.hermes for the duration of the test."""
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir(exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        return default_home
+
+    def test_parity_disabled_and_dedup(self, tmp_path, monkeypatch):
+        """Disabled skills are LABELED (not excluded); duplicate names
+        collapse to one. ``/api/skills`` returns the SAME total count as
+        ``_count_skills`` — disabled skills are annotated with
+        ``enabled: false`` rather than omitted from the list. The CLI
+        card count must therefore match the API list length exactly.
+
+        Profile ``coder`` carries 3 enabled skills plus a disabled skill,
+        a duplicate-name shadow, and a skill under an excluded path
+        component (.venv). Both the CLI count and /api/skills must
+        report the same number.
+        """
+        default_home = self._make_hermes_env(tmp_path, monkeypatch)
+        prof_dir = default_home / "profiles" / "coder"
+        prof_dir.mkdir(parents=True)
+        skills_dir = prof_dir / "skills"
+
+        _write_skill(skills_dir / "alpha", name="alpha")
+        _write_skill(skills_dir / "beta", name="beta")
+        _write_skill(skills_dir / "gamma", name="gamma")
+        # Duplicate-name sibling — must NOT inflate the count.
+        _write_skill(skills_dir / "gamma-shadow", name="gamma",
+                     description="Shadow gamma (should be deduped)")
+        # Excluded by EXCLUDED_SKILL_DIRS part name — must be skipped.
+        _write_skill(skills_dir / ".venv" / "fake-pkg",
+                     name="inside-venv",
+                     description="should be excluded")
+        _write_profile_config(prof_dir, disabled={"alpha"})
+
+        client = self._web_client(tmp_path, monkeypatch)
+        api = self._api_count(client, "coder")
+        cli = profiles._count_skills(prof_dir)
+        # 4 SKILL.md files on disk: alpha (disabled but still in result),
+        # beta, gamma, gamma-shadow (deduped to gamma), .venv/fake-pkg
+        # (excluded). Expected unique enabled+disabled count = 3.
+        assert cli == 3, (
+            f"CLI count={cli}; expected 3 (alpha labeled disabled, "
+            f"beta + gamma enabled, gamma-shadow deduped, .venv excluded)"
+        )
+        assert api == cli == 3, (
+            f"parity broken: api={api}, cli={cli}, expected both == 3 "
+            f"(disabled skills are listed with enabled:false, not omitted)"
+        )
+
+    def test_parity_profile_scoped_external_dirs(self, tmp_path, monkeypatch):
+        """Profile with skills.external_dirs unioned into the count.
+
+        Mirrors the live PR #51708 / issue #51707 bug: the card count
+        must include the external pool that lives under that profile's
+        own config.yaml, not the active profile's external_dirs.
+        """
+        default_home = self._make_hermes_env(tmp_path, monkeypatch)
+        prof_dir = default_home / "profiles" / "writer"
+        prof_dir.mkdir(parents=True)
+        skills_dir = prof_dir / "skills"
+        _write_skill(skills_dir / "local-one", name="local-one")
+
+        external_pool = tmp_path / "shared-skills" / "writer-pool"
+        external_pool.mkdir(parents=True)
+        _write_skill(external_pool / "ext-a", name="ext-a")
+        _write_skill(external_pool / "ext-b", name="ext-b")
+        # Duplicate-name shadow — must dedup.
+        _write_skill(external_pool / "local-one-shadow", name="local-one",
+                     description="Shadow local-one (should be deduped)")
+        _write_profile_config(prof_dir, external_dirs=[external_pool])
+
+        client = self._web_client(tmp_path, monkeypatch)
+        api = self._api_count(client, "writer")
+        cli = profiles._count_skills(prof_dir)
+        # 4 SKILL.md files on disk: local-one + ext-a + ext-b + shadow.
+        # Shadow dedupes to local-one → 3 unique names.
+        assert cli == 3, (
+            f"CLI count={cli}; expected 3 (local-one + ext-a + ext-b; "
+            f"shadow deduped)"
+        )
+        assert api == cli == 3, (
+            f"parity broken: api={api}, cli={cli}, expected both == 3"
+        )
+
+    def test_bare_profile_no_skills_dir(self, tmp_path, monkeypatch):
+        """Brand-new profile with no skills/ and no config.yaml reports 0
+        on both surfaces and does not raise."""
+        default_home = self._make_hermes_env(tmp_path, monkeypatch)
+        prof_dir = default_home / "profiles" / "fresh"
+        prof_dir.mkdir(parents=True)
+
+        # CLI
+        assert profiles._count_skills(prof_dir) == 0
+
+        client = self._web_client(tmp_path, monkeypatch)
+        api = self._api_count(client, "fresh")
+        assert api == 0
+
+    def test_corrupt_config_yaml_does_not_crash(self, tmp_path, monkeypatch):
+        """Malformed config.yaml falls back to empty defaults; the count
+        succeeds and the /api/skills endpoint serves the same data."""
+        default_home = self._make_hermes_env(tmp_path, monkeypatch)
+        prof_dir = default_home / "profiles" / "broken"
+        prof_dir.mkdir(parents=True)
+        _write_skill(prof_dir / "skills" / "only", name="only")
+        prof_dir.joinpath("config.yaml").write_text(
+            "this: : not: valid: yaml: :", encoding="utf-8"
+        )
+        # Must not raise — broken config.yaml must not block discovery.
+        cli = profiles._count_skills(prof_dir)
+        assert cli == 1, (
+            f"expected 1 (only skill) when config.yaml is unreadable; "
+            f"got {cli}"
+        )
+
+        # Parity: /api/skills?profile=broken must also return 1.
+        client = self._web_client(tmp_path, monkeypatch)
+        api = self._api_count(client, "broken")
+        assert api == 1, (
+            f"parity broken: api={api}, cli={cli}, expected both == 1"
+        )

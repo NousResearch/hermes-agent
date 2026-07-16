@@ -5876,6 +5876,35 @@ class AIAgent:
         from agent.chat_completion_helpers import handle_max_iterations
         return handle_max_iterations(self, messages, api_call_count)
 
+    def _conversation_root_id(self) -> Optional[str]:
+        """Resolve the stable conversation id for Portal usage attribution.
+
+        Returns the session-lineage ROOT id rather than the current segment
+        id, so one user-facing conversation keeps a single ``conversation=``
+        tag across context-compression rotation (`/new` starts a genuinely
+        new lineage). Delegate subagents resolve through their
+        ``_parent_session_id`` so an entire delegation tree tags as the
+        parent conversation.
+
+        Best-effort: falls back to the raw session id when the session DB
+        is unavailable or the lineage walk fails.
+        """
+        sid = getattr(self, "session_id", None)
+        if not sid:
+            return None
+        # Subagents may not have a DB row yet on their first turn; walking
+        # from the parent id still lands on the right root.
+        start = getattr(self, "_parent_session_id", None) or sid
+        db = getattr(self, "_session_db", None)
+        if db is not None:
+            try:
+                root = db.get_conversation_root(start)
+                if root:
+                    return root
+            except Exception:
+                logger.debug("Conversation root lineage walk failed", exc_info=True)
+        return start
+
     def run_conversation(
         self,
         user_message: Any,
@@ -5889,17 +5918,30 @@ class AIAgent:
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.conversation_loop import run_conversation
-        return run_conversation(
-            self,
-            user_message,
-            system_message,
-            conversation_history,
-            task_id,
-            stream_callback,
-            persist_user_message,
-            persist_user_timestamp=persist_user_timestamp,
-            moa_config=moa_config,
+        from agent.portal_tags import (
+            reset_conversation_context,
+            set_conversation_context,
         )
+        # Publish the conversation id for ambient Nous Portal tagging. Every
+        # LLM call made inside this turn — main loop, compression, vision,
+        # web_extract, session_search, MoA slots, background-review forks
+        # (which copy this Context into their thread) — inherits the
+        # ``conversation=<root>`` tag with zero per-call-site plumbing.
+        token = set_conversation_context(self._conversation_root_id())
+        try:
+            return run_conversation(
+                self,
+                user_message,
+                system_message,
+                conversation_history,
+                task_id,
+                stream_callback,
+                persist_user_message,
+                persist_user_timestamp=persist_user_timestamp,
+                moa_config=moa_config,
+            )
+        finally:
+            reset_conversation_context(token)
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """

@@ -29,13 +29,23 @@ What we DO NOT expose:
   - read_file / write_file / patch       — codex's apply_patch + shell
   - search_files / process               — codex's shell
   - clarify                              — codex's own UX
-  - delegate_task / memory /             — `_AGENT_LOOP_TOOLS` in Hermes
-    session_search / todo                  (model_tools.py). They require
+  - delegate_task / todo                 — `_AGENT_LOOP_TOOLS` in Hermes
+                                           (model_tools.py). They require
                                            the running AIAgent context to
                                            dispatch (mid-loop state), so a
                                            stateless MCP callback can't
                                            drive them. See the inline
                                            comment on EXPOSED_TOOLS below.
+
+Exposed via STATELESS SHIMS (#26567) rather than the generic dispatcher:
+  - memory                               — tools.memory_tool.load_on_disk_store()
+                                           per call: native caps, drift guard,
+                                           threat scan, locking all inherited
+  - session_search                       — read-only SessionDB over the state
+                                           DB; the calling session's id rides
+                                           HERMES_MCP_SESSION_ID
+  The `_AGENT_LOOP_TOOLS` refusal in handle_function_call stays intact for
+  every other caller — the shims are dedicated closures, not a widened gate.
 
 Run with: python -m agent.transports.hermes_tools_mcp_server
 Spawned by: CodexAppServerSession.ensure_started() when the runtime is
@@ -149,6 +159,216 @@ EXPOSED_TOOLS: tuple[str, ...] = (
 )
 
 
+# --- Stateless agent-loop shims (#26567) ---------------------------------
+#
+# `memory` and `session_search` are `_AGENT_LOOP_TOOLS`: the generic
+# dispatcher refuses them because natively they receive live agent state
+# (the loop's MemoryStore / session-DB handle) from tool_executor. Both
+# have faithful stateless equivalents, so runtimes that own their own agent
+# loop (claude-agent-sdk, codex app-server) can regain them through this
+# server without touching that refusal:
+#
+#   memory         → a fresh `load_on_disk_store()` per call. Char caps,
+#                    config overrides, external-drift guard, threat scan,
+#                    file locking and the consolidation-failure breaker all
+#                    live in MemoryStore/memory_tool and are inherited.
+#                    NOTE: a shim write cannot mirror through MemoryProvider
+#                    hooks (no MemoryManager in this subprocess), so when
+#                    `memory.provider` configures an external backend the
+#                    shim FAILS CLOSED — unregistered, and refused at
+#                    dispatch — rather than silently diverging the stores.
+#   session_search → `SessionDB(read_only=True)` over the state DB (never a
+#                    writable handle in a model-facing subprocess). The
+#                    calling session's id arrives via HERMES_MCP_SESSION_ID
+#                    so own-lineage exclusion keeps working; the DB path can
+#                    be overridden via HERMES_MCP_STATE_DB (defaults to the
+#                    profile's state.db).
+
+_SESSION_ID_ENV = "HERMES_MCP_SESSION_ID"
+_STATE_DB_ENV = "HERMES_MCP_STATE_DB"
+
+
+def _external_memory_provider():
+    """Name of the external memory provider configured via `memory.provider`,
+    or None for the builtin on-disk store. Config-read failure counts as
+    builtin — the same fail-open posture as `_memory_enabled_in_config()`."""
+    try:
+        from hermes_cli.config import load_config
+
+        provider = str(
+            (((load_config() or {}).get("memory", {}) or {}).get("provider") or "")
+        ).strip().lower()
+    except Exception:
+        return None
+    if provider in ("", "none", "builtin", "off", "disabled"):
+        return None
+    return provider
+
+
+def dispatch_memory(kwargs: dict) -> str:
+    """Stateless `memory` dispatch: native handler + on-disk store."""
+    from tools.memory_tool import load_on_disk_store, memory_tool
+    from tools.registry import tool_error
+
+    provider = _external_memory_provider()
+    if provider is not None:
+        # Every memory action mutates (add/replace/remove/batch), and a
+        # mutation here can never reach the external backend — refuse with
+        # the reason instead of letting the two stores drift apart.
+        return tool_error(
+            f"memory is disabled in this MCP shim: external memory provider "
+            f"'{provider}' is configured (memory.provider) and shim writes "
+            f"cannot mirror to it. Use the memory tool in the main agent "
+            f"loop instead.",
+            success=False,
+        )
+    return memory_tool(
+        action=kwargs.get("action", ""),
+        target=kwargs.get("target", "memory"),
+        content=kwargs.get("content"),
+        old_text=kwargs.get("old_text"),
+        operations=kwargs.get("operations"),
+        store=load_on_disk_store(),
+    )
+
+
+def dispatch_session_search(kwargs: dict) -> str:
+    """Stateless `session_search` dispatch: read-only DB + env session id."""
+    from pathlib import Path
+
+    import hermes_state
+    from tools import session_search_tool
+
+    db_path = Path(
+        os.environ.get(_STATE_DB_ENV, "").strip()
+        or hermes_state.DEFAULT_DB_PATH
+    )
+    if not db_path.exists():
+        # Explicit degrade — a missing DB must never read as "no results".
+        return json.dumps({
+            "success": False,
+            "error": f"session_search unavailable: state DB not found at {db_path}",
+        })
+    try:
+        db = hermes_state.SessionDB(db_path=db_path, read_only=True)
+    except Exception as exc:
+        return json.dumps({
+            "success": False,
+            "error": f"session_search unavailable: cannot open state DB read-only: {exc}",
+        })
+    try:
+        # A present-but-uninitialized DB (0-byte file from a crashed first
+        # init) opens fine and would return a SILENT empty result — the
+        # exact failure the missing-file guard above exists to prevent.
+        # Probe the schema and degrade explicitly instead.
+        db.get_session("__schema-probe__")
+    except Exception as exc:
+        try:
+            db.close()
+        except Exception:
+            pass
+        return json.dumps({
+            "success": False,
+            "error": f"session_search unavailable: state DB not initialized: {exc}",
+        })
+
+    def _run(query: str) -> str:
+        return session_search_tool.session_search(
+            query=query,
+            role_filter=kwargs.get("role_filter"),
+            limit=kwargs.get("limit", 3),
+            session_id=kwargs.get("session_id"),
+            around_message_id=kwargs.get("around_message_id"),
+            window=kwargs.get("window", 5),
+            sort=kwargs.get("sort"),
+            profile=kwargs.get("profile"),
+            db=db,
+            current_session_id=os.environ.get(_SESSION_ID_ENV, "").strip() or None,
+        )
+
+    try:
+        query = kwargs.get("query") or ""
+        result = _run(query)
+        # Deterministic OR-relaxation: FTS5 ANDs terms, and models routinely
+        # write "topic word word word" discovery queries that miss content
+        # matching one distinctive term. On a ZERO-hit multi-term query with
+        # no explicit FTS operators, retry ONCE with the terms OR-joined and
+        # annotate the result — never silently, never for a query that
+        # states its own operators, never on a single term.
+        try:
+            parsed = json.loads(result)
+            terms = query.split()
+            has_operators = any(
+                op in query for op in ('"', "*", " OR ", " NOT ", " AND ")
+            )
+            if (
+                isinstance(parsed, dict)
+                and parsed.get("mode") == "discover"
+                and parsed.get("count") == 0
+                and len(terms) >= 2
+                and not has_operators
+            ):
+                relaxed_query = " OR ".join(terms)
+                relaxed = json.loads(_run(relaxed_query))
+                if isinstance(relaxed, dict) and relaxed.get("count", 0) > 0:
+                    relaxed["relaxed_query"] = relaxed_query
+                    relaxed["note"] = (
+                        "No result matched ALL terms (FTS ANDs them); showing "
+                        "matches for ANY term instead."
+                    )
+                    return json.dumps(relaxed)
+        except Exception:
+            logger.debug("session_search relaxation skipped", exc_info=True)
+        return result
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
+def _memory_enabled_in_config() -> bool:
+    """Honor the operator's `memory.memory_enabled` config (default on)."""
+    try:
+        from hermes_cli.config import load_config
+
+        return bool(
+            ((load_config() or {}).get("memory", {}) or {}).get("memory_enabled", True)
+        )
+    except Exception:
+        return True
+
+
+def _stateless_shim_defs() -> list:
+    """(name, description, input_schema, handler) 4-tuples to register.
+
+    session_search is always defined — a missing state DB degrades to an
+    explicit error at call time, which is more diagnosable than an absent
+    tool. memory respects the config kill-switch AND stays unregistered when
+    an external memory provider is configured (shim writes cannot mirror
+    through MemoryProvider hooks — see the scope note above; #26604).
+    """
+    defs = []
+    if _memory_enabled_in_config() and _external_memory_provider() is None:
+        from tools.memory_tool import MEMORY_SCHEMA
+
+        defs.append((
+            "memory",
+            MEMORY_SCHEMA.get("description", "Hermes memory tool"),
+            MEMORY_SCHEMA.get("parameters") or {"type": "object", "properties": {}},
+            dispatch_memory,
+        ))
+    from tools.session_search_tool import SESSION_SEARCH_SCHEMA
+
+    defs.append((
+        "session_search",
+        SESSION_SEARCH_SCHEMA.get("description", "Search past Hermes sessions"),
+        SESSION_SEARCH_SCHEMA.get("parameters") or {"type": "object", "properties": {}},
+        dispatch_session_search,
+    ))
+    return defs
+
+
 def _build_server() -> Any:
     """Create the FastMCP server with Hermes tools attached. Lazy imports
     so the module can be imported without the mcp package installed
@@ -237,10 +457,45 @@ def _build_server() -> Any:
 
         exposed_count += 1
 
+    # Stateless agent-loop shims (#26567) — registered as dedicated
+    # closures so handle_function_call's `_AGENT_LOOP_TOOLS` refusal stays
+    # intact for every other caller. Same signature-from-schema mechanics
+    # as the loop above so FastMCP serves the authoritative registry schema.
+    shim_count = 0
+    for shim_name, shim_description, shim_schema, shim_fn in _stateless_shim_defs():
+        shim_sig, shim_annots = _signature_from_schema(shim_schema)
+
+        def _make_shim_handler(fn, tool_name: str, description: str, sig, annots):
+            def _dispatch(**kwargs: Any) -> str:
+                try:
+                    args = {k: v for k, v in kwargs.items() if v is not None}
+                    return fn(args or {})
+                except Exception as exc:
+                    logger.exception("shim tool %s raised", tool_name)
+                    return json.dumps({"error": str(exc), "tool": tool_name})
+
+            _dispatch.__name__ = tool_name
+            _dispatch.__doc__ = description
+            _dispatch.__signature__ = sig
+            _dispatch.__annotations__ = {**annots, "return": str}
+            return _dispatch
+
+        shim_handler = _make_shim_handler(
+            shim_fn, shim_name, shim_description, shim_sig, shim_annots
+        )
+        try:
+            mcp.add_tool(shim_handler, name=shim_name, description=shim_description)
+        except TypeError:
+            shim_handler = mcp.tool(name=shim_name, description=shim_description)(
+                shim_handler
+            )
+        shim_count += 1
+
     logger.info(
-        "hermes-tools MCP server registered %d/%d tools",
+        "hermes-tools MCP server registered %d/%d tools + %d stateless shims",
         exposed_count,
         len(EXPOSED_TOOLS),
+        shim_count,
     )
     return mcp
 

@@ -403,7 +403,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
 
 
 def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
-    """Return False when the persisted Model/Provider lines are stale."""
+    """Return False when the persisted Model/Provider/Profile lines are stale."""
 
     def line_value(label: str) -> str:
         prefix = f"{label}:"
@@ -422,6 +422,24 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
     current_provider = str(getattr(agent, "provider", "") or "").strip()
     if stored_provider and current_provider and stored_provider != current_provider:
         return False
+
+    # Multiplex gateway profile check. Unlike Model/Provider above, this is
+    # NOT symmetric: a missing stored "Profile:" line is also treated as a
+    # mismatch (not skipped) when the agent is currently running under a
+    # named profile. A session whose stored prompt predates this field (or
+    # was built while profile routing was broken) must not be trusted just
+    # because the line happens to be absent — that's exactly the "wrong
+    # profile's identity baked into the cached prompt" bug this guards
+    # against. Single-profile gateways never set agent.profile, so this is a
+    # no-op for them (current_profile is always empty). Only a real string
+    # counts: agent.profile is str-or-None by contract (agent_init), and test
+    # fakes built from MagicMock must not see a truthy auto-attribute here.
+    _profile_attr = getattr(agent, "profile", None)
+    current_profile = _profile_attr.strip() if isinstance(_profile_attr, str) else ""
+    if current_profile:
+        stored_profile = line_value("Profile")
+        if stored_profile != current_profile:
+            return False
 
     return True
 

@@ -745,6 +745,18 @@ class TelegramAdapter(BasePlatformAdapter):
         # blow the gateway's connect timeout (#46298).
         self._post_connect_task: Optional[asyncio.Task] = None
 
+    def _diagnostic_label(self) -> str:
+        """Log-safe adapter identity for multi-profile Telegram debugging."""
+        profile = getattr(self, "_hermes_profile_name", None) or "default"
+        bot = getattr(self, "_bot", None)
+        username = getattr(bot, "username", None) if bot is not None else None
+        bot_id = getattr(bot, "id", None) if bot is not None else None
+        if username:
+            return f"{self.name} profile={profile} bot=@{username}"
+        if bot_id:
+            return f"{self.name} profile={profile} bot_id={bot_id}"
+        return f"{self.name} profile={profile}"
+
     def _mark_connected(self) -> None:
         self._drop_delayed_deliveries = False
         super()._mark_connected()
@@ -2224,10 +2236,17 @@ class TelegramAdapter(BasePlatformAdapter):
             if getattr(self, "_polling_teardown_started", False):
                 return False
             if self._looks_like_polling_conflict(err):
+                # Bootstrap conflicts hit before PTB invokes our polling
+                # error_callback, so the callback's _disarm_ptb_retry_loop()
+                # path never runs.  Disarm here as well; otherwise PTB's own
+                # network_retry_loop keeps polling while our recovery task does
+                # stop -> sleep -> start_polling, producing a self-inflicted
+                # 409 loop in multiplexer mode.
+                self._disarm_ptb_retry_loop()
                 logger.warning(
                     "[%s] Telegram polling bootstrap conflict; gateway stays alive "
                     "while conflict retry runs: %s",
-                    self.name, err,
+                    self._diagnostic_label(), err,
                 )
                 loop = asyncio.get_running_loop()
                 self._polling_error_task = loop.create_task(self._handle_polling_conflict(err))
@@ -2721,7 +2740,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[%s] Telegram polling conflict (%d/%d) — previous session still "
                 "held open on Telegram's servers. Waiting %ds for it to expire. "
                 "Error: %s",
-                self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES,
+                self._diagnostic_label(), self._polling_conflict_count, MAX_CONFLICT_RETRIES,
                 RETRY_DELAY, error,
             )
             # Stop the local updater cleanly before sleeping.  If it's already
@@ -2767,7 +2786,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.info(
                     "[%s] Telegram polling restarted after conflict retry %d/%d; "
                     "health pending getUpdates progress",
-                    self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES,
+                    self._diagnostic_label(), self._polling_conflict_count, MAX_CONFLICT_RETRIES,
                 )
                 return
             except _PollingLifecycleAbort:
@@ -2778,7 +2797,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.warning(
                     "[%s] Telegram polling retry %d/%d failed: %s. "
                     "Scheduling next attempt.",
-                    self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES,
+                    self._diagnostic_label(), self._polling_conflict_count, MAX_CONFLICT_RETRIES,
                     retry_err,
                 )
                 # Schedule the next retry rather than returning silently.

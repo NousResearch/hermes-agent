@@ -325,6 +325,7 @@ def init_agent(
     request_overrides: Dict[str, Any] = None,
     prefill_messages: List[Dict[str, Any]] = None,
     platform: str = None,
+    profile: str = None,
     user_id: str = None,
     user_id_alt: str = None,
     user_name: str = None,
@@ -410,6 +411,12 @@ def init_agent(
     agent.tool_progress_mode = tool_progress_mode
     agent.ephemeral_system_prompt = ephemeral_system_prompt
     agent.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
+    # Multiplex gateway profile this turn is running under (e.g. "travel",
+    # "home"). None for the default/active profile and for non-gateway
+    # frontends. Embedded in the system prompt (agent/system_prompt.py) and
+    # checked by conversation_loop._stored_prompt_matches_runtime() so a
+    # session's cached system prompt is never reused across a profile change.
+    agent.profile = profile
     agent._user_id = user_id  # Platform user identifier (gateway sessions)
     agent._user_id_alt = user_id_alt  # Optional stable alternate platform identifier
     agent._user_name = user_name

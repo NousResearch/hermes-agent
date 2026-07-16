@@ -18,6 +18,42 @@ from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 
+
+def _current_session_profile() -> str:
+    """Return the multiplex profile this tool call is running as, or "".
+
+    Reads ``HERMES_SESSION_PROFILE`` (set on the live gateway's contextvar
+    for the duration of a chat turn — see ``gateway/run.py::_set_session_env``)
+    falling back to the ``HERMES_PROFILE`` env var (set by the kanban
+    dispatcher when it spawns a worker subprocess). Empty string for
+    non-multiplex gateways / standalone CLI, which callers should treat as
+    "no filtering" to keep pre-multiplex behavior unchanged.
+    """
+    try:
+        from gateway.session_context import get_session_env
+        profile = get_session_env("HERMES_SESSION_PROFILE", "")
+    except Exception:
+        profile = ""
+    return profile or os.environ.get("HERMES_PROFILE", "")
+
+
+def _resolve_runner_adapter(runner, platform):
+    """Profile-aware adapter lookup on the live gateway runner.
+
+    Uses the runner's ``_authorization_adapter`` (multiplex profile-aware)
+    when present; duck-typed runner stands-ins that only carry an
+    ``adapters`` map (tests, embedded frontends) fall back to a plain
+    platform lookup, preserving pre-multiplex behavior.
+    """
+    if runner is None:
+        return None
+    resolver = getattr(runner, "_authorization_adapter", None)
+    if callable(resolver):
+        return resolver(platform, _current_session_profile())
+    adapters = getattr(runner, "adapters", None)
+    return adapters.get(platform) if adapters else None
+
+
 _TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
 _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::([-A-Za-z0-9_]+))?\s*$")
 # Slack conversation IDs: C (public channel), G (private/group channel), D (DM).
@@ -254,7 +290,7 @@ def _handle_list():
     """Return formatted list of available messaging targets."""
     try:
         from gateway.channel_directory import format_directory_for_display
-        return json.dumps({"targets": format_directory_for_display()})
+        return json.dumps({"targets": format_directory_for_display(_current_session_profile())})
     except Exception as e:
         return json.dumps(_error(f"Failed to load channel directory: {e}"))
 
@@ -288,7 +324,7 @@ def _handle_react(args, remove=False):
         if not chat_id:
             try:
                 from gateway.channel_directory import resolve_channel_name
-                resolved = resolve_channel_name(platform_name, target_ref)
+                resolved = resolve_channel_name(platform_name, target_ref, _current_session_profile())
             except Exception:
                 resolved = None
             # Opaque platform-native ids (e.g. photon space GUIDs like
@@ -321,7 +357,7 @@ def _handle_react(args, remove=False):
         runner = _gateway_runner_ref()
     except Exception:
         runner = None
-    adapter = runner.adapters.get(platform) if runner is not None else None
+    adapter = _resolve_runner_adapter(runner, platform)
     if adapter is None:
         return tool_error(
             f"Reactions require a live {platform_name} adapter in the running "
@@ -373,7 +409,7 @@ def _handle_send(args):
     if target_ref and not is_explicit:
         try:
             from gateway.channel_directory import resolve_channel_name
-            resolved = resolve_channel_name(platform_name, target_ref)
+            resolved = resolve_channel_name(platform_name, target_ref, _current_session_profile())
             if resolved:
                 chat_id, thread_id, _ = _parse_target_ref(platform_name, resolved)
             else:
@@ -712,7 +748,7 @@ async def _send_via_adapter(
 
     if runner is not None:
         try:
-            adapter = runner.adapters.get(platform)
+            adapter = _resolve_runner_adapter(runner, platform)
         except Exception:
             adapter = None
         if adapter is not None:
@@ -1681,7 +1717,7 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
     if runner is not None:
         try:
             from gateway.config import Platform
-            live_adapter = runner.adapters.get(Platform.MATRIX)
+            live_adapter = _resolve_runner_adapter(runner, Platform.MATRIX)
         except Exception:
             logger.warning(
                 "Matrix: live gateway adapter lookup failed; falling back to an "

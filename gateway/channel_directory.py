@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home
@@ -109,9 +110,23 @@ def _session_entry_name(origin: Dict[str, Any]) -> str:
 # Build / refresh
 # ---------------------------------------------------------------------------
 
-async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
+async def build_channel_directory(
+    adapters: Dict[Any, Any],
+    profile_adapters: Optional[Dict[str, Dict[Any, Any]]] = None,
+) -> Dict[str, Any]:
     """
     Build a channel directory from connected platform adapters and session data.
+
+    ``profile_adapters`` is the multiplex gateway's ``self._profile_adapters``
+    (profile name -> {Platform: adapter}), when running with
+    ``gateway.multiplex_profiles: true``. Session-discovered entries (the only
+    kind Telegram-style platforms produce) are tagged with a ``"profile"`` key
+    for every secondary profile so a DM chat_id that happens to collide across
+    profiles (Telegram DMs key on the *user's* id, which is identical no
+    matter which bot they're talking to) doesn't collapse into one ambiguous
+    entry. Entries with no ``"profile"`` key belong to the default profile or
+    to a platform with no profile concept (Discord/Slack), unchanged from
+    before this parameter existed.
 
     Returns the directory dict and writes it to DIRECTORY_PATH.
     """
@@ -160,6 +175,32 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
                 platforms[entry.name] = await asyncio.to_thread(_build_from_sessions, entry.name)
     except Exception:
         pass
+
+    # Secondary multiplex profiles: each has its own HERMES_HOME (and thus its
+    # own sessions.json), invisible to the default-profile-only scan above.
+    # Adapter-enumerable platforms (Discord/Slack) aren't handled here — a
+    # secondary profile enabling one of those is already rejected at startup
+    # (multiplex secondary profiles can't bind their own port), so
+    # session-based discovery covers everything multiplex actually supports.
+    if profile_adapters:
+        try:
+            from hermes_cli.profiles import get_profile_dir
+        except Exception:
+            get_profile_dir = None
+        for profile_name, plat_adapters in profile_adapters.items():
+            for platform in plat_adapters.keys():
+                plat_name = platform.value if hasattr(platform, "value") else str(platform)
+                if plat_name in _SKIP_SESSION_DISCOVERY:
+                    continue
+                try:
+                    profile_home = get_profile_dir(profile_name) if get_profile_dir else None
+                except Exception:
+                    profile_home = None
+                entries = _build_from_sessions(plat_name, home_override=profile_home)
+                for entry in entries:
+                    entry["profile"] = profile_name
+                platforms.setdefault(plat_name, [])
+                platforms[plat_name].extend(entries)
 
     # Overlay user-maintained friendly names before persisting.
     _apply_channel_aliases(platforms)
@@ -276,24 +317,39 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
     return channels
 
 
-def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
+def _build_from_sessions(
+    platform_name: str, home_override: Optional[Any] = None
+) -> List[Dict[str, str]]:
     """Pull known channels/contacts from gateway session origin data.
 
     state.db is the primary source (#9006): gateway session rows persist
     origin_json.  Falls back to sessions.json for pre-migration databases.
+
+    ``home_override`` reads a secondary multiplex profile's own HERMES_HOME
+    (its state.db / sessions.json) instead of the default profile's.
     """
-    entries = _build_from_sessions_db(platform_name)
+    entries = _build_from_sessions_db(platform_name, home_override=home_override)
     if entries:
         return entries
-    return _build_from_sessions_json(platform_name)
+    return _build_from_sessions_json(platform_name, home_override=home_override)
 
 
-def _build_from_sessions_db(platform_name: str) -> List[Dict[str, str]]:
+def _build_from_sessions_db(
+    platform_name: str, home_override: Optional[Any] = None
+) -> List[Dict[str, str]]:
     """Pull channels/contacts from state.db gateway session rows."""
     entries: List[Dict[str, str]] = []
     try:
         from hermes_state import SessionDB
-        db = SessionDB()
+        if home_override is not None:
+            # Read-only attach: never contends with the owning profile's
+            # gateway writer, and skips schema init on a DB we don't own.
+            db_path = Path(home_override) / "state.db"
+            if not db_path.exists():
+                return []
+            db = SessionDB(db_path=db_path, read_only=True)
+        else:
+            db = SessionDB()
         try:
             lister = getattr(db, "list_gateway_sessions", None)
             if not callable(lister):
@@ -336,9 +392,12 @@ def _build_from_sessions_db(platform_name: str) -> List[Dict[str, str]]:
     return entries
 
 
-def _build_from_sessions_json(platform_name: str) -> List[Dict[str, str]]:
+def _build_from_sessions_json(
+    platform_name: str, home_override: Optional[Any] = None
+) -> List[Dict[str, str]]:
     """Legacy fallback: pull channels/contacts from sessions.json origin data."""
-    sessions_path = get_hermes_home() / "sessions" / "sessions.json"
+    home = Path(home_override) if home_override is not None else get_hermes_home()
+    sessions_path = home / "sessions" / "sessions.json"
     if not sessions_path.exists():
         return []
 
@@ -404,7 +463,28 @@ def lookup_channel_type(platform_name: str, chat_id: str) -> Optional[str]:
     return None
 
 
-def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
+def _filter_by_profile(
+    channels: List[Dict[str, Any]], profile: Optional[str]
+) -> List[Dict[str, Any]]:
+    """Scope a channel list to one multiplex profile's own targets.
+
+    An entry with no ``"profile"`` key belongs to the default profile (or to
+    a platform with no per-profile concept, like Discord/Slack) — those never
+    get tagged, see ``build_channel_directory``. When *profile* is falsy
+    (non-multiplex gateways, or no session-profile context available), every
+    entry is returned unfiltered — identical to pre-multiplex behavior.
+    """
+    if not profile:
+        return channels
+    return [
+        ch for ch in channels
+        if ch.get("profile") in (None, profile)
+    ]
+
+
+def resolve_channel_name(
+    platform_name: str, name: str, profile: Optional[str] = None
+) -> Optional[str]:
     """
     Resolve a human-friendly channel name to a numeric ID.
 
@@ -412,9 +492,16 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     - Discord: "bot-home", "#bot-home", "GuildName/bot-home"
     - Telegram: display name or group name
     - Slack: "engineering", "#engineering"
+
+    ``profile`` scopes the search to one multiplex profile's own targets —
+    important for Telegram, where a DM's chat_id is the *user's* id and is
+    therefore identical across every bot the user talks to; without this, a
+    secondary profile could resolve a name to another profile's chat_id and
+    silently send through the wrong bot connection.
     """
     directory = load_directory()
     channels = directory.get("platforms", {}).get(platform_name, [])
+    channels = _filter_by_profile(channels, profile)
     if not channels:
         return None
 
@@ -451,10 +538,17 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     return None
 
 
-def format_directory_for_display() -> str:
-    """Format the channel directory as a human-readable list for the model."""
+def format_directory_for_display(profile: Optional[str] = None) -> str:
+    """Format the channel directory as a human-readable list for the model.
+
+    ``profile`` scopes the listing to one multiplex profile's own targets —
+    see ``_filter_by_profile``.
+    """
     directory = load_directory()
-    platforms = directory.get("platforms", {})
+    platforms = {
+        plat_name: _filter_by_profile(channels, profile)
+        for plat_name, channels in directory.get("platforms", {}).items()
+    }
 
     if not any(platforms.values()):
         return "No messaging platforms connected or no channels discovered yet."

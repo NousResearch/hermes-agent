@@ -353,6 +353,64 @@ assert ad.mark_completion_delivered({delegation_id!r})
     assert probe.stdout.strip().splitlines()[-1] == "0"
 
 
+def test_real_process_restart_recovers_abandoned_batch_parent_turn_id(tmp_path):
+    """Owner-exit recovery retains the spawning turn on a durable batch event."""
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    env = {**os.environ, "HERMES_HOME": str(tmp_path), "PYTHONPATH": repo}
+    producer = r'''
+import os
+import sys
+import threading
+from tools import async_delegation as ad
+gate = threading.Event()
+r = ad.dispatch_async_delegation_batch(
+    goals=["restart"], context=None, toolsets=None, role="leaf", model="m",
+    session_key="owner-session", parent_turn_id="turn-restart-901",
+    runner=lambda: (gate.wait(60), {"results": []})[1],
+)
+print(r["delegation_id"])
+sys.stdout.flush()
+os._exit(0)
+'''
+    first = subprocess.run(
+        [sys.executable, "-c", producer], cwd=repo, env=env,
+        text=True, capture_output=True, timeout=15, check=True,
+    )
+    delegation_id = first.stdout.strip().splitlines()[-1]
+
+    consumer = r'''
+import json
+import os
+import queue
+import sqlite3
+import sys
+import types
+sys.modules["gateway.status"] = types.SimpleNamespace(
+    _pid_exists=lambda _pid: False,
+    get_process_start_time=lambda _pid: None,
+)
+from tools import async_delegation as ad
+task_json = sqlite3.connect(os.path.join(os.environ["HERMES_HOME"], "state.db")).execute(
+    "SELECT task_json FROM async_delegations"
+).fetchone()[0]
+recovered = queue.Queue()
+assert ad.restore_undelivered_completions(recovered) == 1
+evt = recovered.get_nowait()
+print(json.dumps({"event": evt, "task": json.loads(task_json)}, sort_keys=True))
+'''
+    second = subprocess.run(
+        [sys.executable, "-c", consumer], cwd=repo, env=env,
+        text=True, capture_output=True, timeout=15, check=True,
+    )
+    payload = json.loads(second.stdout.strip().splitlines()[-1])
+    evt = payload["event"]
+    assert evt["delegation_id"] == delegation_id
+    assert evt["status"] == "unknown"
+    assert (
+        payload["task"].get("parent_turn_id"), evt.get("parent_turn_id")
+    ) == ("turn-restart-901", "turn-restart-901")
+
+
 def test_submit_failure_removes_durable_running_record(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 

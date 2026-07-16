@@ -34,9 +34,11 @@ Active Git filter attributes fail closed before any clean filter can execute, an
 every generated Git call has a bounded timeout. NUL-bearing path output and raw
 Git failure text are rejected behind stable sanitized errors. Assume-unchanged,
 skip-worktree, sparse, and other nonstandard tracked-index tags fail closed;
-fsmonitor and replace-object behavior are disabled for helper Git calls. Run
-generated commands from the repository root. Executing the suggested scan is a
-separate explicit verification step.
+fsmonitor and replace-object behavior are disabled for helper Git calls. Active
+clean filters, `ident`, working-tree encodings, and gitlink/submodule entries fail
+closed before transformed content can hide a worktree change. Run generated
+commands from the repository root. Executing the suggested scan is a separate
+explicit verification step.
 
 ## ULW evidence ledger scaffold
 

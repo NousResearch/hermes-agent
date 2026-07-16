@@ -894,6 +894,153 @@ def test_generated_security_scan_rejects_active_clean_filter_without_executing_i
     assert not (repo / "filter-ran.txt").exists()
 
 
+def test_generated_security_scan_rejects_ident_attribute_transform(tmp_path):
+    mod = _load_bundle()
+    bash = _bash_or_skip()
+    command = mod._added_line_security_scan_command()
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    term = "api" + "_key"
+    sample = repo / "sample.py"
+    sample.write_text(f'{term} = "$Id$"\n', encoding="utf-8")
+    (repo / ".gitattributes").write_text("sample.py ident\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "--", ".gitattributes", sample.name],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "baseline"],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    marker = "SYNTHETIC_IDENT_VALUE"
+    sample.write_text(f'{term} = "$Id: {marker} $"\n', encoding="utf-8")
+
+    scanned = subprocess.run(
+        [bash, "-lc", command],
+        cwd=repo,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+
+    assert scanned.returncode == 1
+    assert "redacted-hit" in scanned.stdout
+    assert marker not in scanned.stdout
+    assert marker not in scanned.stderr
+
+
+@pytest.mark.parametrize("attribute_line", ["sample.py text eol=lf", "sample.py -diff"])
+def test_generated_security_scan_handles_eol_and_binary_diff_attributes(tmp_path, attribute_line):
+    mod = _load_bundle()
+    bash = _bash_or_skip()
+    command = mod._added_line_security_scan_command()
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    sample = repo / "sample.py"
+    sample.write_text("safe = True\n", encoding="utf-8")
+    (repo / ".gitattributes").write_text(attribute_line + "\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "--", ".gitattributes", sample.name],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "baseline"],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    term = "api" + "_key"
+    marker = "attribute-dummy-value"
+    sample.write_text(f'{term} = "{marker}"\n', encoding="utf-8")
+
+    scanned = subprocess.run(
+        [bash, "-lc", command],
+        cwd=repo,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+
+    assert scanned.returncode == 1
+    assert "redacted-hit" in scanned.stdout
+    assert marker not in scanned.stdout
+    assert marker not in scanned.stderr
+
+
+def test_generated_security_scan_rejects_gitlink_entries(tmp_path):
+    mod = _load_bundle()
+    bash = _bash_or_skip()
+    command = mod._added_line_security_scan_command()
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    readme = repo / "README.md"
+    readme.write_text("baseline\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "--", readme.name],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "baseline"],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "update-index", "--add", "--cacheinfo", f"160000,{head},vendor/sub"],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    scanned = subprocess.run(
+        [bash, "-lc", command],
+        cwd=repo,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+
+    assert scanned.returncode == 1
+    assert "redacted-hit" in scanned.stdout
+    assert scanned.stderr == ""
+
+
 @pytest.mark.parametrize("index_flag", ["--assume-unchanged", "--skip-worktree"])
 def test_generated_security_scan_rejects_hidden_index_flags(tmp_path, index_flag):
     mod = _load_bundle()

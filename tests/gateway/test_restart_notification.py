@@ -10,6 +10,7 @@ import gateway.run as gateway_run
 from gateway.config import HomeChannel, Platform
 from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.session import build_session_key
+from hermes_cli.commands import resolve_command
 from tests.gateway.restart_test_helpers import (
     make_restart_runner,
     make_restart_source,
@@ -117,6 +118,113 @@ async def test_restart_command_uses_detached_without_systemd(tmp_path, monkeypat
 
     await runner._handle_restart_command(event)
     runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+
+
+def test_gateway_restart_command_is_registered():
+    cmd = resolve_command("gateway-restart")
+    assert cmd is not None
+    assert cmd.name == "gateway-restart"
+    assert cmd.gateway_only is True
+
+
+@pytest.mark.asyncio
+async def test_gateway_restart_command_requires_confirmation(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "u1,u2")
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+    runner._typed_command_prefix_for = lambda _platform: "/"
+
+    captured = {}
+
+    async def _fake_confirm(**kwargs):
+        captured.update(kwargs)
+        return None
+
+    runner._request_slash_confirm = _fake_confirm
+
+    event = MessageEvent(
+        text="/gateway-restart",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(chat_id="42"),
+        message_id="m1",
+    )
+
+    result = await runner._handle_gateway_restart_command(event)
+
+    assert result is None
+    assert captured["command"] == "gateway-restart"
+    assert "Restart Hermes gateway?" in captured["message"]
+    runner.request_restart.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_gateway_restart_confirmation_delays_restart(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "u1,u2")
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+    runner._typed_command_prefix_for = lambda _platform: "/"
+
+    scheduled = []
+
+    class _Loop:
+        def call_later(self, delay, callback):
+            scheduled.append((delay, callback))
+
+    monkeypatch.setattr("asyncio.get_running_loop", lambda: _Loop())
+
+    captured = {}
+
+    async def _fake_confirm(**kwargs):
+        captured.update(kwargs)
+        return None
+
+    runner._request_slash_confirm = _fake_confirm
+
+    event = MessageEvent(
+        text="/gateway-restart",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(chat_id="42"),
+        message_id="m1",
+    )
+
+    await runner._handle_gateway_restart_command(event)
+    result = await captured["handler"]("once")
+
+    assert "Restarting" in result
+    runner.request_restart.assert_not_called()
+    assert scheduled and scheduled[0][0] == 1.0
+
+    scheduled[0][1]()
+    runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+
+
+@pytest.mark.asyncio
+async def test_gateway_restart_denies_non_allowed_telegram_user(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "u2,u3")
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+    runner._request_slash_confirm = AsyncMock()
+
+    event = MessageEvent(
+        text="/gateway-restart",
+        message_type=MessageType.TEXT,
+        source=make_restart_source(chat_id="42"),
+        message_id="m1",
+    )
+
+    result = await runner._handle_gateway_restart_command(event)
+
+    assert "restricted" in result
+    runner._request_slash_confirm.assert_not_called()
+    runner.request_restart.assert_not_called()
 
 
 @pytest.mark.asyncio

@@ -228,6 +228,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("help", "Show available commands", "Info"),
     CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
                gateway_only=True),
+    CommandDef("gateway-restart", "Confirm, then restart the gateway after draining active runs", "Session",
+               gateway_only=True, aliases=("gateway_restart",)),
     CommandDef("usage", "Show token usage and rate limits; `reset` redeems a banked Codex limit reset", "Info",
                args_hint="[reset [--force]]"),
     CommandDef("credits", "Show Nous credit balance and top up", "Info"),
@@ -278,7 +280,8 @@ def resolve_command(name: str) -> CommandDef | None:
 
     Accepts names with or without the leading slash.
     """
-    return _COMMAND_LOOKUP.get(name.lower().lstrip("/"))
+    key = name.lower().lstrip("/").split("@", 1)[0]
+    return _COMMAND_LOOKUP.get(key)
 
 
 def _build_description(cmd: CommandDef) -> str:
@@ -353,6 +356,7 @@ def is_gateway_known_command(name: str | None) -> bool:
     """
     if not name:
         return False
+    name = name.lower().lstrip("/").split("@", 1)[0]
     if name in GATEWAY_KNOWN_COMMANDS:
         return True
     for plugin_name, _description, _args_hint in _iter_plugin_command_entries():

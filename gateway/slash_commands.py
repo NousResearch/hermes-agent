@@ -1227,7 +1227,12 @@ class GatewaySlashCommandsMixin:
             "  /platform resume <name> — re-queue a paused platform"
         )
 
-    async def _handle_restart_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
+    async def _handle_restart_command(
+        self,
+        event: MessageEvent,
+        *,
+        delay_restart_seconds: float = 0.0,
+    ) -> Union[str, EphemeralReply]:
         """Handle /restart command - drain active work, then restart the gateway."""
         from gateway.run import _hermes_home
         # Defensive idempotency check: if the previous gateway process
@@ -1323,13 +1328,75 @@ class GatewaySlashCommandsMixin:
             "XPC_SERVICE_NAME", "0"
         ) not in ("", "0")
         _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
-        if _under_service or _in_container:
-            self.request_restart(detached=False, via_service=True)
+        restart_kwargs = (
+            {"detached": False, "via_service": True}
+            if _under_service or _in_container
+            else {"detached": True, "via_service": False}
+        )
+        if delay_restart_seconds > 0:
+            asyncio.get_running_loop().call_later(
+                delay_restart_seconds,
+                lambda: self.request_restart(**restart_kwargs),
+            )
         else:
-            self.request_restart(detached=True, via_service=False)
+            self.request_restart(**restart_kwargs)
         if active_agents:
             return t("gateway.draining", count=active_agents)
         return EphemeralReply(t("gateway.restart.restarting"))
+
+    async def _handle_gateway_restart_command(self, event: MessageEvent) -> Union[str, EphemeralReply, None]:
+        """Handle /gateway-restart — confirmed restart with post-ack delay."""
+        source = event.source
+        if source.platform != Platform.TELEGRAM:
+            return "⛔ /gateway-restart is only enabled from Telegram."
+        allowed_ids = {
+            s.strip()
+            for raw in (
+                os.getenv("TELEGRAM_ALLOWED_USERS", ""),
+                os.getenv("TELEGRAM_GROUP_ALLOWED_USERS", ""),
+            )
+            for s in raw.split(",")
+            if s.strip()
+        }
+        try:
+            pc = self.config.platforms.get(Platform.TELEGRAM)
+            extra = pc.extra if pc else {}
+            for key in ("allow_from", "group_allow_from", "allow_admin_from", "group_allow_admin_from"):
+                raw = extra.get(key)
+                if isinstance(raw, str):
+                    allowed_ids.update(s.strip() for s in raw.split(",") if s.strip())
+                elif isinstance(raw, (list, tuple, set)):
+                    allowed_ids.update(str(s).strip() for s in raw if str(s).strip())
+        except Exception:
+            pass
+        if str(source.user_id or "") not in allowed_ids:
+            return "⛔ /gateway-restart is restricted to configured Telegram allowed user IDs."
+
+        if self._restart_requested or self._draining:
+            return await self._handle_restart_command(event)
+
+        async def _on_confirm(choice: str):
+            if choice == "cancel":
+                return "🟡 /gateway-restart cancelled. Gateway is unchanged."
+            return await self._handle_restart_command(
+                event,
+                delay_restart_seconds=1.0,
+            )
+
+        _p = self._typed_command_prefix_for(event.source.platform)
+        return await self._request_slash_confirm(
+            event=event,
+            command="gateway-restart",
+            title="/gateway-restart",
+            message=(
+                "⚠️ **Restart Hermes gateway?**\n\n"
+                "This will briefly take Telegram/other gateway sessions offline, "
+                "then start the gateway again. Current conversations are not reset.\n\n"
+                "Press **Approve Once** to restart, or **Cancel** to leave it running.\n\n"
+                f"_Text fallback: reply `{_p}approve` or `{_p}cancel`._"
+            ),
+            handler=_on_confirm,
+        )
 
     async def _handle_version_command(self, event: MessageEvent) -> str:
         """Handle /version — show the running Hermes Agent version."""

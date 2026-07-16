@@ -9925,6 +9925,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "restart":
             return await self._handle_restart_command(event)
+
+        if canonical == "gateway-restart":
+            return await self._handle_gateway_restart_command(event)
         
         if canonical == "stop":
             return await self._handle_stop_command(event)

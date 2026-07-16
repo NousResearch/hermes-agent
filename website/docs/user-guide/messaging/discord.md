@@ -279,6 +279,7 @@ Discord behavior is controlled through two files: **`~/.hermes/.env`** for crede
 | `DISCORD_HOME_CHANNEL_NAME` | No | `"Home"` | Display name for the home channel in logs and status output. |
 | `DISCORD_COMMAND_SYNC_POLICY` | No | `"safe"` | Controls native slash-command startup sync. `"safe"` diffs existing global commands and only updates what changed, recreating commands when Discord metadata changes cannot be applied via patch. `"bulk"` preserves the old `tree.sync()` behavior. `"off"` skips startup sync entirely. |
 | `DISCORD_REQUIRE_MENTION` | No | `true` | When `true`, the bot only responds in server channels when `@mentioned`. Set to `false` to respond to all messages in every channel. |
+| `DISCORD_REQUIRE_MENTION_ROLES` | No | `false` | When `true`, mentioning a Discord role that the bot holds also satisfies `DISCORD_REQUIRE_MENTION` (in addition to a direct user `@mention`). Useful for summoning the bot via a shared role. Default `false` keeps historical user-mention-only behavior. |
 | `DISCORD_THREAD_REQUIRE_MENTION` | No | `false` | When `true`, the in-thread mention shortcut is disabled — threads are gated the same as channels, requiring `@mention` even after the bot has already participated. Use this when multiple bots share a thread and you want each to fire only on explicit `@mention`. |
 | `DISCORD_FREE_RESPONSE_CHANNELS` | No | — | Comma-separated channel IDs where the bot responds without requiring an `@mention`, even when `DISCORD_REQUIRE_MENTION` is `true`. |
 | `DISCORD_IGNORE_NO_MENTION` | No | `true` | When `true`, the bot stays silent if a message `@mentions` other users but does **not** mention the bot. Prevents the bot from jumping into conversations directed at other people. Only applies in server channels, not DMs. |
@@ -315,6 +316,7 @@ The `discord` section in `~/.hermes/config.yaml` mirrors the env vars above. Con
 # Discord-specific settings
 discord:
   require_mention: true           # Require @mention in server channels
+  require_mention_roles: false    # If true, @role mentions for roles the bot holds also count
   thread_require_mention: false   # If true, require @mention in threads too (multi-bot threads)
   free_response_channels: ""      # Comma-separated channel IDs (or YAML list)
   auto_thread: true               # Auto-create threads on @mention
@@ -339,6 +341,20 @@ group_sessions_per_user: true     # Isolate sessions per user in shared channels
 **Type:** boolean — **Default:** `true`
 
 When enabled, the bot only responds in server channels when directly `@mentioned`. DMs always get a response regardless of this setting.
+
+#### `discord.require_mention_roles`
+
+**Type:** boolean — **Default:** `false`
+
+When enabled (together with `require_mention: true`), mentioning a Discord role that the bot itself holds also wakes the bot — not only a direct user `@BotName` mention. This is useful for summoning the bot via a shared role (for example `@Bot Helpers`) without opening a free-response channel.
+
+Unrelated role pings are ignored. Only roles present on the bot member in that guild count. Leave this `false` (the default) to preserve user-mention-only behavior.
+
+```yaml
+discord:
+  require_mention: true
+  require_mention_roles: true
+```
 
 #### `discord.thread_require_mention`
 

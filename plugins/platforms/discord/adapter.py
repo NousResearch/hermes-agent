@@ -4849,18 +4849,88 @@ class DiscordAdapter(BasePlatformAdapter):
         content = getattr(message, "content", "") or ""
         return {match.group(1) for match in re.finditer(r"<@!?(\d+)>", content)}
 
+    def _raw_mentioned_role_ids(self, message: Any) -> set:
+        """Extract Discord role-mention IDs directly from raw message content.
+
+        Covers the raw ``<@&ROLE_ID>`` form so role pings still count when
+        Discord fails to hydrate ``message.role_mentions``.
+        """
+        content = getattr(message, "content", "") or ""
+        return {match.group(1) for match in re.finditer(r"<@&(\d+)>", content)}
+
+    def _discord_require_mention_roles(self) -> bool:
+        """Return whether role mentions can satisfy the require_mention gate.
+
+        Off by default. When enabled, mentioning a role this bot holds counts
+        as addressing the bot (in addition to a direct user @mention).
+
+        Config: ``discord.require_mention_roles`` (or env
+        ``DISCORD_REQUIRE_MENTION_ROLES``).
+        """
+        configured = self.config.extra.get("require_mention_roles")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("DISCORD_REQUIRE_MENTION_ROLES", "false").lower() in {
+            "true", "1", "yes", "on",
+        }
+
+    def _self_role_ids(self, message: Any) -> set[str]:
+        """Return role IDs held by this bot in the message's guild."""
+        if not self._client or not self._client.user:
+            return set()
+
+        guild = getattr(message, "guild", None) or getattr(
+            getattr(message, "channel", None), "guild", None
+        )
+        if guild is None:
+            return set()
+
+        member = getattr(guild, "me", None)
+        if member is None:
+            get_member = getattr(guild, "get_member", None)
+            if callable(get_member):
+                try:
+                    member = get_member(self._client.user.id)
+                except Exception:
+                    member = None
+
+        role_ids: set[str] = set()
+        for role in (getattr(member, "roles", None) or []):
+            role_id = getattr(role, "id", None)
+            if role_id is not None:
+                role_ids.add(str(role_id))
+        return role_ids
+
+    def _self_is_role_mentioned(self, message: Any) -> bool:
+        """Return True when the bot holds a role that was mentioned."""
+        self_role_ids = self._self_role_ids(message)
+        if not self_role_ids:
+            return False
+
+        resolved_role_ids = {
+            str(getattr(role, "id"))
+            for role in (getattr(message, "role_mentions", None) or [])
+            if getattr(role, "id", None) is not None
+        }
+        return bool(self_role_ids & (resolved_role_ids | self._raw_mentioned_role_ids(message)))
+
     def _self_is_explicitly_mentioned(self, message: Any) -> bool:
         """Return True when this bot is explicitly @mentioned in the message.
 
         Treats the bot as mentioned if it is either present in the resolved
         ``message.mentions`` list OR referenced by its raw ``<@ID>`` / ``<@!ID>``
-        form in the message content.
+        form in the message content. When ``require_mention_roles`` is enabled,
+        a mention of a role this bot holds also counts.
         """
         if not self._client or not self._client.user:
             return False
         if self._client.user in getattr(message, "mentions", []):
             return True
-        return str(self._client.user.id) in self._raw_mentioned_user_ids(message)
+        if str(self._client.user.id) in self._raw_mentioned_user_ids(message):
+            return True
+        return self._discord_require_mention_roles() and self._self_is_role_mentioned(message)
 
     def _self_is_raw_mentioned(self, message: Any) -> bool:
         """Return True only when this bot has an inline mention token.
@@ -4869,10 +4939,16 @@ class DiscordAdapter(BasePlatformAdapter):
         without a literal ``<@bot>`` token in ``message.content``. This helper
         intentionally ignores the resolved mentions list so the bot admission
         gate can distinguish an explicit cross-bot address from a reply chip.
+        When ``require_mention_roles`` is enabled, a raw ``<@&ROLE_ID>`` token
+        for a role this bot holds also counts as an inline address.
         """
         if not self._client or not self._client.user:
             return False
-        return str(self._client.user.id) in self._raw_mentioned_user_ids(message)
+        if str(self._client.user.id) in self._raw_mentioned_user_ids(message):
+            return True
+        return self._discord_require_mention_roles() and bool(
+            self._self_role_ids(message) & self._raw_mentioned_role_ids(message)
+        )
 
     def _discord_bots_require_inline_mention(self) -> bool:
         """Whether another bot must type an inline @mention to trigger us.
@@ -6132,6 +6208,7 @@ class DiscordAdapter(BasePlatformAdapter):
         #
         # Config (all settable via discord.* in config.yaml or DISCORD_* env vars):
         #   discord.require_mention: Require @mention in server channels (default: true)
+        #   discord.require_mention_roles: Also accept role mentions for roles the bot holds (default: false)
         #   discord.free_response_channels: Channel IDs where bot responds without mention
         #   discord.ignored_channels: Channel IDs where bot NEVER responds (even when mentioned)
         #   discord.allowed_channels: If set, bot ONLY responds in these channels (whitelist)
@@ -6168,6 +6245,14 @@ class DiscordAdapter(BasePlatformAdapter):
             if self._client.user:
                 normalized_content = normalized_content.replace(f"<@{self._client.user.id}>", "").strip()
                 normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
+            if self._discord_require_mention_roles():
+                mentioned_role_ids = {
+                    str(getattr(role, "id"))
+                    for role in (getattr(message, "role_mentions", None) or [])
+                    if getattr(role, "id", None) is not None
+                } | self._raw_mentioned_role_ids(message)
+                for role_id in self._self_role_ids(message) & mentioned_role_ids:
+                    normalized_content = normalized_content.replace(f"<@&{role_id}>", "").strip()
             message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
             channel_ids = {str(message.channel.id)}
@@ -8262,7 +8347,8 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     ``DISCORD_NO_THREAD_CHANNELS``, ``DISCORD_HISTORY_BACKFILL``,
     ``DISCORD_HISTORY_BACKFILL_LIMIT``, ``DISCORD_ALLOW_MENTION_*``,
     ``DISCORD_REPLY_TO_MODE``, ``DISCORD_THREAD_REQUIRE_MENTION``,
-    ``DISCORD_BOTS_REQUIRE_INLINE_MENTION``).
+    ``DISCORD_BOTS_REQUIRE_INLINE_MENTION``,
+    ``DISCORD_REQUIRE_MENTION_ROLES``).
     Rather than rewrite ~50 call sites inside the adapter to read from
     ``PlatformConfig.extra`` instead, this hook keeps the existing
     env-driven model and merely owns the YAML→env translation here, next to
@@ -8279,6 +8365,8 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         os.environ["DISCORD_THREAD_REQUIRE_MENTION"] = str(discord_cfg["thread_require_mention"]).lower()
     if "bots_require_inline_mention" in discord_cfg and not os.getenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION"):
         os.environ["DISCORD_BOTS_REQUIRE_INLINE_MENTION"] = str(discord_cfg["bots_require_inline_mention"]).lower()
+    if "require_mention_roles" in discord_cfg and not os.getenv("DISCORD_REQUIRE_MENTION_ROLES"):
+        os.environ["DISCORD_REQUIRE_MENTION_ROLES"] = str(discord_cfg["require_mention_roles"]).lower()
     platforms_cfg = yaml_cfg.get("platforms")
     platform_extra_cfg = {}
     if isinstance(platforms_cfg, dict):

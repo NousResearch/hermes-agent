@@ -171,7 +171,7 @@ class TestFindBashWindows:
         )
         monkeypatch.setattr(local_mod, "_bash_starts", lambda _path: True)
 
-        assert _find_bash() == r"C:\Program Files\Git\bin\bash.exe"
+        assert _find_bash().replace("/", "\\") == r"C:\Program Files\Git\bin\bash.exe"
 
     def test_rejects_wsl_bash_stub_when_git_bash_missing(self, monkeypatch):
         monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)

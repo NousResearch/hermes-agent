@@ -505,7 +505,6 @@ def test_file_tools_path_egress_reaches_docker_environment(monkeypatch):
     import tools.file_tools as ft
 
     monkeypatch.setattr(ft, "_file_ops_cache", {})
-    monkeypatch.setattr(ft, "_last_known_cwd", {})
     captured = _drive_creation_path(
         monkeypatch, lambda: ft._get_file_ops("egress-files"),
     )

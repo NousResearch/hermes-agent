@@ -1760,6 +1760,20 @@ class CredentialPool:
                     (e for e in self._entries if e.runtime_api_key == api_key_hint),
                     None,
                 )
+                if entry is None:
+                    # The failed key is identifiable but matches no entry
+                    # (rotated away, or a wrapper whose runtime key differs).
+                    # Falling through to current()/_select_unlocked() would
+                    # mark an INNOCENT healthy key exhausted for the full
+                    # cooldown TTL.  Don't guess — just hand back a fresh
+                    # selection so the caller can retry.
+                    logger.info(
+                        "credential pool: failed key hint matched no %s entry; "
+                        "rotating without marking any credential exhausted",
+                        self.provider,
+                    )
+                    self._current_id = None
+                    return self._select_unlocked()
             if entry is None:
                 entry = self.current() or self._select_unlocked()
             if entry is None:

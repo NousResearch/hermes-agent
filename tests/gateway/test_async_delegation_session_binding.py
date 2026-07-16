@@ -78,45 +78,60 @@ class TestGatewayPinningFailsClosed:
         runner.session_store = MagicMock()
         runner.session_store.get_or_create_session.return_value = entry
         runner.session_store.switch_session.return_value = entry
-        return runner, entry
+        return runner, db
 
-    def _run_pinning_prefix(self, runner, pinned_session_id):
-        """Execute the pinning guard logic exactly as _handle_message does."""
+    def _resolve(self, runner, pinned_session_id):
+        from gateway.run import GatewayRunner
 
-        async def _go():
-            event = MagicMock()
-            event.metadata = {"gateway_session_id": pinned_session_id}
-            session_entry = runner.session_store.get_or_create_session(MagicMock())
-            pinned = str((getattr(event, "metadata", None) or {}).get("gateway_session_id") or "").strip()
-            if pinned and pinned != session_entry.session_id:
-                pinned_row = None
-                try:
-                    if runner._session_db is not None:
-                        pinned_row = await runner._session_db.get_session(pinned)
-                except Exception:
-                    pinned_row = None
-                if pinned_row is None or pinned_row.get("ended_at"):
-                    return "dropped"
-                switched = runner.session_store.switch_session(session_entry.session_key, pinned)
-                if switched is not None:
-                    return "pinned"
-            return "default"
-
-        return asyncio.run(_go())
+        return asyncio.run(
+            GatewayRunner._resolve_async_completion_session(
+                runner, pinned_session_id
+            )
+        )
 
     def test_live_spawning_session_pins(self):
         runner, _ = self._make_runner({"id": "sess_old", "ended_at": None})
-        assert self._run_pinning_prefix(runner, "sess_old") == "pinned"
+        assert self._resolve(runner, "sess_old") == "sess_old"
 
     def test_ended_spawning_session_drops(self):
-        runner, _ = self._make_runner({"id": "sess_old", "ended_at": "2026-07-08T00:00:00"})
-        assert self._run_pinning_prefix(runner, "sess_old") == "dropped"
-        runner.session_store.switch_session.assert_not_called()
+        runner, db = self._make_runner({
+            "id": "sess_old",
+            "ended_at": "2026-07-08T00:00:00",
+            "end_reason": "session_reset",
+        })
+        assert self._resolve(runner, "sess_old") is None
+        db.get_compression_tip.assert_not_called()
 
     def test_unknown_spawning_session_drops(self):
         runner, _ = self._make_runner(None)
-        assert self._run_pinning_prefix(runner, "sess_gone") == "dropped"
-        runner.session_store.switch_session.assert_not_called()
+        assert self._resolve(runner, "sess_gone") is None
+
+    def test_compression_parent_resolves_to_live_continuation(self):
+        from gateway.run import GatewayRunner
+
+        runner, _ = self._make_runner(None)
+        db = MagicMock()
+        db.get_session = AsyncMock(side_effect=[
+            {
+                "id": "sess_parent",
+                "ended_at": 100.0,
+                "end_reason": "compression",
+            },
+            {
+                "id": "sess_child",
+                "ended_at": None,
+                "parent_session_id": "sess_parent",
+            },
+        ])
+        db.get_compression_tip = AsyncMock(return_value="sess_child")
+        runner._session_db = db
+
+        resolved = asyncio.run(
+            GatewayRunner._resolve_async_completion_session(runner, "sess_parent")
+        )
+
+        assert resolved == "sess_child"
+        db.get_compression_tip.assert_awaited_once_with("sess_parent")
 
 
 class TestResetHandlerInterruptsDelegations:

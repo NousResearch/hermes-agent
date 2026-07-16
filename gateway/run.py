@@ -11114,6 +11114,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
         return source
 
+    async def _resolve_async_completion_session(
+        self, pinned_session_id: str,
+    ) -> Optional[str]:
+        """Resolve a delegation's owner without reviving an ended conversation.
+
+        Explicitly ended sessions remain dead. Compression is different: it
+        preserves the same conversation in a continuation child, so a
+        delegation dispatched before rotation still belongs to the live tip.
+        """
+        if self._session_db is None:
+            return None
+        try:
+            pinned_row = await self._session_db.get_session(pinned_session_id)
+        except Exception:
+            return None
+        if not isinstance(pinned_row, dict):
+            return None
+        if not pinned_row.get("ended_at"):
+            return pinned_session_id
+        if pinned_row.get("end_reason") != "compression":
+            return None
+        try:
+            continuation_id = str(
+                await self._session_db.get_compression_tip(pinned_session_id) or ""
+            )
+            if not continuation_id or continuation_id == pinned_session_id:
+                return None
+            continuation_row = await self._session_db.get_session(continuation_id)
+        except Exception:
+            return None
+        if not isinstance(continuation_row, dict) or continuation_row.get("ended_at"):
+            return None
+        return continuation_id
+
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -11149,42 +11183,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             (getattr(event, "metadata", None) or {}).get("gateway_session_id") or ""
         ).strip()
         if pinned_session_id and pinned_session_id != session_entry.session_id:
-            # Fail closed (#55578): the spawning session may have ENDED since
-            # dispatch (user /new-reset, compression rotation whose parent was
-            # closed). switch_session() re-opens ended sessions, so pinning
-            # blindly would RESURRECT a conversation the user explicitly
-            # ended and inject into it — the same illicit-revival class as
-            # the ws_orphan_reap loop (#60609). A completion whose spawning
-            # session is dead is dropped from injection; the subagent's
-            # output remains in the delegation records.
-            pinned_row = None
-            try:
-                if self._session_db is not None:
-                    # AsyncSessionDB already offloads to a thread.
-                    pinned_row = await self._session_db.get_session(pinned_session_id)
-            except Exception:
-                pinned_row = None
-            if pinned_row is None or pinned_row.get("ended_at"):
+            # Fail closed for explicit session boundaries (#55578), but preserve
+            # ownership across context compression: compression continues the
+            # same conversation under a child session rather than ending it.
+            original_pinned_session_id = pinned_session_id
+            pinned_session_id = (
+                await self._resolve_async_completion_session(pinned_session_id) or ""
+            )
+            if not pinned_session_id:
                 logger.warning(
-                    "Async-delegation completion pinned to session %s, which is "
-                    "%s — dropping injection instead of resurrecting it "
-                    "(#55578 fail-closed; result remains in the delegation "
-                    "records).",
-                    pinned_session_id,
-                    "unknown" if pinned_row is None else "ended",
+                    "Async-delegation completion pinned to session %s, which has "
+                    "no live continuation — dropping injection instead of "
+                    "resurrecting it (#55578 fail-closed; result remains in the "
+                    "delegation records).",
+                    original_pinned_session_id,
                 )
                 return
-            prior_session_id = session_entry.session_id
-            switched = await self.async_session_store.switch_session(session_key, pinned_session_id)
-            if switched is not None:
-                session_entry = switched
+            if pinned_session_id != original_pinned_session_id:
                 logger.info(
-                    "Pinned async-delegation completion to spawning session %s "
-                    "(was %s) for routing key %s (#57498)",
+                    "Resolved async-delegation owner across compression: %s -> %s",
+                    original_pinned_session_id,
                     pinned_session_id,
-                    prior_session_id,
-                    session_key,
                 )
+            if pinned_session_id != session_entry.session_id:
+                prior_session_id = session_entry.session_id
+                switched = await self.async_session_store.switch_session(
+                    session_key, pinned_session_id
+                )
+                if switched is not None:
+                    session_entry = switched
+                    logger.info(
+                        "Pinned async-delegation completion to spawning session %s "
+                        "(was %s) for routing key %s (#57498)",
+                        pinned_session_id,
+                        prior_session_id,
+                        session_key,
+                    )
         self._cache_session_source(session_key, source)
         if await asyncio.to_thread(self._is_telegram_topic_lane, source):
             try:

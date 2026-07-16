@@ -3358,9 +3358,9 @@ def run_job(
 
         # Register the ownership lease so the stale-session reaper can prove
         # this run is dead before closing its session row.  Done AFTER
-        # AIAgent/session init and BEFORE run_conversation.  Failure is
-        # non-fatal — a missing lease means the reaper will not reap (fail
-        # closed), which is the safe default.
+        # AIAgent/session init and BEFORE run_conversation. Failure is
+        # non-fatal; without a lease the row is recoverable only after the
+        # full stale-session grace window.
         _cron_lease = _register_cron_session_lease(_cron_session_id, job_id)
         _last_lease_heartbeat = time.monotonic()
         
@@ -3459,7 +3459,7 @@ def run_job(
                         _heartbeat_cron_lease_if_due()
                 else:
                     # Lease registration failed, so there is nothing to
-                    # heartbeat. Missing leases are never reaped.
+                    # heartbeat. The age grace still protects this live run.
                     result = _cron_future.result()
             else:
                 result = None
@@ -3972,9 +3972,9 @@ def _register_cron_session_lease(
     """Atomically write the ownership lease for a cron session.
 
     Called after ``AIAgent`` / session initialization, before
-    ``run_conversation``.  Returns the lease dict on success, or ``None``
-    on failure (the run proceeds — a missing lease simply means the reaper
-    will not reap the session, which is the fail-closed default).
+    ``run_conversation``. Returns the lease dict on success, or ``None`` on
+    failure. The run proceeds; an ownerless row remains protected by the
+    stale-session age grace.
     """
     try:
         from gateway.status import _get_process_start_time
@@ -4045,8 +4045,9 @@ def _remove_cron_session_lease(session_id: str) -> None:
 def _read_cron_session_lease(session_id: str) -> Optional[dict]:
     """Read and parse the lease for ``session_id``, or ``None``.
 
-    ``None`` covers missing, unreadable, and malformed leases — the caller
-    treats all of these as "do not reap".
+    ``None`` covers missing, unreadable, and malformed leases. After the age
+    grace, that means the legacy row has no live ownership evidence and is
+    eligible for recovery.
     """
     path = _cron_lease_path(session_id)
     try:
@@ -4062,6 +4063,15 @@ def _read_cron_session_lease(session_id: str) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
+def _lease_runner_identity(lease: Optional[dict]) -> tuple[Any, Any]:
+    """Return runner PID/id evidence from current or pre-fencing leases."""
+    if not isinstance(lease, dict):
+        return None, None
+    runner_pid = lease.get("runner_pid", lease.get("owner_pid"))
+    runner_id = lease.get("runner_id", lease.get("owner_start_time"))
+    return runner_pid, runner_id
+
+
 def _owner_definitively_dead(lease: dict) -> bool:
     """Return True only when the lease owner is *provably* no longer alive.
 
@@ -4072,8 +4082,9 @@ def _owner_definitively_dead(lease: dict) -> bool:
     distinguish PID reuse — a recycled PID yields a different start time
     and is never mistaken for the original owner.
     """
+    runner_pid, _runner_id = _lease_runner_identity(lease)
     try:
-        pid = int(lease.get("owner_pid") or 0)
+        pid = int(runner_pid or 0)
     except (TypeError, ValueError):
         return False
     if pid <= 0:
@@ -4117,20 +4128,17 @@ def _owner_definitively_dead(lease: dict) -> bool:
 
 
 def _reap_stale_cron_sessions() -> int:
-    """Close cron sessions whose owning run is *provably* dead.
+    """Close expired cron sessions with no live ownership evidence.
 
-    A session is reaped ONLY when ALL of the following hold:
+    Every candidate must exceed ``_STALE_CRON_SESSION_MAX_AGE_SECONDS``.
+    Legacy or malformed rows without either runner PID or runner identity are
+    then eligible immediately: no owner exists to fence. Rows carrying owner
+    evidence use the stricter lease path — matching session id, stale
+    heartbeat, and a definitively dead local owner. Fresh, active, cross-host,
+    mismatched, or otherwise uncertain owned leases remain open.
 
-    1. Session age exceeds ``_STALE_CRON_SESSION_MAX_AGE_SECONDS``.
-    2. A lease exists and parses.
-    3. The lease heartbeat is stale (older than the max-age threshold).
-    4. The owner is definitively not alive (local host only, PID probe +
-       start-time fingerprint).
-
-    Any missing/malformed/cross-host/uncertain lease, or a fresh
-    heartbeat, means do not reap (fail-closed).  Closing uses
-    ``end_session`` (exact id + ``ended_at IS NULL`` guard) so concurrent
-    closes are idempotent.
+    Closing uses ``end_session`` (exact id + ``ended_at IS NULL`` guard) so
+    concurrent closes are idempotent.
     """
     try:
         db = _open_cron_session_db("Stale cron session reaper")
@@ -4152,17 +4160,20 @@ def _reap_stale_cron_sessions() -> int:
             if started_at is None or started_at >= cutoff:
                 continue  # not old enough
             lease = _read_cron_session_lease(session_id)
-            if not lease or lease.get("session_id") != session_id:
-                continue  # missing / malformed → do not reap
-            heartbeat_at = lease.get("heartbeat_at")
-            try:
-                heartbeat_at = float(heartbeat_at)
-            except (TypeError, ValueError):
-                continue  # fresh-or-unknown heartbeat → do not reap
-            if heartbeat_at >= cutoff:
-                continue  # heartbeat is fresh — run may still be alive
-            if not _owner_definitively_dead(lease):
-                continue  # owner alive / PID reuse / uncertain → do not reap
+            runner_pid, runner_id = _lease_runner_identity(lease)
+            has_owner_evidence = runner_pid is not None or runner_id is not None
+            if has_owner_evidence:
+                if lease.get("session_id") != session_id:
+                    continue  # ownership evidence for another/unknown session
+                heartbeat_at = lease.get("heartbeat_at")
+                try:
+                    heartbeat_at = float(heartbeat_at)
+                except (TypeError, ValueError):
+                    continue  # owned lease with unknown freshness → preserve
+                if heartbeat_at >= cutoff:
+                    continue  # heartbeat is fresh — run may still be alive
+                if not _owner_definitively_dead(lease):
+                    continue  # owner alive / PID reuse / uncertain → preserve
             try:
                 db2 = _open_cron_session_db("Stale cron session reaper")
                 if db2 is None:
@@ -4173,12 +4184,18 @@ def _reap_stale_cron_sessions() -> int:
                     db2.close()
                 _remove_cron_session_lease(session_id)
                 reaped += 1
+                lease_details = lease or {}
+                if has_owner_evidence:
+                    recovery_reason = (
+                        f"runner pid {runner_pid} dead, heartbeat stale"
+                    )
+                else:
+                    recovery_reason = "no live ownership evidence after grace"
                 logger.warning(
-                    "Reaped stale cron session %s (job %s) — owner "
-                    "pid %s dead, heartbeat stale",
+                    "Reaped stale cron session %s (job %s) — %s",
                     session_id,
-                    lease.get("job_id", "?"),
-                    lease.get("owner_pid", "?"),
+                    lease_details.get("job_id", "?"),
+                    recovery_reason,
                 )
             except Exception:
                 logger.debug(
@@ -4198,6 +4215,7 @@ def tick(
     sync: bool = True,
     *,
     can_dispatch=None,
+    reap_stale_sessions: bool = True,
 ):
     """
     Check and run all due jobs.
@@ -4211,6 +4229,7 @@ def tick(
         loop: Optional asyncio event loop (from gateway) for live adapter sends
         can_dispatch: Optional synchronous gate; false leaves due jobs untouched
             for the next allowed tick
+        reap_stale_sessions: Run periodic lease-aware recovery on this tick
 
     Returns:
         Number of jobs executed (0 if another tick is already running)
@@ -4232,14 +4251,15 @@ def tick(
             lock_fd.close()
         return 0
 
-    # ── Stale-session reaper (every tick) ─────────────────────────────
-    # Close cron sessions whose owning run is provably dead (stale lease
-    # heartbeat + dead owner).  Fail-closed: a missing/fresh/cross-host
-    # lease is never reaped.  Cheap index scan + targeted end_session.
-    try:
-        _reap_stale_cron_sessions()
-    except Exception:
-        logger.debug("tick reaper invocation failed: %s", exc_info=True)
+    # ── Stale-session reaper (periodic ticks) ─────────────────────────
+    # Startup performs an unconditional pass. Minute-or-slower ticker cadences
+    # also recover between restarts; genuine sub-minute loops skip the repeated
+    # SessionDB scan.
+    if reap_stale_sessions:
+        try:
+            _reap_stale_cron_sessions()
+        except Exception:
+            logger.debug("tick reaper invocation failed: %s", exc_info=True)
 
     try:
         if can_dispatch is not None and not can_dispatch():

@@ -172,6 +172,53 @@ def test_inprocess_provider_ticks_and_stops():
     assert calls[0].get("sync") is False
 
 
+def test_explicit_one_minute_cron_uses_periodic_recovery():
+    """The exact 60-second cron boundary belongs on the periodic path."""
+    from cron.scheduler_provider import (
+        _minimum_cron_interval_seconds,
+        _should_reap_stale_sessions_periodically,
+    )
+
+    schedule = "*/1 * * * *"
+    assert _minimum_cron_interval_seconds(schedule) == 60
+    assert _should_reap_stale_sessions_periodically(schedule) is True
+
+
+def test_genuine_subminute_interval_skips_periodic_recovery():
+    """Only intervals strictly below one minute use startup-only recovery."""
+    from cron.scheduler_provider import (
+        _minimum_cron_interval_seconds,
+        _should_reap_stale_sessions_periodically,
+    )
+
+    assert _minimum_cron_interval_seconds(59.999) == 59.999
+    assert _should_reap_stale_sessions_periodically(59.999) is False
+    assert _should_reap_stale_sessions_periodically(60) is True
+
+
+def test_provider_passes_reaper_cadence_to_tick():
+    """Scheduler cadence controls periodic recovery without skipping startup."""
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    def first_tick(calls, stop):
+        def _tick(*args, **kwargs):
+            calls.append(kwargs)
+            stop.set()
+            return 0
+
+        return _tick
+
+    for interval, expected in ((59.999, False), (60, True)):
+        calls = []
+        stop = threading.Event()
+        with patch("cron.scheduler._reap_stale_cron_sessions"), patch(
+            "cron.scheduler.tick", side_effect=first_tick(calls, stop)
+        ), patch("cron.jobs.record_ticker_heartbeat"):
+            InProcessCronScheduler().start(stop, interval=interval)
+
+        assert calls[0]["reap_stale_sessions"] is expected
+
+
 def test_inprocess_provider_skips_dispatch_while_draining():
     """A drain pause keeps due work pending until dispatch is re-enabled."""
     from cron.scheduler_provider import InProcessCronScheduler

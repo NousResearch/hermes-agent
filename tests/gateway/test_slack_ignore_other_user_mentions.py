@@ -160,6 +160,35 @@ def test_addressed_channel_and_broadcast_tokens_are_not_users():
 
 
 # ---------------------------------------------------------------------------
+# _slack_message_mentions_self()
+# ---------------------------------------------------------------------------
+
+def _mentions_self(text):
+    return _make_adapter()._slack_message_mentions_self(text, SELF_UIDS)
+
+
+def test_mentions_self_plain_form():
+    assert _mentions_self(f"hello <@{BOT_USER_ID}>") is True
+
+
+def test_mentions_self_pipe_form():
+    assert _mentions_self(f"hello <@{BOT_USER_ID}|hermes>") is True
+
+
+def test_mentions_self_other_user_only():
+    assert _mentions_self(f"hello <@{OTHER_USER_ID}|rasha>") is False
+
+
+def test_mentions_self_id_prefix_is_not_a_match():
+    # <@U_BOT_123X> is a different user whose ID merely starts with ours.
+    assert _mentions_self(f"hello <@{BOT_USER_ID}X>") is False
+
+
+def test_mentions_self_empty():
+    assert _mentions_self("") is False
+
+
+# ---------------------------------------------------------------------------
 # Integration: real _handle_slack_message
 # ---------------------------------------------------------------------------
 
@@ -240,6 +269,24 @@ async def test_free_response_replies_when_bot_also_mentioned(adapter):
     await _run(
         adapter,
         _event(f"<@{OTHER_USER_ID}> and <@{BOT_USER_ID}> please compare", ts="1700000000.000003"),
+    )
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_free_response_replies_when_bot_mentioned_in_pipe_form(adapter):
+    """A pipe-form bot mention (``<@U123|name>``) counts as "also mentioned"
+    even though the exact-markup ``is_mentioned`` check misses it."""
+    adapter.config.extra["free_response_channels"] = CHANNEL_ID
+    adapter.config.extra["ignore_other_user_mentions"] = True
+
+    await _run(
+        adapter,
+        _event(
+            f"<@{OTHER_USER_ID}|rasha> and <@{BOT_USER_ID}|hermes> please compare",
+            ts="1700000000.000004",
+        ),
     )
 
     adapter.handle_message.assert_awaited_once()

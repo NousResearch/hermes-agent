@@ -546,7 +546,8 @@ class RaftAdapter(BasePlatformAdapter):
         env = {**os.environ, "RAFT_CHANNEL_TOKEN": self._bridge_token}
         try:
             self._bridge_process = subprocess.Popen(
-                cmd, env=env, stdin=subprocess.DEVNULL
+                cmd, env=env, stdin=subprocess.DEVNULL,
+                **({"creationflags": 0x08000000} if sys.platform == "win32" else {}),
             )
             logger.info("[raft] Spawned bridge pid=%d profile=%s endpoint=%s", self._bridge_process.pid, profile, endpoint)
         except Exception:

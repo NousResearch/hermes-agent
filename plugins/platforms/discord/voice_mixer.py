@@ -307,6 +307,7 @@ def decode_to_pcm(path: str, *, timeout: float = 30.0) -> Optional[bytes]:
     requirement of the voice path (see ``VoiceReceiver.pcm_to_wav``).
     """
     import subprocess
+    import sys
 
     try:
         proc = subprocess.run(
@@ -321,6 +322,7 @@ def decode_to_pcm(path: str, *, timeout: float = 30.0) -> Optional[bytes]:
             capture_output=True,
             timeout=timeout,
             stdin=subprocess.DEVNULL,
+            **({"creationflags": 0x08000000} if sys.platform == "win32" else {}),
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError) as e:
         logger.warning("decode_to_pcm failed for %s: %s", path, e)

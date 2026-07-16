@@ -691,6 +691,7 @@ def run_import(args) -> None:
                 from hermes_cli.profiles import (
                     create_wrapper_script, check_alias_collision,
                     _is_wrapper_dir_in_path, _get_wrapper_dir,
+                    _get_path_guidance,
                 )
                 for entry in sorted(profiles_dir.iterdir()):
                     if not entry.is_dir():
@@ -716,8 +717,7 @@ def run_import(args) -> None:
                         print(f"  Profile aliases skipped:  {', '.join(skipped)}")
                     if not _is_wrapper_dir_in_path():
                         print(f"\n  Note: {_get_wrapper_dir()} is not in your PATH.")
-                        print('  Add to your shell config (~/.bashrc or ~/.zshrc):')
-                        print('    export PATH="$HOME/.local/bin:$PATH"')
+                        print(_get_path_guidance())
             except ImportError:
                 # hermes_cli.profiles might not be available (fresh install)
                 if any(profiles_dir.iterdir()):

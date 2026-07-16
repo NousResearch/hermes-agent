@@ -183,7 +183,8 @@ def _list_targets(platform_filter: Optional[str], *, json_mode: bool) -> int:
     if not any(platforms.values()):
         print("No messaging platforms configured or no channels discovered yet.")
         print("Set one up with `hermes gateway setup`, or run the gateway once so")
-        print("channel discovery can populate ~/.hermes/channel_directory.json.")
+        from hermes_constants import display_hermes_home
+        print(f"channel discovery can populate {display_hermes_home()}/channel_directory.json.")
         return _SUCCESS_EXIT
 
     # Human display — when unfiltered, reuse the shared formatter the agent

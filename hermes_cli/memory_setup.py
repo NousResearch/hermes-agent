@@ -242,7 +242,8 @@ def cmd_setup(args) -> None:
 
     if not providers:
         print("\n  No memory provider plugins detected.")
-        print("  Install a plugin to ~/.hermes/plugins/ and try again.\n")
+        from hermes_constants import display_hermes_home
+        print(f"  Install a plugin to {display_hermes_home()}/plugins/ and try again.\n")
         return
 
     # Build picker items
@@ -471,7 +472,8 @@ def cmd_status(args) -> None:
                         print(line)
         else:
             print("\n  Plugin:    NOT installed ✗")
-            print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")
+            from hermes_constants import display_hermes_home
+            print(f"  Install the '{provider_name}' memory plugin to {display_hermes_home()}/plugins/")
 
     if providers:
         print("\n  Installed plugins:")

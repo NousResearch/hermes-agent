@@ -399,7 +399,8 @@ def _cmd_backup(args) -> int:
     if snap is None:
         print("curator: snapshot failed — check logs (backup disabled or IO error)")
         return 1
-    print(f"curator: snapshot created at ~/.hermes/skills/.curator_backups/{snap.name}")
+    from hermes_constants import display_hermes_home
+    print(f"curator: snapshot created at {display_hermes_home()}/skills/.curator_backups/{snap.name}")
     return 0
 
 

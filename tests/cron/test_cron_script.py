@@ -211,6 +211,63 @@ class TestRunJobScript:
         parsed = json.loads(output)
         assert parsed["new_prs"][0]["number"] == 42
 
+    def test_windows_shell_script_uses_git_bash_safe_argv(
+        self, cron_env, monkeypatch
+    ):
+        from cron import scheduler
+        from tools.environments import local
+
+        script = cron_env / "scripts" / "probe.sh"
+        script.write_text("echo ok\n")
+        captured = {}
+
+        class _Result:
+            returncode = 0
+            stdout = "ok\n"
+            stderr = ""
+
+        monkeypatch.setattr(local, "_IS_WINDOWS", True)
+        monkeypatch.setattr(local, "_find_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+        monkeypatch.setattr(scheduler.sys, "platform", "win32")
+        monkeypatch.setattr(
+            scheduler.subprocess,
+            "run",
+            lambda argv, **kwargs: captured.update(argv=argv, kwargs=kwargs) or _Result(),
+        )
+
+        success, output = scheduler._run_job_script(str(script))
+
+        assert success is True
+        assert output == "ok"
+        assert captured["argv"][0] == r"C:\Program Files\Git\bin\bash.exe"
+        assert captured["argv"][1].startswith("/")
+        assert "\\" not in captured["argv"][1]
+
+    def test_shell_script_reports_missing_bash_without_spawning(
+        self, cron_env, monkeypatch
+    ):
+        from cron import scheduler
+        from tools.environments import local
+
+        script = cron_env / "scripts" / "probe.sh"
+        script.write_text("echo ok\n")
+        monkeypatch.setattr(
+            local,
+            "_find_bash",
+            lambda: (_ for _ in ()).throw(RuntimeError("Git Bash not found")),
+        )
+        spawned = []
+        monkeypatch.setattr(
+            scheduler.subprocess, "run", lambda *args, **kwargs: spawned.append(args)
+        )
+
+        success, output = scheduler._run_job_script(str(script))
+
+        assert success is False
+        assert "probe.sh" in output
+        assert "Git Bash not found" in output
+        assert spawned == []
+
 
 class TestBuildJobPromptWithScript:
     """Test that script output is injected into the prompt."""

@@ -207,6 +207,50 @@ class TestCmdUpdateNpmLockfileCache:
 
         assert hm._npm_lockfile_changed(tmp_path) is True
 
+    def test_matching_marker_but_root_dep_pruned_defeats_skip(
+        self, tmp_path, monkeypatch
+    ):
+        """#64354 salvage: a tree pruned by the old two-pass update still has a
+        node_modules/ and a MATCHING marker, but the root's declared deps are
+        gone. Honouring the cache there would skip the repair on exactly the
+        installs that hit the bug, so a missing root dep must defeat the skip."""
+        from hermes_cli import main as hm
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        (tmp_path / "package-lock.json").write_text('{"lockfileVersion": 3}')
+        (tmp_path / "package.json").write_text(
+            '{"dependencies": {"agent-browser": "^0.26.0",'
+            ' "@streamdown/math": "^1.0.2"}}'
+        )
+        (tmp_path / "node_modules").mkdir()
+        hm._record_npm_lockfile_hash(tmp_path)
+
+        # All declared root deps present: the marker is honoured (skip).
+        (tmp_path / "node_modules" / "agent-browser").mkdir()
+        (tmp_path / "node_modules" / "@streamdown").mkdir()
+        (tmp_path / "node_modules" / "@streamdown" / "math").mkdir()
+        assert hm._npm_lockfile_changed(tmp_path) is False
+
+        # A pruned root dep (scoped name included) defeats the otherwise-matching
+        # marker even though node_modules/ still exists.
+        import shutil
+
+        shutil.rmtree(tmp_path / "node_modules" / "agent-browser")
+        assert hm._npm_lockfile_changed(tmp_path) is True
+
+    def test_matching_marker_no_root_deps_is_noop(self, tmp_path, monkeypatch):
+        """When root declares no deps (e.g. #44772 drops them entirely) the
+        presence guard is vacuously satisfied and the cache is still honoured."""
+        from hermes_cli import main as hm
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        (tmp_path / "package-lock.json").write_text('{"lockfileVersion": 3}')
+        (tmp_path / "package.json").write_text('{"dependencies": {}}')
+        (tmp_path / "node_modules").mkdir()
+        hm._record_npm_lockfile_hash(tmp_path)
+
+        assert hm._npm_lockfile_changed(tmp_path) is False
+
     def test_update_skips_npm_when_lockfile_unchanged(self, tmp_path, monkeypatch):
         from hermes_cli import main as hm
 

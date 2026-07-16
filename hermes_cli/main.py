@@ -8191,6 +8191,27 @@ def _npm_manifests_digest() -> str | None:
     return h.hexdigest()
 
 
+def _root_declared_deps_present() -> bool:
+    """Return True if every dep declared in the root package.json is installed.
+
+    Only ``dependencies`` are checked: ``optionalDependencies`` may be
+    legitimately absent (platform-specific, install-failure-tolerant), and
+    ``devDependencies`` are not something ``hermes update`` guarantees at the
+    repo root. A missing or unparseable manifest returns True — no evidence the
+    deps are missing — so this guard only ever *adds* a reinstall for the
+    concrete pruned-tree case and never strips the cache's existing behaviour.
+    An empty ``dependencies`` (e.g. if root deps are dropped entirely) is
+    vacuously present, so the guard is a no-op there.
+    """
+    root_pkg = PROJECT_ROOT / "package.json"
+    try:
+        deps = json.loads(root_pkg.read_text(encoding="utf-8")).get("dependencies", {})
+    except (OSError, ValueError):
+        return True
+    node_modules = PROJECT_ROOT / "node_modules"
+    return all((node_modules / name).exists() for name in deps)
+
+
 def _npm_lockfile_changed(hermes_root: Path) -> bool:
     current = _npm_manifests_digest()
     if current is None:
@@ -8198,6 +8219,16 @@ def _npm_lockfile_changed(hermes_root: Path) -> bool:
     # Also check that node_modules exists; a matching hash with missing
     # node_modules means the cache was recorded by another checkout.
     if not (PROJECT_ROOT / "node_modules").is_dir():
+        return True
+    # The digest proves the manifests are unchanged, and node_modules exists —
+    # but neither proves the root's own declared deps are actually installed.
+    # A tree pruned by the pre-fix two-pass update (agent-browser/@streamdown
+    # deleted, #64354) still has a node_modules/ and records a matching marker,
+    # so honouring the cache here would skip the repair on exactly the installs
+    # that hit the bug. Verify the root deps are present before trusting it;
+    # this also self-heals trees damaged by any other cause (manual rm, an
+    # older hermes) and is a no-op once root declares no deps.
+    if not _root_declared_deps_present():
         return True
     try:
         # Key the cache by PROJECT_ROOT so parallel worktrees don't collide.

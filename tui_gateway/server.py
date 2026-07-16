@@ -430,6 +430,20 @@ def _load_busy_input_mode() -> str:
     return raw if raw in {"queue", "steer", "interrupt"} else "interrupt"
 
 
+def _load_interim_assistant_messages() -> bool:
+    """Return whether interim assistant commentary should be surfaced to UIs.
+
+    Honors ``display.interim_assistant_messages`` (default true). When false,
+    the tui_gateway does not install ``interim_assistant_callback``, so
+    interim text from tool-call turns and verify-on-stop candidates is never
+    emitted as ``message.interim`` — mirroring the messaging gateway's gating.
+    """
+    display = _load_cfg().get("display")
+    if not isinstance(display, dict):
+        return True
+    return is_truthy_value(display.get("interim_assistant_messages", True))
+
+
 def _notify_session_boundary(
     event_type: str, session_id: str | None, platform: str | None = None
 ) -> None:
@@ -4307,7 +4321,7 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
 
 
 def _agent_cbs(sid: str) -> dict:
-    return {
+    callbacks = {
         "tool_start_callback": lambda tc_id, name, args: _on_tool_start(
             sid, tc_id, name, args
         ),
@@ -4361,6 +4375,22 @@ def _agent_cbs(sid: str) -> dict:
             timeout=30,
         ),
     }
+
+    # Interim assistant commentary (text alongside tool calls, or the attempted
+    # final answer before a verify-on-stop nudge). Gated on
+    # display.interim_assistant_messages (default true). Also set per-turn in
+    # _run_prompt_submit as defense-in-depth — the per-turn set overwrites
+    # this, and the finally block clears it so a stale closure can't fire.
+    if _load_interim_assistant_messages():
+        callbacks["interim_assistant_callback"] = (
+            lambda text, *, already_streamed=False: _emit(
+                "message.interim",
+                sid,
+                {"text": str(text), "already_streamed": bool(already_streamed)},
+            )
+        )
+
+    return callbacks
 
 
 def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
@@ -10034,6 +10064,22 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     payload["rendered"] = r
                 _emit("message.delta", sid, payload)
 
+            # Surface interim assistant text (commentary emitted alongside
+            # tool calls, or the attempted final answer before a verify-on-stop
+            # nudge) so the desktop can seal it as its own segment instead of
+            # losing it when message.complete replaces the streaming buffer.
+            # Gated on display.interim_assistant_messages (default true).
+            if _load_interim_assistant_messages():
+                def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
+                    _emit("message.interim", sid, {
+                        "text": text,
+                        "already_streamed": already_streamed,
+                    })
+
+                agent.interim_assistant_callback = _interim_assistant_cb
+            else:
+                agent.interim_assistant_callback = None
+
             run_kwargs = {
                 "conversation_history": list(history),
                 "stream_callback": _stream,
@@ -10155,6 +10201,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 payload["reasoning"] = last_reasoning
             if status_note:
                 payload["warning"] = status_note
+            if result.get("response_previewed"):
+                payload["response_previewed"] = True
             rendered = render_message(raw, cols)
             if rendered:
                 payload["rendered"] = rendered
@@ -10338,6 +10386,9 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             if home_token is not None:
                 reset_hermes_home_override(home_token)
             _clear_session_context(session_tokens)
+            # Clear the per-turn interim callback so a stale closure from
+            # this turn can't fire during a later turn on the same agent.
+            agent.interim_assistant_callback = None
             with session["history_lock"]:
                 session["running"] = False
                 session["last_active"] = time.time()

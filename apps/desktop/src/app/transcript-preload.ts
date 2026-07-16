@@ -24,6 +24,7 @@ import { toChatMessages } from '@/lib/chat-messages'
 import type { SessionInfo } from '@/types/hermes'
 
 import { pushTranscriptToRenderCache } from './render-cache-hydration'
+import { stashTranscript } from './transcript-stash'
 
 export const MAX_PRELOAD = 12
 export const PRELOAD_GAP_MS = 750
@@ -45,6 +46,7 @@ export interface PreloadDeps {
 export function selectPreloadSessions(sessions: SessionInfo[], max: number = MAX_PRELOAD): SessionInfo[] {
   const pinned = sessions.filter(s => s.pinned && !s.archived)
   const rest = sessions.filter(s => !s.pinned && !s.archived)
+
   return [...pinned, ...rest].slice(0, Math.max(0, max))
 }
 
@@ -68,13 +70,16 @@ export async function preloadTranscripts(deps: PreloadDeps): Promise<number> {
   }
 
   let cached = 0
+
   for (const session of selectPreloadSessions(sessions)) {
     if (shouldStop()) {
       break
     }
+
     if (freshCached.has(session.id)) {
       continue
     }
+
     try {
       const result = await fetchMessages(session.id, session.profile)
       const raw = Array.isArray(result?.messages) ? result.messages : []
@@ -82,14 +87,22 @@ export async function preloadTranscripts(deps: PreloadDeps): Promise<number> {
       // path never converts on click. toChatMessages is the same conversion
       // the live prefetch applies.
       const rows = raw.length > 0 ? toChatMessages(raw) : []
+
       if (rows.length > 0) {
         push(gatewayUrl, session.id, rows)
+        // Also hydrate the in-memory stash so the FIRST click on a preloaded
+        // session this app run paints synchronously (no loader pass) — the
+        // stash is what makes a switch instant; the disk cache alone is an
+        // async read behind a setMessages([]) blank. Same rows, same shape.
+        stashTranscript(session.id, rows)
         cached += 1
       }
     } catch {
       // fail-open: skip this session, keep going
     }
+
     await sleep(PRELOAD_GAP_MS)
   }
+
   return cached
 }

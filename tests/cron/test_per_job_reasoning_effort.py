@@ -13,9 +13,11 @@ resolution case asserts the exact decision expression against the real
 ``parse_reasoning_effort`` (the same call the scheduler makes).
 """
 import json
+import os
 
 import pytest
 
+import cron.jobs as jobs_mod
 from cron.jobs import create_job, update_job, get_job
 from hermes_constants import parse_reasoning_effort
 
@@ -43,6 +45,37 @@ def _self_isolated_cron_store(tmp_path):
     import cron.jobs as _jm
     with _jm.use_cron_store(tmp_path):
         yield
+
+# ---------------------------------------------------------------------------
+# Self-isolation (2026-07-15 fixture-leak incident).
+#
+# This file creates jobs with prompt="brief" — the exact fixture that
+# cron-config-lint (and eval 1c4a141bd9a9adc6) treats as junk in the LIVE
+# ~/.hermes/cron/jobs.json. Normal pytest runs are hermetic via the autouse
+# conftest fixture, but this module has leaked via harnesses that run it
+# OUTSIDE that fixture (real-agent blackbox session / kanban worker importing
+# it from a worktree sharing the live HERMES_HOME). It therefore isolates
+# ITSELF and never relies on conftest alone — see the twin block in
+# test_ticker_stall_60703.py for the full rationale.
+# ---------------------------------------------------------------------------
+if not os.environ.get("PYTEST_VERSION"):  # pragma: no cover - non-pytest harness
+    import tempfile as _tempfile
+
+    # TemporaryDirectory (not mkdtemp): its finalizer removes the dir at
+    # interpreter exit, so repeated harness runs don't accumulate orphans.
+    _standalone_tmp = _tempfile.TemporaryDirectory(
+        prefix="cron-test-home-reasoning-effort-"
+    )
+    _standalone_store = jobs_mod.use_cron_store(_standalone_tmp.name)
+    _standalone_store.__enter__()  # held for the process lifetime, by design
+
+
+@pytest.fixture(autouse=True)
+def _self_isolated_cron_store(tmp_path):
+    """Belt-and-suspenders: never write 'brief' fixture jobs to a real store."""
+    with jobs_mod.use_cron_store(tmp_path):
+        yield
+
 
 # ---------------------------------------------------------------------------
 # Persistence: create_job / update_job

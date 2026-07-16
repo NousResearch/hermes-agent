@@ -64,6 +64,44 @@ def _self_isolated_cron_store(tmp_path):
 
 
 
+# ---------------------------------------------------------------------------
+# Self-isolation (2026-07-15 fixture-leak incident).
+#
+# This file creates jobs named "claim job"/"oneshot"/"paused job" with
+# one-word prompts. When its code runs against the REAL ~/.hermes cron store,
+# those fixtures re-arm cron-config-lint and page cron-health. Normal pytest
+# runs are hermetic via the autouse conftest fixture — but this module has
+# leaked twice via harnesses that execute it OUTSIDE that fixture (a
+# real-agent blackbox session / kanban worker importing it directly from a
+# worktree that shares the live HERMES_HOME). So the module isolates ITSELF
+# and never relies on conftest alone:
+#
+#   1. Imported outside pytest (PYTEST_VERSION unset — pytest sets it at
+#      import/collection time): pin this module's cron store to a fresh
+#      tempdir for the life of the process.
+#   2. Under pytest: an autouse fixture wraps every test in its own
+#      use_cron_store(tmp_path), so even a run that skips our conftest
+#      (--noconftest / foreign rootdir) stays hermetic.
+# ---------------------------------------------------------------------------
+if not os.environ.get("PYTEST_VERSION"):  # pragma: no cover - non-pytest harness
+    import tempfile as _tempfile
+
+    # TemporaryDirectory (not mkdtemp): its finalizer removes the dir at
+    # interpreter exit, so repeated harness runs don't accumulate orphans.
+    _standalone_tmp = _tempfile.TemporaryDirectory(
+        prefix="cron-test-home-ticker-stall-"
+    )
+    _standalone_store = jobs_mod.use_cron_store(_standalone_tmp.name)
+    _standalone_store.__enter__()  # held for the process lifetime, by design
+
+
+@pytest.fixture(autouse=True)
+def _self_isolated_cron_store(tmp_path):
+    """Belt-and-suspenders: never write fixture jobs to a non-temp store."""
+    with jobs_mod.use_cron_store(tmp_path):
+        yield
+
+
 def _hold_jobs_flock(path: Path, release: threading.Event, held: threading.Event):
     """Hold an exclusive flock on *path* from a separate fd until released.
 

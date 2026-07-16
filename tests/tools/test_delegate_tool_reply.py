@@ -13,6 +13,7 @@ Covers:
 import json
 import os
 import tempfile
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -26,11 +27,24 @@ from tools.registry import registry
 # Handler
 # ---------------------------------------------------------------------------
 
+def _make_agent(subagent_id="child-123"):
+    """A lightweight agent stand-in with real attribute semantics.
+
+    ``MagicMock()`` returns a mock for ANY ``getattr`` (including
+    ``_delegate_reply_chunks``), so the handler's ``is None`` check never
+    fires and the list never gets created. ``SimpleNamespace`` has real
+    attribute access with ``AttributeError`` on missing attrs, which mirrors
+    how the handler interacts with a real AIAgent instance.
+    """
+    agent = SimpleNamespace()
+    agent._subagent_id = subagent_id
+    return agent
+
+
 def test_handler_records_to_agent_instance_and_spills(monkeypatch):
     with tempfile.TemporaryDirectory() as td:
         monkeypatch.setenv("HERMES_HOME", os.path.join(td, ".hermes"))
-        agent = MagicMock()
-        agent._subagent_id = "child-123"
+        agent = _make_agent("child-123")
         result = dtr.delegate_tool_reply(content="my deliverable", parent_agent=agent)
         data = json.loads(result)
         assert data["acknowledged"] is True
@@ -46,8 +60,7 @@ def test_handler_records_to_agent_instance_and_spills(monkeypatch):
 def test_handler_multi_call_appends_to_instance_list(monkeypatch):
     with tempfile.TemporaryDirectory() as td:
         monkeypatch.setenv("HERMES_HOME", os.path.join(td, ".hermes"))
-        agent = MagicMock()
-        agent._subagent_id = "child-456"
+        agent = _make_agent("child-456")
         dtr.delegate_tool_reply(content="chunk1", parent_agent=agent)
         dtr.delegate_tool_reply(content="chunk2", parent_agent=agent)
         assert agent._delegate_reply_chunks == ["chunk1", "chunk2"]
@@ -223,3 +236,51 @@ def test_system_prompt_discipline_present_for_orchestrator():
         "do the task", role="orchestrator", max_spawn_depth=2, child_depth=1,
     )
     assert "delegate_tool_reply" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Dispatch path — agent-level interception
+# ---------------------------------------------------------------------------
+
+def test_dispatch_via_registry_loses_agent_reference():
+    """Registry dispatch does NOT forward ``parent_agent`` — only task_id,
+    session_id, user_task. This is the root cause of the anchorless delivery
+    bug: when ``delegate_tool_reply`` was routed through registry.dispatch,
+    the handler received ``parent_agent=None`` and only produced a spill file
+    with an "unknown" subagent id, never recording the chunk on the agent
+    instance. The fix intercepts the tool at the agent level (like todo /
+    memory / delegate_task) so the agent instance is passed directly.
+    """
+    # Simulate what registry.dispatch forwards to the handler.
+    result = dtr._handle_delegate_tool_reply(
+        {"content": "delivered via registry"},
+        task_id="t1",
+        session_id="s1",
+    )
+    data = json.loads(result)
+    assert data["acknowledged"] is True
+    # No agent instance → the spill filename uses "unknown" as the subagent id.
+    # This proves the registry path cannot record on the agent instance.
+    assert data.get("path") is None or "unknown" in data["path"]
+
+
+def test_agent_level_intercept_passes_agent_to_handler(monkeypatch):
+    """When the tool_executor intercepts ``delegate_tool_reply`` as an
+    agent-level tool, it passes the agent instance directly to the handler —
+    NOT through registry.dispatch. This is the fix for the anchorless delivery
+    bug where registry.dispatch lost the agent reference."""
+    with tempfile.TemporaryDirectory() as td:
+        monkeypatch.setenv("HERMES_HOME", os.path.join(td, ".hermes"))
+        agent = _make_agent("child-intercept-test")
+        # Simulate the inline interception in tool_executor.py / agent_runtime_helpers.py
+        result = dtr.delegate_tool_reply(
+            content="delivered via agent-level intercept",
+            parent_agent=agent,
+        )
+        data = json.loads(result)
+        assert data["acknowledged"] is True
+        # Agent-instance state IS recorded when the agent is passed directly.
+        assert agent._delegate_reply_chunks == ["delivered via agent-level intercept"]
+        # Spill file uses the real subagent id, not "unknown".
+        if data.get("path"):
+            assert "child-intercept-test" in data["path"]

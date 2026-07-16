@@ -57,7 +57,7 @@ def _ra():
 
 
 AGENT_RUNTIME_POST_HOOK_TOOL_NAMES = frozenset(
-    {"todo", "session_search", "memory", "clarify", "read_terminal", "delegate_task"}
+    {"todo", "session_search", "memory", "clarify", "read_terminal", "delegate_task", "delegate_tool_reply"}
 )
 
 
@@ -2262,6 +2262,22 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     elif function_name == "delegate_task":
         def _execute(next_args: dict) -> Any:
             return _finish_agent_tool(agent._dispatch_delegate_task(next_args), next_args)
+    elif function_name == "delegate_tool_reply":
+        # Agent-level tool — must receive the agent instance so the handler
+        # can append the deliverable to ``agent._delegate_reply_chunks``.
+        # Routing through handle_function_call → registry.dispatch would lose
+        # the agent reference (dispatch never forwards parent_agent), causing
+        # the handler to get parent_agent=None and only produce a spill file
+        # with an "unknown" subagent id, never recording on the agent instance.
+        def _execute(next_args: dict) -> Any:
+            from tools.delegate_tool_reply import delegate_tool_reply as _reply
+            return _finish_agent_tool(
+                _reply(
+                    content=next_args.get("content", ""),
+                    parent_agent=agent,
+                ),
+                next_args,
+            )
     else:
         def _execute(next_args: dict) -> Any:
             return _ra().handle_function_call(

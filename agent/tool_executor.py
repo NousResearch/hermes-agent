@@ -1325,6 +1325,35 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     spinner.stop(cute_msg)
                 elif agent._should_emit_quiet_tool_messages():
                     agent._vprint(f"  {cute_msg}")
+        elif function_name == "delegate_tool_reply":
+            # Agent-level tool: the handler appends the deliverable to
+            # ``agent._delegate_reply_chunks`` (agent-instance state, outside
+            # the compressible messages[] transcript). Must be dispatched
+            # inline with the agent instance — routing through
+            # handle_function_call → registry.dispatch loses the agent
+            # reference (dispatch only forwards task_id/session_id/user_task),
+            # so the handler would get parent_agent=None and only produce a
+            # spill file with an "unknown" subagent id, never recording the
+            # chunk on the agent instance. _run_single_child would then find
+            # an empty _delegate_reply_chunks and fall back to trailing
+            # final_response prose.
+            def _execute(next_args: dict) -> Any:
+                from tools.delegate_tool_reply import delegate_tool_reply as _reply
+                return _reply(
+                    content=next_args.get("content", ""),
+                    parent_agent=agent,
+                )
+            function_result, function_args = _run_agent_tool_execution_middleware(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                execute=_execute,
+            )
+            tool_duration = time.time() - tool_start_time
+            if agent._should_emit_quiet_tool_messages():
+                agent._vprint(f"  {_get_cute_tool_message_impl('delegate_tool_reply', function_args, tool_duration, result=function_result)}")
         elif agent._context_engine_tool_names and function_name in agent._context_engine_tool_names:
             # Context engine tools (lcm_grep, lcm_describe, lcm_expand, etc.)
             spinner = None

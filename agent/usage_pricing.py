@@ -613,6 +613,7 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
     # through when configured with provider="fireworks". Fireworks publishes a
     # cached_input rate per model alongside input/output, which maps to
     # cache_read_cost_per_million. No separately published cache_write rate.
+    # Snapshot of https://docs.fireworks.ai/serverless/pricing (Standard tier).
     (
         "fireworks",
         "kimi-k2p6",
@@ -622,7 +623,29 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         cache_read_cost_per_million=Decimal("0.16"),
         source="official_docs_snapshot",
         source_url="https://docs.fireworks.ai/serverless/pricing",
-        pricing_version="fireworks-pricing-2026-05",
+        pricing_version="fireworks-pricing-2026-07",
+    ),
+    (
+        "fireworks",
+        "kimi-k2p7-code",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.95"),
+        output_cost_per_million=Decimal("4.00"),
+        cache_read_cost_per_million=Decimal("0.19"),
+        source="official_docs_snapshot",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
+    ),
+    (
+        "fireworks",
+        "glm-5p2",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.40"),
+        output_cost_per_million=Decimal("4.40"),
+        cache_read_cost_per_million=Decimal("0.14"),
+        source="official_docs_snapshot",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
     ),
     (
         "fireworks",
@@ -633,18 +656,141 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         cache_read_cost_per_million=Decimal("0.145"),
         source="official_docs_snapshot",
         source_url="https://docs.fireworks.ai/serverless/pricing",
-        pricing_version="fireworks-pricing-2026-05",
+        pricing_version="fireworks-pricing-2026-07",
     ),
     (
         "fireworks",
-        "qwen3p6-plus",
+        "deepseek-v4-flash",
     ): PricingEntry(
-        input_cost_per_million=Decimal("0.50"),
-        output_cost_per_million=Decimal("3.00"),
-        cache_read_cost_per_million=Decimal("0.10"),
+        input_cost_per_million=Decimal("0.14"),
+        output_cost_per_million=Decimal("0.28"),
+        cache_read_cost_per_million=Decimal("0.028"),
         source="official_docs_snapshot",
-        source_url="https://fireworks.ai/models/fireworks/qwen3p6-plus",
-        pricing_version="fireworks-pricing-2026-05",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
+    ),
+    (
+        "fireworks",
+        "qwen3p7-plus",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.40"),
+        output_cost_per_million=Decimal("1.60"),
+        cache_read_cost_per_million=Decimal("0.08"),
+        source="official_docs_snapshot",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
+    ),
+    (
+        "fireworks",
+        "minimax-m3",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.30"),
+        output_cost_per_million=Decimal("1.20"),
+        cache_read_cost_per_million=Decimal("0.06"),
+        source="official_docs_snapshot",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
+    ),
+    (
+        "fireworks",
+        "gpt-oss-120b",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.15"),
+        output_cost_per_million=Decimal("0.60"),
+        cache_read_cost_per_million=Decimal("0.015"),
+        source="official_docs_snapshot",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
+    ),
+    (
+        "fireworks",
+        "gpt-oss-20b",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.07"),
+        output_cost_per_million=Decimal("0.30"),
+        cache_read_cost_per_million=Decimal("0.035"),
+        source="official_docs_snapshot",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
+    ),
+    (
+        "fireworks",
+        "glm-5p1",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.40"),
+        output_cost_per_million=Decimal("4.40"),
+        cache_read_cost_per_million=Decimal("0.26"),
+        source="official_docs_snapshot",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
+    ),
+    (
+        "fireworks",
+        "minimax-m2p7",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.30"),
+        output_cost_per_million=Decimal("1.20"),
+        cache_read_cost_per_million=Decimal("0.06"),
+        source="official_docs_snapshot",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
+    ),
+    # Fast/turbo serving tiers — exposed as accounts/fireworks/routers/<name>,
+    # so rsplit("/", 1) yields these distinct ids with their own (higher) rates.
+    (
+        "fireworks",
+        "kimi-k2p6-fast",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.00"),
+        output_cost_per_million=Decimal("8.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        source="official_docs_snapshot",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
+    ),
+    (
+        "fireworks",
+        "kimi-k2p6-turbo",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.00"),
+        output_cost_per_million=Decimal("8.00"),
+        cache_read_cost_per_million=Decimal("0.30"),
+        source="official_docs_snapshot",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
+    ),
+    (
+        "fireworks",
+        "kimi-k2p7-code-fast",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.90"),
+        output_cost_per_million=Decimal("8.00"),
+        cache_read_cost_per_million=Decimal("0.38"),
+        source="official_docs_snapshot",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
+    ),
+    (
+        "fireworks",
+        "glm-5p2-fast",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.10"),
+        output_cost_per_million=Decimal("6.60"),
+        cache_read_cost_per_million=Decimal("0.21"),
+        source="official_docs_snapshot",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
+    ),
+    (
+        "fireworks",
+        "glm-5p1-fast",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.80"),
+        output_cost_per_million=Decimal("8.80"),
+        cache_read_cost_per_million=Decimal("0.52"),
+        source="official_docs_snapshot",
+        source_url="https://docs.fireworks.ai/serverless/pricing",
+        pricing_version="fireworks-pricing-2026-07",
     ),
 }
 

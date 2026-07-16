@@ -227,6 +227,12 @@ export function useGatewayBoot({
       }
     }
 
+    // Events can arrive synchronously with the socket opening, before connect()
+    // resumes. Keep the primary's source tag separate from the foreground atom
+    // and update it before dialing so those first events are attributed to the
+    // backend that emitted them (even when the foreground later switches).
+    let sourceProfile = normalizeProfileKey($activeGatewayProfile.get())
+
     // Adopt the profile the primary (window) backend booted as, so same-profile
     // resumes are no-op swaps and reconnects target the right backend.
     // Best-effort: a missing preference means "default". Shared by boot + soft
@@ -234,12 +240,15 @@ export function useGatewayBoot({
     async function adoptPrimaryProfile() {
       try {
         const pref = await desktop.profile?.get?.()
-        const profileKey = (pref?.profile ?? '').trim() || 'default'
-        $activeGatewayProfile.set(profileKey)
-        setPrimaryGateway(gateway, profileKey)
-        void ensureGatewayForProfile(profileKey)
+        sourceProfile = normalizeProfileKey(pref?.profile)
+        $activeGatewayProfile.set(sourceProfile)
+        setPrimaryGateway(gateway, sourceProfile)
+        void ensureGatewayForProfile(sourceProfile)
       } catch {
-        $activeGatewayProfile.set('default')
+        sourceProfile = 'default'
+        $activeGatewayProfile.set(sourceProfile)
+        setPrimaryGateway(gateway, sourceProfile)
+        void ensureGatewayForProfile(sourceProfile)
       }
     }
 
@@ -280,6 +289,12 @@ export function useGatewayBoot({
         }
 
         publish(conn)
+        await adoptPrimaryProfile()
+
+        if (cancelled) {
+          return
+        }
+
         const wsUrl = await resolveGatewayWsUrl(desktop, conn)
         await gateway.connect(wsUrl)
 
@@ -287,7 +302,6 @@ export function useGatewayBoot({
           return
         }
 
-        await adoptPrimaryProfile()
         await seedDefaultCwd()
         await callbacksRef.current.refreshHermesConfig().catch(() => undefined)
         await callbacksRef.current.refreshSessions().catch(() => undefined)
@@ -332,7 +346,7 @@ export function useGatewayBoot({
 
     const gateway = new HermesGateway()
     callbacksRef.current.onGatewayReady(gateway)
-    setPrimaryGateway(gateway, normalizeProfileKey($activeGatewayProfile.get()))
+    setPrimaryGateway(gateway, sourceProfile)
     // Secondary (background-profile) sockets funnel into the same handler.
     configureGatewayRegistry({ onEvent: event => callbacksRef.current.handleGatewayEvent(event) })
 
@@ -362,7 +376,6 @@ export function useGatewayBoot({
       }
     })
 
-    const sourceProfile = normalizeProfileKey($activeGatewayProfile.get())
     const offEvent = gateway.onEvent(event =>
       callbacksRef.current.handleGatewayEvent({ ...event, profile: sourceProfile })
     )
@@ -459,6 +472,12 @@ export function useGatewayBoot({
           progress: 95
         })
         publish(conn)
+        await adoptPrimaryProfile()
+
+        if (cancelled) {
+          return
+        }
+
         // Mint a fresh WS URL right before connecting. For OAuth gateways the
         // ticket is single-use with a short TTL, so the ticket baked into
         // conn.wsUrl is stale; resolveGatewayWsUrl() re-mints it and, on
@@ -470,8 +489,6 @@ export function useGatewayBoot({
         if (cancelled) {
           return
         }
-
-        await adoptPrimaryProfile()
 
         setDesktopBootStep({
           phase: 'renderer.config',

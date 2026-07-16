@@ -29,6 +29,10 @@ Board resolution order (highest precedence first, all optional):
   ``?board=...`` query param).
 * ``HERMES_KANBAN_BOARD`` env var (used by the dispatcher to pin workers
   to the board their task lives on — workers cannot see other boards).
+  An explicit selection (this env var or a ``scoped_current_board``
+  override) naming a board that does not exist on disk raises
+  :class:`BoardNotFoundError` — it is never silently redirected to
+  another board.
 * ``HERMES_KANBAN_DB`` env var (pins the DB file path directly — legacy
   override still honoured; highest precedence when the file path itself
   is what the caller wants to force).
@@ -483,38 +487,78 @@ def current_board_path() -> Path:
     return kanban_home() / "kanban" / "current"
 
 
+class BoardNotFoundError(RuntimeError):
+    """An *explicitly selected* board does not exist on disk.
+
+    Raised when ``HERMES_KANBAN_BOARD`` or a ``scoped_current_board(...)``
+    override names a board with no directory under ``boards_root()``.
+    Explicit selection means explicit intent — silently redirecting the
+    caller to another board mis-routes cards (an archived board's env pin
+    once landed new cards on ``default`` with no error). The persisted
+    ``<root>/kanban/current`` pointer is deliberately NOT covered: it is
+    ambient state that may go stale via hand-edits or board removal, and
+    keeps its warn-and-fall-through behaviour (upstream PR #20183).
+    """
+
+    def __init__(self, source: str, slug: str, detail: str = ""):
+        self.source = source
+        self.slug = slug
+        hint = detail or (
+            f"no board directory under {boards_root()}. Create it with "
+            f"`hermes kanban boards create {slug}`, restore it from "
+            f"{boards_root() / '_archived'}, or clear the selection."
+        )
+        super().__init__(
+            f"kanban: {source} names board {slug!r} which does not exist — {hint}"
+        )
+
+
 def get_current_board() -> str:
     """Return the active board slug, honouring the resolution chain.
 
     Order (highest precedence first):
 
-    1. ``HERMES_KANBAN_BOARD`` env var (set by the dispatcher on worker
+    1. ``scoped_current_board(...)`` in-process override (CLI ``--board``,
+       dashboard request pins).
+    2. ``HERMES_KANBAN_BOARD`` env var (set by the dispatcher on worker
        spawn, or manually for ad-hoc overrides).
-    2. ``<root>/kanban/current`` on disk (set by ``hermes kanban boards
+    3. ``<root>/kanban/current`` on disk (set by ``hermes kanban boards
        switch``), but only when that board still exists.
-    3. ``DEFAULT_BOARD`` (``"default"``).
+    4. ``DEFAULT_BOARD`` (``"default"``).
 
-    A malformed or stale slug at any step falls through to the next layer
-    with a best-effort warning — the dispatcher must never crash because a
-    user hand-edited a file or removed a board directory.
+    Layers 1 and 2 are *explicit* selections: a malformed slug or a board
+    that does not exist on disk raises :class:`BoardNotFoundError` instead
+    of silently falling through — falling through would redirect explicit
+    intent to a different board's DB (observed: an archived board's env
+    pin landed new cards on ``default`` with no error). Layer 3 is ambient
+    state that legitimately goes stale (hand-edits, board removal), so it
+    falls through to ``default`` with a stderr warning.
     """
     scoped = (_CURRENT_BOARD_OVERRIDE.get() or "").strip()
     if scoped:
         try:
             normed = _normalize_board_slug(scoped)
-            if normed and board_exists(normed):
-                return normed
-        except ValueError:
-            pass
+        except ValueError as exc:
+            raise BoardNotFoundError(
+                "scoped board override", scoped, detail=str(exc)
+            ) from exc
+        if normed:
+            if not board_exists(normed):
+                raise BoardNotFoundError("scoped board override", normed)
+            return normed
 
     env = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
     if env:
         try:
             normed = _normalize_board_slug(env)
-            if normed and board_exists(normed):
-                return normed
-        except ValueError:
-            pass
+        except ValueError as exc:
+            raise BoardNotFoundError(
+                "HERMES_KANBAN_BOARD", env, detail=str(exc)
+            ) from exc
+        if normed:
+            if not board_exists(normed):
+                raise BoardNotFoundError("HERMES_KANBAN_BOARD", normed)
+            return normed
     try:
         f = current_board_path()
         if f.exists():
@@ -526,6 +570,12 @@ def get_current_board() -> str:
                         return normed
                 except ValueError:
                     pass
+                print(
+                    f"kanban: warning: current-board pointer {f} names "
+                    f"board {val!r} which no longer exists; using "
+                    f"{DEFAULT_BOARD!r}",
+                    file=sys.stderr,
+                )
     except OSError:
         pass
     return DEFAULT_BOARD

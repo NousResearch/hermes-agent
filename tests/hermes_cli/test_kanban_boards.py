@@ -170,9 +170,8 @@ class TestCurrentBoard:
         assert kb.get_current_board() == "default"
 
     def test_env_var_takes_precedence(self, fresh_home, monkeypatch):
-        # Create the board so the env-var value is honoured (get_current_board
-        # trusts env-var validity, but the resolution chain doesn't require
-        # the board to exist; we just test that env trumps).
+        # The board must exist — an explicit env selection of a missing
+        # board raises BoardNotFoundError instead of falling through.
         kb.create_board("envboard")
         monkeypatch.setenv("HERMES_KANBAN_BOARD", "envboard")
         assert kb.get_current_board() == "envboard"
@@ -205,16 +204,48 @@ class TestCurrentBoard:
         monkeypatch.setenv("HERMES_KANBAN_BOARD", "b")
         assert kb.get_current_board() == "b"
 
-    def test_stale_env_falls_through_to_file_pointer(self, fresh_home, monkeypatch):
+    def test_stale_env_is_a_hard_error(self, fresh_home, monkeypatch):
+        # An explicit env selection of a board that does not exist must NOT
+        # be silently redirected to another board (observed 2026-07-16: an
+        # archived board's env pin landed new cards on 'default').
         kb.create_board("persisted")
         kb.set_current_board("persisted")
         monkeypatch.setenv("HERMES_KANBAN_BOARD", "missing-board")
-        assert kb.get_current_board() == "persisted"
+        with pytest.raises(kb.BoardNotFoundError) as exc_info:
+            kb.get_current_board()
+        assert "missing-board" in str(exc_info.value)
+        assert "HERMES_KANBAN_BOARD" in str(exc_info.value)
 
-    def test_invalid_env_falls_through(self, fresh_home, monkeypatch):
+    def test_invalid_env_is_a_hard_error(self, fresh_home, monkeypatch):
         monkeypatch.setenv("HERMES_KANBAN_BOARD", "!!bad!!")
-        # Should not crash — falls through to default.
+        with pytest.raises(kb.BoardNotFoundError):
+            kb.get_current_board()
+
+    def test_stale_env_hard_error_in_db_path(self, fresh_home, monkeypatch):
+        # The DB path resolver goes through get_current_board when no
+        # explicit board/override is present — the stale env pin must
+        # surface there too, never resolve to another board's DB file.
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "missing-board")
+        with pytest.raises(kb.BoardNotFoundError):
+            kb.kanban_db_path()
+
+    def test_stale_scoped_override_is_a_hard_error(self, fresh_home):
+        # CLI/dashboard pre-validate before scoping; this is the
+        # defense-in-depth backstop for any future caller that doesn't.
+        with kb.scoped_current_board("missing-board"):
+            with pytest.raises(kb.BoardNotFoundError):
+                kb.get_current_board()
+
+    def test_stale_file_pointer_warns_on_stderr(self, fresh_home, capsys):
+        # Ambient on-disk pointer keeps warn-and-fall-through (PR #20183
+        # behaviour), but the fallback is no longer silent.
+        current = fresh_home / "kanban" / "current"
+        current.parent.mkdir(parents=True, exist_ok=True)
+        current.write_text("missing-board\n", encoding="utf-8")
         assert kb.get_current_board() == "default"
+        err = capsys.readouterr().err
+        assert "missing-board" in err
+        assert "no longer exists" in err
 
     def test_clear_current_board(self, fresh_home):
         kb.create_board("x")
@@ -380,20 +411,26 @@ class TestConnectionIsolation:
         with kb.connect(board="persist") as conn:
             assert kb.list_tasks(conn) == []
 
-    def test_connect_stale_env_uses_fallback_board_without_recreating_it(
+    def test_connect_stale_env_raises_instead_of_misrouting(
         self, fresh_home, monkeypatch,
     ):
+        # Writes explicitly pinned to a removed board must fail loudly —
+        # the old fall-through silently landed them on the next board in
+        # the chain (observed 2026-07-16 with an archived board's env pin).
         kb.create_board("ephemeral")
         kb.remove_board("ephemeral")
         kb.create_board("persist")
         kb.set_current_board("persist")
         monkeypatch.setenv("HERMES_KANBAN_BOARD", "ephemeral")
 
-        with kb.connect() as conn:
-            kb.create_task(conn, title="via-fallback", assignee="x")
+        with pytest.raises(kb.BoardNotFoundError):
+            with kb.connect() as conn:
+                kb.create_task(conn, title="via-fallback", assignee="x")
 
+        # Nothing was written anywhere, and the removed board was not
+        # silently recreated by the failed attempt.
         with kb.connect(board="persist") as conn:
-            assert [t.title for t in kb.list_tasks(conn)] == ["via-fallback"]
+            assert kb.list_tasks(conn) == []
         assert not kb.board_exists("ephemeral")
 
 

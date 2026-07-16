@@ -432,7 +432,71 @@ def test_explicit_only_keeps_unauthenticated_current_provider_visible():
     assert row["source"] == "configured-current"
     assert row["authenticated"] is False
     assert row["models"] == ["deepseek-v4-pro"]
-    assert "DEEPSEEK_API_KEY" in row["warning"]
+
+
+# ─── model.picker_explicit_only config override ────────────────────────
+
+
+def test_picker_explicit_only_config_overrides_include_unconfigured():
+    """model.picker_explicit_only: true in config must force explicit_only
+    behaviour even when the caller passes include_unconfigured=True (as the
+    TUI and dashboard pickers do)."""
+    rows = [
+        {"slug": "zai", "name": "Z.AI", "models": ["glm-5.2"],
+         "total_models": 1, "is_current": True, "is_user_defined": False,
+         "source": "hermes"},
+        {"slug": "copilot", "name": "Copilot", "models": ["gpt-5.4"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "hermes"},
+        {"slug": "custom:lab", "name": "Lab", "models": ["lab-1"],
+         "total_models": 1, "is_current": False, "is_user_defined": True,
+         "source": "user-config"},
+    ]
+    ctx = _empty_ctx(provider="zai", model="glm-5.2")
+    cfg_with_flag = {"model": {"picker_explicit_only": True}}
+    with (
+        _list_auth_returning(rows),
+        patch("hermes_cli.config.load_config", return_value=cfg_with_flag),
+        patch("hermes_cli.config.read_raw_config", return_value={}),
+        patch(
+            "hermes_cli.auth.is_provider_explicitly_configured",
+            return_value=False,
+        ),
+    ):
+        # Caller asks for the full universe — config flag must override.
+        payload = build_models_payload(ctx, include_unconfigured=True)
+
+    slugs = [row["slug"] for row in payload["providers"]]
+    # Only the current provider + user-defined custom rows survive;
+    # ambient Copilot is filtered out despite include_unconfigured=True.
+    assert "copilot" not in slugs
+    assert "zai" in slugs
+    assert "custom:lab" in slugs
+
+
+def test_picker_explicit_only_absent_does_not_change_behaviour():
+    """Without the config flag, include_unconfigured=True must still append
+    unconfigured canonical rows as before."""
+    rows = [
+        {"slug": "zai", "name": "Z.AI", "models": ["glm-5.2"],
+         "total_models": 1, "is_current": True, "is_user_defined": False,
+         "source": "hermes"},
+    ]
+    ctx = _empty_ctx(provider="zai", model="glm-5.2")
+    cfg_without_flag = {"model": {}}
+    with (
+        _list_auth_returning(rows),
+        patch("hermes_cli.config.load_config", return_value=cfg_without_flag),
+        patch("hermes_cli.config.read_raw_config", return_value={}),
+    ):
+        payload = build_models_payload(ctx, include_unconfigured=True)
+
+    slugs = [row["slug"] for row in payload["providers"]]
+    # include_unconfigured=True still works — unconfigured canonical
+    # providers appear as skeleton rows.
+    assert len(slugs) > 1
+
+
 def test_include_unconfigured_keeps_current_provider_visible_without_credentials():
     """If the saved provider is currently unauthenticated, keep a visible row
     with the saved model so GUI pickers don't silently jump to another

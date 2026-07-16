@@ -1,0 +1,46 @@
+model:
+  default: claude-sonnet-4-6
+  provider: anthropic
+
+# ──────────────────────────────────────────────────────────────
+# Browser toolset — lock to Browserbase cloud engine.
+# No local Chromium; every browser_navigate / browser_click call
+# goes through a Browserbase managed session with proxies + stealth.
+# ──────────────────────────────────────────────────────────────
+browser:
+  engine: browserbase
+  record_sessions: true        # useful for debugging browser tasks
+  allow_private_urls: false
+  inactivity_timeout: 300      # 5 min — browser tasks can be slow
+  command_timeout: 60
+
+agent:
+  max_turns: 60
+  task_completion_guidance: true
+  parallel_tool_call_guidance: true
+
+# Enabled toolsets for this profile.
+# Minimal surface: browser + web research + file I/O + delegation.
+# Terminal is intentionally excluded — browser agents should not shell out.
+toolsets:
+  - browser
+  - web
+  - file
+  - vision
+  - delegation
+  - todo
+  - session_search
+
+# Plugins: enable the Browserbase browser backend.
+# The plugin reads BROWSERBASE_API_KEY + BROWSERBASE_PROJECT_ID from .env.
+plugins:
+  enabled:
+    - browser-browserbase
+
+terminal:
+  backend: local
+  timeout: 60
+
+# No cron dispatch from this profile — it's a worker, not an orchestrator.
+kanban:
+  dispatch_in_gateway: false

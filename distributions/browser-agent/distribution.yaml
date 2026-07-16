@@ -1,0 +1,35 @@
+name: browser-agent
+version: 1.0.0
+description: >
+  A dedicated Hermes profile for Browserbase-backed browser automation tasks.
+  Designed to be assigned as the Kanban worker for any task tagged `browser`.
+  Runs all browser tools through Browserbase cloud (no local Chromium required).
+  Install via: hermes profile install github.com/<your-fork>/hermes-agent#feat/browser-agent-profile-distribution --name browser
+author: Kyle Jeong
+license: MIT
+hermes_requires: ">=0.12.0"
+
+# Environment variables this profile needs — values come from your .env, never committed.
+# Run: hermes setup (inside the browser profile) to be prompted for these.
+env_requires:
+  - name: BROWSERBASE_API_KEY
+    description: "Browserbase API key (https://browserbase.com)"
+    required: true
+  - name: BROWSERBASE_PROJECT_ID
+    description: "Browserbase project ID"
+    required: true
+  - name: BROWSERBASE_PROXIES
+    description: "Enable Browserbase residential proxies (true/false)"
+    required: false
+    default: "true"
+  - name: BROWSERBASE_KEEP_ALIVE
+    description: "Keep browser sessions alive between steps (true/false)"
+    required: false
+    default: "true"
+
+# Distribution owns these paths; user-owned paths (.env, memories/, sessions/) are never touched.
+distribution_owned:
+  - distribution.yaml
+  - config.yaml
+  - SOUL.md
+  - skills/

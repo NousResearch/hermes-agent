@@ -145,6 +145,7 @@ class BrowserbaseBrowserProvider(BrowserProvider):
                 headers=headers,
                 json=session_config,
                 timeout=30,
+                verify=True,
             )
 
             proxies_fallback = False
@@ -164,6 +165,7 @@ class BrowserbaseBrowserProvider(BrowserProvider):
                         headers=headers,
                         json=session_config,
                         timeout=30,
+                        verify=True,
                     )
 
                 if response.status_code == 402 and enable_proxies:
@@ -178,6 +180,7 @@ class BrowserbaseBrowserProvider(BrowserProvider):
                         headers=headers,
                         json=session_config,
                         timeout=30,
+                        verify=True,
                     )
         except requests.RequestException as exc:
             raise RuntimeError(

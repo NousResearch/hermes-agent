@@ -262,10 +262,101 @@ class TestRunBackgroundTask:
         mock_adapter.send.assert_called_once()
         call_args = mock_adapter.send.call_args
         content = call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "")
-        assert "Background task complete" in content
+        assert "Background task finished" in content
+        assert "✅" not in content
         assert "Hello from background!" in content
         mock_agent_instance.shutdown_memory_provider.assert_called_once()
         mock_agent_instance.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_background_prompt_requires_waiting_for_dependent_children(self):
+        """Background prompts require durable agents to close dependent child work."""
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], "done"))
+        mock_adapter.extract_images = MagicMock(return_value=([], "done"))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("run_agent.AIAgent") as MockAgent:
+            agent = MagicMock()
+            agent.shutdown_memory_provider = MagicMock()
+            agent.close = MagicMock()
+            agent.run_conversation.return_value = {"final_response": "done", "messages": []}
+            MockAgent.return_value = agent
+
+            await runner._run_background_task("do the work", _make_event().source, "bg_test")
+
+        first_message = agent.run_conversation.call_args.kwargs["user_message"]
+        assert "untracked" in first_message
+        assert "dependent child" in first_message
+        assert "wait/poll" in first_message
+        assert "post-closure readback" in first_message
+
+    @pytest.mark.asyncio
+    async def test_incomplete_first_pass_continues_same_agent_session(self):
+        """A clear pending-verification response gets one bounded closure pass."""
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], "verification complete"))
+        mock_adapter.extract_images = MagicMock(return_value=([], "verification complete"))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("run_agent.AIAgent") as MockAgent:
+            agent = MagicMock()
+            agent.shutdown_memory_provider = MagicMock()
+            agent.close = MagicMock()
+            agent.run_conversation.side_effect = [
+                {"final_response": "Status still pending.", "messages": []},
+                {"final_response": "verification complete", "messages": []},
+            ]
+            MockAgent.return_value = agent
+
+            await runner._run_background_task("do the work", _make_event().source, "bg_test")
+
+        assert agent.run_conversation.call_count == 2
+        closure_message = agent.run_conversation.call_args.kwargs["user_message"]
+        assert "bounded closure pass" in closure_message
+        content = mock_adapter.send.call_args.kwargs["content"]
+        assert "Background task finished" in content
+        assert "verification complete" in content
+
+    @pytest.mark.asyncio
+    async def test_repeated_incomplete_response_is_bounded_and_needs_verification(self):
+        """A second incomplete response is delivered without a green completion wrapper."""
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        mock_adapter.extract_media = MagicMock(return_value=([], "INCOMPLETE: verification pending"))
+        mock_adapter.extract_images = MagicMock(return_value=([], "INCOMPLETE: verification pending"))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("run_agent.AIAgent") as MockAgent:
+            agent = MagicMock()
+            agent.shutdown_memory_provider = MagicMock()
+            agent.close = MagicMock()
+            agent.run_conversation.side_effect = [
+                {"final_response": "INCOMPLETE: verification pending.", "messages": []},
+                {"final_response": "INCOMPLETE: verification pending.", "messages": []},
+            ]
+            MockAgent.return_value = agent
+
+            await runner._run_background_task("do the work", _make_event().source, "bg_test")
+
+        assert agent.run_conversation.call_count == 2
+        content = mock_adapter.send.call_args.kwargs["content"]
+        assert "Background task needs verification" in content
+        assert "✅" not in content
+
+    def test_background_timeout_defaults_to_three_hours(self):
+        """Background work gets a real, configurable three-hour budget by default."""
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["agent"]["background_timeout"] == 10_800
 
     @pytest.mark.asyncio
     async def test_media_files_routed_by_type(self, monkeypatch):
@@ -338,13 +429,13 @@ class TestRunBackgroundTask:
             await runner._run_background_task("make stuff", source, "bg_test")
 
             mock_adapter.send_voice.assert_called_once()
-            assert mock_adapter.send_voice.call_args.kwargs["audio_path"] == _ogg
+            assert mock_adapter.send_voice.call_args.kwargs["audio_path"] == _os.path.realpath(_ogg)
             mock_adapter.send_video.assert_called_once()
-            assert mock_adapter.send_video.call_args.kwargs["video_path"] == _mp4
+            assert mock_adapter.send_video.call_args.kwargs["video_path"] == _os.path.realpath(_mp4)
             mock_adapter.send_image_file.assert_called_once()
-            assert mock_adapter.send_image_file.call_args.kwargs["image_path"] == _png
+            assert mock_adapter.send_image_file.call_args.kwargs["image_path"] == _os.path.realpath(_png)
             mock_adapter.send_document.assert_called_once()
-            assert mock_adapter.send_document.call_args.kwargs["file_path"] == _pdf
+            assert mock_adapter.send_document.call_args.kwargs["file_path"] == _os.path.realpath(_pdf)
         finally:
             import shutil as _shutil
             _shutil.rmtree(_tmpdir, ignore_errors=True)

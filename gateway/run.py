@@ -71,6 +71,38 @@ _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
+# /background creates an otherwise independent agent session. Its initial
+# prompt must make the durable outer agent responsible for any work it starts,
+# rather than allowing it to return while an untracked child is still running.
+_BACKGROUND_EXECUTION_CONTRACT = """
+
+Background execution contract:
+- You are the durable outer agent for this task. Do not spawn an untracked
+  dependent child and then return.
+- If you start a dependent child, wait/poll for it, consume its result,
+  continue all remaining safe actions yourself, and do a post-closure readback
+  before your final response.
+- Do not claim completion while verification or a safe remaining action is
+  pending. Preserve concrete external blockers plainly when they prevent work.
+""".strip()
+_BACKGROUND_CLOSURE_PROMPT = """
+Your previous final response clearly reported incomplete work or verification
+pending. Perform one bounded closure pass in this same session: finish only
+safe remaining actions within the original scope, consume any dependent-child
+result, and do the required readback. Do not bypass approvals or invent a
+result. If a concrete external blocker remains, report it plainly.
+""".strip()
+_BACKGROUND_INCOMPLETE_RESPONSE_RE = re.compile(
+    r"\b(?:incomplete|(?:verification|status)\s+(?:(?:is|still)\s+)?pending|pending\s+verification|"
+    r"needs?\s+verification|not\s+(?:yet\s+)?verified)\b",
+    re.IGNORECASE,
+)
+
+
+def _background_response_needs_closure(response: str) -> bool:
+    """Return whether a final response explicitly asks for closure work."""
+    return bool(_BACKGROUND_INCOMPLETE_RESPONSE_RE.search(str(response or "")))
+
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not gateway chats
     r"auxiliary\s+.+\s+failed"
@@ -13599,6 +13631,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
             agent_cfg = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
+            try:
+                background_timeout = float(agent_cfg.get("background_timeout", 10_800))
+            except (TypeError, ValueError):
+                background_timeout = 10_800
+            # 0 keeps the historical unlimited behavior. A positive budget is
+            # cooperative: we interrupt the agent at its deadline but continue
+            # awaiting the executor future so a worker thread is never left
+            # running after its coroutine has been cancelled.
+            background_timeout = background_timeout if background_timeout > 0 else None
 
             pr = self._provider_routing
             max_iterations = _current_max_iterations()
@@ -13625,6 +13666,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                     except Exception as e:
                         logger.warning("Background task vision enrichment failed: %s", e)
+
+            agent_holder: List[Optional[Any]] = [None]
 
             def run_sync():
                 agent = AIAgent(
@@ -13657,15 +13700,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Reload from disk — do not reuse the startup snapshot (#60955).
                     fallback_model=self._refresh_fallback_model(),
                 )
+                agent_holder[0] = agent
                 try:
-                    return agent.run_conversation(
-                        user_message=enriched_prompt,
+                    result = agent.run_conversation(
+                        user_message=f"{enriched_prompt}\n\n{_BACKGROUND_EXECUTION_CONTRACT}",
                         task_id=task_id,
                     )
+                    if _background_response_needs_closure(
+                        result.get("final_response", "") if result else ""
+                    ):
+                        result = agent.run_conversation(
+                            user_message=_BACKGROUND_CLOSURE_PROMPT,
+                            task_id=task_id,
+                        )
+                    return result
                 finally:
                     self._cleanup_agent_resources(agent)
 
-            result = await self._run_in_executor_with_context(run_sync)
+            executor_task = asyncio.ensure_future(self._run_in_executor_with_context(run_sync))
+            if background_timeout is None:
+                result = await executor_task
+            else:
+                done, _ = await asyncio.wait({executor_task}, timeout=background_timeout)
+                if done:
+                    result = executor_task.result()
+                else:
+                    background_agent = agent_holder[0]
+                    logger.warning(
+                        "Background task %s reached its %.0fs budget; requesting cooperative stop",
+                        task_id,
+                        background_timeout,
+                    )
+                    if background_agent is not None and hasattr(background_agent, "interrupt"):
+                        background_agent.interrupt("background execution budget reached")
+                    # Do not cancel this Future: cancelling its asyncio wrapper
+                    # does not stop the underlying worker thread.
+                    result = await executor_task
 
             response = result.get("final_response", "") if result else ""
             if not response and result and result.get("error"):
@@ -13679,7 +13749,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 images, text_content = adapter.extract_images(response)
 
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
-                header = f'✅ Background task complete\nPrompt: "{preview}"\n\n'
+                status = (
+                    "Background task needs verification"
+                    if _background_response_needs_closure(response)
+                    else "Background task finished"
+                )
+                header = f'{status}\nPrompt: "{preview}"\n\n'
 
                 if text_content:
                     await adapter.send(
@@ -13747,7 +13822,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
                 await adapter.send(
                     chat_id=source.chat_id,
-                    content=f'✅ Background task complete\nPrompt: "{preview}"\n\n(No response generated)',
+                    content=f'Background task finished\nPrompt: "{preview}"\n\n(No response generated)',
                     metadata=_thread_metadata,
                 )
 

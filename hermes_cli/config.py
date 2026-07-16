@@ -994,6 +994,11 @@ DEFAULT_CONFIG = {
         # tools or receiving API responses.  Only fires when the agent has
         # been completely idle for this duration.  0 = unlimited.
         "gateway_timeout": 1800,
+        # Wall-clock budget for a /background task (seconds). A positive value
+        # requests a cooperative agent stop at the deadline, then waits for its
+        # worker thread to close; it never abandons a running worker. 0 = no
+        # wall-clock budget. The 3-hour default supports long autonomous work.
+        "background_timeout": 10_800,
         # Graceful drain timeout for gateway stop/restart (seconds).
         # The gateway stops accepting new work, waits for running agents
         # to finish, then interrupts any remaining runs after the timeout.

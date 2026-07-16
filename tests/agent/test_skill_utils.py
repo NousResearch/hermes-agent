@@ -474,3 +474,43 @@ class TestParseFrontmatterBOM:
         fm, _ = parse_frontmatter(raw)
         assert fm["name"] == "my-skill"
         assert fm["platforms"] == ["macos"]
+
+
+class TestBOMToleranceSiblingSites:
+    """The BOM fix must cover every independent frontmatter parser, not just
+    the canonical ``parse_frontmatter`` — several modules reimplement the
+    ``---`` fence check locally."""
+
+    SKILL = "---\nname: bom-skill\ndescription: Saved by Notepad\n---\n\n# Body\n"
+
+    def test_skill_manager_validate_accepts_bom(self):
+        from tools.skill_manager_tool import _validate_frontmatter
+
+        assert _validate_frontmatter("\ufeff" + self.SKILL) is None
+
+    def test_prompt_builder_strips_bom_frontmatter(self):
+        # A BOM'd context file (AGENTS.md etc.) must not leak raw
+        # frontmatter into the system prompt.
+        from agent.prompt_builder import _strip_yaml_frontmatter
+
+        out = _strip_yaml_frontmatter("\ufeff---\nfoo: bar\n---\nBody text\n")
+        assert out.strip() == "Body text"
+
+    def test_blueprints_split_frontmatter_bom(self):
+        # str.lstrip() does NOT strip U+FEFF (it is not whitespace), so the
+        # pre-existing lstrip() in _split_frontmatter never covered it.
+        from tools.blueprints import _split_frontmatter
+
+        fm = _split_frontmatter("\ufeff---\nname: bp\n---\nbody")
+        assert fm is not None
+        assert fm.get("name") == "bp"
+
+    def test_skills_hub_parsers_accept_bom(self):
+        from tools.skills_hub import GitHubSource, OptionalSkillSource
+
+        for parser in (
+            GitHubSource._parse_frontmatter_quick,
+            OptionalSkillSource._parse_frontmatter,
+        ):
+            fm = parser("\ufeff" + self.SKILL)
+            assert fm.get("name") == "bom-skill", parser.__qualname__

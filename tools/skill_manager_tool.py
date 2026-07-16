@@ -529,6 +529,9 @@ def _validate_frontmatter(content: str) -> Optional[str]:
     if not content.strip():
         return "Content cannot be empty."
 
+    # Tolerate a leading UTF-8 BOM (Windows editors) before the fence.
+    content = content.lstrip("\ufeff")
+
     if not content.startswith("---"):
         return "SKILL.md must start with YAML frontmatter (---). See existing skills for format."
 

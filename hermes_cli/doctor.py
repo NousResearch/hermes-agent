@@ -233,7 +233,6 @@ def _build_apikey_providers_list() -> list:
         "MiniMax (China)": "minimax-cn", "Vercel AI Gateway": "ai-gateway",
         "Kilo Code": "kilocode", "OpenCode Zen": "opencode-zen",
         "OpenCode Go": "opencode-go",
-        "Anthropic": "anthropic",
     }
     for _label, _canonical in _name_to_canonical.items():
         _known_canonical.add(_canonical)

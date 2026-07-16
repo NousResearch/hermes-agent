@@ -66,9 +66,19 @@ async function loadWorktrees(target: string): Promise<void> {
   }
 }
 
+interface RepoStatusRefreshRequest {
+  probe: (cwd: string) => Promise<HermesRepoStatus | null>
+  seq: number
+  target: string
+}
+
 // Coalesce overlapping probes: many triggers can fire around a turn boundary
-// (busy flip + worktree token + focus), but only the latest cwd matters.
+// (busy flip + worktree token + focus), but only the latest cwd matters. Keep
+// one probe in flight and retain at most one trailing request so a slow Git
+// status cannot multiply into an unbounded subprocess pile-up.
 let inflightCwd: null | string = null
+let pendingRepoStatusRefresh: RepoStatusRefreshRequest | null = null
+let repoStatusRefreshInFlight: Promise<void> | null = null
 let repoStatusRefreshSeq = 0
 let repoStatusRefreshTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -79,21 +89,7 @@ const normalizeCwd = (cwd?: null | string): null | string => cwd?.trim() || null
  * Best-effort: a non-repo, a remote backend, or a missing probe clears the
  * status so the rail hides rather than showing stale data.
  */
-export async function refreshRepoStatus(cwd?: null | string): Promise<void> {
-  const target = normalizeCwd(cwd ?? $currentCwd.get())
-  const probe = desktopGit()?.repoStatus
-  const seq = (repoStatusRefreshSeq += 1)
-
-  if (!target || !probe) {
-    $repoStatus.set(null)
-    $repoWorktrees.set([])
-
-    return
-  }
-
-  inflightCwd = target
-  $repoStatusLoading.set(true)
-
+async function runRepoStatusRefresh({ probe, seq, target }: RepoStatusRefreshRequest): Promise<void> {
   try {
     const status = await probe(target)
 
@@ -114,11 +110,48 @@ export async function refreshRepoStatus(cwd?: null | string): Promise<void> {
       $repoStatus.set(null)
       $repoWorktrees.set([])
     }
-  } finally {
-    if (seq === repoStatusRefreshSeq && inflightCwd === target) {
-      $repoStatusLoading.set(false)
-    }
   }
+}
+
+async function drainRepoStatusRefreshes(): Promise<void> {
+  while (pendingRepoStatusRefresh) {
+    const request = pendingRepoStatusRefresh
+
+    pendingRepoStatusRefresh = null
+    await runRepoStatusRefresh(request)
+  }
+
+  // This reset is synchronous with the final empty-queue check. A refresh
+  // arriving before this continuation runs is drained above; one arriving
+  // afterward sees no in-flight promise and starts a new drain.
+  repoStatusRefreshInFlight = null
+  $repoStatusLoading.set(false)
+}
+
+export function refreshRepoStatus(cwd?: null | string): Promise<void> {
+  const target = normalizeCwd(cwd ?? $currentCwd.get())
+  const probe = desktopGit()?.repoStatus
+  const seq = (repoStatusRefreshSeq += 1)
+
+  if (!target || !probe) {
+    pendingRepoStatusRefresh = null
+    inflightCwd = null
+    $repoStatus.set(null)
+    $repoWorktrees.set([])
+    $repoStatusLoading.set(false)
+
+    return repoStatusRefreshInFlight || Promise.resolve()
+  }
+
+  inflightCwd = target
+  pendingRepoStatusRefresh = { probe, seq, target }
+  $repoStatusLoading.set(true)
+
+  if (!repoStatusRefreshInFlight) {
+    repoStatusRefreshInFlight = drainRepoStatusRefreshes()
+  }
+
+  return repoStatusRefreshInFlight
 }
 
 function scheduleRepoStatusRefresh(cwd?: null | string): void {

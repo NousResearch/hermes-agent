@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesRepoStatus } from '@/global'
 
-import { $repoStatus, refreshRepoStatus } from './coding-status'
+import { $repoStatus, $repoStatusLoading, refreshRepoStatus } from './coding-status'
 import { $currentCwd } from './session'
 
 const sampleStatus: HermesRepoStatus = {
@@ -27,12 +27,15 @@ function stubProbe(impl: (cwd: string) => Promise<HermesRepoStatus | null>) {
 
 describe('refreshRepoStatus', () => {
   beforeEach(() => {
+    vi.useFakeTimers()
     $repoStatus.set(null)
     $currentCwd.set('')
     delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
   })
 
   afterEach(() => {
+    vi.clearAllTimers()
+    vi.useRealTimers()
     delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
   })
 
@@ -70,5 +73,48 @@ describe('refreshRepoStatus', () => {
     $repoStatus.set(sampleStatus)
     await refreshRepoStatus('/repo')
     expect($repoStatus.get()).toBeNull()
+  })
+
+  it('runs one probe at a time and coalesces overlap into one trailing refresh', async () => {
+    const resolvers: Array<(status: HermesRepoStatus | null) => void> = []
+    const calls: string[] = []
+    let active = 0
+    let maxActive = 0
+
+    stubProbe(
+      cwd =>
+        new Promise(resolve => {
+          calls.push(cwd)
+          active++
+          maxActive = Math.max(maxActive, active)
+          resolvers.push(status => {
+            active--
+            resolve(status)
+          })
+        })
+    )
+
+    const first = refreshRepoStatus('/repo-a')
+    const second = refreshRepoStatus('/repo-b')
+    const third = refreshRepoStatus('/repo-c')
+
+    expect(calls).toEqual(['/repo-a'])
+    expect(maxActive).toBe(1)
+    expect($repoStatusLoading.get()).toBe(true)
+
+    resolvers.shift()?.(sampleStatus)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(calls).toEqual(['/repo-a', '/repo-c'])
+    expect(maxActive).toBe(1)
+    expect($repoStatus.get()).toBeNull()
+
+    resolvers.shift()?.(sampleStatus)
+    await Promise.all([first, second, third])
+
+    expect(maxActive).toBe(1)
+    expect($repoStatus.get()).toEqual(sampleStatus)
+    expect($repoStatusLoading.get()).toBe(false)
   })
 })

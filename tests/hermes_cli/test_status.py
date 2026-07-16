@@ -373,3 +373,48 @@ def test_show_status_includes_gateway_sandbox_settings(monkeypatch, capsys, tmp_
     assert "Gateway sandbox: docker" in output
     assert "Sandbox image:  gateway:test" in output
     assert "Sandbox lifetime: 42s" in output
+
+
+def test_show_status_reports_invalid_gateway_values_as_ignored(monkeypatch, capsys, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "terminal:\n"
+        "  backend: local\n"
+        "  lifetime_seconds: 90\n"
+        "gateway:\n"
+        "  terminal_backend: invalid\n"
+        "  sandbox_lifetime: 1.5\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    monkeypatch.setenv("TERMINAL_LIFETIME_SECONDS", "60")
+
+    show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "invalid" in output.lower()
+    assert "1.5s" not in output
+    assert "90s" in output
+
+
+def test_show_status_reports_image_and_lifetime_without_backend_override(
+    monkeypatch, capsys, tmp_path
+):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "gateway:\n"
+        "  sandbox_image: gateway:test\n"
+        "  sandbox_lifetime: 42\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+
+    show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Sandbox image:  gateway:test" in output
+    assert "Sandbox lifetime: 42s" in output

@@ -3071,6 +3071,68 @@ class TestCompressionChainProjection:
         assert tip_row["_lineage_root_id"] == "root1"
         assert tip_row["cwd"] == "/tmp/workspaces/tip"
 
+    def test_list_projection_forwards_summary_from_tip(self, db):
+        """The summary / summary_updated_at / summary_model cache fields
+        must follow the compression tip forward, not stick to the historical
+        root row (issue #45103 PR #49518 review feedback).
+
+        Without this, the Desktop sidebar's hover card would show the dead
+        root's summary for a conversation whose user is actually on the tip
+        continuation — the cached summary must reflect the live state.
+        """
+        import time as _time
+
+        self._build_compression_chain(db, _time.time() - 3600)
+
+        # Set DISTINCT summary values on root vs tip so we can tell which
+        # one the projected row carries.
+        root_summary = "ROOT SUMMARY: old dead conversation about refactor"
+        root_summary_at = 1_700_000_000.0
+        root_summary_model = "root-model"
+        tip_summary = "TIP SUMMARY: live continuation with Q3 OKR progress"
+        tip_summary_at = 1_800_000_000.0
+        tip_summary_model = "tip-model"
+
+        db._conn.execute(
+            "UPDATE sessions SET summary=?, summary_updated_at=?, summary_model=? "
+            "WHERE id=?",
+            (root_summary, root_summary_at, root_summary_model, "root1"),
+        )
+        db._conn.execute(
+            "UPDATE sessions SET summary=?, summary_updated_at=?, summary_model=? "
+            "WHERE id=?",
+            (tip_summary, tip_summary_at, tip_summary_model, "tip1"),
+        )
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        tip_row = next(s for s in sessions if s["id"] == "tip1")
+
+        # Identity first (sanity).
+        assert tip_row["_lineage_root_id"] == "root1"
+
+        # The summary fields must come from the tip, not the historical root.
+        assert tip_row["summary"] == tip_summary, (
+            f"expected tip summary {tip_summary!r}, got {tip_row['summary']!r}"
+        )
+        assert tip_row["summary"] != root_summary, (
+            "projection must not fall through to the root row's summary"
+        )
+        assert tip_row["summary_updated_at"] == tip_summary_at
+        assert tip_row["summary_updated_at"] != root_summary_at
+        assert tip_row["summary_model"] == tip_summary_model
+        assert tip_row["summary_model"] != root_summary_model
+
+        # Same assert, with compact_rows=True (exercises the other projection
+        # path that the GET /api/sessions endpoint takes).
+        sessions_compact = db.list_sessions_rich(
+            source="cli", limit=20, compact_rows=True
+        )
+        tip_row_compact = next(s for s in sessions_compact if s["id"] == "tip1")
+        assert tip_row_compact["summary"] == tip_summary
+        assert tip_row_compact["summary_updated_at"] == tip_summary_at
+        assert tip_row_compact["summary_model"] == tip_summary_model
+
     def test_list_without_projection_returns_raw_root(self, db):
         """project_compression_tips=False returns the raw parent-NULL root
         rows — useful for admin/debug UIs.

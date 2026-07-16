@@ -775,6 +775,77 @@ else:
     security_headers_middleware = None  # type: ignore[assignment]
 
 
+class _RateLimiter:
+    """Simple in-memory rate limiter with sliding window and periodic cleanup."""
+
+    def __init__(self, max_requests: int = 60, window_seconds: int = 60, max_buckets: int = 10000):
+        self._max = max_requests
+        self._window = window_seconds
+        self._max_buckets = max_buckets
+        self._buckets: Dict[str, list] = {}
+        self._last_cleanup = time.time()
+
+    def check(self, key: str) -> tuple[bool, int, int]:
+        """Check if request is allowed. Returns (allowed, current, limit)."""
+        now = time.time()
+        if now - self._last_cleanup > 300:
+            self._cleanup(now)
+        bucket = self._buckets.setdefault(key, [])
+        cutoff = now - self._window
+        bucket[:] = [t for t in bucket if t > cutoff]
+        if len(bucket) >= self._max:
+            return False, len(bucket), self._max
+        bucket.append(now)
+        return True, len(bucket), self._max
+
+    def _cleanup(self, now: float) -> None:
+        """Remove stale buckets to prevent unbounded memory growth."""
+        cutoff = now - self._window
+        stale = [k for k, v in self._buckets.items() if not v or max(v) < cutoff]
+        for k in stale:
+            del self._buckets[k]
+        if len(self._buckets) > self._max_buckets:
+            sorted_keys = sorted(self._buckets.keys(), key=lambda k: max(self._buckets[k]) if self._buckets[k] else 0)
+            for k in sorted_keys[:len(sorted_keys) - self._max_buckets]:
+                del self._buckets[k]
+        self._last_cleanup = now
+
+
+if AIOHTTP_AVAILABLE:
+    _rate_limiter = _RateLimiter()
+
+    @web.middleware
+    async def rate_limit_middleware(request, handler):
+        """Rate limit by IP address.
+
+        Only honours X-Forwarded-For when HERMES_TRUSTED_PROXIES is set
+        (comma-separated list of proxy IPs).  Otherwise derives the bucket
+        key from aiohttp's peer address to prevent client-side bypass.
+        """
+        limiter = getattr(request.app, "_rate_limiter", None) or request.app.get("rate_limiter")
+        if limiter:
+            trusted_proxies = os.environ.get("HERMES_TRUSTED_PROXIES", "")
+            if trusted_proxies:
+                proxy_set = {p.strip() for p in trusted_proxies.split(",") if p.strip()}
+                if (request.remote or "") in proxy_set:
+                    client_ip = request.headers.get("X-Forwarded-For", request.remote or "unknown")
+                else:
+                    client_ip = request.remote or "unknown"
+            else:
+                client_ip = request.remote or "unknown"
+            allowed, current, limit = limiter.check(client_ip)
+            if not allowed:
+                return web.json_response(
+                    {"error": {"message": "Rate limit exceeded. Try again later.", "type": "rate_limit_error"}},
+                    status=429,
+                    headers={"Retry-After": "60", "X-RateLimit-Limit": str(limit), "X-RateLimit-Remaining": "0"},
+                )
+        return await handler(request)
+else:
+    rate_limit_middleware = None
+    _rate_limiter = None
+
+
 class _IdempotencyCache:
     """In-memory idempotency cache with TTL and basic LRU semantics."""
     def __init__(self, max_items: int = 1000, ttl_seconds: int = 300):
@@ -4970,9 +5041,11 @@ class APIServerAdapter(BasePlatformAdapter):
             return False
 
         try:
-            mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
+            mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware, rate_limit_middleware) if mw is not None]
             self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
             assert self._app is not None
+            self._app["api_server_adapter"] = self
+            self._app["rate_limiter"] = _rate_limiter
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)
             self._app.router.add_get("/v1/health", self._handle_health)
@@ -4994,6 +5067,8 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
+            self._app.router.add_get("/v2/health", self._handle_health)
+            self._app.router.add_get("/v2/models", self._handle_models)
             # Cron jobs management API
             self._app.router.add_get("/api/jobs", self._handle_list_jobs)
             self._app.router.add_post("/api/jobs", self._handle_create_job)

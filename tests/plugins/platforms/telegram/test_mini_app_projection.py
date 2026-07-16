@@ -116,7 +116,7 @@ def test_profile_projection_never_enumerates_sibling_profile_homes(
 
 
 def test_tool_and_skill_catalogs_do_not_load_credential_config(tmp_path, monkeypatch):
-    skills = tmp_path / "skills" / "safe-skill"
+    skills = tmp_path / "skills" / "github" / "safe-skill"
     skills.mkdir(parents=True)
     (skills / "SKILL.md").write_text(
         "---\nname: safe-skill\ndescription: Safe metadata\ncategory: local\n---\nBody\n"

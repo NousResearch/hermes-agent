@@ -46,7 +46,7 @@ def _load_dedicated_env(path: Path) -> dict[str, str]:
     """Load only the two Mini App credentials, without sourcing a shell file."""
     if not path.is_file():
         raise RuntimeError(
-            "Mini App credentials are missing; run `hermes gateway mini-app setup`."
+            "Mini App credentials are missing; run `hermes telegram-mini-app setup`."
         )
     values: dict[str, str] = {}
     for line_number, raw_line in enumerate(

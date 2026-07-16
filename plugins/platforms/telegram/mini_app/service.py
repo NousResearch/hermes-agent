@@ -425,7 +425,7 @@ def require_install_support() -> None:
         return
     raise MiniAppServiceError(
         "Native Mini App installation currently requires Linux with systemd user services. "
-        "On macOS and other POSIX platforms, `hermes gateway mini-app serve` runs unsandboxed in the foreground; "
+        "On macOS and other POSIX platforms, `hermes telegram-mini-app serve` runs unsandboxed in the foreground; "
         "do not expose it directly to the network."
     )
 
@@ -454,7 +454,7 @@ def install(hermes_home: Path) -> None:
     p = paths_for(hermes_home)
     if not p.env.exists():
         raise MiniAppServiceError(
-            "Mini App is not configured; run `hermes gateway mini-app setup` first."
+            "Mini App is not configured; run `hermes telegram-mini-app setup` first."
         )
     for log in (p.stdout_log, p.stderr_log):
         ensure_private_file(log)

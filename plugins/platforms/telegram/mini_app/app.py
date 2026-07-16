@@ -472,7 +472,7 @@ def _skill_catalog() -> list[dict[str, Any]]:
     if not skills_root.is_dir():
         return []
     items = []
-    for skill_md in sorted(skills_root.glob("*/SKILL.md")):
+    for skill_md in sorted(skills_root.rglob("SKILL.md")):
         try:
             text = skill_md.read_text(encoding="utf-8")[:4000]
         except OSError:

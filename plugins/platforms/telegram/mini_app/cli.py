@@ -592,9 +592,43 @@ def setup(
         print(f"✓ Telegram Mini App is configured for {url}")
         print(
             "  Native supervision is unavailable on this platform. "
-            "Run `hermes gateway mini-app serve` in a dedicated foreground terminal; "
+            "Run `hermes telegram-mini-app serve` in a dedicated foreground terminal; "
             "the command binds only to loopback and does not verify public ingress."
         )
+
+
+def register_cli(parser) -> None:
+    """Build the plugin-owned Telegram Mini App command tree."""
+    subparsers = parser.add_subparsers(dest="mini_app_command")
+    setup_parser = subparsers.add_parser(
+        "setup", help="Configure, install, verify, and publish the Mini App button"
+    )
+    setup_parser.add_argument(
+        "--public-url",
+        required=True,
+        help="Stable public HTTPS origin that proxies to the loopback listener",
+    )
+    setup_parser.add_argument(
+        "--owner",
+        action="append",
+        help="Numeric Telegram user ID authorized to use the Mini App (repeatable)",
+    )
+    setup_parser.add_argument(
+        "--listen-port",
+        type=int,
+        default=None,
+        help="Loopback listener port (default: deterministic per profile)",
+    )
+    subparsers.add_parser("status", help="Show Mini App service status")
+    subparsers.add_parser("start", help="Start the installed Mini App service")
+    subparsers.add_parser("stop", help="Stop the Mini App service")
+    subparsers.add_parser("restart", help="Restart the Mini App service")
+    subparsers.add_parser(
+        "uninstall", help="Remove the Mini App service and dedicated credentials"
+    )
+    subparsers.add_parser(
+        "serve", help="Run the Mini App in the foreground on loopback"
+    )
 
 
 def command(args) -> None:

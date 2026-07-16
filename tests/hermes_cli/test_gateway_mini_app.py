@@ -2,26 +2,24 @@ from __future__ import annotations
 
 import argparse
 
-from hermes_cli import gateway
-from hermes_cli.subcommands.gateway import build_gateway_parser
+from gateway.platform_registry import PlatformRegistry
+from hermes_cli import plugins
+from plugins.platforms import telegram
+from plugins.platforms.telegram.mini_app import cli
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command")
-    build_gateway_parser(
-        subparsers,
-        cmd_gateway=lambda args: None,
-        cmd_proxy=lambda args: None,
-        cmd_gateway_enroll=lambda args: None,
-    )
+    mini_app = subparsers.add_parser("telegram-mini-app")
+    cli.register_cli(mini_app)
+    mini_app.set_defaults(func=cli.command)
     return parser
 
 
-def test_gateway_mini_app_setup_parser_contract() -> None:
+def test_plugin_mini_app_setup_parser_contract() -> None:
     args = _parser().parse_args([
-        "gateway",
-        "mini-app",
+        "telegram-mini-app",
         "setup",
         "--public-url",
         "https://mini.example.com",
@@ -30,27 +28,47 @@ def test_gateway_mini_app_setup_parser_contract() -> None:
         "--owner",
         "222",
     ])
-    assert args.gateway_command == "mini-app"
+    assert args.command == "telegram-mini-app"
     assert args.mini_app_command == "setup"
     assert args.public_url == "https://mini.example.com"
     assert args.owner == ["111", "222"]
     assert args.listen_port is None
 
 
-def test_gateway_mini_app_all_lifecycle_verbs_parse() -> None:
+def test_plugin_mini_app_all_lifecycle_verbs_parse() -> None:
     for verb in ("status", "start", "stop", "restart", "uninstall", "serve"):
-        args = _parser().parse_args(["gateway", "mini-app", verb])
-        assert args.gateway_command == "mini-app"
+        args = _parser().parse_args(["telegram-mini-app", verb])
+        assert args.command == "telegram-mini-app"
         assert args.mini_app_command == verb
 
 
-def test_gateway_dispatches_mini_app(monkeypatch) -> None:
-    seen = []
-    monkeypatch.setattr(
-        "plugins.platforms.telegram.mini_app.cli.command",
-        lambda args: seen.append(args.mini_app_command),
-    )
-    gateway._gateway_command_inner(
-        argparse.Namespace(gateway_command="mini-app", mini_app_command="status")
-    )
-    assert seen == ["status"]
+def test_telegram_plugin_owns_mini_app_cli_registration() -> None:
+    class Context:
+        def __init__(self):
+            self.platform = None
+            self.cli_command = None
+
+        def register_platform(self, **kwargs):
+            self.platform = kwargs
+
+        def register_cli_command(self, **kwargs):
+            self.cli_command = kwargs
+
+    context = Context()
+    telegram.register(context)
+
+    assert context.platform["name"] == "telegram"
+    assert context.cli_command["name"] == "telegram-mini-app"
+    assert context.cli_command["setup_fn"] is cli.register_cli
+    assert context.cli_command["handler_fn"] is cli.command
+
+
+def test_platform_cli_loader_resolves_hyphenated_command_prefix(monkeypatch) -> None:
+    registry = PlatformRegistry()
+    loaded = []
+    registry.register_deferred("telegram", lambda: loaded.append("telegram"))
+    monkeypatch.setattr("gateway.platform_registry.platform_registry", registry)
+
+    assert plugins.load_platform_cli_commands_for("telegram-mini-app") is True
+    assert loaded == ["telegram"]
+    assert plugins.load_platform_cli_commands_for("unknown-command") is False

@@ -94,6 +94,17 @@ def test_private_surface_is_exactly_read_only():
     )
 
 
+def test_authenticated_read_only_surface_rejects_mutating_methods(client):
+    exchange = _exchange(client, _signed_init_data(query_id="read-only-methods"))
+    assert exchange.status_code == 200
+    assert client.get("/api/me").status_code == 200
+
+    for method in ("POST", "PUT", "PATCH", "DELETE"):
+        response = client.request(method, "/api/status", json={"enabled": True})
+        assert response.status_code == 405
+        assert response.headers["cache-control"] == "no-store"
+
+
 def test_exchange_issues_opaque_secure_cookie_and_init_data_is_one_use(client):
     init_data = _signed_init_data()
     response = _exchange(client, init_data)

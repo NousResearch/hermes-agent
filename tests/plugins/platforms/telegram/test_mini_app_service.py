@@ -344,7 +344,7 @@ def test_unsupported_setup_configures_foreground_without_native_lifecycle(
     assert service.paths_for(tmp_path).env.is_file()
     output = capsys.readouterr().out
     assert "configured" in output
-    assert "hermes gateway mini-app serve" in output
+    assert "hermes telegram-mini-app serve" in output
 
 
 def test_setup_rejects_platform_without_clean_foreground_exec(

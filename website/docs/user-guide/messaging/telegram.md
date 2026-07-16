@@ -222,7 +222,7 @@ dedicated private credentials, save the lifecycle mirror, and publish the
 Telegram menu button:
 
 ```bash
-hermes gateway mini-app setup \
+hermes telegram-mini-app setup \
   --public-url https://hermes.example.com \
   --owner 123456789
 ```
@@ -255,11 +255,11 @@ environment.
 Manage the service with:
 
 ```bash
-hermes gateway mini-app status
-hermes gateway mini-app start
-hermes gateway mini-app stop
-hermes gateway mini-app restart
-hermes gateway mini-app uninstall
+hermes telegram-mini-app status
+hermes telegram-mini-app start
+hermes telegram-mini-app stop
+hermes telegram-mini-app restart
+hermes telegram-mini-app uninstall
 ```
 
 `uninstall` restores the previous global and owner-specific Telegram menu
@@ -271,7 +271,7 @@ The Linux service exposes an exact read-only snapshot of the active session
 database, selected Kanban database, gateway status, memories, and skills into
 an otherwise empty home/data namespace. Existing mounted files stay live while
 their inode is unchanged. If a DB/WAL/status file is newly created or replaced,
-run `hermes gateway mini-app restart` to rebuild that mounted view; until then
+run `hermes telegram-mini-app restart` to rebuild that mounted view; until then
 the new file remains hidden or the previous mounted inode may appear stale.
 
 On Linux with systemd, setup installs, starts, and verifies the supervised
@@ -282,7 +282,7 @@ Windows foreground service is not supported in this release. Start a clean
 foreground process with:
 
 ```bash
-hermes gateway mini-app serve
+hermes telegram-mini-app serve
 ```
 
 Foreground `serve` is an explicitly manual, unsandboxed mode. It re-executes a

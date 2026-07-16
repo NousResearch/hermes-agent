@@ -6527,15 +6527,15 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
     resolved_command = shutil.which(command) if command else None
     if not resolved_command and not base_url.startswith("acp+tcp://"):
         raise AuthError(
-            f"Could not find the Copilot CLI command '{command}'. "
-            "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH.",
+            f"Could not find the {pconfig.name} command '{command}'. "
+            "Install its ACP adapter or set the harness-specific HERMES_*_ACP_COMMAND override.",
             provider=provider_id,
-            code="missing_copilot_cli",
+            code="missing_acp_adapter",
         )
 
     return {
         "provider": provider_id,
-        "api_key": "copilot-acp",
+        "api_key": provider_id,
         "base_url": base_url.rstrip("/"),
         "command": resolved_command or command,
         "args": args,

@@ -620,6 +620,15 @@ DANGEROUS_PATTERNS = [
     # *next* line to satisfy the negative lookahead, silently allowing DELETE without WHERE.
     (r'\bDELETE\s+FROM\b(?![^\n]*\bWHERE\b)', "SQL DELETE without WHERE"),
     (r'\bTRUNCATE\s+(TABLE)?\s*\w', "SQL TRUNCATE"),
+    # Package-manager uninstall commands can remove installed software outside
+    # the current project (notably `npm uninstall -g`). Treat their destructive
+    # subcommands like other state-removing operations while leaving installs
+    # and updates alone.
+    (r'\bnpm\s+(?:-[^\s]+\s+)*(?:uninstall|unlink|remove|rm|r|un)\b', "package manager uninstall"),
+    (r'\bpnpm\s+(?:-[^\s]+\s+)*(?:uninstall|remove|rm|un)\b', "package manager uninstall"),
+    (r'\byarn\s+(?:global\s+)?(?:uninstall|remove)\b', "package manager uninstall"),
+    (r'\bpip(?:3)?\s+(?:-[^\s]+\s+)*uninstall\b', "package manager uninstall"),
+    (r'\bbrew\s+(?:uninstall|remove|rm)\b', "package manager uninstall"),
     (rf'>\s*{_SYSTEM_CONFIG_PATH}', "overwrite system config"),
     (r'\bsystemctl\s+(-[^\s]+\s+)*(stop|restart|disable|mask)\b', "stop/restart system service"),
     (r'\bkill\s+-9\s+-1\b', "kill all processes"),

@@ -18,6 +18,8 @@ from tools.approval import (
     _normalize_approval_mode,
     _smart_approve,
     approve_session,
+    check_all_command_guards,
+    check_dangerous_command,
     detect_dangerous_command,
     detect_hardline_command,
     is_approved,
@@ -165,6 +167,81 @@ class TestDetectDangerousRm:
                 assert is_dangerous is True, command
                 assert key is not None, command
                 assert "delete" in desc.lower(), command
+
+
+class TestPackageManagerUninstallApproval:
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "npm uninstall -g openclaw",
+            "npm --global remove openclaw",
+            "npm unlink openclaw",
+            "npm r openclaw",
+            "pnpm un -g openclaw",
+            "yarn global remove openclaw",
+            "pip3 uninstall openclaw",
+            "brew rm openclaw",
+        ],
+    )
+    def test_uninstall_requires_approval(self, command):
+        dangerous, key, description = detect_dangerous_command(command)
+
+        assert dangerous is True
+        assert key == "package manager uninstall"
+        assert description == "package manager uninstall"
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "npm update -g openclaw",
+            "pnpm add openclaw",
+            "yarn install",
+            "pip install openclaw",
+            "brew upgrade openclaw",
+        ],
+    )
+    def test_non_destructive_package_operations_are_not_flagged(self, command):
+        assert detect_dangerous_command(command) == (False, None, None)
+
+    def test_session_approval_bypasses_matching_uninstall_prompt(self, monkeypatch):
+        session_key = "package-manager-uninstall"
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        monkeypatch.setenv("HERMES_SESSION_KEY", session_key)
+        approval_module.clear_session(session_key)
+        approve_session(session_key, "package manager uninstall")
+
+        try:
+            result = check_dangerous_command(
+                "npm uninstall -g openclaw",
+                "local",
+                approval_callback=lambda *_: "deny",
+            )
+            assert result["approved"] is True
+        finally:
+            approval_module.clear_session(session_key)
+
+    def test_combined_guard_requires_approval_for_package_removal(self, monkeypatch):
+        session_key = "package-manager-combined-guard"
+        monkeypatch.setattr(approval_module, "_YOLO_MODE_FROZEN", False)
+        monkeypatch.setattr(approval_module, "_get_approval_config", lambda: {"mode": "manual"})
+        monkeypatch.setattr(
+            "tools.tirith_security.check_command_security",
+            lambda _command: {"action": "allow", "findings": [], "summary": ""},
+        )
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        monkeypatch.setenv("HERMES_SESSION_KEY", session_key)
+        approval_module.clear_session(session_key)
+
+        try:
+            result = check_all_command_guards(
+                "npm unlink openclaw",
+                "local",
+                approval_callback=lambda *_: "deny",
+            )
+            assert result["approved"] is False
+        finally:
+            approval_module.clear_session(session_key)
 
 
 class TestWindowsShellDestructiveCommands:

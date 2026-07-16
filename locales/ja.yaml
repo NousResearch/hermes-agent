@@ -7,6 +7,10 @@ approval:
   choose_short:    "      [o]今回のみ  |  [s]セッション中  |  [d]拒否"
   prompt_long:     "      選択 [o/s/a/D]: "
   prompt_short:    "      選択 [o/s/D]: "
+  choose_smart_deny: "      [o]今回のみ  |  [d]拒否"
+  prompt_smart_deny: "      選択 [o/D]: "
+  smart_deny_once_inputs: "o,once"
+  smart_deny_deny_inputs: "d,deny"
   timeout:         "      ⏱ タイムアウト — コマンドを拒否しました"
   allowed_once:    "      ✓ 今回のみ許可"
   allowed_session: "      ✓ このセッション中は許可"
@@ -107,6 +111,8 @@ gateway:
     no_pending:            "拒否待ちのコマンドはありません。"
     denied_singular:       "❌ コマンドを拒否しました。"
     denied_plural:         "❌ コマンドを拒否しました ({count} 件)。"
+    denied_reason_singular: "❌ コマンドを拒否しました。 理由をエージェントに伝達しました: \"{reason}\""
+    denied_reason_plural:  "❌ コマンドを拒否しました ({count} 件)。 理由をエージェントに伝達しました: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast は Priority Processing をサポートする OpenAI モデルでのみ利用できます。"
@@ -358,6 +364,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_estimated_context:  "推定コンテキスト: ~{count} トークン"
     detailed_after_first:     "_(詳細な使用状況は最初のエージェント応答後に利用可能)_"
     no_data:                  "このセッションの使用データはありません。"
+    unknown_subcommand:       "不明な /usage サブコマンド: `{args}`。`/usage` または `/usage reset [--force]` をお試しください。"
+    reset_wrong_provider:     "バンクされた使用制限リセットは openai-codex プロバイダーでのみ利用できます。まず `/model` で切り替えてください。"
 
   credits:
     not_logged_in:            "Nous Portal にログインしていません。ログインすると残高の確認とチャージができます。"

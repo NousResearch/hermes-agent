@@ -358,6 +358,46 @@ async def test_agent_notification_no_message_id_is_tolerated(monkeypatch, tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_agent_notify_consumed_completion_sends_no_raw_duplicate(monkeypatch, tmp_path):
+    """When the agent already consumed the completion via process(wait),
+    the watcher must not also push the raw text-only notification.
+
+    Reproduces #65379: agent_notify=True + is_completion_consumed()==True
+    used to fall through the synthetic-injection guard straight into the
+    plain-text branch below, which only checked notify_mode and ignored
+    agent_notify entirely -- sending the same completion twice."""
+    import tools.process_registry as pr_module
+
+    class _ConsumedRegistry(_FakeRegistry):
+        def is_completion_consumed(self, session_id):
+            return True
+
+    sessions = [SimpleNamespace(
+        output_buffer="done\n", exited=True, exit_code=0, command="sleep 1",
+    )]
+    monkeypatch.setattr(pr_module, "process_registry", _ConsumedRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    watcher = {
+        "session_id": "proc_already_consumed",
+        "check_interval": 0,
+        "platform": "telegram",
+        "chat_id": "123",
+        "notify_on_complete": True,
+    }
+    await runner._run_process_watcher(watcher)
+
+    adapter.send.assert_not_awaited()
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_inject_watch_notification_carries_message_id_reply_anchor(monkeypatch, tmp_path):
     from gateway.session import SessionSource
 

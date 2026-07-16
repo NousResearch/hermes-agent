@@ -16001,6 +16001,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         continue
                     break
 
+                if agent_notify:
+                    # Completion was already consumed by the agent's own
+                    # wait()/log() call before this watcher tick ran. The
+                    # agent will surface the result to the user itself on
+                    # its next turn -- don't also send the raw text
+                    # notification below, or the user gets the same
+                    # completion twice (once from the agent, once raw).
+                    break
+
                 # --- Normal text-only notification ---
                 # Decide whether to notify based on mode
                 should_notify = (

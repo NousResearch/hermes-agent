@@ -103,6 +103,27 @@ re-run `list_toolsets`/`describe_toolset`. New C++ `UFUNCTION`s need a full
 editor restart regardless. If a call fails with "unknown tool" that
 `describe_toolset` just showed, refresh + reconnect.
 
+### 10b. Ref-object vs plain-string params are inconsistent — the error schema is the tiebreaker
+
+Most tools take object references as `{"refPath": ...}` objects, but some
+take plain string paths — live-verified: `add_to_scene_from_class` takes
+`actor_type` as a refPath OBJECT, while `add_to_scene_from_asset` takes
+`asset_path` as a STRING. Don't pattern-match across tools. When a call
+fails on params, the error text contains the complete input schema for
+that exact function — read it and fix; it's faster and more authoritative
+than re-describing the toolset.
+
+### 10c. Blueprint DSL node IDs must come from find_node_types
+
+DSL docs examples and intuition both produce wrong node IDs
+(live-verified: `(event Tick)` fails — it's `EventTick`; `MakeRotator`
+fails — it's `Math|Rotator|MakeRotator`; doc-style
+`Utilities|Transformation|AddActorLocalRotation` fails — the registry says
+`Transformation|AddActorLocalRotation`; there is no `(self)` node — omit
+`:self` for the owning actor). Resolve EVERY node ID with
+`find_node_types` against the target graph before writing DSL. Errors are
+progressive (one failing node at a time, named exactly) — fix and rerun.
+
 ### 11. Experimental means drift
 
 Tool names, parameters, and result shapes may change across engine versions.

@@ -406,15 +406,18 @@ def _context_summary_prefix_start(text: str) -> Optional[int]:
     if not stripped.startswith(_MERGED_PRIOR_CONTEXT_HEADER):
         return None
     search_from = len(_MERGED_PRIOR_CONTEXT_HEADER)
+    prefix_start: Optional[int] = None
     while True:
         delimiter_at = stripped.find(_MERGED_SUMMARY_DELIMITER, search_from)
         if delimiter_at < 0:
-            return None
+            return leading + prefix_start if prefix_start is not None else None
         after_at = delimiter_at + len(_MERGED_SUMMARY_DELIMITER)
         after = stripped[after_at:]
         summary = after.lstrip()
         if any(summary.startswith(prefix) for prefix in prefixes):
-            return leading + after_at + (len(after) - len(summary))
+            # Preserved prior content can quote a complete delimiter + prefix
+            # pair. The generated boundary is the final valid pair.
+            prefix_start = after_at + (len(after) - len(summary))
         search_from = after_at
 
 
@@ -428,6 +431,25 @@ def is_context_summary_content(content: Any) -> bool:
     """
     text = _content_text_for_contains(content)
     return _context_summary_prefix_start(text) is not None
+
+
+def _merged_prior_context_text(content: Any) -> str:
+    """Extract the real pre-summary turn from a generated merged wrapper."""
+    text = _content_text_for_contains(content)
+    stripped = text.lstrip()
+    if not stripped.startswith(_MERGED_PRIOR_CONTEXT_HEADER):
+        return ""
+    prefix_start = _context_summary_prefix_start(stripped)
+    if prefix_start is None:
+        return ""
+    delimiter_at = stripped.rfind(
+        _MERGED_SUMMARY_DELIMITER,
+        len(_MERGED_PRIOR_CONTEXT_HEADER),
+        prefix_start,
+    )
+    if delimiter_at < 0:
+        return ""
+    return stripped[len(_MERGED_PRIOR_CONTEXT_HEADER):delimiter_at].strip()
 
 
 def _append_text_to_content(content: Any, text: str, *, prepend: bool = False) -> Any:
@@ -3201,6 +3223,16 @@ This compaction should PRIORITISE preserving all information related to the focu
             if summary_body and not self._previous_summary:
                 self._previous_summary = summary_body
             turns_to_summarize = messages[max(compress_start, summary_idx + 1):compress_end]
+            if summary_idx >= compress_start:
+                prior_context = _merged_prior_context_text(messages[summary_idx].get("content"))
+                if prior_context:
+                    prior_role = messages[summary_idx].get("role")
+                    if prior_role not in {"user", "assistant"}:
+                        prior_role = "user"
+                    turns_to_summarize.insert(
+                        0,
+                        {"role": prior_role, "content": prior_context},
+                    )
         elif self._previous_summary:
             # No handoff summary found in the current messages, but
             # _previous_summary is non-empty — it was set by a different

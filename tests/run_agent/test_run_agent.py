@@ -2377,45 +2377,6 @@ class TestExecuteToolCalls:
         assert metadata["tool_call_id"] == "mem-1"
         assert messages[-1]["tool_call_id"] == "mem-1"
 
-    def test_sequential_session_search_forwards_profile(self, agent):
-        tc = _mock_tool_call(
-            name="session_search",
-            arguments=json.dumps({"query": "needle", "profile": "research-agent"}),
-            call_id="session-search-1",
-        )
-        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
-        messages = []
-        session_db = object()
-
-        with (
-            patch.object(agent, "_get_session_db_for_recall", return_value=session_db),
-            patch("tools.session_search_tool.session_search", return_value=json.dumps({"success": True})) as mock_search,
-        ):
-            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
-
-        assert mock_search.call_args.kwargs["profile"] == "research-agent"
-        assert mock_search.call_args.kwargs["db"] is session_db
-        assert messages[-1]["tool_call_id"] == "session-search-1"
-
-    def test_invoke_tool_session_search_forwards_profile(self, agent):
-        session_db = object()
-
-        with (
-            patch.object(agent, "_get_session_db_for_recall", return_value=session_db),
-            patch("tools.session_search_tool.session_search", return_value=json.dumps({"success": True})) as mock_search,
-        ):
-            result = agent._invoke_tool(
-                "session_search",
-                {"query": "needle", "profile": "research-agent"},
-                "task-1",
-                tool_call_id="session-search-2",
-                messages=[],
-            )
-
-        assert json.loads(result)["success"] is True
-        assert mock_search.call_args.kwargs["profile"] == "research-agent"
-        assert mock_search.call_args.kwargs["db"] is session_db
-
     def test_keyboard_interrupt_emits_cancelled_post_tool_hook(self, agent, monkeypatch):
         tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])

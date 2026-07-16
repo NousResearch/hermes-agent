@@ -57,6 +57,8 @@ _DEMOTED_SESSION_SOURCES = ("cron",)
 # interactive matches buried under a wall of cron hits, so this is well above
 # the handful of distinct sessions a typical query returns.
 _DISCOVER_SCAN_LIMIT = 300
+_MAX_LINEAGE_DEPTH = 256
+_MAX_DISCOVERY_LINEAGE_LOOKUPS = 1_024
 
 # ``session_search`` output is injected straight back into the active model
 # context. A single historical compaction handoff can be tens of thousands of
@@ -100,14 +102,36 @@ def _format_timestamp(ts: Union[int, float, str, None]) -> str:
     return str(ts)
 
 
-def _resolve_to_parent(db, session_id: str) -> str:
-    """Walk parent_session_id chain to the lineage root. Falls back to input on errors."""
+def _resolve_to_parent(
+    db,
+    session_id: str,
+    *,
+    cache: Optional[Dict[str, str]] = None,
+    lookup_budget: Optional[List[int]] = None,
+) -> str:
+    """Resolve a lineage root with path compression and hard lookup bounds."""
     if not session_id:
         return session_id
+    lineage_cache = cache if cache is not None else {}
+    cached = lineage_cache.get(session_id)
+    if cached:
+        return cached
+    path: List[str] = []
     visited = set()
     cur = session_id
-    while cur and cur not in visited:
+    for _ in range(_MAX_LINEAGE_DEPTH):
+        cached = lineage_cache.get(cur)
+        if cached:
+            cur = cached
+            break
+        if not cur or cur in visited:
+            break
         visited.add(cur)
+        path.append(cur)
+        if lookup_budget is not None:
+            if lookup_budget[0] <= 0:
+                break
+            lookup_budget[0] -= 1
         try:
             s = db.get_session(cur)
             if not s:
@@ -119,6 +143,10 @@ def _resolve_to_parent(db, session_id: str) -> str:
         except Exception as e:
             logging.debug("Error resolving parent for %s: %s", cur, e, exc_info=True)
             break
+    else:
+        logging.debug("Lineage depth cap reached while resolving %s", session_id)
+    for child in path:
+        lineage_cache[child] = cur
     return cur
 
 
@@ -559,23 +587,10 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
         return tool_error(f"session_id not found: {session_id}", success=False)
 
     try:
-        total = max(0, int(meta.get("message_count") or 0))
-    except (TypeError, ValueError):
-        total = 0
-
-    try:
-        if total > head + tail:
-            rows = db.get_messages(session_id, limit=head)
-            rows += db.get_messages(session_id, limit=tail, offset=max(total - tail, 0))
-            truncated = True
-        else:
-            rows = db.get_messages(session_id)
-            total = len(rows)
-            truncated = total > head + tail
-            if truncated:
-                rows = rows[:head] + rows[-tail:]
+        rows, total = db.get_message_head_tail(session_id, head=head, tail=tail)
+        truncated = total > head + tail
     except Exception as e:
-        logging.error("get_messages failed for %s: %s", session_id, e, exc_info=True)
+        logging.error("get_message_head_tail failed for %s: %s", session_id, e, exc_info=True)
         return tool_error(f"failed to load session: {e}", success=False)
 
     window = [_shape_message(m) for m in rows]
@@ -778,6 +793,8 @@ def _title_match_result(
     db,
     query: str,
     current_lineage_root: Optional[str],
+    lineage_cache: Dict[str, str],
+    lineage_lookup_budget: List[int],
 ) -> Optional[Dict[str, Any]]:
     """Return a discovery-shaped result when the query matches a session title."""
     title_query = _normalize_title_query(query)
@@ -792,7 +809,12 @@ def _title_match_result(
     if not session_id:
         return None
 
-    lineage_root = _resolve_to_parent(db, session_id)
+    lineage_root = _resolve_to_parent(
+        db,
+        session_id,
+        cache=lineage_cache,
+        lookup_budget=lineage_lookup_budget,
+    )
     if current_lineage_root and lineage_root == current_lineage_root:
         return None
 
@@ -859,24 +881,28 @@ def _search_match_is_context_summary(db, match: Dict[str, Any]) -> bool:
     if not session_id or message_id is None:
         return False
     try:
-        view = db.get_messages_around(session_id, message_id, window=0)
+        get_message = getattr(db, "get_message", None)
+        if callable(get_message):
+            anchor = get_message(session_id, message_id)
+        else:
+            view = db.get_messages_around(session_id, message_id, window=0)
+            anchor = next(
+                (
+                    message
+                    for message in (view.get("window") or [])
+                    if message.get("id") == message_id
+                ),
+                None,
+            )
     except Exception:
         logging.debug(
-            "get_messages_around failed while classifying %s/%s",
+            "message lookup failed while classifying %s/%s",
             session_id,
             message_id,
             exc_info=True,
         )
         return False
-    anchor = next(
-        (
-            message
-            for message in (view.get("window") or [])
-            if message.get("id") == message_id
-        ),
-        None,
-    )
-    return bool(anchor) and _is_compaction_summary_content(anchor.get("content"))
+    return isinstance(anchor, dict) and _is_compaction_summary_content(anchor.get("content"))
 
 
 def _discover(
@@ -889,8 +915,25 @@ def _discover(
 ) -> str:
     """Discovery shape: FTS5 + anchored window + bookends per hit. Single call."""
     role_list = role_filter if role_filter else ["user", "assistant"]
-    current_lineage_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
-    title_result = _title_match_result(db, query, current_lineage_root)
+    lineage_cache: Dict[str, str] = {}
+    lineage_lookup_budget = [_MAX_DISCOVERY_LINEAGE_LOOKUPS]
+    current_lineage_root = (
+        _resolve_to_parent(
+            db,
+            current_session_id,
+            cache=lineage_cache,
+            lookup_budget=lineage_lookup_budget,
+        )
+        if current_session_id
+        else None
+    )
+    title_result = _title_match_result(
+        db,
+        query,
+        current_lineage_root,
+        lineage_cache,
+        lineage_lookup_budget,
+    )
 
     try:
         raw_results = db.search_messages(
@@ -927,6 +970,7 @@ def _discover(
     # row — only that pairs validly with the FTS5 match id for the anchored
     # window. parent_session_id is exposed separately when different.
     seen_sessions = {}
+    summary_lineages = set()
     results = []
 
     if title_result:
@@ -936,8 +980,15 @@ def _discover(
         results.append(title_result)
 
     for r in raw_results:
+        if len(seen_sessions) >= limit and not summary_lineages:
+            break
         raw_sid = r["session_id"]
-        resolved_sid = _resolve_to_parent(db, raw_sid)
+        resolved_sid = _resolve_to_parent(
+            db,
+            raw_sid,
+            cache=lineage_cache,
+            lookup_budget=lineage_lookup_budget,
+        )
         # Skip the current session lineage
         if current_lineage_root and resolved_sid == current_lineage_root:
             continue
@@ -949,18 +1000,19 @@ def _discover(
             if len(seen_sessions) >= limit:
                 continue
             row = dict(r)
-            row["_lineage_root"] = resolved_sid
             row["_is_summary_match"] = _search_match_is_context_summary(db, row)
             seen_sessions[resolved_sid] = row
+            if row["_is_summary_match"]:
+                summary_lineages.add(resolved_sid)
             continue
 
         # A generated summary can outrank the real source row in FTS. Prefer the
         # first non-summary hit in the same lineage so discovery remains useful.
         if existing.get("_is_summary_match") and not _search_match_is_context_summary(db, r):
             row = dict(r)
-            row["_lineage_root"] = resolved_sid
             row["_is_summary_match"] = False
             seen_sessions[resolved_sid] = row
+            summary_lineages.discard(resolved_sid)
 
     for lineage_root, match_info in seen_sessions.items():
         if match_info.get("_title_only"):
@@ -1114,7 +1166,7 @@ def _session_search_impl(
     profile: Optional[str] = None,
 ) -> str:
     """Select and own DB handles, then dispatch one recall shape."""
-    owned_dbs = []
+    owned_db = None
 
     # Session ids never contain "/", so a raw profile/id link is unambiguous.
     if isinstance(session_id, str) and "/" in session_id:
@@ -1131,7 +1183,7 @@ def _session_search_impl(
             except Exception as e:
                 return tool_error(f"profile '{profile}': {e}", success=False)
             if profile_db is not None:
-                owned_dbs.append(profile_db)
+                owned_db = profile_db
                 db = profile_db
                 current_session_id = None
 
@@ -1140,7 +1192,7 @@ def _session_search_impl(
                 from hermes_state import SessionDB
 
                 db = SessionDB()
-                owned_dbs.append(db)
+                owned_db = db
             except Exception:
                 logging.debug("SessionDB unavailable for session_search", exc_info=True)
                 from hermes_state import format_session_db_unavailable
@@ -1159,7 +1211,7 @@ def _session_search_impl(
             sort=sort,
         )
     finally:
-        for owned_db in reversed(owned_dbs):
+        if owned_db is not None:
             try:
                 owned_db.close()
             except Exception:

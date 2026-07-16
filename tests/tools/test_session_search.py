@@ -478,6 +478,58 @@ class TestRecallPayloadSafety:
         anchor = next(message for message in hit["messages"] if message.get("anchor"))
         assert anchor["content"] == "needle source decision"
 
+    def test_discovery_stops_after_limit_when_no_summary_needs_replacement(
+        self, db, monkeypatch
+    ):
+        for index in range(20):
+            session_id = f"s_early_{index}"
+            db.create_session(session_id, source="cli")
+            db.append_message(session_id, role="user", content=f"needle result {index}")
+
+        original_get_session = db.get_session
+        get_session_calls = []
+
+        def recording_get_session(session_id):
+            get_session_calls.append(session_id)
+            return original_get_session(session_id)
+
+        monkeypatch.setattr(db, "get_session", recording_get_session)
+
+        result = json.loads(session_search(query="needle", limit=3, db=db))
+
+        assert result["count"] == 3
+        assert len(get_session_calls) <= 6
+
+    def test_lineage_resolution_path_compresses_repeated_deep_hits(self):
+        class ChainDB:
+            def __init__(self):
+                self.calls = 0
+
+            def get_session(self, session_id):
+                self.calls += 1
+                index = int(session_id[1:])
+                return {
+                    "id": session_id,
+                    "parent_session_id": f"s{index - 1}" if index else None,
+                }
+
+        chain = ChainDB()
+        cache = {}
+        budget = [session_search_tool._MAX_DISCOVERY_LINEAGE_LOOKUPS]
+
+        roots = [
+            session_search_tool._resolve_to_parent(
+                chain,
+                "s150",
+                cache=cache,
+                lookup_budget=budget,
+            )
+            for _ in range(300)
+        ]
+
+        assert set(roots) == {"s0"}
+        assert chain.calls == 151
+
     def test_context_compaction_lookalike_is_not_omitted(self, db):
         db.create_session("s_lookalike", source="cli")
         content = "[CONTEXT COMPACTION is a topic, not a generated summary] needle"
@@ -920,29 +972,62 @@ class TestReadShape:
         result = json.loads(session_search(session_id="ghost", db=db))
         assert result["success"] is False
 
-    def test_read_truncates_large_session_without_loading_the_middle(self, db, monkeypatch):
+    @pytest.mark.parametrize(
+        ("cached_count", "inactive_tail", "expected_total", "expected_last"),
+        [
+            (0, False, 50, "m49"),
+            (1_000_000, False, 50, "m49"),
+            ("corrupt", True, 45, "m44"),
+        ],
+    )
+    def test_read_truncates_from_active_source_of_truth(
+        self,
+        db,
+        monkeypatch,
+        cached_count,
+        inactive_tail,
+        expected_total,
+        expected_last,
+    ):
         db.create_session("s_big", source="cli")
         for i in range(50):
-            db.append_message("s_big", role="user" if i % 2 == 0 else "assistant", content=f"m{i}")
+            db.append_message(
+                "s_big",
+                role="user" if i % 2 == 0 else "assistant",
+                content=f"m{i}",
+            )
+        db._conn.execute(
+            "UPDATE sessions SET message_count = ? WHERE id = ?",
+            (cached_count, "s_big"),
+        )
+        if inactive_tail:
+            ids = [
+                row[0]
+                for row in db._conn.execute(
+                    "SELECT id FROM messages WHERE session_id = ? ORDER BY id",
+                    ("s_big",),
+                )
+            ]
+            db._conn.execute(
+                "UPDATE messages SET active = 0 WHERE id >= ?",
+                (ids[-5],),
+            )
         db._conn.commit()
 
-        original_get_messages = db.get_messages
-        calls = []
-
-        def recording_get_messages(*args, **kwargs):
-            calls.append((args, kwargs))
-            return original_get_messages(*args, **kwargs)
-
-        monkeypatch.setattr(db, "get_messages", recording_get_messages)
+        monkeypatch.setattr(
+            db,
+            "get_messages",
+            lambda *_args, **_kwargs: pytest.fail(
+                "read shape must not hydrate an unbounded list"
+            ),
+        )
         result = json.loads(session_search(session_id="s_big", db=db))
+
         assert result["mode"] == "read"
-        assert result["message_count"] == 50
+        assert result["message_count"] == expected_total
         assert result["truncated"] is True
         assert len(result["messages"]) == 30  # head 20 + tail 10
-        assert calls == [
-            (("s_big",), {"limit": 20}),
-            (("s_big",), {"limit": 10, "offset": 40}),
-        ]
+        assert result["messages"][-1]["content"] == expected_last
 
 
 # =========================================================================
@@ -1030,6 +1115,25 @@ class TestCrossProfileRead:
         )
 
         assert result["success"] is False
+        assert closed == [True]
+
+    def test_default_constructed_db_is_closed(self, tmp_path, monkeypatch):
+        owned = SessionDB(tmp_path / "default-owned.db")
+        closed = []
+        real_close = owned.close
+
+        def track_close():
+            closed.append(True)
+            real_close()
+
+        monkeypatch.setattr(owned, "close", track_close)
+        import hermes_state
+
+        monkeypatch.setattr(hermes_state, "SessionDB", lambda: owned)
+
+        result = json.loads(session_search(db=None))
+
+        assert result["success"] is True
         assert closed == [True]
 
     def test_caller_supplied_db_is_not_closed(self, db, monkeypatch):

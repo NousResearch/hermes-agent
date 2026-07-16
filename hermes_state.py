@@ -4146,6 +4146,88 @@ class SessionDB:
             result.append(msg)
         return result
 
+    def get_message(self, session_id: str, message_id: int) -> Optional[Dict[str, Any]]:
+        """Load one message by id without hydrating an anchored window."""
+        conn = self._conn
+        if conn is None:
+            raise RuntimeError("SessionDB connection is not initialized")
+        with self._lock:
+            row = conn.execute(
+                "SELECT * FROM messages WHERE session_id = ? AND id = ? LIMIT 1",
+                (session_id, message_id),
+            ).fetchone()
+        if row is None:
+            return None
+        msg = dict(row)
+        if "content" in msg:
+            msg["content"] = self._decode_content(msg["content"])
+        if msg.get("tool_calls"):
+            try:
+                msg["tool_calls"] = json.loads(msg["tool_calls"])
+            except (json.JSONDecodeError, TypeError):
+                logger.warning(
+                    "Failed to deserialize tool_calls in get_message, falling back to []"
+                )
+                msg["tool_calls"] = []
+        return msg
+
+    def get_message_head_tail(
+        self,
+        session_id: str,
+        head: int = 20,
+        tail: int = 10,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """Return active message bookends and their source-of-truth count.
+
+        One window-function query gives the count and both slices from the same
+        SQLite snapshot while materializing at most ``head + tail`` rows.
+        """
+        head = max(0, int(head))
+        tail = max(0, int(tail))
+        conn = self._conn
+        if conn is None:
+            raise RuntimeError("SessionDB connection is not initialized")
+        with self._lock:
+            rows = conn.execute(
+                "WITH ranked_messages AS ("
+                " SELECT m.*,"
+                " ROW_NUMBER() OVER (ORDER BY id) AS _row_number,"
+                " COUNT(*) OVER () AS _message_count"
+                " FROM messages m"
+                " WHERE session_id = ? AND active = 1"
+                ")"
+                " SELECT * FROM ranked_messages"
+                " WHERE _row_number <= ? OR _row_number > _message_count - ?"
+                " ORDER BY id",
+                (session_id, head, tail),
+            ).fetchall()
+            if not rows:
+                total = conn.execute(
+                    "SELECT COUNT(*) FROM messages WHERE session_id = ? AND active = 1",
+                    (session_id,),
+                ).fetchone()[0]
+                return [], total
+
+        total = int(rows[0]["_message_count"])
+        result = []
+        for row in rows:
+            msg = dict(row)
+            msg.pop("_row_number", None)
+            msg.pop("_message_count", None)
+            if "content" in msg:
+                msg["content"] = self._decode_content(msg["content"])
+            if msg.get("tool_calls"):
+                try:
+                    msg["tool_calls"] = json.loads(msg["tool_calls"])
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning(
+                        "Failed to deserialize tool_calls in get_message_head_tail, "
+                        "falling back to []"
+                    )
+                    msg["tool_calls"] = []
+            result.append(msg)
+        return result, total
+
     def get_messages_around(
         self,
         session_id: str,

@@ -2238,7 +2238,8 @@ class TestCompressWithClient:
 
         merged = (
             f"{_MERGED_PRIOR_CONTEXT_HEADER}\n"
-            f"quoted marker: {_MERGED_SUMMARY_DELIMITER}\nnot a summary\n"
+            f"quoted marker: {_MERGED_SUMMARY_DELIMITER}\n"
+            f"{SUMMARY_PREFIX}\nQUOTED_STALE_BODY\nstill prior context\n"
             f"{_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}\nREAL_BODY"
         )
         assert ContextCompressor._is_context_summary_content(merged) is True
@@ -2250,6 +2251,65 @@ class TestCompressWithClient:
         ordinary = f"Discussion quote: {_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}"
         assert ContextCompressor._is_context_summary_content(ordinary) is False
         assert ContextCompressor._strip_summary_prefix(ordinary) == ordinary
+
+    def test_recompaction_preserves_real_turn_from_merged_summary_wrapper(self):
+        from agent.context_compressor import _MERGED_PRIOR_CONTEXT_HEADER
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=1,
+                protect_last_n=2,
+            )
+
+        summarized_turns = []
+
+        def fake_generate(turns, focus_topic=None):
+            summarized_turns.append(turns)
+            retained_tail = any(
+                "TAIL_SENTINEL" in str(turn.get("content") or "")
+                for turn in turns
+            )
+            summary = "second summary retains TAIL_SENTINEL" if retained_tail else "first summary"
+            c._previous_summary = summary
+            return summary
+
+        messages = [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "protected head"},
+            {"role": "assistant", "content": "middle 1"},
+            {"role": "user", "content": "middle 2"},
+            {"role": "assistant", "content": "middle 3"},
+            {"role": "assistant", "content": "TAIL_SENTINEL"},
+            {"role": "user", "content": "tail user"},
+            {"role": "assistant", "content": "tail assistant"},
+        ]
+
+        with patch.object(c, "_generate_summary", side_effect=fake_generate):
+            first = c.compress(messages, force=True)
+            assert any(
+                _MERGED_PRIOR_CONTEXT_HEADER in str(message.get("content") or "")
+                and "TAIL_SENTINEL" in str(message.get("content") or "")
+                for message in first
+            )
+
+            second_input = first + [
+                {"role": "user", "content": "new 1"},
+                {"role": "assistant", "content": "new 2"},
+                {"role": "user", "content": "new 3"},
+                {"role": "assistant", "content": "new 4"},
+            ]
+            second = c.compress(second_input, force=True)
+
+        assert any(
+            "TAIL_SENTINEL" in str(turn.get("content") or "")
+            for turn in summarized_turns[1]
+        )
+        assert any(
+            "second summary retains TAIL_SENTINEL" in str(message.get("content") or "")
+            for message in second
+        )
 
     def test_double_collision_user_head_assistant_tail(self):
         """Reverse double collision: head ends with 'user', tail starts with 'assistant'.

@@ -84,6 +84,15 @@ const buildAttachmentMessage = async (client, base, info, id, partIndex, parentI
   return msg;
 };
 const cacheMessage = (cache, message) => { cache.set(message.id, message); };
+const ensureM4a = async (buffer, mimeType) => ({ buffer });
+const uploadVoice = async (remote, content) => {
+  const { buffer } = await ensureM4a(await content.read(), content.mimeType);
+  const name = content.name ?? "voice.m4a";
+  return {
+    guid: (await remote.attachments.upload({ data: buffer, fileName: name })).attachment.guid,
+    name
+  };
+};
 const rebuildFromAppleMessage = async (client, message, phone, chatGuidHint) => {
   const messageGuidStr = message.guid;
   const base = buildMessageBase(message, chatGuidHint, message.dateCreated ?? /* @__PURE__ */ new Date(), phone);
@@ -148,7 +157,7 @@ const toInboundMessages = async (client, cache, event, phone) => {
   cacheMessage(cache, msg);
   return [msg];
 };
-export { rebuildFromAppleMessage, toInboundMessages };
+export { rebuildFromAppleMessage, toInboundMessages, uploadVoice };
 """
 
 
@@ -185,6 +194,7 @@ def test_spectrum_patch_rewrites_the_imessage_mapper(tmp_path: Path) -> None:
     # The text is captured in both mappers before the attachment branches run.
     assert "const text2 = message.content.text;" in patched
     assert "const text2 = event.message.content.text;" in patched
+    assert 'content.name?.replace(/\\.[^./]+$/, "") || "voice"' in patched
 
     # Re-running is a no-op (idempotent self-heal on every sidecar start).
     again = subprocess.run(
@@ -214,7 +224,7 @@ def test_spectrum_patch_preserves_text_at_runtime(tmp_path: Path) -> None:
 
     harness = textwrap.dedent(
         f"""
-        import {{ rebuildFromAppleMessage, toInboundMessages }} from {str(chunk)!r};
+        import {{ rebuildFromAppleMessage, toInboundMessages, uploadVoice }} from {str(chunk)!r};
         const assert = (c, m) => {{ if (!c) {{ console.error("FAIL: " + m); process.exit(1); }} }};
 
         // Mixed text + single attachment -> group [text@0, attachment@1].
@@ -243,6 +253,14 @@ def test_spectrum_patch_preserves_text_at_runtime(tmp_path: Path) -> None:
         // Text only, no attachments -> plain text (unchanged).
         r = await rebuildFromAppleMessage(null, {{ guid: "G4", content: {{ text: "just text", attachments: [] }} }}, "+1");
         assert(r.content.type === "text" && r.content.text === "just text" && r.id === "G4", "text-only unchanged");
+
+        // Spectrum transcodes the bytes to M4A; the uploaded filename must match.
+        const uploaded = [];
+        const voice = await uploadVoice(
+          {{ attachments: {{ upload: async (payload) => {{ uploaded.push(payload); return {{ attachment: {{ guid: "V" }} }}; }} }} }},
+          {{ name: "reply.mp3", mimeType: "audio/mpeg", read: async () => Buffer.from("mp3") }}
+        );
+        assert(voice.name === "reply.m4a" && uploaded[0].fileName === "reply.m4a", "voice upload uses m4a filename");
         """
     )
     run = subprocess.run(

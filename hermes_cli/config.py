@@ -1529,6 +1529,16 @@ DEFAULT_CONFIG = {
                                       # session_search and recoverable, not deleted.
                                       # Default False during rollout; will flip on
                                       # after live validation.
+        "persist_in_response_store": True,  # When True, if compression occurs during a
+                                      # /v1/responses request that loads history from the
+                                      # response_store (via previous_response_id or
+                                      # conversation name), the compressed messages are
+                                      # persisted as the stored conversation_history
+                                      # snapshot.  This prevents repeated re-compression
+                                      # on subsequent requests in the same chain.
+                                      # Only applies when the client does NOT supply an
+                                      # explicit conversation_history array.  Set to False
+                                      # to preserve legacy behavior (store uncompressed).
     },
 
     # Kanban subsystem (orchestrator workers + dispatcher-driven child tasks).

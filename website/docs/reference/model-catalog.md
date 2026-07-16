@@ -29,6 +29,7 @@ Published on every merge to `main` via the existing `deploy-site.yml` GitHub Pag
     "openrouter": {
       "metadata": {},
       "models": [
+        {"id": "z-ai/glm-5.2",         "description": "default", "default": true},
         {"id": "moonshotai/kimi-k2.6", "description": "recommended", "metadata": {}},
         {"id": "openai/gpt-5.4",       "description": ""}
       ]
@@ -36,6 +37,7 @@ Published on every merge to `main` via the existing `deploy-site.yml` GitHub Pag
     "nous": {
       "metadata": {},
       "models": [
+        {"id": "z-ai/glm-5.2", "default": true},
         {"id": "anthropic/claude-opus-4.7"},
         {"id": "moonshotai/kimi-k2.6"}
       ]
@@ -48,7 +50,8 @@ Field notes:
 
 - **`version`** — integer schema version. Future schemas bump this; Hermes refuses manifests with versions it doesn't understand and falls back to the hardcoded snapshot.
 - **`metadata`** — free-form dict at the manifest, provider, and model level. Any keys. Hermes ignores unknown fields, so you can annotate entries (`"tier": "paid"`, `"tags": [...]`, etc.) without coordinating a schema change.
-- **`description`** — OpenRouter-only. Drives picker badge text (`"recommended"`, `"free"`, or empty). Nous Portal doesn't use this — free-tier gating is determined live from the Portal's pricing endpoint.
+- **`description`** — OpenRouter-only. Drives picker badge text (`"recommended"`, `"free"`, `"default"`, or empty). Nous Portal doesn't use this — free-tier gating is determined live from the Portal's pricing endpoint.
+- **`default`** — exactly one entry per provider may carry `"default": true`. That model is the **silent default**: what Hermes lands on when the user never selected a model (GUI onboarding confirm card, `provider` configured with no `model`, empty `model.default`). Read cache-only at runtime (`get_default_model_from_cache`) so hot resolution paths never hit the network; when no cached manifest exists, Hermes falls back to the in-repo `PREFERRED_SILENT_DEFAULT_MODEL` constant, which must match the labeled entry. This lets maintainers rotate the silent default without shipping a release. It is deliberately a capable low-cost model, never the priciest flagship.
 - **Pricing and context length** are NOT in the manifest. Those come from live provider APIs (`/v1/models` endpoints, models.dev) at fetch time.
 
 ## Fetch behavior

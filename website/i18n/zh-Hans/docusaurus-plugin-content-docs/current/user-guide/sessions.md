@@ -271,6 +271,21 @@ What's the weather in Las Vegas?                    3d ago        tele   2025030
 
 ### 导出 Session
 
+`hermes sessions export` 是所有导出格式的统一入口，用 `--format` 选择：
+
+| 格式 | 输出 | 适用场景 |
+|------|------|----------|
+| `jsonl`（默认） | 每个 session 一个 JSON 对象 | 备份、机器可读的往返格式 |
+| `md` / `qmd` | 每个 session 一个 Markdown/Quarto 文件 + manifest | 可读归档、笔记 |
+| `html` | 单个独立页面（多 session 带侧边栏） | 分享、浏览 |
+| `trace` | Claude Code JSONL | HF Agent Trace Viewer、`--upload` |
+
+另有 `--only user-prompts` 只导出你的 prompt（jsonl 或 md）。
+
+所有格式共享同一套选择方式：`--session-id` 导出单个 session，或使用与 `prune` / `archive` 相同的完整过滤器进行批量导出 — `--older-than` / `--newer-than` / `--before` / `--after`（时长如 `5h`/`2d`/`1w`、纯数字天数或 ISO 时间戳）、`--source`、`--title`、`--model`、`--provider`、`--cwd`、`--min/--max-messages`、`--min/--max-tokens`、`--min/--max-cost`、`--min/--max-tool-calls`、`--user`、`--chat-id`、`--chat-type`、`--branch`、`--end-reason`。`--dry-run` 可预览匹配集而不写入。`--redact` 在任意格式下从导出内容中清除密钥（API key、token、凭据）— 任何打算分享的导出都建议加上。注意：带过滤器的批量导出只匹配*已结束*的 session；不带过滤器的 `export` 会导出所有 session（包括活跃的）。
+
+#### JSONL（默认）
+
 ```bash
 # 将所有 session 导出到 JSONL 文件
 hermes sessions export backup.jsonl
@@ -280,9 +295,81 @@ hermes sessions export telegram-history.jsonl --source telegram
 
 # 导出单个 session
 hermes sessions export session.jsonl --session-id 20250305_091523_a1b2c3d4
+
+# 从导出内容中脱敏 API key/token/凭据
+hermes sessions export backup.jsonl --redact
 ```
 
 导出文件每行包含一个 JSON 对象，包含完整的 session 元数据和所有消息。
+
+#### HTML
+
+`--format html` 生成一个完全独立的 HTML 文件 — 无远程依赖 — 带样式化的消息气泡、可折叠的工具输出，多 session 导出时还带侧边栏导航：
+
+```bash
+# 将一个 session 导出为独立 HTML 页面
+hermes sessions export --format html --session-id 20250305_091523_a1b2c3d4 transcript.html
+
+# 将最近一周的所有 Telegram session 导出到一个文件，并脱敏
+hermes sessions export --format html --newer-than 1w --source telegram --redact archive.html
+```
+
+#### 只导出 Prompt
+
+`--only user-prompts` 只导出你写的 prompt — 不含助手回复、工具输出或系统上下文。适合构建 prompt 库或回顾你问过什么：
+
+```bash
+# 每个 prompt 一条 JSONL 记录（session id、序号、时间戳、文本）
+hermes sessions export prompts.jsonl --session-id 20250305_091523_a1b2c3d4 --only user-prompts
+
+# Markdown 格式，直接输出到 stdout
+hermes sessions export - --session-id 20250305_091523_a1b2c3d4 --only user-prompts --format md
+```
+
+支持 `--format jsonl`（默认）或 `md`，批量导出时同样支持全部过滤器，也可与 `--redact` 组合。
+
+#### Trace（HF Agent Trace Viewer）
+
+`--format trace` 生成 Claude Code JSONL — Hugging Face Hub 的 [Agent Trace Viewer](https://huggingface.co/docs/hub/agent-traces) 可自动识别的转录格式。可以写入本地文件，或加 `--upload` 推送到你自己的私有 `hermes-traces` 数据集（读取 `HF_TOKEN`）：
+
+```bash
+# 最近一个 session 的 trace，输出到 stdout
+hermes sessions export --format trace
+
+# 将一个 session 导出为本地 trace 文件
+hermes sessions export --format trace --session-id 20250305_091523_a1b2c3d4 trace.jsonl
+
+# 直接上传到你的私有 HF traces 数据集
+hermes sessions export --format trace --session-id 20250305_091523_a1b2c3d4 --upload
+```
+
+Trace 导出默认强制脱敏（它们本来就是要离开本机的）；`--no-redact` 需人工审查后才建议使用。`--upload` 默认私有，除非加 `--public`。带过滤器的批量 trace 导出会为每个 session 写一个 `<id>.trace.jsonl`。
+
+#### Markdown / QMD
+
+当你想在隐藏或删除旧 session 之前保留一份可读的文件归档时，传入 `--format md` 或 `--format qmd`。Markdown/QMD 导出会为每个 session 写入一个文件到目录中（默认：`~/.hermes/session-exports`）。
+
+```bash
+# 将单个 session 导出为 Markdown
+hermes sessions export --format md --session-id 20250305_091523_a1b2c3d4
+
+# 将压缩链（compression lineage）导出为一个逻辑文档
+hermes sessions export --format md --session-id 20250305_091523_a1b2c3d4 --lineage logical
+
+# 预览 90 天前已结束的 session，不写入文件
+hermes sessions export --format md --older-than 90 --dry-run
+
+# 将 2 周前已结束的 Telegram session 导出为 QMD 文件
+hermes sessions export --format qmd --older-than 2w --source telegram
+
+# 导出长的 Claude session，并脱敏
+hermes sessions export --format md --model sonnet --min-messages 50 --redact
+
+# 导出并在校验通过后删除一个明确指定的 session
+hermes sessions export --format md --session-id 20250305_091523_a1b2c3d4 --delete-after-verified --yes
+```
+
+Markdown/QMD 导出为每个 session 写入一个 `.md` 或 `.qmd` 文件，并附带一个 `manifest.jsonl`，记录文件路径、消息数量、lineage id 和 SHA-256。批量导出必须带至少一个过滤条件，不带过滤条件的批量导出会被拒绝。`--delete-after-verified` 仅限与 `--session-id` 搭配使用，且必须加 `--yes`。`--redact` 会在写入前从消息内容和工具输出中清除密钥（API key、token、凭据）— 任何打算分享的导出都建议加上。
 
 ### 删除 Session
 

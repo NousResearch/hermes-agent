@@ -28,6 +28,13 @@ const LAST_SESSION_KEY = 'hermes.desktop.lastSessionId'
 export const getRememberedSessionId = (): null | string => storedString(LAST_SESSION_KEY)
 export const setRememberedSessionId = (id: null | string) => persistString(LAST_SESSION_KEY, id)
 
+// The last non-overlay route (a page like /skills, or a session route), so a
+// relaunch lands back where you were instead of a bare new-chat.
+const LAST_ROUTE_KEY = 'hermes.desktop.lastRoute'
+
+export const getRememberedRoute = (): null | string => storedString(LAST_ROUTE_KEY)
+export const setRememberedRoute = (path: null | string) => persistString(LAST_ROUTE_KEY, path)
+
 let configuredDefaultProjectDir = ''
 
 function workspaceCwdKey(connection: HermesConnection | null = $connection.get()): string {
@@ -42,6 +49,7 @@ function workspaceCwdKey(connection: HermesConnection | null = $connection.get()
 }
 
 export const getRememberedWorkspaceCwd = (): string => storedString(workspaceCwdKey())?.trim() || ''
+export type NewChatWorkspaceTarget = null | string | undefined
 
 export const getConfiguredDefaultProjectDir = (): string => configuredDefaultProjectDir
 
@@ -124,6 +132,14 @@ function updateAtom<T>(store: AppAtom<T>, next: Updater<T>) {
  *  lineage root is stable across every compression, so we pin on that. */
 export const sessionPinId = (session: Pick<SessionInfo, '_lineage_root_id' | 'id'>): string =>
   session._lineage_root_id ?? session.id
+
+/** True when a stored/lineage id resolves to this session — it matches either
+ *  the live id or the stable lineage root (see sessionPinId). The one place the
+ *  "same conversation across compression" test lives. */
+export const sessionMatchesStoredId = (
+  session: Pick<SessionInfo, '_lineage_root_id' | 'id'>,
+  storedSessionId: string
+): boolean => session.id === storedSessionId || session._lineage_root_id === storedSessionId
 
 /** Merge a fresh server session page into the in-memory list, keeping any
  *  row the server omitted that we still want visible — both still-"working"
@@ -270,6 +286,8 @@ export const $currentFastMode = atom(storedBoolean(COMPOSER_FAST_KEY, false))
 // reflection of the truth the gateway reports rather than its own store.
 export const $yoloActive = atom(false)
 export const $currentCwd = atom(getRememberedWorkspaceCwd())
+export const $newChatWorkspaceTarget = atom<NewChatWorkspaceTarget>(undefined)
+export const $newChatWorkspaceTargetGeneration = atom(0)
 export const $currentBranch = atom('')
 export const $currentUsage = atom<UsageStats>({
   calls: 0,
@@ -301,7 +319,17 @@ export const setSessionProfileTotals = (next: Updater<Record<string, number>>) =
 export const setSessionsLoading = (next: Updater<boolean>) => updateAtom($sessionsLoading, next)
 export const setWorkingSessionIds = (next: Updater<string[]>) => updateAtom($workingSessionIds, next)
 export const setActiveSessionId = (next: Updater<string | null>) => updateAtom($activeSessionId, next)
-export const setSelectedStoredSessionId = (next: Updater<string | null>) => updateAtom($selectedStoredSessionId, next)
+
+export const setSelectedStoredSessionId = (next: Updater<string | null>) => {
+  updateAtom($selectedStoredSessionId, next)
+  // Opening a session clears its unread state — the user is now looking at it.
+  const id = $selectedStoredSessionId.get()
+
+  if (id && $unreadFinishedSessionIds.get().includes(id)) {
+    toggleMembership(setUnreadFinishedSessionIds, id, false)
+  }
+}
+
 export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($messages, next)
 export const setFreshDraftReady = (next: Updater<boolean>) => updateAtom($freshDraftReady, next)
 export const setResumeFailedSessionId = (next: Updater<string | null>) => updateAtom($resumeFailedSessionId, next)
@@ -336,6 +364,16 @@ export const setYoloActive = (next: Updater<boolean>) => updateAtom($yoloActive,
 export const setCurrentCwd = (next: Updater<string>) => {
   updateAtom($currentCwd, next)
   persistString(workspaceCwdKey(), $currentCwd.get().trim() || null)
+}
+
+export const setCurrentCwdTransient = (next: Updater<string>) => updateAtom($currentCwd, next)
+
+export const setNewChatWorkspaceTarget = (next: NewChatWorkspaceTarget): number => {
+  const generation = $newChatWorkspaceTargetGeneration.get() + 1
+  $newChatWorkspaceTarget.set(next)
+  $newChatWorkspaceTargetGeneration.set(generation)
+
+  return generation
 }
 
 export const workspaceCwdForNewSession = (): string => {
@@ -484,6 +522,13 @@ const toggleMembership = (set: (next: Updater<string[]>) => void, id: string, on
     return present ? current.filter(x => x !== id) : current
   })
 
+// Stored session ids whose most recent turn finished while the user was
+// looking at a different session. The sidebar renders a steady green dot for
+// these so the user can tab back and find newly-completed work. Cleared on
+// session open (setSelectedStoredSessionId) and on gateway-mode wipe.
+export const $unreadFinishedSessionIds = atom<string[]>([])
+export const setUnreadFinishedSessionIds = (next: Updater<string[]>) => updateAtom($unreadFinishedSessionIds, next)
+
 // Stored session ids with a blocking prompt (clarify) waiting on the user.
 // Separate from $workingSessionIds: a session can be "working" (turn running)
 // AND need input. The sidebar row reads this for a persistent indicator that,
@@ -520,6 +565,12 @@ export function setSessionWorking(sessionId: string | null | undefined, working:
     // aggregator to return its now-persisted row.
     if (wasWorking) {
       markSessionSettled(sessionId)
+
+      // Mark unread when a background session finishes — only if the user
+      // isn't currently viewing it. The active session's finish is seen live.
+      if (sessionId !== $selectedStoredSessionId.get()) {
+        toggleMembership(setUnreadFinishedSessionIds, sessionId, true)
+      }
     }
   }
 }

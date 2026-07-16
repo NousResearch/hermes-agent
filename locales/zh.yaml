@@ -45,6 +45,17 @@ gateway:
     usage_switch_model:     "`/model <name>` — 切换模型"
     usage_switch_provider:  "`/model <name> --provider <slug>` — 切换提供方"
     usage_persist:          "`/model <name> --global` — 永久保存"
+  session_info:
+    model: "◆ 模型：`{model}`"
+    provider: "◆ 提供商：{provider}"
+    context: "◆ 上下文：{tokens} tokens ({source})"
+    endpoint: "◆ 端点：{endpoint}"
+
+  session_auto_reset:
+    header: "◐ 会话自动重置（{reason}）。"
+    history_cleared: "对话历史已清除。"
+    resume_hint: "使用 /resume 浏览和恢复之前的会话。"
+    config_hint: "可在 config.yaml 的 session_reset 部分调整重置时机。"
 
   agents:
     header:                "🤖 **活跃代理与任务**"

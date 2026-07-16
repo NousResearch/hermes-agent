@@ -11352,10 +11352,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             duration = f"{hours}h" if not mins else f"{hours}h {mins}m" if hours else f"{mins}m"
                             reason_text = f"inactive for {duration}"
                         notice = (
-                            f"◐ Session automatically reset ({reason_text}). "
-                            f"Conversation history cleared.\n"
-                            f"Use /resume to browse and restore a previous session.\n"
-                            f"Adjust reset timing in config.yaml under session_reset."
+                            t("gateway.session_auto_reset.header", reason=reason_text) + " " +
+                            t("gateway.session_auto_reset.history_cleared") + "\n" +
+                            t("gateway.session_auto_reset.resume_hint") + "\n" +
+                            t("gateway.session_auto_reset.config_hint")
                         )
                         try:
                             session_info = await asyncio.to_thread(
@@ -12857,14 +12857,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ctx_display = str(context_length)
 
         lines = [
-            f"◆ Model: `{model}`",
-            f"◆ Provider: {provider or 'openrouter'}",
-            f"◆ Context: {ctx_display} tokens ({ctx_source})",
+            t("gateway.session_info.model", model=model),
+            t("gateway.session_info.provider", provider=provider or "openrouter"),
+            t("gateway.session_info.context", tokens=ctx_display, source=ctx_source),
         ]
 
         # Show endpoint for local/custom setups
         if base_url and ("localhost" in base_url or "127.0.0.1" in base_url or "0.0.0.0" in base_url):
-            lines.append(f"◆ Endpoint: {base_url}")
+            lines.append(t("gateway.session_info.endpoint", endpoint=base_url))
 
         return "\n".join(lines)
 

@@ -507,6 +507,7 @@ class TestCheckVoiceRequirements:
         assert "ELEVENLABS_API_KEY" in details
         assert "XAI_API_KEY" in details
         assert "MISTRAL_API_KEY" in details
+        assert "DEEPINFRA_API_KEY" in details
 
     @pytest.mark.parametrize(
         "provider,label",
@@ -515,6 +516,7 @@ class TestCheckVoiceRequirements:
             ("mistral", "Mistral Voxtral"),
             ("xai", "xAI Grok STT"),
             ("elevenlabs", "ElevenLabs Scribe"),
+            ("deepinfra", "DeepInfra Whisper"),
         ],
     )
     def test_provider_recognised_in_requirements_check(self, monkeypatch, provider, label):

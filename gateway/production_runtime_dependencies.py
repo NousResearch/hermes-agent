@@ -809,14 +809,19 @@ def _distribution_identity(
         raise RuntimeDependencyError("runtime_dependency_distribution_drifted")
     records: list[Mapping[str, Any]] = []
     for entry in sorted(distribution.files, key=str):
-        located = Path(distribution.locate_file(entry)).resolve(strict=True)
+        try:
+            located = Path(distribution.locate_file(entry)).resolve(strict=True)
+            state = located.lstat()
+        except OSError as exc:
+            raise RuntimeDependencyError(
+                "runtime_dependency_source_unavailable"
+            ) from exc
         try:
             relative = located.relative_to(_release_interpreter(release).parents[1])
         except ValueError as exc:
             raise RuntimeDependencyError("runtime_dependency_distribution_escaped") from exc
-        if located.is_dir():
+        if stat.S_ISDIR(state.st_mode):
             continue
-        state = located.lstat()
         payload = _read_regular(
             located,
             maximum=64 * 1024 * 1024,

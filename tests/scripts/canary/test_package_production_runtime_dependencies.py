@@ -473,6 +473,36 @@ def test_distribution_identity_hashes_zero_byte_files_canonically(
     }
 
 
+def test_distribution_identity_normalizes_missing_file_races(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    release = tmp_path / "release"
+    interpreter = release / "venv/bin/python"
+    site_packages = release / "venv/lib/python3.11/site-packages"
+
+    class Distribution:
+        version = package.DDGS_LOCKED_DISTRIBUTIONS["certifi"]
+        files = (Path("missing"),)
+
+        @staticmethod
+        def locate_file(entry: Path) -> Path:
+            return site_packages / entry
+
+    monkeypatch.setattr(
+        package.importlib.metadata,
+        "distribution",
+        lambda _name: Distribution(),
+    )
+    monkeypatch.setattr(package, "_release_interpreter", lambda _release: interpreter)
+
+    with pytest.raises(
+        package.RuntimeDependencyError,
+        match="runtime_dependency_source_unavailable",
+    ):
+        package._distribution_identity("certifi", release)
+
+
 def test_verify_manifest_is_observational_and_rejects_drift(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

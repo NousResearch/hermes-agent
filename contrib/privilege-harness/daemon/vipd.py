@@ -131,8 +131,11 @@ def main():
     # Recover pending requests from disk
     queue.recover()
 
-    # Register builtin connectors
-    _register_builtin_connectors(server, config)
+    # Register builtin connectors (optional — passive mode doesn't need them)
+    try:
+        _register_builtin_connectors(server, config)
+    except ImportError as exc:
+        logger.warning("connectors not available (passive mode): %s", exc)
 
     # Signal handling
     running = True

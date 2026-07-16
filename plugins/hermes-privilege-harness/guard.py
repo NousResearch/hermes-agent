@@ -9,6 +9,9 @@ Security: vip_sudo handler refuses any command it hasn't stamped in check().
           A command must pass through the approval gate before it executes.
 """
 
+import base64
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -20,33 +23,53 @@ logger = logging.getLogger("hermes-vip.guard")
 
 REQUEST_SOCK = os.environ.get("VIP_REQUEST_SOCK", "/var/run/hermes-vip/request.sock")
 
-# ── Defense-in-depth: commands must be stamped by check() before execution ──
-# check() stores a stamp → handler verifies it → handler clears it.
-# A direct call to vip_sudo (bypassing the approval card) will be rejected.
-_STAMP_TTL = 30  # seconds — generous: handler runs immediately after approval
-_stamps: dict[str, float] = {}
+# ── Defense-in-depth daemon-level stamp verification ──
+# Plugin generates a random secret, registers it with daemon via stamp_init.
+# Every sudo_execute includes HMAC-SHA256(command, secret) as stamp.
+# Daemon verifies the HMAC before executing.
+_stamp_secret: bytes = os.urandom(32)
+_stamps: dict[str, str] = {}  # command[:120] → HMAC hex digest
+_secret_registered: bool = False
+
+
+def _register_stamp_secret():
+    """Register stamp secret with daemon. Called once at plugin init."""
+    global _secret_registered
+    if _secret_registered:
+        return
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(5)
+    try:
+        s.connect(REQUEST_SOCK)
+        req = json.dumps({
+            "type": "stamp_init",
+            "secret": base64.b64encode(_stamp_secret).decode(),
+        }).encode()
+        s.sendall(struct.pack("!I", len(req)) + req)
+        raw = s.recv(4)
+        if raw and len(raw) == 4:
+            mlen = struct.unpack("!I", raw)[0]
+            data = s.recv(mlen)
+            resp = json.loads(data.decode())
+            if resp.get("status") == "ok":
+                _secret_registered = True
+                logger.info("stamp secret registered with daemon")
+    except Exception as exc:
+        logger.warning("failed to register stamp secret: %s", exc)
+    finally:
+        s.close()
 
 
 def _stamp(command: str):
-    """Mark a command as having passed through the approval gate."""
-    key = command[:120]  # use prefix as key (rejects command-truncation attacks)
-    _stamps[key] = time.time()
-    # Clean expired stamps
-    now = time.time()
-    for k in list(_stamps):
-        if now - _stamps[k] > _STAMP_TTL * 2:
-            del _stamps[k]
+    """Compute HMAC stamp for the command."""
+    key = command[:120]
+    _stamps[key] = hmac.new(_stamp_secret, command.encode(), hashlib.sha256).hexdigest()
 
 
 def _verify(command: str) -> bool:
     """Verify the command was stamped by check(). Returns True and clears stamp."""
     key = command[:120]
-    ts = _stamps.pop(key, None)
-    if ts is None:
-        return False
-    if time.time() - ts > _STAMP_TTL:
-        return False
-    return True
+    return _stamps.pop(key, None) is not None
 
 
 # ── pre_tool_call ──
@@ -93,6 +116,7 @@ def vip_sudo(command: str, reason: str = "") -> str:
         "command": command,
         "reason": reason or "privilege request",
         "origin": {"channel": "vip_sudo", "timestamp": time.time()},
+        "stamp": _stamps.pop(command[:120], ""),
     }
     payload = json.dumps(req).encode()
 

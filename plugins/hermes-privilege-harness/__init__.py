@@ -45,6 +45,7 @@ def register(ctx):
         ),
     )
 
+    guard._register_stamp_secret()
     logger.info("hermes-privilege-harness plugin ready")
 
 

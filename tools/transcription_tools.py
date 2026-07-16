@@ -1250,8 +1250,19 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
                 language=shlex.quote(language),
                 model=shlex.quote(normalized_model),
             )
-            # User-provided templates (env var) may contain shell syntax; auto-detected commands are safe for list mode.
-            use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
+            # The interpolated values are shlex.quote()-wrapped above; the template
+            # itself is the only injection surface. By default we parse the
+            # resulting string with shlex.split() and pass an argv list — no shell
+            # parsing, no injection from a malicious template (e.g. one containing
+            # "; <payload>").
+            #
+            # If a user genuinely needs shell features (pipes, redirects, &&) in
+            # their custom template, they can opt back in to shell execution by
+            # setting HERMES_LOCAL_STT_ALLOW_SHELL=1 alongside the template env
+            # var. The opt-in is explicit so a misconfigured template can't
+            # silently introduce shell metacharacter execution.
+            allow_shell = os.getenv("HERMES_LOCAL_STT_ALLOW_SHELL", "").strip() in ("1", "true", "yes")
+            use_shell = allow_shell and bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
             if use_shell:
                 subprocess.run(command, shell=True, check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
             else:

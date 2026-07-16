@@ -21,7 +21,7 @@ from tools.mcp_oauth import (
     _is_interactive,
     _wait_for_callback,
     _make_callback_handler,
-    _redirect_handler,
+    _make_redirect_handler,
     _paste_callback_reader,
 )
 
@@ -254,20 +254,20 @@ class TestUtilities:
 
 
 class TestRedirectHandlerSshHint:
-    """_redirect_handler must print an SSH tunnel hint on remote sessions."""
+    """_make_redirect_handler must print an SSH tunnel hint on remote sessions."""
 
     def _run(self, coro):
         return asyncio.get_event_loop().run_until_complete(coro)
 
     def test_ssh_hint_shown_on_ssh_session(self, monkeypatch, capsys):
         import tools.mcp_oauth as mco
-        monkeypatch.setattr(mco, "_oauth_port", 49200)
         monkeypatch.setattr(mco, "_is_interactive", lambda: True)
         monkeypatch.setenv("SSH_CLIENT", "1.2.3.4 1234 22")
         monkeypatch.delenv("SSH_TTY", raising=False)
         monkeypatch.setattr(mco, "_can_open_browser", lambda: False)
 
-        self._run(_redirect_handler("https://example.com/auth?foo=bar"))
+        handler = _make_redirect_handler(49200)
+        self._run(handler("https://example.com/auth?foo=bar"))
 
         err = capsys.readouterr().err
         assert "49200" in err
@@ -276,13 +276,13 @@ class TestRedirectHandlerSshHint:
 
     def test_ssh_hint_shown_via_ssh_tty(self, monkeypatch, capsys):
         import tools.mcp_oauth as mco
-        monkeypatch.setattr(mco, "_oauth_port", 49201)
         monkeypatch.setattr(mco, "_is_interactive", lambda: True)
         monkeypatch.delenv("SSH_CLIENT", raising=False)
         monkeypatch.setenv("SSH_TTY", "/dev/pts/1")
         monkeypatch.setattr(mco, "_can_open_browser", lambda: False)
 
-        self._run(_redirect_handler("https://example.com/auth"))
+        handler = _make_redirect_handler(49201)
+        self._run(handler("https://example.com/auth"))
 
         err = capsys.readouterr().err
         assert "49201" in err
@@ -290,26 +290,26 @@ class TestRedirectHandlerSshHint:
 
     def test_no_ssh_hint_on_local_session(self, monkeypatch, capsys):
         import tools.mcp_oauth as mco
-        monkeypatch.setattr(mco, "_oauth_port", 49202)
         monkeypatch.setattr(mco, "_is_interactive", lambda: True)
         monkeypatch.delenv("SSH_CLIENT", raising=False)
         monkeypatch.delenv("SSH_TTY", raising=False)
         monkeypatch.setattr(mco, "_can_open_browser", lambda: True)
         monkeypatch.setattr("webbrowser.open", lambda url, **kw: True)
 
-        self._run(_redirect_handler("https://example.com/auth"))
+        handler = _make_redirect_handler(49202)
+        self._run(handler("https://example.com/auth"))
 
         err = capsys.readouterr().err
         assert "ssh -N -L" not in err
 
-    def test_no_ssh_hint_when_port_not_set(self, monkeypatch, capsys):
+    def test_no_ssh_hint_when_port_is_zero(self, monkeypatch, capsys):
         import tools.mcp_oauth as mco
-        monkeypatch.setattr(mco, "_oauth_port", None)
         monkeypatch.setattr(mco, "_is_interactive", lambda: True)
         monkeypatch.setenv("SSH_CLIENT", "1.2.3.4 1234 22")
         monkeypatch.setattr(mco, "_can_open_browser", lambda: False)
 
-        self._run(_redirect_handler("https://example.com/auth"))
+        handler = _make_redirect_handler(0)
+        self._run(handler("https://example.com/auth"))
 
         err = capsys.readouterr().err
         assert "ssh -N -L" not in err
@@ -421,6 +421,103 @@ class TestOAuthPortSharing:
         assert mod._oauth_port is not None
         assert isinstance(mod._oauth_port, int)
         assert 1024 <= mod._oauth_port <= 65535
+
+
+# ---------------------------------------------------------------------------
+# TOCTOU port reservation (#22161)
+# ---------------------------------------------------------------------------
+
+class TestCallbackPortReservation:
+    """The socket picked at selection time stays bound until callback bind.
+
+    _find_free_port() closed its probe socket before HTTPServer re-bound the
+    port, leaving a race window where another process could steal it
+    (#22161). _reserve_callback_port() keeps the bound socket parked in
+    _reserved_sockets until _wait_for_callback adopts it.
+    """
+
+    def test_reserved_port_cannot_be_stolen(self):
+        import socket as sock
+        import tools.mcp_oauth as mod
+
+        port = mod._reserve_callback_port()
+        try:
+            # The reservation holds the bind — a competing bind must fail.
+            thief = sock.socket(sock.AF_INET, sock.SOCK_STREAM)
+            with pytest.raises(OSError):
+                thief.bind(("127.0.0.1", port))
+            thief.close()
+        finally:
+            reserved = mod._reserved_sockets.pop(port, None)
+            if reserved is not None:
+                reserved.close()
+
+    def test_configure_callback_port_reserves_ephemeral(self):
+        import tools.mcp_oauth as mod
+
+        cfg: dict = {}
+        port = mod._configure_callback_port(cfg)
+        try:
+            assert cfg["_resolved_port"] == port
+            assert port in mod._reserved_sockets
+        finally:
+            reserved = mod._reserved_sockets.pop(port, None)
+            if reserved is not None:
+                reserved.close()
+
+    def test_pinned_port_is_not_reserved(self):
+        import tools.mcp_oauth as mod
+
+        cfg: dict = {"redirect_port": 49399}
+        port = mod._configure_callback_port(cfg)
+        assert port == 49399
+        assert 49399 not in mod._reserved_sockets
+
+    def test_reservation_pool_is_bounded(self):
+        import tools.mcp_oauth as mod
+
+        ports = [mod._reserve_callback_port() for _ in range(mod._MAX_RESERVED_SOCKETS + 3)]
+        try:
+            assert len(mod._reserved_sockets) <= mod._MAX_RESERVED_SOCKETS
+            # newest reservations survive
+            assert ports[-1] in mod._reserved_sockets
+        finally:
+            for p in list(mod._reserved_sockets):
+                mod._reserved_sockets.pop(p).close()
+
+    def test_wait_for_callback_adopts_reserved_socket(self, monkeypatch):
+        """E2E: reserve → _wait_for_callback binds the SAME socket and the
+        callback round-trips through it."""
+        import asyncio
+        import threading
+        import urllib.request
+        import tools.mcp_oauth as mod
+
+        cfg: dict = {}
+        port = mod._configure_callback_port(cfg)
+        monkeypatch.setattr(mod, "_is_interactive", lambda: False)
+        # Bypass the non-interactive guard — this test drives the flow directly.
+        monkeypatch.setattr(mod, "_raise_if_non_interactive", lambda lead: None)
+
+        async def drive():
+            task = asyncio.create_task(mod._wait_for_callback())
+            await asyncio.sleep(0.2)  # let the server adopt the socket
+
+            def hit():
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/callback?code=abc123&state=xyz",
+                    timeout=5,
+                )
+
+            t = threading.Thread(target=hit, daemon=True)
+            t.start()
+            return await asyncio.wait_for(task, timeout=10)
+
+        code, state = asyncio.run(drive())
+        assert code == "abc123"
+        assert state == "xyz"
+        # Reservation was consumed by adoption.
+        assert port not in mod._reserved_sockets
 
 
 # ---------------------------------------------------------------------------
@@ -661,7 +758,7 @@ class TestNonInteractiveFailFastAtCallbackBoundary:
         )
 
         with pytest.raises(OAuthNonInteractiveError, match="browser authorization"):
-            asyncio.run(mod._redirect_handler("https://idp.example.com/authorize?x=1"))
+            asyncio.run(mod._make_redirect_handler(49300)("https://idp.example.com/authorize?x=1"))
 
         err = capsys.readouterr().err
         assert "https://idp.example.com/authorize" not in err
@@ -673,7 +770,7 @@ class TestNonInteractiveFailFastAtCallbackBoundary:
 
         monkeypatch.setattr(mod, "_is_interactive", lambda: False)
         with pytest.raises(OAuthNonInteractiveError, match="hermes mcp login"):
-            asyncio.run(mod._redirect_handler("https://idp.example.com/authorize"))
+            asyncio.run(mod._make_redirect_handler(49301)("https://idp.example.com/authorize"))
 
         mod._oauth_port = _find_free_port()
         with pytest.raises(OAuthNonInteractiveError, match="hermes mcp login"):
@@ -698,7 +795,7 @@ class TestNonInteractiveFailFastAtCallbackBoundary:
         monkeypatch.delenv("SSH_TTY", raising=False)
         monkeypatch.setattr(mod, "_can_open_browser", lambda: False)
 
-        asyncio.run(mod._redirect_handler("https://idp.example.com/authorize?x=9"))
+        asyncio.run(mod._make_redirect_handler(49302)("https://idp.example.com/authorize?x=9"))
 
         err = capsys.readouterr().err
         assert "https://idp.example.com/authorize?x=9" in err

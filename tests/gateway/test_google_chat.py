@@ -253,6 +253,7 @@ class TestEnvConfigLoading:
         "GOOGLE_CLOUD_PROJECT",
         "GOOGLE_CHAT_SUBSCRIPTION_NAME",
         "GOOGLE_CHAT_SUBSCRIPTION",
+        "GOOGLE_CHAT_HTTP_EVENTS_URL",
         "GOOGLE_CHAT_SERVICE_ACCOUNT_JSON",
         "GOOGLE_APPLICATION_CREDENTIALS",
         "GOOGLE_CHAT_HOME_CHANNEL",
@@ -281,7 +282,12 @@ class TestEnvConfigLoading:
         cfg = load_gateway_config()
         assert _GC not in cfg.platforms
 
-
+    def test_http_events_enable_without_pubsub(self, monkeypatch):
+        self._clean_env(monkeypatch)
+        monkeypatch.setenv("GOOGLE_CHAT_HTTP_EVENTS_URL", "https://example.test/google-chat/events")
+        cfg = load_gateway_config()
+        assert _GC in cfg.platforms
+        assert cfg.platforms[_GC].extra["http_events_url"] == "https://example.test/google-chat/events"
 
 
 # ===========================================================================
@@ -390,6 +396,47 @@ class TestValidateConfig:
         project, sub = a._validate_config()
         assert project == "test-project"
         assert sub == "projects/test-project/subscriptions/test-sub"
+
+    def test_http_events_mode_does_not_require_pubsub(self):
+        cfg = PlatformConfig(enabled=True)
+        cfg.extra["http_events_url"] = "https://example.test/google-chat/events"
+        a = GoogleChatAdapter(cfg)
+        project, sub = a._validate_config()
+        assert project == ""
+        assert sub is None
+
+    def test_full_subscription_can_infer_project(self):
+        cfg = PlatformConfig(enabled=True)
+        cfg.extra["subscription_name"] = "projects/inferred/subscriptions/sub"
+        a = GoogleChatAdapter(cfg)
+        project, sub = a._validate_config()
+        assert project == "inferred"
+        assert sub == "projects/inferred/subscriptions/sub"
+
+
+class TestConnectModes:
+    @pytest.mark.asyncio
+    async def test_connect_http_mode_skips_pubsub_subscriber(self, tmp_path, monkeypatch):
+        cfg = PlatformConfig(enabled=True)
+        cfg.extra.update({
+            "http_events_url": "https://example.test/google-chat/events",
+            "service_account_json": "{}",
+        })
+        a = GoogleChatAdapter(cfg)
+        a._thread_count_store._path = tmp_path / "google_chat_thread_counts.json"
+        monkeypatch.setattr(_gc_mod, "_load_google_modules", lambda: True)
+        monkeypatch.setattr(a, "_load_sa_credentials", MagicMock(return_value=MagicMock()))
+        monkeypatch.setattr(_gc_mod, "build_service", MagicMock(return_value=MagicMock()))
+        subscriber_client = MagicMock()
+        monkeypatch.setattr(_gc_mod, "pubsub_v1", MagicMock(SubscriberClient=subscriber_client))
+        a._resolve_bot_user_id = AsyncMock(return_value=None)
+
+        assert await a.connect() is True
+        subscriber_client.assert_not_called()
+        assert a._subscription_path is None
+        assert a._supervisor_task is None
+        assert a.is_connected is True
+        await a.disconnect()
 
 
 # ===========================================================================

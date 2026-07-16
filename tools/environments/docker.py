@@ -719,14 +719,20 @@ class DockerEnvironment(BaseEnvironment):
         # Egress control. "on" keeps full network (current default), "off" cuts
         # all network, "allowlist" routes HTTP(S) through a domain-filtered proxy
         # on an --internal network (raw/non-proxied egress has no route out).
+        # ``_effective_network`` records the NetworkMode a fresh container gets
+        # so the reuse guard below can validate persisted containers against
+        # the current config (None == "on": no exact expectation).
+        self._effective_network: Optional[str] = None
         if self._network_mode == "off":
             resource_args.append("--network=none")
+            self._effective_network = "none"
         elif self._network_mode == "allowlist":
             try:
                 from tools.environments.egress_proxy import ensure_allowlisted_network
 
                 proxy = ensure_allowlisted_network(self._network_allowlist)
                 resource_args.extend(["--network", proxy.network])
+                self._effective_network = proxy.network
                 # Inject proxy env so package managers / git / curl route through it.
                 # Merged into self._env here so it lands in both the `docker run -e`
                 # args and the init_session snapshot (subsequent exec inherits it).
@@ -753,6 +759,7 @@ class DockerEnvironment(BaseEnvironment):
                     exc_info=True,
                 )
                 resource_args.append("--network=none")
+                self._effective_network = "none"
 
         # Persistent workspace via bind mounts from a configurable host directory
         # (TERMINAL_SANDBOX_DIR, default ~/.hermes/sandboxes/). Non-persistent
@@ -1013,27 +1020,22 @@ class DockerEnvironment(BaseEnvironment):
                 container_id, state = existing
                 # Network-mode guard: reuse must not silently defeat an
                 # egress lockdown.  A container created before the operator
-                # set ``docker_network: false`` keeps its original bridge
-                # NetworkMode, so label-only reuse would hand the agent a
-                # networked container despite the config.  On mismatch we
-                # remove the stale container and start fresh — leaving it in
-                # place would let the next label-based reuse pick it up again.
-                # Only the lockdown direction is guarded: a ``none``-mode
-                # container under a default-network config is left alone so
-                # operators using ``docker_extra_args: ["--network=none"]``
-                # don't get their container churned on every startup.
-                mode_mismatch = False
-                actual_mode = None
-                if not network:
-                    actual_mode = self._container_network_mode(container_id)
-                    mode_mismatch = actual_mode != "none"
+                # tightened ``container_network`` (or set ``docker_network:
+                # false``) keeps its original NetworkMode, so label-only reuse
+                # would hand the agent a networked container despite the
+                # config.  On mismatch we remove the stale container and start
+                # fresh — leaving it in place would let the next label-based
+                # reuse pick it up again.  See _reuse_network_mismatch for the
+                # per-mode expectations.
+                mode_mismatch, actual_mode = self._reuse_network_mismatch(container_id)
                 if mode_mismatch:
                     logger.warning(
-                        "Existing container %s has NetworkMode=%s but "
-                        "docker_network=false requests an air-gapped "
-                        "container — removing it and starting fresh "
-                        "(task=%s, profile=%s).",
+                        "Existing container %s is on network %r but "
+                        "container_network=%r expects %r — removing it and "
+                        "starting fresh (task=%s, profile=%s).",
                         container_id[:12], actual_mode or "unknown",
+                        self._network_mode,
+                        self._effective_network or "no hermes-egress network",
                         task_label, profile_name,
                     )
                     try:
@@ -1378,6 +1380,31 @@ class DockerEnvironment(BaseEnvironment):
             return None
         mode = result.stdout.strip()
         return mode or None
+
+    def _reuse_network_mismatch(self, container_id: str) -> tuple[bool, Optional[str]]:
+        """True when a reused container's NetworkMode conflicts with the
+        current egress config, plus the inspected mode for logging.
+
+        - ``off`` / ``allowlist`` (``_effective_network`` is set): the
+          container must sit exactly on the expected network — ``none``, or
+          the ``hermes-egress-<hash>`` network for the *current* allowlist
+          (a changed allowlist hashes to a different network, so stale
+          bridge and different-allowlist containers both mismatch).  A
+          failed inspect (``None``) counts as a mismatch: never hand out
+          unverified egress under lockdown.
+        - ``on``: only containers stranded on a ``hermes-egress-*`` internal
+          network are replaced — they have no route out at all under an
+          open-network config.  ``none``/bridge/anything else is left alone
+          so operators using ``docker_extra_args: ["--network=none"]`` don't
+          get their container churned on every startup, and a failed inspect
+          keeps the container (nothing to lock down).
+        """
+        actual = self._container_network_mode(container_id)
+        if self._effective_network is not None:
+            return actual != self._effective_network, actual
+        from tools.environments.egress_proxy import EGRESS_NETWORK_PREFIX
+
+        return bool(actual) and actual.startswith(EGRESS_NETWORK_PREFIX), actual
 
     def _find_reusable_container(self, task_label: str, profile_label: str) -> Optional[tuple[str, str]]:
         """Look for an existing container labeled for this (task, profile).

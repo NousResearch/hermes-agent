@@ -35,6 +35,10 @@ _SERVER_SCRIPT = os.path.join(os.path.dirname(__file__), "egress_proxy_server.py
 # Label stamped on every egress network/proxy so prune_egress_proxies() (and
 # users, via `docker ps --filter label=...`) can enumerate what we created.
 _EGRESS_LABEL = "hermes.egress"
+# Every egress network is named <prefix><allowlist-hash>; the Docker reuse
+# guard matches on this prefix to spot containers stranded on an egress
+# network after the operator switched modes.
+EGRESS_NETWORK_PREFIX = "hermes-egress-"
 
 # Serialize provisioning so concurrent sandbox starts don't race on the same
 # network/proxy (T-1.1: isolate shared mutable state behind an explicit gate).
@@ -56,7 +60,18 @@ def _allowlist_hash(allowlist: list[str]) -> str:
 
 def _names(allowlist: list[str]) -> tuple[str, str]:
     h = _allowlist_hash(allowlist)
-    return f"hermes-egress-{h}", f"hermes-egress-proxy-{h}"
+    return f"{EGRESS_NETWORK_PREFIX}{h}", f"{EGRESS_NETWORK_PREFIX}proxy-{h}"
+
+
+def expected_network_name(allowlist: list[str]) -> str:
+    """Name of the internal egress network *allowlist* would provision.
+
+    Pure (no docker calls) — same canonicalization/hash as
+    ensure_allowlisted_network(), so the Docker reuse path can validate a
+    persisted container's NetworkMode without provisioning anything.
+    """
+    network, _proxy = _names(allowlist)
+    return network
 
 
 def _docker(*args: str, timeout: int = 120) -> subprocess.CompletedProcess:

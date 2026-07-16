@@ -808,8 +808,22 @@ def test_labels_attribute_populated_after_init(monkeypatch):
 # ── Cross-process container reuse (issue #20561) ──────────────────
 
 
+def _network_mode_inspect_result(cmd, network_mode_response: str | None):
+    """CompletedProcess for the reuse guard's NetworkMode inspect probe.
+
+    ``None`` simulates a failed inspect (rc 1); anything else is returned
+    as the container's HostConfig.NetworkMode.
+    """
+    if network_mode_response is None:
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="no such object")
+    return subprocess.CompletedProcess(
+        cmd, 0, stdout=f"{network_mode_response}\n", stderr="",
+    )
+
+
 def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
-                                     start_succeeds: bool = True):
+                                     start_succeeds: bool = True,
+                                     network_mode_response: str | None = None):
     """Reuse-aware subprocess.run mock.
 
     ``ps_state`` controls what ``docker ps -a --filter ...`` returns:
@@ -818,6 +832,13 @@ def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
         path picks it up. ``"running"`` skips ``docker start``; other states
         trigger ``docker start`` (which can be forced to fail via
         ``start_succeeds=False``).
+
+    ``network_mode_response`` controls what ``docker inspect --format
+    {{.HostConfig.NetworkMode}}`` (the reuse network guard probe) returns:
+      * ``None`` (default) → inspect fails (rc 1). The guard treats an
+        unknown mode as "keep" under mode ``on`` and "replace" under
+        lockdown, so existing on-mode reuse tests are unaffected.
+      * ``"bridge"`` / ``"none"`` / ``"hermes-egress-..."`` → that mode
 
     Returns the captured call list so the test can verify which docker
     commands actually ran.
@@ -836,6 +857,8 @@ def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
                 return subprocess.CompletedProcess(
                     cmd, 0, stdout=f"reused-cid\t{ps_state}\n", stderr="",
                 )
+            if sub == "inspect" and "{{.HostConfig.NetworkMode}}" in cmd:
+                return _network_mode_inspect_result(cmd, network_mode_response)
             if sub == "start":
                 if not start_succeeds:
                     # Real subprocess.run with check=True raises on non-zero exit;
@@ -915,6 +938,159 @@ def test_reuse_falls_back_to_fresh_run_when_start_fails(monkeypatch):
     )
     run_invocations = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
     assert run_invocations, "fallback to fresh docker run must happen on start failure"
+
+
+# ── Reuse network guard across egress modes ────────────────────────
+#
+# Label-only reuse must not hand out a container whose network contradicts
+# the current ``container_network`` config (a stale bridge container under
+# "off"/"allowlist" would silently defeat the lockdown).
+
+
+def _sub_calls(calls, sub):
+    return [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == sub]
+
+
+def _patch_egress_proxy(monkeypatch, network="hermes-egress-test"):
+    class _Proxy:
+        proxy_env = {"HTTP_PROXY": "http://hermes-egress-proxy:8888"}
+
+    _Proxy.network = network
+    import tools.environments.egress_proxy as ep
+    monkeypatch.setattr(ep, "ensure_allowlisted_network", lambda allowlist: _Proxy())
+
+
+def _guard_env(monkeypatch, network_mode_response, **env_kwargs):
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    calls = _mock_subprocess_run_with_reuse(
+        monkeypatch, ps_state="running", network_mode_response=network_mode_response,
+    )
+    env = _make_dummy_env(**env_kwargs)
+    return env, calls
+
+
+def test_reuse_guard_off_removes_networked_container(monkeypatch):
+    """Mode "off" must replace a reusable container still on a bridge network."""
+    env, calls = _guard_env(
+        monkeypatch, "bridge", task_id="guard-off-bridge", network_mode="off",
+    )
+
+    assert _sub_calls(calls, "rm"), "stale bridge container must be removed under mode off"
+    assert env._container_id == "fresh-cid"
+
+
+def test_reuse_guard_off_keeps_airgapped_container(monkeypatch):
+    """Mode "off" reuses a container that is already air-gapped."""
+    env, calls = _guard_env(
+        monkeypatch, "none", task_id="guard-off-none", network_mode="off",
+    )
+
+    assert not _sub_calls(calls, "rm")
+    assert not _sub_calls(calls, "run")
+    assert env._container_id == "reused-cid"
+
+
+def test_reuse_guard_legacy_network_false_still_enforced(monkeypatch):
+    """Backward compat: docker_network=false keeps its bridge-replacement guard."""
+    env, calls = _guard_env(
+        monkeypatch, "bridge", task_id="guard-legacy-false",
+        network=False, network_mode=None,
+    )
+
+    assert _sub_calls(calls, "rm")
+    assert env._container_id == "fresh-cid"
+
+
+def test_reuse_guard_allowlist_removes_bridge_container(monkeypatch):
+    """Switching to allowlist mode must not reuse a full-network container."""
+    _patch_egress_proxy(monkeypatch)
+    env, calls = _guard_env(
+        monkeypatch, "bridge", task_id="guard-allow-bridge",
+        network_mode="allowlist", network_allowlist=["github.com"],
+    )
+
+    assert _sub_calls(calls, "rm"), "bridge container must be removed under allowlist mode"
+    assert env._container_id == "fresh-cid"
+    assert "--network hermes-egress-test" in _run_args_str(calls)
+
+
+def test_reuse_guard_allowlist_removes_other_allowlist_container(monkeypatch):
+    """A changed allowlist hashes to a different network — replace, don't reuse."""
+    _patch_egress_proxy(monkeypatch)
+    env, calls = _guard_env(
+        monkeypatch, "hermes-egress-0123456789", task_id="guard-allow-other",
+        network_mode="allowlist", network_allowlist=["github.com"],
+    )
+
+    assert _sub_calls(calls, "rm")
+    assert env._container_id == "fresh-cid"
+
+
+def test_reuse_guard_allowlist_keeps_matching_container(monkeypatch):
+    """Same allowlist → same egress network → container is reused as-is."""
+    _patch_egress_proxy(monkeypatch)
+    env, calls = _guard_env(
+        monkeypatch, "hermes-egress-test", task_id="guard-allow-match",
+        network_mode="allowlist", network_allowlist=["github.com"],
+    )
+
+    assert not _sub_calls(calls, "rm")
+    assert not _sub_calls(calls, "run")
+    assert env._container_id == "reused-cid"
+
+
+def test_reuse_guard_allowlist_proxy_failure_fails_closed(monkeypatch):
+    """When proxy provisioning fails the expectation drops to "none", so even
+    a container on the (now unverifiable) egress network is replaced."""
+    import tools.environments.egress_proxy as ep
+
+    def _boom(allowlist):
+        raise RuntimeError("proxy down")
+
+    monkeypatch.setattr(ep, "ensure_allowlisted_network", _boom)
+    env, calls = _guard_env(
+        monkeypatch, "hermes-egress-test", task_id="guard-allow-fail",
+        network_mode="allowlist", network_allowlist=["github.com"],
+    )
+
+    assert _sub_calls(calls, "rm")
+    assert env._container_id == "fresh-cid"
+    assert "--network=none" in _run_args_str(calls)
+
+
+def test_reuse_guard_lockdown_inspect_failure_fails_closed(monkeypatch):
+    """Under lockdown an unverifiable container (inspect fails) is replaced."""
+    env, calls = _guard_env(
+        monkeypatch, None, task_id="guard-off-unknown", network_mode="off",
+    )
+
+    assert _sub_calls(calls, "rm")
+    assert env._container_id == "fresh-cid"
+
+
+def test_reuse_guard_on_replaces_stranded_egress_container(monkeypatch):
+    """Mode "on" replaces a container stuck on an internal hermes-egress-*
+    network — it has no route out at all under an open-network config."""
+    env, calls = _guard_env(
+        monkeypatch, "hermes-egress-0123456789", task_id="guard-on-stranded",
+    )
+
+    assert _sub_calls(calls, "rm")
+    assert env._container_id == "fresh-cid"
+
+
+@pytest.mark.parametrize("existing_mode", ["bridge", "none"])
+def test_reuse_guard_on_keeps_non_egress_containers(monkeypatch, existing_mode):
+    """Mode "on" leaves bridge containers and deliberate --network=none
+    containers (docker_extra_args operators) alone — no churn."""
+    env, calls = _guard_env(
+        monkeypatch, existing_mode, task_id=f"guard-on-{existing_mode}",
+    )
+
+    assert not _sub_calls(calls, "rm")
+    assert not _sub_calls(calls, "run")
+    assert env._container_id == "reused-cid"
 
 
 def test_failed_docker_run_cleans_up_orphaned_container(monkeypatch):

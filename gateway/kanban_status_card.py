@@ -185,14 +185,14 @@ def _state(
     assignee = _clean_text(_attr(task, "assignee", ""), 80)
     worker = f"@{assignee}" if assignee else "Worker"
     latest = _last_event(timeline, {
-        "review_requested", "review_rejected", "review_accepted", "crashed",
+        "review_requested", "review_rejected", "review_rework_exhausted", "review_accepted", "blocked", "crashed",
         "timed_out", "gave_up", "reclaimed", "archived", "review_retry_scheduled",
         "review_recovered", "review_job_reconciled", "reviewer_review_claimed",
         "reviewer_review_spawned", "needs_reviewer",
     })
     if status == "running" and current_run is not None:
         current_latest = _last_event(_attr(current_run, "events", ()), {
-            "review_requested", "review_rejected", "review_accepted", "crashed",
+            "review_requested", "review_rejected", "review_rework_exhausted", "review_accepted", "blocked", "crashed",
             "timed_out", "gave_up", "reclaimed", "archived", "review_retry_scheduled",
             "review_recovered", "review_job_reconciled", "reviewer_review_claimed",
             "reviewer_review_spawned", "needs_reviewer",
@@ -223,6 +223,8 @@ def _state(
         if status == "running":
             return "🤝", f"{worker} is addressing reviewer feedback", "The worker is addressing reviewer feedback."
         return "😡", "Reviewer returned the task for changes", "The task is waiting for the worker to restart."
+    if latest_kind == "review_rework_exhausted" or (status == "blocked" and block_kind == "review"):
+        return "🛑", "Reviewer feedback needs a decision", "Automatic rework is paused; no worker will restart."
     if status == "done" or latest_kind == "review_accepted":
         return "✅", "Accepted by reviewer", "Review complete."
     if latest_kind == "gave_up":
@@ -238,6 +240,8 @@ def _state(
             return "⏳", heading, detail
         if block_kind == "transient":
             return "⚠️", "Restarting after a temporary failure", "This is temporary; no reply is needed."
+        if block_kind == "review":
+            return "🛑", "Reviewer feedback needs a decision", "Automatic rework is paused; no worker will restart."
         if block_kind == "capability":
             return "🔐", "Manual help required", "A user action or access is required."
         return "📞", "Your reply is needed", "A reply is needed to continue."

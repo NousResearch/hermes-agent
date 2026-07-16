@@ -274,6 +274,7 @@ def test_short_header_is_not_changed():
         (_task("todo"), [], [_parent("Первый"), _parent("Второй")], "⏳ Starts after 2 related tasks"),
         (_task("blocked", block_kind="needs_input"), [], None, "📞 Your reply is needed"),
         (_task("blocked", block_kind="capability"), [], None, "🔐 Manual help required"),
+        (_task("blocked", block_kind="review"), [_event("review_rework_exhausted")], None, "🛑 Reviewer feedback needs a decision"),
         (_task("blocked", block_kind="transient"), [], None, "⚠️ Restarting after a temporary failure"),
         (_task("ready"), [_event("reclaimed")], None, "⚠️ Worker is restarting"),
         (_task("ready"), [_event("gave_up")], None, "❌ Could not complete automatically"),

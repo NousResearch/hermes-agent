@@ -4847,7 +4847,8 @@ def test_review_request_after_reject_resets_review_receipt_for_retry(
         assert first_reject_handoff is not None
 
         assert kb.request_review(
-            conn, tid, summary="ready for second review", metadata={"tests_run": 2}
+            conn, tid, summary="ready for second review",
+            metadata={"tests_run": 2, "rework_evidence": "tests: pytest review: 2 passed"},
         )
         assert kb.dispatch_once(conn, reviewer_spawn_fn=reviewer_spawn).reviewer_spawned == [tid]
 
@@ -4880,7 +4881,10 @@ def test_repeated_review_reject_requires_a_fresh_handoff(
         first_handoff = conn.execute(
             "SELECT handoff_event_id FROM kanban_review_jobs WHERE task_id=?", (tid,)
         ).fetchone()[0]
-        assert kb.request_review(conn, tid, summary="rework is ready for another audit")
+        assert kb.request_review(
+            conn, tid, summary="rework is ready for another audit",
+            metadata={"rework_evidence": "commit: abc1234"},
+        )
         second_handoff = conn.execute(
             "SELECT handoff_event_id FROM kanban_review_jobs WHERE task_id=?", (tid,)
         ).fetchone()[0]
@@ -4890,9 +4894,40 @@ def test_repeated_review_reject_requires_a_fresh_handoff(
         task = kb.get_task(conn, tid)
         kinds = [event.kind for event in kb.list_events(conn, tid)]
 
-    assert task is not None and task.status == "ready"
+    assert task is not None and task.status == "blocked"
     assert kinds.count("review_requested") == 2
     assert kinds.count("review_rejected") == 2
+
+
+def test_review_rework_is_bounded_sticky_and_requires_concrete_evidence(
+    kanban_home, all_assignees_spawnable, tmp_path,
+):
+    with kb.connect() as conn:
+        tid, _ = _request_review_with_workspace(conn, tmp_path)
+        # Operational failures and review rejections use independent budgets.
+        conn.execute("UPDATE tasks SET consecutive_failures=1 WHERE id=?", (tid,))
+        assert kb.reject_review(conn, tid, reason="add deterministic coverage")
+        first = kb.get_task(conn, tid)
+        assert first is not None and first.status == "ready"
+        assert first.consecutive_failures == 1
+        assert first.review_rejections == 1
+        assert "add deterministic coverage" in kb._worker_prompt_for(first)
+
+        with pytest.raises(ValueError, match="rework_evidence"):
+            kb.request_review(conn, tid, summary="unchanged handoff", metadata={"rework_evidence": "n/a"})
+        assert kb.request_review(
+            conn, tid, summary="coverage added",
+            metadata={"rework_evidence": "tests: pytest test_rework.py: 1 passed"},
+        )
+        assert kb.reject_review(conn, tid, reason="missing cancellation assertion")
+        blocked = kb.get_task(conn, tid)
+        assert blocked is not None and blocked.status == "blocked"
+        assert blocked.block_kind == "review"
+        # A future larger operational failure limit cannot re-promote this.
+        assert kb.recompute_ready(conn, failure_limit=99) == 0
+        assert kb.get_task(conn, tid).status == "blocked"
+
+    assert blocked.review_rejections == 2
 
 
 def test_reconcile_replaces_stale_terminal_review_receipt(

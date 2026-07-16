@@ -713,6 +713,9 @@ class TelegramAdapter(BasePlatformAdapter):
             min_value=1.0,
             max_value=300.0,
         )
+        # Telegram rate limits are bot-wide.  A RetryAfter from a status card,
+        # reply, pin, or typing action must suppress every other send path.
+        self._telegram_flood_cooldown_until: float = 0.0
         # Buffer rapid/album photo updates so Telegram image bursts are handled
         # as a single MessageEvent instead of self-interrupting multiple turns.
         self._media_batch_delay_seconds = env_float("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", 0.8)
@@ -4158,6 +4161,10 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
+        flood_cooldown = self._active_flood_cooldown_result()
+        if flood_cooldown is not None:
+            return flood_cooldown
+
         # getattr() — tests build adapters via object.__new__() (no __init__).
         if getattr(self, "_send_path_degraded", False):
             return SendResult(success=False, error="send_path_degraded", retryable=True)
@@ -4182,6 +4189,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 return SendResult(success=True, message_id=str(msg.message_id))
             except Exception as emoji_error:
+                flood_result = self._record_flood_cooldown(emoji_error)
+                if flood_result is not None:
+                    return flood_result
                 # A bad or unauthorized emoji must not prevent the card itself
                 # from arriving. Retry exactly once with its Unicode fallback;
                 # all other provider failures must retain their normal retry
@@ -4200,6 +4210,19 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                     return SendResult(success=True, message_id=str(msg.message_id))
                 except Exception as fallback_error:
+                    flood_result = self._record_flood_cooldown(fallback_error)
+                    if flood_result is not None:
+                        return flood_result
+                    if retry_entities and self._is_custom_emoji_rejection(fallback_error):
+                        try:
+                            msg = await self._send_message_with_thread_fallback(
+                                chat_id=normalize_telegram_chat_id(chat_id), text=content,
+                                reply_to_message_id=reply_to_id, **thread_kwargs,
+                                **self._link_preview_kwargs(), **self._notification_kwargs(metadata),
+                            )
+                            return SendResult(success=True, message_id=str(msg.message_id))
+                        except Exception as unicode_error:
+                            return SendResult(success=False, error=_redact_telegram_error_text(unicode_error))
                     return SendResult(success=False, error=_redact_telegram_error_text(fallback_error))
 
         try:
@@ -4440,6 +4463,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     except Exception as send_err:
                         retry_after = getattr(send_err, "retry_after", None)
                         if retry_after is not None or "retry after" in str(send_err).lower():
+                            self._record_flood_cooldown(send_err)
                             if _send_attempt < 2:
                                 wait = float(retry_after) if retry_after is not None else 1.0
                                 safe_send_error = _redact_telegram_error_text(send_err)
@@ -4563,6 +4587,9 @@ class TelegramAdapter(BasePlatformAdapter):
         """Pin one existing message without creating a second Telegram update."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        flood_cooldown = self._active_flood_cooldown_result()
+        if flood_cooldown is not None:
+            return flood_cooldown
         try:
             await self._bot.pin_chat_message(
                 chat_id=normalize_telegram_chat_id(chat_id),
@@ -4571,6 +4598,9 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return SendResult(success=True, message_id=message_id)
         except Exception as exc:
+            flood_result = self._record_flood_cooldown(exc)
+            if flood_result is not None:
+                return flood_result
             return SendResult(success=False, error=_redact_telegram_error_text(exc))
 
     async def edit_message(
@@ -4594,6 +4624,9 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        flood_cooldown = self._active_flood_cooldown_result()
+        if flood_cooldown is not None:
+            return flood_cooldown
 
         custom_entities = self._custom_emoji_entities(content, metadata)
         if custom_entities:
@@ -4604,6 +4637,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 return SendResult(success=True, message_id=message_id)
             except Exception as emoji_error:
+                flood_result = self._record_flood_cooldown(emoji_error)
+                if flood_result is not None:
+                    return flood_result
                 if not self._is_custom_emoji_rejection(emoji_error):
                     error_text = str(emoji_error).lower()
                     return SendResult(
@@ -4622,6 +4658,17 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                     return SendResult(success=True, message_id=message_id)
                 except Exception as fallback_error:
+                    flood_result = self._record_flood_cooldown(fallback_error)
+                    if flood_result is not None:
+                        return flood_result
+                    if retry_entities and self._is_custom_emoji_rejection(fallback_error):
+                        try:
+                            await self._bot.edit_message_text(
+                                chat_id=normalize_telegram_chat_id(chat_id), message_id=int(message_id), text=content,
+                            )
+                            return SendResult(success=True, message_id=message_id)
+                        except Exception as unicode_error:
+                            fallback_error = unicode_error
                     fallback_error_text = str(fallback_error).lower()
                     return SendResult(
                         success=False,
@@ -4755,6 +4802,7 @@ class TelegramAdapter(BasePlatformAdapter):
             # to a normal final send instead of leaving a truncated partial.
             retry_after = getattr(e, "retry_after", None)
             if retry_after is not None or "retry after" in err_str:
+                self._record_flood_cooldown(e)
                 wait = retry_after if retry_after else 1.0
                 logger.warning(
                     "[%s] Telegram flood control, waiting %.1fs",
@@ -6540,6 +6588,9 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send audio as a native Telegram voice message or audio file."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        flood_cooldown = self._active_flood_cooldown_result()
+        if flood_cooldown is not None:
+            return flood_cooldown
         
         try:
             if not os.path.exists(audio_path):
@@ -6619,7 +6670,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            rate_limited = _telegram_rate_limit_result(e)
+            rate_limited = self._record_flood_cooldown(e)
             if rate_limited is not None:
                 return rate_limited
             logger.error(
@@ -6649,6 +6700,8 @@ class TelegramAdapter(BasePlatformAdapter):
         the base adapter's per-image loop.
         """
         if not self._bot:
+            return
+        if self._active_flood_cooldown_result() is not None:
             return
         if not images:
             return
@@ -6749,7 +6802,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     reset_media=_reset_opened_files,
                 )
             except Exception as e:
-                if _telegram_rate_limit_result(e) is not None:
+                if self._record_flood_cooldown(e) is not None:
                     logger.warning(
                         "[%s] send_media_group rate-limited (chunk %d/%d); skipping fallback",
                         self.name, chunk_idx + 1, len(chunks),
@@ -6783,6 +6836,9 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send a local image file natively as a Telegram photo."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        flood_cooldown = self._active_flood_cooldown_result()
+        if flood_cooldown is not None:
+            return flood_cooldown
 
         try:
             if not os.path.exists(image_path):
@@ -6815,7 +6871,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            rate_limited = _telegram_rate_limit_result(e)
+            rate_limited = self._record_flood_cooldown(e)
             if rate_limited is not None:
                 return rate_limited
             error_str = str(e)
@@ -6892,6 +6948,9 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send a document/file natively as a Telegram file attachment."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        flood_cooldown = self._active_flood_cooldown_result()
+        if flood_cooldown is not None:
+            return flood_cooldown
 
         try:
             if not os.path.exists(file_path):
@@ -6927,7 +6986,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            rate_limited = _telegram_rate_limit_result(e)
+            rate_limited = self._record_flood_cooldown(e)
             if rate_limited is not None:
                 return rate_limited
             # Topic rejected explicit thread routing (e.g. General topic
@@ -6973,6 +7032,9 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send a video natively as a Telegram video message."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        flood_cooldown = self._active_flood_cooldown_result()
+        if flood_cooldown is not None:
+            return flood_cooldown
 
         try:
             if not os.path.exists(video_path):
@@ -7005,7 +7067,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            rate_limited = _telegram_rate_limit_result(e)
+            rate_limited = self._record_flood_cooldown(e)
             if rate_limited is not None:
                 return rate_limited
             # Same self-heal as send_document: retry once without thread
@@ -7050,6 +7112,9 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        flood_cooldown = self._active_flood_cooldown_result()
+        if flood_cooldown is not None:
+            return flood_cooldown
 
         from tools.url_safety import is_safe_url
         if not is_safe_url(image_url):
@@ -7083,7 +7148,7 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            rate_limited = _telegram_rate_limit_result(e)
+            rate_limited = self._record_flood_cooldown(e)
             if rate_limited is not None:
                 return rate_limited
             logger.warning(
@@ -7123,7 +7188,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 return SendResult(success=True, message_id=str(msg.message_id))
             except Exception as e2:
-                rate_limited = _telegram_rate_limit_result(e2)
+                rate_limited = self._record_flood_cooldown(e2)
                 if rate_limited is not None:
                     return rate_limited
                 logger.error(
@@ -7146,6 +7211,9 @@ class TelegramAdapter(BasePlatformAdapter):
         """Send an animated GIF natively as a Telegram animation (auto-plays inline)."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
+        flood_cooldown = self._active_flood_cooldown_result()
+        if flood_cooldown is not None:
+            return flood_cooldown
         
         try:
             _anim_thread = self._metadata_thread_id(metadata)
@@ -7173,7 +7241,7 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            rate_limited = _telegram_rate_limit_result(e)
+            rate_limited = self._record_flood_cooldown(e)
             if rate_limited is not None:
                 return rate_limited
             logger.error(
@@ -7228,9 +7296,43 @@ class TelegramAdapter(BasePlatformAdapter):
         self._telegram_typing_cooldown_until.pop(str(chat_id), None)
         return False
 
+    def _active_flood_cooldown_result(self) -> Optional[SendResult]:
+        """Return the active bot-wide Telegram rate-limit deadline, if any."""
+        until = float(getattr(self, "_telegram_flood_cooldown_until", 0.0) or 0.0)
+        if until <= 0:
+            return None
+        now = asyncio.get_running_loop().time()
+        remaining = until - now
+        if remaining <= 0:
+            self._telegram_flood_cooldown_until = 0.0
+            return None
+        return SendResult(
+            success=False,
+            error=f"flood_control:{remaining:.1f}",
+            error_kind="rate_limited",
+            retryable=True,
+            retry_after=remaining,
+        )
+
+    def _record_flood_cooldown(self, exc: Exception) -> Optional[SendResult]:
+        """Latch a provider RetryAfter across all outbound Telegram operations."""
+        result = _telegram_rate_limit_result(exc)
+        if result is None or result.retry_after is None:
+            return result
+        delay = max(0.0, float(result.retry_after))
+        self._telegram_flood_cooldown_until = max(
+            float(getattr(self, "_telegram_flood_cooldown_until", 0.0) or 0.0),
+            asyncio.get_running_loop().time() + delay,
+        )
+        return result
+
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Send typing indicator."""
-        if not self._bot or self._typing_in_cooldown(chat_id):
+        if (
+            not self._bot
+            or self._typing_in_cooldown(chat_id)
+            or self._active_flood_cooldown_result() is not None
+        ):
             return
 
         _is_dm_topic: bool = False
@@ -7262,6 +7364,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         self._record_typing_cooldown(chat_id, fallback_exc)
             elif self._is_transient_typing_error(e):
                 self._record_typing_cooldown(chat_id, e)
+            self._record_flood_cooldown(e)
             # Typing failures are non-fatal; log at debug level only.
             logger.debug(
                 "[%s] Failed to send Telegram typing indicator: %s",

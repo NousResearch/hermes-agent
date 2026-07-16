@@ -356,12 +356,36 @@ _WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 # Inspired by Mercury Agent's permission-hardened blocklist
 # (https://github.com/cosmicstack-labs/mercury-agent).
 
+# Multi-call applets (BusyBox / toybox) run the real verb as argv[1] of a
+# single process (`busybox reboot`), not as a separate command word. The
+# command-position hardline rules would only see `busybox` / `toybox` and
+# miss the applet, so `busybox reboot` powered the host off with no prompt
+# while bare `reboot` was blocked. Peel the multi-call binary so the next
+# word is still the applet name.
+#
+# BusyBox documents `busybox <applet> [arguments...]`. Do not consume
+# dash-prefixed tokens before the applet: option-first forms such as
+# `busybox --help reboot` are not applet selection (`reboot` is data for
+# --help), and swallowing flags would put them on the unconditional floor.
+#
+# Path form accepts absolute (`/bin/busybox`), dot-relative (`./busybox`),
+# and slash-containing relative (`usr/bin/busybox`) spellings of the
+# multi-call binary itself.
+_MULTI_CALL_PREFIX = (
+    r'(?:'
+    r'(?:/?(?:[^\s/]+/)*)?'          # optional path to the multi-call binary
+    r'(?:busybox|toybox)\b'
+    r'\s+'                           # next word is the applet (immediate)
+    r')?'
+)
+
 # Regex fragment matching the *start* of a command (i.e. positions where
 # a shell would begin parsing a new command).  Used by shutdown/reboot
 # patterns so they don't fire on "echo reboot" or "grep 'shutdown' log".
 # Matches: start of string, after command separators (; && || | newline),
 # after subshell openers ( `$(` or backtick ), optionally consuming
-# leading wrapper commands (sudo, env VAR=VAL, exec, nohup, setsid).
+# leading wrapper commands (sudo, env VAR=VAL, exec, nohup, setsid) and a
+# multi-call applet prefix (busybox/toybox).
 _CMDPOS = (
     r'(?:^|[;&|\n`]|\$\()'         # start position
     r'\s*'                          # optional whitespace
@@ -369,6 +393,7 @@ _CMDPOS = (
     r'(?:env\s+(?:\w+=\S*\s+)*)?'   # optional env with VAR=VAL pairs
     r'(?:(?:exec|nohup|setsid|time)\s+)*'  # optional wrapper commands
     r'\s*'
+    + _MULTI_CALL_PREFIX            # optional busybox/toybox applet peel
 )
 
 # Destructive-path argument matcher for the rm hardline rules.

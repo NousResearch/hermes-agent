@@ -92,6 +92,21 @@
       "note": "Keep official CI and security workflow changes."
     },
     {
+      "pattern": "apps/desktop/electron/windows-child-process.test.ts",
+      "action": "upstream",
+      "note": "Official behavior-focused Windows child-process coverage supersedes the legacy source-regex test while retaining the maintained child-process contract."
+    },
+    {
+      "pattern": "apps/desktop/src/app/desktop-controller.tsx",
+      "action": "upstream",
+      "note": "Official contribution-shell wiring already carries resetViewSync, so retire the legacy controller with the upstream architecture."
+    },
+    {
+      "pattern": "apps/desktop/src/components/pane-shell/pane-shell.tsx",
+      "action": "upstream",
+      "note": "Official layout-tree tracks pane width overrides without the legacy resizable gate, superseding the fork fix."
+    },
+    {
       "pattern": "tests/tools/test_stage2_hook_*.py",
       "action": "upstream",
       "note": "Upstream c918d07b5 moved stage2 hook contracts to tests/docker/ runtime tests."

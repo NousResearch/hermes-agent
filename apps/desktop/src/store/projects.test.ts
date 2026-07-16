@@ -1,21 +1,31 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $sidebarAgentsGrouped } from '@/store/layout'
+import { $activeGatewayProfile } from '@/store/profile'
+import { $activeSessionId, $currentCwd, $selectedStoredSessionId, $sessions, setSessions } from '@/store/session'
 
 import {
   $activeProjectId,
   $projectScope,
   $projectsRpcAvailable,
+  $projectTree,
   $worktreeRefreshToken,
   ALL_PROJECTS,
   createProject,
   enterProject,
   exitProjectScope,
+  moveSessionToProject,
   openProjectCreate,
   pickProjectFolder,
   refreshProjects,
   refreshWorktrees
 } from './projects'
+
+vi.mock('@/hermes', () => ({
+  HermesGateway: class {},
+  setApiRequestProfile: vi.fn(),
+  setSessionWorkspace: vi.fn()
+}))
 
 vi.mock('@/i18n', () => ({
   translateNow: (key: string) => key
@@ -46,6 +56,16 @@ const gw = await import('@/store/gateway')
 const activeGateway = vi.mocked(gw.activeGateway)
 const notifications = await import('@/store/notifications')
 const notify = vi.mocked(notifications.notify)
+const hermes = await import('@/hermes')
+const setSessionWorkspace = vi.mocked(hermes.setSessionWorkspace)
+
+const project = {
+  id: 'p_demo',
+  label: 'Demo',
+  path: '/srv/demo',
+  repos: [],
+  sessionCount: 0
+}
 
 describe('project scope', () => {
   beforeEach(() => {
@@ -86,6 +106,88 @@ describe('worktree refresh', () => {
     const before = $worktreeRefreshToken.get()
     refreshWorktrees()
     expect($worktreeRefreshToken.get()).toBe(before + 1)
+  })
+})
+
+describe('moveSessionToProject', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    $activeSessionId.set(null)
+    $activeGatewayProfile.set('default')
+    $selectedStoredSessionId.set(null)
+    $projectTree.set([project])
+    setSessions([
+      {
+        archived: false,
+        cwd: '/old',
+        ended_at: null,
+        id: 'stored-1',
+        input_tokens: 0,
+        is_active: false,
+        last_active: 1,
+        message_count: 1,
+        model: null,
+        output_tokens: 0,
+        preview: null,
+        source: 'desktop',
+        started_at: 1,
+        title: 'Chat',
+        tool_call_count: 0
+      }
+    ])
+  })
+
+  it('moves the active runtime and persisted row together through session.cwd.set', async () => {
+    $selectedStoredSessionId.set('stored-1')
+    $activeSessionId.set('runtime-1')
+
+    const request = vi.fn(async (method: string) => {
+      if (method === 'session.cwd.set') {
+        return { branch: 'main', cwd: '/srv/demo' }
+      }
+
+      return { projects: [project], scoped_session_ids: [] }
+    })
+
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await moveSessionToProject({ id: 'stored-1' }, project)
+
+    expect(request).toHaveBeenCalledWith('session.cwd.set', { cwd: '/srv/demo', session_id: 'runtime-1' })
+    expect(setSessionWorkspace).not.toHaveBeenCalled()
+    expect($currentCwd.get()).toBe('/srv/demo')
+    expect($sessions.get()[0]?.cwd).toBe('/srv/demo')
+  })
+
+  it('moves an inactive historical session through the profile-routed REST mutation', async () => {
+    $activeGatewayProfile.set('work')
+    setSessionWorkspace.mockResolvedValue({
+      branch: 'feature',
+      cwd: '/srv/demo',
+      git_repo_root: '/srv/demo',
+      ok: true
+    })
+    activeGateway.mockReturnValue({
+      connectionState: 'open',
+      request: vi.fn().mockResolvedValue({ projects: [project], scoped_session_ids: [] })
+    } as never)
+
+    await moveSessionToProject({ id: 'stored-1', profile: 'work' }, project)
+
+    expect(setSessionWorkspace).toHaveBeenCalledWith('stored-1', '/srv/demo', 'work')
+    expect($sessions.get()[0]).toMatchObject({
+      cwd: '/srv/demo',
+      git_branch: 'feature',
+      git_repo_root: '/srv/demo'
+    })
+  })
+
+  it('refuses to move a background-profile session with the active profile project list', async () => {
+    await expect(moveSessionToProject({ id: 'stored-1', profile: 'work' }, project)).rejects.toThrow(
+      'sidebar.row.moveProjectWrongProfile'
+    )
+
+    expect(setSessionWorkspace).not.toHaveBeenCalled()
   })
 })
 

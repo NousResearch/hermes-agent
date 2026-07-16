@@ -2,6 +2,7 @@ import { atom } from 'nanostores'
 
 import { liveSessionProjectId, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
 import type { HermesGitBaseBranch, HermesGitBranch } from '@/global'
+import { type SessionInfo, type SessionWorkspaceUpdateResponse, setSessionWorkspace } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { desktopDefaultCwd, selectDesktopPaths, writeDesktopFileText } from '@/lib/desktop-fs'
 import { desktopGit } from '@/lib/desktop-git'
@@ -10,8 +11,17 @@ import { persistentAtom } from '@/lib/persisted'
 import { activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
 import { setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
-import { requestFreshSession } from '@/store/profile'
-import { $selectedStoredSessionId, $sessions, sessionMatchesStoredId, workspaceCwdForNewSession } from '@/store/session'
+import { $activeGatewayProfile, normalizeProfileKey, requestFreshSession } from '@/store/profile'
+import {
+  $activeSessionId,
+  $selectedStoredSessionId,
+  $sessions,
+  sessionMatchesStoredId,
+  setCurrentBranch,
+  setCurrentCwd,
+  setSessions,
+  workspaceCwdForNewSession
+} from '@/store/session'
 import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
 // First-class, per-profile Projects (named, multi-folder workspaces). State is
@@ -178,6 +188,81 @@ export function projectIdForCwd(cwd: string): null | string {
   }
 
   return best
+}
+
+function projectWorkspacePath(project: SidebarProjectTree): string {
+  return (project.path || project.repos.find(repo => repo.path)?.path || '').trim()
+}
+
+/** Move an existing conversation into a project's primary workspace.
+ *
+ * Project membership is derived from cwd, so this deliberately updates the
+ * session's one authoritative workspace instead of introducing a second
+ * project-id assignment that could drift. The active runtime takes the RPC
+ * path so its agent and persisted row move together; inactive history uses the
+ * profile-routed REST mutation without loading the transcript first.
+ */
+export async function moveSessionToProject(
+  session: Pick<SessionInfo, 'id' | 'profile'>,
+  project: SidebarProjectTree
+): Promise<SessionWorkspaceUpdateResponse> {
+  const cwd = projectWorkspacePath(project)
+
+  if (!cwd) {
+    throw new Error(translateNow('sidebar.row.moveProjectMissingWorkspace'))
+  }
+
+  if (session.profile && normalizeProfileKey(session.profile) !== normalizeProfileKey($activeGatewayProfile.get())) {
+    throw new Error(translateNow('sidebar.row.moveProjectWrongProfile'))
+  }
+
+  const isActive = session.id === $selectedStoredSessionId.get()
+  const runtimeId = isActive ? $activeSessionId.get() : null
+  let result: SessionWorkspaceUpdateResponse
+
+  if (runtimeId) {
+    const gateway = activeGateway()
+
+    if (!gateway || gateway.connectionState !== 'open') {
+      throw new Error('Hermes gateway is not connected')
+    }
+
+    const info = await gateway.request<{ branch?: string; cwd?: string }>('session.cwd.set', {
+      session_id: runtimeId,
+      cwd
+    })
+
+    result = {
+      branch: info.branch || '',
+      cwd: info.cwd || cwd,
+      git_repo_root: '',
+      ok: true
+    }
+  } else {
+    result = await setSessionWorkspace(session.id, cwd, session.profile)
+  }
+
+  setSessions(current =>
+    current.map(row =>
+      row.id === session.id
+        ? {
+            ...row,
+            cwd: result.cwd,
+            git_branch: result.branch || null,
+            git_repo_root: result.git_repo_root || null
+          }
+        : row
+    )
+  )
+
+  if (isActive) {
+    setCurrentCwd(result.cwd)
+    setCurrentBranch(result.branch)
+  }
+
+  await refreshProjectTree()
+
+  return result
 }
 
 // The active session's agent relocated itself (created/entered another repo or

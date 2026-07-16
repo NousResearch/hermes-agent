@@ -37,6 +37,7 @@ import {
   $gatewayState,
   $selectedStoredSessionId,
   $sessions,
+  $workingSessionIds,
   sessionMatchesStoredId,
   sessionPinId
 } from '@/store/session'
@@ -351,12 +352,14 @@ export function SessionTabMenu({
   const sessions = useStore($sessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const stored = sessions.find(s => sessionMatchesStoredId(s, storedSessionId))
+  const isWorking = useStore($workingSessionIds).includes(storedSessionId)
   const pinId = stored ? sessionPinId(stored) : storedSessionId
   const pinned = pinnedSessionIds.includes(pinId)
 
   return (
     <span className="contents" onContextMenu={event => event.stopPropagation()}>
       <SessionContextMenu
+        isWorking={isWorking}
         onArchive={() => void sessionTileDelegate()?.archiveSession(storedSessionId)}
         onBranch={() => void sessionTileDelegate()?.branchSession(storedSessionId)}
         onClose={onClose}

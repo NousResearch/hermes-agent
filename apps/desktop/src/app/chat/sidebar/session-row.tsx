@@ -99,6 +99,7 @@ export function SidebarSessionRow({
 
   return (
     <SessionContextMenu
+      isWorking={isWorking}
       onArchive={onArchive}
       onBranch={onBranch}
       onDelete={onDelete}
@@ -117,6 +118,7 @@ export function SidebarSessionRow({
               </span>
             )}
             <SessionActionsMenu
+              isWorking={isWorking}
               onArchive={onArchive}
               onBranch={onBranch}
               onDelete={onDelete}

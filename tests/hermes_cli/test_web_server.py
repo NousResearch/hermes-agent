@@ -1304,6 +1304,42 @@ class TestWebServerEndpoints:
         resp = self.client.patch("/api/sessions/does-not-exist", json={"title": "x"})
         assert resp.status_code == 404
 
+    def test_move_session_workspace_updates_persisted_cwd(self, tmp_path):
+        """A historical chat can move projects without being resumed first."""
+        from hermes_state import SessionDB
+
+        workspace = tmp_path / "project"
+        workspace.mkdir()
+        db = SessionDB()
+        try:
+            db.create_session(session_id="move-me", source="desktop")
+        finally:
+            db.close()
+
+        resp = self.client.patch("/api/sessions/move-me", json={"cwd": str(workspace)})
+
+        assert resp.status_code == 200
+        assert resp.json()["cwd"] == str(workspace.resolve())
+        db = SessionDB()
+        try:
+            assert db.get_session("move-me")["cwd"] == str(workspace.resolve())
+        finally:
+            db.close()
+
+    def test_move_session_workspace_rejects_missing_directory(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="move-missing", source="desktop")
+        finally:
+            db.close()
+
+        resp = self.client.patch("/api/sessions/move-missing", json={"cwd": str(tmp_path / "missing")})
+
+        assert resp.status_code == 400
+        assert "does not exist" in resp.json()["detail"]
+
     def test_import_sessions_endpoint_imports_exported_json(self):
         from hermes_state import SessionDB
 

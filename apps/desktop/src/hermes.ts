@@ -372,6 +372,26 @@ export function setSessionArchived(id: string, archived: boolean, profile?: stri
   })
 }
 
+export interface SessionWorkspaceUpdateResponse {
+  branch: string
+  cwd: string
+  git_repo_root: string
+  ok: boolean
+}
+
+export function setSessionWorkspace(
+  id: string,
+  cwd: string,
+  profile?: string | null
+): Promise<SessionWorkspaceUpdateResponse> {
+  return window.hermesDesktop.api<SessionWorkspaceUpdateResponse>({
+    ...(profile ? { profile } : {}),
+    path: `/api/sessions/${encodeURIComponent(id)}`,
+    method: 'PATCH',
+    body: { cwd, ...(profile ? { profile } : {}) }
+  })
+}
+
 export function searchSessions(query: string): Promise<SessionSearchResponse> {
   return window.hermesDesktop.api<SessionSearchResponse>({
     path: `/api/sessions/search?q=${encodeURIComponent(query)}`

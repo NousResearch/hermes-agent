@@ -372,9 +372,9 @@ export function setSessionArchived(id: string, archived: boolean, profile?: stri
   })
 }
 
-export function searchSessions(query: string, profile?: string | null): Promise<SessionSearchResponse> {
+export function searchSessions(query: string): Promise<SessionSearchResponse> {
   return window.hermesDesktop.api<SessionSearchResponse>({
-    ...(profile ? { profile } : {}),
+    ...profileScoped(),
     path: `/api/sessions/search?q=${encodeURIComponent(query)}`
   })
 }

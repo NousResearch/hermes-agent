@@ -63,7 +63,6 @@ import {
   unpinSession
 } from '@/store/layout'
 import {
-  $activeProfile,
   $newChatProfile,
   $profiles,
   $profileScope,

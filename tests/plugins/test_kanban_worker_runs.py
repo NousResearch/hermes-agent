@@ -14,6 +14,7 @@ import secrets
 import sys
 import time
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -27,8 +28,8 @@ from hermes_cli import kanban_db as kb
 # Fixtures
 # ---------------------------------------------------------------------------
 
-def _load_plugin_router():
-    """Dynamically load plugins/kanban/dashboard/plugin_api.py and return its router."""
+def _load_plugin_router() -> Any:
+    """Dynamically load plugins/kanban/dashboard/plugin_api.py and return its module."""
     repo_root = Path(__file__).resolve().parents[2]
     plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
     assert plugin_file.exists(), f"plugin file missing: {plugin_file}"
@@ -36,14 +37,14 @@ def _load_plugin_router():
     mod_name = "hermes_dashboard_plugin_kanban_worker_runs_test"
     # Re-use a cached module if already loaded to avoid duplicate-router issues.
     if mod_name in sys.modules:
-        return sys.modules[mod_name].router
+        return sys.modules[mod_name]
 
     spec = importlib.util.spec_from_file_location(mod_name, plugin_file)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     sys.modules[mod_name] = mod
     spec.loader.exec_module(mod)
-    return mod.router
+    return mod
 
 
 @pytest.fixture
@@ -60,7 +61,12 @@ def kanban_home(tmp_path, monkeypatch):
 @pytest.fixture
 def client(kanban_home):
     app = FastAPI()
-    app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
+    plugin = _load_plugin_router()
+    # The plugin is cached across tests, while kanban_db may be reloaded by
+    # another Kanban test module. Keep the cached plugin bound to the live
+    # module so monkeypatches target the object used by the route.
+    plugin.kanban_db = kb
+    app.include_router(plugin.router, prefix="/api/plugins/kanban")
     return TestClient(app)
 
 

@@ -1238,7 +1238,9 @@ class _RoleBoundReconciliationClient:
             "instance": launcher.SQL_INSTANCE,
             "name": username,
             "project": launcher.PROJECT,
-            "type": "BUILT_IN",
+            # Cloud SQL users.get omits the default BUILT_IN type for real
+            # PostgreSQL users.  The boundary must canonicalize that API
+            # default without accepting an explicitly different type.
         }
 
     def request_json(self, method, url, *, body=None):
@@ -1313,6 +1315,94 @@ def test_schema_reconciliation_cloud_boundary_uses_fenced_describes_for_partial_
     assert client.list_etag != resource["etag"]
 
 
+def test_schema_reconciliation_cloud_boundary_accepts_explicit_built_in_type() -> None:
+    username = "muncho_canary_admin_" + "a" * 16
+    boundary = _role_bound_schema_reconciliation_cloud_boundary(
+        list(launcher.SCHEMA_RECONCILIATION_DATABASE_ROLES)
+    )
+    client = boundary._client
+    assert isinstance(client, _RoleBoundReconciliationClient)
+    client.describe_payload["type"] = "BUILT_IN"
+
+    resource = boundary._role_bound_resource(
+        username,
+        require_exact_roles=True,
+    )
+
+    assert resource is not None
+    assert resource["type"] == "BUILT_IN"
+
+
+@pytest.mark.parametrize(
+    "resource_type",
+    [
+        None,
+        "",
+        0,
+        "UNKNOWN",
+        "CLOUD_IAM_USER",
+        "CLOUD_IAM_SERVICE_ACCOUNT",
+        "CLOUD_IAM_GROUP",
+        "CLOUD_IAM_GROUP_USER",
+        "CLOUD_IAM_GROUP_SERVICE_ACCOUNT",
+    ],
+)
+def test_schema_reconciliation_cloud_boundary_rejects_explicit_non_built_in_type(
+    resource_type: object,
+) -> None:
+    username = "muncho_canary_admin_" + "a" * 16
+    boundary = _role_bound_schema_reconciliation_cloud_boundary(
+        list(launcher.SCHEMA_RECONCILIATION_DATABASE_ROLES)
+    )
+    client = boundary._client
+    assert isinstance(client, _RoleBoundReconciliationClient)
+    client.describe_payload["type"] = resource_type
+
+    with pytest.raises(
+        launcher.OwnerLauncherError,
+        match="cloud_sql_schema_reconciliation_admin_resource_invalid",
+    ):
+        boundary._role_bound_resource(
+            username,
+            require_exact_roles=True,
+        )
+
+
+@pytest.mark.parametrize(
+    ("etag_present", "etag"),
+    [
+        (False, None),
+        (True, None),
+        (True, ""),
+        (True, "invalid etag"),
+        (True, 0),
+    ],
+)
+def test_schema_reconciliation_cloud_boundary_keeps_etag_mandatory_when_type_omitted(
+    etag_present: bool,
+    etag: object,
+) -> None:
+    username = "muncho_canary_admin_" + "a" * 16
+    boundary = _role_bound_schema_reconciliation_cloud_boundary(
+        list(launcher.SCHEMA_RECONCILIATION_DATABASE_ROLES)
+    )
+    client = boundary._client
+    assert isinstance(client, _RoleBoundReconciliationClient)
+    if etag_present:
+        client.describe_payload["etag"] = etag
+    else:
+        client.describe_payload.pop("etag")
+
+    with pytest.raises(
+        launcher.OwnerLauncherError,
+        match="cloud_sql_schema_reconciliation_admin_resource_invalid",
+    ):
+        boundary._role_bound_resource(
+            username,
+            require_exact_roles=True,
+        )
+
+
 def test_schema_reconciliation_cloud_boundary_rejects_describe_drift() -> None:
     username = "muncho_canary_admin_" + "a" * 16
     boundary = _role_bound_schema_reconciliation_cloud_boundary(
@@ -1366,6 +1456,7 @@ def test_schema_reconciliation_cloud_boundary_is_exact_custom_role_only() -> Non
     }
     receipt = boundary.temporary_admin_authority_receipt(username)
     assert receipt["schema"] == launcher.TEMPORARY_ADMIN_AUTHORITY_RECEIPT_SCHEMA
+    assert receipt["type"] == "BUILT_IN"
     assert receipt["database_roles"] == list(
         launcher.SCHEMA_RECONCILIATION_DATABASE_ROLES
     )

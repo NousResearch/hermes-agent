@@ -7366,7 +7366,7 @@ class CloudSqlSchemaReconciliationAdmin(CloudSqlTemporaryAdmin):
             or item.get("name") != username
             or item.get("project") != PROJECT
             or item.get("instance") != SQL_INSTANCE
-            or item.get("type") != "BUILT_IN"
+            or ("type" in item and item.get("type") != "BUILT_IN")
             or item.get("host") != ""
             or not self._valid_etag(etag)
             or "password" in item

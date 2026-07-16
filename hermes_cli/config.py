@@ -2471,6 +2471,14 @@ DEFAULT_CONFIG = {
         "channel_prompts": {},         # Per-channel ephemeral system prompts
     },
 
+    # Gateway-only terminal overrides. ``None`` preserves terminal settings
+    # when no explicit gateway override is configured.
+    "gateway": {
+        "terminal_backend": None,
+        "sandbox_image": None,
+        "sandbox_lifetime": None,
+    },
+
     # Discord platform settings (gateway mode)
     "discord": {
         "require_mention": True,       # Require @mention to respond in server channels

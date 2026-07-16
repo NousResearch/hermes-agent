@@ -1561,6 +1561,20 @@ if _config_path.exists():
                         os.environ[_env_var] = json.dumps(_val)
                     else:
                         os.environ[_env_var] = str(_val)
+        # Gateway-only values overlay the same TERMINAL_* bridge.  This keeps
+        # CLI behavior unchanged and preserves native remote execute_code
+        # routing through the selected terminal environment.
+        from gateway.sandbox_config import (
+            apply_gateway_backend_to_env,
+            should_warn_insecure_gateway,
+        )
+        apply_gateway_backend_to_env(_cfg)
+        if should_warn_insecure_gateway(_cfg):
+            logging.getLogger(__name__).warning(
+                "Gateway terminal backend is local; messaging sessions do not "
+                "have sandbox isolation. Set gateway.terminal_backend to a "
+                "remote backend (for example, docker)."
+            )
         # Compression config is read directly from config.yaml by run_agent.py
         # and auxiliary_client.py — no env var bridging needed.
         # Auxiliary model/direct-endpoint overrides (vision, web_extract,

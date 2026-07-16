@@ -427,6 +427,29 @@ def show_status(args):
     elif terminal_env == "daytona":
         daytona_image = os.getenv("TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20")
         print(f"  Daytona Image: {daytona_image}")
+    try:
+        _gw_cfg = load_config()
+        gateway_cfg = _gw_cfg.get("gateway", {})
+        terminal_cfg = _gw_cfg.get("terminal", {})
+        if not isinstance(gateway_cfg, dict):
+            gateway_cfg = {}
+        if not isinstance(terminal_cfg, dict):
+            terminal_cfg = {}
+    except Exception:
+        _gw_cfg = {}
+        gateway_cfg = {}
+        terminal_cfg = {}
+    gw_backend = gateway_cfg.get("terminal_backend")
+    if gw_backend:
+        print(f"  Gateway sandbox: {gw_backend}")
+        if gw_backend == "docker":
+            image = gateway_cfg.get("sandbox_image") or terminal_cfg.get(
+                "docker_image", "python:3.11-slim"
+            )
+            print(f"  Sandbox image:  {image}")
+        lifetime = gateway_cfg.get("sandbox_lifetime")
+        if lifetime is not None:
+            print(f"  Sandbox lifetime: {lifetime}s")
 
     sudo_password = os.getenv("SUDO_PASSWORD", "")
     print(f"  Sudo:         {check_mark(bool(sudo_password))} {'enabled' if sudo_password else 'disabled'}")

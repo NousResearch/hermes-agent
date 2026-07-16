@@ -51,6 +51,7 @@ import {
   setCurrentBranch,
   setCurrentCwd,
   setCurrentModel,
+  setCurrentModelSource,
   setCurrentProvider,
   setMessages
 } from '@/store/session'
@@ -898,6 +899,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             onMainModelChanged={(provider, model) => {
               setCurrentProvider(provider)
               setCurrentModel(model)
+              setCurrentModelSource('default')
               updateModelOptionsCache(provider, model, true)
               void refreshCurrentModel()
               void queryClient.invalidateQueries({ queryKey: ['model-options'] })

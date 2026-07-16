@@ -24,10 +24,15 @@
   {
     "feature": "hygiene compaction announces in-chat on success",
     "tests": [
-      "tests/gateway/test_session_hygiene.py::test_hygiene_msgcount_announces_limit_not_count"
+      "tests/gateway/test_session_hygiene.py::test_hygiene_msgcount_announces_limit_not_count",
+      "tests/agent/test_compaction_announce.py::TestHygieneMessageLimitClause",
+      "tests/agent/test_compaction_announce.py::TestFormatterLCM",
+      "tests/agent/test_compaction_announce.py::TestFormatterBuiltin"
     ],
     "paths": [
-      "gateway/run.py"
+      "gateway/run.py",
+      "agent/fork_ext/compaction_ext.py",
+      "tests/golden/compaction_ext/"
     ],
     "why": "Successful hygiene compaction must be visible in the originating chat without exposing misleading raw message counts."
   },

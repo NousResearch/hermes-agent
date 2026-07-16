@@ -178,6 +178,31 @@ def test_run_slash_archive_accepts_legacy_positional_reason(kanban_home):
     assert archived.payload == {"reason": "stale scratch task"}
 
 
+def test_run_slash_archive_accepts_explicit_reason_for_multiple_ids(kanban_home):
+    import re
+
+    out1 = kc.run_slash("create 'scratch one' --assignee alice")
+    out2 = kc.run_slash("create 'scratch two' --assignee bob")
+    m1 = re.search(r"(t_[a-f0-9]+)", out1)
+    m2 = re.search(r"(t_[a-f0-9]+)", out2)
+    assert m1
+    assert m2
+    tid1 = m1.group(1)
+    tid2 = m2.group(1)
+
+    out = kc.run_slash(f"archive {tid1} {tid2} --reason 'stale scratch batch'")
+
+    assert out.splitlines() == [f"Archived {tid1}", f"Archived {tid2}"]
+    with kb.connect() as conn:
+        for tid in (tid1, tid2):
+            task = kb.get_task(conn, tid)
+            events = kb.list_events(conn, tid)
+            assert task is not None
+            assert task.status == "archived"
+            archived = [event for event in events if event.kind == "archived"][-1]
+            assert archived.payload == {"reason": "stale scratch batch"}
+
+
 def test_run_slash_json_output(kanban_home):
     out = kc.run_slash("create 'jsontask' --assignee alice --json")
     payload = json.loads(out)

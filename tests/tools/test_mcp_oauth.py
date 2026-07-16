@@ -561,6 +561,54 @@ class TestCallbackPortReservation:
         # Reservation was consumed by adoption.
         assert port not in mod._reserved_sockets
 
+    def test_concurrent_flows_keep_their_own_callback_ports(self, monkeypatch):
+        """#34260: flow A's waiter listens on A's port even after flow B
+        overwrites the legacy module-level global.
+
+        This is the callback-side sibling of the #44588 redirect-handler fix:
+        without a per-flow waiter, A's callback wait would bind B's port and
+        A's redirect (pointing at A's port) would never be received.
+        """
+        import asyncio
+        import threading
+        import urllib.request
+        import tools.mcp_oauth as mod
+
+        monkeypatch.setattr(mod, "_is_interactive", lambda: False)
+        monkeypatch.setattr(mod, "_raise_if_non_interactive", lambda lead: None)
+
+        cfg_a: dict = {}
+        port_a = mod._configure_callback_port(cfg_a)
+        waiter_a = mod._make_callback_waiter(port_a)
+        # Flow B configures afterwards — overwrites mod._oauth_port.
+        cfg_b: dict = {}
+        port_b = mod._configure_callback_port(cfg_b)
+        assert mod._oauth_port == port_b != port_a
+
+        async def drive():
+            task = asyncio.create_task(waiter_a())
+            await asyncio.sleep(0.2)
+
+            def hit():
+                # The redirect goes to flow A's port — where A's waiter
+                # must be listening despite the clobbered global.
+                urllib.request.urlopen(
+                    f"http://127.0.0.1:{port_a}/callback?code=flowA&state=sA",
+                    timeout=5,
+                )
+
+            threading.Thread(target=hit, daemon=True).start()
+            return await asyncio.wait_for(task, timeout=10)
+
+        try:
+            code, state = asyncio.run(drive())
+        finally:
+            leftover = mod._reserved_sockets.pop(port_b, None)
+            if leftover is not None:
+                leftover.close()
+        assert code == "flowA"
+        assert state == "sA"
+
 
 # ---------------------------------------------------------------------------
 # remove_oauth_tokens

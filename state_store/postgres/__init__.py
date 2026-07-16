@@ -32,6 +32,8 @@ from state_store.postgres.ddl import (
     schema_statements,
     schema_table_statements,
 )
+from state_store.postgres.session_db import PostgresSessionDB
+from state_store.postgres.session_db_base import PostgresSessionDBBase
 
 __all__ = [
     "BoundedConnectionPool",
@@ -49,6 +51,8 @@ __all__ = [
     "PostgresSchemaVersionError",
     "PostgresStateStore",
     "PostgresStateStoreError",
+    "PostgresSessionDB",
+    "PostgresSessionDBBase",
     "SCHEMA_VERSION",
     "PostgresColumnUpgrade",
     "PostgresColumnContract",

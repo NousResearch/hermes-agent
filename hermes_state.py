@@ -23,35 +23,31 @@ import sqlite3
 import sys
 import threading
 import time
-from dataclasses import dataclass
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
 from hermes_constants import get_hermes_home
-from typing import Any, Callable, Dict, List, Literal, Mapping, Optional, Tuple, TypeVar
+from state_store.session_api import (
+    APISessionMutationAbort as _APISessionMutationAbort,
+    APISessionMutationResult,
+)
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    List,
+    Literal,
+    Mapping,
+    Optional,
+    Tuple,
+    TypeVar,
+)
+
+if TYPE_CHECKING:
+    from state_store.postgres.session_db import PostgresSessionDB
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class APISessionMutationResult:
-    """Outcome of one atomic API-facing session mutation."""
-
-    outcome: Literal[
-        "created",
-        "source_missing",
-        "destination_exists",
-        "invalid_title",
-    ]
-    session: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-
-
-class _APISessionMutationAbort(Exception):
-    """Rollback marker for an expected API mutation outcome."""
-
-    def __init__(self, result: APISessionMutationResult) -> None:
-        self.result = result
 
 
 def workspace_key(row: Dict[str, Any]) -> Optional[str]:
@@ -1039,22 +1035,19 @@ class SessionDB:
         read_only: bool = False,
         config: Optional[Mapping[str, Any]] = None,
         environ: Optional[Mapping[str, str]] = None,
-    ) -> "SessionDB":
-        """Open the explicitly resolved SQLite state store for ``home``.
+    ) -> "SessionDB | PostgresSessionDB":
+        """Open the explicitly resolved state store for ``home``.
 
-        This establishes the production factory boundary without changing
-        existing SQLite callers. PostgreSQL settings resolve into a safe spec
-        but deliberately do not fall back to SQLite before that backend exists.
+        Explicit ``SessionDB()`` construction remains SQLite-only. PostgreSQL
+        activation happens here so its optional backend stays lazy for normal
+        SQLite callers.
         """
         if config is None:
             from hermes_cli.config import load_config_for_home
 
             config = load_config_for_home(home)
 
-        from state_store import (
-            StateStoreBackendNotActivatedError,
-            resolve_state_store,
-        )
+        from state_store import resolve_state_store
 
         spec = resolve_state_store(
             home,
@@ -1062,10 +1055,10 @@ class SessionDB:
             read_only=read_only,
             environ=environ,
         )
-        if spec.backend != "sqlite":
-            raise StateStoreBackendNotActivatedError(
-                "The configured PostgreSQL state store is not activated in this build."
-            )
+        if spec.backend == "postgres":
+            from state_store.postgres.session_db import PostgresSessionDB
+
+            return PostgresSessionDB.from_spec(spec, environ=environ)
         return cls(db_path=spec.sqlite_path, read_only=spec.read_only)
 
     def __init__(self, db_path: Path = None, read_only: bool = False):

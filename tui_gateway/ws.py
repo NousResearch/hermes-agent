@@ -81,6 +81,10 @@ class WSTransport:
     the loop we're currently blocking. We detect that case and fire-and-
     forget instead. Callers that need to know when the bytes are on the wire
     should use :meth:`write_async` from the loop thread.
+
+    ``authorization`` is the server-derived grant for this connection. The
+    dispatcher reads it before resolving any method; clients cannot mutate it
+    through JSON-RPC input.
     """
 
     def __init__(
@@ -89,10 +93,12 @@ class WSTransport:
         loop: asyncio.AbstractEventLoop,
         *,
         peer: str = "unknown",
+        authorization: dict | None = None,
     ) -> None:
         self._ws = ws
         self._loop = loop
         self._peer = peer
+        self.authorization = authorization
         self._closed = False
         # Token-coalescing buffer (CF-2). Streamed token frames land here and a
         # short timer flushes the batch. The lock guards the buffer + the
@@ -280,7 +286,7 @@ def _disable_nagle(ws: Any) -> None:
         _log.debug("ws TCP_NODELAY skip: %s", exc)
 
 
-async def handle_ws(ws: Any) -> None:
+async def handle_ws(ws: Any, *, authorization: dict | None = None) -> None:
     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``."""
     peer = _ws_peer_label(ws)
     transport: WSTransport | None = None
@@ -298,7 +304,12 @@ async def handle_ws(ws: Any) -> None:
         _disable_nagle(ws)
         _log.info("ws accepted peer=%s", peer)
 
-        transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer)
+        transport = WSTransport(
+            ws,
+            asyncio.get_running_loop(),
+            peer=peer,
+            authorization=authorization,
+        )
 
         # The desktop app and dashboard chat reach the agent through this WS
         # sidecar, NOT through tui_gateway.entry.main() (the stdio TUI path that
@@ -316,13 +327,18 @@ async def handle_ws(ws: Any) -> None:
             thread_name="tui-ws-mcp-discovery",
         )
 
+        from tui_gateway.mobile_contract import gateway_ready_payload
+
         ready_ok = await transport.write_async(
             {
                 "jsonrpc": "2.0",
                 "method": "event",
                 "params": {
                     "type": "gateway.ready",
-                    "payload": {"skin": server.resolve_skin()},
+                    "payload": gateway_ready_payload(
+                        skin=server.resolve_skin(),
+                        authorization=authorization,
+                    ),
                 },
             }
         )

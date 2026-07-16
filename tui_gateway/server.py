@@ -1212,8 +1212,11 @@ def _ok(rid, result: dict) -> dict:
     return {"jsonrpc": "2.0", "id": rid, "result": result}
 
 
-def _err(rid, code: int, msg: str) -> dict:
-    return {"jsonrpc": "2.0", "id": rid, "error": {"code": code, "message": msg}}
+def _err(rid, code: int, msg: str, *, data: dict | None = None) -> dict:
+    error = {"code": code, "message": msg}
+    if data is not None:
+        error["data"] = data
+    return {"jsonrpc": "2.0", "id": rid, "error": error}
 
 
 def method(name: str):
@@ -1275,6 +1278,20 @@ def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
             return normalized
 
         _rid, method, _params = normalized
+        from tui_gateway.mobile_contract import mobile_method_denial
+
+        denial = mobile_method_denial(
+            method,
+            getattr(t, "authorization", None),
+            _params,
+        )
+        if denial is not None:
+            return _err(
+                _rid,
+                4030,
+                "insufficient authorization scope",
+                data=denial,
+            )
         if method not in _LONG_HANDLERS:
             return handle_request(req)
 
@@ -5121,7 +5138,15 @@ def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
     session["queued_prompt"] = {"text": text, "transport": transport}
 
 
-def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any) -> dict:
+def _handle_busy_submit(
+    rid,
+    sid: str,
+    session: dict,
+    text: Any,
+    transport: Any,
+    *,
+    allow_control: bool = True,
+) -> dict:
     """Apply the ``display.busy_input_mode`` policy to a prompt that lands while
     a turn is in flight, instead of rejecting it with ``session busy``.
 
@@ -5136,6 +5161,14 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any)
     without interrupting; ``steer`` → inject into the live turn if accepted,
     else queue.
     """
+    # A scoped writer may enqueue the next user turn, but must not inherit the
+    # dashboard's interrupt/steer preference unless its connection also holds
+    # conversation.control.
+    if not allow_control:
+        _enqueue_prompt(session, text, transport)
+        session["last_active"] = time.time()
+        return _ok(rid, {"status": "queued"})
+
     mode = _load_busy_input_mode()
     agent = session.get("agent")
     if mode == "steer" and agent is not None and hasattr(agent, "steer"):
@@ -8161,7 +8194,9 @@ def _(rid, params: dict) -> dict:
 
 @method("session.interrupt")
 def _(rid, params: dict) -> dict:
-    session, err = _sess(params, rid)
+    # Interrupting a deferred/lazy session must not build the very agent the
+    # caller is trying to stop. Operate on live state only.
+    session, err = _sess_nowait(params, rid)
     if err:
         return err
     # Safety net: if the turn's run thread is already gone but `running` stayed
@@ -8476,18 +8511,36 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
-    # Re-bind to the current client transport for this request. This keeps
-    # streaming events on the active websocket even if an earlier disconnect
-    # or fallback moved the session transport to stdio.
-    if (t := current_transport()) is not None:
-        session["transport"] = t
+    # Re-bind accepted idle work to the current client. A busy scoped writer
+    # without conversation.control queues its next turn on this transport but
+    # must not seize the in-flight turn from the currently attached client.
+    t = current_transport()
     with session["history_lock"]:
         if session.get("running"):
             # Don't reject a mid-turn prompt — queue it (and, by default,
             # interrupt the live turn) so it runs as the next turn. See
             # _handle_busy_submit for why the old "session busy" rejection
             # dropped messages when teardown outlived the client's retry window.
-            return _handle_busy_submit(rid, sid, session, text, t or session.get("transport"))
+            active_transport = t or session.get("transport")
+            from tui_gateway.mobile_contract import (
+                CONVERSATION_CONTROL_SCOPE,
+                authorization_allows_scope,
+            )
+
+            allow_control = authorization_allows_scope(
+                getattr(active_transport, "authorization", None),
+                CONVERSATION_CONTROL_SCOPE,
+            )
+            if t is not None and allow_control:
+                session["transport"] = t
+            return _handle_busy_submit(
+                rid,
+                sid,
+                session,
+                text,
+                active_transport,
+                allow_control=allow_control,
+            )
         # A watch session's run lives in the PARENT turn, so its own running
         # flag is False — without this, typing mid-run builds a second agent
         # racing the in-flight child on the same stored session (interleaved
@@ -8495,6 +8548,8 @@ def _(rid, params: dict) -> dict:
         # the upgrade resumes the child's transcript as a normal conversation.
         if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
             return _err(rid, 4009, "subagent still running — wait for it to finish")
+        if t is not None:
+            session["transport"] = t
         if truncate_user_ordinal is not None:
             try:
                 ordinal = int(truncate_user_ordinal)

@@ -10,7 +10,7 @@ transport:
   type: stdio
   command: uvx
   args:
-    - egov-law-mcp
+    - egov-law-mcp==0.1.0
 
 auth:
   type: none
@@ -28,7 +28,7 @@ post_install: |
   e-Gov法令API MCPは認証不要です。一次資料（法令条文）の取得に使います。
 
   Windows で uvx が無い場合:
-    py -3 -m pip install "egov-law-mcp>=0.1.0,<1"
+    py -3 -m pip install "egov-law-mcp==0.1.0"
     hermes mcp add egov-law --command py --args -3 -m egov_law_mcp.server
 
   OSINT fusion では `worldmonitor_fusion_report` と併用し、

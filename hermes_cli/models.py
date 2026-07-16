@@ -31,6 +31,67 @@ COPILOT_EDITOR_VERSION = "vscode/1.104.1"
 COPILOT_REASONING_EFFORTS_GPT5 = ["minimal", "low", "medium", "high"]
 COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 
+_OPENCODE_LIVE_MODEL_BASE_URLS = {
+    "opencode-zen": "https://opencode.ai/zen/v1",
+    "opencode-go": "https://opencode.ai/zen/go/v1",
+}
+_OPENCODE_LIVE_CACHE_TTL = 3600
+_OPENCODE_LIVE_MODEL_CACHE: dict[str, tuple[float, list[str]]] = {}
+OPENCODE_FREE_FALLBACK_MODEL_ALIASES = frozenset({
+    "free",
+    "auto-free",
+    "current-free",
+    "opencode-free",
+    "@free",
+    "$free",
+    "*free",
+})
+OPENCODE_FREE_FALLBACK_PROVIDER_ALIASES = frozenset({
+    "opencode-free",
+    "opencode-zen-free",
+    "zen-free",
+})
+NOUS_FREE_FALLBACK_MODEL_ALIASES = frozenset({
+    "free",
+    "auto-free",
+    "current-free",
+    "nous-free",
+    "@free",
+    "$free",
+    "*free",
+})
+NOUS_FREE_FALLBACK_PROVIDER_ALIASES = frozenset({
+    "nous-free",
+})
+NVIDIA_AUTO_FALLBACK_MODEL_ALIASES = frozenset({
+    "auto",
+    "auto-rotate",
+    "rotate",
+    "any",
+})
+_NOUS_STATIC_FREE_MODELS = [
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+]
+_OPENCODE_STATIC_FREE_MODELS = [
+    "big-pickle",
+    "deepseek-v4-flash-free",
+    "qwen3.6-plus-free",
+    "minimax-m2.5-free",
+    "nemotron-3-super-free",
+    "kimi-k2.5-free",
+    "glm-5-free",
+    "minimax-m2.1-free",
+    "mimo-v2-flash-free",
+    "trinity-large-preview-free",
+    "mimo-v2-pro-free",
+    "ling-2.6-flash-free",
+    "glm-4.7-free",
+    "hy3-preview-free",
+    "ring-2.6-1t-free",
+    "mimo-v2-omni-free",
+]
+
 def _urlopen_model_catalog_request(req: urllib.request.Request, *, timeout: float):
     """Open catalog requests without forwarding headers across origins."""
     return open_credentialed_url(req, timeout=timeout)
@@ -3888,6 +3949,7 @@ def probe_api_models(
         blocked_all_candidates = False
         tried.append(url)
         try:
+            req = urllib.request.Request(url, headers=headers)
             with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
                 return {

@@ -885,8 +885,10 @@ class TestShippedCatalog:
                 # @scope/pkg@1.2.3 (npx/bunx/pnpx). The version must start
                 # with a digit — a bare name, a range operator, or an npm
                 # dist-tag (@latest, @next) floats and is rejected.
-                exact = re.fullmatch(r"[^=@\s]+==\d[\w.\-+]*", pkg) or re.fullmatch(
-                    r"(@[\w.\-]+/)?[\w.\-]+@\d[\w.\-+]*", pkg
+                exact = (
+                    re.fullmatch(r"[^=@\s]+==\d[\w.\-+]*", pkg)
+                    or re.fullmatch(r"(@[\w.\-]+/)?[\w.\-]+@\d[\w.\-+]*", pkg)
+                    or re.fullmatch(r"git\+https://[^@\s]+@[0-9a-f]{40}", pkg)
                 )
                 if not exact:
                     problems.append(

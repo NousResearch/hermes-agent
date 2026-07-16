@@ -1,6 +1,7 @@
 """Local execution environment — spawn-per-call with session snapshot."""
 
 import logging
+import ntpath
 import os
 import platform
 import re
@@ -46,6 +47,22 @@ def _msys_to_windows_path(cwd: str) -> str:
     drive = m.group(1).upper()
     tail = (m.group(2) or "").replace('/', '\\')
     return f"{drive}:{tail or chr(92)}"  # chr(92) = backslash, avoid raw-string escape
+
+
+def _windows_to_bash_path(path: str, path_style: str = "msys") -> str:
+    if not _IS_WINDOWS or not path:
+        return path
+    if path == "~" or path == "~/" or path.startswith("~/"):
+        return path
+    if path.startswith("\\\\"):
+        return "//" + path.lstrip("\\").replace("\\", "/")
+    match = re.match(r"^([a-zA-Z]):[\\/](.*)$", path)
+    if not match:
+        return path.replace("\\", "/")
+    drive = match.group(1).lower()
+    tail = match.group(2).replace("\\", "/")
+    prefix = f"/mnt/{drive}" if path_style == "wsl" else f"/{drive}"
+    return f"{prefix}/{tail}" if tail else f"{prefix}/"
 
 
 def _windows_to_msys_path(cwd: str) -> str:
@@ -235,6 +252,33 @@ def _build_provider_env_blocklist() -> frozenset:
         "EMAIL_SMTP_HOST",
         "EMAIL_HOME_ADDRESS",
         "EMAIL_HOME_ADDRESS_NAME",
+        "MATRIX_PASSWORD",
+        "TWILIO_ACCOUNT_SID",
+        "TWILIO_AUTH_TOKEN",
+        "TWILIO_PHONE_NUMBER",
+        "TWILIO_PHONE_NUMBER_SID",
+        "DINGTALK_CLIENT_ID",
+        "DINGTALK_CLIENT_SECRET",
+        "FEISHU_APP_ID",
+        "FEISHU_APP_SECRET",
+        "FEISHU_ENCRYPT_KEY",
+        "FEISHU_VERIFICATION_TOKEN",
+        "WECOM_BOT_ID",
+        "WECOM_SECRET",
+        "WECOM_CALLBACK_CORP_ID",
+        "WECOM_CALLBACK_CORP_SECRET",
+        "WECOM_CALLBACK_AGENT_ID",
+        "WECOM_CALLBACK_TOKEN",
+        "WECOM_CALLBACK_ENCODING_AES_KEY",
+        "WEIXIN_TOKEN",
+        "WEIXIN_ACCOUNT_ID",
+        "YUANBAO_APP_ID",
+        "YUANBAO_APP_KEY",
+        "YUANBAO_APP_SECRET",
+        "YUANBAO_BOT_ID",
+        "QQ_STT_API_KEY",
+        "TERMINAL_SSH_KEY",
+        "LANGFUSE_SECRET_KEY",
         "HERMES_DASHBOARD_SESSION_TOKEN",
         "GATEWAY_ALLOWED_USERS",
         "GH_TOKEN",
@@ -552,15 +596,15 @@ def _is_wsl_bash_stub(candidate: str | None) -> bool:
         return False
 
     try:
-        resolved = os.path.normcase(os.path.abspath(candidate))
+        resolved = ntpath.normcase(ntpath.abspath(candidate))
     except (OSError, ValueError):
         resolved = os.path.normcase(str(candidate))
 
-    windows_dir = os.path.normcase(os.environ.get("WINDIR", r"C:\Windows"))
-    windows_apps = os.environ.get("LOCALAPPDATA", "")
-    stubs = {os.path.normcase(os.path.join(windows_dir, "System32", "bash.exe"))}
+    windows_dir = ntpath.normcase(os.environ.get("WINDIR", r"C:\Windows"))
+    windows_apps = ntpath.normcase(os.environ.get("LOCALAPPDATA", ""))
+    stubs = {ntpath.normcase(ntpath.join(windows_dir, "System32", "bash.exe"))}
     if windows_apps:
-        stubs.add(os.path.normcase(os.path.join(windows_apps, "Microsoft", "WindowsApps", "bash.exe")))
+        stubs.add(ntpath.normcase(ntpath.join(windows_apps, "Microsoft", "WindowsApps", "bash.exe")))
     return resolved in stubs
 
 

@@ -108,6 +108,7 @@ def adapter(monkeypatch):
     for _var in (
         "DISCORD_REQUIRE_MENTION",
         "DISCORD_THREAD_REQUIRE_MENTION",
+        "DISCORD_THREAD_OWNER_ROUTING",
         "DISCORD_FREE_RESPONSE_CHANNELS",
         "DISCORD_AUTO_THREAD",
         "DISCORD_NO_THREAD_CHANNELS",
@@ -127,12 +128,13 @@ def adapter(monkeypatch):
     return adapter
 
 
-def make_message(*, channel, content: str, mentions=None, msg_type=None):
+def make_message(*, channel, content: str, mentions=None, role_mentions=None, msg_type=None):
     author = SimpleNamespace(id=42, display_name="Jezza", name="Jezza")
     return SimpleNamespace(
         id=123,
         content=content,
         mentions=list(mentions or []),
+        role_mentions=list(role_mentions or []),
         attachments=[],
         reference=None,
         created_at=datetime.now(timezone.utc),
@@ -769,6 +771,88 @@ async def test_discord_thread_require_mention_via_config_extra(adapter, monkeypa
     adapter._threads.mark("456")
 
     message = make_message(channel=thread, content="ambient — should be ignored")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_thread_owner_routing_ignores_foreign_thread_followups(adapter, monkeypatch):
+    """Creator-owns-thread mode should not ambiently follow up in another bot's thread."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_THREAD_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter.config.extra["thread_owner_routing"] = True
+
+    thread = FakeThread(channel_id=456, name="athena-owned thread")
+    adapter._threads.mark("456")  # we replied here once, but did not create it
+
+    message = make_message(channel=thread, content="ambient chatter — not ours")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_thread_owner_routing_keeps_bot_created_threads_open(adapter, monkeypatch):
+    """Creator-owns-thread mode still allows ambient follow-ups in bot-created threads."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_THREAD_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter.config.extra["thread_owner_routing"] = True
+
+    thread = FakeThread(channel_id=456, name="hermes-owned thread")
+    adapter._threads.mark("456")
+    adapter._owned_threads.mark("456")
+
+    message = make_message(channel=thread, content="follow-up without mention")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_discord_bare_role_mention_joins_foreign_thread(adapter, monkeypatch):
+    """A bare role mention should wake the non-owner bot in another bot's thread."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_THREAD_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter.config.extra["thread_owner_routing"] = True
+
+    role_id = 1522315013522718795
+    bot_member = SimpleNamespace(id=999, roles=[SimpleNamespace(id=role_id)])
+    guild = SimpleNamespace(
+        name="Hermes Server",
+        get_member=lambda user_id: bot_member if user_id == 999 else None,
+    )
+    thread = FakeThread(channel_id=456, name="hermes-owned thread", guild_name="Hermes Server")
+    thread.guild = guild
+    adapter._threads.mark("456")  # we replied here once, but did not create it
+
+    message = make_message(channel=thread, content=f"<@&{role_id}>")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "(The user explicitly mentioned you to join this thread)"
+
+
+@pytest.mark.asyncio
+async def test_discord_bare_role_mention_in_channel_still_ignored(adapter, monkeypatch):
+    """Bare mention-only pings stay ignored outside threads."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    role_id = 1522315013522718795
+    bot_member = SimpleNamespace(id=999, roles=[SimpleNamespace(id=role_id)])
+    guild = SimpleNamespace(
+        name="Hermes Server",
+        get_member=lambda user_id: bot_member if user_id == 999 else None,
+    )
+    channel = FakeTextChannel(channel_id=123)
+    channel.guild = guild
+
+    message = make_message(channel=channel, content=f"<@&{role_id}>")
     await adapter._handle_message(message)
 
     adapter.handle_message.assert_not_awaited()

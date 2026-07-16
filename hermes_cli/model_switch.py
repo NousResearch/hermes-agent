@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Any, List, NamedTuple, Optional
 
@@ -1524,6 +1525,58 @@ def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
     return t
 
 
+def _parallel_probe_providers(
+    probe_targets: list[dict],
+) -> dict[tuple[str, str], list[str]]:
+    """Fetch ``/models`` from multiple custom providers concurrently.
+
+    Each entry in ``probe_targets`` is a dict with keys:
+    ``api_key``, ``api_url``, ``headers`` (optional).
+
+    Returns a mapping of ``(api_url, api_key)`` → ``list[str]`` of model IDs.
+    Failed or timed-out probes are simply absent from the result.
+
+    This replaces the sequential per-provider ``fetch_api_models()`` calls
+    that made ``/model`` take 5-10s when multiple custom providers are
+    configured.  With parallel execution the total wait is bounded by the
+    slowest single endpoint (default 5s timeout in ``fetch_api_models``)
+    rather than the sum of all endpoints.  See issue #65650.
+    """
+    if not probe_targets:
+        return {}
+
+    from hermes_cli.models import fetch_api_models
+
+    results: dict[tuple[str, str], list[str]] = {}
+
+    def _probe(target: dict) -> tuple[tuple[str, str], list[str] | None]:
+        key = (target["api_url"], target["api_key"])
+        try:
+            models = fetch_api_models(
+                target["api_key"],
+                target["api_url"],
+                headers=target.get("headers") or None,
+            )
+            return key, models
+        except Exception:
+            return key, None
+
+    # Use at most 8 threads — enough for typical configs without
+    # creating excessive connection overhead.
+    max_workers = min(8, len(probe_targets))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_probe, target): target
+            for target in probe_targets
+        }
+        for future in as_completed(futures):
+            key, models = future.result()
+            if models:
+                results[key] = models
+
+    return results
+
+
 def list_authenticated_providers(
     current_provider: str = "",
     current_base_url: str = "",
@@ -2085,6 +2138,90 @@ def list_authenticated_providers(
     # produces two picker rows: one bare-slug ("openrouter") from section 3
     # and one "custom:openrouter" from section 4, both labelled identically.
     _section3_emitted_pairs: set = set()
+
+    # --- Pre-probe: collect all custom provider probe targets and fetch
+    # them in parallel so the /model picker doesn't block 5s per endpoint.
+    # See issue #65650.
+    _probe_targets: list[dict] = []
+    if user_providers and isinstance(user_providers, dict):
+        for ep_name, ep_cfg in user_providers.items():
+            if not isinstance(ep_cfg, dict):
+                continue
+            if ep_name.lower() in seen_slugs:
+                continue
+            api_url = str(ep_cfg.get("base_url", "") or ep_cfg.get("api", "") or ep_cfg.get("url", "") or "").strip().rstrip("/")
+            if not api_url:
+                continue
+            api_key = str(ep_cfg.get("api_key", "") or "").strip()
+            if not api_key:
+                key_env = str(ep_cfg.get("key_env", "") or "").strip()
+                api_key = os.environ.get(key_env, "").strip() if key_env else ""
+            discover = ep_cfg.get("discover_models", True)
+            if isinstance(discover, str):
+                discover = discover.lower() not in {"false", "no", "0"}
+            models_list = [
+                str(m).strip()
+                for m in _declared_model_ids(ep_cfg.get("models", []))
+                if str(m).strip()
+            ]
+            has_explicit_models = bool(models_list)
+            _ep_is_current_pre = (
+                str(ep_name).strip().lower() == _current_provider_norm
+                or custom_provider_slug(ep_cfg.get("name", "") or ep_name).lower() == _current_provider_norm
+                or (
+                    _current_provider_norm == "custom"
+                    and bool(_current_base_url_norm)
+                    and str(api_url).strip().rstrip("/").lower() == _current_base_url_norm
+                )
+            )
+            if (
+                _can_probe_custom_provider(row_is_current=_ep_is_current_pre)
+                and bool(api_url)
+                and discover
+                and (bool(api_key) or not has_explicit_models)
+            ):
+                _probe_targets.append({
+                    "api_key": api_key,
+                    "api_url": api_url,
+                    "headers": _extra_headers_from_config(ep_cfg) or None,
+                })
+
+    # Also collect Section 4 probe targets for parallel fetch.
+    if custom_providers:
+        for entry in custom_providers:
+            if not isinstance(entry, dict):
+                continue
+            _grp_url = str(entry.get("base_url", "") or entry.get("url", "") or "").strip().rstrip("/")
+            if not _grp_url:
+                continue
+            _grp_key = str(entry.get("api_key", "") or "").strip()
+            if not _grp_key:
+                _grp_key_env = str(entry.get("key_env", "") or "").strip()
+                _grp_key = os.environ.get(_grp_key_env, "").strip() if _grp_key_env else ""
+            _grp_discover = entry.get("discover_models", True)
+            if isinstance(_grp_discover, str):
+                _grp_discover = _grp_discover.lower() not in {"false", "no", "0"}
+            _grp_explicit = bool([
+                str(m).strip()
+                for m in _declared_model_ids(entry.get("models", []))
+                if str(m).strip()
+            ])
+            if (
+                _can_probe_custom_provider(row_is_current=False)
+                and bool(_grp_url)
+                and _grp_discover
+                and (bool(_grp_key) or not _grp_explicit)
+            ):
+                # Avoid duplicates with Section 3 targets
+                if not any(t["api_url"] == _grp_url and t["api_key"] == _grp_key for t in _probe_targets):
+                    _probe_targets.append({
+                        "api_key": _grp_key,
+                        "api_url": _grp_url,
+                        "headers": entry.get("extra_headers") or None,
+                    })
+
+    _probe_results = _parallel_probe_providers(_probe_targets)
+
     if user_providers and isinstance(user_providers, dict):
         for ep_name, ep_cfg in user_providers.items():
             if not isinstance(ep_cfg, dict):
@@ -2160,17 +2297,10 @@ def list_authenticated_providers(
                 bool(api_key) or not has_explicit_models
             )
             if should_probe:
-                try:
-                    from hermes_cli.models import fetch_api_models
-                    live_models = fetch_api_models(
-                        api_key,
-                        api_url,
-                        headers=_extra_headers_from_config(ep_cfg) or None,
-                    )
-                    if live_models:
-                        models_list = live_models
-                except Exception:
-                    pass
+                _probe_key = (api_url, api_key)
+                live_models = _probe_results.get(_probe_key)
+                if live_models:
+                    models_list = live_models
 
             results.append({
                 "slug": ep_name,
@@ -2436,19 +2566,11 @@ def list_authenticated_providers(
                 and grp.get("discover_models", True)
             )
             if should_probe:
-                try:
-                    from hermes_cli.models import fetch_api_models
-
-                    live_models = fetch_api_models(
-                        api_key,
-                        api_url,
-                        headers=grp.get("extra_headers") or None,
-                    )
-                    if live_models:
-                        grp["models"] = live_models
-                        grp["total_models"] = len(live_models)
-                except Exception:
-                    pass
+                _probe_key = (api_url, api_key)
+                live_models = _probe_results.get(_probe_key)
+                if live_models:
+                    grp["models"] = live_models
+                    grp["total_models"] = len(live_models)
             results.append({
                 "slug": slug,
                 "name": grp["name"],

@@ -3085,6 +3085,29 @@ This compaction should PRIORITISE preserving all information related to the focu
     # Main compression entry point
     # ------------------------------------------------------------------
 
+    def post_compress(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Post-process the compressed message list (subclass extension point).
+
+        Called *before* the terminal ``_strip_persistence_markers`` sweep,
+        so subclasses can transform the compressor output without worrying
+        about persistence-marker invariants — the sweep runs immediately
+        after this hook returns and catches any re-introduced markers.
+
+        Override in a subclass to prune stale tool results, re-order,
+        annotate, inject metadata, or apply any other post-compression
+        transform.
+
+        The default implementation is a no-op (returns *messages* unchanged).
+
+        Args:
+            messages: The compressed message list produced by ``compress()``.
+
+        Returns:
+            The (possibly modified) message list. Must preserve valid
+            OpenAI-format message alternation (assistant → tool → assistant).
+        """
+        return messages
+
     def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None, force: bool = False) -> List[Dict[str, Any]]:
         """Compress conversation messages by summarizing middle turns.
 
@@ -3480,6 +3503,10 @@ This compaction should PRIORITISE preserving all information related to the focu
         # carrying a session-store persistence marker. The per-site strips above
         # are positional; this single terminal sweep makes it structural so a
         # future copy site cannot re-leak the marker into the child-session flush.
+        # Subclass extension point — post-process the compressed message list
+        # *before* the terminal marker sweep.  Override in a subclass to prune,
+        # re-order, annotate, or otherwise transform the compressor output.
+        compressed = self.post_compress(compressed)
         _strip_persistence_markers(compressed)
         self._last_compression_made_progress = True
 

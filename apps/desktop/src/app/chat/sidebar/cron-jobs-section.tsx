@@ -8,11 +8,11 @@ import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { SidebarGroup, SidebarGroupContent } from '@/components/ui/sidebar'
 import { Tip } from '@/components/ui/tooltip'
-import { deleteCronJob, getCronJobRuns, pauseCronJob, resumeCronJob, type SessionInfo } from '@/hermes'
+import { deleteCronJob, pauseCronJob, resumeCronJob, type SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { fmtDayTime, relativeTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
-import { getCachedCronRuns, setCachedCronRuns, updateCronJobs } from '@/store/cron'
+import { getCachedCronRuns, loadCronJobRuns, updateCronJobs } from '@/store/cron'
 import { $changeEventsAvailable, $cronChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
 import { $selectedStoredSessionId } from '@/store/session'
@@ -330,17 +330,16 @@ function CronJobSidebarRuns({ jobId, onOpenRun }: { jobId: string; onOpenRun: (s
   const selectedSessionId = useStore($selectedStoredSessionId)
   const changeEventsAvailable = useStore($changeEventsAvailable)
   const cronChangeTick = useStore($cronChangeTick)
-  const [runs, setRuns] = useState<null | SessionInfo[]>(() => getCachedCronRuns(jobId))
+  const [runs, setRuns] = useState<null | SessionInfo[]>(() => getCachedCronRuns(jobId, PEEK_RUN_LIMIT))
   const visible = usePaneVisible()
 
   useEffect(() => {
     let cancelled = false
 
     const load = () =>
-      getCronJobRuns(jobId, PEEK_RUN_LIMIT)
+      loadCronJobRuns(jobId, PEEK_RUN_LIMIT)
         .then(result => {
           if (!cancelled) {
-            setCachedCronRuns(jobId, result)
             setRuns(result)
           }
         })

@@ -72,6 +72,46 @@ class TestApiModeAccepted:
 
 
 class TestRunConversationCodexPath:
+    @pytest.mark.parametrize(
+        "reasoning_config,service_tier,expected_effort,expected_tier",
+        [
+            ({"enabled": True, "effort": "high"}, "priority", "high", "fast"),
+            ({"enabled": False}, None, "none", None),
+        ],
+    )
+    def test_effective_runtime_settings_reach_codex_turn(
+        self,
+        monkeypatch,
+        reasoning_config,
+        service_tier,
+        expected_effort,
+        expected_tier,
+    ):
+        captured = {}
+
+        def fake_run_turn(self, user_input: str, **kwargs):
+            captured.update(kwargs)
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="turn-settings-1",
+                thread_id="thread-settings-1",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+        agent = _make_codex_agent(
+            model="gpt-5.4",
+            reasoning_config=reasoning_config,
+            service_tier=service_tier,
+        )
+
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hello")
+
+        assert captured["model"] == "gpt-5.4"
+        assert captured["reasoning_effort"] == expected_effort
+        assert captured["service_tier"] == expected_tier
+
     def test_run_conversation_returns_codex_shape(self, fake_session):
         agent = _make_codex_agent()
         # No background review fork during tests
@@ -769,4 +809,3 @@ class TestCodexToolProgressBridge:
 
         assert "on_event" in captured_init and captured_init["on_event"] is not None
         assert ("tool.started", "exec_command", "pytest") in events
-

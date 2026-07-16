@@ -259,6 +259,43 @@ class TestRunTurn:
         assert "[Image attached at: /tmp/a.png]" in text
         assert "[image attached]" in text
 
+    def test_turn_start_includes_runtime_overrides(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        s = make_session(client)
+
+        s.run_turn(
+            "hi",
+            model="gpt-5.4",
+            reasoning_effort="high",
+            service_tier="fast",
+            turn_timeout=2.0,
+        )
+
+        _, params = next(req for req in client.requests if req[0] == "turn/start")
+        assert params["model"] == "gpt-5.4"
+        assert params["effort"] == "high"
+        assert params["serviceTier"] == "fast"
+
+    def test_turn_start_can_clear_service_tier(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        s = make_session(client)
+
+        s.run_turn("hi", service_tier=None, turn_timeout=2.0)
+
+        _, params = next(req for req in client.requests if req[0] == "turn/start")
+        assert "serviceTier" in params
+        assert params["serviceTier"] is None
+
     def test_tool_iteration_counter_ticks(self):
         client = FakeClient()
         # Two completed exec items + one final agent message

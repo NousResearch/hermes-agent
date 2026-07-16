@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 # wedge watchdog, etc.). Small enough to keep error messages legible, large
 # enough to surface a config/provider/auth diagnostic.
 _STDERR_TAIL_LINES = 12
+_UNSET = object()
 
 
 # Permission profile mapping mirrors the docstring in PR proposal:
@@ -367,6 +368,9 @@ class CodexAppServerSession:
         self,
         user_input: Any,
         *,
+        model: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
+        service_tier: Any = _UNSET,
         turn_timeout: float = 600.0,
         notification_poll_timeout: float = 0.25,
         post_tool_quiet_timeout: float = 90.0,
@@ -407,13 +411,21 @@ class CodexAppServerSession:
 
         # Send turn/start with the user input. Text-only for now (codex
         # supports rich content but Hermes' text path is the common case).
+        turn_params: dict[str, Any] = {
+            "threadId": self._thread_id,
+            "input": [{"type": "text", "text": user_input_text}],
+        }
+        if model:
+            turn_params["model"] = model
+        if reasoning_effort is not None:
+            turn_params["effort"] = reasoning_effort
+        if service_tier is not _UNSET:
+            # An explicit null clears a tier previously selected on this thread.
+            turn_params["serviceTier"] = service_tier
         try:
             ts = self._client.request(
                 "turn/start",
-                {
-                    "threadId": self._thread_id,
-                    "input": [{"type": "text", "text": user_input_text}],
-                },
+                turn_params,
                 timeout=10,
             )
         except CodexAppServerError as exc:

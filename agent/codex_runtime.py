@@ -410,8 +410,30 @@ def run_codex_app_server_turn(
     # standard run_conversation() flow (line ~11823) before the early
     # return reaches us. Do NOT append again — that would duplicate.
 
+    reasoning_config = getattr(agent, "reasoning_config", None)
+    reasoning_effort = None
+    if isinstance(reasoning_config, dict):
+        if reasoning_config.get("enabled") is False:
+            reasoning_effort = "none"
+        elif reasoning_config.get("effort"):
+            reasoning_effort = str(reasoning_config["effort"])
+
+    service_tier = getattr(agent, "service_tier", None)
+    if service_tier == "priority":
+        # Hermes uses the OpenAI API name; Codex app-server calls this tier fast.
+        service_tier = "fast"
+    elif service_tier in {None, "", "normal", "default"}:
+        # Send null rather than omitting the field so `/fast off` clears a tier
+        # selected by an earlier turn in the same Codex thread.
+        service_tier = None
+
     try:
-        turn = agent._codex_session.run_turn(user_input=user_message)
+        turn = agent._codex_session.run_turn(
+            user_input=user_message,
+            model=str(getattr(agent, "model", "") or "").strip() or None,
+            reasoning_effort=reasoning_effort,
+            service_tier=service_tier,
+        )
     except Exception as exc:
         logger.exception("codex app-server turn failed")
         # Crash → unconditionally drop the session so the next turn

@@ -1660,6 +1660,59 @@ class TestRewriteTranscriptPreservesReasoning:
 
 
 class TestGatewaySessionDbRecovery:
+    def test_transcript_append_rebuilds_fts_and_retries_dirty_rows_in_order(self):
+        import threading
+
+        class FakeConnection:
+            def __init__(self):
+                self.sql = []
+
+            def execute(self, sql):
+                self.sql.append(sql)
+
+            def commit(self):
+                pass
+
+            def rollback(self):
+                pass
+
+        class FakeDb:
+            _FTS_TABLES = ("messages_fts",)
+
+            def __init__(self):
+                self._lock = threading.Lock()
+                self._conn = FakeConnection()
+                self.attempts = []
+                self.persisted = []
+
+            def _fts_table_exists(self, _table):
+                return True
+
+            def append_message(self, **kwargs):
+                content = kwargs["content"]
+                self.attempts.append(content)
+                if len(self.attempts) <= 2:
+                    raise RuntimeError("database disk image is malformed")
+                self.persisted.append(content)
+
+        store = object.__new__(SessionStore)
+        store._db = FakeDb()
+        store._transcript_retry_lock = threading.Lock()
+        store._dirty_transcripts = {}
+        store._transcript_append_failures = {}
+        store._fts_rebuild_attempted = False
+
+        store.append_to_transcript("s1", {"role": "user", "content": "first"})
+        assert [m["content"] for m in store._dirty_transcripts["s1"]] == ["first"]
+
+        store.append_to_transcript("s1", {"role": "assistant", "content": "second"})
+
+        assert store._db.persisted == ["first", "second"]
+        assert "s1" not in store._dirty_transcripts
+        assert store._db._conn.sql == [
+            "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')"
+        ]
+
     def test_new_session_records_gateway_peer_fields(self, tmp_path):
         store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
         source = SessionSource(

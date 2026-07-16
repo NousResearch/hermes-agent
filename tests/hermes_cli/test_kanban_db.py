@@ -174,6 +174,28 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
             created_at INTEGER NOT NULL
         )
     """)
+    # Pre-worker-observability run shape: all historical fields are present,
+    # but no durable worker_session_id exists yet.
+    conn.execute("""
+        CREATE TABLE task_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            profile TEXT,
+            step_key TEXT,
+            status TEXT NOT NULL,
+            claim_lock TEXT,
+            claim_expires INTEGER,
+            worker_pid INTEGER,
+            max_runtime_seconds INTEGER,
+            last_heartbeat_at INTEGER,
+            started_at INTEGER NOT NULL,
+            ended_at INTEGER,
+            outcome TEXT,
+            summary TEXT,
+            metadata TEXT,
+            error TEXT
+        )
+    """)
     conn.execute(
         "INSERT INTO tasks (id, title, status, created_at) "
         "VALUES ('legacy', 'old board task', 'ready', 1)"
@@ -189,6 +211,10 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
             row["name"]
             for row in migrated.execute("PRAGMA table_info(task_events)")
         }
+        run_columns = {
+            row["name"]
+            for row in migrated.execute("PRAGMA table_info(task_runs)")
+        }
         indexes = {
             row["name"]
             for row in migrated.execute(
@@ -201,11 +227,13 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     assert "tenant" in task_columns
     assert "idempotency_key" in task_columns
     assert "run_id" in event_columns
+    assert "worker_session_id" in run_columns
     # And their indexes — the regression scope of this test:
     assert "idx_tasks_session_id" in indexes
     assert "idx_tasks_tenant" in indexes
     assert "idx_tasks_idempotency" in indexes
     assert "idx_events_run" in indexes
+    assert "idx_task_runs_worker_session" in indexes
 
 
 # ---------------------------------------------------------------------------
@@ -2594,6 +2622,53 @@ def test_list_runs_filters_by_outcome_value(kanban_home):
         empty = kb.list_runs(conn, tid, state_type="outcome", state_name="blocked")
     assert matching
     assert not empty
+
+
+def test_bind_worker_session_is_durable_and_idempotent(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="observe me", assignee="builder")
+        kb.claim_task(conn, tid, claimer="host:worker")
+        task = kb.get_task(conn, tid)
+        assert task is not None and task.current_run_id is not None
+
+        first = kb.bind_worker_session(
+            conn, tid, task.current_run_id, "session-root-123"
+        )
+        second = kb.bind_worker_session(
+            conn, tid, task.current_run_id, "session-root-123"
+        )
+        events = [
+            event
+            for event in kb.list_events(conn, tid)
+            if event.kind == "worker_session_bound"
+        ]
+
+    assert first.worker_session_id == "session-root-123"
+    assert second.worker_session_id == "session-root-123"
+    assert len(events) == 1
+    assert events[0].run_id == task.current_run_id
+
+
+def test_bind_worker_session_rejects_foreign_closed_and_replacement(kanban_home):
+    with kb.connect() as conn:
+        first_task = kb.create_task(conn, title="first", assignee="builder")
+        second_task = kb.create_task(conn, title="second", assignee="builder")
+        kb.claim_task(conn, first_task, claimer="host:first")
+        kb.claim_task(conn, second_task, claimer="host:second")
+        first_run = kb.get_task(conn, first_task).current_run_id
+        second_run = kb.get_task(conn, second_task).current_run_id
+        assert first_run is not None and second_run is not None
+
+        with pytest.raises(ValueError, match="current run"):
+            kb.bind_worker_session(conn, first_task, second_run, "session-foreign")
+
+        kb.bind_worker_session(conn, first_task, first_run, "session-original")
+        with pytest.raises(ValueError, match="another worker session"):
+            kb.bind_worker_session(conn, first_task, first_run, "session-replacement")
+
+        kb.complete_task(conn, second_task, summary="done")
+        with pytest.raises(ValueError, match="not running"):
+            kb.bind_worker_session(conn, second_task, second_run, "session-late")
 
 
 def test_tenant_propagates_to_events(kanban_home):

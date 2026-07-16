@@ -15350,6 +15350,48 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 # Main Entry Point
 # ============================================================================
 
+def _bind_kanban_worker_session_q(cli: "HermesCLI") -> None:
+    """Persist a dispatched worker's root session before its first turn.
+
+    Registration is best-effort so an observability write can never prevent
+    the worker from doing its assigned work. The database validates that the
+    run is still current and belongs to this task.
+    """
+    task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    run_id_raw = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+    session_id = (getattr(cli, "session_id", None) or "").strip()
+    if not task_id or not run_id_raw or not session_id:
+        return
+    try:
+        run_id = int(run_id_raw)
+    except ValueError:
+        logger.warning(
+            "Kanban worker session was not registered: invalid run id for task %s",
+            task_id,
+        )
+        return
+
+    conn = None
+    try:
+        from hermes_cli import kanban_db as _kb
+
+        conn = _kb.connect()
+        _kb.bind_worker_session(conn, task_id, run_id, session_id)
+    except Exception as exc:
+        logger.warning(
+            "Kanban worker session was not registered for task %s run %s: %s",
+            task_id,
+            run_id,
+            exc,
+        )
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
     """Drive a kanban goal_mode worker through the Ralph-style goal loop.
 
@@ -15730,6 +15772,7 @@ def main(
     if query or image:
         if not cli._claim_active_session("cli", stderr=bool(quiet)):
             sys.exit(1)
+        _bind_kanban_worker_session_q(cli)
         try:
             query, single_query_images = _collect_query_images(query, image)
             # Kanban workers spawn with ``hermes chat -q "work kanban task <id>"``;

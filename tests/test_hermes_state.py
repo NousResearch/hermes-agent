@@ -253,6 +253,47 @@ class TestSessionLifecycle:
 
         assert db.list_open_cron_sessions() == []
 
+    def test_cron_listing_preserves_message_and_usage_persistence(self, db):
+        """The reaper query is additive to current session persistence."""
+        from agent.tool_dispatch_helpers import make_tool_result_message
+
+        session_id = "cron_schema_contract"
+        db.create_session(session_id, source="cron", model="test/model")
+        db.replace_messages(
+            session_id,
+            [
+                make_tool_result_message(
+                    "write_file",
+                    "worker detached",
+                    "call-1",
+                    effect_disposition="unknown",
+                )
+            ],
+        )
+        db.update_token_counts(
+            session_id,
+            input_tokens=12,
+            output_tokens=3,
+            model="test/model",
+            billing_provider="test-provider",
+            api_call_count=1,
+        )
+
+        assert [row["id"] for row in db.list_open_cron_sessions()] == [session_id]
+        messages = db.get_messages_as_conversation(session_id)
+        assert messages[0]["effect_disposition"] == "unknown"
+        usage = db._conn.execute(
+            "SELECT model, billing_provider, input_tokens, output_tokens "
+            "FROM session_model_usage WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert dict(usage) == {
+            "model": "test/model",
+            "billing_provider": "test-provider",
+            "input_tokens": 12,
+            "output_tokens": 3,
+        }
+
     def test_update_system_prompt(self, db):
         db.create_session(session_id="s1", source="cli")
         db.update_system_prompt("s1", "You are a helpful assistant.")

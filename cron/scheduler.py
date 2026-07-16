@@ -4071,6 +4071,13 @@ def _lease_runner_identity(lease: Optional[dict]) -> tuple[Any, Any]:
     runner_id = lease.get("runner_id", lease.get("owner_start_time"))
     return runner_pid, runner_id
 
+def _session_has_active_in_process_owner(session_id: str) -> bool:
+    """Return whether the session belongs to a job running in this process."""
+    return any(
+        session_id.startswith(f"cron_{job_id}_")
+        for job_id in get_running_job_ids()
+    )
+
 
 def _owner_definitively_dead(lease: dict) -> bool:
     """Return True only when the lease owner is *provably* no longer alive.
@@ -4131,11 +4138,13 @@ def _reap_stale_cron_sessions() -> int:
     """Close expired cron sessions with no live ownership evidence.
 
     Every candidate must exceed ``_STALE_CRON_SESSION_MAX_AGE_SECONDS``.
-    Legacy or malformed rows without either runner PID or runner identity are
-    then eligible immediately: no owner exists to fence. Rows carrying owner
-    evidence use the stricter lease path — matching session id, stale
-    heartbeat, and a definitively dead local owner. Fresh, active, cross-host,
-    mismatched, or otherwise uncertain owned leases remain open.
+    A matching entry in ``_running_job_ids`` always fences the current
+    process's active run, including the lease-write-failure path. Legacy or
+    malformed rows without either runner PID or runner identity are otherwise
+    eligible after the grace window. Rows carrying owner evidence use the
+    stricter lease path — matching session id, stale heartbeat, and a
+    definitively dead local owner. Fresh, active, cross-host, mismatched, or
+    otherwise uncertain owned leases remain open.
 
     Closing uses ``end_session`` (exact id + ``ended_at IS NULL`` guard) so
     concurrent closes are idempotent.
@@ -4159,6 +4168,8 @@ def _reap_stale_cron_sessions() -> int:
             started_at = row.get("started_at")
             if started_at is None or started_at >= cutoff:
                 continue  # not old enough
+            if _session_has_active_in_process_owner(session_id):
+                continue  # this process still owns the active run
             lease = _read_cron_session_lease(session_id)
             runner_pid, runner_id = _lease_runner_identity(lease)
             has_owner_evidence = runner_pid is not None or runner_id is not None

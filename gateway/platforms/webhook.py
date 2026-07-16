@@ -895,13 +895,23 @@ class WebhookAdapter(BasePlatformAdapter):
     def _validate_signature(
         self, request: "web.Request", body: bytes, secret: str
     ) -> bool:
-        """Validate webhook signature (GitHub, GitLab, Svix, generic HMAC-SHA256)."""
+        """Validate webhook signature (Linear, GitHub, GitLab, Svix, generic HMAC)."""
         def _header(name: str) -> str:
             return (
                 request.headers.get(name, "")
                 or request.headers.get(name.lower(), "")
                 or request.headers.get(name.upper(), "")
             )
+
+        # Linear: Linear-Signature = <hex HMAC-SHA256 of raw body>.
+        # Presence commits to this scheme so invalid Linear signatures cannot
+        # fall through to another recognized signature header.
+        if any(name.lower() == "linear-signature" for name in request.headers):
+            linear_signature = _header("Linear-Signature")
+            expected = hmac.new(
+                secret.encode(), body, hashlib.sha256
+            ).hexdigest()
+            return hmac.compare_digest(linear_signature, expected)
 
         # Svix / AgentMail:
         #   svix-id: msg_...

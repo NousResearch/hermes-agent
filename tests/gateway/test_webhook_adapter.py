@@ -25,7 +25,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
-from aiohttp.test_utils import TestClient, TestServer
+from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import SendResult
@@ -103,6 +103,11 @@ def _generic_signature(body: bytes, secret: str) -> str:
     return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
 
 
+def _linear_signature(body: bytes, secret: str) -> str:
+    """Compute Linear-Signature for *body* using *secret*."""
+    return hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+
 def _generic_v2_signature(body: bytes, secret: str, timestamp: str) -> str:
     """Compute X-Webhook-Signature-V2 (HMAC-SHA256 of "<timestamp>.<body>")."""
     signed_content = timestamp.encode() + b"." + body
@@ -128,6 +133,68 @@ def _svix_signature(body: bytes, secret: str, msg_id: str, timestamp: str) -> st
 
 class TestValidateSignature:
     """Tests for WebhookAdapter._validate_signature."""
+
+    def test_validate_linear_signature_valid(self):
+        """Valid Linear-Signature over the exact raw body is accepted."""
+        adapter = _make_adapter()
+        body = b'{"action":"update","data":{"id":"ENG-131"}}'
+        secret = "linear-webhook-secret"
+        sig = _linear_signature(body, secret)
+        req = _mock_request(headers={"linear-signature": sig})
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_linear_signature_mixed_case_aiohttp_headers(self):
+        """Linear signatures honor aiohttp's case-insensitive header semantics."""
+        adapter = _make_adapter()
+        body = b'{"action":"update","data":{"id":"ENG-131"}}'
+        secret = "linear-webhook-secret"
+        sig = _linear_signature(body, secret)
+        req = make_mocked_request(
+            "POST",
+            "/webhooks/linear",
+            headers={"lInEaR-SiGnAtUrE": sig},
+        )
+
+        assert req.headers["Linear-Signature"] == sig
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_linear_signature_invalid(self):
+        """Linear signatures are bound to the exact raw request body."""
+        adapter = _make_adapter()
+        signed_body = b'{"action":"update","data":{"id":"ENG-131"}}'
+        received_body = b'{"action": "update", "data": {"id": "ENG-131"}}'
+        secret = "linear-webhook-secret"
+        sig = _linear_signature(signed_body, secret)
+        req = _mock_request(headers={"Linear-Signature": sig})
+        assert adapter._validate_signature(req, received_body, secret) is False
+
+    def test_validate_linear_signature_malformed(self):
+        """Non-hex Linear signature formats are rejected."""
+        adapter = _make_adapter()
+        body = b'{"action":"update"}'
+        req = _mock_request(
+            headers={"Linear-Signature": "sha256=not-a-linear-hex-digest"}
+        )
+        assert adapter._validate_signature(req, body, "linear-secret") is False
+
+    def test_validate_empty_linear_signature_rejects(self):
+        """An explicitly empty Linear-Signature fails closed."""
+        adapter = _make_adapter()
+        req = _mock_request(headers={"Linear-Signature": ""})
+        assert adapter._validate_signature(req, b"{}", "linear-secret") is False
+
+    def test_invalid_linear_signature_does_not_fall_through(self):
+        """A present invalid Linear signature cannot use another valid scheme."""
+        adapter = _make_adapter()
+        body = b'{"action":"update"}'
+        secret = "linear-webhook-secret"
+        req = _mock_request(
+            headers={
+                "Linear-Signature": "0" * 64,
+                "X-Webhook-Signature": _generic_signature(body, secret),
+            }
+        )
+        assert adapter._validate_signature(req, body, secret) is False
 
     def test_validate_github_signature_valid(self):
         """Valid X-Hub-Signature-256 is accepted."""
@@ -451,6 +518,66 @@ class TestValidateSignature:
             }
         )
         assert adapter._validate_signature(req, body, secret) is True
+
+
+@pytest.mark.asyncio
+async def test_invalid_linear_signature_precedes_rate_limit_and_json_parsing():
+    """Linear auth failure returns 401 before rate limiting or malformed JSON."""
+    secret = "global-linear-secret"
+    adapter = _make_adapter(
+        routes={"linear": {"prompt": "Linear event: {action}"}},
+        secret=secret,
+    )
+    adapter._record_rate_limit_hit = MagicMock(return_value=True)
+    request = _mock_request(
+        headers={"Linear-Signature": "0" * 64},
+        body=b"not-json",
+        match_info={"route_name": "linear"},
+    )
+
+    response = await adapter._handle_webhook(request)
+
+    assert response.status == 401
+    adapter._record_rate_limit_hit.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_valid_linear_signature_parses_json_and_dispatches_event():
+    """A valid Linear request reaches JSON parsing and background dispatch."""
+    secret = "global-linear-secret"
+    payload = {"action": "update", "data": {"id": "ENG-131"}}
+    body = json.dumps(payload, separators=(",", ":")).encode()
+    delivery_id = "linear-delivery-valid"
+    adapter = _make_adapter(
+        routes={"linear": {"prompt": "Linear event: {action}"}},
+        secret=secret,
+    )
+    adapter.handle_message = AsyncMock()
+    request = _mock_request(
+        headers={
+            "Linear-Signature": _linear_signature(body, secret),
+            "X-Request-ID": delivery_id,
+        },
+        body=body,
+        match_info={"route_name": "linear"},
+    )
+
+    response = await adapter._handle_webhook(request)
+    pending_dispatches = tuple(adapter._background_tasks)
+    await asyncio.gather(*pending_dispatches)
+
+    assert response.status == 202
+    assert json.loads(response.body) == {
+        "status": "accepted",
+        "route": "linear",
+        "event": "unknown",
+        "delivery_id": delivery_id,
+    }
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.raw_message == payload
+    assert event.text == "Linear event: update"
+    assert event.message_id == delivery_id
 
 
 # ===================================================================

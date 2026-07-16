@@ -2960,6 +2960,8 @@ class BasePlatformAdapter(ABC):
         self,
         parent_chat_id: str,
         name: str,
+        *,
+        user_ids: Optional[List[str]] = None,
     ) -> Optional[str]:
         """Create a fresh thread under ``parent_chat_id`` for a session handoff.
 

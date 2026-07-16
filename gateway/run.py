@@ -7625,9 +7625,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # None we fall through to using the home channel directly — the
         # synthetic turn still lands; just without thread isolation.
         thread_name = f"Hermes — {cli_title}"
+        handoff_thread_args = {}
+        if platform == Platform.DISCORD and row.get("user_id"):
+            handoff_thread_args["user_ids"] = [str(row["user_id"])]
         try:
             new_thread_id = await adapter.create_handoff_thread(
-                str(home.chat_id), thread_name,
+                str(home.chat_id), thread_name, **handoff_thread_args
             )
         except Exception as exc:
             logger.debug(

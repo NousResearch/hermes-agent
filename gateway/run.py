@@ -9153,12 +9153,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # to the primary gateway process; consulting it here would let primary
         # aliases or access rules override a secondary profile before the
         # routed quick-command sink gets a chance to load its own config.
-        _source_gateway_config = self.config
+        _source_gateway_config = getattr(self, "config", {})
         _source_profile_home = None
         _multiplex_profiles = (
-            bool(self.config.get("multiplex_profiles", False))
-            if isinstance(self.config, dict)
-            else bool(getattr(self.config, "multiplex_profiles", False))
+            bool(_source_gateway_config.get("multiplex_profiles", False))
+            if isinstance(_source_gateway_config, dict)
+            else bool(getattr(_source_gateway_config, "multiplex_profiles", False))
         )
         if _multiplex_profiles and event.get_command():
             _source_profile_home = self._resolve_profile_home_for_source(source)

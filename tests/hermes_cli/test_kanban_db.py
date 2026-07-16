@@ -5786,6 +5786,48 @@ def test_dispatch_verified_bypass_spawn_failure_rearms_token(
         assert sum(1 for e in events if e.kind == "guard_bypass_restored") == 1
 
 
+def test_dispatch_verifier_popen_failure_restores_bypass_and_reconciles_channel(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """A pre-start verifier subprocess failure must not strand any authority.
+
+    The dispatcher consumed the exact bypass and claimed the task before
+    `_default_spawn` reached `Popen`; failure there must requeue the exact
+    claim/bypass while terminally reconciling the stale verifier channel so a
+    later run can mint a fresh binding for a fresh run id.
+    """
+    monkeypatch.setattr(kb, "_IS_WINDOWS", False)
+
+    def missing_verifier(*args, **kwargs):
+        raise FileNotFoundError("missing hermes")
+
+    monkeypatch.setattr(subprocess, "Popen", missing_verifier)
+    with kb.connect() as conn:
+        tid = _seed_verified_recovery(conn)
+
+        result = kb.dispatch_once(conn)
+        task = kb.get_task(conn, tid)
+        row = conn.execute(
+            "SELECT state, reason_code, supervisor_owner, verifier_root "
+            "FROM verifier_result_authorizations WHERE task_id = ?",
+            (tid,),
+        ).fetchone()
+        restored_bypass = _stored_guard_bypass(conn, tid)
+        events = kb.list_events(conn, tid)
+
+    assert result.spawned == []
+    assert task.status == "ready"
+    assert task.current_run_id is None
+    assert task.claim_lock is None
+    assert restored_bypass is not None
+    assert row["state"] == "reconciled"
+    assert row["reason_code"] == "pre_start_restore"
+    assert row["supervisor_owner"] is None
+    assert row["verifier_root"] is None
+    assert sum(1 for e in events if e.kind == "guard_bypass_consumed") == 1
+    assert sum(1 for e in events if e.kind == "guard_bypass_restored") == 1
+
+
 def test_dispatch_ordinary_ready_task_takes_normal_path_only(
     kanban_home, tmp_path, all_assignees_spawnable,
 ):
@@ -6015,12 +6057,21 @@ def test_legacy_db_migrates_block_evidence_and_guard_bypass_columns(tmp_path):
 
 
 def _stage1_authorization_binding(task_id: str, run_id: int, claim_lock: str) -> dict:
+    contract = {
+        "pr_url": PR_URL,
+        "approved_head": HEAD_SHA,
+        "approved_base": BASE_BRANCH,
+        "readiness_evidence": {"ready": True},
+    }
     return {
         "task_id": task_id,
         "run_id": run_id,
         "claim_lock": claim_lock,
         "contract_id": "protected-merge:v1",
+        "contract_hash": kb.canonical_verifier_contract_hash(contract),
         "pr_url": PR_URL,
+        "approved_head": HEAD_SHA,
+        "approved_base": BASE_BRANCH,
         "nonce": "nonce-stage1",
     }
 
@@ -6059,7 +6110,10 @@ def test_verifier_authorization_rejects_substitution_and_stale_claim(tmp_path):
             "run_id": claim.current_run_id + 1,
             "claim_lock": "other-claim",
             "contract_id": "other-contract",
+            "contract_hash": "0" * 64,
             "pr_url": PR_URL_OTHER,
+            "approved_head": "other-head",
+            "approved_base": "other-base",
             "nonce": "other-nonce",
         }.items():
             attempted = dict(binding)
@@ -6245,6 +6299,30 @@ def test_parse_protected_merge_verifier_intent_rejects_non_dict_readiness_eviden
         "readiness_evidence": "looks good to me",
     }
     with pytest.raises(ValueError, match="readiness_evidence"):
+        kb.parse_protected_merge_verifier_intent(data)
+
+
+def test_parse_protected_merge_verifier_intent_rejects_not_ready_evidence():
+    data = {
+        "kind": "protected_merge_verifier",
+        "pr_url": PR_URL,
+        "approved_head": HEAD_SHA,
+        "approved_base": BASE_BRANCH,
+        "readiness_evidence": {"ready": False},
+    }
+    with pytest.raises(ValueError, match="ready"):
+        kb.parse_protected_merge_verifier_intent(data)
+
+
+def test_parse_protected_merge_verifier_intent_rejects_oversized_readiness_evidence():
+    data = {
+        "kind": "protected_merge_verifier",
+        "pr_url": PR_URL,
+        "approved_head": HEAD_SHA,
+        "approved_base": BASE_BRANCH,
+        "readiness_evidence": {"ready": True, "detail": "x" * (kb._CTX_MAX_FIELD_BYTES + 1)},
+    }
+    with pytest.raises(ValueError, match="too large"):
         kb.parse_protected_merge_verifier_intent(data)
 
 

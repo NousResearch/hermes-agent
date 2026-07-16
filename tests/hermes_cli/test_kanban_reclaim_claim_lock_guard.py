@@ -15,6 +15,7 @@ computed for.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -66,28 +67,24 @@ def test_stale_crash_reset_rejected_for_reclaimed_task(conn):
     )
     conn.commit()
     kb.claim_task(conn, tid, claimer=f"{host}:B")
-    sleeper = subprocess.Popen(["sleep", "30"])
-    try:
-        kb._set_worker_pid(conn, tid, sleeper.pid)
+    kb._set_worker_pid(conn, tid, os.getpid())
 
-        # The stale reset for worker A — same shape as the guarded UPDATE in
-        # detect_crashed_workers — must reject (rowcount 0) because B owns it.
-        cur = conn.execute(
-            "UPDATE tasks SET status='ready', claim_lock=NULL, "
-            "claim_expires=NULL, worker_pid=NULL "
-            "WHERE id=? AND status='running' AND worker_pid=? AND claim_lock IS ?",
-            (tid, old["worker_pid"], old["claim_lock"]),
-        )
-        conn.commit()
-        assert cur.rowcount == 0, "stale reclaim wrongly clobbered the re-claimed task"
+    # The stale reset for worker A — same shape as the guarded UPDATE in
+    # detect_crashed_workers — must reject (rowcount 0) because B owns it.
+    cur = conn.execute(
+        "UPDATE tasks SET status='ready', claim_lock=NULL, "
+        "claim_expires=NULL, worker_pid=NULL "
+        "WHERE id=? AND status='running' AND worker_pid=? AND claim_lock IS ?",
+        (tid, old["worker_pid"], old["claim_lock"]),
+    )
+    conn.commit()
+    assert cur.rowcount == 0, "stale reclaim wrongly clobbered the re-claimed task"
 
-        final = conn.execute(
-            "SELECT status, claim_lock FROM tasks WHERE id=?", (tid,)
-        ).fetchone()
-        assert final["status"] == "running"
-        assert final["claim_lock"] == f"{host}:B"
-    finally:
-        sleeper.terminate()
+    final = conn.execute(
+        "SELECT status, claim_lock FROM tasks WHERE id=?", (tid,)
+    ).fetchone()
+    assert final["status"] == "running"
+    assert final["claim_lock"] == f"{host}:B"
 
 
 def test_genuine_crash_still_reclaims(conn):

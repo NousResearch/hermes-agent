@@ -71,6 +71,7 @@ new locking.
 from __future__ import annotations
 
 import contextlib
+import hmac
 import hashlib
 import json
 import os
@@ -1293,7 +1294,10 @@ CREATE TABLE IF NOT EXISTS verifier_result_authorizations (
     run_id      INTEGER NOT NULL,
     claim_lock  TEXT NOT NULL,
     contract_id TEXT NOT NULL,
+    contract_hash TEXT NOT NULL,
     pr_url      TEXT NOT NULL,
+    approved_head TEXT NOT NULL,
+    approved_base TEXT NOT NULL,
     nonce_digest TEXT NOT NULL,
     supervisor_owner TEXT,
     verifier_root TEXT,
@@ -2117,6 +2121,27 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                 "cleanup_error",
                 "cleanup_error TEXT",
             )
+        if "contract_hash" not in auth_cols:
+            _add_column_if_missing(
+                conn,
+                "verifier_result_authorizations",
+                "contract_hash",
+                "contract_hash TEXT",
+            )
+        if "approved_head" not in auth_cols:
+            _add_column_if_missing(
+                conn,
+                "verifier_result_authorizations",
+                "approved_head",
+                "approved_head TEXT",
+            )
+        if "approved_base" not in auth_cols:
+            _add_column_if_missing(
+                conn,
+                "verifier_result_authorizations",
+                "approved_base",
+                "approved_base TEXT",
+            )
 
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.
@@ -2468,7 +2493,10 @@ _VERIFIER_RESULT_ALLOWED_FIELDS = frozenset({
     "run_id",
     "claim_lock",
     "contract_id",
+    "contract_hash",
     "pr_url",
+    "approved_head",
+    "approved_base",
     "nonce",
     "action",
     "summary",
@@ -2480,7 +2508,10 @@ _VERIFIER_RESULT_REQUIRED_FIELDS = frozenset({
     "run_id",
     "claim_lock",
     "contract_id",
+    "contract_hash",
     "pr_url",
+    "approved_head",
+    "approved_base",
     "nonce",
     "action",
 })
@@ -2488,11 +2519,15 @@ _VERIFIER_RESULT_STRING_FIELDS = frozenset({
     "task_id",
     "claim_lock",
     "contract_id",
+    "contract_hash",
     "pr_url",
+    "approved_head",
+    "approved_base",
     "nonce",
     "action",
 })
 _VERIFIER_RESULT_ACTIONS = frozenset({"complete", "re-block"})
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True)
@@ -2509,6 +2544,51 @@ class VerifierSupervisorResult:
     reason: str
 
 
+def _canonical_verifier_contract_payload(contract: dict) -> dict[str, Any]:
+    if not isinstance(contract, dict):
+        raise ValueError("verifier contract must be a JSON object")
+    pr_url = contract.get("pr_url")
+    approved_head = contract.get("approved_head")
+    approved_base = contract.get("approved_base")
+    readiness_evidence = contract.get("readiness_evidence")
+    if not isinstance(pr_url, str) or not pr_url.strip():
+        raise ValueError("verifier contract requires pr_url")
+    if not isinstance(approved_head, str) or not approved_head.strip():
+        raise ValueError("verifier contract requires approved_head")
+    if not isinstance(approved_base, str) or not approved_base.strip():
+        raise ValueError("verifier contract requires approved_base")
+    if not isinstance(readiness_evidence, dict):
+        raise ValueError("verifier contract requires readiness_evidence object")
+    if readiness_evidence.get("ready") is not True:
+        raise ValueError("verifier contract readiness_evidence.ready must be true")
+    encoded_evidence = json.dumps(
+        readiness_evidence,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    if len(encoded_evidence) > _CTX_MAX_FIELD_BYTES:
+        raise ValueError("verifier contract readiness_evidence is too large")
+    return {
+        "contract_id": VERIFIER_RESULT_CONTRACT_ID,
+        "pr_url": pr_url.strip(),
+        "approved_head": approved_head.strip(),
+        "approved_base": approved_base.strip(),
+        "readiness_evidence": readiness_evidence,
+    }
+
+
+def canonical_verifier_contract_hash(contract: dict) -> str:
+    payload = _canonical_verifier_contract_payload(contract)
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def make_verifier_result_binding(
     task: Task,
     contract: dict,
@@ -2519,15 +2599,16 @@ def make_verifier_result_binding(
         raise ValueError("verifier result binding requires a current run id")
     if not task.claim_lock:
         raise ValueError("verifier result binding requires a claim lock")
-    pr_url = contract.get("pr_url") if isinstance(contract, dict) else None
-    if not isinstance(pr_url, str) or not pr_url:
-        raise ValueError("verifier result binding requires contract pr_url")
+    canonical_contract = _canonical_verifier_contract_payload(contract)
     return {
         "task_id": task.id,
         "run_id": int(task.current_run_id),
         "claim_lock": task.claim_lock,
-        "contract_id": VERIFIER_RESULT_CONTRACT_ID,
-        "pr_url": pr_url,
+        "contract_id": canonical_contract["contract_id"],
+        "contract_hash": canonical_verifier_contract_hash(contract),
+        "pr_url": canonical_contract["pr_url"],
+        "approved_head": canonical_contract["approved_head"],
+        "approved_base": canonical_contract["approved_base"],
         "nonce": nonce,
     }
 
@@ -2552,6 +2633,8 @@ def parse_verifier_result_frame(
         return VerifierResultFrame(False, "oversized")
     if not raw_frame:
         return VerifierResultFrame(False, "no_frame")
+    if b"\n" in raw_frame and not raw_frame.endswith(b"\n"):
+        return VerifierResultFrame(False, "trailing_bytes")
     if not raw_frame.endswith(b"\n"):
         return VerifierResultFrame(False, "partial_frame")
     if raw_frame.count(b"\n") != 1:
@@ -2579,9 +2662,13 @@ def parse_verifier_result_frame(
         return VerifierResultFrame(False, "invalid_version")
     if not isinstance(payload["run_id"], int):
         return VerifierResultFrame(False, "invalid_type:run_id")
+    if payload["run_id"] <= 0:
+        return VerifierResultFrame(False, "invalid_value:run_id")
     for field in _VERIFIER_RESULT_STRING_FIELDS:
         if not isinstance(payload[field], str) or not payload[field]:
             return VerifierResultFrame(False, f"invalid_type:{field}")
+    if not _SHA256_HEX_RE.fullmatch(payload["contract_hash"]):
+        return VerifierResultFrame(False, "invalid_value:contract_hash")
     if payload["action"] not in _VERIFIER_RESULT_ACTIONS:
         return VerifierResultFrame(False, "invalid_action")
     for field in ("summary", "reason"):
@@ -2603,7 +2690,17 @@ def apply_verifier_supervisor_result(
     if not parsed.valid or parsed.payload is None:
         return VerifierSupervisorResult(False, None, parsed.reason)
     payload = parsed.payload
-    for field in ("task_id", "run_id", "claim_lock", "contract_id", "pr_url", "nonce"):
+    for field in (
+        "task_id",
+        "run_id",
+        "claim_lock",
+        "contract_id",
+        "contract_hash",
+        "pr_url",
+        "approved_head",
+        "approved_base",
+        "nonce",
+    ):
         if payload.get(field) != binding.get(field):
             return VerifierSupervisorResult(False, None, f"binding_mismatch:{field}")
     action = payload["action"]
@@ -2654,7 +2751,10 @@ def _apply_verifier_supervisor_result_atomic(
             run_id=run_id,
             claim_lock=claim_lock,
             contract_id=str(binding["contract_id"]),
+            contract_hash=str(binding["contract_hash"]),
             pr_url=str(binding["pr_url"]),
+            approved_head=str(binding["approved_head"]),
+            approved_base=str(binding["approved_base"]),
             nonce=str(binding["nonce"]),
         )
         if mismatch is not None:
@@ -2794,7 +2894,10 @@ def _authorization_binding_reason(
     run_id: int,
     claim_lock: str,
     contract_id: str,
+    contract_hash: str,
     pr_url: str,
+    approved_head: str,
+    approved_base: str,
     nonce: str,
 ) -> Optional[str]:
     """Return a stable mismatch/staleness code without exposing the nonce."""
@@ -2803,12 +2906,16 @@ def _authorization_binding_reason(
         "run_id": run_id,
         "claim_lock": claim_lock,
         "contract_id": contract_id,
+        "contract_hash": contract_hash,
         "pr_url": pr_url,
-        "nonce_digest": _nonce_digest(nonce),
+        "approved_head": approved_head,
+        "approved_base": approved_base,
     }
     for field, value in expected.items():
         if row[field] != value:
-            return f"binding_mismatch:{field.removesuffix('_digest')}"
+            return f"binding_mismatch:{field}"
+    if not hmac.compare_digest(str(row["nonce_digest"]), _nonce_digest(nonce)):
+        return "binding_mismatch:nonce"
     run = conn.execute(
         "SELECT status, claim_lock FROM task_runs WHERE id = ? AND task_id = ?",
         (run_id, task_id),
@@ -2830,7 +2937,10 @@ def _authorization_static_binding_reason(
     run_id: int,
     claim_lock: str,
     contract_id: str,
+    contract_hash: str,
     pr_url: str,
+    approved_head: str,
+    approved_base: str,
     nonce: str,
 ) -> Optional[str]:
     expected = {
@@ -2838,12 +2948,16 @@ def _authorization_static_binding_reason(
         "run_id": run_id,
         "claim_lock": claim_lock,
         "contract_id": contract_id,
+        "contract_hash": contract_hash,
         "pr_url": pr_url,
-        "nonce_digest": _nonce_digest(nonce),
+        "approved_head": approved_head,
+        "approved_base": approved_base,
     }
     for field, value in expected.items():
         if row[field] != value:
-            return f"binding_mismatch:{field.removesuffix('_digest')}"
+            return f"binding_mismatch:{field}"
+    if not hmac.compare_digest(str(row["nonce_digest"]), _nonce_digest(nonce)):
+        return "binding_mismatch:nonce"
     return None
 
 
@@ -2853,7 +2967,8 @@ def _authorization_result(row: sqlite3.Row, reason: str) -> VerifierAuthorizatio
 
 def authorize_verifier_result(
     conn: sqlite3.Connection, *, task_id: str, run_id: int, claim_lock: str,
-    contract_id: str, pr_url: str, nonce: str,
+    contract_id: str, contract_hash: str, pr_url: str, approved_head: str,
+    approved_base: str, nonce: str,
 ) -> VerifierAuthorization:
     """Create one active authorization or return its idempotent outcome.
 
@@ -2861,7 +2976,19 @@ def authorize_verifier_result(
     task/run claim is checked under the same write transaction as the insert;
     a stale worker cannot mint an authorization after it loses its claim.
     """
-    if not all(isinstance(value, str) and value for value in (task_id, claim_lock, contract_id, pr_url, nonce)):
+    if not all(
+        isinstance(value, str) and value
+        for value in (
+            task_id,
+            claim_lock,
+            contract_id,
+            contract_hash,
+            pr_url,
+            approved_head,
+            approved_base,
+            nonce,
+        )
+    ):
         raise ValueError("verifier authorization binding fields must be non-empty strings")
     now = int(time.time())
     with write_txn(conn):
@@ -2886,16 +3013,30 @@ def authorize_verifier_result(
         if existing is not None:
             exact = _authorization_binding_reason(
                 conn, existing, task_id=task_id, run_id=run_id, claim_lock=claim_lock,
-                contract_id=contract_id, pr_url=pr_url, nonce=nonce,
+                contract_id=contract_id, contract_hash=contract_hash, pr_url=pr_url,
+                approved_head=approved_head, approved_base=approved_base, nonce=nonce,
             )
             return _authorization_result(
                 existing, "idempotent_retry" if exact is None else "active_authorization_exists",
             )
         cursor = conn.execute(
             "INSERT INTO verifier_result_authorizations "
-            "(task_id, run_id, claim_lock, contract_id, pr_url, nonce_digest, state, reason_code, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, 'authorized', 'authorized', ?, ?)",
-            (task_id, run_id, claim_lock, contract_id, pr_url, _nonce_digest(nonce), now, now),
+            "(task_id, run_id, claim_lock, contract_id, contract_hash, pr_url, "
+            "approved_head, approved_base, nonce_digest, state, reason_code, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'authorized', 'authorized', ?, ?)",
+            (
+                task_id,
+                run_id,
+                claim_lock,
+                contract_id,
+                contract_hash,
+                pr_url,
+                approved_head,
+                approved_base,
+                _nonce_digest(nonce),
+                now,
+                now,
+            ),
         )
         authorization_id = cursor.lastrowid
         assert authorization_id is not None
@@ -2905,7 +3046,8 @@ def authorize_verifier_result(
 
 def _transition_verifier_result(
     conn: sqlite3.Connection, *, authorization_id: int, action: str, task_id: str,
-    run_id: int, claim_lock: str, contract_id: str, pr_url: str, nonce: str,
+    run_id: int, claim_lock: str, contract_id: str, contract_hash: str,
+    pr_url: str, approved_head: str, approved_base: str, nonce: str,
 ) -> VerifierAuthorization:
     expected_state, next_state = _VERIFIER_TRANSITIONS[action]
     with write_txn(conn):
@@ -2919,12 +3061,14 @@ def _transition_verifier_result(
         if action == "apply":
             mismatch = _authorization_static_binding_reason(
                 row, task_id=task_id, run_id=run_id, claim_lock=claim_lock,
-                contract_id=contract_id, pr_url=pr_url, nonce=nonce,
+                contract_id=contract_id, contract_hash=contract_hash, pr_url=pr_url,
+                approved_head=approved_head, approved_base=approved_base, nonce=nonce,
             )
         else:
             mismatch = _authorization_binding_reason(
                 conn, row, task_id=task_id, run_id=run_id, claim_lock=claim_lock,
-                contract_id=contract_id, pr_url=pr_url, nonce=nonce,
+                contract_id=contract_id, contract_hash=contract_hash, pr_url=pr_url,
+                approved_head=approved_head, approved_base=approved_base, nonce=nonce,
             )
         if mismatch is not None:
             return _authorization_result(row, mismatch)
@@ -2949,6 +3093,69 @@ def reserve_verifier_result(conn: sqlite3.Connection, *, authorization_id: int, 
 
 def start_verifier_result(conn: sqlite3.Connection, *, authorization_id: int, **binding: Any) -> VerifierAuthorization:
     return _transition_verifier_result(conn, authorization_id=authorization_id, action="start", **binding)
+
+
+def start_verifier_result_with_owner(
+    conn: sqlite3.Connection,
+    *,
+    authorization_id: int,
+    supervisor_owner: str,
+    verifier_root: Optional[Path] = None,
+    **binding: Any,
+) -> VerifierAuthorization:
+    if not isinstance(supervisor_owner, str) or not supervisor_owner:
+        raise ValueError("supervisor_owner must be a non-empty string")
+    expected_state, next_state = _VERIFIER_TRANSITIONS["start"]
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT * FROM verifier_result_authorizations WHERE id = ?",
+            (authorization_id,),
+        ).fetchone()
+        if row is None:
+            return VerifierAuthorization(authorization_id, "missing", "authorization_not_found")
+        if row["state"] in {"applied", "failed", "reconciled"}:
+            return _authorization_result(row, f"already_{row['state']}")
+        mismatch = _authorization_binding_reason(
+            conn,
+            row,
+            task_id=str(binding["task_id"]),
+            run_id=int(binding["run_id"]),
+            claim_lock=str(binding["claim_lock"]),
+            contract_id=str(binding["contract_id"]),
+            contract_hash=str(binding["contract_hash"]),
+            pr_url=str(binding["pr_url"]),
+            approved_head=str(binding["approved_head"]),
+            approved_base=str(binding["approved_base"]),
+            nonce=str(binding["nonce"]),
+        )
+        if mismatch is not None:
+            return _authorization_result(row, mismatch)
+        if row["state"] == next_state:
+            return _authorization_result(row, "idempotent_retry")
+        if row["state"] != expected_state:
+            return _authorization_result(row, f"invalid_transition:{row['state']}->{next_state}")
+        cur = conn.execute(
+            "UPDATE verifier_result_authorizations "
+            "SET state = 'started', reason_code = 'start', supervisor_owner = ?, "
+            "verifier_root = COALESCE(?, verifier_root), updated_at = ? "
+            "WHERE id = ? AND state = 'reserved'",
+            (
+                supervisor_owner,
+                str(verifier_root) if verifier_root is not None else None,
+                int(time.time()),
+                authorization_id,
+            ),
+        )
+        if cur.rowcount != 1:
+            return _authorization_result(row, "compare_and_swap_failed")
+        _append_event(
+            conn,
+            str(binding["task_id"]),
+            "verifier_authorization",
+            {"authorization_id": authorization_id, "state": "started"},
+            run_id=int(binding["run_id"]),
+        )
+        return VerifierAuthorization(authorization_id, "started", "start")
 
 
 def consume_verifier_result(conn: sqlite3.Connection, *, authorization_id: int, **binding: Any) -> VerifierAuthorization:
@@ -6137,6 +6344,16 @@ def parse_protected_merge_verifier_intent(
             f"intent.readiness_evidence must be a JSON object, got "
             f"{type(readiness_evidence).__name__}"
         )
+    if readiness_evidence.get("ready") is not True:
+        raise ValueError("intent.readiness_evidence.ready must be true")
+    encoded_evidence = json.dumps(
+        readiness_evidence,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    if len(encoded_evidence) > _CTX_MAX_FIELD_BYTES:
+        raise ValueError("intent.readiness_evidence is too large")
     return ProtectedMergeVerifierIntent(
         pr_url=data["pr_url"].strip(),
         approved_head=data["approved_head"].strip(),
@@ -9668,7 +9885,10 @@ def _reconcile_verifier_authorization_failure(
                     run_id=int(binding["run_id"]),
                     claim_lock=str(binding["claim_lock"]),
                     contract_id=str(binding["contract_id"]),
+                    contract_hash=str(binding["contract_hash"]),
                     pr_url=str(binding["pr_url"]),
+                    approved_head=str(binding["approved_head"]),
+                    approved_base=str(binding["approved_base"]),
                     nonce=str(binding["nonce"]),
                 )
                 if mismatch is not None:
@@ -9804,6 +10024,56 @@ def _cleanup_verifier_root(
                 "kanban verifier cleanup failed for %s and audit failed",
                 root,
                 exc_info=True,
+            )
+
+
+def _reconcile_prestart_verifier_authorization(
+    *,
+    db_path: Path,
+    authorization_id: int,
+    binding: dict[str, Any],
+    reason: str,
+) -> None:
+    with connect(db_path=db_path) as conn:
+        with write_txn(conn):
+            row = conn.execute(
+                "SELECT * FROM verifier_result_authorizations WHERE id = ?",
+                (authorization_id,),
+            ).fetchone()
+            if row is None or row["state"] not in {"authorized", "reserved"}:
+                return
+            mismatch = _authorization_static_binding_reason(
+                row,
+                task_id=str(binding["task_id"]),
+                run_id=int(binding["run_id"]),
+                claim_lock=str(binding["claim_lock"]),
+                contract_id=str(binding["contract_id"]),
+                contract_hash=str(binding["contract_hash"]),
+                pr_url=str(binding["pr_url"]),
+                approved_head=str(binding["approved_head"]),
+                approved_base=str(binding["approved_base"]),
+                nonce=str(binding["nonce"]),
+            )
+            if mismatch is not None:
+                return
+            conn.execute(
+                "UPDATE verifier_result_authorizations "
+                "SET state = 'reconciled', reason_code = ?, "
+                "supervisor_owner = NULL, verifier_root = NULL, updated_at = ? "
+                "WHERE id = ? AND state IN ('authorized', 'reserved')",
+                (reason, int(time.time()), authorization_id),
+            )
+            _append_event(
+                conn,
+                str(binding["task_id"]),
+                "verifier_authorization_reconciled",
+                {
+                    "authorization_id": authorization_id,
+                    "from_state": row["state"],
+                    "to_state": "reconciled",
+                    "reason": reason,
+                },
+                run_id=int(binding["run_id"]),
             )
 
 
@@ -10037,6 +10307,18 @@ def _start_verifier_supervisor_waiter(
                     exc,
                     exc_info=True,
                 )
+                _reconcile_verifier_authorization_failure(
+                    db_path=db_path,
+                    authorization_id=authorization_id,
+                    binding=binding,
+                    reason="apply_exception",
+                )
+                _verifier_failure_reblock(
+                    db_path=db_path,
+                    task_id=str(binding["task_id"]),
+                    run_id=int(binding["run_id"]),
+                    reason="apply_exception",
+                )
                 return
             if not applied.ok:
                 _reconcile_verifier_authorization_failure(
@@ -10068,6 +10350,137 @@ def _start_verifier_supervisor_waiter(
     thread.start()
 
 
+def _read_yaml_file(path: Path) -> dict[str, Any]:
+    try:
+        import yaml
+    except Exception:
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _profile_config_for_verifier(profile_arg: str) -> tuple[dict[str, Any], Path]:
+    from hermes_constants import get_hermes_home
+    from hermes_cli.profiles import resolve_profile_env
+
+    try:
+        profile_home = Path(resolve_profile_env(profile_arg))
+    except Exception:
+        profile_home = Path(get_hermes_home())
+    return _read_yaml_file(profile_home / "config.yaml"), profile_home
+
+
+def _dotenv_values(path: Path) -> dict[str, str]:
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    values: dict[str, str] = {}
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key:
+            values[key] = value
+    return values
+
+
+def _verifier_provider_from_config(config: dict[str, Any]) -> str:
+    model_cfg = config.get("model")
+    if isinstance(model_cfg, dict):
+        provider = str(model_cfg.get("provider") or "").strip()
+        if provider:
+            return provider
+    return ""
+
+
+def _write_verifier_config(
+    *,
+    verifier_root: Path,
+    profile_config: dict[str, Any],
+    task: Task,
+) -> None:
+    try:
+        import yaml
+    except Exception as exc:
+        raise RuntimeError("PyYAML is required to write verifier config") from exc
+    model_cfg = profile_config.get("model")
+    if not isinstance(model_cfg, (dict, str)):
+        model_cfg = {}
+    config: dict[str, Any] = {
+        "model": model_cfg,
+        "toolsets": ["kanban_verifier"],
+        "agent": {"disabled_toolsets": [], "max_turns": 6},
+        "display": {"interface": "cli", "tool_progress": "off"},
+    }
+    for key in ("providers", "custom_providers"):
+        value = profile_config.get(key)
+        if isinstance(value, (dict, list)):
+            config[key] = value
+    (verifier_root / "config.yaml").write_text(
+        yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+
+
+def _copy_required_provider_credential(
+    *,
+    env: dict[str, str],
+    base_env: dict[str, str],
+    profile_home: Path,
+    provider: str,
+) -> None:
+    """Preserve only the credential env var needed by the configured provider."""
+    if not provider:
+        return
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+    except Exception:
+        return
+    provider_cfg = PROVIDER_REGISTRY.get(provider)
+    if provider_cfg is None:
+        return
+    dotenv = _dotenv_values(profile_home / ".env")
+    for name in tuple(provider_cfg.api_key_env_vars or ()):
+        value = base_env.get(name) or dotenv.get(name)
+        if value:
+            env[name] = value
+            break
+    base_url_name = getattr(provider_cfg, "base_url_env_var", "") or ""
+    if base_url_name:
+        value = base_env.get(base_url_name) or dotenv.get(base_url_name)
+        if value:
+            env[base_url_name] = value
+
+
+def _verifier_prompt(contract: dict[str, Any]) -> str:
+    contract_text = json.dumps(
+        {
+            "pr_url": contract.get("pr_url"),
+            "approved_head": contract.get("approved_head"),
+            "approved_base": contract.get("approved_base"),
+            "readiness_evidence": contract.get("readiness_evidence"),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return (
+        "You are the isolated protected-merge verifier. Review only this bound "
+        "contract and emit exactly one result by calling kanban_verifier_result. "
+        "Use verdict='approved' only if the contract is ready to complete. Use "
+        "verdict='changes_requested', verdict='comment_only', or verdict='superseded' "
+        "with a concrete reason if it must be re-blocked. Do not answer in prose "
+        f"before calling the tool.\n\nContract: {contract_text}"
+    )
+
+
 def _build_verifier_child_env(
     *,
     base_env: dict[str, str],
@@ -10077,43 +10490,46 @@ def _build_verifier_child_env(
     writer_fd: int,
     verifier_root: Path,
     result_endpoint: Optional[int] = None,
+    profile_arg: str = "",
+    task: Optional[Task] = None,
 ) -> dict[str, str]:
+    del workspace
     keep_names = {
         "PATH",
-        "HOME",
-        "USER",
-        "USERNAME",
-        "TMPDIR",
-        "TEMP",
-        "TMP",
         "LANG",
         "LC_ALL",
         "SSL_CERT_FILE",
         "REQUESTS_CA_BUNDLE",
-        "HERMES_BIN",
     }
     env = {
         key: value
         for key, value in base_env.items()
-        if key in keep_names or key.startswith(("OPENAI_", "ANTHROPIC_", "GITHUB_"))
+        if key in keep_names
     }
-    env["HERMES_IGNORE_USER_CONFIG"] = "1"
+    repo_root = Path(__file__).resolve().parent.parent
+    existing_pythonpath = base_env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        str(repo_root)
+        if not existing_pythonpath
+        else os.pathsep.join([str(repo_root), existing_pythonpath])
+    )
     env["HERMES_HOME"] = str(verifier_root)
     env["HOME"] = str(verifier_root)
     env["TMPDIR"] = str(verifier_root / "tmp")
     env["TMP"] = str(verifier_root / "tmp")
     env["TEMP"] = str(verifier_root / "tmp")
-    if workspace and os.path.isabs(workspace) and os.path.isdir(workspace):
-        env["TERMINAL_CWD"] = workspace
     env["HERMES_KANBAN_VERIFY_ONLY"] = "1"
+    env["HERMES_KANBAN_VERIFY_CONTRACT_HASH"] = str(binding["contract_hash"])
     env["HERMES_KANBAN_VERIFY_CONTRACT"] = json.dumps(
         {
             "contract_id": binding["contract_id"],
+            "contract_hash": binding["contract_hash"],
             "task_id": binding["task_id"],
             "run_id": binding["run_id"],
+            "claim_lock": binding["claim_lock"],
             "pr_url": binding["pr_url"],
-            "approved_head": str(contract.get("approved_head") or ""),
-            "approved_base": str(contract.get("approved_base") or ""),
+            "approved_head": binding["approved_head"],
+            "approved_base": binding["approved_base"],
             "nonce": binding["nonce"],
         },
         sort_keys=True,
@@ -10125,6 +10541,19 @@ def _build_verifier_child_env(
         )
     else:
         env["HERMES_KANBAN_VERIFY_RESULT_FD"] = str(writer_fd)
+    profile_config, profile_home = _profile_config_for_verifier(profile_arg)
+    if task is not None:
+        _write_verifier_config(
+            verifier_root=verifier_root,
+            profile_config=profile_config,
+            task=task,
+        )
+    _copy_required_provider_credential(
+        env=env,
+        base_env=base_env,
+        profile_home=profile_home,
+        provider=_verifier_provider_from_config(profile_config),
+    )
     return env
 
 
@@ -10156,7 +10585,7 @@ def _spawn_verifier_supervisor(
         nonce=nonce,
     )
     db_path = kanban_db_path(board=board)
-    owner_id = _claimer_id()
+    owner_id = f"prestart:{secrets.token_hex(8)}"
     with connect(db_path=db_path) as conn:
         auth = authorize_verifier_result(conn, **binding)
         if auth.state not in {"authorized", "reserved", "started"} or auth.id <= 0:
@@ -10173,16 +10602,6 @@ def _spawn_verifier_supervisor(
                 "WHERE id = ? AND state = 'reserved'",
                 (owner_id, str(verifier_root), int(time.time()), auth.id),
             )
-        started = start_verifier_result(conn, authorization_id=auth.id, **binding)
-        if started.state != "started":
-            _cleanup_verifier_root(
-                db_path=db_path,
-                authorization_id=auth.id,
-                task_id=task.id,
-                run_id=int(binding["run_id"]),
-                verifier_root=verifier_root,
-            )
-            raise RuntimeError(f"verifier authorization start failed: {started.reason}")
         authorization_id = auth.id
 
     read_fd, writer_fd = os.pipe()
@@ -10197,22 +10616,16 @@ def _spawn_verifier_supervisor(
         writer_fd=writer_fd,
         verifier_root=verifier_root,
         result_endpoint=result_endpoint,
-    )
-    contract_json = env["HERMES_KANBAN_VERIFY_CONTRACT"]
-    endpoint = (
-        f"file descriptor {writer_fd}" if not _IS_WINDOWS else f"handle {result_endpoint}"
-    )
-    prompt = (
-        "Verification-only protected-merge run. Inspect the workspace and the "
-        f"approved PR contract, then write exactly one newline-delimited JSON "
-        f"result envelope to inherited {endpoint}. Contract: {contract_json}. "
-        "Allowed actions are complete and re-block. Do not use Kanban tools."
+        profile_arg=task.assignee or "",
+        task=task,
     )
     cmd = [
         *base_cmd,
-        "--toolsets", "terminal,file",
+        "--toolsets",
+        "kanban_verifier",
         "chat",
-        "-q", prompt,
+        "-q",
+        _verifier_prompt(task.verification_contract),
         "-Q",
     ]
     log_dir = worker_logs_dir(board=board)
@@ -10222,7 +10635,7 @@ def _spawn_verifier_supervisor(
     _rotate_worker_log(log_path, rotate_bytes, backup_count)
     log_f = open(log_path, "ab")
     popen_kwargs: dict[str, Any] = {
-        "cwd": workspace if os.path.isdir(workspace) else None,
+        "cwd": str(verifier_root),
         "stdin": subprocess.DEVNULL,
         "stdout": log_f,
         "stderr": subprocess.STDOUT,
@@ -10260,9 +10673,15 @@ def _spawn_verifier_supervisor(
             run_id=int(binding["run_id"]),
             verifier_root=verifier_root,
         )
+        _reconcile_prestart_verifier_authorization(
+            db_path=db_path,
+            authorization_id=authorization_id,
+            binding=binding,
+            reason="pre_start_restore",
+        )
         raise RuntimeError(
-            "`hermes` executable not found on PATH. "
-            "Install Hermes Agent or activate its venv before running the kanban dispatcher."
+            "Hermes executable not found for verifier subprocess. "
+            "Activate the Hermes Agent environment before running the kanban dispatcher."
         )
     except Exception:
         log_f.close()
@@ -10281,9 +10700,44 @@ def _spawn_verifier_supervisor(
             run_id=int(binding["run_id"]),
             verifier_root=verifier_root,
         )
+        _reconcile_prestart_verifier_authorization(
+            db_path=db_path,
+            authorization_id=authorization_id,
+            binding=binding,
+            reason="pre_start_restore",
+        )
         raise
     else:
         log_f.close()
+    try:
+        with connect(db_path=db_path) as conn:
+            supervisor_owner = f"{socket.gethostname()}:{int(proc.pid)}"
+            started = start_verifier_result_with_owner(
+                conn,
+                authorization_id=authorization_id,
+                supervisor_owner=supervisor_owner,
+                verifier_root=verifier_root,
+                **binding,
+            )
+            if started.state != "started":
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                _cleanup_verifier_root(
+                    db_path=db_path,
+                    authorization_id=authorization_id,
+                    task_id=task.id,
+                    run_id=int(binding["run_id"]),
+                    verifier_root=verifier_root,
+                )
+                _reconcile_prestart_verifier_authorization(
+                    db_path=db_path,
+                    authorization_id=authorization_id,
+                    binding=binding,
+                    reason=f"pre_start_failed:{started.reason}",
+                )
+                raise RuntimeError(f"verifier authorization start failed: {started.reason}")
     finally:
         try:
             os.close(writer_fd)

@@ -278,6 +278,16 @@ TOOLSETS = {
         "includes": [],
     },
 
+    "kanban_verifier": {
+        "description": (
+            "Protected-merge verifier result surface. Only active inside the "
+            "isolated verifier subprocess; exposes a single one-shot result "
+            "emitter and no general Kanban, terminal, file, or code tools."
+        ),
+        "tools": ["kanban_verifier_result"],
+        "includes": [],
+    },
+
     "discord": {
         "description": "Discord read and participate tools (fetch messages, search members, create threads)",
         "tools": ["discord"],

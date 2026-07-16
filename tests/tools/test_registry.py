@@ -5,6 +5,8 @@ import threading
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 import tools.registry as registry_module
 from tools.registry import ToolRegistry, _module_registers_tools, discover_builtin_tools
 
@@ -243,6 +245,39 @@ class TestToolsetAvailability:
             assert len(registry_module._check_fn_last_good) <= expected_cap
         finally:
             registry_module.invalidate_check_fn_cache()
+
+    @pytest.mark.parametrize("sampled", [True, False])
+    def test_sampled_context_drives_definition_verdict_without_resampling(
+        self,
+        sampled,
+    ):
+        registry_module.invalidate_check_fn_cache()
+        reg = ToolRegistry()
+        state = {"value": sampled}
+
+        def check():
+            raise AssertionError("contextual check body must not be re-sampled")
+
+        setattr(check, "cache_context_fn", lambda: state["value"])
+        setattr(check, "check_value_from_context_fn", bool)
+        reg.register(
+            name="contextual",
+            toolset="contextual",
+            schema=_make_schema("contextual"),
+            handler=_dummy_handler,
+            check_fn=check,
+        )
+        _, contexts = reg.sample_check_fn_cache_contexts()
+        state["value"] = not sampled
+
+        definitions = reg.get_definitions(
+            {"contextual"},
+            quiet=True,
+            check_fn_contexts=contexts,
+        )
+
+        assert bool(definitions) is sampled
+        registry_module.invalidate_check_fn_cache()
 
     def test_get_all_tool_names(self):
         reg = ToolRegistry()

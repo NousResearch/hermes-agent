@@ -5927,10 +5927,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         touched = False
 
         # (1) Top-level curator section — only add missing keys
-        _curator_defaults_raw = DEFAULT_CONFIG.get("curator", {})
-        _curator_defaults = (
-            _curator_defaults_raw if isinstance(_curator_defaults_raw, dict) else {}
-        )
+        _curator_defaults = DEFAULT_CONFIG.get("curator", {})
         raw_curator = config.get("curator")
         if not isinstance(raw_curator, dict):
             raw_curator = {}
@@ -5944,17 +5941,8 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             touched = True
 
         # (2) auxiliary.curator task slot
-        _auxiliary_defaults_raw = DEFAULT_CONFIG.get("auxiliary", {})
-        _auxiliary_defaults = (
-            _auxiliary_defaults_raw
-            if isinstance(_auxiliary_defaults_raw, dict)
-            else {}
-        )
-        _aux_curator_defaults_raw = _auxiliary_defaults.get("curator", {})
         _aux_curator_defaults = (
-            _aux_curator_defaults_raw
-            if isinstance(_aux_curator_defaults_raw, dict)
-            else {}
+            DEFAULT_CONFIG.get("auxiliary", {}).get("curator", {})
         )
         raw_aux = config.get("auxiliary")
         if not isinstance(raw_aux, dict):

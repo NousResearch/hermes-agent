@@ -318,14 +318,30 @@ def get_tool_definitions(
             cfg_fp = (cfg_stat.st_mtime_ns, cfg_stat.st_size)
         except (FileNotFoundError, OSError, ImportError):
             cfg_fp = None
+        sample_availability_contexts_fn = getattr(
+            registry,
+            "sample_check_fn_cache_contexts",
+            None,
+        )
         availability_context_fn = getattr(
             registry,
             "get_check_fn_cache_context_fingerprint",
             None,
         )
-        get_availability_context = (
-            availability_context_fn if callable(availability_context_fn) else lambda: ()
-        )
+
+        def sample_availability_contexts() -> Tuple[
+            tuple,
+            Optional[Dict[Any, object]],
+        ]:
+            if callable(sample_availability_contexts_fn):
+                sampled: Any = sample_availability_contexts_fn()
+                return sampled
+            fingerprint: Any = (
+                availability_context_fn()
+                if callable(availability_context_fn)
+                else ()
+            )
+            return fingerprint if isinstance(fingerprint, tuple) else (), None
         key_prefix = (
             frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
             frozenset(disabled_toolsets) if disabled_toolsets else None,
@@ -338,11 +354,11 @@ def get_tool_definitions(
         )
 
         for attempt in range(2):
-            availability_before = get_availability_context()
+            availability_before, check_fn_contexts = sample_availability_contexts()
             cache_key = key_prefix + (availability_before,) + key_suffix
             cached = _tool_defs_cache.get(cache_key)
             if cached is not None:
-                availability_after = get_availability_context()
+                availability_after, _ = sample_availability_contexts()
                 if availability_before == availability_after:
                     # Update _last_resolved_tool_names so downstream callers see
                     # consistent state even on a cache hit.
@@ -359,8 +375,9 @@ def get_tool_definitions(
                 disabled_toolsets,
                 quiet_mode,
                 skip_tool_search_assembly=skip_tool_search_assembly,
+                check_fn_contexts=check_fn_contexts,
             )
-            availability_after = get_availability_context()
+            availability_after, _ = sample_availability_contexts()
             if availability_before == availability_after:
                 # Cache only a stable lifecycle snapshot. A transition during
                 # computation retries once; a second race returns uncached.
@@ -384,6 +401,7 @@ def _compute_tool_definitions(
     disabled_toolsets: Optional[List[str]] = None,
     quiet_mode: bool = False,
     skip_tool_search_assembly: bool = False,
+    check_fn_contexts: Optional[Dict[Any, object]] = None,
 ) -> List[Dict[str, Any]]:
     """Uncached implementation of :func:`get_tool_definitions`."""
     # Determine which tool names the caller wants
@@ -467,7 +485,11 @@ def _compute_tool_definitions(
     # other toolset.
 
     # Ask the registry for schemas (only returns tools whose check_fn passes)
-    filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
+    filtered_tools = registry.get_definitions(
+        tools_to_include,
+        quiet=quiet_mode,
+        check_fn_contexts=check_fn_contexts,
+    )
 
     # The set of tool names that actually passed check_fn filtering.
     # Use this (not tools_to_include) for any downstream schema that references

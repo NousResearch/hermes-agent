@@ -146,6 +146,7 @@ _CHECK_FN_TTL_SECONDS = 30.0
 # so a genuinely-down backend is reflected within a couple of turns.
 _CHECK_FN_FAILURE_GRACE_SECONDS = 60.0
 _CHECK_FN_CACHE_MAX_ENTRIES = 256
+_CHECK_FN_CONTEXT_UNSET = object()
 _check_fn_cache: Dict[tuple[Callable, object], tuple[float, bool]] = {}
 # Monotonic timestamp of the most recent True result per check_fn.
 _check_fn_last_good: Dict[tuple[Callable, object], float] = {}
@@ -204,7 +205,7 @@ def _prune_check_fn_caches(now: float) -> None:
             _check_fn_cache.pop(key, None)
 
 
-def _check_fn_cached(fn: Callable) -> bool:
+def _check_fn_cached(fn: Callable, context: object = _CHECK_FN_CONTEXT_UNSET) -> bool:
     """Return a requirement verdict, TTL-cached across calls.
 
     Exceptions are swallowed as False. A transient False/exception within
@@ -216,7 +217,8 @@ def _check_fn_cached(fn: Callable) -> bool:
     ``check_value_from_context_fn`` so cache identity and value cannot diverge.
     """
     now = time.monotonic()
-    context = _check_fn_context(fn)
+    if context is _CHECK_FN_CONTEXT_UNSET:
+        context = _check_fn_context(fn)
     cache_key = (fn, context)
     with _check_fn_cache_lock:
         _prune_check_fn_caches(now)
@@ -344,7 +346,14 @@ class ToolRegistry:
     def get_check_fn_cache_context_fingerprint(self) -> tuple:
         """Return dynamic requirement contexts that affect schema availability."""
 
+        fingerprint, _ = self.sample_check_fn_cache_contexts()
+        return fingerprint
+
+    def sample_check_fn_cache_contexts(self) -> tuple[tuple, Dict[Callable, object]]:
+        """Sample dynamic check contexts once for cache identity and evaluation."""
+
         fingerprint = []
+        contexts: Dict[Callable, object] = {}
         seen: set[Callable] = set()
         for entry in self._snapshot_entries():
             fn = entry.check_fn
@@ -353,8 +362,10 @@ class ToolRegistry:
             ):
                 continue
             seen.add(fn)
-            fingerprint.append((entry.name, _check_fn_context(fn)))
-        return tuple(fingerprint)
+            context = _check_fn_context(fn)
+            contexts[fn] = context
+            fingerprint.append((entry.name, context))
+        return tuple(fingerprint), contexts
 
     def get_registered_toolset_names(self) -> List[str]:
         """Return sorted unique toolset names present in the registry."""
@@ -607,7 +618,12 @@ class ToolRegistry:
     # Schema retrieval
     # ------------------------------------------------------------------
 
-    def get_definitions(self, tool_names: Set[str], quiet: bool = False) -> List[dict]:
+    def get_definitions(
+        self,
+        tool_names: Set[str],
+        quiet: bool = False,
+        check_fn_contexts: Optional[Dict[Callable, object]] = None,
+    ) -> List[dict]:
         """Return OpenAI-format tool schemas for the requested tool names.
 
         Only tools whose ``check_fn()`` returns True (or have no check_fn)
@@ -630,7 +646,18 @@ class ToolRegistry:
                 continue
             if entry.check_fn:
                 if entry.check_fn not in check_results:
-                    check_results[entry.check_fn] = _check_fn_cached(entry.check_fn)
+                    context = (
+                        check_fn_contexts.get(
+                            entry.check_fn,
+                            _CHECK_FN_CONTEXT_UNSET,
+                        )
+                        if check_fn_contexts is not None
+                        else _CHECK_FN_CONTEXT_UNSET
+                    )
+                    check_results[entry.check_fn] = _check_fn_cached(
+                        entry.check_fn,
+                        context,
+                    )
                 if not check_results[entry.check_fn]:
                     if not quiet:
                         logger.debug("Tool %s unavailable (check failed)", name)

@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from utils import atomic_json_write
+from utils import atomic_json_write, base_url_host_matches
 
 import requests
 
@@ -692,6 +692,36 @@ def get_provider_info(provider_id: str) -> Optional[ProviderInfo]:
 # Model-level queries (rich ModelInfo)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Custom-endpoint provider validation
+# ---------------------------------------------------------------------------
+
+# Known upstream providers mapped to the API host(s) they serve from.  A custom
+# endpoint is resolved to a vendor's catalog ONLY when its ``base_url`` host
+# matches one of these — display-name matching risks mis-assigning pricing,
+# limits and capabilities to an unrelated endpoint that merely shares a name
+# (e.g. a custom endpoint named "friendli" pointed at a different host).
+_UPSTREAM_PROVIDER_HOSTS: Dict[str, str] = {
+    "api.friendli.ai": "friendli",
+}
+
+
+def upstream_provider_id_for_base_url(base_url: Optional[str]) -> Optional[str]:
+    """Return the models.dev provider id for a custom endpoint's base URL.
+
+    Returns ``None`` when the host is not a recognized upstream provider, so an
+    unrelated endpoint never inherits a vendor's catalog pricing.  Callers that
+    want the catalog short-circuit must validate identity here rather than from
+    the ``custom:<name>`` slug.
+    """
+    if not base_url:
+        return None
+    for host, mdev_id in _UPSTREAM_PROVIDER_HOSTS.items():
+        if base_url_host_matches(base_url, host):
+            return mdev_id
+    return None
+
+
 def get_model_info(
     provider_id: str, model_id: str
 ) -> Optional[ModelInfo]:
@@ -699,18 +729,16 @@ def get_model_info(
 
     Accepts Hermes or models.dev provider ID.  Tries exact match then
     case-insensitive fallback.  Returns None if not found.
+
+    A ``custom:<name>`` provider slug is a user-chosen display name, not a
+    verified vendor identity, so it intentionally does *not* match the catalog
+    here — resolving a custom endpoint to a vendor's pricing must go through
+    ``upstream_provider_id_for_base_url`` (host-validated), never the bare name.
     """
     mdev_id = PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
 
     data = fetch_models_dev()
     pdata = data.get(mdev_id)
-    if not isinstance(pdata, dict) and provider_id.startswith("custom:"):
-        # Custom providers are slugged "custom:<name>"; retry with the bare
-        # name so a custom endpoint that mirrors a known models.dev provider
-        # (e.g. "custom:friendli" -> "friendli") resolves to real pricing.
-        bare = provider_id.split(":", 1)[1]
-        mdev_id = PROVIDER_TO_MODELS_DEV.get(bare, bare)
-        pdata = data.get(mdev_id)
     if not isinstance(pdata, dict):
         return None
 

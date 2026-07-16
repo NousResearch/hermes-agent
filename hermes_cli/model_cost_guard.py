@@ -72,13 +72,24 @@ def expensive_model_warning(
         return None
 
     input_cost, output_cost, source = _pricing_from_model_info(model_info)
-    if input_cost is None and output_cost is None and provider:
+    if input_cost is None and output_cost is None:
         try:
-            from agent.models_dev import get_model_info
-
-            input_cost, output_cost, source = _pricing_from_model_info(
-                get_model_info(provider, model)
+            from agent.models_dev import (
+                get_model_info,
+                upstream_provider_id_for_base_url,
             )
+
+            # Resolve vendor identity from the endpoint's base_url, never the
+            # ``custom:<name>`` slug: an unrelated endpoint named "friendli"
+            # pointed elsewhere must not inherit Friendli pricing.  A genuine
+            # custom endpoint whose host matches a known upstream provider (e.g.
+            # api.friendli.ai) resolves to that vendor's catalog short-circuiting
+            # the per-endpoint pricing path, which is otherwise unit-blind.
+            resolved = upstream_provider_id_for_base_url(base_url) or provider
+            if resolved:
+                input_cost, output_cost, source = _pricing_from_model_info(
+                    get_model_info(resolved, model)
+                )
         except Exception:
             pass
     if input_cost is None and output_cost is None:

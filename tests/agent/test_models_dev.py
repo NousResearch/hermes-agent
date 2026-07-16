@@ -403,11 +403,15 @@ class TestGetModelCapabilities:
         assert caps is None
 
 
-class TestGetModelInfoCustomSlug:
-    """A ``custom:<name>`` provider slug must resolve to the same models.dev
-    entry as the bare name when ``<name>`` is a known provider, so custom
-    endpoints that mirror a catalog provider (e.g. Friendli) get real pricing
-    instead of falling through to the per-endpoint pricing path.
+class TestCustomEndpointProviderValidation:
+    """A ``custom:<name>`` slug is a display name, not a verified vendor
+    identity, so it must NOT match the catalog by name — only a host-validated
+    ``base_url`` may resolve a custom endpoint to a vendor's models.dev entry.
+
+    This is the Friendli route: ``api.friendli.ai`` is Friendli's own Model
+    API host, so an endpoint pointed there resolves to the ``friendli`` catalog
+    (per-million pricing) and never reaches the unit-blind per-endpoint path.
+    An unrelated endpoint merely *named* ``friendli`` must not inherit it.
     """
 
     REGISTRY = {
@@ -424,22 +428,45 @@ class TestGetModelInfoCustomSlug:
         },
     }
 
-    def test_custom_slug_resolves_to_bare_provider(self):
+    def test_display_name_slug_does_not_match_catalog(self):
         from agent.models_dev import get_model_info
 
         with patch("agent.models_dev.fetch_models_dev", return_value=self.REGISTRY):
-            bare = get_model_info("friendli", "zai-org/GLM-5.2")
-            slugged = get_model_info("custom:friendli", "zai-org/GLM-5.2")
+            # The bare name resolves; the "custom:friendli" slug deliberately
+            # does not, so an unrelated endpoint named "friendli" cannot pull
+            # Friendli pricing out of its display name alone.
+            assert get_model_info("friendli", "zai-org/GLM-5.2") is not None
+            assert get_model_info("custom:friendli", "zai-org/GLM-5.2") is None
 
-        assert bare is not None
-        assert slugged is not None
-        # Invariant: the custom slug yields identical pricing to the bare name.
-        assert slugged.cost_input == bare.cost_input
-        assert slugged.cost_output == bare.cost_output
-        assert slugged.provider_id == bare.provider_id
+    def test_upstream_provider_resolved_from_base_url_host(self):
+        from agent.models_dev import upstream_provider_id_for_base_url
 
-    def test_custom_slug_unknown_provider_returns_none(self):
-        from agent.models_dev import get_model_info
+        assert (
+            upstream_provider_id_for_base_url("https://api.friendli.ai/serverless/v1")
+            == "friendli"
+        )
+        assert upstream_provider_id_for_base_url("https://api.friendli.ai") == "friendli"
+
+    def test_unrelated_host_is_not_validated_as_friendli(self):
+        from agent.models_dev import upstream_provider_id_for_base_url
+
+        # Substring tricks and a same-named-but-different host must not validate.
+        assert upstream_provider_id_for_base_url("https://api.friendli.ai.evil/v1") is None
+        assert upstream_provider_id_for_base_url("https://evil.com/api.friendli.ai/v1") is None
+        assert upstream_provider_id_for_base_url(None) is None
+        assert upstream_provider_id_for_base_url("") is None
+
+    def test_validated_base_url_resolves_custom_endpoint_to_catalog(self):
+        from agent.models_dev import get_model_info, upstream_provider_id_for_base_url
+
+        base_url = "https://api.friendli.ai/serverless/v1"
+        resolved = upstream_provider_id_for_base_url(base_url)
+        assert resolved == "friendli"
 
         with patch("agent.models_dev.fetch_models_dev", return_value=self.REGISTRY):
-            assert get_model_info("custom:not-a-provider", "zai-org/GLM-5.2") is None
+            info = get_model_info(resolved, "zai-org/GLM-5.2")
+
+        assert info is not None
+        # Per-million models.dev pricing, *not* re-scaled by the endpoint path.
+        assert info.cost_input == 1.4
+        assert info.cost_output == 4.4

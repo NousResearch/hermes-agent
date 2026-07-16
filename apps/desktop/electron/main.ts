@@ -106,6 +106,12 @@ import {
   resolveTimeoutMs,
   TEXT_PREVIEW_SOURCE_MAX_BYTES
 } from './hardening'
+import {
+  createLinkTitleCurlFetcher,
+  type LinkTitleCurlHop,
+  linkTitleCurlRequestArgs,
+  parseLinkTitleCurlHeaders
+} from './link-title-curl'
 import { createLinkTitleFetcher } from './link-title-fetch'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
@@ -4021,8 +4027,8 @@ function filenameFromUrl(rawUrl, fallback = 'image') {
 // Link title resolution — curl (tier 1) → hidden BrowserWindow (tier 2).
 // Use bundle-time require here so the Electron composite project does not pull
 // the shared workspace's source tree under its own rootDir.
-const { isLinkTitleFetchableUrl } = require('@hermes/shared') as {
-  isLinkTitleFetchableUrl: (value: string) => boolean
+const { admitLinkTitleUrl } = require('@hermes/shared') as {
+  admitLinkTitleUrl: (value: string) => null | string
 }
 
 const titleCache = new Map()
@@ -4047,18 +4053,6 @@ const HTML_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: 
 const RENDER_TITLE_MAX_CONCURRENT = 2
 const RENDER_TITLE_TIMEOUT_MS = 8000
 const RENDER_TITLE_GRACE_MS = 700
-
-// Resource types we cancel before the network even fires — keeps the hidden
-// renderer fast and cuts third-party tracking noise.
-const RENDER_TITLE_BLOCKED_RESOURCES = new Set([
-  'cspReport',
-  'font',
-  'imageset',
-  'media',
-  'object',
-  'ping',
-  'stylesheet'
-])
 
 let linkTitleSession = null
 let oauthSession = null
@@ -4104,39 +4098,41 @@ function parseHtmlTitle(html) {
   return raw ? decodeHtmlEntities(raw).replace(/\s+/g, ' ').trim() : ''
 }
 
-function fetchHtmlTitleWithCurl(rawUrl: string): Promise<string> {
+function requestHtmlTitleWithCurl(url: string, timeoutMs: number): Promise<LinkTitleCurlHop> {
   return new Promise(resolve => {
-    const url = String(rawUrl || '').trim()
+    const timeoutSeconds = Math.max(0.1, timeoutMs / 1000)
 
-    if (!url) {
-      return resolve('')
-    }
+    const headerPath = path.join(
+      os.tmpdir(),
+      `hermes-link-title-${process.pid}-${crypto.randomBytes(6).toString('hex')}.headers`
+    )
 
-    const args = [
-      '--silent',
-      '--show-error',
-      '--location',
-      '--max-redirs',
-      String(TITLE_MAX_REDIRECTS),
-      '--max-time',
-      String(Math.max(2, Math.ceil(TITLE_TIMEOUT_MS / 1000))),
-      '--connect-timeout',
-      '4',
-      '--user-agent',
-      TITLE_USER_AGENT,
-      '--header',
-      'Accept: text/html,application/xhtml+xml;q=0.9,*/*;q=0.5',
-      '--header',
-      'Accept-Language: en-US,en;q=0.7',
-      '--header',
-      'Accept-Encoding: identity',
-      '--raw',
-      url
-    ]
+    const args = linkTitleCurlRequestArgs(url, {
+      connectTimeoutSeconds: Math.min(4, timeoutSeconds),
+      headerPath,
+      timeoutSeconds,
+      userAgent: TITLE_USER_AGENT
+    })
 
     const child = spawn('curl', args, hiddenWindowsChildOptions({ stdio: ['ignore', 'pipe', 'ignore'] }))
     const chunks = []
     let bytes = 0
+    let settled = false
+
+    const finish = async () => {
+      if (settled) {
+        return
+      }
+
+      settled = true
+      const headers = await fs.promises.readFile(headerPath, 'utf8').catch(() => '')
+      await fs.promises.unlink(headerPath).catch(() => undefined)
+
+      resolve({
+        body: chunks.length ? Buffer.concat(chunks).toString('utf8') : '',
+        ...parseLinkTitleCurlHeaders(headers)
+      })
+    }
 
     child.stdout.on('data', chunk => {
       if (bytes >= TITLE_BYTE_BUDGET) {
@@ -4150,27 +4146,33 @@ function fetchHtmlTitleWithCurl(rawUrl: string): Promise<string> {
       bytes += next.length
     })
 
-    child.on('error', () => resolve(''))
-    child.on('close', () => {
-      if (!chunks.length) {
-        return resolve('')
-      }
-
-      resolve(parseHtmlTitle(Buffer.concat(chunks).toString('utf8')))
-    })
+    child.on('error', () => void finish())
+    child.on('close', () => void finish())
   })
 }
+
+const fetchHtmlTitleWithCurl = createLinkTitleCurlFetcher({
+  admitUrl: admitLinkTitleUrl,
+  maxRedirects: TITLE_MAX_REDIRECTS,
+  readTitle: parseHtmlTitle,
+  request: requestHtmlTitleWithCurl,
+  timeoutMs: TITLE_TIMEOUT_MS
+})
 
 function getLinkTitleSession() {
   if (linkTitleSession || !app.isReady()) {
     return linkTitleSession
   }
 
-  linkTitleSession = session.fromPartition('hermes:link-titles', { cache: false })
-  linkTitleSession.webRequest.onBeforeRequest((details, callback) => {
-    callback({ cancel: RENDER_TITLE_BLOCKED_RESOURCES.has(details.resourceType) })
-  })
-  guardLinkTitleSession(linkTitleSession)
+  const candidate = session.fromPartition('hermes:link-titles', { cache: false })
+
+  try {
+    guardLinkTitleSession(candidate, admitLinkTitleUrl)
+  } catch {
+    return null
+  }
+
+  linkTitleSession = candidate
 
   return linkTitleSession
 }
@@ -4189,6 +4191,12 @@ function dequeueRenderTitle() {
 
 function runRenderTitleJob(rawUrl) {
   return new Promise(resolve => {
+    const url = admitLinkTitleUrl(rawUrl)
+
+    if (!url) {
+      return resolve('')
+    }
+
     if (!app.isReady()) {
       return resolve('')
     }
@@ -4260,7 +4268,7 @@ function runRenderTitleJob(rawUrl) {
     })
 
     window
-      .loadURL(rawUrl, {
+      .loadURL(url, {
         httpReferrer: 'https://www.google.com/',
         userAgent: TITLE_USER_AGENT
       })
@@ -4269,8 +4277,14 @@ function runRenderTitleJob(rawUrl) {
 }
 
 function fetchHtmlTitleWithRenderer(rawUrl: string): Promise<string> {
+  const url = admitLinkTitleUrl(rawUrl)
+
+  if (!url) {
+    return Promise.resolve('')
+  }
+
   return new Promise(resolve => {
-    renderTitleQueue.push({ resolve, url: rawUrl })
+    renderTitleQueue.push({ resolve, url })
     dequeueRenderTitle()
   })
 }
@@ -4282,7 +4296,7 @@ function usableTitle(value: string): string {
 }
 
 const fetchLinkTitle = createLinkTitleFetcher({
-  admitUrl: isLinkTitleFetchableUrl,
+  admitUrl: admitLinkTitleUrl,
   cache: titleCache,
   cacheKey: canonicalTitleCacheKey,
   fetchWithCurl: fetchHtmlTitleWithCurl,

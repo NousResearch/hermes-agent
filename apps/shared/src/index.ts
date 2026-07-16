@@ -42,7 +42,7 @@ export {
   JsonRpcGatewayClient,
   type WebSocketLike
 } from './json-rpc-gateway'
-export { isLinkTitleFetchableUrl } from './link-title-url'
+export { admitLinkTitleUrl, isLinkTitleFetchableUrl } from './link-title-url'
 export {
   buildHermesWebSocketUrl,
   type GatewayAuthMode,

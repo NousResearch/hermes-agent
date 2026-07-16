@@ -169,31 +169,39 @@ function isLocalOnlyHostname(hostname: string): boolean {
   return LOCAL_ONLY_HOST_SUFFIXES.some(suffix => hostname === suffix || hostname.endsWith(`.${suffix}`))
 }
 
-export function isLinkTitleFetchableUrl(value: string): boolean {
+export function admitLinkTitleUrl(value: string): null | string {
   let url: URL
 
   try {
     url = new URL(value)
   } catch {
-    return false
+    return null
   }
 
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    return false
+    return null
   }
 
   const hostname = url.hostname.toLowerCase().replace(/\.$/, '')
   const ipv4 = canonicalIpv4Value(hostname)
 
-  if (ipv4 !== null) {
-    return !isNonPublicIpv4(ipv4)
+  if (ipv4 !== null && isNonPublicIpv4(ipv4)) {
+    return null
   }
 
   const ipv6 = canonicalIpv6Words(hostname)
 
-  if (ipv6) {
-    return isPublicIpv6(ipv6)
+  if (ipv6 && !isPublicIpv6(ipv6)) {
+    return null
   }
 
-  return !isLocalOnlyHostname(hostname)
+  if (ipv4 === null && !ipv6 && isLocalOnlyHostname(hostname)) {
+    return null
+  }
+
+  return url.href
+}
+
+export function isLinkTitleFetchableUrl(value: string): boolean {
+  return admitLinkTitleUrl(value) !== null
 }

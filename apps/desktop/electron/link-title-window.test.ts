@@ -65,11 +65,15 @@ test('createLinkTitleWindow still returns the window if muting throws', () => {
 test('guardLinkTitleSession cancels downloads triggered by the title-fetch window', () => {
   let cancelled = false
   const handlers = {}
-  guardLinkTitleSession({
-    on: (e, h) => {
-      handlers[e] = h
-    }
-  })
+  guardLinkTitleSession(
+    {
+      on: (e, h) => {
+        handlers[e] = h
+      },
+      webRequest: { onBeforeRequest() {} }
+    },
+    value => value
+  )
   handlers['will-download'](null, {
     cancel: () => {
       cancelled = true
@@ -78,13 +82,59 @@ test('guardLinkTitleSession cancels downloads triggered by the title-fetch windo
   assert.ok(cancelled)
 })
 
+test('guardLinkTitleSession blocks rejected redirects and subrequests while allowing public HTTP(S)', () => {
+  let beforeRequest
+
+  const admitUrl = value => {
+    const url = new URL(value)
+
+    if (!['http:', 'https:'].includes(url.protocol) || ['10.0.0.1', '127.0.0.1'].includes(url.hostname)) {
+      return null
+    }
+
+    return url.href
+  }
+
+  guardLinkTitleSession(
+    {
+      on() {},
+      webRequest: {
+        onBeforeRequest(handler) {
+          beforeRequest = handler
+        }
+      }
+    },
+    admitUrl
+  )
+
+  const cancelled = (url, resourceType) => {
+    let result
+    beforeRequest({ resourceType, url }, value => {
+      result = value.cancel
+    })
+
+    return result
+  }
+
+  assert.equal(cancelled('http://127.0.0.1/redirect', 'mainFrame'), true)
+  assert.equal(cancelled('http://10.0.0.1/data', 'xhr'), true)
+  assert.equal(cancelled('file:///tmp/private', 'mainFrame'), true)
+  assert.equal(cancelled('https://example.com/', 'mainFrame'), false)
+  assert.equal(cancelled('http://cdn.example.com/app.js', 'script'), false)
+  assert.equal(cancelled('https://example.com/site.css', 'stylesheet'), true)
+})
+
 test('guardLinkTitleSession is a no-op when session.on throws', () => {
   assert.doesNotThrow(() =>
-    guardLinkTitleSession({
-      on() {
-        throw new Error()
-      }
-    })
+    guardLinkTitleSession(
+      {
+        on() {
+          throw new Error()
+        },
+        webRequest: { onBeforeRequest() {} }
+      },
+      value => value
+    )
   )
 })
 

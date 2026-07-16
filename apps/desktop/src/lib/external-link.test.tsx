@@ -1,3 +1,4 @@
+import { admitLinkTitleUrl } from '@hermes/shared'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -85,6 +86,17 @@ describe('external link helpers', () => {
 
     await expect(fetchLinkTitle('http://127')).resolves.toBe('')
     expect(bridge).not.toHaveBeenCalled()
+  })
+
+  it('forwards the exact WHATWG-canonical admitted URL to Electron', async () => {
+    const bridge = vi.fn().mockResolvedValue('Canonical title')
+    installDesktopBridge({ fetchLinkTitle: bridge as unknown as Window['hermesDesktop']['fetchLinkTitle'] })
+    const raw = 'http://example.com\\@127.0.0.1/'
+    const canonical = 'http://example.com/@127.0.0.1/'
+
+    expect(admitLinkTitleUrl(raw)).toBe(canonical)
+    await expect(fetchLinkTitle(raw)).resolves.toBe('Canonical title')
+    expect(bridge).toHaveBeenCalledWith(canonical)
   })
 
   it('deduplicates in-flight title fetches and caches results', async () => {

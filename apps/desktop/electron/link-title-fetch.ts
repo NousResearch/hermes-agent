@@ -1,5 +1,5 @@
 export interface LinkTitleFetchDependencies {
-  admitUrl(value: string): boolean
+  admitUrl(value: string): null | string
   cache: {
     get(key: string): string | undefined
     has(key: string): boolean
@@ -18,9 +18,10 @@ export interface LinkTitleFetchDependencies {
 
 export function createLinkTitleFetcher(deps: LinkTitleFetchDependencies): (rawUrl: unknown) => Promise<string> {
   return rawUrl => {
-    const url = String(rawUrl || '').trim()
+    const raw = String(rawUrl || '').trim()
+    const url = deps.admitUrl(raw)
 
-    if (!deps.admitUrl(url)) {
+    if (!url) {
       return Promise.resolve('')
     }
 

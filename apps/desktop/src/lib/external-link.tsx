@@ -1,4 +1,4 @@
-import { isLinkTitleFetchableUrl } from '@hermes/shared'
+import { admitLinkTitleUrl } from '@hermes/shared'
 import type { ComponentProps, ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 
@@ -111,16 +111,17 @@ export function urlSlugTitleLabel(value: string): string {
 }
 
 export function isTitleFetchable(value: string): boolean {
-  return isLinkTitleFetchableUrl(normalizeExternalUrl(value))
+  return admitLinkTitleUrl(normalizeExternalUrl(value)) !== null
 }
 
 export function fetchLinkTitle(url: string): Promise<string> {
-  const normalizedUrl = normalizeExternalUrl(url)
-  const key = titleCacheKey(normalizedUrl)
+  const canonicalUrl = admitLinkTitleUrl(normalizeExternalUrl(url))
 
-  if (!isTitleFetchable(normalizedUrl)) {
+  if (!canonicalUrl) {
     return Promise.resolve('')
   }
+
+  const key = titleCacheKey(canonicalUrl)
 
   if (titleCache.has(key)) {
     return Promise.resolve(titleCache.get(key) ?? '')
@@ -140,7 +141,7 @@ export function fetchLinkTitle(url: string): Promise<string> {
     return Promise.resolve('')
   }
 
-  const promise = bridge(normalizedUrl)
+  const promise = bridge(canonicalUrl)
     .then(value => (value || '').replace(/\s+/g, ' ').trim())
     .then(clean => (clean && !ERROR_TITLE_RE.test(clean) ? clean : ''))
     .catch(() => '')
@@ -158,14 +159,14 @@ export function fetchLinkTitle(url: string): Promise<string> {
 }
 
 export function useLinkTitle(url?: null | string): string {
-  const normalizedUrl = useMemo(() => (url ? normalizeExternalUrl(url) : ''), [url])
-  const key = useMemo(() => (normalizedUrl ? titleCacheKey(normalizedUrl) : ''), [normalizedUrl])
+  const canonicalUrl = useMemo(() => (url ? (admitLinkTitleUrl(normalizeExternalUrl(url)) ?? '') : ''), [url])
+  const key = useMemo(() => (canonicalUrl ? titleCacheKey(canonicalUrl) : ''), [canonicalUrl])
   const [title, setTitle] = useState(() => (key ? (titleCache.get(key) ?? '') : ''))
 
   useEffect(() => {
     setTitle(key ? (titleCache.get(key) ?? '') : '')
 
-    if (!key || !isTitleFetchable(normalizedUrl)) {
+    if (!key) {
       return
     }
 
@@ -173,7 +174,7 @@ export function useLinkTitle(url?: null | string): string {
 
     subs.add(setTitle)
     titleSubs.set(key, subs)
-    void fetchLinkTitle(normalizedUrl)
+    void fetchLinkTitle(canonicalUrl)
 
     return () => {
       subs.delete(setTitle)
@@ -182,7 +183,7 @@ export function useLinkTitle(url?: null | string): string {
         titleSubs.delete(key)
       }
     }
-  }, [key, normalizedUrl])
+  }, [canonicalUrl, key])
 
   return title
 }

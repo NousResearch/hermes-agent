@@ -1636,7 +1636,7 @@ DEFAULT_CONFIG = {
             "extra_body": {},
             "language": "",
         },
-        "honcho_query_rewrite": {
+        "memory_query_rewrite": {
             "provider": "auto",    # fast/cheap model recommended
             "model": "",
             "base_url": "",

@@ -1,4 +1,8 @@
-"""Rewrite the latest user message into a clean Honcho retrieval query."""
+"""Rewrite the latest user message into a clean memory-retrieval query.
+
+Provider-agnostic: any memory provider can pass ``rewrite_dialectic_query``
+as its query rewriter. Model/timeout are configured under
+``auxiliary.memory_query_rewrite`` in config.yaml."""
 
 from __future__ import annotations
 
@@ -9,7 +13,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-TASK_KEY = "honcho_query_rewrite"
+TASK_KEY = "memory_query_rewrite"
 
 _MAX_INPUT_CHARS = 4_000
 _MAX_QUERY_CHARS = 320

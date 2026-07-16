@@ -2737,11 +2737,46 @@ _restore_electron_dist_with_fallback() {
 # Build apps/desktop into a launchable native app. Mirrors install.ps1's
 # Install-Desktop: a root-level npm install so the apps/* workspace resolves
 # the desktop's own deps (Electron ~150MB), then `npm run pack`
-# (electron-builder --dir) which emits an unpacked app for the current OS. Only invoked
+# Desktop build: only on explicit opt-in. Invoked by the main installer when run
 # via the 'desktop' stage / --include-desktop, which the Electron app's own
 # first-launch bootstrap never requests (it must not rebuild itself).
+require_kanban_workspace_owns_path() {
+    local target="$1"
+    local action="$2"
+
+    [ -n "${HERMES_KANBAN_TASK:-}" ] || return 0
+
+    if [ -z "${HERMES_KANBAN_WORKSPACE:-}" ]; then
+        log_error "Refusing ${action}: kanban task ${HERMES_KANBAN_TASK} has no HERMES_KANBAN_WORKSPACE set"
+        log_info "Re-run from the task's isolated workspace/worktree so npm/build steps cannot touch a live checkout"
+        return 1
+    fi
+
+    local workspace_resolved target_resolved
+    workspace_resolved="$(cd "$HERMES_KANBAN_WORKSPACE" 2>/dev/null && pwd -P)" || {
+        log_error "Refusing ${action}: kanban workspace is missing or unreadable: $HERMES_KANBAN_WORKSPACE"
+        return 1
+    }
+    target_resolved="$(cd "$target" 2>/dev/null && pwd -P)" || target_resolved="$target"
+
+    case "$target_resolved" in
+        "$workspace_resolved"|"$workspace_resolved"/*)
+            return 0
+            ;;
+    esac
+
+    log_error "Refusing ${action}: target path is outside the active kanban workspace"
+    log_info "  task: ${HERMES_KANBAN_TASK}"
+    log_info "  workspace: $workspace_resolved"
+    log_info "  requested path: $target_resolved"
+    log_info "  Re-run this command from the task's isolated checkout/worktree instead of the live editable Hermes tree"
+    return 1
+}
+
 install_desktop() {
     local desktop_dir="$INSTALL_DIR/apps/desktop"
+
+    require_kanban_workspace_owns_path "$INSTALL_DIR" "desktop installer bootstrap" || return 1
 
     # The desktop stage only runs when a build is explicitly requested
     # (--include-desktop / 'desktop' stage), so a missing toolchain is a hard
@@ -2753,6 +2788,10 @@ install_desktop() {
     # the build never runs on a too-old system Node — the cause of the opaque
     # "Build desktop app … exit code 1" failure (Vite crashes on old Node).
     check_node
+    if [ ! -f "$desktop_dir/package.json" ]; then
+        log_warn "Skipping desktop build (apps/desktop not present in checkout)"
+        return 0
+    fi
     if ! command -v npm >/dev/null 2>&1; then
         log_error "Cannot build desktop app: Node.js / npm unavailable"
         log_info "Install Node.js and retry: cd $desktop_dir && npm run pack"

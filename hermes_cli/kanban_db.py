@@ -9277,7 +9277,7 @@ def _default_spawn(
     # CLI pin deliberately tiny; model_tools appends the scoped Kanban review
     # decision tools because HERMES_KANBAN_TASK is present.
     worker_toolsets = (
-        ["kanban-review-readonly", "kanban"]
+        ["kanban-review"]
         if review_only else _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
     )
     if worker_toolsets:

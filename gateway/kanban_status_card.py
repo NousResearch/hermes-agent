@@ -185,12 +185,16 @@ def _state(
         "reviewer_review_spawned", "needs_reviewer",
     })
     if status == "running" and current_run is not None:
-        latest = _last_event(_attr(current_run, "events", ()), {
+        current_latest = _last_event(_attr(current_run, "events", ()), {
             "review_requested", "review_rejected", "review_accepted", "crashed",
             "timed_out", "gave_up", "reclaimed", "archived", "review_retry_scheduled",
             "review_recovered", "review_job_reconciled", "reviewer_review_claimed",
             "reviewer_review_spawned", "needs_reviewer",
         })
+        # A fresh retry has only claim/heartbeat events. Preserve the task-wide
+        # review result until this run records a newer lifecycle transition.
+        if current_latest is not None:
+            latest = current_latest
     latest_kind = _attr(latest, "kind", "")
     if status == "archived" or latest_kind == "archived":
         return "📦", "Archived", "This task was closed in the archive."
@@ -374,6 +378,14 @@ def _active_index_item(
         return 1, _age(reviewed_at, now) or 0, "review", (
             f"{_active_index_title('🔎', title, status_card_url)}\n"
             f"🟡 In review: {format_elapsed_age(_age(reviewed_at, now) or 0)}"
+        )
+
+    review_rejected = _last_event(timeline, {"review_rejected"})
+    if status == "running" and review_rejected is not None:
+        return 1, _age(started_at, now) or 0, "review", (
+            f"{_active_index_title('🤝', title, status_card_url)}\n"
+            f"🟡 Addressing reviewer feedback · 🛠 {_compact_elapsed(progress_age)} · "
+            f"⏱️ {_compact_elapsed(_age(started_at, now))}"
         )
 
     dependency_wait = status == "todo" or (

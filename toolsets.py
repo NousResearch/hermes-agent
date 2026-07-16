@@ -75,6 +75,7 @@ _HERMES_CORE_TOOLS = [
     "kanban_complete", "kanban_block", "kanban_heartbeat",
     "kanban_comment", "kanban_create", "kanban_link",
     "kanban_unblock",
+    "kanban_accept_review", "kanban_reject_review", "kanban_recover_review",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
 ]
@@ -272,6 +273,17 @@ TOOLSETS = {
             "kanban_heartbeat", "kanban_comment",
             "kanban_create", "kanban_link",
             "kanban_unblock",
+            "kanban_accept_review", "kanban_reject_review", "kanban_recover_review",
+        ],
+        "includes": [],
+    },
+
+    "kanban-review": {
+        "description": "Scoped Kanban review: inspect a task workspace and record an accept/reject decision.",
+        "tools": [
+            "read_file", "search_files", "terminal", "process", "computer_use",
+            "kanban_show", "kanban_accept_review", "kanban_reject_review",
+            "kanban_recover_review",
         ],
         "includes": [],
     },

@@ -379,17 +379,19 @@ class TestKeepaliveProbeFallback:
         assert task._ping_unsupported is False
 
 
-
-
 @pytest.mark.asyncio
 class TestKeepaliveFailureLogging:
     """The keepalive warning must name the failure it reports (#65787).
 
-    The exceptions this path actually sees — ``TimeoutError`` from the probe's
-    ``wait_for``, ``CancelledError``, ``ConnectionResetError`` — are raised with
-    no args, so ``str(exc)`` is ``""``. Under ``%s`` the warning renders as
-    "...triggering reconnect:" with nothing after the colon, which is what hid
-    the original reconnect-loop for days. ``%r`` always names the type.
+    The exceptions this path actually sees are raised with no args —
+    ``TimeoutError`` from the probe's ``wait_for``, and arg-less ``OSError``
+    subclasses such as ``ConnectionResetError`` — so ``str(exc)`` is ``""``.
+    Under ``%s`` the warning renders as "...triggering reconnect:" with nothing
+    after the colon, which is what hid the original reconnect-loop for days.
+    ``%r`` always names the type.
+
+    (``CancelledError`` is deliberately not covered: it derives from
+    ``BaseException``, so the loop's ``except Exception`` never sees it.)
     """
 
     async def _keepalive_failure_message(self, task, caplog):

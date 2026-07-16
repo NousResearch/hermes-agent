@@ -153,6 +153,86 @@ def test_gui_skip_build_launches_existing_packaged_app_without_npm(tmp_path, mon
     assert mock_run.call_args.args[0] == [str(packaged_exe)]
 
 
+def test_macos_relaunch_fixup_uses_persistent_local_signing_identity(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    _make_packaged_executable(root, monkeypatch, platform="darwin")
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+    monkeypatch.delenv("CSC_NAME", raising=False)
+
+    ok = subprocess.CompletedProcess([], 0)
+
+    def fake_tool(binary: str) -> str | None:
+        if binary == "codesign":
+            return "/usr/bin/codesign"
+        return f"/usr/bin/{binary}"
+
+    with patch("hermes_cli.main._desktop_macos_system_tool", side_effect=fake_tool), \
+         patch("hermes_cli.main._desktop_macos_ensure_local_signing_identity", return_value="ABCDEF123456") as mock_identity, \
+         patch("hermes_cli.main.subprocess.run", return_value=ok) as mock_run:
+        cli_main._desktop_macos_relaunchable_fixup(desktop_dir)
+
+    mock_identity.assert_called_once()
+    commands = [call.args[0] for call in mock_run.call_args_list]
+    assert commands == [
+        ["xattr", "-cr", str(desktop_dir / "release" / "mac-arm64" / "Hermes.app")],
+        [
+            "/usr/bin/codesign",
+            "--force",
+            "--deep",
+            "--preserve-metadata=entitlements,flags,runtime",
+            "--sign",
+            "ABCDEF123456",
+            str(desktop_dir / "release" / "mac-arm64" / "Hermes.app"),
+        ],
+        [
+            "/usr/bin/codesign",
+            "--verify",
+            "--deep",
+            "--strict",
+            "--verbose=2",
+            str(desktop_dir / "release" / "mac-arm64" / "Hermes.app"),
+        ],
+    ]
+
+
+def test_macos_relaunch_fixup_falls_back_to_ad_hoc_when_local_identity_unavailable(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    _make_packaged_executable(root, monkeypatch, platform="darwin")
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+    monkeypatch.delenv("CSC_NAME", raising=False)
+
+    ok = subprocess.CompletedProcess([], 0)
+
+    with patch("hermes_cli.main._desktop_macos_system_tool", return_value="/usr/bin/codesign"), \
+         patch("hermes_cli.main._desktop_macos_ensure_local_signing_identity", return_value=None), \
+         patch("hermes_cli.main.subprocess.run", return_value=ok) as mock_run:
+        cli_main._desktop_macos_relaunchable_fixup(desktop_dir)
+
+    sign_commands = [call.args[0] for call in mock_run.call_args_list if "--sign" in call.args[0]]
+    assert sign_commands[0][sign_commands[0].index("--sign") + 1] == "-"
+
+
+def test_gui_build_only_applies_macos_fixup_even_when_desktop_build_is_up_to_date(tmp_path, monkeypatch):
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch, platform="darwin")
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=False), \
+         patch("hermes_cli.main._run_npm_install_deterministic") as mock_install, \
+         patch("hermes_cli.main.subprocess.run") as mock_run, \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup") as mock_fixup:
+        cli_main.cmd_gui(_ns(build_only=True))
+
+    mock_install.assert_not_called()
+    mock_run.assert_not_called()
+    mock_fixup.assert_called_once_with(root / "apps" / "desktop")
+
+
 def test_gui_linux_configures_sandbox_before_launch(tmp_path, monkeypatch):
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
@@ -305,7 +385,8 @@ def test_desktop_build_stamp_skips_build_when_up_to_date(tmp_path, monkeypatch):
 
     launch_ok = subprocess.CompletedProcess([], 0)
 
-    with patch("hermes_cli.main._desktop_build_needed", return_value=False), \
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=False), \
          patch("hermes_cli.main._run_npm_install_deterministic") as mock_install, \
          patch("hermes_cli.main.subprocess.run", return_value=launch_ok) as mock_run, \
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \

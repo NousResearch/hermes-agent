@@ -5442,25 +5442,250 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
     return stopped
 
 
+_DESKTOP_MACOS_LOCAL_SIGNING_IDENTITY = "Hermes Local Code Signing"
+
+
+def _desktop_macos_system_tool(name: str) -> Optional[str]:
+    """Resolve a macOS system tool without trusting a polluted PATH first."""
+    system_path = Path("/usr/bin") / name
+    if system_path.exists() and os.access(system_path, os.X_OK):
+        return str(system_path)
+    return shutil.which(name)
+
+
+def _desktop_macos_login_keychain() -> Path:
+    """Return the user's login keychain path for local Desktop signing."""
+    override = os.environ.get("HERMES_DESKTOP_SIGNING_KEYCHAIN", "").strip()
+    if override:
+        return Path(override).expanduser()
+
+    keychains = Path.home() / "Library" / "Keychains"
+    modern = keychains / "login.keychain-db"
+    if modern.exists():
+        return modern
+    return keychains / "login.keychain"
+
+
+def _desktop_macos_find_codesigning_identity(identity_name: str, *, security: str | None = None) -> Optional[str]:
+    """Return the SHA-1 hash for a usable codesigning identity with this name."""
+    security = security or _desktop_macos_system_tool("security")
+    if not security:
+        return None
+    try:
+        result = subprocess.run(
+            [security, "find-identity", "-v", "-p", "codesigning"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    marker = f'"{identity_name}"'
+    for line in (result.stdout or "").splitlines():
+        if marker not in line:
+            continue
+        parts = line.strip().split()
+        if len(parts) >= 2:
+            return parts[1]
+    return None
+
+
+def _desktop_macos_ensure_local_signing_identity() -> Optional[str]:
+    """Create/reuse a stable local code-signing identity for source-built macOS Desktop.
+
+    TCC permissions such as Full Disk Access are tied to macOS' code requirement
+    for the app. Re-signing source-built Desktop updates with ad-hoc signing
+    (``codesign --sign -``) changes that requirement on every rebuild because the
+    cdhash changes, so macOS treats each update as a different app and asks the
+    user to grant Full Disk Access again. A reusable self-signed Code Signing
+    certificate gives the local app a stable designated requirement across
+    rebuilds while remaining entirely local to the user's login keychain.
+
+    Real release identities still win: callers skip this path when electron-builder
+    has CSC_LINK / APPLE_SIGNING_IDENTITY configured. Best-effort: return None on
+    any failure so the caller can fall back to ad-hoc signing for relaunchability.
+    """
+    if sys.platform != "darwin":
+        return None
+    if os.environ.get("HERMES_DESKTOP_DISABLE_LOCAL_SIGNING_IDENTITY"):
+        return None
+
+    identity_name = os.environ.get(
+        "HERMES_DESKTOP_LOCAL_SIGNING_IDENTITY",
+        _DESKTOP_MACOS_LOCAL_SIGNING_IDENTITY,
+    ).strip()
+    if not identity_name:
+        return None
+
+    security = _desktop_macos_system_tool("security")
+    codesign = _desktop_macos_system_tool("codesign")
+    if not security or not codesign:
+        return None
+    existing_identity = _desktop_macos_find_codesigning_identity(identity_name, security=security)
+    if existing_identity:
+        return existing_identity
+
+    openssl = _desktop_macos_system_tool("openssl")
+    if not openssl:
+        return None
+
+    import tempfile
+
+    keychain = _desktop_macos_login_keychain()
+    common_name = identity_name.replace("\\", "\\\\").replace("\n", " ").replace("\r", " ")
+    password = os.urandom(18).hex()
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="hermes-macos-codesign-") as tmp:
+            tmp_path = Path(tmp)
+            cfg = tmp_path / "openssl.cnf"
+            key = tmp_path / "identity.key"
+            cert = tmp_path / "identity.crt"
+            p12 = tmp_path / "identity.p12"
+            cfg.write_text(
+                "\n".join(
+                    [
+                        "[req]",
+                        "distinguished_name = req_distinguished_name",
+                        "x509_extensions = v3_req",
+                        "prompt = no",
+                        "",
+                        "[req_distinguished_name]",
+                        f"CN = {common_name}",
+                        "",
+                        "[v3_req]",
+                        "basicConstraints = critical,CA:false",
+                        "keyUsage = critical,digitalSignature",
+                        "extendedKeyUsage = codeSigning",
+                        "subjectKeyIdentifier = hash",
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            subprocess.run(
+                [
+                    openssl,
+                    "req",
+                    "-new",
+                    "-newkey",
+                    "rsa:2048",
+                    "-nodes",
+                    "-x509",
+                    "-days",
+                    "3650",
+                    "-config",
+                    str(cfg),
+                    "-keyout",
+                    str(key),
+                    "-out",
+                    str(cert),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+                check=True,
+            )
+            subprocess.run(
+                [
+                    openssl,
+                    "pkcs12",
+                    "-export",
+                    "-inkey",
+                    str(key),
+                    "-in",
+                    str(cert),
+                    "-name",
+                    identity_name,
+                    "-out",
+                    str(p12),
+                    "-passout",
+                    f"pass:{password}",
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+                check=True,
+            )
+            subprocess.run(
+                [
+                    security,
+                    "import",
+                    str(p12),
+                    "-k",
+                    str(keychain),
+                    "-P",
+                    password,
+                    "-T",
+                    codesign,
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+                check=True,
+            )
+            # Trust is best-effort and bounded: if macOS asks for interactive
+            # approval, the timeout drops us back to ad-hoc signing rather than
+            # hanging a headless Desktop update. When trust succeeds, find-identity
+            # exposes a reusable SHA-1 identity for future updates.
+            subprocess.run(
+                [security, "add-trusted-cert", "-r", "trustRoot", "-p", "codeSign", "-k", str(keychain), str(cert)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                check=False,
+            )
+    except Exception:
+        return None
+
+    created_identity = _desktop_macos_find_codesigning_identity(identity_name, security=security)
+    if created_identity:
+        return created_identity
+    return None
+
+
+def _desktop_macos_sign_app(app: Path, *, codesign: str, signing_identity: str) -> bool:
+    """Sign and verify a macOS app bundle, preserving electron-builder metadata."""
+    sign_cmd = [
+        codesign,
+        "--force",
+        "--deep",
+        "--preserve-metadata=entitlements,flags,runtime",
+        "--sign",
+        signing_identity,
+        str(app),
+    ]
+    result = subprocess.run(sign_cmd, check=False)
+    if result.returncode != 0:
+        return False
+
+    verify = subprocess.run(
+        [codesign, "--verify", "--deep", "--strict", "--verbose=2", str(app)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return verify.returncode == 0
+
+
 def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
-    """Make a locally-built (unsigned) macOS desktop app survive in-place self-update.
+    """Make a locally-built macOS desktop app survive in-place self-update.
 
-    An ad-hoc-signed .app has no stable Designated Requirement (no Team ID), so
-    when the self-updater rebuilds the bundle in place with a fresh build (a new,
-    different cdhash) Gatekeeper/LaunchServices treats the changed code as
-    tampering and macOS reports "Hermes is damaged and can't be opened." The
-    bundle also inherits the com.apple.quarantine flag from the downloaded
-    installer process chain. Both make the relaunch fail.
-
-    Clearing the quarantine xattrs and re-applying a clean deep ad-hoc signature
-    (omitting the hardened-runtime flag, which is meaningless without a real
-    Developer ID) lets the rebuilt app relaunch. No-op when a real signing
-    identity is configured (CSC_LINK / APPLE_SIGNING_IDENTITY) so a properly
-    signed/notarized build is never clobbered. Best-effort: never raises.
+    Source-built Desktop bundles do not have a Developer ID identity. If we only
+    ad-hoc sign them, every rebuild gets a different code requirement and macOS
+    TCC permissions such as Full Disk Access are lost on each update. Prefer a
+    reusable local Code Signing identity so the app identity stays stable across
+    local rebuilds; fall back to ad-hoc signing when that cannot be created so the
+    app remains relaunchable. No-op when a real signing identity is configured
+    (CSC_LINK / APPLE_SIGNING_IDENTITY), so release builds are never clobbered.
+    Best-effort: never raises.
     """
     if sys.platform != "darwin":
         return
-    if os.environ.get("CSC_LINK") or os.environ.get("APPLE_SIGNING_IDENTITY"):
+    if os.environ.get("CSC_LINK") or os.environ.get("APPLE_SIGNING_IDENTITY") or os.environ.get("CSC_NAME"):
         return
     exe = _desktop_packaged_executable(desktop_dir)
     if exe is None:
@@ -5469,12 +5694,16 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
     app = exe.parents[2]
     if not str(app).endswith(".app") or not app.is_dir():
         return
-    codesign = shutil.which("codesign")
+    codesign = _desktop_macos_system_tool("codesign")
     if not codesign:
         return
     try:
         subprocess.run(["xattr", "-cr", str(app)], check=False)
-        subprocess.run([codesign, "--force", "--deep", "--sign", "-", str(app)], check=False)
+        signing_identity = _desktop_macos_ensure_local_signing_identity()
+        if signing_identity and _desktop_macos_sign_app(app, codesign=codesign, signing_identity=signing_identity):
+            return
+        if not _desktop_macos_sign_app(app, codesign=codesign, signing_identity="-"):
+            print(f"  (warning: macOS relaunch fixup could not sign {app})")
     except Exception as exc:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
 
@@ -5818,6 +6047,11 @@ def cmd_gui(args: argparse.Namespace):
             print("  Expected an unpacked Electron app for the current OS.")
             sys.exit(1)
         else:
+            # Even when the Desktop content hash says no rebuild is needed,
+            # ``hermes update`` may have just updated this CLI-side fixup. Apply it
+            # once on the headless build-only path so existing source-built apps get
+            # the stable macOS signing identity without requiring a forced rebuild.
+            _desktop_macos_relaunchable_fixup(desktop_dir)
             print(f"✓ Desktop packaged app ready: {packaged_executable} (not launching; --build-only)")
         return
 

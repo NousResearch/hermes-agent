@@ -1,7 +1,7 @@
 ---
 name: parallel-cli
 description: Use Parallel for web research, enrichment, and monitoring.
-version: 1.2.0
+version: 1.2.1
 author: George Pickett (@grp06), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -35,10 +35,10 @@ Run the preflight through `terminal`:
 ```bash
 parallel-cli --version
 parallel-cli auth --json
-parallel-cli <command-group> --help
+parallel-cli search --help
 ```
 
-The commands below are verified against `parallel-cli` 0.7.1. If a documented command is missing, identify the install method and upgrade through that same method before retrying.
+Replace `search` with the selected command group when checking help. The commands below are verified against `parallel-cli` 0.7.1. If a documented command is missing, identify the install method and upgrade through that same method before retrying.
 
 Install with one method appropriate to the active terminal backend:
 
@@ -85,9 +85,9 @@ The device flow does not require a PTY. For unattended CI or automation, set `PA
 ## How to Run
 
 1. Use `terminal` for every `parallel-cli` command.
-2. Prefer `--json` when Hermes must parse stdout.
-3. Use `-o` for large or reusable results, then read the saved file instead of relying on possibly truncated terminal output.
-4. Choose a writable output path valid for the active terminal backend; do not assume a Unix temp directory exists.
+2. Use `--json` when Hermes must parse stdout and no output file is requested.
+3. Use `-o` for large or reusable results, then read the saved JSON file instead of parsing stdout. The CLI may print a saved-path status line even when `--json` is also present.
+4. Choose a writable output path valid for the active terminal backend; create its parent first for commands other than research, which creates missing output parents. Do not assume a Unix temp directory exists.
 5. Use `--no-wait` for long jobs, capture the returned identifier, and resume with `status` or `poll`.
 6. Cite only URLs present in the returned Parallel payload.
 
@@ -108,7 +108,7 @@ Common flags:
 - `--json`: print machine-readable output.
 - `-o` / `--output`: save authoritative output to a file.
 - `--no-wait`: return immediately after creating a long-running job.
-- `--previous-interaction-id <interaction_id>`: reuse prior research context in a research or enrichment request.
+- `--previous-interaction-id trun_interaction_xxx`: reuse prior research context in a research or enrichment request.
 
 ## Procedure
 
@@ -124,11 +124,10 @@ parallel-cli search \
   --mode basic \
   --max-results 10 \
   --excerpt-max-chars-total 27000 \
-  --json \
   -o react-19-search.json
 ```
 
-Use `turbo` for simple, latency-sensitive English or Japanese lookups, `basic` for the default balance, and `advanced` for harder multi-step searches. Add `--location us` for geography-sensitive results, `--after-date YYYY-MM-DD` for recency, or include/exclude domain filters when source scope matters.
+Use `turbo` for simple, latency-sensitive lookups, `basic` for the default balance, and `advanced` for harder multi-step searches. Add `--location us` for geography-sensitive results, `--after-date YYYY-MM-DD` for recency, or include/exclude domain filters when source scope matters.
 
 Read the saved JSON and extract each result's title, URL, date, and useful excerpts. Skip navigation noise and never invent a citation.
 
@@ -140,7 +139,6 @@ Use extraction when the URL is already known:
 parallel-cli extract https://example.com \
   --objective "Find pricing and plan limits" \
   -q "pricing" \
-  --json \
   -o extracted-page.json
 ```
 
@@ -165,13 +163,15 @@ Capture both returned fields:
 - `interaction_id` carries context into a later research or enrichment request.
 
 ```bash
-parallel-cli research status <run_id> --json
-parallel-cli research poll <run_id> --timeout 540 -o research-report
+parallel-cli research status trun_run_xxx --json
+parallel-cli research poll trun_run_xxx --timeout 540 -o research-report
 parallel-cli research run "Drill into the top result" \
-  --previous-interaction-id <interaction_id> \
+  --previous-interaction-id trun_interaction_xxx \
   --no-wait \
   --json
 ```
+
+Substitute the returned `run_id` for `trun_run_xxx` and `interaction_id` for `trun_interaction_xxx`; they are different identifiers even when their values share a prefix.
 
 `research poll -o research-report` writes `research-report.json` and also writes `research-report.md` when the task used `--text`. If polling times out, the server-side task continues; reuse the same `run_id`.
 
@@ -197,9 +197,11 @@ parallel-cli enrich run \
 Capture `taskgroup_id`, then poll to a JSON file:
 
 ```bash
-parallel-cli enrich status <taskgroup_id> --json
-parallel-cli enrich poll <taskgroup_id> --timeout 540 -o enriched-results.json
+parallel-cli enrich status tgrp_xxx --json
+parallel-cli enrich poll tgrp_xxx --timeout 540 -o enriched-results.json
 ```
+
+Substitute the returned `taskgroup_id` for `tgrp_xxx`.
 
 For files, replace `--data` with `--source-type`, `--source`, and explicit `--source-columns`. A prior research `interaction_id` may be passed with `--previous-interaction-id`; enrichment does not return a new interaction ID.
 
@@ -227,11 +229,11 @@ parallel-cli findall run \
   --no-wait \
   --json
 
-parallel-cli findall status <findall_id> --json
-parallel-cli findall poll <findall_id> --timeout 540 -o findall-results.json
+parallel-cli findall status findall_xxx --json
+parallel-cli findall poll findall_xxx --timeout 540 -o findall-results.json
 ```
 
-Capture `findall_id`. Filter obvious placeholder entities and validate falsifiable criteria before presenting results.
+Capture `findall_id` and substitute it for `findall_xxx`. Filter obvious placeholder entities and validate falsifiable criteria before presenting results.
 
 ### Monitor
 
@@ -241,23 +243,29 @@ Confirm the query, frequency, and webhook before creating a persistent monitor:
 parallel-cli monitor create "Track Tesla SEC filings" --frequency 1d --json
 ```
 
-Capture `monitor_id` and verify creation with `get` rather than scanning the list:
+Capture `monitor_id` and verify creation with `get` rather than scanning the list. Run only the operation needed for the user's request:
 
 ```bash
-parallel-cli monitor get <monitor_id> --json
-parallel-cli monitor events <monitor_id> --json
-parallel-cli monitor events <monitor_id> --event-group-id <event_group_id> --json
-parallel-cli monitor update <monitor_id> --frequency 1w --json
-parallel-cli monitor trigger <monitor_id> --json
-parallel-cli monitor cancel <monitor_id> --json
+parallel-cli monitor get mon_xxx --json
+parallel-cli monitor events mon_xxx --json
+parallel-cli monitor events mon_xxx --event-group-id egrp_xxx --json
 ```
 
-Events are newest-first. When a response includes `next_cursor`, pass it back with `--cursor`; pagination is ignored when `--event-group-id` is set. Monitor queries and snapshot task-run IDs are immutable, and `trigger` emits an event only when it detects a material change. Always obtain explicit user confirmation before `cancel`, which is irreversible.
+Substitute the returned `monitor_id` and `event_group_id` for `mon_xxx` and `egrp_xxx`. Events are newest-first. When a response includes `next_cursor`, pass it back with `--cursor`; pagination is ignored when `--event-group-id` is set.
+
+`update`, `trigger`, and `cancel` mutate persistent monitor state. Confirm the exact requested action first, then run only that action:
+
+- Update: `parallel-cli monitor update mon_xxx --frequency 1w --json`
+- Trigger: `parallel-cli monitor trigger mon_xxx --json`
+- After explicit confirmation, cancel irreversibly: `parallel-cli monitor cancel mon_xxx --json`
+
+Monitor queries and snapshot task-run IDs are immutable, and `trigger` emits an event only when it detects a material change.
 
 ## Pitfalls
 
 - Do not silently choose Parallel when Hermes native web tools are sufficient.
 - Do not omit `--json` when Hermes must parse stdout.
+- Do not combine `--json` and `-o` when a downstream parser expects stdout to contain only JSON; treat the saved file as authoritative.
 - Do not rely on large terminal stdout when the command supports `-o`.
 - Do not confuse `run_id` with `interaction_id`, or use a generic research ID for FindAll.
 - Do not use `--previous-interaction-id` outside research and enrichment.
@@ -270,9 +278,9 @@ Events are newest-first. When a response includes `next_cursor`, pass it back wi
 
 - [ ] `parallel-cli auth --json` reports `authenticated: true`.
 - [ ] The selected command exits successfully.
-- [ ] Any requested output file exists and contains valid JSON.
+- [ ] Every JSON-designated output file exists and parses as JSON; any text-schema research report is non-empty Markdown.
 - [ ] Every asynchronous identifier is captured under its exact field name.
 - [ ] `status` or `poll` confirms completion before final results are reported.
 - [ ] Every citation URL appears in the returned Parallel payload.
-- [ ] A created or updated monitor is confirmed with `monitor get <monitor_id> --json`.
+- [ ] A created or updated monitor is confirmed with `parallel-cli monitor get mon_xxx --json` using its returned ID.
 - [ ] Any irreversible monitor cancellation had explicit user confirmation.

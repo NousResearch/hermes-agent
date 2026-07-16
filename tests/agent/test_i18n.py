@@ -36,7 +36,6 @@ def _flatten(d, prefix="") -> dict:
 # ---------------------------------------------------------------------------
 
 
-
 @pytest.mark.parametrize("lang", [l for l in i18n.SUPPORTED_LANGUAGES if l != "en"])
 def test_catalog_keys_match_english(lang: str):
     """Every non-English catalog must have exactly the same key set as English."""
@@ -75,13 +74,11 @@ def test_catalog_placeholders_match_english(lang: str):
 # ---------------------------------------------------------------------------
 
 
-
-
-
-
-
-
-
+def test_normalize_lang_accepts_polish_aliases():
+    assert i18n._normalize_lang("Polski") == "pl"
+    assert i18n._normalize_lang("Polish") == "pl"
+    assert i18n._normalize_lang("pl-PL") == "pl"
+    assert i18n._LANGUAGE_ALIASES["pl-pl"] == "pl"
 
 
 def test_default_when_nothing_set(monkeypatch):
@@ -98,9 +95,8 @@ def test_default_when_nothing_set(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-
-
-
+def test_t_explicit_polish_lang():
+    assert i18n.t("approval.denied", lang="pl").endswith("Odrzucono")
 
 
 def test_t_missing_key_in_non_english_falls_back_to_english(tmp_path, monkeypatch):
@@ -120,14 +116,11 @@ def test_t_missing_key_in_non_english_falls_back_to_english(tmp_path, monkeypatc
         i18n.reset_language_cache()
 
 
-
-
 # ---------------------------------------------------------------------------
 # _locales_dir resolution ladder -- regression for #23943 / #27632 / #35374.
 # Sealed installs (Nix store venv, pip wheel) have no source tree next to
 # agent/, so _locales_dir must resolve via env override or the data scheme.
 # ---------------------------------------------------------------------------
-
 
 
 def test_locales_dir_env_override_ignored_when_missing(tmp_path, monkeypatch):
@@ -138,5 +131,3 @@ def test_locales_dir_env_override_ignored_when_missing(tmp_path, monkeypatch):
     assert result != tmp_path / "does-not-exist"
     # In a source checkout this is the repo-root locales dir.
     assert result.name == "locales"
-
-

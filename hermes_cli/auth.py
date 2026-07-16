@@ -3635,23 +3635,77 @@ def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
         return None
 
 
+def _codex_access_token_env_backend_compatible(token: str) -> bool:
+    """Return True when CODEX_ACCESS_TOKEN is usable on backend-api/codex.
+
+    OpenAI's Business/Enterprise Codex access tokens for `codex app-server`
+    currently carry audience `codex-app-server`; those are accepted by the
+    official Codex CLI/app-server path, but chatgpt.com/backend-api/codex rejects
+    them as unparsable/unauthorized.  Do not let such a token shadow a working
+    Hermes OAuth credential for the backend-api provider.
+    """
+    if not token or "." not in token:
+        return False
+    try:
+        payload_b64 = token.split(".")[1]
+        payload_b64 += "=" * (-len(payload_b64) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload_b64.encode("ascii")).decode("utf-8"))
+    except Exception:
+        return False
+    aud = claims.get("aud")
+    if isinstance(aud, str):
+        audiences = {aud}
+    elif isinstance(aud, list):
+        audiences = {str(item) for item in aud}
+    else:
+        audiences = set()
+    return "https://api.openai.com/v1" in audiences
+
+
+def _read_codex_access_token_env() -> str:
+    """Return an explicit backend-api compatible Codex token from env, if set.
+
+    This is intentionally separate from OPENAI_API_KEY: these tokens authenticate
+    against chatgpt.com/backend-api/codex and should not be routed to the metered
+    Platform API.  Codex app-server access tokens are ignored here because they
+    require the app-server runtime, not the backend-api provider.
+    """
+    token = (os.getenv("CODEX_ACCESS_TOKEN") or "").strip()
+    if token and _codex_access_token_env_backend_compatible(token):
+        return token
+    return ""
+
+
 def resolve_codex_runtime_credentials(
     *,
     force_refresh: bool = False,
     refresh_if_expiring: bool = True,
     refresh_skew_seconds: int = CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
 ) -> Dict[str, Any]:
-    """Resolve runtime credentials from Hermes's own Codex token store.
+    """Resolve runtime credentials for the ChatGPT Codex backend.
 
-    Falls back to the credential pool when the singleton (``providers.openai-codex.tokens``)
-    has no usable access_token but the pool (``credential_pool.openai-codex``) does. This
-    closes the divergence between the chat path (singleton-only via this function) and
-    the auxiliary path (pool-first via ``_read_codex_access_token``). Without this
-    fallback, a user whose tokens live only in the pool — for example after a manual
-    pool seed, a partial re-auth, or pool-only restoration from a backup — gets a bare
-    HTTP 401 ``Missing Authentication header`` from the wire instead of a usable
-    credential. See issue #32992.
+    Prefer an explicit backend-compatible ``CODEX_ACCESS_TOKEN`` for automation
+    (ChatGPT Business / Enterprise access-token flow). Fall back to
+    Hermes-managed OAuth refresh tokens for interactive/local use, and then to
+    the openai-codex credential pool when the singleton auth-store entry is
+    missing but a usable pool entry exists. The pool fallback closes the
+    singleton-vs-pool divergence tracked in issue #32992.
     """
+    access_token_env = _read_codex_access_token_env()
+    if access_token_env:
+        base_url = (
+            os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
+            or DEFAULT_CODEX_BASE_URL
+        )
+        return {
+            "provider": "openai-codex",
+            "base_url": base_url,
+            "api_key": access_token_env,
+            "source": "codex-access-token-env",
+            "last_refresh": None,
+            "auth_mode": "access_token",
+        }
+
     read_error: Optional[AuthError] = None
     try:
         data = _read_codex_tokens()

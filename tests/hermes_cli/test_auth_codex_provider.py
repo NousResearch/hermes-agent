@@ -50,6 +50,14 @@ def _jwt_with_exp(exp_epoch: int) -> str:
     return f"h.{encoded}.s"
 
 
+def _codex_backend_jwt(exp_epoch: int | None = None) -> str:
+    if exp_epoch is None:
+        exp_epoch = int(time.time()) + 3600
+    payload = {"exp": exp_epoch, "aud": ["https://api.openai.com/v1"]}
+    encoded = base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).rstrip(b"=").decode("utf-8")
+    return f"h.{encoded}.s"
+
+
 def test_read_codex_tokens_success(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     _setup_hermes_auth(hermes_home)
@@ -72,11 +80,59 @@ def test_read_codex_tokens_missing(tmp_path, monkeypatch):
     assert exc.value.code == "codex_auth_missing"
 
 
+def test_resolve_codex_runtime_credentials_uses_codex_access_token_env_without_auth_store(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    token = _codex_backend_jwt()
+    monkeypatch.setenv("CODEX_ACCESS_TOKEN", token)
+
+    resolved = resolve_codex_runtime_credentials(force_refresh=True)
+
+    assert resolved["api_key"] == token
+    assert resolved["source"] == "codex-access-token-env"
+    assert resolved["auth_mode"] == "access_token"
+    assert resolved["base_url"] == DEFAULT_CODEX_BASE_URL
+
+
+def test_resolve_codex_runtime_credentials_prefers_codex_access_token_env_over_oauth_refresh(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    _setup_hermes_auth(hermes_home, access_token=_jwt_with_exp(int(time.time()) - 10), refresh_token="refresh-old")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    token = _codex_backend_jwt()
+    monkeypatch.setenv("CODEX_ACCESS_TOKEN", token)
+
+    def _should_not_refresh(tokens, timeout_seconds):
+        raise AssertionError("access-token mode must not use OAuth refresh tokens")
+
+    monkeypatch.setattr("hermes_cli.auth._refresh_codex_auth_tokens", _should_not_refresh)
+
+    resolved = resolve_codex_runtime_credentials(force_refresh=True)
+
+    assert resolved["api_key"] == token
+    assert resolved["source"] == "codex-access-token-env"
+
+
+def test_resolve_codex_runtime_credentials_ignores_app_server_access_token_for_backend(tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes"
+    _setup_hermes_auth(hermes_home, access_token="oauth-access", refresh_token="oauth-refresh")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    payload = {"exp": int(time.time()) + 3600, "aud": "codex-app-server"}
+    encoded = base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).rstrip(b"=").decode("utf-8")
+    monkeypatch.setenv("CODEX_ACCESS_TOKEN", f"h.{encoded}.s")
+
+    resolved = resolve_codex_runtime_credentials(force_refresh=False, refresh_if_expiring=False)
+
+    assert resolved["api_key"] == "oauth-access"
+    assert resolved["source"] == "hermes-auth-store"
+
+
 def test_resolve_codex_runtime_credentials_missing_access_token(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     _setup_hermes_auth(hermes_home, access_token="")
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex"))
+    monkeypatch.delenv("CODEX_ACCESS_TOKEN", raising=False)
 
     with pytest.raises(AuthError) as exc:
         resolve_codex_runtime_credentials()

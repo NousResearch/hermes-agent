@@ -4392,6 +4392,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         text = str(getattr(event, "text", "") or "").strip()
         if not text or text.startswith("/"):
             return False
+        if bool((getattr(event, "metadata", None) or {}).get("_explicit_queue")):
+            return False
         return not bool(getattr(event, "media_urls", None))
 
     def _batch_queued_text_events(
@@ -9172,6 +9174,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         auto_skill=event.auto_skill,
                         channel_prompt=event.channel_prompt,
                         internal=event.internal,
+                        metadata={**(event.metadata or {}), "_explicit_queue": True},
                         timestamp=event.timestamp,
                     )
                     self._enqueue_fifo(_quick_key, queued_event, adapter)

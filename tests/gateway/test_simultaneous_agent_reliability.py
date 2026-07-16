@@ -10,6 +10,7 @@ def _event(text, *, message_type=None, media_urls=None):
         text=text,
         message_type=message_type or base.MessageType.TEXT,
         media_urls=media_urls or [],
+        metadata={},
     )
 
 
@@ -38,6 +39,18 @@ def test_busy_queue_does_not_batch_media():
 
     assert result.text == "caption"
     assert runner._queued_events["session"][0].text == "next"
+
+
+def test_busy_queue_does_not_batch_explicit_queue_commands():
+    runner = object.__new__(gateway_run.GatewayRunner)
+    head = _event("first explicit turn")
+    head.metadata["_explicit_queue"] = True
+    runner._queued_events = {"session": [_event("ordinary follow-up")]}
+
+    result = runner._batch_queued_text_events("session", head)
+
+    assert result.text == "first explicit turn"
+    assert runner._queued_events["session"][0].text == "ordinary follow-up"
 
 
 def test_reasoning_persistence_can_be_disabled():

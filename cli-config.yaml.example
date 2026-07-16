@@ -726,6 +726,12 @@ agent:
   # Controls how much "thinking" the model does before responding.
   # Options: "xhigh" (max), "high", "medium", "low", "minimal", "none" (disable)
   reasoning_effort: "medium"
+
+  # Persist and replay hidden reasoning fields in conversation history.
+  # Disable for local profiles where scratchpads can be very large and the
+  # provider does not require reasoning continuity. Usage metrics are still
+  # retained and inline <think> blocks are still stripped from visible text.
+  persist_reasoning: true
   
   # Predefined personalities (use with /personality command)
   personalities:

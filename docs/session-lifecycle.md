@@ -2,7 +2,7 @@
 
 > **Audience:** Gateway developers and maintainers
 > **Source files:** `gateway/session.py` (~1444 lines), `gateway/run.py` (~16800 lines), `gateway/config.py`
-> **Last updated:** 2026-06-16
+> **Last updated:** 2026-07-16
 
 ## Overview
 
@@ -444,8 +444,8 @@ or `/restart`.
 
 The message queuing system handles two scenarios:
 
-1. **Interrupt follow-ups** — When a user sends multiple messages while the agent is
-   processing, subsequent messages are queued as single-slot pending messages.
+1. **Busy-input follow-ups** — With `busy_input_mode: queue`, messages received during
+   an active turn enter a bounded FIFO. Contiguous plain text may be batched at drain time.
 2. **`/queue` FIFO** — Explicit `/queue` commands that must each produce their own full
    agent turn, in order, without merging.
 
@@ -453,12 +453,12 @@ The message queuing system handles two scenarios:
 
 ```
 adapter._pending_messages: Dict[session_key, MessageEvent]
-    └── Single "next-up" slot per session. Overwritten on repeat sends
-        (burst collapse). Shared with photo-burst follow-ups.
+    └── Single "next-up" slot per session. Shared with photo-burst
+        follow-ups and the FIFO head.
 
 self._queued_events: Dict[session_key, List[MessageEvent]]
-    └── Overflow buffer. Each /queue invocation appends here when the
-        slot is occupied. Promoted one-at-a-time after each drain.
+    └── Overflow buffer. Busy follow-ups and explicit /queue events append
+        here when the slot is occupied. Promoted after each drain.
 ```
 
 ### Enqueue (`_enqueue_fifo`)
@@ -488,15 +488,44 @@ Called at the drain site after the slot was consumed. If there's an overflow ite
 
 `_queue_depth(session_key, adapter)` returns `len(overflow) + (1 if slot occupied else 0)`.
 
+### Bounded Busy-Text Batching (`_batch_queued_text_events`)
+
+Immediately after dequeue, Hermes may combine the FIFO head with following plain-text events:
+
+- At most 10 messages and 8,000 source characters enter one next turn.
+- Order is explicit in `[Queued message N]` blocks.
+- Batching stops before slash commands, explicit `/queue` events, or any event with media.
+- Explicit `/queue` events carry `_explicit_queue` metadata so stripping the command prefix
+  cannot accidentally make them batchable.
+- The first non-batchable event remains at the overflow head for the next turn.
+
+The queue cap remains 32 pending events per session, preventing unbounded memory growth when
+a gateway receives a burst behind a long-running turn.
+
 ### Clearing
 
 Queued events for a session are cleared on `/new` and `/reset` (via `_handle_reset_command`).
 
 ### FIFO Invariant
 
-Each `/queue` invocation produces exactly one full agent turn, in FIFO order, with no
-merging. The single-slot `_pending_messages` + overflow `_queued_events` design ensures
-that repeated sends during an active turn don't cause out-of-order processing.
+Each explicit `/queue` invocation produces exactly one full agent turn, in FIFO order, with
+no merging. Ordinary busy-mode text preserves arrival order but may share one bounded next
+turn. Commands and media always preserve their own event boundary.
+
+### Terminal TTS and Media Outbox
+
+A successful `text_to_speech` call ends the agent loop without another model request. The
+gateway collects current-turn `MEDIA:` tags before its empty-response return, so interrupted
+or media-only turns cannot orphan completed audio.
+
+Before platform delivery, terminal TTS is staged in profile-local `media_outbox.sqlite3`
+under a session/tool-call/path key. Successful delivery records the platform message ID;
+acknowledged keys are skipped and pending rows retry before the next inbound event. Only a
+compact TTS marker remains in in-memory conversation history.
+
+For profiles with `agent.persist_reasoning: false`, gateway-created agents neither persist nor
+replay hidden `reasoning_content`, `reasoning_details`, or provider-specific reasoning carriers.
+Visible content and usage metrics are unchanged.
 
 ---
 

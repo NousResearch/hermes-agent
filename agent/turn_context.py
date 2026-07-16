@@ -233,6 +233,10 @@ def build_turn_context(
     agent._unicode_sanitization_passes = 0
     agent._tool_guardrails.reset_for_turn()
     agent._tool_guardrail_halt_decision = None
+    # Bind a fresh per-turn skill_view dedup set. The state lives in a
+    # ContextVar, so this only affects the current turn's context (copied
+    # into the executor per session task) — it can never clear another
+    # concurrently running session's dedup state.
     try:
         from tools.skills_tool import reset_skill_load_cache
         reset_skill_load_cache()

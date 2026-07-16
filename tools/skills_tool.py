@@ -69,6 +69,7 @@ Usage:
 import json
 import logging
 import time
+from contextvars import ContextVar
 
 from hermes_constants import get_hermes_home, display_hermes_home
 import os
@@ -90,12 +91,45 @@ logger = logging.getLogger(__name__)
 # Per-turn skill load deduplication: track (name, file_path) pairs loaded
 # during the current turn so the same skill (or linked file) is never
 # re-read, re-parsed, or re-processed within a single turn.
-_loaded_skill_keys: set = set()
+#
+# The set is bound to a ContextVar — NOT a module global — so state is scoped
+# to the executing turn:
+#
+#   * the gateway copies each session task's context into the shared executor
+#     (``gateway/run.py::_run_in_executor_with_context`` does ``copy_context()``
+#     + ``ctx.run``), and tool worker threads re-copy the agent thread's
+#     context (``tools/thread_context.py::propagate_context_to_thread``), so
+#     every thread participating in one turn shares this turn's set while
+#     concurrently scheduled sessions each see their own;
+#   * ``build_turn_context()`` binds a FRESH set at turn start via
+#     ``reset_skill_load_cache()``, so one session starting a turn can never
+#     clear (or populate) another session's active turn.
+#
+# The default ``None`` means "no turn bound" (direct library callers, one-shot
+# scripts, contexts that never ran a turn prologue): dedup is disabled there
+# rather than falling back to shared process-global state.
+_turn_loaded_skill_keys: ContextVar[Optional[set]] = ContextVar(
+    "skills_tool_turn_loaded_keys", default=None
+)
 
 
 def reset_skill_load_cache() -> None:
-    """Clear the per-turn skill-load dedup set (called at turn start)."""
-    _loaded_skill_keys.clear()
+    """Bind a fresh, empty per-turn dedup set to the current context.
+
+    Called from the turn prologue (``agent/turn_context.py``); activates
+    per-turn skill_view dedup for the duration of the turn.
+    """
+    _turn_loaded_skill_keys.set(set())
+
+
+def clear_skill_load_cache() -> None:
+    """Unbind the per-turn dedup set — dedup becomes inactive.
+
+    Used by tests (and any caller tearing down a turn context) to guarantee
+    a previously bound dedup set can't leak into unrelated code running in
+    the same context.
+    """
+    _turn_loaded_skill_keys.set(None)
 
 
 # Per-session skill discovery cache.  _find_all_skills() re-reads every
@@ -987,10 +1021,61 @@ def skill_view(
         preprocess: Apply configured SKILL.md template and inline shell rendering
             to main skill content. Internal slash/preload callers disable this
             because they render the skill message themselves.
+        _skip_dedup: Internal loaders (e.g. ``_load_skill_payload``) pass True
+            because they need the full payload every time.
 
     Returns:
         JSON string with skill content or error message
+
+    Per-turn dedup: when a turn context is active (``reset_skill_load_cache``
+    was called in the current context), a repeated view of the same
+    ``(name, file_path)`` within the turn short-circuits with
+    ``already_loaded: true`` instead of re-reading and re-processing the
+    file. Only *successful* loads are marked — a failed call leaves the key
+    unmarked so the next identical call retries the real path and surfaces
+    the real result.
     """
+    loaded_keys = None if _skip_dedup else _turn_loaded_skill_keys.get()
+    dedup_key = (name, file_path)
+
+    if loaded_keys is not None and dedup_key in loaded_keys:
+        already = {
+            "success": True,
+            "name": name,
+            "content": None,
+            "already_loaded": True,
+            "note": "This skill was already loaded during the current turn.",
+        }
+        if file_path:
+            already["file"] = file_path
+        return json.dumps(already, ensure_ascii=False)
+
+    result = _skill_view_impl(
+        name, file_path=file_path, task_id=task_id, preprocess=preprocess
+    )
+
+    if loaded_keys is not None:
+        # Mark AFTER the load completes, and only when it actually succeeded.
+        # Resolution, security checks, readiness probing, linked-file
+        # validation, and the reads themselves all happen inside the impl and
+        # any of them can fail; marking up front would turn the next
+        # identical call into a synthetic success with null content.
+        try:
+            if json.loads(result).get("success") is True:
+                loaded_keys.add(dedup_key)
+        except Exception:
+            logger.debug("skill_view dedup marking skipped", exc_info=True)
+
+    return result
+
+
+def _skill_view_impl(
+    name: str,
+    file_path: str = None,
+    task_id: str = None,
+    preprocess: bool = True,
+) -> str:
+    """Uncached ``skill_view`` body — see the public wrapper for the contract."""
     try:
         # Validate before the ':' qualified-name dispatch so a Windows drive
         # path (e.g. C:\skills\foo) can't be reinterpreted as a plugin
@@ -1006,25 +1091,6 @@ def skill_view(
                 },
                 ensure_ascii=False,
             )
-
-        # Per-turn dedup: if this exact (name, file_path) was already loaded
-        # during the current turn, skip re-reading and re-processing the file.
-        # Internal loaders (e.g. _load_skill_payload) pass _skip_dedup=True
-        # because they need the full payload every time.
-        _dedup_key = (name, file_path)
-        if not _skip_dedup:
-            if _dedup_key in _loaded_skill_keys:
-                return json.dumps(
-                    {
-                        "success": True,
-                        "name": name,
-                        "content": None,
-                        "already_loaded": True,
-                        "note": "This skill was already loaded during the current turn.",
-                    },
-                    ensure_ascii=False,
-                )
-            _loaded_skill_keys.add(_dedup_key)
 
         local_category_name: str | None = None
         # ── Qualified name dispatch (plugin skills) ──────────────────

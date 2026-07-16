@@ -14,6 +14,7 @@ from tools.skills_tool import (
     _parse_tags,
     _get_category_from_path,
     _find_all_skills,
+    reset_skill_load_cache,
     skill_matches_platform,
     skills_list,
     skill_view,
@@ -1370,3 +1371,164 @@ class TestSkillViewCollisionDetection:
         result = json.loads(raw)
         assert result["success"] is True
         assert "LOCAL BODY" in result["content"]
+
+
+# ---------------------------------------------------------------------------
+# skill_view per-turn dedup
+# ---------------------------------------------------------------------------
+
+
+class TestSkillViewPerTurnDedup:
+    """Behavioral coverage for ContextVar-scoped per-turn skill_view dedup."""
+
+    def test_duplicate_load_within_turn_returns_already_loaded(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "dedup-skill", body="FULL BODY")
+            reset_skill_load_cache()  # turn start
+
+            first = json.loads(skill_view("dedup-skill"))
+            second = json.loads(skill_view("dedup-skill"))
+
+        assert first["success"] is True
+        assert "FULL BODY" in first["content"]
+        assert "already_loaded" not in first
+        assert second["success"] is True
+        assert second["already_loaded"] is True
+        assert second["content"] is None
+
+    def test_dedup_inactive_without_turn_context(self, tmp_path):
+        """No turn bound (library/one-shot callers): every call does real work."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "no-turn", body="FULL BODY")
+            first = json.loads(skill_view("no-turn"))
+            second = json.loads(skill_view("no-turn"))
+
+        for result in (first, second):
+            assert result["success"] is True
+            assert "FULL BODY" in result["content"]
+            assert "already_loaded" not in result
+
+    def test_failed_first_call_retries_real_path(self, tmp_path):
+        """A failed call must NOT mark the key: the retry hits the real path."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(tmp_path, "retry-skill")
+            reset_skill_load_cache()
+
+            # First call fails: the linked file does not exist yet.
+            first = json.loads(
+                skill_view("retry-skill", file_path="references/api.md")
+            )
+            assert first["success"] is False
+
+            # The failure repeats verbatim (a real error, not a synthetic
+            # already_loaded success with null content)...
+            again = json.loads(
+                skill_view("retry-skill", file_path="references/api.md")
+            )
+            assert again["success"] is False
+            assert "already_loaded" not in again
+
+            # ...and once the file appears, the same call really succeeds.
+            refs = skill_dir / "references"
+            refs.mkdir()
+            (refs / "api.md").write_text("# API\nEndpoint info.")
+            third = json.loads(
+                skill_view("retry-skill", file_path="references/api.md")
+            )
+
+        assert third["success"] is True
+        assert "Endpoint info" in third["content"]
+
+    def test_missing_skill_error_not_deduped(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "some-skill")
+            reset_skill_load_cache()
+            first = json.loads(skill_view("nope"))
+            second = json.loads(skill_view("nope"))
+
+        for result in (first, second):
+            assert result["success"] is False
+            assert "already_loaded" not in result
+
+    def test_reset_between_turns_allows_reload(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "turn-skill", body="FULL BODY")
+            reset_skill_load_cache()  # turn 1
+            assert "FULL BODY" in json.loads(skill_view("turn-skill"))["content"]
+            assert json.loads(skill_view("turn-skill"))["already_loaded"] is True
+
+            reset_skill_load_cache()  # turn 2 boundary
+            reloaded = json.loads(skill_view("turn-skill"))
+
+        assert reloaded["success"] is True
+        assert "FULL BODY" in reloaded["content"]
+        assert "already_loaded" not in reloaded
+
+    def test_linked_file_keyed_separately_from_main_skill(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_dir = _make_skill(tmp_path, "files-skill", body="MAIN BODY")
+            refs = skill_dir / "references"
+            refs.mkdir()
+            (refs / "api.md").write_text("# API\nEndpoint info.")
+            reset_skill_load_cache()
+
+            main = json.loads(skill_view("files-skill"))
+            linked = json.loads(
+                skill_view("files-skill", file_path="references/api.md")
+            )
+            linked_again = json.loads(
+                skill_view("files-skill", file_path="references/api.md")
+            )
+
+        assert "MAIN BODY" in main["content"]
+        # A different (name, file_path) key is not deduped by the main load...
+        assert linked["success"] is True
+        assert "Endpoint info" in linked["content"]
+        # ...but repeating the same file view within the turn is.
+        assert linked_again["already_loaded"] is True
+        assert linked_again["file"] == "references/api.md"
+
+    def test_concurrent_turn_contexts_are_isolated(self, tmp_path):
+        """Two turns (e.g. two gateway sessions) must not share dedup state.
+
+        Each gateway session task's context is copied into the shared
+        executor (gateway/run.py::_run_in_executor_with_context), so two
+        concurrently scheduled turns run in distinct contexts. Simulate that
+        with two contextvars.Context objects interleaved on one thread.
+        """
+        import contextvars
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "shared-skill", body="FULL BODY")
+            turn_a = contextvars.copy_context()
+            turn_b = contextvars.copy_context()
+            turn_a.run(reset_skill_load_cache)
+            turn_b.run(reset_skill_load_cache)
+
+            # Turn A loads the skill.
+            first_a = json.loads(turn_a.run(skill_view, "shared-skill"))
+            assert "FULL BODY" in first_a["content"]
+
+            # Turn B starting/resetting must not clear A's active state...
+            turn_b.run(reset_skill_load_cache)
+            second_a = json.loads(turn_a.run(skill_view, "shared-skill"))
+            assert second_a["already_loaded"] is True
+
+            # ...and A's load must not have marked the skill in B.
+            first_b = json.loads(turn_b.run(skill_view, "shared-skill"))
+            assert first_b["success"] is True
+            assert "FULL BODY" in first_b["content"]
+            assert "already_loaded" not in first_b
+
+    def test_skip_dedup_bypasses_cache_for_internal_loaders(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "internal-skill", body="FULL BODY")
+            reset_skill_load_cache()
+
+            assert "FULL BODY" in json.loads(skill_view("internal-skill"))["content"]
+            # Internal loaders (_load_skill_payload) always get the payload...
+            bypass = json.loads(skill_view("internal-skill", _skip_dedup=True))
+            assert "FULL BODY" in bypass["content"]
+            # ...while normal tool calls stay deduped.
+            deduped = json.loads(skill_view("internal-skill"))
+            assert deduped["already_loaded"] is True

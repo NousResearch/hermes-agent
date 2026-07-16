@@ -16342,18 +16342,31 @@ def _render_active_theme_bootstrap_css() -> str:
             # later extended to ship user-authored CSS literals.
             def _esc(s: str) -> str:
                 return str(s).replace("</", "<\\/")
+            # Variable names MUST match what the bundle actually consumes:
+            #   - ``--background-base`` / ``--midground-base`` come from
+            #     ``layerVars()`` in ``web/src/themes/context.tsx``.
+            #   - ``--theme-font-sans`` / ``--theme-base-size`` come from
+            #     ``typographyVars()`` there, and ``index.css`` applies them
+            #     via ``html{font-family:var(--theme-font-sans);
+            #     font-size:var(--theme-base-size)}``.
+            # The ``html,body`` canvas rule references the SAME variables
+            # instead of literal values so runtime theme switches stay
+            # live: ``applyTheme()`` writes these vars as inline styles on
+            # ``documentElement``, which outrank this stylesheet block in
+            # the cascade — the rule below re-resolves automatically and
+            # never goes stale when the user picks a different theme.
             return (
                 '<style id="hermes-theme-bootstrap">'
                 ":root{"
                 f"--background-base:{_esc(bg_hex)};"
-                f"--color-background:{_esc(bg_hex)};"
                 f"--midground-base:{_esc(mg_hex)};"
-                f"--color-midground:{_esc(mg_hex)};"
-                f"--font-sans:{_esc(font_sans)};"
-                f"--font-base-size:{_esc(base_size)};"
+                f"--theme-font-sans:{_esc(font_sans)};"
+                f"--theme-base-size:{_esc(base_size)};"
                 "}"
-                f"html,body{{background-color:{_esc(bg_hex)};color:{_esc(mg_hex)};"
-                f"font-family:{_esc(font_sans)};font-size:{_esc(base_size)};}}"
+                "html,body{background-color:var(--background-base);"
+                "color:var(--midground-base);"
+                "font-family:var(--theme-font-sans);"
+                "font-size:var(--theme-base-size);}"
                 "</style>"
             )
         return ""

@@ -3597,15 +3597,42 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # resolve_runtime_provider() raised UnscopedSecretError before model
         # selection, breaking every cron job. Mirrors the per-turn pattern in
         # gateway/run.py (_profile_runtime_scope).
+        #
+        # However, on single-profile deployments where credentials are injected
+        # via the process environment (container env vars, systemd Environment=,
+        # a sourced .env — NOT written to <home>/.env), installing the scope
+        # breaks credential resolution: build_profile_secret_scope() returns
+        # only the parsed .env, not os.environ, so env-injected keys (e.g.
+        # DEEPINFRA_API_KEY) resolve to empty → HTTP 401. The interactive paths
+        # in gateway/run.py guard with `if not multiplex_profiles: return`,
+        # skipping the scope on single-profile deployments. This mirror that
+        # guard so cron behaves the same as interactive turns. See issue #65773.
         from agent.secret_scope import (
             build_profile_secret_scope,
             reset_secret_scope,
             set_secret_scope,
         )
 
-        _scope_token = set_secret_scope(
-            build_profile_secret_scope(_get_hermes_home())
-        )
+        # Check if multiplex_profiles is enabled — if not, skip the scope
+        # so env-injected credentials fall through to os.environ like the
+        # interactive path does.
+        _skip_scope = False
+        try:
+            from gateway.config import load_gateway_config as _lgc
+            _gw_cfg = _lgc()
+            if not getattr(_gw_cfg, "multiplex_profiles", False):
+                _skip_scope = True
+        except Exception:
+            pass  # If config load fails, install the scope (safe default)
+
+        if _skip_scope:
+            # Single-profile: don't install secret scope — env vars resolve
+            # directly via os.environ, matching interactive path behavior.
+            _scope_token = None
+        else:
+            _scope_token = set_secret_scope(
+                build_profile_secret_scope(_get_hermes_home())
+            )
         # Defer the cron agent's async-resource teardown until AFTER delivery.
         # run_job normally closes the agent (and reaps stale async clients) in
         # its finally block; doing that before _deliver_result runs means the
@@ -3628,7 +3655,8 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
                 _teardown_cron_agent(_deferred_agent, job["id"])
             raise
         finally:
-            reset_secret_scope(_scope_token)
+            if _scope_token is not None:
+                reset_secret_scope(_scope_token)
 
         # Everything from here through delivery runs with the agent still live
         # (deferred teardown). Wrap it ALL in a try/finally so that if any step

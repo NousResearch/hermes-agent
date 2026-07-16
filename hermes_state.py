@@ -2613,9 +2613,18 @@ class SessionDB:
         ~3k tokens; keeps user/assistant text verbatim so the model has the
         actual conversation to summarize (not just metadata).
         """
+        # Only the user-facing conversation roles go into the summarizer
+        # prompt. Tool output and system messages must NOT be copied
+        # verbatim — they bloat the prompt and (for tool output) often
+        # contain large blobs (file contents, command stdout, etc.) that
+        # distort the summary. PR #49519 review feedback.
+        _KEEP_ROLES = frozenset({"user", "assistant"})
+
         lines = []
         for m in messages:
             role = m.get("role", "unknown")
+            if role not in _KEEP_ROLES:
+                continue
             content = m.get("content")
             if content is None:
                 continue

@@ -1314,6 +1314,13 @@ class APIServerAdapter(BasePlatformAdapter):
             "reasoning_tokens", "estimated_cost_usd", "actual_cost_usd",
             "api_call_count", "parent_session_id", "last_active", "preview",
             "_lineage_root_id",
+            # Hover-card summary cache (issue #45103, PR #49519 review feedback).
+            # Without these, GET /api/sessions/{id} returns a row that has
+            # summary populated in state.db but never reaches the client,
+            # forcing the desktop hover card to fall back to preview even
+            # when a proper AI summary is available. All three are null
+            # until the background scheduler (PR #49520) writes them.
+            "summary", "summary_updated_at", "summary_model",
         )
         payload = {key: session.get(key) for key in safe_keys if key in session}
         # Avoid exposing full system prompts/model_config through the client API;
@@ -1489,9 +1496,16 @@ class APIServerAdapter(BasePlatformAdapter):
         failure, returns 200 with ``summary: null`` and an error code
         — the cached summary (if any) is left untouched.
 
-        The actual summarization is synchronous; expect 1-5 s response
-        time. Clients should not poll this endpoint.
+        The actual summarization is synchronous and reaches
+        ``agent.auxiliary_client.call_llm`` (1-5 s typical). We dispatch
+        it via ``asyncio.to_thread`` so the aiohttp event loop stays
+        responsive to other requests while the LLM is generating
+        (PR #49519 review feedback — the previous sync call would
+        freeze every other in-flight API request for the duration of
+        the summarization).
         """
+        import asyncio  # local import: keep top-of-file imports light
+
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -1501,7 +1515,15 @@ class APIServerAdapter(BasePlatformAdapter):
             return err
         db = self._ensure_session_db()
         try:
-            new_summary = db.summarize_session(session_id, force=True)
+            # asyncio.to_thread runs the sync DB+LLM call on the default
+            # thread pool (separate from aiohttp's loop), so a 5 s LLM
+            # generation does not block the event loop for the whole
+            # gateway. The default thread pool is sized for I/O-bound
+            # work and grows on demand; the LLM call is I/O-bound on
+            # the upstream API, so this is the right pool.
+            new_summary = await asyncio.to_thread(
+                db.summarize_session, session_id, force=True
+            )
         except Exception as exc:
             logger.warning("summarize_session API error for %s: %s", session_id, exc)
             return web.json_response(

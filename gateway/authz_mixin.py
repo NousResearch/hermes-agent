@@ -441,7 +441,10 @@ class GatewayAuthorizationMixin:
         # Compare with ``is True`` so the real bool field authorizes while a
         # MagicMock source (test fixtures using ``object.__new__`` runners with
         # mock sources) does not auto-truthy through this gate (see pitfall #13).
-        if getattr(source, "role_authorized", False) is True:
+        if (
+            allow_adapter_delegation
+            and getattr(source, "role_authorized", False) is True
+        ):
             return True
 
         # Check pairing store. A pairing entry is a first-class authorization

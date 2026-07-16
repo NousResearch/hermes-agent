@@ -32,8 +32,10 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 from gateway.status import terminate_pid
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
+    EXTERNAL_GATEWAY_SUPERVISOR_ENV,
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
+    is_gateway_supervisor_process,
     parse_restart_drain_timeout,
 )
 from hermes_cli.config import (
@@ -694,6 +696,22 @@ def _capture_gateway_argv(pid: int) -> list[str] | None:
     except Exception:
         pass
     return argv
+
+
+def _prepare_profile_gateway_update_restart(profile: str, pid: int) -> str | None:
+    """Choose who relaunches a profile gateway after ``hermes update``.
+
+    A gateway started with ``--external-supervisor`` must exit back to that
+    manager. Starting Hermes's detached watcher as well would escape the
+    manager and race its replacement process. Ordinary foreground gateways
+    retain the existing detached-watcher behavior.
+    """
+    argv = _capture_gateway_argv(pid)
+    if argv and "--external-supervisor" in argv:
+        return "external-supervisor"
+    if launch_detached_profile_gateway_restart(profile, pid):
+        return "detached"
+    return None
 
 
 def launch_detached_gateway_restart_by_cmdline(
@@ -4503,15 +4521,10 @@ def _running_under_gateway_supervisor() -> bool:
       - launchd sets ``XPC_SERVICE_NAME`` to the job label for jobs it spawns;
         interactive shells inherit the sentinel ``"0"`` instead.
       - the s6-overlay container longrun exports ``HERMES_S6_SUPERVISED_CHILD``.
+      - wrapped services can opt in with ``--external-supervisor`` when their
+        launcher strips the native systemd/launchd marker.
     """
-    if os.environ.get("INVOCATION_ID"):
-        return True
-    if os.environ.get("HERMES_S6_SUPERVISED_CHILD"):
-        return True
-    xpc_service = os.environ.get("XPC_SERVICE_NAME", "")
-    if xpc_service and xpc_service != "0":
-        return True
-    return False
+    return is_gateway_supervisor_process()
 
 
 def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
@@ -6543,6 +6556,8 @@ def _gateway_command_inner(args):
     if subcmd is None or subcmd == "run":
         if _maybe_redirect_run_to_s6_supervision(args):
             return  # unreachable; execvp doesn't return
+        if getattr(args, "external_supervisor", False):
+            os.environ[EXTERNAL_GATEWAY_SUPERVISOR_ENV] = "1"
         verbose = getattr(args, "verbose", 0)
         quiet = getattr(args, "quiet", False)
         replace = getattr(args, "replace", False)

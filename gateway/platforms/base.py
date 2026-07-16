@@ -1504,12 +1504,16 @@ MEDIA_TAG_CLEANUP_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Extension-less absolute paths (e.g. Caddyfile, Dockerfile, Makefile) are
-# intentionally excluded from MEDIA_TAG_CLEANUP_RE — they are validated and
-# delivered via MEDIA_EXTENSIONLESS_TAG_RE so prompt-injection paths that do
-# not exist on disk are left visible instead of silently dropped. Paths with
-# an unknown but present extension (e.g. .weirdext) stay on the #34517
-# bare-path fallback and are not handled here.
+# Paths NOT covered by MEDIA_TAG_CLEANUP_RE's extension alternation — both
+# extension-less files (Caddyfile, Dockerfile, Makefile) and files with an
+# unknown extension (.py, .log, .weirdext, ...) — are validated and delivered
+# via MEDIA_EXTENSIONLESS_TAG_RE. Every ``MEDIA:`` path is therefore
+# deliverable regardless of file type (#36060): known extensions extract
+# unconditionally via the anchored pattern above, everything else extracts
+# only after ``validate_media_delivery_path`` accepts it (exists on disk, not
+# under the credential/system denylist, strict-mode rules honored), so
+# prompt-injection paths that do not validate are left visible instead of
+# silently dropped.
 MEDIA_EXTENSIONLESS_TAG_RE = re.compile(
     r'''[`"']?MEDIA:\s*'''
     r'''(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|'''
@@ -1527,8 +1531,16 @@ def _normalize_media_tag_path(raw: str) -> str:
 
 
 def _path_lacks_deliverable_extension(path: str) -> bool:
-    """True only when the basename has no extension (Caddyfile, Makefile, …)."""
-    return not Path(path).suffix
+    """True when MEDIA_TAG_CLEANUP_RE's extension alternation does not cover
+    ``path`` — either the basename has no extension at all (Caddyfile,
+    Makefile, …) or the extension is not in MEDIA_DELIVERY_EXTS (.py, .log,
+    .weirdext, …). Such paths route through the validated delivery pass
+    (``validate_media_delivery_path``) instead of the unconditional one, so
+    every file type is deliverable (#36060) while nonexistent / denylisted
+    paths stay visible in the text.
+    """
+    suffix = Path(path).suffix.lower()
+    return not suffix or suffix not in MEDIA_DELIVERY_EXTS
 
 
 def _strip_media_tag_directives(text: str) -> str:
@@ -5649,7 +5661,10 @@ class BasePlatformAdapter(ABC):
             # a potential closing fence, and the chunk indicator.
             headroom = max_length - INDICATOR_RESERVE - _len(prefix) - _len(FENCE_CLOSE)
             if headroom < 1:
-                headroom = max_length // 2
+                # Floor at 1 so a pathologically small max_length (0 or 1 —
+                # e.g. a relay capability descriptor whose max_message_length
+                # is 0/1) can't make headroom 0 and stall the loop below.
+                headroom = max(1, max_length // 2)
 
             # Everything remaining fits in one final chunk
             if _len(prefix) + _len(remaining) <= max_length - INDICATOR_RESERVE:
@@ -5673,7 +5688,24 @@ class BasePlatformAdapter(ABC):
             if split_at < _cp_limit // 2:
                 split_at = region.rfind(" ")
             if split_at < 1:
-                split_at = _cp_limit
+                # Consume at least one codepoint. Without the max(1, …) floor,
+                # a zero _cp_limit — reachable when max_length is 0/1, or under
+                # utf16_len when the next char is a surrogate pair wider than
+                # the whole budget — leaves split_at at 0, so ``remaining``
+                # never shrinks and the while-loop spins forever appending
+                # empty chunks (an unbounded hang / OOM).
+                #
+                # Length contract for a degenerate budget: a codepoint is the
+                # smallest indivisible unit, so when the budget is smaller than
+                # one codepoint (e.g. max_length=1 with a 2-unit surrogate pair
+                # under utf16_len) the emitted chunk WILL exceed max_length by
+                # that one codepoint. That is intentional — emitting the
+                # codepoint whole preserves the content, whereas the only
+                # alternatives are dropping it (data loss) or looping forever.
+                # Real callers never hit this: platform caps are hundreds/
+                # thousands, and the relay path normalizes a 0/negative
+                # descriptor bound to 4096 (see gateway/relay/descriptor.py).
+                split_at = max(1, _cp_limit)
 
             # Avoid splitting inside an inline code span (`...`).
             # If the text before split_at has an odd number of unescaped

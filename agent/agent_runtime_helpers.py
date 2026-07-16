@@ -2192,18 +2192,6 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     if not isinstance(function_args, dict):
         function_args = {}
 
-    try:
-        from tools.argument_validator import validate_tool_arguments as _validate_tool_arguments
-        from tools.registry import registry as _tool_registry
-    except Exception:
-        _validate_tool_arguments = None
-        _tool_registry = None
-
-    if _validate_tool_arguments is not None and _tool_registry is not None:
-        _ok, _err = _validate_tool_arguments(function_name, function_args, _tool_registry)
-        if not _ok:
-            return json.dumps({"error": _err}, ensure_ascii=False)
-
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
     try:
         from hermes_cli.middleware import apply_tool_request_middleware

@@ -95,6 +95,7 @@ def validate_tool_arguments(
     tool_name: str,
     args: dict[str, Any],
     registry: Any,
+    task_id: Optional[str] = None,
 ) -> tuple[bool, str]:
     """Validate tool arguments before execution.
 
@@ -124,6 +125,10 @@ def validate_tool_arguments(
         if isinstance(value, str) and _is_path_like(key):
             if tool_name in _PATH_WRITE_TOOLS:
                 continue  # write operations create files — skip placeholder check
+            # On remote/container backends the path lives inside the sandbox,
+            # not on the host FS — os.path.exists() is meaningless there.
+            if task_id is not None and _uses_remote_backend(task_id):
+                continue
             expanded = os.path.expanduser(value.strip())
             if os.path.exists(expanded):
                 continue  # real path — skip both placeholder and type checks
@@ -144,10 +149,27 @@ def validate_tool_arguments(
             if type_error:
                 return False, type_error
 
-    if tool_name in _PATH_EXISTENCE_TOOLS:
+    # On remote/container backends the path lives inside the sandbox, not on
+    # the host FS — os.path.exists() here is meaningless, so skip the check.
+    if tool_name in _PATH_EXISTENCE_TOOLS and not (
+        task_id is not None and _uses_remote_backend(task_id)
+    ):
         path = args.get("path")
         if isinstance(path, str) and path.strip():
             if tool_name in _PATH_READ_CHECK_TOOLS and not os.path.exists(os.path.expanduser(path.strip())):
                 return False, f"File not found: {path.strip()}"
 
     return True, ""
+
+def _uses_remote_backend(task_id: str) -> bool:
+    """True when task_id resolves to a non-local terminal backend.
+
+    Reuses file_tools._terminal_env_type_for_task so resolution logic
+    stays in one place. Best-effort: falls back to the global env_type
+    when no live environment exists yet for the task.
+    """
+    try:
+        from tools.file_tools import _terminal_env_type_for_task
+        return _terminal_env_type_for_task(task_id) != "local"
+    except Exception:
+        return False

@@ -1066,6 +1066,22 @@ def handle_function_call(
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
         function_args = {}
+
+    # Validate coerced args. After coerce_tool_args() so string-encoded
+    # ints/bools ("10", "true") are converted before checks run; before
+    # execution so both the concurrent (invoke_tool) and sequential
+    # (tool_executor) paths are covered by one shared gate.
+    try:
+        from tools.argument_validator import validate_tool_arguments as _validate_tool_arguments
+        from tools.registry import registry as _tool_registry
+        _ok, _err = _validate_tool_arguments(
+            function_name, function_args, _tool_registry, task_id=task_id
+        )
+        if not _ok:
+            return json.dumps({"error": _err}, ensure_ascii=False)
+    except Exception:
+        pass
+
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
 
     # ── Tool Search bridge dispatch ──────────────────────────────────

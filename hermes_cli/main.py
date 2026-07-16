@@ -1436,6 +1436,63 @@ def _workspace_root(dir: Path) -> Path:
     return dir
 
 
+def _assert_kanban_workspace_owns_path(target: Path, *, action: str) -> None:
+    """Refuse npm/build mutations outside the active kanban workspace.
+
+    Kanban workers are expected to run from an isolated task workspace or
+    worktree. If this Python process was imported from a different checkout
+    (for example the live editable ``~/.hermes/hermes-agent`` tree), repo-root
+    npm/build helpers can silently mutate that live tree instead of the task's
+    workspace. Refuse those writes explicitly so the operator must rerun from
+    the isolated checkout.
+    """
+    task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    if not task_id:
+        return
+
+    workspace_raw = (os.environ.get("HERMES_KANBAN_WORKSPACE") or "").strip()
+    if not workspace_raw:
+        print(
+            f"Refusing {action}: kanban task {task_id} has no HERMES_KANBAN_WORKSPACE set.",
+            file=sys.stderr,
+        )
+        print(
+            "  Re-run from the task's isolated workspace/worktree so npm/build steps cannot touch a live checkout.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    try:
+        workspace = Path(workspace_raw).expanduser().resolve(strict=True)
+    except OSError:
+        print(
+            f"Refusing {action}: kanban workspace is missing or unreadable: {workspace_raw}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    try:
+        target_resolved = target.expanduser().resolve(strict=False)
+    except OSError:
+        target_resolved = target.expanduser()
+
+    if target_resolved == workspace or target_resolved.is_relative_to(workspace):
+        return
+
+    print(
+        f"Refusing {action}: target path is outside the active kanban workspace.",
+        file=sys.stderr,
+    )
+    print(f"  task: {task_id}", file=sys.stderr)
+    print(f"  workspace: {workspace}", file=sys.stderr)
+    print(f"  requested path: {target_resolved}", file=sys.stderr)
+    print(
+        "  Re-run this command from the task's isolated checkout/worktree instead of the live editable Hermes tree.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
 def _termux_workspace_install_context(
     dir: Path, *, include_child_workspaces: bool = False
 ) -> tuple[Path, tuple[str, ...]]:
@@ -1788,6 +1845,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     #    Existing desktop behaviour runs npm from the workspace root.  Termux
     #    scopes the install to ui-tui so launch does not pull desktop/web
     #    dependencies into the hot path.
+    _assert_kanban_workspace_owns_path(tui_dir, action="TUI npm/build")
     did_install = False
     termux_startup = _is_termux_startup_environment()
     termux_need_rebuild = False
@@ -4884,6 +4942,8 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     if not _web_ui_build_needed(web_dir):
         return True
 
+    _assert_kanban_workspace_owns_path(web_dir, action="web UI npm/build")
+
     # Console-encoding-safe print: Windows consoles default to cp1252
     # (or similar) and will raise UnicodeEncodeError on arrow / check
     # glyphs unless PYTHONIOENCODING=utf-8 is set. Routing every print
@@ -5706,6 +5766,7 @@ def cmd_gui(args: argparse.Namespace):
             build_label = "source build" if source_mode else "packaged app"
             print(f"✓ Desktop {build_label} is up to date (content stamp matches)")
         else:
+            _assert_kanban_workspace_owns_path(desktop_dir, action="desktop npm/build")
             print("→ Installing desktop workspace dependencies...")
             nixos_env = _nixos_build_env()
             install_result = _run_npm_install_deterministic(npm, PROJECT_ROOT, capture_output=False, env=nixos_env)

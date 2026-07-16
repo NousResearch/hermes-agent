@@ -260,9 +260,7 @@ function proseLineCount(body: string): number {
 const CODE_SIGNAL_RE = [
   /(^|\s)(const|let|var|function|class|import|export|return|if|for|while|switch)\b/gim,
   /=>|==|===|!=|!==|\{|\}|;|<\/?[a-z][^>]*>/gi,
-  /^\s*(#include|SELECT|INSERT|UPDATE|DELETE|CREATE|DROP)\b/gim,
-  /^\s*(?:\/?(?:bin\/)?(?:bash|zsh|sh|fish)|brew|cd|command|curl|docker|env|gh|git|grep|make|npm|pnpm|python3?|stow|uv|wget|yarn)\b/gim,
-  /\b[A-Z_][A-Z0-9_]*="\$[A-Z_][A-Z0-9_]*"|&&|\|\||\\\s*$/gm
+  /^\s*(#include|SELECT|INSERT|UPDATE|DELETE|CREATE|DROP)\b/gim
 ]
 
 function codeSignalCount(body: string): number {

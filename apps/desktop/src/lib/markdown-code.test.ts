@@ -63,4 +63,15 @@ describe('isLikelyProseCodeBlock', () => {
     expect(isLikelyProseFence('text', paths)).toBe(false)
     expect(isLikelyProseCodeBlock('text', paths)).toBe(false)
   })
+
+  it('still demotes untagged prose that starts with shell-like English words', () => {
+    const prose = [
+      'Make sure to invite everyone before Friday.',
+      'Command the team to use the shared checklist.',
+      'Git ready after the lunch update.'
+    ].join('\n')
+
+    expect(isLikelyProseFence('', prose)).toBe(true)
+    expect(isLikelyProseCodeBlock('', prose)).toBe(true)
+  })
 })

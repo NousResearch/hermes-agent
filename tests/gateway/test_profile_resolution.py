@@ -2,7 +2,7 @@
 
 import logging
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -406,7 +406,8 @@ class TestAdapterToSessionKeyIntegration:
         assert key.startswith("agent:ops:"), key
         assert key != build_session_key(source, profile=None)
 
-    def test_chat_route_keeps_shared_adapter_for_delivery(self):
+    @pytest.mark.asyncio
+    async def test_chat_route_keeps_shared_adapter_for_delivery(self):
         runner = object.__new__(GatewayRunner)
         runner.config = GatewayConfig(
             multiplex_profiles=True,
@@ -414,6 +415,7 @@ class TestAdapterToSessionKeyIntegration:
         )
         runner._profile_adapters = {"ops": {}}
         adapter = _stub_adapter(Platform.TELEGRAM, runner)
+        adapter.send = AsyncMock()
         runner.adapters = {Platform.TELEGRAM: adapter}
 
         source = adapter.build_source(
@@ -422,6 +424,12 @@ class TestAdapterToSessionKeyIntegration:
 
         assert source.profile == "ops"
         assert runner._adapter_for_source(source) is adapter
+        await runner._deliver_platform_notice(source, "routed reply")
+        adapter.send.assert_awaited_once_with(
+            "-1001234567890",
+            "routed reply",
+            metadata=None,
+        )
 
     def test_adapter_without_runner_falls_back_to_default_namespace(self, mock_runner):
         """Regression anchor: with no ``gateway_runner`` injected (the pre-fix

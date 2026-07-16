@@ -28,6 +28,9 @@ import platform
 import shutil
 import stat
 import subprocess
+import sys
+
+from hermes_cli._subprocess_compat import windows_hide_flags
 import tarfile
 import tempfile
 import threading
@@ -318,6 +321,7 @@ def _verify_cosign(checksums_path: str, sig_path: str, cert_path: str) -> bool |
             text=True,
             timeout=15,
             stdin=subprocess.DEVNULL,
+            **({"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}),
         )
         if result.returncode == 0:
             logger.info("cosign provenance verification passed")
@@ -779,6 +783,7 @@ def check_command_security(command: str) -> dict:
             text=True,
             timeout=timeout,
             stdin=subprocess.DEVNULL,
+            **({"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}),
         )
     except OSError as exc:
         # Covers FileNotFoundError, PermissionError, exec format error.

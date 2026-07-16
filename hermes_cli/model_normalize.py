@@ -294,6 +294,33 @@ def detect_vendor(model_name: str) -> Optional[str]:
     return None
 
 
+def is_known_vendor_namespace(prefix: str) -> bool:
+    """Return True if ``prefix`` is a recognised aggregator vendor namespace.
+
+    A ``vendor/model`` slug like ``anthropic/claude-opus-4.6`` or
+    ``meta-llama/llama-4-scout`` carries a *vendor* prefix — the left side is
+    a model publisher, not a Hermes provider id. Those are safe to strip down
+    to a bare model name when routing to a direct provider.
+
+    A ``provider/model`` value like ``claude-apr/claude-fable-5`` carries a
+    *provider* prefix — the left side names a Hermes provider (often supplied
+    by a ``plugins/model-providers/<name>/`` plugin). If that provider does
+    not resolve for the running profile, the prefix must NOT be silently
+    stripped onto whatever default provider happens to be configured; doing so
+    substitutes both model and provider and produces a confusing downstream
+    400 (see the ``claude-apr/…`` → openai-codex incident). Callers use this
+    predicate to tell the two apart before stripping.
+
+    Recognises both the first-token aliases (``claude``, ``gpt``, ``llama``,
+    …) and the canonical vendor slugs (``anthropic``, ``openai``,
+    ``meta-llama``, …) from ``_VENDOR_PREFIXES``.
+    """
+    p = (prefix or "").strip().lower()
+    if not p:
+        return False
+    return p in _VENDOR_PREFIXES or p in set(_VENDOR_PREFIXES.values())
+
+
 def _prepend_vendor(model_name: str) -> str:
     """Prepend the detected ``vendor/`` prefix if missing.
 

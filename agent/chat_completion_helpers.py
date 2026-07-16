@@ -2748,6 +2748,41 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     if agent._interrupt_requested:
         raise InterruptedError("Agent interrupted before streaming API call")
 
+    def _stream_final_text(response) -> str:
+        try:
+            choices = getattr(response, "choices", None)
+            first_choice = choices[0] if isinstance(choices, (list, tuple)) and choices else None
+            message = getattr(first_choice, "message", None)
+            content = getattr(message, "content", None)
+            if isinstance(content, str):
+                return content
+        except Exception:
+            pass
+        try:
+            content = getattr(response, "content", None)
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                parts = []
+                for part in content:
+                    text = getattr(part, "text", None)
+                    if isinstance(text, str):
+                        parts.append(text)
+                return "".join(parts)
+        except Exception:
+            pass
+        return ""
+
+    def _emit_stream_start() -> None:
+        emit = getattr(agent, "_emit_stream_start", None)
+        if emit is not None:
+            emit()
+
+    def _emit_stream_end(*, final_text: str, finished: bool, error: str | None) -> None:
+        emit = getattr(agent, "_emit_stream_end", None)
+        if emit is not None:
+            emit(final_text=final_text, finished=finished, error=error)
+
     # Cron and other non-interactive, nested-pool contexts deadlock on the
     # spawned worker thread (#62151). They also have no stream consumer, so the
     # deltas this path produces go nowhere. Delegate to the non-streaming entry
@@ -2763,8 +2798,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # ensure on_first_delta reaches it. Store it on the instance
         # temporarily so _run_codex_stream can pick it up.
         agent._codex_on_first_delta = on_first_delta
+        _emit_stream_start()
         try:
-            return agent._interruptible_api_call(api_kwargs)
+            response = agent._interruptible_api_call(api_kwargs)
+            _emit_stream_end(final_text=_stream_final_text(response), finished=True, error=None)
+            return response
+        except Exception as exc:
+            _emit_stream_end(final_text="", finished=False, error=str(exc))
+            raise
         finally:
             agent._codex_on_first_delta = None
 
@@ -2873,6 +2914,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     token = writer_token["value"]
                     return token is None or stream_writer_is_current(agent, token)
 
+                try:
+                    from agent.plugin_stream_hooks import has_reasoning_stream_observer_hooks
+
+                    plugin_reasoning_observer = has_reasoning_stream_observer_hooks()
+                except Exception:
+                    logger.debug("plugin reasoning stream observer check failed", exc_info=True)
+                    plugin_reasoning_observer = False
+
                 stream = relay_llm.stream(
                     dict(api_kwargs),
                     _open_bedrock_stream,
@@ -2906,7 +2955,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     {"stream": stream},
                     on_text_delta=_on_text if agent._has_stream_consumers() else None,
                     on_tool_start=_on_tool,
-                    on_reasoning_delta=_on_reasoning if agent.reasoning_callback or agent.stream_delta_callback else None,
+                    on_reasoning_delta=_on_reasoning
+                    if agent.reasoning_callback or agent.stream_delta_callback or plugin_reasoning_observer
+                    else None,
                     on_interrupt_check=lambda: agent._interrupt_requested,
                     on_event=lambda: _bedrock_last_event.__setitem__("t", time.time()),
                 )
@@ -2917,82 +2968,88 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 if stream is not None:
                     stream.close()
 
-        t = threading.Thread(
-            target=_context_thread_target(_bedrock_call), daemon=True
-        )
-        t.start()
-        while t.is_alive():
-            t.join(timeout=0.3)
-            if agent._interrupt_requested:
-                raise InterruptedError("Agent interrupted during Bedrock API call")
-            # Liveness watchdog: no Bedrock event for longer than the stale
-            # timeout means the stream has wedged (open socket, keep-alives but
-            # no data, or a silently hung provider).  Without this the worker
-            # blocks in ``for event in event_stream`` indefinitely.
-            _stale_elapsed = time.time() - _bedrock_last_event["t"]
-            if _stale_elapsed > _bedrock_stale_timeout:
-                logger.warning(
-                    "Bedrock stream stale for %.0fs (threshold %.0fs) — no events "
-                    "received. region=%s model=%s. Aborting call.",
-                    _stale_elapsed, _bedrock_stale_timeout,
-                    _bedrock_region, api_kwargs.get("modelId", "unknown"),
-                )
-                agent._buffer_status(
-                    f"⚠️ No events from Bedrock for {int(_stale_elapsed)}s "
-                    f"(model: {api_kwargs.get('modelId', 'unknown')}). Aborting..."
-                )
-                # Count the stale kill in the SAME cross-turn breaker as the
-                # OpenAI/Anthropic path (#58962).
-                _bump_stale_streak(agent)
-                # Best-effort: evict the region's cached bedrock-runtime client
-                # so the NEXT call reconnects with a fresh pool.  NOTE: this does
-                # NOT abort the in-flight botocore EventStream the worker thread
-                # is blocked on — botocore exposes no external cancellation for
-                # it — so the daemon worker keeps reading until its socket read
-                # ultimately errors.  We therefore end THIS call by raising
-                # below and let the streak+give-up breaker escalate across turns.
-                try:
-                    from agent.bedrock_adapter import invalidate_runtime_client
-                    invalidate_runtime_client(_bedrock_region)
-                except Exception as _inval_exc:
-                    logger.debug(
-                        "bedrock: stale client eviction failed: %s", _inval_exc
+        _emit_stream_start()
+        try:
+            t = threading.Thread(
+                target=_context_thread_target(_bedrock_call), daemon=True
+            )
+            t.start()
+            while t.is_alive():
+                t.join(timeout=0.3)
+                if agent._interrupt_requested:
+                    raise InterruptedError("Agent interrupted during Bedrock API call")
+                # Liveness watchdog: no Bedrock event for longer than the stale
+                # timeout means the stream has wedged (open socket, keep-alives but
+                # no data, or a silently hung provider).  Without this the worker
+                # blocks in ``for event in event_stream`` indefinitely.
+                _stale_elapsed = time.time() - _bedrock_last_event["t"]
+                if _stale_elapsed > _bedrock_stale_timeout:
+                    logger.warning(
+                        "Bedrock stream stale for %.0fs (threshold %.0fs) — no events "
+                        "received. region=%s model=%s. Aborting call.",
+                        _stale_elapsed, _bedrock_stale_timeout,
+                        _bedrock_region, api_kwargs.get("modelId", "unknown"),
                     )
-                # Reset the timer so a repeated trip (should the worker somehow
-                # survive) waits a fresh interval rather than re-firing instantly.
-                _bedrock_last_event["t"] = time.time()
-                # Escalate across turns: raises RuntimeError once the streak
-                # crosses HERMES_STREAM_STALE_GIVEUP, so a persistently wedged
-                # Bedrock provider aborts fast instead of re-waiting the timeout.
-                _check_stale_giveup(agent)
-                # Streak still under the give-up threshold: end THIS call with a
-                # TimeoutError so the outer retry loop / next turn re-evaluates
-                # and the streak carries forward.  Break rather than keep polling
-                # a worker we cannot abort.
-                result["error"] = TimeoutError(
-                    f"Bedrock stream produced no events for {int(_stale_elapsed)}s "
-                    f"(threshold {int(_bedrock_stale_timeout)}s) — aborting stalled "
-                    f"stream so the retry/fallback path can recover."
-                )
-                break
-        # Worker exited before the poll loop observed the interrupt flag. The
-        # Bedrock stream callback breaks out and returns a PARTIAL response
-        # without raising on interrupt (see bedrock_adapter.py
-        # stream_converse_with_callbacks / on_interrupt_check), so result[
-        # "response"] is populated with error=None and the in-loop raise above
-        # never fires. Re-check here so /stop is not silently swallowed on the
-        # Bedrock path — mirrors the post-worker guard on the main streaming
-        # loop. (#59999 area)
-        if agent._interrupt_requested:
-            raise InterruptedError("Agent interrupted during Bedrock API call (post-worker)")
-        if result["error"] is not None:
-            raise result["error"]
-        # Success — clear the cross-turn breaker (#58962): Bedrock proved
-        # responsive.  Mirrors the OpenAI/Anthropic success reset below so a
-        # recovered provider doesn't carry a stale streak into later turns.
-        if result["response"] is not None:
-            _reset_stale_streak(agent)
-        return result["response"]
+                    agent._buffer_status(
+                        f"⚠️ No events from Bedrock for {int(_stale_elapsed)}s "
+                        f"(model: {api_kwargs.get('modelId', 'unknown')}). Aborting..."
+                    )
+                    # Count the stale kill in the SAME cross-turn breaker as the
+                    # OpenAI/Anthropic path (#58962).
+                    _bump_stale_streak(agent)
+                    # Best-effort: evict the region's cached bedrock-runtime client
+                    # so the NEXT call reconnects with a fresh pool.  NOTE: this does
+                    # NOT abort the in-flight botocore EventStream the worker thread
+                    # is blocked on — botocore exposes no external cancellation for
+                    # it — so the daemon worker keeps reading until its socket read
+                    # ultimately errors.  We therefore end THIS call by raising
+                    # below and let the streak+give-up breaker escalate across turns.
+                    try:
+                        from agent.bedrock_adapter import invalidate_runtime_client
+                        invalidate_runtime_client(_bedrock_region)
+                    except Exception as _inval_exc:
+                        logger.debug(
+                            "bedrock: stale client eviction failed: %s", _inval_exc
+                        )
+                    # Reset the timer so a repeated trip (should the worker somehow
+                    # survive) waits a fresh interval rather than re-firing instantly.
+                    _bedrock_last_event["t"] = time.time()
+                    # Escalate across turns: raises RuntimeError once the streak
+                    # crosses HERMES_STREAM_STALE_GIVEUP, so a persistently wedged
+                    # Bedrock provider aborts fast instead of re-waiting the timeout.
+                    _check_stale_giveup(agent)
+                    # Streak still under the give-up threshold: end THIS call with a
+                    # TimeoutError so the outer retry loop / next turn re-evaluates
+                    # and the streak carries forward.  Break rather than keep polling
+                    # a worker we cannot abort.
+                    result["error"] = TimeoutError(
+                        f"Bedrock stream produced no events for {int(_stale_elapsed)}s "
+                        f"(threshold {int(_bedrock_stale_timeout)}s) — aborting stalled "
+                        f"stream so the retry/fallback path can recover."
+                    )
+                    break
+            # Worker exited before the poll loop observed the interrupt flag. The
+            # Bedrock stream callback breaks out and returns a PARTIAL response
+            # without raising on interrupt (see bedrock_adapter.py
+            # stream_converse_with_callbacks / on_interrupt_check), so result[
+            # "response"] is populated with error=None and the in-loop raise above
+            # never fires. Re-check here so /stop is not silently swallowed on the
+            # Bedrock path — mirrors the post-worker guard on the main streaming
+            # loop. (#59999 area)
+            if agent._interrupt_requested:
+                raise InterruptedError("Agent interrupted during Bedrock API call (post-worker)")
+            if result["error"] is not None:
+                raise result["error"]
+            # Success — clear the cross-turn breaker (#58962): Bedrock proved
+            # responsive.  Mirrors the OpenAI/Anthropic success reset below so a
+            # recovered provider doesn't carry a stale streak into later turns.
+            if result["response"] is not None:
+                _reset_stale_streak(agent)
+            _emit_stream_end(final_text=_stream_final_text(result["response"]), finished=True, error=None)
+            return result["response"]
+        except Exception as exc:
+            _emit_stream_end(final_text="", finished=False, error=str(exc))
+            raise
 
     result = {"response": None, "error": None, "partial_tool_names": []}
 
@@ -4008,6 +4065,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 if agent._interrupt_requested:
                     _cancel_current_stream_attempt("interrupt_before_stream_retry")
                     raise InterruptedError("Agent interrupted before stream retry")
+                _emit_stream_start()
                 try:
                     if agent.api_mode == "anthropic_messages":
                         # #67142: per-request client (credential refresh happens
@@ -4022,8 +4080,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         result["response"] = _call_anthropic(request_client)
                     else:
                         result["response"] = _call_chat_completions(stream_attempt_id)
+                    _emit_stream_end(
+                        final_text=_stream_final_text(result["response"]),
+                        finished=True,
+                        error=None,
+                    )
                     return  # success
                 except Exception as e:
+                    _emit_stream_end(final_text="", finished=False, error=str(e))
                     _close_managed_stream()
                     # If the main poll loop force-closed this request because
                     # of an interrupt, the resulting transport error is the

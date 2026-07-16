@@ -5072,11 +5072,17 @@ def _rebuild_desktop_after_update(
     # system location (e.g. /Applications/Hermes.app). The
     # in-app updater handles that swap itself, but a CLI
     # `hermes update` otherwise leaves the installed app stale.
-    installed = _m()._install_rebuilt_desktop_app(desktop_dir)
-    if installed:
-        print(f"  ✓ Desktop app updated at {installed}")
+    if _m()._desktop_bundle_install_supported():
+        installed = _m()._install_rebuilt_desktop_app(desktop_dir)
+        if installed:
+            print(f"  ✓ Desktop app updated at {installed}")
+        else:
+            print("  ✓ Desktop app up to date")
     else:
-        print("  ✓ Desktop app up to date")
+        print(
+            "  ✓ Desktop app rebuilt; automatic installed-package "
+            f"replacement is unsupported on {sys.platform}"
+        )
     return True
 
 

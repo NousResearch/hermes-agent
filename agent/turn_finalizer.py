@@ -26,6 +26,7 @@ import os
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.message_content import flatten_message_text
+from agent.message_sanitization import mark_interrupted_tool_tail
 
 
 def _is_pure_tool_call_tail(msg: dict) -> bool:
@@ -266,6 +267,8 @@ def finalize_turn(
     # same empty-response loop again.
     try:
         agent._drop_trailing_empty_response_scaffolding(messages)
+        if interrupted:
+            mark_interrupted_tool_tail(messages)
 
         # Drop verification-continuation nudges (synthetic user messages)
         # from the live history before the tail-assistant check — only the

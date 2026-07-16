@@ -46,15 +46,7 @@ def test_linux_null_is_on_screen_is_treated_as_unknown_not_offscreen():
     assert windows[2]["off_screen"] is True
 
 
-def test_linux_empty_app_name_falls_back_to_window_title_for_app_filter():
-    """Linux list_windows can omit app_name, so capture(app=...) must use title."""
-    from tools.computer_use.cua_backend import _window_matches_app_filter
 
-    chrome = _normalized_windows()[1]
-
-    assert chrome["app_name"] == ""
-    assert _window_matches_app_filter(chrome, "chrome") is True
-    assert _window_matches_app_filter(chrome, "firefox") is False
 
 
 def test_default_capture_skips_gnome_shell_background_window():

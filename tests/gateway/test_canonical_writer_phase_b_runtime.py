@@ -68,7 +68,7 @@ def test_zero_input_cli_and_collector_have_no_evidence_mapping_surface() -> None
     assert "load_fixed_phase_b_authority" not in runtime.__all__
 
 
-def test_fixed_six_service_collection_is_stopped_and_secret_free(
+def test_fixed_seven_service_collection_is_stopped_and_secret_free(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, ...]] = []

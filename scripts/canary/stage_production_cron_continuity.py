@@ -18,12 +18,16 @@ if str(_RELEASE_ROOT) not in sys.path:
     sys.path.insert(0, str(_RELEASE_ROOT))
 
 from gateway.production_cron_continuity_package import (  # noqa: E402
+    PLAN_SCHEMA as PACKAGED_PLAN_SCHEMA,
     ProductionCronContinuityPackageError,
     derive_packaged_continuity_from_host,
     stage_packaged_continuity_from_host,
 )
 from gateway import canonical_writer_production_cutover as cutover  # noqa: E402
-from gateway.production_cron_migration import DEFAULT_JOBS_PATH  # noqa: E402
+from gateway.production_cron_migration import (  # noqa: E402
+    DEFAULT_JOBS_PATH,
+    PLAN_SCHEMA as LEGACY_PLAN_SCHEMA,
+)
 
 
 DEFAULT_OUTPUT_ROOT = Path(
@@ -137,9 +141,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise RuntimeError("production_cron_stage_revision_drifted")
         authority = freeze["cutover_authority"]
         continuity_plan = authority["cron_continuity_plan"]
-        if continuity_plan.get("schema") != (
-            "muncho-production-cron-packaged-continuity-plan.v3"
-        ):
+        continuity_schema = continuity_plan.get("schema")
+        if continuity_schema == LEGACY_PLAN_SCHEMA:
             unsigned = {
                 "schema": LEGACY_NOOP_SCHEMA,
                 "release_revision": args.revision,
@@ -167,7 +170,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ).encode("ascii")
                 ).hexdigest(),
             }
-        else:
+        elif continuity_schema == PACKAGED_PLAN_SCHEMA:
             result = stage_packaged_continuity_from_host(
                 revision=args.revision,
                 mechanical_job_package=authority[
@@ -177,6 +180,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 output_root=DEFAULT_OUTPUT_ROOT,
                 expected_continuity_plan=continuity_plan,
             )
+        else:
+            raise RuntimeError("production_cron_stage_schema_unsupported")
     sys.stdout.buffer.write(
         json.dumps(
             result,

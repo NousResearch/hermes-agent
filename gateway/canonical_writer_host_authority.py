@@ -2912,7 +2912,12 @@ def _host_identity_sha256() -> str:
         or any(character in hostname for character in "\x00\r\n")
     ):
         raise RuntimeError("native observation hostname is invalid")
-    return _sha256_json({"machine_id": machine_id, "hostname": hostname})
+    machine_id_sha256 = hashlib.sha256(machine_id.encode("utf-8")).hexdigest()
+    hostname_sha256 = hashlib.sha256(hostname.encode("utf-8")).hexdigest()
+    return _sha256_json({
+        "machine_id_sha256": machine_id_sha256,
+        "hostname_sha256": hostname_sha256,
+    })
 
 
 def current_host_identity_sha256() -> str:

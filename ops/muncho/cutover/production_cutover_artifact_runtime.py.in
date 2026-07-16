@@ -2,7 +2,7 @@
 """Self-contained mechanical edge for an owner-approved production cutover.
 
 This file is a build template, not an executable.  The release packager
-replaces the five exact sentinels below and emits six distinct executables.
+replaces the exact sentinels below and emits six distinct executables.
 Each emitted artifact accepts only its own action class, validates the signed
 plan and its own SHA-256, constructs a sealed child environment, and emits one
 canonical, secret-free receipt.
@@ -41,6 +41,7 @@ WRITER_MIGRATION_SQL = __MUNCHO_WRITER_MIGRATION_SQL__
 CONNECTOR_UNIT_TEMPLATE = __MUNCHO_CONNECTOR_UNIT_TEMPLATE__
 GATEWAY_CONNECTOR_DROP_IN_BYTES = __MUNCHO_GATEWAY_CONNECTOR_DROP_IN_BYTES__
 PRODUCTION_CAPABILITY_PREREQUISITE_CONTRACT = __MUNCHO_PRODUCTION_CAPABILITY_PREREQUISITE_CONTRACT__
+PRODUCTION_CRON_CONTINUITY_PLAN_SCHEMA = __MUNCHO_PRODUCTION_CRON_CONTINUITY_PLAN_SCHEMA__
 SEALED_RUNTIME_ARTIFACT_REQUEST = __MUNCHO_SEALED_RUNTIME_ARTIFACT_REQUEST__
 
 REQUEST_SCHEMA = "muncho-production-cutover-artifact-request.v1"
@@ -738,7 +739,7 @@ def _validate_cron_continuity_authority(
     packaged_plan = (
         isinstance(plan_value, Mapping)
         and plan_value.get("schema")
-        == "muncho-production-cron-packaged-continuity-plan.v3"
+        == PRODUCTION_CRON_CONTINUITY_PLAN_SCHEMA
     )
     collector_package = None
     collector_execution_readiness = None

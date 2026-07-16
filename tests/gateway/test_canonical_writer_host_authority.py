@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from gateway import canonical_canary_host_identity as host_identity
 from gateway import canonical_writer_host_authority as authority
 
 
@@ -118,6 +119,45 @@ def _plan_mapping():
 
 def _plan():
     return authority.NativeObservationPlan.from_mapping(_plan_mapping())
+
+
+def test_host_identity_digest_matches_dedicated_host_receipt_projection(monkeypatch):
+    machine_id = "0123456789abcdef0123456789abcdef"
+    hostname = "muncho-canary-v2-01"
+    boot_id = "11111111-1111-4111-8111-111111111111"
+    monkeypatch.setattr(authority, "_require_root_linux", lambda: None)
+    monkeypatch.setattr(
+        authority,
+        "_read_bounded",
+        lambda path, **_kwargs: (
+            f"{machine_id}\n"
+            if path == Path("/etc/machine-id")
+            else pytest.fail(f"unexpected identity path: {path}")
+        ),
+    )
+    monkeypatch.setattr(authority.socket, "gethostname", lambda: hostname)
+
+    expected_gce = host_identity._dedicated_canary_gce_identity()
+    metadata = {
+        path: (
+            f"projects/{host_identity.DEDICATED_CANARY_PROJECT_NUMBER}/zones/"
+            f"{host_identity.DEDICATED_CANARY_ZONE}"
+            if name == "zone"
+            else expected_gce[name]
+        )
+        for name, path in host_identity._GCE_METADATA_PATHS.items()
+    }
+    local = {
+        "machine_id": machine_id,
+        "hostname": hostname,
+        "boot_id": boot_id,
+    }
+    expected = host_identity._observe_dedicated_canary_host(
+        metadata_reader=metadata.__getitem__,
+        local_identity_reader=local.__getitem__,
+    )["host_identity_sha256"]
+
+    assert authority.current_host_identity_sha256() == expected
 
 
 def _approval(plan=None, *, scope="native_observation", now=NOW):

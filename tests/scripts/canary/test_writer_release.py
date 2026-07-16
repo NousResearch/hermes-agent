@@ -6,6 +6,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,6 +43,7 @@ EXPECTED_TRACKED_RELEASE_ARTIFACTS = (
     "package.json",
     "package-lock.json",
     "scripts/sql/canonical_writer_v1.sql",
+    "gateway/assets/canonical_writer_schema_contract_v1.json",
     "scripts/sql/canonical_writer_foundation_observe_v1.sql",
     "scripts/sql/canonical_writer_foundation_phase_b_preflight_v1.sql",
     "scripts/sql/canonical_writer_foundation_phase_b_role_v1.sql",
@@ -52,6 +54,28 @@ EXPECTED_TRACKED_RELEASE_ARTIFACTS = (
     "scripts/sql/canonical_writer_foundation_membership_v1.sql",
     "scripts/sql/canonical_writer_foundation_retire_v1.sql",
 )
+
+
+def test_writer_release_import_is_stdlib_only_before_venv_exists() -> None:
+    repository = Path(writer_release.__file__).resolve().parents[2]
+    program = (
+        "import sys; "
+        f"sys.path.insert(0, {str(repository)!r}); "
+        "import scripts.canary.writer_release"
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", program],
+        cwd="/",
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
 
 
 @pytest.fixture(autouse=True)
@@ -101,6 +125,51 @@ def _write_runtime_dependency_entries(spec: ReleaseBuildSpec) -> None:
     manifest.chmod(0o444)
 
 
+def _write_schema_contract_entries(
+    spec: ReleaseBuildSpec,
+    *,
+    tracked: bool = True,
+) -> None:
+    repository_root = Path(writer_release.__file__).resolve().parents[2]
+    asset_relative = (
+        writer_release.CANONICAL_WRITER_SCHEMA_CONTRACT_ASSET_RELATIVE_PATH
+    )
+    asset_raw = (repository_root / asset_relative).read_bytes()
+    if tracked:
+        tracked_asset = spec.release_root / asset_relative
+        tracked_asset.parent.mkdir(parents=True, exist_ok=True)
+        tracked_asset.write_bytes(asset_raw)
+        tracked_asset.chmod(0o444)
+        tracked_base = (
+            spec.release_root
+            / writer_release.CANONICAL_WRITER_BASE_MIGRATION_SQL_RELATIVE_PATH
+        )
+        tracked_base.parent.mkdir(parents=True, exist_ok=True)
+        tracked_base.write_bytes(
+            (
+                repository_root
+                / writer_release.CANONICAL_WRITER_BASE_MIGRATION_SQL_RELATIVE_PATH
+            ).read_bytes()
+        )
+        tracked_base.chmod(0o444)
+    spec.schema_contract_asset_origin.parent.mkdir(parents=True, exist_ok=True)
+    spec.schema_contract_asset_origin.write_bytes(asset_raw)
+    spec.schema_contract_asset_origin.chmod(0o644)
+
+
+def _write_schema_reconciliation_modules(spec: ReleaseBuildSpec) -> None:
+    module_paths = (
+        spec.schema_reconciliation_module_origin,
+        spec.schema_reconciliation_db_module_origin,
+        spec.schema_reconciliation_bootstrap_module_origin,
+        spec.schema_reconciliation_runtime_module_origin,
+    )
+    for module_path in module_paths:
+        module_path.parent.mkdir(parents=True, exist_ok=True)
+        module_path.write_text("PACKAGED = True\n", encoding="utf-8")
+        module_path.chmod(0o644)
+
+
 def _write_required_release_entries(spec: ReleaseBuildSpec) -> None:
     spec.foundation_module_origin.parent.mkdir(parents=True, exist_ok=True)
     spec.foundation_module_origin.write_text("FOUNDATION = True\n", encoding="utf-8")
@@ -110,11 +179,13 @@ def _write_required_release_entries(spec: ReleaseBuildSpec) -> None:
     spec.phase_b_runtime_module_origin.write_text(
         "PHASE_B_RUNTIME = True\n", encoding="utf-8"
     )
+    _write_schema_reconciliation_modules(spec)
     _write_runtime_dependency_entries(spec)
     for relative_path in writer_release._TRACKED_RELEASE_ARTIFACTS:
         path = spec.release_root / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(f"-- {relative_path.name}\n".encode())
+    _write_schema_contract_entries(spec)
 
 
 def _manifest() -> ReleaseManifest:
@@ -871,6 +942,115 @@ def test_build_release_materializes_all_tracked_sql_before_install_tooling(
         assert stat.S_IMODE(os.lstat(installed).st_mode) == 0o444
 
 
+def test_build_release_revalidates_runtime_after_late_dependency_tamper(
+    tmp_path,
+    monkeypatch,
+):
+    spec = _spec(tmp_path)
+    _source(spec)
+    spec.release_base.mkdir()
+    spec.uv_cache_dir.mkdir()
+    managed = spec.managed_python_root / "cpython-3.11.15/bin/python3.11"
+
+    _allow_local_materialization_owner(monkeypatch)
+    monkeypatch.setattr(writer_release, "_require_root_linux", lambda: None)
+    monkeypatch.setattr(writer_release, "_validate_root_parent_chain", lambda _p: None)
+    monkeypatch.setattr(writer_release, "_validate_root_executable", lambda _p: None)
+    monkeypatch.setattr(writer_release, "_validate_root_source_tree", lambda _p: None)
+    monkeypatch.setattr(writer_release, "_validate_build_constraints", lambda _s: None)
+    monkeypatch.setattr(
+        writer_release,
+        "_validate_root_directory",
+        lambda _p, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        writer_release,
+        "verify_clean_checkout",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        writer_release,
+        "_write_incomplete_marker",
+        lambda current: (
+            current.release_root / writer_release.INCOMPLETE_MARKER_NAME
+        ).write_text("incomplete\n", encoding="utf-8"),
+    )
+    monkeypatch.setattr(writer_release, "_copy_tracked_release_artifacts", lambda _s: None)
+    monkeypatch.setattr(writer_release, "_write_source_commit_marker", lambda _s: None)
+
+    def prepare(current):
+        current.build_project_root.mkdir(parents=True)
+        current.wheel_output_root.mkdir()
+        current.wheel_artifact_root.mkdir()
+        item = os.lstat(current.build_scratch_root)
+        return item.st_dev, item.st_ino
+
+    monkeypatch.setattr(writer_release, "_prepare_build_scratch", prepare)
+
+    scratch_wheel = spec.wheel_output_root / "hermes_agent-test.whl"
+    artifact_wheel = spec.wheel_artifact_root / scratch_wheel.name
+    monkeypatch.setattr(writer_release, "_select_built_wheel", lambda _s: scratch_wheel)
+    monkeypatch.setattr(
+        writer_release,
+        "_copy_built_wheel",
+        lambda _s, _wheel: artifact_wheel,
+    )
+
+    def materialize(current, exact_managed):
+        current.interpreter.parent.mkdir(parents=True, exist_ok=True)
+        if not current.interpreter.exists():
+            current.interpreter.write_bytes(exact_managed.read_bytes())
+            current.interpreter.chmod(0o555)
+        current.site_packages.mkdir(parents=True, exist_ok=True)
+        (current.venv_root / "pyvenv.cfg").write_text(
+            "home = " + str(exact_managed.parent) + "\n"
+            "include-system-site-packages = false\n"
+            "executable = " + str(exact_managed) + "\n",
+            encoding="utf-8",
+        )
+        return hashlib.sha256(exact_managed.read_bytes()).hexdigest()
+
+    monkeypatch.setattr(writer_release, "_materialize_copied_interpreter", materialize)
+    monkeypatch.setattr(writer_release, "_remove_build_scratch", lambda *_a, **_k: None)
+    seal_calls = []
+    monkeypatch.setattr(
+        writer_release,
+        "_seal_release_tree",
+        lambda root: seal_calls.append(root),
+    )
+
+    def install_packaged_runtime():
+        for relative_path in writer_release._PACKAGED_DISCORD_EDGE_MODULES:
+            module_path = spec.site_packages / relative_path
+            module_path.parent.mkdir(parents=True, exist_ok=True)
+            module_path.write_text("PACKAGED = True\n", encoding="utf-8")
+            module_path.chmod(0o644)
+        _write_required_release_entries(spec)
+
+    def runner(command):
+        stdout = ""
+        if command.argv[1:3] == ("python", "find"):
+            stdout = f"{managed}\n"
+        elif command.argv[1:3] == ("python", "install"):
+            managed.parent.mkdir(parents=True)
+            managed.write_bytes(b"python")
+            managed.chmod(0o755)
+        elif str(artifact_wheel) in command.argv:
+            install_packaged_runtime()
+        elif (
+            "gateway.production_runtime_dependencies" in command.argv
+            and "verify" in command.argv
+        ):
+            spec.schema_contract_asset_origin.write_bytes(b"late dependency tamper\n")
+        return subprocess.CompletedProcess(command.argv, 0, stdout, "")
+
+    with pytest.raises(RuntimeError, match="schema contract drifted"):
+        build_release(spec, runner=runner)
+
+    assert seal_calls == []
+    assert (spec.release_root / writer_release.INCOMPLETE_MARKER_NAME).is_file()
+
+
 def test_exact_revision_path_is_never_reused_and_other_revisions_coexist(
     tmp_path,
     monkeypatch,
@@ -1041,6 +1221,20 @@ def test_tree_manifest_is_canonical_and_binds_installed_module_origins(tmp_path)
     assert phase_b_runtime_entry.sha256 == hashlib.sha256(
         spec.phase_b_runtime_module_origin.read_bytes()
     ).hexdigest()
+    for module_path in (
+        spec.schema_reconciliation_module_origin,
+        spec.schema_reconciliation_db_module_origin,
+        spec.schema_reconciliation_bootstrap_module_origin,
+        spec.schema_reconciliation_runtime_module_origin,
+    ):
+        module_entry = next(
+            entry
+            for entry in first.entries
+            if entry.path == module_path.relative_to(spec.release_root).as_posix()
+        )
+        assert module_entry.sha256 == hashlib.sha256(
+            module_path.read_bytes()
+        ).hexdigest()
     assert len(first.artifact_sha256) == 64
     assert [entry.path for entry in first.entries] == sorted(
         entry.path for entry in first.entries
@@ -1114,6 +1308,8 @@ def test_sealed_release_carries_every_exact_manifest_bound_writer_sql_artifact(
     spec.phase_b_runtime_module_origin.write_text(
         "PHASE_B_RUNTIME = True\n", encoding="utf-8"
     )
+    _write_schema_reconciliation_modules(spec)
+    _write_schema_contract_entries(spec, tracked=False)
     _write_runtime_dependency_entries(spec)
     writer_release._seal_release_tree(spec.release_root)
     manifest = create_release_manifest(spec)
@@ -1276,12 +1472,14 @@ def test_installed_runtime_requires_copied_venv_and_no_legacy_script_bootstraps(
         module_path.write_text("PACKAGED = True\n", encoding="utf-8")
         module_path.chmod(0o644)
     _write_runtime_dependency_entries(spec)
+    _write_schema_contract_entries(spec)
     spec.foundation_module_origin.write_text("PACKAGED = True\n", encoding="utf-8")
     spec.foundation_module_origin.chmod(0o644)
     spec.phase_b_runtime_module_origin.write_text(
         "PACKAGED = True\n", encoding="utf-8"
     )
     spec.phase_b_runtime_module_origin.chmod(0o644)
+    _write_schema_reconciliation_modules(spec)
     (spec.venv_root / "pyvenv.cfg").write_text(
         "home = " + str(managed.parent) + "\n"
         "include-system-site-packages = false\n"
@@ -1346,6 +1544,7 @@ def test_installed_runtime_requires_exact_packaged_discord_edge_modules(
         "PACKAGED = True\n", encoding="utf-8"
     )
     spec.phase_b_runtime_module_origin.chmod(0o644)
+    _write_schema_reconciliation_modules(spec)
     target = module_paths[0]
     if mutation == "missing":
         target.unlink()
@@ -1390,6 +1589,7 @@ def test_installed_runtime_requires_packaged_canonical_writer_foundation(
     foundation = spec.foundation_module_origin
     foundation.write_text("PACKAGED = True\n", encoding="utf-8")
     foundation.chmod(0o644)
+    _write_schema_reconciliation_modules(spec)
     if mutation == "missing":
         foundation.unlink()
     elif mutation == "symlink":
@@ -1403,6 +1603,71 @@ def test_installed_runtime_requires_packaged_canonical_writer_foundation(
         foundation.write_bytes(b"")
 
     with pytest.raises(RuntimeError, match="Canonical Writer foundation module"):
+        writer_release._validate_installed_runtime(spec, managed)
+
+
+@pytest.mark.parametrize(
+    "origin_attribute",
+    (
+        "schema_reconciliation_module_origin",
+        "schema_reconciliation_db_module_origin",
+        "schema_reconciliation_bootstrap_module_origin",
+        "schema_reconciliation_runtime_module_origin",
+    ),
+)
+@pytest.mark.parametrize("mutation", ("missing", "symlink", "mode", "empty"))
+def test_installed_runtime_requires_packaged_schema_reconciliation_modules(
+    tmp_path,
+    origin_attribute,
+    mutation,
+):
+    spec = _spec(tmp_path)
+    managed = spec.managed_python_root / "cpython-3.11.15/bin/python3.11"
+    managed.parent.mkdir(parents=True)
+    managed.write_bytes(b"managed")
+    managed.chmod(0o555)
+    spec.interpreter.parent.mkdir(parents=True)
+    spec.interpreter.write_bytes(b"copied")
+    spec.interpreter.chmod(0o555)
+    spec.site_packages.mkdir(parents=True)
+    (spec.venv_root / "pyvenv.cfg").write_text(
+        "home = " + str(managed.parent) + "\n"
+        "include-system-site-packages = false\n"
+        "executable = " + str(managed) + "\n",
+        encoding="utf-8",
+    )
+    for relative_path in writer_release._PACKAGED_DISCORD_EDGE_MODULES:
+        module_path = spec.site_packages / relative_path
+        module_path.parent.mkdir(parents=True, exist_ok=True)
+        module_path.write_text("PACKAGED = True\n", encoding="utf-8")
+        module_path.chmod(0o644)
+    spec.foundation_module_origin.write_text("PACKAGED = True\n", encoding="utf-8")
+    spec.foundation_module_origin.chmod(0o644)
+    spec.phase_b_runtime_module_origin.write_text(
+        "PACKAGED = True\n", encoding="utf-8"
+    )
+    spec.phase_b_runtime_module_origin.chmod(0o644)
+    _write_schema_reconciliation_modules(spec)
+    _write_schema_contract_entries(spec)
+    _write_runtime_dependency_entries(spec)
+
+    target = getattr(spec, origin_attribute)
+    if mutation == "missing":
+        target.unlink()
+    elif mutation == "symlink":
+        link_target = tmp_path / f"{target.name}.target"
+        link_target.write_text("PACKAGED = True\n", encoding="utf-8")
+        target.unlink()
+        target.symlink_to(link_target)
+    elif mutation == "mode":
+        target.chmod(0o664)
+    else:
+        target.write_bytes(b"")
+
+    with pytest.raises(
+        RuntimeError,
+        match="Canonical Writer schema reconciliation module",
+    ):
         writer_release._validate_installed_runtime(spec, managed)
 
 

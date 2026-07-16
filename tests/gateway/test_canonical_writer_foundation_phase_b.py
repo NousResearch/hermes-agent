@@ -1127,11 +1127,12 @@ def test_preflight_rejects_public_cross_database_or_missing_writer_acl() -> None
         phase_b.PhaseBPreflight.from_mapping(value)
 
 
-def test_service_order_matches_fixed_six_unit_boundary() -> None:
+def test_service_order_matches_fixed_seven_unit_boundary() -> None:
     assert phase_b.SERVICE_UNITS == (
         "muncho-canary-discord-edge.service",
         "muncho-discord-egress.service",
         "muncho-canonical-writer.service",
+        "muncho-canonical-writer-phase-b-readiness.service",
         "muncho-canonical-writer-export.service",
         "muncho-canonical-writer-export.timer",
         "hermes-cloud-gateway.service",

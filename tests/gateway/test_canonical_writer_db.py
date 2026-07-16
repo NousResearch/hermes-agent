@@ -813,11 +813,17 @@ def test_db_requires_startup_attestation_and_reattests_each_session(tmp_path):
         if "SELECT object_acl FROM" in sql
     )
     assert "owner.rolcanlogin" in event_identity_query
-    assert "pg_catalog.pg_auth_members membership" in event_identity_query
+    assert (
+        "pg_catalog.pg_auth_members AS event_log_membership"
+        in event_identity_query
+    )
     assert "attribute.attacl" in event_identity_query
     assert "column:%s:%s:%s:%s:%s" in event_identity_query
     assert "owner.rolcanlogin" in private_schema_query
-    assert "pg_catalog.pg_auth_members membership" in private_schema_query
+    assert (
+        "pg_catalog.pg_auth_members AS private_schema_membership"
+        in private_schema_query
+    )
     assert "class.relkind IN ('r','p','S','v','m','f','c')" in (
         private_relations_query
     )
@@ -825,7 +831,10 @@ def test_db_requires_startup_attestation_and_reattests_each_session(tmp_path):
     assert "index_owner.rolcanlogin" in private_relations_query
     assert "NOT trigger.tgisinternal" in private_relations_query
     assert "owner.rolcanlogin" in routine_identity_query
-    assert "owner_membership.member = owner.oid" in routine_identity_query
+    assert (
+        "routine_owner_membership.member = owner.oid"
+        in routine_identity_query
+    )
     assert "a.grantee <> n.nspowner" in canonical_acl_query
     assert "a.grantee <> c.relowner" in canonical_acl_query
     assert "attribute.attacl" in canonical_acl_query

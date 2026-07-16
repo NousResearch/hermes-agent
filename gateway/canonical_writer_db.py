@@ -1504,6 +1504,27 @@ def _sql_string(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def _owner_membership_danger_sql(
+    owner_alias: str,
+    membership_alias: str,
+) -> str:
+    """Return an EXISTS expression for every role edge touching an owner."""
+
+    _valid_identifier(owner_alias, "owner SQL alias")
+    _valid_identifier(membership_alias, "membership SQL alias")
+    relationship = (
+        f"{membership_alias}.roleid = {owner_alias}.oid OR "
+        f"{membership_alias}.member = {owner_alias}.oid"
+    )
+    return (
+        "EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members AS "
+        + membership_alias
+        + " WHERE "
+        + relationship
+        + ")"
+    )
+
+
 def _bool(value: str | None) -> bool:
     if value == "t":
         return True
@@ -1563,25 +1584,50 @@ def _collect_privilege_attestation(
     config: WriterDBConfig,
     policy: WriterPrivilegePolicy,
     managed_hba_receipt: ManagedCloudSQLAdminHBAReceipt | None = None,
+    subject_user: str | None = None,
 ) -> PrivilegeAttestation:
+    if subject_user is None:
+        subject_sql = "current_user"
+    else:
+        subject = _valid_identifier(subject_user, "attestation subject")
+        if subject.casefold() == "postgres":
+            raise PrivilegeAttestationError("postgres_role_forbidden")
+        if config.user != subject:
+            raise PrivilegeAttestationError(
+                "attestation_subject_config_mismatch"
+            )
+        subject_sql = _sql_string(subject)
+    if managed_hba_receipt is not None:
+        _validate_active_managed_hba_receipt(
+            managed_hba_receipt,
+            managed_hba_receipt,
+            config=config,
+            now_unix=int(time.time()),
+            require_expected_fresh=False,
+        )
     role_result = session.query(
-        "SELECT current_user, r.rolsuper, r.rolcreatedb, r.rolcreaterole, "
+        "SELECT r.rolname, r.rolsuper, r.rolcreatedb, r.rolcreaterole, "
         "r.rolreplication, r.rolbypassrls FROM pg_catalog.pg_roles r "
-        "WHERE r.rolname = current_user",
+        "WHERE r.rolname = " + subject_sql,
         maximum_rows=1,
     )
     if len(role_result.rows) != 1 or len(role_result.rows[0]) != 6:
         raise PostgresProtocolError("database_role_attestation_missing")
     role_row = role_result.rows[0]
     role = role_row[0] or ""
+    if subject_user is not None and role != subject_user:
+        raise PostgresProtocolError("database_role_attestation_subject_mismatch")
     schema = _sql_string(policy.schema)
 
     private_schema_result = session.query(
         "SELECT owner.rolname, (owner.rolcanlogin OR owner.rolsuper OR "
         "owner.rolcreatedb OR owner.rolcreaterole OR owner.rolreplication OR "
-        "owner.rolbypassrls OR EXISTS (SELECT 1 FROM "
-        "pg_catalog.pg_auth_members membership WHERE "
-        "membership.roleid = owner.oid OR membership.member = owner.oid)) "
+        "owner.rolbypassrls OR "
+        + _owner_membership_danger_sql(
+            "owner",
+            "private_schema_membership",
+        )
+        + ") "
         "FROM pg_catalog.pg_namespace namespace JOIN pg_catalog.pg_roles owner "
         "ON owner.oid = namespace.nspowner WHERE namespace.nspname = " + schema,
         maximum_rows=1,
@@ -1597,8 +1643,11 @@ def _collect_privilege_attestation(
         "SELECT owner.rolname, "
         "(owner.rolcanlogin OR owner.rolsuper OR owner.rolcreatedb OR "
         "owner.rolcreaterole OR owner.rolreplication OR owner.rolbypassrls OR "
-        "EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members membership "
-        "WHERE membership.roleid = owner.oid OR membership.member = owner.oid)), "
+        + _owner_membership_danger_sql(
+            "owner",
+            "event_log_membership",
+        )
+        + "), "
         "c.relkind::text, c.relpersistence::text, c.relispartition, "
         "table_method.amname, c.reltablespace::text, c.relrowsecurity, "
         "c.relforcerowsecurity, c.relreplident::text, "
@@ -1769,9 +1818,12 @@ def _collect_privilege_attestation(
     private_relations_result = session.query(
         "SELECT class.relname, owner.rolname, (owner.rolcanlogin OR "
         "owner.rolsuper OR owner.rolcreatedb OR owner.rolcreaterole OR "
-        "owner.rolreplication OR owner.rolbypassrls OR EXISTS (SELECT 1 "
-        "FROM pg_catalog.pg_auth_members membership WHERE "
-        "membership.roleid = owner.oid OR membership.member = owner.oid)), "
+        "owner.rolreplication OR owner.rolbypassrls OR "
+        + _owner_membership_danger_sql(
+            "owner",
+            "private_relation_membership",
+        )
+        + "), "
         "class.relkind::text, class.relpersistence::text, class.relispartition, "
         "coalesce(method.amname, ''), class.reltablespace::text, "
         "class.relrowsecurity, class.relforcerowsecurity, class.relreplident::text, "
@@ -1888,10 +1940,12 @@ def _collect_privilege_attestation(
         "json_agg(pg_catalog.format('%s:%s', index_owner.rolname, CASE WHEN "
         "index_owner.rolcanlogin OR index_owner.rolsuper OR "
         "index_owner.rolcreatedb OR index_owner.rolcreaterole OR "
-        "index_owner.rolreplication OR index_owner.rolbypassrls OR EXISTS "
-        "(SELECT 1 FROM pg_catalog.pg_auth_members index_membership WHERE "
-        "index_membership.roleid = index_owner.oid OR "
-        "index_membership.member = index_owner.oid) THEN 't' ELSE 'f' END) "
+        "index_owner.rolreplication OR index_owner.rolbypassrls OR "
+        + _owner_membership_danger_sql(
+            "index_owner",
+            "index_membership",
+        )
+        + " THEN 't' ELSE 'f' END) "
         "ORDER BY coalesce(owning_constraint.contype::text, ''), "
         "coalesce(pg_catalog.pg_get_constraintdef(owning_constraint.oid, true), "
         "''), CASE WHEN owning_constraint.oid IS NULL THEN index_class.relname "
@@ -1966,9 +2020,9 @@ def _collect_privilege_attestation(
     unexpected: list[str] = []
     tables_result = session.query(
         "SELECT format('%I.%I', n.nspname, c.relname), "
-        "pg_get_userbyid(c.relowner) = current_user, "
+        "pg_get_userbyid(c.relowner) = " + subject_sql + ", "
         + ", ".join(
-            f"has_table_privilege(current_user, c.oid, '{privilege}')"
+            f"has_table_privilege({subject_sql}, c.oid, '{privilege}')"
             for privilege in _TABLE_PRIVILEGES
         )
         + " FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n "
@@ -1996,9 +2050,9 @@ def _collect_privilege_attestation(
 
     sequences_result = session.query(
         "SELECT format('%I.%I', n.nspname, c.relname), "
-        "pg_get_userbyid(c.relowner) = current_user, "
+        "pg_get_userbyid(c.relowner) = " + subject_sql + ", "
         + ", ".join(
-            f"has_sequence_privilege(current_user, c.oid, '{privilege}')"
+            f"has_sequence_privilege({subject_sql}, c.oid, '{privilege}')"
             for privilege in _SEQUENCE_PRIVILEGES
         )
         + " FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n "
@@ -2026,12 +2080,14 @@ def _collect_privilege_attestation(
     routines_result = session.query(
         "SELECT format('%I.%I(%s)', n.nspname, p.proname, "
         "pg_catalog.oidvectortypes(p.proargtypes)), "
-        "pg_get_userbyid(p.proowner) = current_user, "
-        "has_function_privilege(current_user, p.oid, 'EXECUTE'), "
-        "owner.rolname, (owner.rolcanlogin OR owner.rolsuper OR EXISTS ("
-        "SELECT 1 FROM pg_catalog.pg_auth_members owner_membership WHERE "
-        "owner_membership.roleid = owner.oid OR "
-        "owner_membership.member = owner.oid)), owner.rolcreatedb, "
+        "pg_get_userbyid(p.proowner) = " + subject_sql + ", "
+        "has_function_privilege(" + subject_sql + ", p.oid, 'EXECUTE'), "
+        "owner.rolname, (owner.rolcanlogin OR owner.rolsuper OR "
+        + _owner_membership_danger_sql(
+            "owner",
+            "routine_owner_membership",
+        )
+        + "), owner.rolcreatedb, "
         "owner.rolcreaterole, owner.rolreplication, owner.rolbypassrls, "
         "p.prosecdef, language.lanname, "
         "array_to_json(coalesce(p.proconfig, ARRAY[]::text[]))::text, "
@@ -2089,7 +2145,9 @@ def _collect_privilege_attestation(
     membership_result = session.query(
         "WITH RECURSIVE memberships(oid) AS ("
         "SELECT roleid FROM pg_catalog.pg_auth_members "
-        "WHERE member = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = current_user) "
+        "WHERE member = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = "
+        + subject_sql
+        + ") "
         "UNION SELECT m.roleid FROM pg_catalog.pg_auth_members m "
         "JOIN memberships inherited ON inherited.oid = m.member) "
         "SELECT r.rolname FROM memberships JOIN pg_catalog.pg_roles r "
@@ -2131,9 +2189,9 @@ def _collect_privilege_attestation(
         )
 
     schema_result = session.query(
-        "SELECT n.nspname, pg_get_userbyid(n.nspowner) = current_user, "
+        "SELECT n.nspname, pg_get_userbyid(n.nspowner) = " + subject_sql + ", "
         + ", ".join(
-            f"has_schema_privilege(current_user, n.oid, '{privilege}')"
+            f"has_schema_privilege({subject_sql}, n.oid, '{privilege}')"
             for privilege in _SCHEMA_PRIVILEGES
         )
         + " FROM pg_catalog.pg_namespace n WHERE n.nspname !~ '^pg_' "
@@ -2158,9 +2216,9 @@ def _collect_privilege_attestation(
 
     database_result = session.query(
         "SELECT d.datname, d.datname = current_database(), "
-        "pg_get_userbyid(d.datdba) = current_user, "
+        "pg_get_userbyid(d.datdba) = " + subject_sql + ", "
         + ", ".join(
-            f"has_database_privilege(current_user, d.oid, '{privilege}')"
+            f"has_database_privilege({subject_sql}, d.oid, '{privilege}')"
             for privilege in _DATABASE_PRIVILEGES
         )
         + " FROM pg_catalog.pg_database d WHERE d.datallowconn ORDER BY 1",
@@ -2194,8 +2252,8 @@ def _collect_privilege_attestation(
             unexpected.append("database:" + row[0])
 
     tablespace_result = session.query(
-        "SELECT s.spcname, pg_get_userbyid(s.spcowner) = current_user, "
-        "has_tablespace_privilege(current_user, s.oid, 'CREATE') "
+        "SELECT s.spcname, pg_get_userbyid(s.spcowner) = " + subject_sql + ", "
+        "has_tablespace_privilege(" + subject_sql + ", s.oid, 'CREATE') "
         "FROM pg_catalog.pg_tablespace s ORDER BY 1",
         maximum_rows=_MAX_ATTESTATION_ROWS,
     )

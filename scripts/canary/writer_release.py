@@ -103,8 +103,23 @@ _PACKAGED_CANONICAL_WRITER_PHASE_B_FOUNDATION_MODULE = Path(
 _PACKAGED_CANONICAL_WRITER_PHASE_B_RUNTIME_MODULE = Path(
     "gateway/canonical_writer_phase_b_runtime.py"
 )
+_PACKAGED_CANONICAL_WRITER_SCHEMA_RECONCILIATION_MODULE = Path(
+    "gateway/canonical_writer_schema_reconciliation.py"
+)
+_PACKAGED_CANONICAL_WRITER_SCHEMA_RECONCILIATION_DB_MODULE = Path(
+    "gateway/canonical_writer_schema_reconciliation_db.py"
+)
+_PACKAGED_CANONICAL_WRITER_SCHEMA_RECONCILIATION_BOOTSTRAP_MODULE = Path(
+    "gateway/canonical_writer_schema_reconciliation_bootstrap.py"
+)
+_PACKAGED_CANONICAL_WRITER_SCHEMA_RECONCILIATION_RUNTIME_MODULE = Path(
+    "gateway/canonical_writer_schema_reconciliation_runtime.py"
+)
 CANONICAL_WRITER_BASE_MIGRATION_SQL_RELATIVE_PATH = Path(
     "scripts/sql/canonical_writer_v1.sql"
+)
+CANONICAL_WRITER_SCHEMA_CONTRACT_ASSET_RELATIVE_PATH = Path(
+    "gateway/assets/canonical_writer_schema_contract_v1.json"
 )
 CANONICAL_WRITER_FOUNDATION_SQL_RELATIVE_PATHS = (
     Path("scripts/sql/canonical_writer_foundation_observe_v1.sql"),
@@ -127,9 +142,22 @@ SOURCE_COMMIT_MARKER_RELATIVE_PATH = Path(".codex-source-commit")
 _TRACKED_RELEASE_ARTIFACTS = (
     *RUNTIME_DEPENDENCY_LOCK_RELATIVE_PATHS,
     CANONICAL_WRITER_BASE_MIGRATION_SQL_RELATIVE_PATH,
+    CANONICAL_WRITER_SCHEMA_CONTRACT_ASSET_RELATIVE_PATH,
     *CANONICAL_WRITER_FOUNDATION_SQL_RELATIVE_PATHS,
 )
 _MAX_TRACKED_RELEASE_ARTIFACT_BYTES = 1024 * 1024
+_SCHEMA_CONTRACT_ASSET_FILE_SHA256 = (
+    "1d6b62eef9bf354ed90fa78ac80d536d107e0f75bf4119f5a21c65a5d4b05c11"
+)
+_SCHEMA_CONTRACT_ASSET_SHA256 = (
+    "79496dfd5ee22166059e0ac85ac72f70d1b5181169e8ac9c6c1738d204adca33"
+)
+_SCHEMA_CONTRACT_SHA256 = (
+    "5036aa2519c3b0b3a730db54b44d5750b70abc35cf3928069138a0c6391d3bab"
+)
+_SCHEMA_CONTRACT_BASE_ARTIFACT_SHA256 = (
+    "df6c6f9f4a6e4df6c55f3cf32a60af4dac6b03ff940ad174035709ae14a58475"
+)
 
 # The stopped publication boundary is intentionally narrower than the release
 # builder API above.  Its CLI derives every path and tool from one exact commit
@@ -181,6 +209,7 @@ _STOPPED_SERVICE_UNITS = (
     "muncho-canary-discord-edge.service",
     "muncho-discord-egress.service",
     "muncho-canonical-writer.service",
+    "muncho-canonical-writer-phase-b-readiness.service",
     "muncho-canonical-writer-export.service",
     "muncho-canonical-writer-export.timer",
     "hermes-cloud-gateway.service",
@@ -304,6 +333,41 @@ class ReleaseBuildSpec:
         return (
             self.site_packages
             / _PACKAGED_CANONICAL_WRITER_PHASE_B_FOUNDATION_MODULE
+        )
+
+    @property
+    def schema_reconciliation_module_origin(self) -> Path:
+        return (
+            self.site_packages
+            / _PACKAGED_CANONICAL_WRITER_SCHEMA_RECONCILIATION_MODULE
+        )
+
+    @property
+    def schema_reconciliation_db_module_origin(self) -> Path:
+        return (
+            self.site_packages
+            / _PACKAGED_CANONICAL_WRITER_SCHEMA_RECONCILIATION_DB_MODULE
+        )
+
+    @property
+    def schema_reconciliation_bootstrap_module_origin(self) -> Path:
+        return (
+            self.site_packages
+            / _PACKAGED_CANONICAL_WRITER_SCHEMA_RECONCILIATION_BOOTSTRAP_MODULE
+        )
+
+    @property
+    def schema_reconciliation_runtime_module_origin(self) -> Path:
+        return (
+            self.site_packages
+            / _PACKAGED_CANONICAL_WRITER_SCHEMA_RECONCILIATION_RUNTIME_MODULE
+        )
+
+    @property
+    def schema_contract_asset_origin(self) -> Path:
+        return (
+            self.site_packages
+            / CANONICAL_WRITER_SCHEMA_CONTRACT_ASSET_RELATIVE_PATH
         )
 
     @property
@@ -856,6 +920,11 @@ def create_release_manifest(spec: ReleaseBuildSpec) -> ReleaseManifest:
         spec.foundation_module_origin,
         spec.phase_b_foundation_module_origin,
         spec.phase_b_runtime_module_origin,
+        spec.schema_reconciliation_module_origin,
+        spec.schema_reconciliation_db_module_origin,
+        spec.schema_reconciliation_bootstrap_module_origin,
+        spec.schema_reconciliation_runtime_module_origin,
+        spec.schema_contract_asset_origin,
         spec.runtime_dependency_module_origin,
         spec.release_root / SOURCE_COMMIT_MARKER_RELATIVE_PATH,
         spec.release_root / RUNTIME_DEPENDENCY_MANIFEST_RELATIVE_PATH,
@@ -1427,6 +1496,118 @@ def _remove_build_scratch(
         raise RuntimeError("release scratch cleanup did not complete")
 
 
+def _read_stable_release_build_file(
+    path: Path,
+    *,
+    expected_uid: int,
+    expected_gid: int,
+    exact_mode: int,
+    maximum_bytes: int,
+) -> bytes:
+    before = os.lstat(path)
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or stat.S_ISLNK(before.st_mode)
+        or before.st_uid != expected_uid
+        or before.st_gid != expected_gid
+        or before.st_nlink != 1
+        or stat.S_IMODE(before.st_mode) != exact_mode
+        or not 0 < before.st_size <= maximum_bytes
+        or _list_xattrs(path)
+    ):
+        raise RuntimeError("release build file identity is not exact")
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        opened = os.fstat(descriptor)
+
+        def identity(item: os.stat_result) -> tuple[int, ...]:
+            return (
+                item.st_dev,
+                item.st_ino,
+                item.st_mode,
+                item.st_nlink,
+                item.st_uid,
+                item.st_gid,
+                item.st_size,
+                item.st_mtime_ns,
+                item.st_ctime_ns,
+            )
+
+        if identity(opened) != identity(before):
+            raise RuntimeError("release build file changed during open")
+        chunks: list[bytes] = []
+        size = 0
+        while chunk := os.read(
+            descriptor,
+            min(64 * 1024, maximum_bytes + 1 - size),
+        ):
+            chunks.append(chunk)
+            size += len(chunk)
+            if size > maximum_bytes:
+                raise RuntimeError("release build file exceeds its bound")
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    reachable = os.lstat(path)
+    if (
+        size != before.st_size
+        or identity(after) != identity(before)
+        or identity(reachable) != identity(before)
+    ):
+        raise RuntimeError("release build file changed during read")
+    return b"".join(chunks)
+
+
+def _validate_schema_contract_asset_bytes(raw: bytes) -> str:
+    """Validate the one pinned contract without importing runtime dependencies."""
+
+    try:
+        value = _decode_canonical_mapping(
+            raw,
+            label="Canonical Writer schema contract asset",
+        )
+        contract = value.get("contract")
+        unsigned = {
+            name: item for name, item in value.items() if name != "asset_sha256"
+        }
+        if (
+            hashlib.sha256(raw).hexdigest()
+            != _SCHEMA_CONTRACT_ASSET_FILE_SHA256
+            or set(value)
+            != {
+                "schema",
+                "postgresql_major",
+                "base_artifact_filename",
+                "base_artifact_sha256",
+                "contract",
+                "contract_sha256",
+                "asset_sha256",
+            }
+            or value.get("schema")
+            != "muncho-canonical-writer-schema-contract-asset.v1"
+            or value.get("postgresql_major") != 18
+            or value.get("base_artifact_filename") != "canonical_writer_v1.sql"
+            or value.get("base_artifact_sha256")
+            != _SCHEMA_CONTRACT_BASE_ARTIFACT_SHA256
+            or not isinstance(contract, Mapping)
+            or hashlib.sha256(_canonical_bytes(contract)).hexdigest()
+            != _SCHEMA_CONTRACT_SHA256
+            or value.get("contract_sha256") != _SCHEMA_CONTRACT_SHA256
+            or hashlib.sha256(_canonical_bytes(unsigned)).hexdigest()
+            != _SCHEMA_CONTRACT_ASSET_SHA256
+            or value.get("asset_sha256") != _SCHEMA_CONTRACT_ASSET_SHA256
+        ):
+            raise ValueError("schema contract identity drifted")
+    except BaseException as exc:
+        raise RuntimeError(
+            "release packaged Canonical Writer schema contract is invalid"
+        ) from exc
+    return _SCHEMA_CONTRACT_BASE_ARTIFACT_SHA256
+
+
 def _validate_installed_runtime(
     spec: ReleaseBuildSpec,
     managed_python: Path,
@@ -1532,6 +1713,65 @@ def _validate_installed_runtime(
     ):
         raise RuntimeError(
             "release packaged Canonical Writer Phase-B runtime module is invalid"
+        )
+    schema_reconciliation_module_paths = (
+        spec.schema_reconciliation_module_origin,
+        spec.schema_reconciliation_db_module_origin,
+        spec.schema_reconciliation_bootstrap_module_origin,
+        spec.schema_reconciliation_runtime_module_origin,
+    )
+    for module_path in schema_reconciliation_module_paths:
+        try:
+            module_stat = os.lstat(module_path)
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                "release is missing a packaged Canonical Writer schema "
+                "reconciliation module"
+            ) from exc
+        if (
+            not stat.S_ISREG(module_stat.st_mode)
+            or stat.S_ISLNK(module_stat.st_mode)
+            or module_stat.st_nlink != 1
+            or module_stat.st_uid != site_stat.st_uid
+            or module_stat.st_gid != site_stat.st_gid
+            or stat.S_IMODE(module_stat.st_mode) != 0o644
+            or module_stat.st_size == 0
+        ):
+            raise RuntimeError(
+                "release packaged Canonical Writer schema reconciliation "
+                "module is invalid"
+            )
+    installed_contract_raw = _read_stable_release_build_file(
+        spec.schema_contract_asset_origin,
+        expected_uid=site_stat.st_uid,
+        expected_gid=site_stat.st_gid,
+        maximum_bytes=_MAX_TRACKED_RELEASE_ARTIFACT_BYTES,
+        exact_mode=0o644,
+    )
+    tracked_contract_raw = _read_stable_release_build_file(
+        spec.release_root / CANONICAL_WRITER_SCHEMA_CONTRACT_ASSET_RELATIVE_PATH,
+        expected_uid=site_stat.st_uid,
+        expected_gid=site_stat.st_gid,
+        maximum_bytes=_MAX_TRACKED_RELEASE_ARTIFACT_BYTES,
+        exact_mode=_SEALED_FILE_MODE,
+    )
+    if installed_contract_raw != tracked_contract_raw:
+        raise RuntimeError(
+            "release packaged Canonical Writer schema contract drifted"
+        )
+    contract_base_sha256 = _validate_schema_contract_asset_bytes(
+        installed_contract_raw
+    )
+    base_migration_raw = _read_stable_release_build_file(
+        spec.release_root / CANONICAL_WRITER_BASE_MIGRATION_SQL_RELATIVE_PATH,
+        expected_uid=site_stat.st_uid,
+        expected_gid=site_stat.st_gid,
+        maximum_bytes=_MAX_TRACKED_RELEASE_ARTIFACT_BYTES,
+        exact_mode=_SEALED_FILE_MODE,
+    )
+    if hashlib.sha256(base_migration_raw).hexdigest() != contract_base_sha256:
+        raise RuntimeError(
+            "release Canonical Writer schema contract base digest drifted"
         )
     runtime_dependency_path = spec.runtime_dependency_module_origin
     try:
@@ -1980,6 +2220,11 @@ def build_release(
         scratch_device=scratch_device,
         scratch_inode=scratch_inode,
     )
+    # Runtime dependency provisioning and the final source re-attestation both
+    # execute after the first installed-runtime gate.  Re-read every pinned
+    # module and schema-contract byte only after those mutable phases finish,
+    # immediately before the release tree becomes immutable.
+    _validate_installed_runtime(spec, managed_python)
     _seal_release_tree(spec.release_root)
     manifest = create_release_manifest(spec)
     _write_release_manifest(spec.release_root, manifest)

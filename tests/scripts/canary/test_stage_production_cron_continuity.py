@@ -3,10 +3,13 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from gateway import canonical_writer_production_cutover as cutover
+from gateway import production_cron_continuity_package as continuity
 from scripts.canary import stage_production_cron_continuity as stage
 from tests.gateway.test_canonical_writer_production_cutover import (
     REVISION,
@@ -77,3 +80,80 @@ def test_stage_rejects_caller_supplied_mechanical_package(
         assert str(exc) == "production_cron_stage_package_unexpected"
     else:
         raise AssertionError("caller-supplied package unexpectedly accepted")
+
+
+def test_packaged_v4_authority_stages_the_bound_continuity_plan(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    freeze_path = tmp_path / "freeze-plan.json"
+    freeze_path.write_text("{}", encoding="ascii")
+    continuity_plan = {"schema": continuity.PLAN_SCHEMA, "plan_sha256": "a" * 64}
+    mechanical_package = {"manifest_sha256": "b" * 64}
+    freeze = SimpleNamespace(
+        sha256="c" * 64,
+        value={
+            "release_revision": REVISION,
+            "cutover_authority": {
+                "cron_continuity_plan": continuity_plan,
+                "mechanical_job_package": mechanical_package,
+            },
+        },
+    )
+    observed: dict[str, object] = {}
+
+    def stage_bound(**kwargs):
+        observed.update(kwargs)
+        return {"schema": "staged-v4"}
+
+    monkeypatch.setattr(cutover, "STAGED_FREEZE_PLAN_PATH", freeze_path)
+    monkeypatch.setattr(
+        cutover.FreezePlan,
+        "from_mapping",
+        lambda _value: freeze,
+    )
+    monkeypatch.setattr(stage, "stage_packaged_continuity_from_host", stage_bound)
+    monkeypatch.setattr(stage.os, "geteuid", lambda: 0)
+
+    assert stage.main(["stage", "--revision", REVISION]) == 0
+
+    assert json.loads(capsys.readouterr().out) == {"schema": "staged-v4"}
+    assert observed["revision"] == REVISION
+    assert observed["mechanical_job_package"] is mechanical_package
+    assert observed["expected_continuity_plan"] is continuity_plan
+
+
+def test_unknown_continuity_schema_fails_closed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    freeze_path = tmp_path / "freeze-plan.json"
+    freeze_path.write_text("{}", encoding="ascii")
+    freeze = SimpleNamespace(
+        sha256="c" * 64,
+        value={
+            "release_revision": REVISION,
+            "cutover_authority": {
+                "cron_continuity_plan": {
+                    "schema": "muncho-production-cron-packaged-continuity-plan.v999"
+                },
+                "mechanical_job_package": {},
+            },
+        },
+    )
+    monkeypatch.setattr(cutover, "STAGED_FREEZE_PLAN_PATH", freeze_path)
+    monkeypatch.setattr(
+        cutover.FreezePlan,
+        "from_mapping",
+        lambda _value: freeze,
+    )
+    monkeypatch.setattr(stage.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        stage,
+        "stage_packaged_continuity_from_host",
+        lambda **_kwargs: pytest.fail("unknown schema reached staging"),
+    )
+
+    with pytest.raises(RuntimeError, match="production_cron_stage_schema_unsupported"):
+        stage.main(["stage", "--revision", REVISION])

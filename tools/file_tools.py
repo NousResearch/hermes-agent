@@ -661,14 +661,21 @@ def _get_hermes_config_resolved() -> str | None:
 
 
 def _is_current_user_temp_path(path: str) -> bool:
-    """Return whether *path* is inside this process's resolved temp root.
+    """Return whether *path* is inside this process's macOS per-user temp root.
 
     On macOS, ``tempfile`` and pytest use ``/var/folders/...`` which resolves
-    beneath ``/private/var/folders/...``.  File tools should work in that
-    per-user workspace without opening the rest of ``/private/var``.
+    beneath ``/private/var/folders/...``.  Require that resolved root before
+    granting the narrow exception so a manipulated broad or sensitive temp
+    root cannot relax another system-path guard.
     """
+    if sys.platform != "darwin":
+        return False
     try:
         temp_root = Path(tempfile.gettempdir()).expanduser().resolve(strict=False)
+        macos_temp_parent = Path("/private/var/folders")
+        temp_relative = temp_root.relative_to(macos_temp_parent)
+        if len(temp_relative.parts) != 3 or temp_relative.parts[-1] != "T":
+            return False
         target = Path(path).expanduser().resolve(strict=False)
         target.relative_to(temp_root)
         return True
@@ -700,7 +707,10 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         )
     for prefix in _SENSITIVE_PATH_PREFIXES:
         if resolved.startswith(prefix) or normalized.startswith(prefix):
-            if _is_current_user_temp_path(resolved) or _is_current_user_temp_path(normalized):
+            if prefix == "/private/var/" and (
+                _is_current_user_temp_path(resolved)
+                or _is_current_user_temp_path(normalized)
+            ):
                 return None
             return _err
     if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:

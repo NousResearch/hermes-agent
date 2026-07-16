@@ -293,13 +293,26 @@ class TestCheckSensitivePathMacOSBypass:
         from tools import file_tools
 
         temp_root = "/private/var/folders/ab/current-user/T"
+        monkeypatch.setattr(file_tools.sys, "platform", "darwin")
         monkeypatch.setattr(file_tools.tempfile, "gettempdir", lambda: temp_root)
         assert file_tools._check_sensitive_path(f"{temp_root}/workspace/result.txt") is None
+
+    def test_non_macos_never_uses_private_var_temp_exception(self, monkeypatch):
+        """The macOS-only exception must stay closed on other platforms."""
+        from tools import file_tools
+
+        temp_root = "/private/var/folders/ab/current-user/T"
+        monkeypatch.setattr(file_tools.sys, "platform", "linux")
+        monkeypatch.setattr(file_tools.tempfile, "gettempdir", lambda: temp_root)
+        assert file_tools._check_sensitive_path(
+            f"{temp_root}/workspace/result.txt"
+        ) is not None
 
     def test_other_private_var_folder_remains_blocked(self, monkeypatch):
         """The exception is exact to this process's temp root, not all /private/var/folders."""
         from tools import file_tools
 
+        monkeypatch.setattr(file_tools.sys, "platform", "darwin")
         monkeypatch.setattr(
             file_tools.tempfile,
             "gettempdir",
@@ -309,10 +322,62 @@ class TestCheckSensitivePathMacOSBypass:
             "/private/var/folders/zz/other-user/T/result.txt"
         ) is not None
 
+    @pytest.mark.parametrize(
+        ("temp_root", "target"),
+        [
+            (
+                "/private/var/folders/ab",
+                "/private/var/folders/ab/other-user/T/result.txt",
+            ),
+            (
+                "/private/var/folders/ab/current-user",
+                "/private/var/folders/ab/current-user/T/result.txt",
+            ),
+            (
+                "/private/var/folders/ab/current-user/C",
+                "/private/var/folders/ab/current-user/C/result.txt",
+            ),
+        ],
+    )
+    def test_malformed_macos_temp_roots_remain_blocked(
+        self, monkeypatch, temp_root, target
+    ):
+        """Only the exact /private/var/folders/<shard>/<user>/T shape qualifies."""
+        from tools import file_tools
+
+        monkeypatch.setattr(file_tools.sys, "platform", "darwin")
+        monkeypatch.setattr(file_tools.tempfile, "gettempdir", lambda: temp_root)
+        assert file_tools._check_sensitive_path(target) is not None
+
+    def test_private_etc_temp_root_remains_blocked(self, monkeypatch):
+        """A manipulated temp root must never relax the /private/etc guard."""
+        from tools import file_tools
+
+        monkeypatch.setattr(file_tools.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            file_tools.tempfile,
+            "gettempdir",
+            lambda: "/private/etc/hermes-temp",
+        )
+        assert file_tools._check_sensitive_path(
+            "/private/etc/hermes-temp/result.txt"
+        ) is not None
+
+    def test_broad_private_var_temp_root_remains_blocked(self, monkeypatch):
+        """Only a per-user /private/var/folders root can qualify for the exception."""
+        from tools import file_tools
+
+        monkeypatch.setattr(file_tools.sys, "platform", "darwin")
+        monkeypatch.setattr(file_tools.tempfile, "gettempdir", lambda: "/private/var")
+        assert file_tools._check_sensitive_path(
+            "/private/var/db/hermes-temp/result.txt"
+        ) is not None
+
     def test_hermes_config_inside_temp_root_remains_blocked(self, monkeypatch):
         from tools import file_tools
 
         config_path = "/private/var/folders/ab/current-user/T/hermes/config.yaml"
+        monkeypatch.setattr(file_tools.sys, "platform", "darwin")
         monkeypatch.setattr(
             file_tools.tempfile,
             "gettempdir",

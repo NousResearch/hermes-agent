@@ -942,9 +942,18 @@ def test_build_release_materializes_all_tracked_sql_before_install_tooling(
         assert stat.S_IMODE(os.lstat(installed).st_mode) == 0o444
 
 
-def test_build_release_revalidates_runtime_after_late_dependency_tamper(
+@pytest.mark.parametrize(
+    ("late_mutation", "expected_error"),
+    (
+        ("contract", "schema contract drifted"),
+        ("extra_pth", "dynamic site path"),
+    ),
+)
+def test_build_release_revalidates_runtime_around_late_dependencies(
     tmp_path,
     monkeypatch,
+    late_mutation,
+    expected_error,
 ):
     spec = _spec(tmp_path)
     _source(spec)
@@ -1039,16 +1048,42 @@ def test_build_release_revalidates_runtime_after_late_dependency_tamper(
             install_packaged_runtime()
         elif (
             "gateway.production_runtime_dependencies" in command.argv
+            and "install" in command.argv
+        ):
+            hook = (
+                spec.site_packages
+                / writer_release._SETUPTOOLS_DISTUTILS_SITE_HOOK_NAME
+            )
+            hook.write_bytes(writer_release._SETUPTOOLS_DISTUTILS_SITE_HOOK_BYTES)
+            hook.chmod(0o644)
+            if late_mutation == "extra_pth":
+                (spec.site_packages / "injected.pth").write_bytes(
+                    b"import attacker\n"
+                )
+        elif (
+            "gateway.production_runtime_dependencies" in command.argv
             and "verify" in command.argv
         ):
+            if late_mutation == "extra_pth":
+                pytest.fail("runtime verifier started with an unreviewed site hook")
+            assert not (
+                spec.site_packages
+                / writer_release._SETUPTOOLS_DISTUTILS_SITE_HOOK_NAME
+            ).exists()
             spec.schema_contract_asset_origin.write_bytes(b"late dependency tamper\n")
         return subprocess.CompletedProcess(command.argv, 0, stdout, "")
 
-    with pytest.raises(RuntimeError, match="schema contract drifted"):
+    with pytest.raises(RuntimeError, match=expected_error):
         build_release(spec, runner=runner)
 
     assert seal_calls == []
     assert (spec.release_root / writer_release.INCOMPLETE_MARKER_NAME).is_file()
+    assert not (
+        spec.site_packages / writer_release._SETUPTOOLS_DISTUTILS_SITE_HOOK_NAME
+    ).exists()
+    assert (spec.site_packages / "injected.pth").exists() is (
+        late_mutation == "extra_pth"
+    )
 
 
 def test_exact_revision_path_is_never_reused_and_other_revisions_coexist(
@@ -1715,6 +1750,55 @@ def test_virtualenv_site_hook_removal_rejects_drift(
 
     with pytest.raises(RuntimeError, match="site hook"):
         writer_release._remove_exact_virtualenv_site_hook(spec)
+    assert os.path.lexists(hook)
+
+
+def test_removes_only_exact_setuptools_distutils_site_hook(tmp_path, monkeypatch):
+    _allow_local_materialization_owner(monkeypatch)
+    assert len(writer_release._SETUPTOOLS_DISTUTILS_SITE_HOOK_BYTES) == 151
+    assert hashlib.sha256(
+        writer_release._SETUPTOOLS_DISTUTILS_SITE_HOOK_BYTES
+    ).hexdigest() == "2638ce9e2500e572a5e0de7faed6661eb569d1b696fcba07b0dd223da5f5d224"
+    spec = _spec(tmp_path)
+    spec.site_packages.mkdir(parents=True)
+    hook = spec.site_packages / writer_release._SETUPTOOLS_DISTUTILS_SITE_HOOK_NAME
+    hook.write_bytes(writer_release._SETUPTOOLS_DISTUTILS_SITE_HOOK_BYTES)
+    hook.chmod(0o644)
+
+    assert writer_release._remove_exact_setuptools_distutils_site_hook(spec) is True
+    assert not hook.exists()
+    assert writer_release._remove_exact_setuptools_distutils_site_hook(spec) is False
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("content", "symlink", "mode", "hardlink"),
+)
+def test_setuptools_distutils_site_hook_removal_rejects_drift(
+    tmp_path,
+    monkeypatch,
+    mutation,
+):
+    _allow_local_materialization_owner(monkeypatch)
+    spec = _spec(tmp_path)
+    spec.site_packages.mkdir(parents=True)
+    hook = spec.site_packages / writer_release._SETUPTOOLS_DISTUTILS_SITE_HOOK_NAME
+    hook.write_bytes(writer_release._SETUPTOOLS_DISTUTILS_SITE_HOOK_BYTES)
+    hook.chmod(0o644)
+    if mutation == "content":
+        hook.write_bytes(b"import attacker\n")
+    elif mutation == "symlink":
+        target = tmp_path / "target.pth"
+        target.write_bytes(writer_release._SETUPTOOLS_DISTUTILS_SITE_HOOK_BYTES)
+        hook.unlink()
+        hook.symlink_to(target)
+    elif mutation == "mode":
+        hook.chmod(0o444)
+    else:
+        os.link(hook, tmp_path / "hardlink.pth")
+
+    with pytest.raises(RuntimeError, match="setuptools distutils site hook"):
+        writer_release._remove_exact_setuptools_distutils_site_hook(spec)
     assert os.path.lexists(hook)
 
 

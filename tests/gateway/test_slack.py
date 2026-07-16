@@ -2721,6 +2721,67 @@ class TestThreadReplyHandling:
         adapter.handle_message.assert_not_called()
 
 
+class TestClarifyEcho:
+    """Test that Slack echoes intercepted clarify replies back to the thread."""
+
+    @pytest.mark.asyncio
+    async def test_clarify_reply_is_posted_back_to_thread(self):
+        from tools.clarify_gateway import clear_session, register
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageEvent, MessageType, SendResult
+        from gateway.session import SessionSource, build_session_key
+
+        config = PlatformConfig(enabled=True, token="xoxb-test-token")
+        adapter = SlackAdapter(config)
+        adapter._app = MagicMock()
+        adapter._bot_user_id = "U_BOT"
+        adapter._running = True
+        adapter._message_handler = AsyncMock(return_value=None)
+        adapter._send_with_retry = AsyncMock(
+            return_value=SendResult(success=True, message_id="999.000")
+        )
+
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="group",
+            user_id="U_USER",
+            thread_id="123.000",
+        )
+        event = MessageEvent(
+            text="Need more info",
+            source=source,
+            message_id="123.456",
+            message_type=MessageType.TEXT,
+        )
+        session_key = build_session_key(
+            source,
+            group_sessions_per_user=True,
+            thread_sessions_per_user=False,
+        )
+        adapter._active_sessions[session_key] = asyncio.Event()
+        adapter._session_tasks[session_key] = asyncio.current_task()
+        register(
+            clarify_id="clarify-1",
+            session_key=session_key,
+            question="Which folder?",
+            choices=None,
+        )
+
+        try:
+            await adapter.handle_message(event)
+        finally:
+            clear_session(session_key)
+            adapter._active_sessions.pop(session_key, None)
+            adapter._session_tasks.pop(session_key, None)
+
+        adapter._send_with_retry.assert_awaited_once()
+        send_kwargs = adapter._send_with_retry.await_args.kwargs
+        assert send_kwargs["chat_id"] == "C123"
+        assert send_kwargs["reply_to"] == "123.456"
+        assert send_kwargs["content"] == "📝 Submitted input:\nNeed more info"
+
+
 # ---------------------------------------------------------------------------
 # TestAssistantThreadLifecycle
 # ---------------------------------------------------------------------------

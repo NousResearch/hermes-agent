@@ -3371,6 +3371,20 @@ class BasePlatformAdapter(ABC):
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Hook called when background processing completes."""
 
+    def format_intercepted_clarify_response(
+        self,
+        event: MessageEvent,
+        clarify_entry: Any,
+        response_text: str,
+    ) -> Optional[str]:
+        """Return a user-visible echo for an intercepted clarify reply.
+
+        Platforms can override this to surface the submitted reply back into
+        the channel/thread that captured it. Returning ``None`` keeps the
+        existing silent-intercept behavior.
+        """
+        return None
+
     async def _run_processing_hook(self, hook_name: str, *args: Any, **kwargs: Any) -> None:
         """Run a lifecycle hook without letting failures break message flow."""
         hook = getattr(self, hook_name, None)
@@ -4045,24 +4059,53 @@ class BasePlatformAdapter(ABC):
                         self.name, session_key,
                     )
                     try:
+                        raw_clarify_reply = (event.text or "").strip()
+                        if not raw_clarify_reply:
+                            return
+
+                        try:
+                            from tools import clarify_gateway as _clarify_mod
+                            pending_clarify = _clarify_mod.get_pending_for_session(session_key)
+                        except Exception:
+                            pending_clarify = None
+
+                        if pending_clarify is None:
+                            return
+
+                        resolved = _clarify_mod.resolve_gateway_clarify(
+                            pending_clarify.clarify_id,
+                            raw_clarify_reply,
+                        )
+                        if not resolved:
+                            return
+
                         _thread_meta = _thread_metadata_for_source(
                             event.source, _reply_anchor_for_event(event)
                         )
-                        response = await self._message_handler(event)
-                        _text, _eph_ttl = self._unwrap_ephemeral(response)
-                        if _text:
-                            _r = await self._send_with_retry(
+                        clarify_text = None
+                        try:
+                            formatter = getattr(
+                                self, "format_intercepted_clarify_response", None
+                            )
+                            if callable(formatter):
+                                clarify_text = formatter(
+                                    event,
+                                    pending_clarify,
+                                    raw_clarify_reply,
+                                )
+                        except Exception as exc:
+                            logger.warning(
+                                "[%s] clarify response formatter failed: %s",
+                                self.name,
+                                exc,
+                            )
+                        if clarify_text is not None:
+                            await self._send_with_retry(
                                 chat_id=event.source.chat_id,
-                                content=_text,
+                                content=clarify_text,
                                 reply_to=_reply_anchor_for_event(event),
                                 metadata=_mark_notify_metadata(_thread_meta),
                             )
-                            if _eph_ttl > 0 and _r.success and _r.message_id:
-                                self._schedule_ephemeral_delete(
-                                    chat_id=event.source.chat_id,
-                                    message_id=_r.message_id,
-                                    ttl_seconds=_eph_ttl,
-                                )
                     except Exception as e:
                         logger.error(
                             "[%s] Clarify text-intercept dispatch failed: %s",

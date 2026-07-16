@@ -3072,6 +3072,18 @@ class SlackAdapter(BasePlatformAdapter):
 
         return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
 
+    def format_intercepted_clarify_response(
+        self,
+        event,
+        clarify_entry,
+        response_text: str,
+    ) -> Optional[str]:
+        """Echo a submitted clarify reply back into the Slack thread."""
+        text = (response_text or "").strip()
+        if not text:
+            return None
+        return f"📝 Submitted input:\n{text}"
+
     async def _handle_slash_confirm_action(self, ack, body, action) -> None:
         """Handle a slash-confirm button click from Block Kit."""
         await ack()

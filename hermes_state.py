@@ -4544,6 +4544,20 @@ class SessionDB:
         messages = _strip_background_review_harness(messages)
         return messages
 
+    def get_conversation_root(self, session_id: str) -> str:
+        """Return the ROOT id of *session_id*'s lineage chain.
+
+        The root is the stable "conversation id": context compression
+        rotates ``session_id`` to a new segment linked via
+        ``parent_session_id``, and delegate subagents hang off their
+        parent the same way. Walking to the root gives every segment of
+        one user-facing conversation (and its delegation tree) a single
+        identifier — used for Nous Portal ``conversation=`` usage tagging.
+        Returns *session_id* unchanged when it has no recorded parent.
+        """
+        chain = self._session_lineage_root_to_tip(session_id)
+        return (chain[0] if chain and chain[0] else session_id)
+
     def _session_lineage_root_to_tip(self, session_id: str) -> List[str]:
         if not session_id:
             return [session_id]

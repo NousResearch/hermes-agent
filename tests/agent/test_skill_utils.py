@@ -1,10 +1,12 @@
 """Tests for agent/skill_utils.py."""
 
+import logging
 from unittest.mock import patch
 
 from agent.skill_utils import (
     extract_skill_conditions,
     iter_skill_index_files,
+    parse_frontmatter,
     skill_matches_platform,
 )
 
@@ -197,3 +199,58 @@ class TestSkillMatchesPlatformTermux:
             "agent.skill_utils.is_termux", return_value=False
         ):
             assert skill_matches_platform(fm) is True
+
+
+# ── parse_frontmatter fallback diagnostic ────────────────────────────────
+
+
+def test_parse_frontmatter_malformed_yaml_logs_debug_and_falls_back(caplog):
+    """Malformed YAML must produce the simple-parser fallback output AND
+    emit a DEBUG diagnostic from agent.skill_utils so the failure is
+    investigable. Regression test for PR #44204 per teknium1 review:
+    the silent fallback made frontmatter errors undiagnosable.
+    """
+    content = (
+        "---\n"
+        "name: bogus\n"
+        ": : invalid yaml structure\n"
+        ":: nested: [unterminated\n"
+        "---\n"
+        "Body text after frontmatter.\n"
+    )
+
+    with caplog.at_level(logging.DEBUG, logger="agent.skill_utils"):
+        frontmatter, body = parse_frontmatter(content)
+
+    # Fallback parser produced something (simple key:value path) AND the
+    # body is the text after the closing frontmatter delimiter.
+    assert isinstance(frontmatter, dict)
+    assert body == "Body text after frontmatter.\n"
+    # At least one DEBUG record came from agent.skill_utils mentioning
+    # the YAML fallback.
+    debug_records = [
+        r for r in caplog.records
+        if r.name == "agent.skill_utils" and r.levelno == logging.DEBUG
+    ]
+    assert len(debug_records) >= 1, caplog.text
+    assert any(
+        "YAML frontmatter parse failed" in r.getMessage() for r in debug_records
+    ), caplog.text
+
+
+def test_parse_frontmatter_well_formed_yaml_no_debug_log(caplog):
+    """Sanity counter-test: well-formed YAML must not emit the fallback
+    DEBUG diagnostic. Tightens coverage so the new log cannot spuriously
+    fire and silence real regression symptoms later.
+    """
+    content = "---\nname: real-skill\nversion: 1\n---\nbody\n"
+
+    with caplog.at_level(logging.DEBUG, logger="agent.skill_utils"):
+        frontmatter, body = parse_frontmatter(content)
+
+    assert frontmatter == {"name": "real-skill", "version": 1}
+    debug_records = [
+        r for r in caplog.records
+        if r.name == "agent.skill_utils" and r.levelno == logging.DEBUG
+    ]
+    assert not debug_records, caplog.text

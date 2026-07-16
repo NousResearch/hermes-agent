@@ -1644,6 +1644,42 @@ def _resolve_managed_path(
     return policy, resolved, str(resolved)
 
 
+def _hosted_fs_read_guard(target: Path, request: Request) -> None:
+    """Hold the ``_fs_path`` read routes to the managed-files boundary.
+
+    The file-preview and code-review routes resolve their path through the
+    unconfined ``_fs_path``/``_git_path`` rather than ``_resolve_managed_path``,
+    so on a locked deployment they never adopted the read confinement that
+    #57505 gave ``/api/files*``: a tenant confined to the managed root could
+    still read ``auth.json`` / ``.env`` / ``mcp-tokens`` and any path outside
+    the root through the preview or the git ``file`` argument. Apply the same
+    two checks the managed-files reader uses.
+
+    Engages only when a locked root is in effect (the ``/opt/data`` hosted
+    container or an explicit ``HERMES_DASHBOARD_FILES_ROOT``). A local dashboard
+    has no locked root: it is the operator's own machine and keeps previewing
+    and editing their whole filesystem exactly as before.
+    """
+    root = _managed_files_policy(request, create_root=False).locked_root
+    if root is None:
+        return
+    if not _path_is_under(root, target):
+        raise HTTPException(status_code=403, detail="Path outside managed files root")
+    if _is_sensitive_path(target):
+        raise HTTPException(status_code=403, detail="Access to sensitive files is not allowed")
+
+
+def _git_file_read_target(cwd: str, file: str) -> Path:
+    """Resolve a git ``file`` argument the way ``git diff`` reads it.
+
+    ``git diff -- <file>`` (and the ``--no-index`` all-add path) treats a
+    relative file as relative to the repo and honors an absolute one, so join
+    it onto the repo dir before ``_fs_path`` resolves symlinks. That is the
+    real path the hosted read guard must vet.
+    """
+    return _fs_path(str(Path(cwd) / file))
+
+
 def _managed_response_meta(policy: ManagedFilesPolicy) -> Dict[str, Any]:
     locked_root = str(policy.locked_root) if policy.locked_root is not None else None
     return {
@@ -1944,13 +1980,17 @@ async def delete_managed_file(payload: ManagedFileDelete, request: Request):
 
 
 @app.get("/api/fs/list")
-async def fs_list(path: str):
+async def fs_list(path: str, request: Request):
     target = _fs_path(path)
+    _hosted_fs_read_guard(target, request)
+    hosted_root = _managed_files_policy(request, create_root=False).locked_root
     try:
         entries = []
         with os.scandir(target) as scan:
             for entry in scan:
                 if entry.name in _FS_READDIR_HIDDEN:
+                    continue
+                if hosted_root is not None and _is_sensitive_path(target / entry.name):
                     continue
                 entries.append({
                     "name": entry.name,
@@ -1970,8 +2010,9 @@ async def fs_list(path: str):
 
 
 @app.get("/api/fs/read-text")
-async def fs_read_text(path: str):
+async def fs_read_text(path: str, request: Request):
     target, st = _fs_regular_file(_fs_path(path))
+    _hosted_fs_read_guard(target, request)
     if st.st_size > _FS_TEXT_SOURCE_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
     bytes_to_read = min(st.st_size, _FS_TEXT_PREVIEW_MAX_BYTES)
@@ -2046,8 +2087,9 @@ async def fs_write_text(payload: FsWriteText):
 
 
 @app.get("/api/fs/read-data-url")
-async def fs_read_data_url(path: str):
+async def fs_read_data_url(path: str, request: Request):
     target, st = _fs_regular_file(_fs_path(path))
+    _hosted_fs_read_guard(target, request)
     if st.st_size > _FS_DATA_URL_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
     try:
@@ -2157,19 +2199,30 @@ async def git_review_list_route(path: str, scope: str = "uncommitted", base: Opt
 
 @app.get("/api/git/review/diff")
 async def git_review_diff_route(
-    path: str, file: str, scope: str = "uncommitted", base: Optional[str] = None, staged: bool = False
+    path: str, file: str, request: Request,
+    scope: str = "uncommitted", base: Optional[str] = None, staged: bool = False
 ):
-    return {"diff": await _git_op(_web_git.review_diff, _git_path(path), file, scope, base, staged)}
+    cwd = _git_path(path)
+    _hosted_fs_read_guard(_git_file_read_target(cwd, file), request)
+    return {"diff": await _git_op(_web_git.review_diff, cwd, file, scope, base, staged)}
 
 
 @app.get("/api/git/file-diff")
-async def git_file_diff_route(path: str, file: str):
-    return {"diff": await _git_op(_web_git.file_diff_vs_head, _git_path(path), file)}
+async def git_file_diff_route(path: str, file: str, request: Request):
+    cwd = _git_path(path)
+    _hosted_fs_read_guard(_git_file_read_target(cwd, file), request)
+    return {"diff": await _git_op(_web_git.file_diff_vs_head, cwd, file)}
 
 
 @app.get("/api/git/review/commit-context")
-async def git_commit_context_route(path: str):
-    return await _git_op(_web_git.review_commit_context, _git_path(path))
+async def git_commit_context_route(path: str, request: Request):
+    # Aggregated `git diff --cached` / `git diff HEAD` for the whole repo.
+    # Unlike the per-file routes, there is no `file` arg to guard; the
+    # caller-supplied cwd is the read target. On a locked deployment an
+    # outside-root path must not return another repository's diff contents.
+    cwd = _git_path(path)
+    _hosted_fs_read_guard(Path(cwd), request)
+    return await _git_op(_web_git.review_commit_context, cwd)
 
 
 @app.get("/api/git/review/rev-parse")

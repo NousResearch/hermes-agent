@@ -175,3 +175,116 @@ def test_git_endpoints_require_auth(repo):
 
     assert unauth.get("/api/git/status", params={"path": str(repo)}).status_code == 401
     assert unauth.post("/api/git/review/stage", json={"path": str(repo)}).status_code == 401
+
+
+# --- locked-deployment read confinement for the git diff `file` param --------
+#
+# review_diff / file_diff_vs_head shell out to `git diff --no-index -- /dev/null
+# <file>` for untracked files, which reads ANY path the caller names. On a
+# locked dashboard that let a confined tenant read credential files or escape
+# the managed root through the review panel, bypassing the #57505 control.
+# The guard confines the resolved file to the locked root and blocks credential
+# files. Local mode is unaffected (see test_review_diff_* above).
+
+
+@pytest.fixture
+def locked_repo(tmp_path, monkeypatch):
+    root = tmp_path / "data"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_DASHBOARD_FILES_ROOT", str(root))
+    repo_dir = root / "repo"
+    repo_dir.mkdir()
+    _git(repo_dir, "init", "-q")
+    _git(repo_dir, "config", "user.email", "t@example.com")
+    _git(repo_dir, "config", "user.name", "Test")
+    (repo_dir / "tracked.txt").write_text("one\n")
+    _git(repo_dir, "add", "-A")
+    _git(repo_dir, "commit", "-qm", "init")
+    (repo_dir / "new.py").write_text("print(1)\n")   # benign untracked
+    (repo_dir / "auth.json").write_text('{"token": "s3cr3t"}')  # credential in-repo
+    return root, repo_dir
+
+
+def test_review_diff_blocks_absolute_path_escape_in_locked_mode(client, locked_repo, tmp_path):
+    root, repo_dir = locked_repo
+    secret = tmp_path / "host-secret.env"     # outside the locked root
+    secret.write_text("HOST_SECRET=leaked")
+
+    response = client.get(
+        "/api/git/review/diff", params={"path": str(repo_dir), "file": str(secret)}
+    )
+
+    assert response.status_code == 403
+
+
+def test_review_diff_blocks_credential_file_in_locked_mode(client, locked_repo):
+    _root, repo_dir = locked_repo
+
+    response = client.get(
+        "/api/git/review/diff", params={"path": str(repo_dir), "file": "auth.json"}
+    )
+
+    assert response.status_code == 403
+
+
+def test_review_diff_allows_benign_untracked_file_in_locked_mode(client, locked_repo):
+    _root, repo_dir = locked_repo
+
+    response = client.get(
+        "/api/git/review/diff", params={"path": str(repo_dir), "file": "new.py"}
+    )
+
+    assert response.status_code == 200
+    assert "print(1)" in response.json()["diff"]
+
+
+def test_file_diff_blocks_credential_and_escape_in_locked_mode(client, locked_repo, tmp_path):
+    _root, repo_dir = locked_repo
+    secret = tmp_path / "outside.env"
+    secret.write_text("X=1")
+
+    assert client.get(
+        "/api/git/file-diff", params={"path": str(repo_dir), "file": "auth.json"}
+    ).status_code == 403
+    assert client.get(
+        "/api/git/file-diff", params={"path": str(repo_dir), "file": str(secret)}
+    ).status_code == 403
+
+
+# commit-context has no `file` arg: it returns the whole-repo staged/HEAD
+# diff for the caller-supplied cwd. Guard that cwd the same way so a locked
+# deployment cannot point path at an outside-root repository and read its
+# diff contents.
+
+
+def test_commit_context_blocks_repo_outside_locked_root(client, locked_repo, tmp_path):
+    _root, _repo_dir = locked_repo
+    outside = tmp_path / "outside-repo"
+    outside.mkdir()
+    _git(outside, "init", "-q")
+    _git(outside, "config", "user.email", "t@example.com")
+    _git(outside, "config", "user.name", "Test")
+    (outside / "secret.txt").write_text("HOST_SECRET=leaked\n")
+    _git(outside, "add", "-A")
+    _git(outside, "commit", "-qm", "init")
+    (outside / "secret.txt").write_text("HOST_SECRET=changed\n")
+
+    response = client.get(
+        "/api/git/review/commit-context", params={"path": str(outside)}
+    )
+
+    assert response.status_code == 403
+    body = response.json()
+    # Must not leak the outside-repo diff (detail-only error, no "diff" payload).
+    assert "diff" not in body or "HOST_SECRET" not in str(body)
+
+
+def test_commit_context_allows_repo_under_locked_root(client, locked_repo):
+    _root, repo_dir = locked_repo
+
+    response = client.get(
+        "/api/git/review/commit-context", params={"path": str(repo_dir)}
+    )
+
+    assert response.status_code == 200
+    assert "new.py" in response.json()["diff"]

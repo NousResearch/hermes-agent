@@ -40,9 +40,11 @@ class RingBuffer:
 
 
 class PtySession:
-    def __init__(self, key: str, bridge, *, buffer_cap: int, read_timeout: float) -> None:
+    def __init__(self, key: str, bridge, *, buffer_cap: int, read_timeout: float,
+                 target_id: Optional[str] = None) -> None:
         self.key = key
         self.bridge = bridge
+        self.target_id = target_id
         self.buffer = RingBuffer(buffer_cap)
         self.alive = True
         self.attached = False
@@ -145,12 +147,19 @@ class PtySessionRegistry:
         self._read_timeout = read_timeout
         self._sessions: Dict[str, PtySession] = {}
 
-    async def attach_or_spawn(self, key: str, *, spawn: Callable[[], object]
+    async def attach_or_spawn(self, key: str, *, spawn: Callable[[], object],
+                              target_id: Optional[str] = None
                               ) -> Tuple[PtySession, bool]:
         await self.reap_idle()
         existing = self._sessions.get(key)
         if existing is not None and existing.alive:
-            return existing, False
+            if target_id is not None and existing.target_id != target_id:
+                # Target changed (different resume session or profile):
+                # close the old PTY so we spawn a fresh one below.
+                await existing.close()
+                self._sessions.pop(key, None)
+            else:
+                return existing, False
         if existing is not None:                       # dead remnant
             await existing.close()
             self._sessions.pop(key, None)
@@ -160,7 +169,8 @@ class PtySessionRegistry:
         # loop (#53227).
         bridge = await asyncio.to_thread(spawn)
         session = PtySession(key, bridge, buffer_cap=self._buffer_cap,
-                             read_timeout=self._read_timeout)
+                             read_timeout=self._read_timeout,
+                             target_id=target_id)
         await session.start()
         self._sessions[key] = session
         return session, True
@@ -173,10 +183,9 @@ class PtySessionRegistry:
     async def close_if_exists(self, key: str) -> bool:
         """Close and remove a session if present. Returns True if one was removed.
 
-        Used to force a fresh PTY spawn when resuming a different session
-        via the dashboard — without this, ``attach_or_spawn`` returns the
-        existing PTY (which was spawned with stale argv/env) and the new
-        resume target takes no effect.
+        Prefer ``attach_or_spawn(..., target_id=...)`` which automatically tears
+        down mismatched sessions. This method is for callers that need to force
+        a fresh spawn outside the attach_or_spawn flow.
         """
         s = self._sessions.get(key)
         if s is not None:

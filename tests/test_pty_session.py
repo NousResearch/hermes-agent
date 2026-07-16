@@ -180,3 +180,71 @@ async def test_reaper_loop_invokes_reap(monkeypatch):
     except asyncio.CancelledError:
         pass
     assert calls["n"] >= 2
+
+
+@pytest.mark.asyncio
+async def test_same_target_reattaches():
+    """Same key + same target_id → reattach, no new spawn."""
+    reg = make_registry()
+    b1 = FakeBridge([b"", b"", b""])
+    s1, c1 = await reg.attach_or_spawn("tok", spawn=lambda: b1, target_id="sess-A")
+    s2, c2 = await reg.attach_or_spawn("tok", spawn=lambda: FakeBridge([]), target_id="sess-A")
+    assert c1 is True and c2 is False
+    assert s1 is s2
+    assert s2.target_id == "sess-A"
+    await reg.close_all()
+
+
+@pytest.mark.asyncio
+async def test_different_target_respawns():
+    """Same key but different target_id → close old, spawn fresh."""
+    reg = make_registry()
+    b1 = FakeBridge([b"", b"", b""])
+    s1, c1 = await reg.attach_or_spawn("tok", spawn=lambda: b1, target_id="sess-A")
+    s2, c2 = await reg.attach_or_spawn("tok", spawn=lambda: FakeBridge([]), target_id="sess-B")
+    assert c1 is True and c2 is True
+    assert s1 is not s2
+    assert b1.closed is True
+    assert s2.target_id == "sess-B"
+    await reg.close_all()
+
+
+@pytest.mark.asyncio
+async def test_target_id_none_reattaches():
+    """No target_id → backward-compat reattach, matching pre-target_id behaviour."""
+    reg = make_registry()
+    b1 = FakeBridge([b"", b"", b""])
+    s1, c1 = await reg.attach_or_spawn("tok", spawn=lambda: b1)
+    s2, c2 = await reg.attach_or_spawn("tok", spawn=lambda: FakeBridge([]))
+    assert c1 is True and c2 is False
+    assert s1 is s2
+    await reg.close_all()
+
+
+@pytest.mark.asyncio
+async def test_target_id_isolates_by_profile():
+    """Same resume but different profile → different target, spawn fresh."""
+    reg = make_registry()
+    b1 = FakeBridge([b"", b"", b""])
+    s1, c1 = await reg.attach_or_spawn("tok", spawn=lambda: b1,
+                                       target_id="sess-A|profile-work")
+    s2, c2 = await reg.attach_or_spawn("tok", spawn=lambda: FakeBridge([]),
+                                       target_id="sess-A|profile-personal")
+    assert c1 is True and c2 is True
+    assert s1 is not s2
+    assert b1.closed is True
+    await reg.close_all()
+
+
+@pytest.mark.asyncio
+async def test_first_attach_without_target_later_with_target_respawns():
+    """First call without target_id, second with target_id → different identity, spawn fresh."""
+    reg = make_registry()
+    b1 = FakeBridge([b"", b"", b""])
+    s1, c1 = await reg.attach_or_spawn("tok", spawn=lambda: b1)
+    s2, c2 = await reg.attach_or_spawn("tok", spawn=lambda: FakeBridge([]),
+                                       target_id="sess-A")
+    assert c1 is True and c2 is True
+    assert s1 is not s2
+    assert b1.closed is True
+    await reg.close_all()

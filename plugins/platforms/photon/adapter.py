@@ -997,7 +997,9 @@ class PhotonAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        return await self._sidecar_send(chat_id, self.format_message(content))
+        return await self._sidecar_send(
+            chat_id, self.format_message(content), reply_to=reply_to
+        )
 
     # -- Outbound media (parity with the BlueBubbles iMessage channel) -----
     #
@@ -1023,7 +1025,7 @@ class PhotonAdapter(BasePlatformAdapter):
             # Couldn't fetch the URL — fall back to sending it as text.
             return await super().send_image(chat_id, image_url, caption, reply_to)
         return await self._sidecar_send_attachment(
-            chat_id, local_path, caption=caption,
+            chat_id, local_path, caption=caption, reply_to=reply_to,
         )
 
     async def send_image_file(
@@ -1036,7 +1038,7 @@ class PhotonAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         return await self._sidecar_send_attachment(
-            chat_id, image_path, caption=caption,
+            chat_id, image_path, caption=caption, reply_to=reply_to,
         )
 
     async def send_voice(
@@ -1048,9 +1050,68 @@ class PhotonAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
+        prepared_path, mime_type = await self._prepare_imessage_voice(audio_path)
         return await self._sidecar_send_attachment(
-            chat_id, audio_path, caption=caption, kind="voice",
+            chat_id,
+            prepared_path,
+            name=Path(prepared_path).name,
+            mime_type=mime_type,
+            caption=caption,
+            kind="voice",
+            reply_to=reply_to,
         )
+
+    async def _prepare_imessage_voice(self, audio_path: str) -> tuple[str, Optional[str]]:
+        """Normalize generated audio to the documented iMessage voice shape.
+
+        Photon accepts ``voice(path, {mimeType})`` and documents M4A with
+        ``audio/mp4`` as the portable iMessage form. Hermes TTS commonly emits
+        MP3, while inbound Apple voice notes arrive as CAF. Convert either to
+        AAC/M4A before sending so Messages renders a voice note instead of an
+        opaque audio attachment. If ffmpeg is unavailable or conversion fails,
+        retain the original path and let Spectrum perform its normal fallback.
+        """
+        source = Path(audio_path).expanduser()
+        if source.suffix.lower() in {".m4a", ".mp4"}:
+            return str(source), "audio/mp4"
+
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            logger.warning("[photon] ffmpeg unavailable; sending voice in source format")
+            return str(source), None
+
+        output = source.with_name(f"{source.stem}-imessage.m4a")
+        proc = await asyncio.create_subprocess_exec(
+            ffmpeg,
+            "-y",
+            "-loglevel",
+            "error",
+            "-i",
+            str(source),
+            "-vn",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-movflags",
+            "+faststart",
+            str(output),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0 or not output.is_file() or output.stat().st_size == 0:
+            logger.warning(
+                "[photon] voice normalization failed; sending source format: %s",
+                stderr.decode("utf-8", errors="replace")[:300],
+            )
+            try:
+                output.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return str(source), None
+
+        return str(output), "audio/mp4"
 
     async def send_video(
         self,
@@ -1062,7 +1123,7 @@ class PhotonAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         return await self._sidecar_send_attachment(
-            chat_id, video_path, caption=caption,
+            chat_id, video_path, caption=caption, reply_to=reply_to,
         )
 
     async def send_document(
@@ -1076,7 +1137,11 @@ class PhotonAdapter(BasePlatformAdapter):
         **kwargs,
     ) -> SendResult:
         return await self._sidecar_send_attachment(
-            chat_id, file_path, name=file_name, caption=caption,
+            chat_id,
+            file_path,
+            name=file_name,
+            caption=caption,
+            reply_to=reply_to,
         )
 
     async def send_animation(
@@ -1378,7 +1443,9 @@ class PhotonAdapter(BasePlatformAdapter):
             logger.error("[photon] Plain-text retry also failed: %s", fallback_result.error)
         return fallback_result
 
-    async def _sidecar_send(self, space_id: str, text: str) -> SendResult:
+    async def _sidecar_send(
+        self, space_id: str, text: str, *, reply_to: Optional[str] = None
+    ) -> SendResult:
         if len(text) > self.MAX_MESSAGE_LENGTH:
             logger.warning(
                 "[photon] truncating outbound from %d to %d chars",
@@ -1386,6 +1453,8 @@ class PhotonAdapter(BasePlatformAdapter):
             )
             text = text[: self.MAX_MESSAGE_LENGTH]
         body: Dict[str, Any] = {"spaceId": space_id, "text": text}
+        if reply_to:
+            body["replyToId"] = reply_to
         # Omit the key when disabled so an older sidecar (pre-`format`)
         # keeps accepting the body during a half-upgraded restart.
         if _markdown_enabled():
@@ -1406,6 +1475,7 @@ class PhotonAdapter(BasePlatformAdapter):
         mime_type: Optional[str] = None,
         caption: Optional[str] = None,
         kind: str = "attachment",
+        reply_to: Optional[str] = None,
     ) -> SendResult:
         """POST a local file to the sidecar's ``/send-attachment`` endpoint.
 
@@ -1439,6 +1509,8 @@ class PhotonAdapter(BasePlatformAdapter):
             body["mimeType"] = mime_type
         if caption:
             body["caption"] = caption
+        if reply_to:
+            body["replyToId"] = reply_to
         try:
             data = await self._sidecar_call("/send-attachment", body)
         except Exception as e:

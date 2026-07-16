@@ -88,12 +88,45 @@ async def test_send_voice_marks_kind_voice(
     adapter = _make_adapter(monkeypatch)
     calls = _capture_sidecar(adapter)
 
-    result = await adapter.send_voice("any;-;+1", str(audio))
+    result = await adapter.send_voice(
+        "any;-;+1", str(audio), reply_to="spc-msg-inbound"
+    )
 
     assert result.success is True
     path, body = calls[0]
     assert path == "/send-attachment"
     assert body["kind"] == "voice"
+    assert body["path"] == str(audio)
+    assert body["name"] == "note.m4a"
+    assert body["mimeType"] == "audio/mp4"
+    assert body["replyToId"] == "spc-msg-inbound"
+
+
+@pytest.mark.asyncio
+async def test_send_voice_uses_normalized_imessage_audio(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    _patch_safe_path(monkeypatch)
+    source = tmp_path / "note.mp3"
+    source.write_bytes(b"fake-mp3")
+    normalized = tmp_path / "note-imessage.m4a"
+    normalized.write_bytes(b"fake-m4a")
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    async def _fake_prepare(path: str) -> tuple[str, str]:
+        assert path == str(source)
+        return str(normalized), "audio/mp4"
+
+    monkeypatch.setattr(adapter, "_prepare_imessage_voice", _fake_prepare)
+
+    result = await adapter.send_voice("any;-;+1", str(source))
+
+    assert result.success is True
+    _, body = calls[0]
+    assert body["path"] == str(normalized)
+    assert body["kind"] == "voice"
+    assert body["mimeType"] == "audio/mp4"
 
 
 @pytest.mark.asyncio

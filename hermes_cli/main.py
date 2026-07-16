@@ -12062,7 +12062,30 @@ def cmd_claw(args):
 
 
 def main():
-    """Main entry point for hermes CLI."""
+    """Main entry point for hermes CLI.
+
+    This is the function bound to the ``hermes`` console script entry point
+    in pyproject.toml (``hermes = "hermes_cli.main:main"``), so any startup
+    guard must live *here* — not under ``if __name__ == "__main__"``, which
+    only fires when running the module directly via ``python -m`` / the file
+    path and is bypassed by the installed console script.
+    """
+    # The first Ctrl+C during startup (while discover_plugins() runs inside
+    # _prepare_agent_startup()) propagates an uncaught KeyboardInterrupt out
+    # of the body below and dumps a full traceback instead of exiting
+    # cleanly. Catch it here so the guard covers every invocation path:
+    # the installed ``hermes`` console script, ``python -m hermes_cli.main``,
+    # and direct ``python hermes_cli/main.py``. Exit code 130 = 128 + SIGINT,
+    # matching conventional Unix behaviour and the TUI's own Ctrl+C handling.
+    try:
+        _main_body()
+    except KeyboardInterrupt:
+        print("\nInterrupted.", file=sys.stderr)
+        sys.exit(130)
+
+
+def _main_body():
+    """Actual CLI startup logic, guarded against KeyboardInterrupt by main()."""
     # Cosmetic: make the process show up as 'hermes' instead of 'python3.11'
     # in ps/top/htop.  Non-fatal — just a nicer UX.
     _set_process_title()
@@ -13292,8 +13315,7 @@ def main():
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\nInterrupted.", file=sys.stderr)
-        sys.exit(130)
+    # KeyboardInterrupt is already caught inside main(), so this path is now
+    # covered regardless of whether hermes is launched via the installed
+    # console script, ``python -m hermes_cli.main``, or this file directly.
+    main()

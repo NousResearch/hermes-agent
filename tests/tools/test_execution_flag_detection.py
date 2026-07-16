@@ -296,6 +296,21 @@ def test_execution_detection_handles_wrappers_and_compound_commands():
     assert dangerous is True
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "sudo -C 3 sh -c 'echo ok'",
+        "env -C /tmp sh -c 'echo ok'",
+        "env -iC /tmp sh -c 'echo ok'",
+        "env -a custom -S 'sh -c echo ok'",
+        "env --argv0 custom -S 'sh -c echo ok'",
+    ],
+)
+def test_case_sensitive_wrapper_option_operands_reach_carried_command(command):
+    dangerous, _, _ = detect_dangerous_command(command)
+    assert dangerous is True
+
+
 def test_hardline_payload_after_wrapper_still_reaches_floor():
     hardline, _ = detect_hardline_command(
         "sudo -u nobody sort --compress-program='rm -rf --no-preserve-root /' names"

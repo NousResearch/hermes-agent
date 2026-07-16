@@ -21,6 +21,7 @@ import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
+import { recordPlanArtifactFromTool } from '@/store/plan-review'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { followActiveSessionCwd } from '@/store/projects'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
@@ -69,6 +70,7 @@ interface GatewayEventDeps {
   compactedTurnRef: MutableRefObject<Set<string>>
   lastCwdInfoSessionRef: MutableRefObject<string | null>
   nativeSubagentSessionsRef: MutableRefObject<Set<string>>
+  sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
   appendAssistantDelta: (sessionId: string, delta: string) => void
   appendReasoningDelta: (sessionId: string, delta: string, replace?: boolean) => void
   completeAssistantMessage: (sessionId: string, text: string) => void
@@ -99,6 +101,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
     compactedTurnRef,
     lastCwdInfoSessionRef,
     nativeSubagentSessionsRef,
+    sessionStateByRuntimeIdRef,
     completeAssistantMessage,
     failAssistantMessage,
     flushQueuedDeltas,
@@ -459,6 +462,11 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           recordToolDiff(payload.tool_id || payload.name || '', payload.inline_diff)
         }
 
+        recordPlanArtifactFromTool(
+          payload,
+          (sessionId && sessionStateByRuntimeIdRef.current.get(sessionId)?.storedSessionId) || sessionId
+        )
+
         // A file-mutating tool just finished — nudge the git-mirroring surfaces
         // (coding rail, review pane, file tree) to refresh. Event-driven, not
         // polled: fires exactly when the agent touches the tree.
@@ -720,6 +728,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       nativeSubagentSessionsRef,
       queryClient,
       refreshHermesConfig,
+      sessionStateByRuntimeIdRef,
       sessionInterrupted,
       updateSessionState,
       upsertToolCall

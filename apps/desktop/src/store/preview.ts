@@ -27,7 +27,7 @@ export interface PreviewTarget {
   language?: string
   mimeType?: string
   path?: string
-  previewKind?: 'binary' | 'html' | 'image' | 'text'
+  previewKind?: 'binary' | 'html' | 'image' | 'pdf' | 'svg' | 'tex' | 'text'
   renderMode?: 'preview' | 'source'
   source: string
   url: string

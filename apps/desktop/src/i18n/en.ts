@@ -2578,6 +2578,101 @@ export const en: Translations = {
     noClipboardImage: 'No image found in clipboard',
     clipboardPasteFailed: 'Clipboard paste failed',
     dropFiles: 'Drop files',
+    annotations: {
+      add: 'Annotate',
+      clear: 'Clear annotations',
+      comment: 'Comment',
+      commentPlaceholder: 'What should the agent review or change?',
+      concern: 'Concern',
+      discard: 'Discard draft',
+      discardDescription: 'The unsaved annotation will be lost.',
+      discardReplaceTitle: 'Replace the current annotation draft?',
+      discardTitle: 'Discard this annotation draft?',
+      edit: 'Edit annotation',
+      labels: {
+        accessibility: 'Accessibility',
+        bug: 'Bug',
+        performance: 'Performance',
+        security: 'Security',
+        style: 'Style',
+        testing: 'Testing'
+      },
+      lastTurnTracking: 'Last-turn tracking starts with your next prompt.',
+      listTitle: 'Annotations',
+      planApprove: 'Approve and continue',
+      planApproved: 'Plan approved',
+      planAvailable: 'Plan ready for review',
+      planRequestChanges: 'Request changes',
+      planReview: 'Review plan',
+      remove: 'Remove annotation',
+      reopen: 'Reopen annotation draft',
+      save: 'Save annotation',
+      scopeBranch: 'Branch',
+      scopeLastTurn: 'Last turn',
+      scopeUncommitted: 'Uncommitted',
+      sendToAgent: 'Send feedback to agent',
+      storageError: 'Annotation drafts cannot be saved in this window.',
+      statusOrphaned: 'Anchor not found',
+      statusSent: 'Sent',
+      statusStale: 'Revision changed',
+      suggestedReplacement: 'Suggested replacement',
+      suggestion: 'Suggestion',
+      suggestionPlaceholder: 'Replacement text or code',
+      title: 'Add annotation',
+      preview: {
+        annotateSelection: 'Annotate selection',
+        documentComment: 'Document comment',
+        minimizeEditor: 'Minimize annotation editor',
+        html: {
+          decrease: 'Decrease HTML preview size',
+          increase: 'Increase HTML preview size',
+          pan: 'Drag HTML preview to pan',
+          reset: zoom => `Reset HTML preview size from ${zoom}%`,
+          zoom: 'HTML preview zoom'
+        },
+        image: {
+          decrease: 'Decrease image preview size',
+          deleteMarkup: 'Delete selected markup',
+          externalResourcesBlocked: 'External SVG resources were blocked',
+          increase: 'Increase image preview size',
+          reset: zoom => `Reset image preview size from ${zoom}%`,
+          undoMarkup: 'Undo markup',
+          zoom: 'Image preview zoom'
+        },
+        ocr: {
+          label: 'OCR',
+          language: 'OCR language',
+          languages: { chi_sim: 'Simplified Chinese', chi_tra: 'Traditional Chinese', eng: 'English', jpn: 'Japanese' },
+          recognizing: 'Recognizing text…',
+          unavailable: 'OCR unavailable'
+        },
+        pdf: {
+          couldNotOpen: 'Could not open PDF',
+          find: 'Find',
+          fit: 'Fit',
+          incorrectPassword: 'Incorrect password',
+          open: 'Open PDF',
+          page: 'Page',
+          passwordProtected: 'Password-protected PDF',
+          search: 'Search PDF',
+          width: 'Width'
+        },
+        tex: {
+          compilationFailed: 'TeX compilation failed',
+          engineUnavailable: 'TeX engine unavailable',
+          updating: 'Updating rendered preview…'
+        },
+        tools: {
+          arrow: 'Arrow',
+          pan: 'Pan image',
+          pen: 'Pen',
+          pin: 'Numbered pin',
+          rectangle: 'Rectangle',
+          select: 'Select or move',
+          text: 'Select text'
+        }
+      }
+    },
     handoff: {
       pickPlatform: 'Choose a destination',
       success: platform => `Handed off to ${platform}. Resume here anytime.`,

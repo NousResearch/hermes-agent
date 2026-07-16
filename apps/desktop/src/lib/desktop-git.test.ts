@@ -21,6 +21,10 @@ const api = vi.fn(async ({ path }: { path: string }) => {
     return { diff: 'remote-diff' }
   }
 
+  if (path === '/api/git/review/snapshot') {
+    return { tree: 'abc123' }
+  }
+
   return { ok: true }
 })
 
@@ -89,5 +93,17 @@ describe('desktop git facade', () => {
       path: '/api/git/review/stage'
     })
     expect(localGit.review.stage).not.toHaveBeenCalled()
+  })
+
+  it('captures last-turn baselines on the remote workspace', async () => {
+    $connection.set({ mode: 'remote', profile: 'remote-docker' } as never)
+
+    await expect(desktopGit()?.review.snapshot('/srv/work')).resolves.toBe('abc123')
+    expect(api).toHaveBeenCalledWith({
+      body: { path: '/srv/work' },
+      method: 'POST',
+      path: '/api/git/review/snapshot',
+      profile: 'remote-docker'
+    })
   })
 })

@@ -62,6 +62,7 @@ import {
   watchSessionTiles,
   WorkspaceTabMenu
 } from '../chat/session-tile'
+import { PlanReviewStatus } from '../review/annotations/plan-reviews'
 import { $terminalTakeover, setTerminalTakeover } from '../right-sidebar/store'
 import { $workspaceIsPage } from '../routes'
 
@@ -240,6 +241,12 @@ registry.registerMany([
 // ---------------------------------------------------------------------------
 
 registry.registerMany([
+  {
+    id: 'planReview',
+    area: 'statusBar.left',
+    order: 20,
+    render: () => <PlanReviewStatus />
+  },
   // Titlebar center stays empty on purpose: session title lives in tabs +
   // sidebar; place/cwd lives in the sidebar project tree. Center is drag
   // chrome (plugins can still contribute to titleBar.center if needed).

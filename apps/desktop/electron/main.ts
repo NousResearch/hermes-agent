@@ -64,6 +64,7 @@ import {
 } from './desktop-uninstall'
 import { installEmbedReferer } from './embed-referer'
 import { readDirForIpc } from './fs-read-dir'
+import { writeTextFileCas } from './fs-write-text'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { scanGitRepos } from './git-repo-scan'
 import {
@@ -78,6 +79,7 @@ import {
   reviewRevert,
   reviewRevParse,
   reviewShipInfo,
+  reviewSnapshot,
   reviewStage,
   reviewUnstage
 } from './git-review-ops'
@@ -109,6 +111,7 @@ import {
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
+import { compileTexPreview, texDirectives } from './tex-preview'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { readLiveUpdateMarker, writeUpdateMarker } from './update-marker'
@@ -622,7 +625,9 @@ const MEDIA_MIME_TYPES = {
   '.ogg': 'audio/ogg',
   '.opus': 'audio/ogg; codecs=opus',
   '.png': 'image/png',
+  '.pdf': 'application/pdf',
   '.svg': 'image/svg+xml',
+  '.tex': 'text/x-tex',
   '.wav': 'audio/wav',
   '.webm': 'video/webm',
   '.webp': 'image/webp'
@@ -658,6 +663,7 @@ const PREVIEW_LANGUAGE_BY_EXT = {
   '.sh': 'shell',
   '.sql': 'sql',
   '.svg': 'xml',
+  '.tex': 'latex',
   '.toml': 'toml',
   '.ts': 'typescript',
   '.tsx': 'tsx',
@@ -777,6 +783,100 @@ protocol.registerSchemesAsPrivileged([
     }
   }
 ])
+
+const previewDocumentTokenOwners = new Set<number>()
+
+const previewDocuments = new Map<
+  string,
+  {
+    cleanupRoot?: string
+    file: fs.promises.FileHandle
+    modifiedAt: number
+    ownerId: number
+    path: string
+    size: number
+  }
+>()
+
+const PDF_RANGE_CHUNK_BYTES = 64 * 1024
+const PDF_MAX_RANGE_BYTES = 1024 * 1024
+const TEX_PREVIEW_OUTPUT_ROOT = path.join(app.getPath('temp'), 'hermes-tex-preview')
+const activeTexCompiles = new Map<string, { controller: AbortController; requestId: string }>()
+
+async function closePreviewDocuments(ownerId: number) {
+  const closing: Promise<void>[] = []
+
+  for (const [id, entry] of previewDocuments) {
+    if (entry.ownerId === ownerId) {
+      previewDocuments.delete(id)
+      closing.push(entry.file.close().catch(() => {}))
+
+      if (entry.cleanupRoot) {
+        closing.push(fs.promises.rm(entry.cleanupRoot, { force: true, recursive: true }).catch(() => {}))
+      }
+    }
+  }
+
+  await Promise.all(closing)
+}
+
+async function openPreviewDocument(filePath: string, ownerId: number, cleanupRoot?: string) {
+  const { resolvedPath, stat } = await resolveReadableFileForIpc(filePath, { purpose: 'PDF preview' })
+
+  if (path.extname(resolvedPath).toLowerCase() !== '.pdf') {
+    throw new Error('PDF preview requires a .pdf file')
+  }
+
+  const file = await fs.promises.open(resolvedPath, 'r')
+  const id = crypto.randomBytes(24).toString('base64url')
+  const initialLength = Math.min(stat.size, PDF_RANGE_CHUNK_BYTES)
+  const initialData = Buffer.allocUnsafe(initialLength)
+
+  try {
+    const { bytesRead } = await file.read(initialData, 0, initialLength, 0)
+    const revision = `${stat.size}:${stat.mtimeMs}`
+    previewDocuments.set(id, {
+      cleanupRoot,
+      file,
+      modifiedAt: stat.mtimeMs,
+      ownerId,
+      path: resolvedPath,
+      size: stat.size
+    })
+
+    return {
+      byteLength: stat.size,
+      id,
+      initialData: new Uint8Array(initialData.buffer, initialData.byteOffset, bytesRead),
+      modifiedAt: stat.mtimeMs,
+      revision
+    }
+  } catch (error) {
+    await file.close().catch(() => {})
+    throw error
+  }
+}
+
+function trackPreviewDocumentOwner(webContents) {
+  const ownerId = webContents.id
+
+  if (previewDocumentTokenOwners.has(ownerId)) {
+    return
+  }
+
+  previewDocumentTokenOwners.add(ownerId)
+  webContents.once('destroyed', () => {
+    previewDocumentTokenOwners.delete(ownerId)
+    void closePreviewDocuments(ownerId)
+
+    for (const [key, active] of activeTexCompiles) {
+      if (key.startsWith(`${ownerId}:`)) {
+        active.controller.abort()
+        activeTexCompiles.delete(key)
+      }
+    }
+  })
+}
 
 function registerMediaProtocol() {
   protocol.handle(MEDIA_PROTOCOL, async request => {
@@ -4288,8 +4388,24 @@ async function previewFileTarget(rawTarget, baseDir) {
   const mimeType = mimeTypeForPath(resolved)
   const metadata = previewFileMetadata(resolved, mimeType)
   const isHtml = PREVIEW_HTML_EXTENSIONS.has(ext)
-  const isImage = mimeType.startsWith('image/')
-  const previewKind = isHtml ? 'html' : isImage ? 'image' : metadata.binary ? 'binary' : 'text'
+  const isSvg = ext === '.svg'
+  const isPdf = ext === '.pdf'
+  const isTex = ext === '.tex'
+  const isImage = mimeType.startsWith('image/') && !isSvg
+
+  const previewKind = isHtml
+    ? 'html'
+    : isSvg
+      ? 'svg'
+      : isImage
+        ? 'image'
+        : isPdf
+          ? 'pdf'
+          : isTex
+            ? 'tex'
+            : metadata.binary
+              ? 'binary'
+              : 'text'
 
   return {
     binary: metadata.binary,
@@ -7989,6 +8105,168 @@ ipcMain.handle('hermes:readFileDataUrl', async (_event, filePath) => {
   return `data:${mimeTypeForPath(resolvedPath)};base64,${data.toString('base64')}`
 })
 
+ipcMain.handle('hermes:pdf:open', async (event, filePath) => {
+  trackPreviewDocumentOwner(event.sender)
+
+  return openPreviewDocument(filePath, event.sender.id)
+})
+
+ipcMain.handle('hermes:pdf:readRange', async (event, request) => {
+  const id = String(request?.id || '')
+  const begin = Number(request?.begin)
+  const end = Number(request?.end)
+  const entry = previewDocuments.get(id)
+
+  if (!entry || entry.ownerId !== event.sender.id) {
+    throw new Error('PDF document is closed or unavailable')
+  }
+
+  if (!Number.isSafeInteger(begin) || !Number.isSafeInteger(end) || begin < 0 || end <= begin || end > entry.size) {
+    throw new Error('Invalid PDF byte range')
+  }
+
+  if (end - begin > PDF_MAX_RANGE_BYTES) {
+    throw new Error('PDF byte range is too large')
+  }
+
+  const stat = await fs.promises.stat(entry.path)
+
+  if (stat.size !== entry.size || stat.mtimeMs !== entry.modifiedAt) {
+    throw new Error('PDF_CHANGED')
+  }
+
+  const data = Buffer.allocUnsafe(end - begin)
+  const { bytesRead } = await entry.file.read(data, 0, data.length, begin)
+
+  return new Uint8Array(data.buffer, data.byteOffset, bytesRead)
+})
+
+ipcMain.handle('hermes:pdf:close', async (event, idValue) => {
+  const id = String(idValue || '')
+  const entry = previewDocuments.get(id)
+
+  if (!entry || entry.ownerId !== event.sender.id) {
+    return false
+  }
+
+  previewDocuments.delete(id)
+  await entry.file.close().catch(() => {})
+
+  if (entry.cleanupRoot) {
+    await fs.promises.rm(entry.cleanupRoot, { force: true, recursive: true }).catch(() => {})
+  }
+
+  return true
+})
+
+ipcMain.handle('hermes:texPreview:compile', async (event, request) => {
+  const requestId = String(request?.requestId || '')
+
+  if (!requestId) {
+    throw new Error('TeX preview request id is required')
+  }
+
+  trackPreviewDocumentOwner(event.sender)
+
+  const source = await resolveReadableFileForIpc(request?.path, {
+    maxBytes: TEXT_PREVIEW_SOURCE_MAX_BYTES,
+    purpose: 'TeX preview source'
+  })
+
+  if (path.extname(source.resolvedPath).toLowerCase() !== '.tex') {
+    throw new Error('TeX preview requires a .tex file')
+  }
+
+  const sourceText = await fs.promises.readFile(source.resolvedPath, 'utf8')
+  const directives = texDirectives(sourceText, source.resolvedPath)
+
+  const root = await resolveReadableFileForIpc(directives.rootPath, {
+    maxBytes: TEXT_PREVIEW_SOURCE_MAX_BYTES,
+    purpose: 'TeX preview root'
+  })
+
+  const rootText =
+    root.resolvedPath === source.resolvedPath ? sourceText : await fs.promises.readFile(root.resolvedPath, 'utf8')
+
+  const rootProgram = texDirectives(rootText, root.resolvedPath).program
+
+  const sourceDir = path.dirname(source.resolvedPath)
+
+  const requestedWorkspaceRoot = request?.workspaceRoot
+    ? await fs.promises.realpath(path.resolve(String(request.workspaceRoot))).catch(() => '')
+    : ''
+
+  const requestedRelative = requestedWorkspaceRoot ? path.relative(requestedWorkspaceRoot, source.resolvedPath) : '..'
+
+  const workspaceContainsSource =
+    requestedWorkspaceRoot && !requestedRelative.startsWith('..') && !path.isAbsolute(requestedRelative)
+
+  const projectRoot = workspaceContainsSource
+    ? requestedWorkspaceRoot
+    : (await gitRootForIpc(source.resolvedPath)) || sourceDir
+
+  const relativeRoot = path.relative(projectRoot, root.resolvedPath)
+
+  if (relativeRoot.startsWith('..') || path.isAbsolute(relativeRoot)) {
+    throw new Error('TeX root must remain inside the source project')
+  }
+
+  const key = `${event.sender.id}:${source.resolvedPath}`
+  activeTexCompiles.get(key)?.controller.abort()
+  const controller = new AbortController()
+  activeTexCompiles.set(key, { controller, requestId })
+
+  try {
+    const result = await compileTexPreview({
+      outputRoot: TEX_PREVIEW_OUTPUT_ROOT,
+      requestId,
+      signal: controller.signal,
+      program: directives.program ?? rootProgram,
+      sourcePath: root.resolvedPath
+    })
+
+    const current = activeTexCompiles.get(key)
+
+    if (!current || current.requestId !== requestId || controller.signal.aborted) {
+      if (result.pdfPath) {
+        await fs.promises.rm(path.dirname(result.pdfPath), { force: true, recursive: true }).catch(() => {})
+      }
+
+      return { ...result, pdfPath: undefined, stale: true }
+    }
+
+    let pdfDocument
+
+    if (result.pdfPath) {
+      const cleanupRoot = path.dirname(result.pdfPath)
+
+      try {
+        pdfDocument = await openPreviewDocument(result.pdfPath, event.sender.id, cleanupRoot)
+      } catch (error) {
+        await fs.promises.rm(cleanupRoot, { force: true, recursive: true }).catch(() => {})
+        throw error
+      }
+    }
+
+    return { ...result, pdfDocument, pdfPath: undefined, stale: false }
+  } finally {
+    if (activeTexCompiles.get(key)?.requestId === requestId) {
+      activeTexCompiles.delete(key)
+    }
+  }
+})
+
+ipcMain.on('hermes:texPreview:cancel', (event, requestId) => {
+  const wanted = String(requestId || '')
+
+  for (const [key, active] of activeTexCompiles) {
+    if (key.startsWith(`${event.sender.id}:`) && active.requestId === wanted) {
+      active.controller.abort()
+      activeTexCompiles.delete(key)
+    }
+  }
+})
+
 ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
   const { resolvedPath, stat } = await resolveReadableFileForIpc(filePath, {
     maxBytes: TEXT_PREVIEW_SOURCE_MAX_BYTES,
@@ -8006,6 +8284,7 @@ ipcMain.handle('hermes:readFileText', async (_event, filePath) => {
     return {
       binary: looksBinary(buffer.subarray(0, Math.min(bytesRead, 4096))),
       byteSize: stat.size,
+      contentHash: crypto.createHash('sha256').update(buffer.subarray(0, bytesRead)).digest('hex'),
       language: PREVIEW_LANGUAGE_BY_EXT[ext] || 'text',
       mimeType: mimeTypeForPath(resolvedPath),
       path: resolvedPath,
@@ -8483,7 +8762,7 @@ ipcMain.handle('hermes:fs:rename', async (_event, targetPath, newName) => {
 // is hardened (resolveRequestedPathForIpc) and the parent must already exist —
 // this never creates directory trees or escapes the allowed roots, and content
 // is size-capped so it can't be abused as a bulk-write primitive.
-ipcMain.handle('hermes:fs:writeText', async (_event, filePath, content) => {
+ipcMain.handle('hermes:fs:writeText', async (_event, filePath, content, options = {}) => {
   const raw = String(filePath || '').trim()
 
   if (!raw) {
@@ -8502,9 +8781,9 @@ ipcMain.handle('hermes:fs:writeText', async (_event, filePath, content) => {
     throw new Error('Parent directory does not exist')
   }
 
-  await fs.promises.writeFile(resolved, text, 'utf8')
+  const expectedHash = typeof options?.expectedHash === 'string' ? options.expectedHash : undefined
 
-  return { path: resolved }
+  return writeTextFileCas(resolved, text, expectedHash)
 })
 
 // Move a file/folder to the OS trash (recoverable) — the VS Code "Delete"
@@ -8571,6 +8850,7 @@ ipcMain.handle('hermes:git:review:revert', async (_event, repoPath, filePath) =>
 ipcMain.handle('hermes:git:review:revParse', async (_event, repoPath, ref) =>
   reviewRevParse(repoPath, ref, resolveGitBinary())
 )
+ipcMain.handle('hermes:git:review:snapshot', async (_event, repoPath) => reviewSnapshot(repoPath, resolveGitBinary()))
 ipcMain.handle('hermes:git:review:commit', async (_event, repoPath, message, push) =>
   reviewCommit(repoPath, message, Boolean(push), resolveGitBinary())
 )

@@ -1,4 +1,5 @@
 import base64
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -77,6 +78,7 @@ def test_fs_read_text_matches_preview_shape_and_truncates(client, tmp_path, monk
     assert response.json() == {
         "binary": False,
         "byteSize": 14,
+        "contentHash": hashlib.sha256(b"print").hexdigest(),
         "language": "python",
         "mimeType": "text/x-python",
         "path": str(target),
@@ -105,6 +107,86 @@ def test_fs_read_text_flags_binary(client, tmp_path):
     body = response.json()
     assert body["binary"] is True
     assert body["text"].startswith("hello")
+
+
+def test_fs_write_text_replaces_expected_revision_and_returns_hash(client, tmp_path):
+    target = tmp_path / "plan.md"
+    target.write_text("old")
+
+    response = client.post(
+        "/api/fs/write-text",
+        json={
+            "path": str(target),
+            "content": "new",
+            "expectedHash": hashlib.sha256(b"old").hexdigest(),
+        },
+    )
+
+    assert response.status_code == 200
+    assert target.read_text() == "new"
+    assert response.json() == {
+        "ok": True,
+        "path": str(target),
+        "byteSize": 3,
+        "contentHash": hashlib.sha256(b"new").hexdigest(),
+    }
+
+
+def test_fs_write_text_rejects_stale_revision_without_overwriting(client, tmp_path):
+    target = tmp_path / "plan.md"
+    target.write_text("newer")
+
+    response = client.post(
+        "/api/fs/write-text",
+        json={
+            "path": str(target),
+            "content": "mine",
+            "expectedHash": hashlib.sha256(b"old").hexdigest(),
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "FILE_CHANGED"
+    assert target.read_text() == "newer"
+
+
+def test_fs_write_text_rechecks_revision_after_staging(client, tmp_path, monkeypatch):
+    target = tmp_path / "plan.md"
+    target.write_text("old")
+    original_write_text = type(target).write_text
+
+    def racing_write(path, content, *args, **kwargs):
+        result = original_write_text(path, content, *args, **kwargs)
+        if ".hermes-tmp-" in path.name:
+            original_write_text(target, "external", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(type(target), "write_text", racing_write)
+
+    response = client.post(
+        "/api/fs/write-text",
+        json={
+            "path": str(target),
+            "content": "mine",
+            "expectedHash": hashlib.sha256(b"old").hexdigest(),
+        },
+    )
+
+    assert response.status_code == 409
+    assert target.read_text() == "external"
+
+
+def test_fs_write_text_rejects_directory_and_missing_parent(client, tmp_path):
+    directory_response = client.post(
+        "/api/fs/write-text", json={"path": str(tmp_path), "content": "no"}
+    )
+    missing_parent_response = client.post(
+        "/api/fs/write-text",
+        json={"path": str(tmp_path / "missing" / "file.txt"), "content": "no"},
+    )
+
+    assert directory_response.status_code == 400
+    assert missing_parent_response.status_code == 400
 
 
 def test_fs_read_data_url_returns_capped_data_url(client, tmp_path, monkeypatch):
@@ -182,7 +264,11 @@ def test_fs_endpoints_require_auth(tmp_path):
     list_response = client.get("/api/fs/list", params={"path": str(tmp_path)})
     read_response = client.get("/api/fs/read-text", params={"path": str(target)})
     default_response = client.get("/api/fs/default-cwd")
+    write_response = client.post(
+        "/api/fs/write-text", json={"path": str(target), "content": "changed"}
+    )
 
     assert list_response.status_code == 401
     assert read_response.status_code == 401
     assert default_response.status_code == 401
+    assert write_response.status_code == 401

@@ -226,6 +226,7 @@ const SHIKI_LANGUAGE_BY_EXTENSION: Record<string, string> = {
   svelte: 'svelte',
   swift: 'swift',
   tf: 'terraform',
+  tex: 'latex',
   toml: 'toml',
   ts: 'typescript',
   tsx: 'tsx',

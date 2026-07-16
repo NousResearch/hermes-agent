@@ -91,6 +91,86 @@ def test_review_diff_shows_change_and_synthesizes_untracked(client, repo):
     assert "print(1)" in untracked  # all-add diff for a file git doesn't track yet
 
 
+def test_last_turn_snapshot_excludes_unchanged_preexisting_dirt(client, repo):
+    status_before = subprocess.run(
+        ["git", "status", "--porcelain=v1"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    objects_before = sorted(
+        str(path.relative_to(repo))
+        for path in (repo / ".git" / "objects").rglob("*")
+        if path.is_file()
+    )
+    snapshot = client.post("/api/git/review/snapshot", json={"path": str(repo)})
+
+    assert snapshot.status_code == 200
+    baseline = snapshot.json()["tree"]
+    assert baseline
+    status_after = subprocess.run(
+        ["git", "status", "--porcelain=v1"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert status_after == status_before
+    assert sorted(
+        str(path.relative_to(repo))
+        for path in (repo / ".git" / "objects").rglob("*")
+        if path.is_file()
+    ) == objects_before
+
+    (repo / "a.txt").write_text("changed in turn\n")
+    (repo / "turn.txt").write_text("new in turn\n")
+    body = client.get(
+        "/api/git/review/list",
+        params={"path": str(repo), "scope": "lastTurn", "base": baseline},
+    ).json()
+
+    assert {file["path"] for file in body["files"]} == {"a.txt", "turn.txt"}
+    old_untracked = client.get(
+        "/api/git/review/diff",
+        params={
+            "path": str(repo),
+            "file": "new.py",
+            "scope": "lastTurn",
+            "base": baseline,
+        },
+    ).json()["diff"]
+    turn_untracked = client.get(
+        "/api/git/review/diff",
+        params={
+            "path": str(repo),
+            "file": "turn.txt",
+            "scope": "lastTurn",
+            "base": baseline,
+        },
+    ).json()["diff"]
+    assert old_untracked == ""
+    assert "new in turn" in turn_untracked
+
+
+def test_review_snapshot_does_not_execute_repository_filters(client, repo):
+    marker = repo / "filter-ran"
+    (repo / ".gitattributes").write_text("*.txt filter=unsafe\n")
+    _git(
+        repo,
+        "config",
+        "filter.unsafe.clean",
+        f"sh -c 'echo invoked > {marker}; cat'",
+    )
+    (repo / "a.txt").write_text("snapshot me\n")
+
+    response = client.post("/api/git/review/snapshot", json={"path": str(repo)})
+
+    assert response.status_code == 200
+    assert response.json()["tree"]
+    assert not marker.exists()
+
+
 def test_stage_commit_roundtrip_clears_changes(client, repo):
     assert client.post("/api/git/review/stage", json={"path": str(repo), "file": "a.txt"}).json() == {"ok": True}
     staged = client.get("/api/git/status", params={"path": str(repo)}).json()
@@ -175,3 +255,4 @@ def test_git_endpoints_require_auth(repo):
 
     assert unauth.get("/api/git/status", params={"path": str(repo)}).status_code == 401
     assert unauth.post("/api/git/review/stage", json={"path": str(repo)}).status_code == 401
+    assert unauth.post("/api/git/review/snapshot", json={"path": str(repo)}).status_code == 401

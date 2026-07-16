@@ -5,7 +5,9 @@
 // non-repo / remote backend; mutations reject so the renderer can toast.
 
 import { execFile } from 'node:child_process'
+import fsSync from 'node:fs'
 import fs from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 
 import simpleGit from 'simple-git'
@@ -16,6 +18,73 @@ const COMMIT_CONTEXT_DIFF_MAX_CHARS = 120_000
 const COMMIT_CONTEXT_UNTRACKED_MAX = 80
 const UNTRACKED_LINE_COUNT_CONCURRENCY = 16
 const UNTRACKED_LINE_COUNT_MAX_BYTES = 1024 * 1024
+const REVIEW_SNAPSHOT_LIMIT = 64
+
+interface ReviewSnapshotRecord {
+  cwd: string
+  objectDirectory: string
+  root: string
+  tree: string
+}
+
+const reviewSnapshots = new Map<string, ReviewSnapshotRecord>()
+
+const snapshotKey = (cwd: string, tree: string): string => `${path.resolve(cwd)}\0${tree}`
+
+function forgetSnapshot(key: string): void {
+  const snapshot = reviewSnapshots.get(key)
+
+  if (!snapshot) {
+    return
+  }
+
+  reviewSnapshots.delete(key)
+  fsSync.rmSync(snapshot.root, { force: true, recursive: true })
+}
+
+function rememberSnapshot(snapshot: ReviewSnapshotRecord): void {
+  const key = snapshotKey(snapshot.cwd, snapshot.tree)
+  forgetSnapshot(key)
+  reviewSnapshots.set(key, snapshot)
+
+  while (reviewSnapshots.size > REVIEW_SNAPSHOT_LIMIT) {
+    const oldest = reviewSnapshots.keys().next().value
+
+    if (typeof oldest !== 'string') {
+      break
+    }
+
+    forgetSnapshot(oldest)
+  }
+}
+
+function snapshotObjectDirectories(cwd: string, refs: Array<null | string | undefined>): string[] {
+  const resolved = path.resolve(cwd)
+
+  return refs.flatMap(ref => {
+    if (!ref) {
+      return []
+    }
+
+    const snapshot = reviewSnapshots.get(snapshotKey(resolved, ref))
+
+    return snapshot ? [snapshot.objectDirectory] : []
+  })
+}
+
+function snapshotReadEnv(cwd: string, refs: Array<null | string | undefined>): NodeJS.ProcessEnv {
+  const objectDirectories = snapshotObjectDirectories(cwd, refs)
+
+  return objectDirectories.length
+    ? { ...process.env, GIT_ALTERNATE_OBJECT_DIRECTORIES: objectDirectories.join(path.delimiter) }
+    : process.env
+}
+
+process.once('exit', () => {
+  for (const key of [...reviewSnapshots.keys()]) {
+    forgetSnapshot(key)
+  }
+})
 
 // GUI-launched Electron apps on macOS inherit only a minimal PATH (no
 // /opt/homebrew/bin or /usr/local/bin), so `gh` — and the `git` gh shells out
@@ -44,6 +113,133 @@ function runGh(args, cwd, ghBin): Promise<{ ok: boolean; stdout: string }> {
 
 function gitFor(cwd, gitBin) {
   return simpleGit({ baseDir: cwd, binary: gitBin || 'git', maxConcurrentProcesses: 4, trimmed: false })
+}
+
+function runGit(cwd, args, gitBin, env = process.env): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(
+      gitBin || 'git',
+      args,
+      { cwd, env, windowsHide: true, timeout: 30_000, maxBuffer: 32 * 1024 * 1024 },
+      (error, stdout) => (error ? reject(error) : resolve(String(stdout || '')))
+    )
+  })
+}
+
+const validObjectId = value => /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(String(value || ''))
+
+async function snapshotDiffFiles(cwd, base, current, gitBin) {
+  const output = await runGit(cwd, ['diff', '--numstat', base, current], gitBin, snapshotReadEnv(cwd, [base, current]))
+
+  return output
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map(line => {
+      const [added, removed, ...pathParts] = line.split('\t')
+
+      return {
+        path: resolveRenamePath(pathParts.join('\t')),
+        added: added === '-' ? 0 : Number.parseInt(added, 10) || 0,
+        removed: removed === '-' ? 0 : Number.parseInt(removed, 10) || 0,
+        status: 'M',
+        staged: false
+      }
+    })
+}
+
+async function snapshotGitConfig(cwd, gitBin) {
+  const args = ['-c', 'core.fsmonitor=false']
+
+  try {
+    const names = await runGit(
+      cwd,
+      ['config', '--name-only', '--get-regexp', '^filter\\..*\\.(clean|process|required)$'],
+      gitBin
+    )
+
+    const drivers = new Set()
+
+    for (const name of names.split(/\r?\n/)) {
+      const match = /^filter\.(.+)\.(?:clean|process|required)$/.exec(name.trim())
+
+      if (match) {
+        drivers.add(match[1])
+      }
+    }
+
+    for (const driver of drivers) {
+      args.push(
+        '-c',
+        `filter.${driver}.clean=`,
+        '-c',
+        `filter.${driver}.process=`,
+        '-c',
+        `filter.${driver}.required=false`
+      )
+    }
+  } catch {
+    // No configured filters is the common case.
+  }
+
+  return args
+}
+
+/** Snapshot HEAD + the current index/worktree/untracked files as an anonymous
+ * Git tree. Both the index and new objects live outside the repository. */
+async function reviewSnapshot(repoPath, gitBin) {
+  let cwd
+
+  try {
+    cwd = resolveRequestedPathForIpc(repoPath, { purpose: 'Review snapshot' })
+  } catch {
+    return null
+  }
+
+  const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'hermes-review-snapshot-'))
+  const temporaryIndex = path.join(temporaryRoot, 'index')
+  const temporaryObjects = path.join(temporaryRoot, 'objects')
+  await fs.mkdir(temporaryObjects)
+
+  let keepSnapshot = false
+
+  try {
+    const config = await snapshotGitConfig(cwd, gitBin)
+    const commonDir = (await runGit(cwd, ['rev-parse', '--git-common-dir'], gitBin)).trim()
+    const repositoryObjects = path.resolve(cwd, commonDir, 'objects')
+
+    const env = {
+      ...process.env,
+      GIT_ALTERNATE_OBJECT_DIRECTORIES: repositoryObjects,
+      GIT_INDEX_FILE: temporaryIndex,
+      GIT_OBJECT_DIRECTORY: temporaryObjects
+    }
+
+    try {
+      await runGit(cwd, [...config, 'read-tree', 'HEAD'], gitBin, env)
+    } catch {
+      await runGit(cwd, [...config, 'read-tree', '--empty'], gitBin, env)
+    }
+
+    // Disable clean/process filters: a review snapshot is a read-side UI
+    // operation and must never execute repository-configured commands.
+    await runGit(cwd, [...config, 'add', '-A', '--', '.'], gitBin, env)
+    const tree = (await runGit(cwd, [...config, 'write-tree'], gitBin, env)).trim()
+
+    if (!validObjectId(tree)) {
+      return null
+    }
+
+    rememberSnapshot({ cwd: path.resolve(cwd), objectDirectory: temporaryObjects, root: temporaryRoot, tree })
+    keepSnapshot = true
+
+    return tree
+  } catch {
+    return null
+  } finally {
+    if (!keepSnapshot) {
+      await fs.rm(temporaryRoot, { force: true, recursive: true }).catch(() => undefined)
+    }
+  }
 }
 
 // simple-git reports renames as `old => new` (and `dir/{old => new}/f`); resolve
@@ -233,36 +429,17 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
     if (scope === 'branch' || scope === 'lastTurn') {
       const base = scope === 'branch' ? await branchBase(git) : baseRef
 
-      if (!base) {
+      const current = await reviewSnapshot(cwd, gitBin)
+
+      if (!base || !current || (scope === 'lastTurn' && !validObjectId(base))) {
         return { files: [], base: null }
       }
 
-      const range = scope === 'branch' ? `${base}...HEAD` : base
-      const summary = await git.diffSummary([range])
-
-      const files = summary.files.map(file => ({
-        path: resolveRenamePath(file.file),
-        added: 'insertions' in file ? file.insertions : 0,
-        removed: 'deletions' in file ? file.deletions : 0,
-        status: 'M',
-        staged: false
-      }))
-
-      // "Last turn" also surfaces files created since the baseline (untracked).
-      if (scope === 'lastTurn') {
-        const status = await git.status()
-
-        for (const path of status.not_added) {
-          if (!files.some(f => f.path === path)) {
-            files.push({ path, added: 0, removed: 0, status: '?', staged: false })
-          }
-        }
-      }
+      const files = await snapshotDiffFiles(cwd, base, current, gitBin)
 
       files.sort((a, b) => a.path.localeCompare(b.path))
-      await fillUntrackedCounts(cwd, files)
 
-      return { files, base }
+      return { files, base, revision: current }
     }
 
     // Default: uncommitted (staged + unstaged + untracked), one row per path.
@@ -292,7 +469,7 @@ async function reviewList(repoPath, scope, baseRef, gitBin) {
     files.sort((a, b) => a.path.localeCompare(b.path))
     await fillUntrackedCounts(cwd, files)
 
-    return { files, base: null }
+    return { files, base: null, revision: await reviewSnapshot(cwd, gitBin) }
   } catch {
     return { files: [], base: null }
   }
@@ -312,12 +489,23 @@ async function reviewDiff(repoPath, filePath, scope, baseRef, staged, gitBin) {
 
   if (scope === 'branch') {
     const base = await branchBase(git)
+    const current = await reviewSnapshot(cwd, gitBin)
 
-    return base ? safe([`${base}...HEAD`, '--', filePath]) : ''
+    return base && current
+      ? runGit(cwd, ['diff', base, current, '--', filePath], gitBin, snapshotReadEnv(cwd, [base, current])).catch(
+          () => ''
+        )
+      : ''
   }
 
   if (scope === 'lastTurn') {
-    return baseRef ? safe([baseRef, '--', filePath]) : ''
+    const current = await reviewSnapshot(cwd, gitBin)
+
+    return baseRef && current && validObjectId(baseRef)
+      ? runGit(cwd, ['diff', baseRef, current, '--', filePath], gitBin, snapshotReadEnv(cwd, [baseRef, current])).catch(
+          () => ''
+        )
+      : ''
   }
 
   if (staged) {
@@ -688,6 +876,7 @@ export {
   reviewRevert,
   reviewRevParse,
   reviewShipInfo,
+  reviewSnapshot,
   reviewStage,
   reviewUnstage
 }

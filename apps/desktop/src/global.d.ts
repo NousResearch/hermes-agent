@@ -76,6 +76,19 @@ declare global {
       requestMicrophoneAccess: () => Promise<boolean>
       readFileDataUrl: (filePath: string) => Promise<string>
       readFileText: (filePath: string) => Promise<HermesReadFileTextResult>
+      pdf: {
+        close: (id: string) => Promise<boolean>
+        open: (filePath: string) => Promise<HermesPdfDocument>
+        readRange: (id: string, begin: number, end: number) => Promise<Uint8Array>
+      }
+      texPreview: {
+        cancel: (requestId: string) => void
+        compile: (request: {
+          path: string
+          requestId: string
+          workspaceRoot?: string
+        }) => Promise<HermesTexCompileResult>
+      }
       selectPaths: (options?: HermesSelectPathsOptions) => Promise<string[]>
       writeClipboard: (text: string) => Promise<boolean>
       saveImageFromUrl: (url: string) => Promise<boolean>
@@ -114,7 +127,11 @@ declare global {
       // Rename a file/folder in place (new base name, same parent dir).
       renamePath?: (path: string, newName: string) => Promise<{ path: string }>
       // Write a small UTF-8 text file (hardened path, parent must exist).
-      writeTextFile?: (path: string, content: string) => Promise<{ path: string }>
+      writeTextFile?: (
+        path: string,
+        content: string,
+        options?: { expectedHash?: string }
+      ) => Promise<{ contentHash: string; path: string }>
       // Move a file/folder to the OS trash (recoverable).
       trashPath?: (path: string) => Promise<boolean>
       // Git-driven worktree management for the "Start work" flow.
@@ -157,6 +174,7 @@ declare global {
           unstage: (repoPath: string, filePath?: null | string) => Promise<{ ok: boolean }>
           revert: (repoPath: string, filePath?: null | string) => Promise<{ ok: boolean }>
           revParse: (repoPath: string, ref?: null | string) => Promise<null | string>
+          snapshot: (repoPath: string) => Promise<null | string>
           commit: (repoPath: string, message: string, push: boolean) => Promise<{ ok: boolean }>
           // Diff (staged-or-all) + recent commit subjects for drafting a
           // commit message. Reads only; empty strings off-repo.
@@ -637,15 +655,36 @@ export interface HermesPreviewTarget {
   language?: string
   mimeType?: string
   path?: string
-  previewKind?: 'binary' | 'html' | 'image' | 'text'
+  previewKind?: 'binary' | 'html' | 'image' | 'pdf' | 'svg' | 'tex' | 'text'
   renderMode?: 'preview' | 'source'
   source: string
   url: string
 }
 
+export interface HermesPdfDocument {
+  byteLength: number
+  id: string
+  initialData: Uint8Array
+  modifiedAt: number
+  revision: string
+  transport?: 'local' | 'remote'
+}
+
+export interface HermesTexCompileResult {
+  diagnostics: Array<{ file?: string; line?: number; message: string }>
+  durationMs: number
+  engine?: string
+  log: string
+  pdfDocument?: HermesPdfDocument
+  rootPath: string
+  stale: boolean
+  status: 'error' | 'missing-engine' | 'success'
+}
+
 export interface HermesReadFileTextResult {
   binary?: boolean
   byteSize?: number
+  contentHash?: string
   language?: string
   mimeType?: string
   path: string
@@ -742,6 +781,9 @@ export interface HermesReviewList {
   // The resolved base ref the scope diffed against (branch merge-base / turn
   // baseline), or null for the uncommitted scope.
   base: null | string
+  // Anonymous Git tree for the exact index/worktree revision rendered by this
+  // list, including untracked files. Used to stale-check line annotations.
+  revision?: null | string
 }
 
 // The branch's PR (if any) as reported by `gh pr view`.

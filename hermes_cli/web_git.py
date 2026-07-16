@@ -12,11 +12,15 @@ can surface a toast. Callers pass an already path-hardened ``cwd``.
 
 from __future__ import annotations
 
+import atexit
+from collections import OrderedDict
 import json
 import os
 import re
 import shutil
 import subprocess
+import tempfile
+import threading
 from pathlib import Path
 
 _GIT_TIMEOUT = 30
@@ -27,9 +31,56 @@ _UNTRACKED_SCAN_CAP = 500
 _COMMIT_CONTEXT_DIFF_MAX_CHARS = 120_000
 _COMMIT_CONTEXT_UNTRACKED_MAX = 80
 _TRUNK_BRANCHES = ("main", "master")
+_REVIEW_SNAPSHOT_LIMIT = 64
+_review_snapshot_lock = threading.Lock()
+_review_snapshots: OrderedDict[tuple[str, str], tuple[str, str]] = OrderedDict()
 
 
-def _git(cwd: str, args: list[str], *, timeout: int = _GIT_TIMEOUT) -> tuple[int, str, str]:
+def _drop_review_snapshot(key: tuple[str, str]) -> None:
+    record = _review_snapshots.pop(key, None)
+    if record:
+        shutil.rmtree(record[0], ignore_errors=True)
+
+
+def _remember_review_snapshot(cwd: str, tree: str, root: str, objects: str) -> None:
+    key = (str(Path(cwd).resolve()), tree)
+    with _review_snapshot_lock:
+        _drop_review_snapshot(key)
+        _review_snapshots[key] = (root, objects)
+        while len(_review_snapshots) > _REVIEW_SNAPSHOT_LIMIT:
+            oldest = next(iter(_review_snapshots))
+            _drop_review_snapshot(oldest)
+
+
+def _snapshot_env(cwd: str, refs: list[str | None]) -> dict[str, str] | None:
+    resolved = str(Path(cwd).resolve())
+    with _review_snapshot_lock:
+        objects = [
+            record[1]
+            for ref in refs
+            if ref and (record := _review_snapshots.get((resolved, ref)))
+        ]
+    if not objects:
+        return None
+    return {**os.environ, "GIT_ALTERNATE_OBJECT_DIRECTORIES": os.pathsep.join(objects)}
+
+
+def _cleanup_review_snapshots() -> None:
+    with _review_snapshot_lock:
+        for key in list(_review_snapshots):
+            _drop_review_snapshot(key)
+
+
+atexit.register(_cleanup_review_snapshots)
+
+
+def _git(
+    cwd: str,
+    args: list[str],
+    *,
+    timeout: int = _GIT_TIMEOUT,
+    env: dict[str, str] | None = None,
+) -> tuple[int, str, str]:
     """Run ``git`` in ``cwd``. Returns (returncode, stdout, stderr); never raises
     on a non-zero exit (callers decide what an error means)."""
     try:
@@ -37,6 +88,7 @@ def _git(cwd: str, args: list[str], *, timeout: int = _GIT_TIMEOUT) -> tuple[int
             ["git", *args],
             cwd=cwd,
             capture_output=True,
+            env=env,
             text=True,
             timeout=timeout,
         )
@@ -45,9 +97,9 @@ def _git(cwd: str, args: list[str], *, timeout: int = _GIT_TIMEOUT) -> tuple[int
     return proc.returncode, proc.stdout, proc.stderr
 
 
-def _git_out(cwd: str, args: list[str]) -> str:
+def _git_out(cwd: str, args: list[str], *, env: dict[str, str] | None = None) -> str:
     """stdout of a git command, or "" on any failure."""
-    code, out, _ = _git(cwd, args)
+    code, out, _ = _git(cwd, args, env=env)
     return out if code == 0 else ""
 
 
@@ -82,9 +134,11 @@ def resolve_rename_path(raw: str) -> str:
     return path.split(" => ")[-1].strip()
 
 
-def _numstat(cwd: str, args: list[str]) -> dict[str, tuple[int, int]]:
+def _numstat(
+    cwd: str, args: list[str], *, env: dict[str, str] | None = None
+) -> dict[str, tuple[int, int]]:
     """``git diff --numstat`` → {path: (added, removed)}; binary files (``-``) → 0."""
-    out = _git_out(cwd, ["diff", "--numstat", *args])
+    out = _git_out(cwd, ["diff", "--numstat", *args], env=env)
     counts: dict[str, tuple[int, int]] = {}
     for line in out.splitlines():
         parts = line.split("\t")
@@ -117,6 +171,88 @@ def _fill_untracked_counts(cwd: str, files: list[dict]) -> None:
     for file in files:
         if file["status"] == "?" and file["added"] == 0 and file["removed"] == 0:
             file["added"] = _untracked_insertions(cwd, file["path"])
+
+
+def _snapshot_git_config(cwd: str) -> list[str]:
+    """Disable command-running filters/fsmonitor for a read-side snapshot."""
+    args = ["-c", "core.fsmonitor=false"]
+    names = _git_out(
+        cwd,
+        [
+            "config",
+            "--name-only",
+            "--get-regexp",
+            r"^filter\..*\.(clean|process|required)$",
+        ],
+    )
+    drivers = set()
+    for name in names.splitlines():
+        match = re.fullmatch(r"filter\.(.+)\.(?:clean|process|required)", name.strip())
+        if match:
+            drivers.add(match.group(1))
+    for driver in drivers:
+        args += [
+            "-c",
+            f"filter.{driver}.clean=",
+            "-c",
+            f"filter.{driver}.process=",
+            "-c",
+            f"filter.{driver}.required=false",
+        ]
+    return args
+
+
+def review_snapshot(cwd: str) -> str | None:
+    """Snapshot HEAD + index/worktree/untracked files as an anonymous Git tree.
+
+    A temporary index keeps the user's real staging area byte-for-byte intact.
+    Comparing two tree objects gives last-turn review an exact baseline even
+    when files were already dirty before the turn began.
+    """
+    if not _is_dir(cwd):
+        return None
+
+    root = tempfile.mkdtemp(prefix="hermes-review-snapshot-")
+    index_path = os.path.join(root, "index")
+    object_path = os.path.join(root, "objects")
+    os.mkdir(object_path)
+    keep_snapshot = False
+
+    try:
+        config = _snapshot_git_config(cwd)
+        code, common_dir, _ = _git(cwd, ["rev-parse", "--git-common-dir"])
+        if code != 0:
+            return None
+        repository_objects = str((Path(cwd) / common_dir.strip() / "objects").resolve())
+        env = {
+            **os.environ,
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES": repository_objects,
+            "GIT_INDEX_FILE": index_path,
+            "GIT_OBJECT_DIRECTORY": object_path,
+        }
+        code, _, _ = _git(cwd, [*config, "read-tree", "HEAD"], env=env)
+        if code != 0:
+            code, _, _ = _git(cwd, [*config, "read-tree", "--empty"], env=env)
+            if code != 0:
+                return None
+
+        # Snapshotting is a read-side UI operation. Never run repository-
+        # configured clean/process filter commands while materializing it.
+        code, _, _ = _git(cwd, [*config, "add", "-A", "--", "."], env=env)
+        if code != 0:
+            return None
+
+        code, tree, _ = _git(cwd, [*config, "write-tree"], env=env)
+        value = tree.strip()
+        valid = re.fullmatch(r"[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?", value)
+        if code != 0 or not valid:
+            return None
+        _remember_review_snapshot(cwd, value, root, object_path)
+        keep_snapshot = True
+        return value
+    finally:
+        if not keep_snapshot:
+            shutil.rmtree(root, ignore_errors=True)
 
 
 def _branch_base(cwd: str) -> str | None:
@@ -262,24 +398,19 @@ def review_list(cwd: str, scope: str, base_ref: str | None) -> dict:
 
     if scope in ("branch", "lastTurn"):
         base = _branch_base(cwd) if scope == "branch" else base_ref
-        if not base:
+        current = review_snapshot(cwd)
+        valid_base = scope != "lastTurn" or bool(
+            base and re.fullmatch(r"[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?", base)
+        )
+        if not base or not current or not valid_base:
             return {"files": [], "base": None}
-        rng = f"{base}...HEAD" if scope == "branch" else base
+        env = _snapshot_env(cwd, [base, current])
         files = [
             {"path": path, "added": a, "removed": r, "status": "M", "staged": False}
-            for path, (a, r) in _numstat(cwd, [rng]).items()
+            for path, (a, r) in _numstat(cwd, [base, current], env=env).items()
         ]
-        if scope == "lastTurn":
-            seen = {f["path"] for f in files}
-            _, raw, _ = _git(cwd, ["status", "--porcelain=v2", "-z"])
-            files += [
-                {"path": path, "added": 0, "removed": 0, "status": "?", "staged": False}
-                for tag, _xy, path in _walk_entries(raw)
-                if tag == "?" and path not in seen
-            ]
         files.sort(key=lambda f: f["path"])
-        _fill_untracked_counts(cwd, files)
-        return {"files": files, "base": base}
+        return {"files": files, "base": base, "revision": current}
 
     code, raw, _ = _git(cwd, ["status", "--porcelain=v2", "-z"])
     if code != 0:
@@ -302,7 +433,7 @@ def review_list(cwd: str, scope: str, base_ref: str | None) -> dict:
         )
     files.sort(key=lambda f: f["path"])
     _fill_untracked_counts(cwd, files)
-    return {"files": files, "base": None}
+    return {"files": files, "base": None, "revision": review_snapshot(cwd)}
 
 
 def review_diff(cwd: str, file_path: str, scope: str, base_ref: str | None, staged: bool) -> str:
@@ -310,9 +441,30 @@ def review_diff(cwd: str, file_path: str, scope: str, base_ref: str | None, stag
         return ""
     if scope == "branch":
         base = _branch_base(cwd)
-        return _git_out(cwd, ["diff", f"{base}...HEAD", "--", file_path]) if base else ""
+        current = review_snapshot(cwd)
+        return (
+            _git_out(
+                cwd,
+                ["diff", base, current, "--", file_path],
+                env=_snapshot_env(cwd, [base, current]),
+            )
+            if base and current
+            else ""
+        )
     if scope == "lastTurn":
-        return _git_out(cwd, ["diff", base_ref, "--", file_path]) if base_ref else ""
+        current = review_snapshot(cwd)
+        valid_base = bool(
+            base_ref and re.fullmatch(r"[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?", base_ref)
+        )
+        return (
+            _git_out(
+                cwd,
+                ["diff", base_ref, current, "--", file_path],
+                env=_snapshot_env(cwd, [base_ref, current]),
+            )
+            if valid_base and current
+            else ""
+        )
     if staged:
         return _git_out(cwd, ["diff", "--cached", "--", file_path])
     worktree = _git_out(cwd, ["diff", "--", file_path])

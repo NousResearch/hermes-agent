@@ -61,6 +61,15 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   requestMicrophoneAccess: () => ipcRenderer.invoke('hermes:requestMicrophoneAccess'),
   readFileDataUrl: filePath => ipcRenderer.invoke('hermes:readFileDataUrl', filePath),
   readFileText: filePath => ipcRenderer.invoke('hermes:readFileText', filePath),
+  pdf: {
+    open: filePath => ipcRenderer.invoke('hermes:pdf:open', filePath),
+    readRange: (id, begin, end) => ipcRenderer.invoke('hermes:pdf:readRange', { begin, end, id }),
+    close: id => ipcRenderer.invoke('hermes:pdf:close', id)
+  },
+  texPreview: {
+    compile: request => ipcRenderer.invoke('hermes:texPreview:compile', request),
+    cancel: requestId => ipcRenderer.send('hermes:texPreview:cancel', requestId)
+  },
   selectPaths: options => ipcRenderer.invoke('hermes:selectPaths', options),
   writeClipboard: text => ipcRenderer.invoke('hermes:writeClipboard', text),
   saveImageFromUrl: url => ipcRenderer.invoke('hermes:saveImageFromUrl', url),
@@ -109,7 +118,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   revealPath: targetPath => ipcRenderer.invoke('hermes:fs:reveal', targetPath),
   openDir: dirPath => ipcRenderer.invoke('hermes:fs:openDir', dirPath),
   renamePath: (targetPath, newName) => ipcRenderer.invoke('hermes:fs:rename', targetPath, newName),
-  writeTextFile: (filePath, content) => ipcRenderer.invoke('hermes:fs:writeText', filePath, content),
+  writeTextFile: (filePath, content, options) => ipcRenderer.invoke('hermes:fs:writeText', filePath, content, options),
   trashPath: targetPath => ipcRenderer.invoke('hermes:fs:trash', targetPath),
   git: {
     worktreeList: repoPath => ipcRenderer.invoke('hermes:git:worktreeList', repoPath),
@@ -130,6 +139,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       unstage: (repoPath, filePath) => ipcRenderer.invoke('hermes:git:review:unstage', repoPath, filePath),
       revert: (repoPath, filePath) => ipcRenderer.invoke('hermes:git:review:revert', repoPath, filePath),
       revParse: (repoPath, ref) => ipcRenderer.invoke('hermes:git:review:revParse', repoPath, ref),
+      snapshot: repoPath => ipcRenderer.invoke('hermes:git:review:snapshot', repoPath),
       commit: (repoPath, message, push) => ipcRenderer.invoke('hermes:git:review:commit', repoPath, message, push),
       commitContext: repoPath => ipcRenderer.invoke('hermes:git:review:commitContext', repoPath),
       push: repoPath => ipcRenderer.invoke('hermes:git:review:push', repoPath),

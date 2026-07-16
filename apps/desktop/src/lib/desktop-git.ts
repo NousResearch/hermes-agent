@@ -84,6 +84,8 @@ const remoteGit: GitBridge = {
     revParse: async (repoPath, ref) =>
       (await gitGet<{ sha: null | string }>('review/rev-parse', { path: repoPath, ref })).sha,
 
+    snapshot: async repoPath => (await gitPost<{ tree: null | string }>('review/snapshot', { path: repoPath })).tree,
+
     commit: (repoPath, message, push) => gitPost('review/commit', { message, path: repoPath, push }),
 
     commitContext: repoPath => gitGet('review/commit-context', { path: repoPath }),

@@ -2412,6 +2412,101 @@ export const zhHant = defineLocale({
     noClipboardImage: '剪貼簿中沒有圖片',
     clipboardPasteFailed: '剪貼簿貼上失敗',
     dropFiles: '拖曳檔案',
+    annotations: {
+      add: '註解',
+      clear: '清除註解',
+      comment: '留言',
+      commentPlaceholder: '希望代理檢查或變更什麼？',
+      concern: '疑慮',
+      discard: '捨棄草稿',
+      discardDescription: '未儲存的註解將遺失。',
+      discardReplaceTitle: '取代目前的註解草稿？',
+      discardTitle: '捨棄此註解草稿？',
+      edit: '編輯註解',
+      labels: {
+        accessibility: '無障礙',
+        bug: '錯誤',
+        performance: '效能',
+        security: '安全性',
+        style: '樣式',
+        testing: '測試'
+      },
+      lastTurnTracking: '將於下一個提示開始追蹤上一回合。',
+      listTitle: '註解',
+      planApprove: '核准並繼續',
+      planApproved: '計畫已核准',
+      planAvailable: '計畫已可供檢閱',
+      planRequestChanges: '要求變更',
+      planReview: '檢閱計畫',
+      remove: '移除註解',
+      reopen: '重新開啟註解草稿',
+      save: '儲存註解',
+      scopeBranch: '分支',
+      scopeLastTurn: '上一輪',
+      scopeUncommitted: '未提交',
+      sendToAgent: '將回饋傳送給代理',
+      storageError: '無法在此視窗儲存註解草稿。',
+      statusOrphaned: '找不到錨點',
+      statusSent: '已傳送',
+      statusStale: '修訂版本已變更',
+      suggestedReplacement: '建議取代內容',
+      suggestion: '建議',
+      suggestionPlaceholder: '取代文字或程式碼',
+      title: '新增註解',
+      preview: {
+        annotateSelection: '註解所選內容',
+        documentComment: '文件評論',
+        minimizeEditor: '最小化註解編輯器',
+        html: {
+          decrease: '縮小 HTML 預覽',
+          increase: '放大 HTML 預覽',
+          pan: '拖曳以平移 HTML 預覽',
+          reset: zoom => `從 ${zoom}% 重設 HTML 預覽`,
+          zoom: 'HTML 預覽縮放'
+        },
+        image: {
+          decrease: '縮小影像預覽',
+          deleteMarkup: '刪除所選標記',
+          externalResourcesBlocked: '已封鎖外部 SVG 資源',
+          increase: '放大影像預覽',
+          reset: zoom => `從 ${zoom}% 重設影像預覽`,
+          undoMarkup: '復原標記',
+          zoom: '影像預覽縮放'
+        },
+        ocr: {
+          label: 'OCR',
+          language: 'OCR 語言',
+          languages: { chi_sim: '簡體中文', chi_tra: '繁體中文', eng: '英文', jpn: '日文' },
+          recognizing: '正在辨識文字…',
+          unavailable: 'OCR 無法使用'
+        },
+        pdf: {
+          couldNotOpen: '無法開啟 PDF',
+          find: '尋找',
+          fit: '符合',
+          incorrectPassword: '密碼不正確',
+          open: '開啟 PDF',
+          page: '頁碼',
+          passwordProtected: '受密碼保護的 PDF',
+          search: '搜尋 PDF',
+          width: '寬度'
+        },
+        tex: {
+          compilationFailed: 'TeX 編譯失敗',
+          engineUnavailable: 'TeX 引擎無法使用',
+          updating: '正在更新算繪預覽…'
+        },
+        tools: {
+          arrow: '箭頭',
+          pan: '平移影像',
+          pen: '畫筆',
+          pin: '編號標記',
+          rectangle: '矩形',
+          select: '選取或移動',
+          text: '選取文字'
+        }
+      }
+    },
     handoff: {
       pickPlatform: '選擇目標平台',
       success: platform => `已移交到 ${platform}。隨時可在此處恢復。`,

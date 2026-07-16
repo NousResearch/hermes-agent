@@ -2510,6 +2510,101 @@ export const ja = defineLocale({
     noClipboardImage: 'クリップボードに画像が見つかりません',
     clipboardPasteFailed: 'クリップボードからの貼り付けに失敗しました',
     dropFiles: 'ファイルをドロップ',
+    annotations: {
+      add: '注釈',
+      clear: '注釈を消去',
+      comment: 'コメント',
+      commentPlaceholder: 'エージェントに確認または変更してほしいことは？',
+      concern: '懸念',
+      discard: '下書きを破棄',
+      discardDescription: '未保存の注釈は失われます。',
+      discardReplaceTitle: '現在の注釈の下書きを置き換えますか？',
+      discardTitle: 'この注釈の下書きを破棄しますか？',
+      edit: '注釈を編集',
+      labels: {
+        accessibility: 'アクセシビリティ',
+        bug: 'バグ',
+        performance: 'パフォーマンス',
+        security: 'セキュリティ',
+        style: 'スタイル',
+        testing: 'テスト'
+      },
+      lastTurnTracking: '次のプロンプトから最終ターンの追跡を開始します。',
+      listTitle: '注釈',
+      planApprove: '承認して続行',
+      planApproved: '計画を承認済み',
+      planAvailable: 'レビュー可能な計画があります',
+      planRequestChanges: '変更を依頼',
+      planReview: '計画をレビュー',
+      remove: '注釈を削除',
+      reopen: '注釈の下書きを再開',
+      save: '注釈を保存',
+      scopeBranch: 'ブランチ',
+      scopeLastTurn: '前回のターン',
+      scopeUncommitted: '未コミット',
+      sendToAgent: 'フィードバックをエージェントへ送信',
+      storageError: 'このウィンドウでは注釈の下書きを保存できません。',
+      statusOrphaned: 'アンカーが見つかりません',
+      statusSent: '送信済み',
+      statusStale: 'リビジョンが変更されました',
+      suggestedReplacement: '置換候補',
+      suggestion: '提案',
+      suggestionPlaceholder: '置換するテキストまたはコード',
+      title: '注釈を追加',
+      preview: {
+        annotateSelection: '選択範囲に注釈',
+        documentComment: 'ドキュメントコメント',
+        minimizeEditor: '注釈エディターを最小化',
+        html: {
+          decrease: 'HTML プレビューを縮小',
+          increase: 'HTML プレビューを拡大',
+          pan: 'ドラッグして HTML プレビューを移動',
+          reset: zoom => `HTML プレビューを ${zoom}% からリセット`,
+          zoom: 'HTML プレビューのズーム'
+        },
+        image: {
+          decrease: '画像プレビューを縮小',
+          deleteMarkup: '選択したマークを削除',
+          externalResourcesBlocked: '外部 SVG リソースをブロックしました',
+          increase: '画像プレビューを拡大',
+          reset: zoom => `画像プレビューを ${zoom}% からリセット`,
+          undoMarkup: 'マークを元に戻す',
+          zoom: '画像プレビューのズーム'
+        },
+        ocr: {
+          label: 'OCR',
+          language: 'OCR 言語',
+          languages: { chi_sim: '簡体字中国語', chi_tra: '繁体字中国語', eng: '英語', jpn: '日本語' },
+          recognizing: 'テキストを認識中…',
+          unavailable: 'OCR を利用できません'
+        },
+        pdf: {
+          couldNotOpen: 'PDF を開けませんでした',
+          find: '検索',
+          fit: '合わせる',
+          incorrectPassword: 'パスワードが正しくありません',
+          open: 'PDF を開く',
+          page: 'ページ',
+          passwordProtected: 'パスワード保護された PDF',
+          search: 'PDF を検索',
+          width: '幅'
+        },
+        tex: {
+          compilationFailed: 'TeX のコンパイルに失敗しました',
+          engineUnavailable: 'TeX エンジンを利用できません',
+          updating: 'レンダリング済みプレビューを更新中…'
+        },
+        tools: {
+          arrow: '矢印',
+          pan: '画像を移動',
+          pen: 'ペン',
+          pin: '番号付きピン',
+          rectangle: '長方形',
+          select: '選択または移動',
+          text: 'テキストを選択'
+        }
+      }
+    },
     handoff: {
       pickPlatform: '送信先を選択',
       success: platform => `${platform} に引き継ぎました。いつでもここで再開できます。`,

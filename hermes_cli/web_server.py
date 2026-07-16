@@ -1418,6 +1418,18 @@ _FS_TEXT_PREVIEW_MAX_BYTES = 512 * 1024
 # non-truncated text (<= the preview cap), so this is a safety ceiling against
 # a pasted-in megablob, not the expected payload size.
 _FS_TEXT_WRITE_MAX_BYTES = 8 * 1024 * 1024
+_fs_write_locks: dict[str, threading.Lock] = {}
+_fs_write_locks_guard = threading.Lock()
+
+
+def _fs_write_lock(path: Path) -> threading.Lock:
+    key = str(path)
+    with _fs_write_locks_guard:
+        lock = _fs_write_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _fs_write_locks[key] = lock
+        return lock
 _FS_PREVIEW_LANGUAGE_BY_EXT = {
     ".c": "c",
     ".conf": "ini",
@@ -1443,6 +1455,7 @@ _FS_PREVIEW_LANGUAGE_BY_EXT = {
     ".sh": "shell",
     ".sql": "sql",
     ".svg": "xml",
+    ".tex": "latex",
     ".toml": "toml",
     ".ts": "typescript",
     ".tsx": "tsx",
@@ -1467,7 +1480,9 @@ _FS_MIME_TYPES = {
     ".ogg": "audio/ogg",
     ".opus": "audio/ogg; codecs=opus",
     ".png": "image/png",
+    ".pdf": "application/pdf",
     ".svg": "image/svg+xml",
+    ".tex": "text/x-tex",
     ".wav": "audio/wav",
     ".webm": "video/webm",
     ".webp": "image/webp",
@@ -2207,6 +2222,7 @@ async def fs_read_text(path: str):
     return {
         "binary": _fs_looks_binary(data[:4096]),
         "byteSize": st.st_size,
+        "contentHash": hashlib.sha256(data).hexdigest(),
         "language": _FS_PREVIEW_LANGUAGE_BY_EXT.get(target.suffix.lower(), "text"),
         "mimeType": _fs_mime_type(target),
         "path": str(target),
@@ -2218,6 +2234,7 @@ async def fs_read_text(path: str):
 class FsWriteText(BaseModel):
     path: str
     content: str
+    expectedHash: Optional[str] = None
 
 
 @app.post("/api/fs/write-text")
@@ -2229,8 +2246,9 @@ async def fs_write_text(payload: FsWriteText):
     exist (we never build directory trees), only regular files may be replaced,
     and the payload is size-capped. The write is staged to a sibling temp file
     and ``os.replace``-d into place so a crash mid-write can't truncate the
-    original. Stale-on-disk detection is the client's job (re-read before save),
-    so both transports behave identically.
+    original. When ``expectedHash`` is supplied it is compared with the current
+    bytes before replacement, so stale editors fail with HTTP 409 instead of
+    silently overwriting a newer revision.
     """
     target = _fs_path(payload.path)
     text = payload.content or ""
@@ -2253,18 +2271,46 @@ async def fs_write_text(payload: FsWriteText):
     if not target.parent.is_dir():
         raise HTTPException(status_code=400, detail="Parent directory does not exist")
 
-    tmp = target.with_name(f".{target.name}.hermes-tmp-{os.getpid()}")
-    try:
-        tmp.write_text(text, encoding="utf-8")
-        os.replace(tmp, target)
-    except PermissionError:
-        tmp.unlink(missing_ok=True)
-        raise HTTPException(status_code=403, detail="File is not writable")
-    except OSError as exc:
-        tmp.unlink(missing_ok=True)
-        raise HTTPException(status_code=500, detail=f"Could not write file: {exc}")
+    def assert_unchanged() -> None:
+        if not payload.expectedHash:
+            return
+        try:
+            current = target.read_bytes() if target.exists() else b""
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="File is not readable")
+        except OSError as exc:
+            raise HTTPException(status_code=400, detail=str(exc) or "File read failed")
+        if hashlib.sha256(current).hexdigest() != payload.expectedHash:
+            raise HTTPException(status_code=409, detail="FILE_CHANGED")
 
-    return {"ok": True, "path": str(target), "byteSize": len(text.encode("utf-8"))}
+    with _fs_write_lock(target):
+        assert_unchanged()
+        tmp = target.with_name(
+            f".{target.name}.hermes-tmp-{os.getpid()}-{secrets.token_hex(6)}"
+        )
+        try:
+            tmp.write_text(text, encoding="utf-8")
+            # Catch an editor or external process that changed the file while
+            # this request was staging its sibling temporary file.
+            assert_unchanged()
+            os.replace(tmp, target)
+        except HTTPException:
+            tmp.unlink(missing_ok=True)
+            raise
+        except PermissionError:
+            tmp.unlink(missing_ok=True)
+            raise HTTPException(status_code=403, detail="File is not writable")
+        except OSError as exc:
+            tmp.unlink(missing_ok=True)
+            raise HTTPException(status_code=500, detail=f"Could not write file: {exc}")
+
+    encoded = text.encode("utf-8")
+    return {
+        "ok": True,
+        "path": str(target),
+        "byteSize": len(encoded),
+        "contentHash": hashlib.sha256(encoded).hexdigest(),
+    }
 
 
 @app.get("/api/fs/read-data-url")
@@ -2296,6 +2342,103 @@ async def fs_git_root(path: str):
 async def fs_default_cwd():
     cwd = _fs_default_cwd()
     return {"cwd": cwd, "branch": _fs_git_branch(cwd)}
+
+
+# ---------------------------------------------------------------------------
+# Document previews — tokenized PDF range transport and hardened TeX compile.
+# These routes inherit the dashboard's authentication middleware. They expose
+# opaque document ids rather than filesystem paths after the initial open.
+# ---------------------------------------------------------------------------
+
+from hermes_cli import web_document_preview as _document_preview  # noqa: E402
+
+
+class PdfOpenRequest(BaseModel):
+    path: str
+
+
+class PdfRangeRequest(BaseModel):
+    id: str
+    begin: int
+    end: int
+    revision: Optional[str] = None
+
+
+class PdfCloseRequest(BaseModel):
+    id: str
+
+
+class TexCompileRequest(BaseModel):
+    path: str
+    requestId: str
+    workspaceRoot: Optional[str] = None
+
+
+class TexCancelRequest(BaseModel):
+    requestId: str
+
+
+@app.post("/api/preview/pdf/open")
+async def preview_pdf_open(payload: PdfOpenRequest):
+    target, _ = _fs_regular_file(_fs_path(payload.path))
+    if target.suffix.lower() != ".pdf":
+        raise HTTPException(status_code=400, detail="PDF preview requires a .pdf file")
+    try:
+        return await run_in_threadpool(_document_preview.open_pdf, target)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc) or "Could not open PDF")
+
+
+@app.post("/api/preview/pdf/range")
+async def preview_pdf_range(payload: PdfRangeRequest):
+    try:
+        data = await run_in_threadpool(
+            _document_preview.read_pdf_range,
+            payload.id,
+            payload.begin,
+            payload.end,
+            payload.revision,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"data": base64.b64encode(data).decode("ascii")}
+
+
+@app.post("/api/preview/pdf/close")
+async def preview_pdf_close(payload: PdfCloseRequest):
+    return {"closed": _document_preview.close_pdf(payload.id)}
+
+
+@app.post("/api/preview/tex/compile")
+async def preview_tex_compile(payload: TexCompileRequest):
+    if not payload.requestId.strip():
+        raise HTTPException(status_code=400, detail="TeX preview request id is required")
+    target, st = _fs_regular_file(_fs_path(payload.path))
+    if target.suffix.lower() != ".tex":
+        raise HTTPException(status_code=400, detail="TeX preview requires a .tex file")
+    if st.st_size > _FS_TEXT_SOURCE_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="TeX source is too large")
+    try:
+        workspace_root = _fs_path(payload.workspaceRoot) if payload.workspaceRoot else None
+        if workspace_root:
+            try:
+                target.relative_to(workspace_root)
+            except ValueError:
+                workspace_root = None
+        return await run_in_threadpool(_document_preview.compile_tex, target, payload.requestId, workspace_root)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=429, detail=str(exc))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/preview/tex/cancel")
+async def preview_tex_cancel(payload: TexCancelRequest):
+    return {"cancelled": _document_preview.cancel_tex(payload.requestId)}
 
 
 # ---------------------------------------------------------------------------
@@ -2401,6 +2544,11 @@ async def git_commit_context_route(path: str):
 @app.get("/api/git/review/rev-parse")
 async def git_rev_parse_route(path: str, ref: Optional[str] = None):
     return {"sha": await _git_op(_web_git.review_rev_parse, _git_path(path), ref)}
+
+
+@app.post("/api/git/review/snapshot")
+async def git_review_snapshot_route(body: GitPathBody):
+    return {"tree": await _git_op(_web_git.review_snapshot, _git_path(body.path))}
 
 
 @app.get("/api/git/review/ship-info")

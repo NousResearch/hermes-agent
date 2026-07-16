@@ -56,12 +56,12 @@ Both layers are joined, then truncated to fit `contextTokens` budget via `_trunc
 
 When `queryRewrite: true`, dialectic pass 0 first uses the shared
 `memory_query_rewrite` auxiliary task to turn the latest message into one
-concise memory-retrieval question. Only that rewritten question is sent to
-Honcho, so prompt instructions and the raw user message do not pollute
-Honcho's semantic prefetch. If rewriting times out or returns an invalid
-result, the plugin falls back to the existing cold/warm prompt below. With
-the flag on, base context still prewarms at session start but the generic
-dialectic prewarm is skipped so it cannot shadow the first user message.
+concise memory-retrieval question. The rewritten question is used for the
+dialectic request; base-context retrieval still uses the raw message as its
+search query. If rewriting times out or returns an invalid result, the plugin
+falls back to the existing cold/warm prompt below. With the flag on, the
+generic dialectic prewarm is skipped so it cannot shadow the first user
+message.
 
 **Off by default** — the rewrite adds one auxiliary-model call per dialectic
 cycle (not per pass). Select a fast, inexpensive model under `hermes model`
@@ -305,7 +305,7 @@ Host key is derived from the active Hermes profile: `hermes` (default) or `herme
 | `injectionFrequency` | string | `"every-turn"` | `"every-turn"` or `"first-turn"` (inject base context on the first user message only; the dialectic supplement keeps its own cadence) |
 | `queryRewrite` | bool | `false` | Rewrite the latest message into a retrieval query before dialectic (one extra auxiliary LLM call per cycle) |
 | `firstTurnBaseWait` | float | `3.0` | Max seconds turn 1 waits for base context / session init. `0` disables the wait (fully async; context surfaces on later turns). Turns 2+ never wait on a stalled init |
-| `firstTurnDialecticWait` | float | `2.0` | Max seconds turn 1 waits for the dialectic prewarm. `0` disables |
+| `firstTurnDialecticWait` | float | `2.0` | Max seconds turn 1 waits for a dialectic result. `0` disables |
 
 ### Observation (Granular)
 

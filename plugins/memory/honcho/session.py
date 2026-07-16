@@ -618,15 +618,9 @@ class HonchoSessionManager:
                              Only honored when dialecticDynamic is true.
                              If None or dialecticDynamic is false, uses the configured default.
             peer: Which peer to query — "user" (default) or "ai".
-            apply_injection_cap: When True (default), clip the result to
-                             ``dialecticMaxChars`` — the budget for the dialectic
-                             supplement auto-injected into the system prompt every
-                             turn. Set False for explicit ``honcho_reasoning`` tool
-                             calls, where the model deliberately asked for a full
-                             synthesized answer; that result is already bounded
-                             server-side by Honcho's dialectic MAX_OUTPUT_TOKENS,
-                             so clipping it to the injection budget silently
-                             discards content the caller asked for.
+            apply_injection_cap: Clip automatic injections to
+                ``dialecticMaxChars``. Explicit ``honcho_reasoning`` calls pass
+                False because Honcho already bounds their output.
 
         Returns:
             Honcho's synthesized answer, or empty string on failure.
@@ -665,11 +659,7 @@ class HonchoSessionManager:
                 target_peer = self._get_or_create_peer(target_peer_id)
                 result = target_peer.chat(query, reasoning_level=level) or ""
 
-            # Apply the Hermes-side injection char cap before caching. This budget
-            # (dialecticMaxChars) bounds the dialectic supplement auto-injected into
-            # the system prompt every turn; it must NOT clip explicit
-            # honcho_reasoning tool results, which the model asked for in full and
-            # which Honcho already bounds server-side via MAX_OUTPUT_TOKENS.
+            # Only automatic injection uses the Hermes-side character cap.
             if (
                 apply_injection_cap
                 and result
@@ -1129,19 +1119,9 @@ class HonchoSessionManager:
         peer: str = "user",
     ) -> str:
         """
-        Hybrid (semantic + keyword) message search over a peer's history.
-
-        Calls Honcho's workspace message-search endpoint with a
-        ``peer_perspective`` filter, which returns RRF-ranked raw message
-        snippets drawn from every session the peer was a member of (scoped
-        by their join/leave windows). This is the cross-session factual
-        recall primitive: it finds what was actually *said* — including
-        messages authored by the assistant about the peer — rather than
-        dumping the standing representation.
-
-        No LLM reasoning is involved — cheaper and faster than
-        ``dialectic_query``. Good for factual lookups where the model will
-        do its own synthesis over the returned excerpts.
+        Search raw messages across every session visible from the target
+        peer's perspective. Results include all authors and require no LLM
+        synthesis.
 
         Args:
             session_key: Session whose workspace/peer scope to search within.
@@ -1158,10 +1138,7 @@ class HonchoSessionManager:
         if not session:
             return ""
 
-        # Resolve the peer whose message history we scope the search to.
-        # We deliberately use the *target* peer (the human by default) for the
-        # peer_perspective filter so the search spans every session that peer
-        # participated in, across all authors — not just messages they wrote.
+        # peer_perspective spans the target peer's sessions across all authors.
         peer_id = self._resolve_peer_id(session, peer)
 
         # Honcho caps query length for the embedding model; keep well under it.
@@ -1171,8 +1148,7 @@ class HonchoSessionManager:
         if len(q) > 4000:
             q = q[:4000]
 
-        # Convert the token budget into an approximate result count + char cap.
-        # ~4 chars/token; assume a useful snippet is a few hundred chars.
+        # Approximate four characters per token and a few hundred per result.
         char_budget = max(200, int(max_tokens) * 4)
         limit = max(3, min(20, char_budget // 300))
 
@@ -1196,8 +1172,7 @@ class HonchoSessionManager:
         if not messages:
             return ""
 
-        # Format ranked snippets, honoring the char budget. Label the author
-        # so the model can tell user-stated facts from assistant-derived ones.
+        # Author labels distinguish user-stated facts from assistant-derived ones.
         assistant_id = session.assistant_peer_id
         lines: list[str] = []
         used = 0
@@ -1208,13 +1183,21 @@ class HonchoSessionManager:
             author = getattr(m, "peer_id", "") or "unknown"
             who = "assistant" if author == assistant_id else author
             sess = getattr(m, "session_id", "") or ""
-            # Trim individual snippets so one long message can't eat the budget.
             snippet = content[:1200]
             entry = f"[{who}{f' · {sess}' if sess else ''}] {snippet}"
-            if used + len(entry) > char_budget and lines:
+            separator = "\n\n" if lines else ""
+            remaining = char_budget - used - len(separator)
+            if remaining <= 0:
+                break
+            if len(entry) > remaining:
+                entry = entry[:remaining].rstrip()
+                if not entry:
+                    break
+                lines.append(entry)
+                used += len(separator) + len(entry)
                 break
             lines.append(entry)
-            used += len(entry)
+            used += len(separator) + len(entry)
 
         return "\n\n".join(lines)
 
@@ -1306,11 +1289,7 @@ class HonchoSessionManager:
         peer: str = "user",
         limit: int = 20,
     ) -> list[dict]:
-        """List or semantically search stored conclusions, including their ids.
-
-        This is the lookup path `honcho_conclude`'s delete action needs:
-        Conclusion.id is a server-generated nanoid that no other Honcho tool
-        surfaces (honcho_search only searches Messages, a separate resource).
+        """List or semantically search conclusions with their server IDs.
 
         Args:
             session_key: Session key for peer resolution.

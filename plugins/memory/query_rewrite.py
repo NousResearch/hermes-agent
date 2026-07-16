@@ -1,6 +1,6 @@
 """Rewrite the latest user message into a clean memory-retrieval query.
 
-Provider-agnostic: any memory provider can pass ``rewrite_dialectic_query``
+Provider-agnostic: any memory provider can pass ``rewrite_memory_query``
 as its query rewriter. Model/timeout are configured under
 ``auxiliary.memory_query_rewrite`` in config.yaml."""
 
@@ -106,7 +106,7 @@ def _normalize_rewrite(text: str) -> str:
     return candidate
 
 
-def rewrite_dialectic_query(user_message: str) -> str:
+def rewrite_memory_query(user_message: str) -> str:
     """Return a retrieval-only question, or ``""`` to preserve old behavior."""
     bounded = _bounded_user_message(user_message)
     if not bounded:
@@ -132,8 +132,8 @@ def rewrite_dialectic_query(user_message: str) -> str:
         )
         rewritten = _normalize_rewrite(_extract_response_text(response))
         if not rewritten:
-            logger.debug("Honcho query rewrite returned an invalid or empty question")
+            logger.debug("Memory query rewrite returned an invalid or empty question")
         return rewritten
     except Exception as exc:
-        logger.debug("Honcho query rewrite failed: %s", exc)
+        logger.debug("Memory query rewrite failed: %s", exc)
         return ""

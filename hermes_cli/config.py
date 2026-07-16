@@ -1653,7 +1653,7 @@ DEFAULT_CONFIG = {
             "language": "",
         },
         "memory_query_rewrite": {
-            "provider": "auto",    # fast/cheap model recommended
+            "provider": "auto",
             "model": "",
             "base_url": "",
             "api_key": "",

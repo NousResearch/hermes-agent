@@ -342,10 +342,7 @@ class HonchoClientConfig:
     # honcho_reasoning tool param (agentic). When false, always uses
     # dialecticReasoningLevel and ignores model-provided overrides.
     dialectic_dynamic: bool = True
-    # Max chars of the dialectic supplement auto-injected into the Hermes system
-    # prompt each turn. Applies ONLY to auto-injection — explicit honcho_reasoning
-    # tool results return in full (bounded server-side by Honcho's MAX_OUTPUT_TOKENS),
-    # via dialectic_query(apply_injection_cap=False).
+    # Automatic-injection cap; explicit honcho_reasoning calls bypass it.
     dialectic_max_chars: int = 600
     # Dialectic depth: how many .chat() calls per dialectic cycle (1-3).
     # Depth 1: single call. Depth 2: self-audit + targeted synthesis.
@@ -485,10 +482,7 @@ class HonchoClientConfig:
             or os.environ.get("HONCHO_BASE_URL", "").strip()
             or None
         )
-        # Host block wins, then flat/global, then env — consistent with every
-        # other field above. Previously the host block was skipped, silently
-        # dropping a per-host `timeout`/`requestTimeout` and falling through to
-        # config.yaml honcho.timeout (or the 30s default).
+        # Host config wins over flat/global config and environment.
         timeout = _resolve_optional_float(
             host_block.get("timeout"),
             host_block.get("requestTimeout"),
@@ -628,10 +622,7 @@ class HonchoClientConfig:
                 raw.get("initOnSessionStart"),
                 default=False,
             ),
-            # Cost-awareness cadence: host block wins, then root.
-            # Previously these were read only via `raw.get()` which missed
-            # any setting placed inside `hosts.<name>`, making per-host
-            # tuning of injectionFrequency / contextCadence silently no-op.
+            # Host cadence settings override flat/global values.
             injection_frequency=(
                 host_block.get("injectionFrequency")
                 or raw.get("injectionFrequency", "every-turn")
@@ -872,16 +863,9 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
             "For local instances, set HONCHO_BASE_URL instead."
         )
 
-    # Everything below is the expensive part the issue flags: lazy SDK
-    # install, config resolution, and client construction. Run it inside the
-    # slot's factory so it executes exactly once even when several threads
-    # race the first call — the slot's double-checked lock serializes them and
-    # the losers get the winner's client instead of building their own.
+    # Build inside the singleton factory so racing callers share one client.
     def _build() -> "Honcho":
-        # Lazy-install the honcho SDK on demand. ensure() honors
-        # security.allow_lazy_installs (default true). On failure we surface
-        # the original ImportError-shape message so existing callers still get
-        # the "go run hermes honcho setup" hint they used to.
+        # Lazy dependency failures fall through to the canonical import error.
         try:
             from tools.lazy_deps import FeatureUnavailable, ensure as _lazy_ensure
             _lazy_ensure("memory.honcho", prompt=False)

@@ -218,6 +218,27 @@ describe('createGatewayEventHandler', () => {
     expect(getTurnState().todos).toEqual([])
   })
 
+  it('correlates tool progress by stable id when names collide', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: { context: 'first command', name: 'terminal', tool_id: 'tool-1' },
+      type: 'tool.start'
+    } as any)
+    onEvent({
+      payload: { context: 'second command', name: 'terminal', tool_id: 'tool-2' },
+      type: 'tool.start'
+    } as any)
+    onEvent({
+      payload: { name: 'terminal', text: 'second live output', tool_id: 'tool-2' },
+      type: 'tool.progress'
+    } as any)
+    onEvent({ payload: { name: 'terminal', tool_id: 'tool-1' }, type: 'tool.complete' } as any)
+
+    expect(getTurnState().tools).toMatchObject([{ context: 'second live output', id: 'tool-2', name: 'terminal' }])
+  })
+
   it('persists completed tool rows when message.complete lands immediately after tool.complete', () => {
     const appended: Msg[] = []
 

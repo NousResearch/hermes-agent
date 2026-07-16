@@ -292,6 +292,7 @@ class TestStepCallback:
 
         assert list(tool_call_ids["write_file"]) == ["tc-meta"]
         assert tool_call_meta["tc-meta"] == {
+            "name": "write_file",
             "args": {"path": "diff-test.txt", "content": "hello"},
             "snapshot": "snapshot",
         }

@@ -596,6 +596,11 @@ def _build_hermes_tools_mcp_entry() -> dict:
     out: dict[str, Any] = {
         "command": sys.executable,
         "args": ["-m", "agent.transports.hermes_tools_mcp_server"],
+        # Keep Codex-native web search authoritative. Hermes image generation
+        # remains available for configured image editing/reference inputs, and
+        # Hermes skill tools remain available for external/plugin-qualified
+        # skills that are not represented by Codex's native skill roots.
+        "disabled_tools": ["web_search"],
     }
     if env:
         out["env"] = env

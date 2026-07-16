@@ -704,8 +704,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
 
       case 'tool.progress':
-        if (ev.payload?.preview && ev.payload.name) {
-          turnController.recordToolProgress(ev.payload.name, ev.payload.preview)
+        if ((ev.payload?.preview || ev.payload?.text) && ev.payload.name) {
+          turnController.recordToolProgress(
+            ev.payload.name,
+            ev.payload.preview || ev.payload.text || '',
+            ev.payload.tool_id
+          )
         }
 
         return

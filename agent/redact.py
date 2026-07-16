@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import shlex
+from urllib.parse import unquote_plus
 
 logger = logging.getLogger(__name__)
 
@@ -271,18 +272,19 @@ _SIGNAL_PHONE_RE = re.compile(r"(\+[1-9]\d{6,14})(?![A-Za-z0-9])")
 # Used to scan text for URLs whose query params may contain secrets.
 # Ported from nearai/ironclaw#2529.
 _URL_WITH_QUERY_RE = re.compile(
-    r"(https?|wss?|ftp)://"          # scheme
+    r"([A-Za-z][A-Za-z0-9+.-]*)://"  # any RFC-style URI scheme
     r"([^\s/?#]+)"                    # authority (may include userinfo)
     r"([^\s?#]*)"                     # path
     r"\?([^\s#]+)"                    # query (required)
     r"(#\S*)?",                       # optional fragment
+    re.IGNORECASE,
 )
 
-# URLs containing userinfo — `scheme://user:password@host` for ANY scheme
-# (not just DB protocols already covered by _DB_CONNSTR_RE above).
-# Catches things like `https://user:token@api.example.com/v1/foo`.
+# URLs containing userinfo for any RFC-style URI scheme. The password is
+# optional because opaque bearer credentials also appear as `scheme://TOKEN@`.
 _URL_USERINFO_RE = re.compile(
-    r"(https?|wss?|ftp)://([^/\s:@]+):([^/\s@]+)@",
+    r"([A-Za-z][A-Za-z0-9+.-]*://)([^/\s:@]*)(?::([^/\s@]*))?@",
+    re.IGNORECASE,
 )
 
 # HTTP access logs often use a relative request target rather than a full URL:
@@ -376,7 +378,9 @@ def _redact_query_string(query: str) -> str:
             parts.append(pair)
             continue
         key, _, value = pair.partition("=")
-        if key.lower() in _SENSITIVE_QUERY_PARAMS:
+        # Query names may be percent-encoded (e.g. api%5Fkey). Decode once,
+        # matching how application servers interpret a valid URL parameter.
+        if unquote_plus(key).casefold() in _SENSITIVE_QUERY_PARAMS:
             parts.append(f"{key}=***")
         else:
             parts.append(pair)
@@ -400,15 +404,15 @@ def _redact_url_query_params(text: str) -> str:
 
 
 def _redact_url_userinfo(text: str) -> str:
-    """Strip `user:password@` from HTTP/WS/FTP URLs.
+    """Redact userinfo credentials from URLs for every URI scheme."""
 
-    DB protocols (postgres, mysql, mongodb, redis, amqp) are handled
-    separately by `_DB_CONNSTR_RE`.
-    """
-    return _URL_USERINFO_RE.sub(
-        lambda m: f"{m.group(1)}://{m.group(2)}:***@",
-        text,
-    )
+    def _sub(match: re.Match) -> str:
+        scheme, username, password = match.groups()
+        if password is None:
+            return f"{scheme}***@"
+        return f"{scheme}{username}:***@"
+
+    return _URL_USERINFO_RE.sub(_sub, text)
 
 
 def redact_cdp_url(value: object) -> str:

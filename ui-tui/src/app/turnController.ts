@@ -833,12 +833,12 @@ class TurnController {
     })
   }
 
-  recordToolProgress(toolName: string, preview: string) {
+  recordToolProgress(toolName: string, preview: string, toolId?: string) {
     if (this.interrupted) {
       return
     }
 
-    const index = this.activeTools.findIndex(tool => tool.name === toolName)
+    const index = this.activeTools.findIndex(tool => (toolId ? tool.id === toolId : tool.name === toolName))
 
     if (index < 0) {
       return

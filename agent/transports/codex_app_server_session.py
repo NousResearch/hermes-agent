@@ -24,8 +24,10 @@ call is synchronous and behaves like AIAgent's existing chat_completions loop.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import queue
 import threading
 import time
 from dataclasses import dataclass, field
@@ -47,6 +49,7 @@ logger = logging.getLogger(__name__)
 # wedge watchdog, etc.). Small enough to keep error messages legible, large
 # enough to surface a config/provider/auth diagnostic.
 _STDERR_TAIL_LINES = 12
+_MAX_TERMINAL_SERVER_REQUEST_DRAIN = 256
 
 
 # Permission profile mapping mirrors the docstring in PR proposal:
@@ -83,6 +86,10 @@ class TurnResult:
     # of riding a CPU-spinning or auth-broken process. Mirrors openclaw
     # beta.8's "retire timed-out app-server clients" fix.
     should_retire: bool = False
+
+
+class _ClarifyCancellationFailed(RuntimeError):
+    """The Hermes prompt worker survived or rejected cancellation."""
 
 
 # Markers we accept as terminal even when codex never emits turn/completed.
@@ -204,15 +211,34 @@ class CodexAppServerSession:
         cwd: Optional[str] = None,
         codex_bin: str = "codex",
         codex_home: Optional[str] = None,
+        extra_skill_roots: Optional[list[str]] = None,
         permission_profile: Optional[str] = None,
         approval_callback: Optional[Callable[..., str]] = None,
+        clarify_callback: Optional[
+            Callable[[str, Optional[list[str]]], str]
+        ] = None,
+        clarify_cancel_callback: Optional[Callable[[], None]] = None,
         on_event: Optional[Callable[[dict], None]] = None,
         request_routing: Optional[_ServerRequestRouting] = None,
         client_factory: Optional[Callable[..., CodexAppServerClient]] = None,
+        developer_instructions: Optional[str] = None,
+        dynamic_tools: Optional[list[dict[str, Any]]] = None,
+        initial_history_items: Optional[list[dict[str, Any]]] = None,
+        dynamic_tool_handler: Optional[
+            Callable[[dict[str, Any]], dict[str, Any]]
+        ] = None,
     ) -> None:
         self._cwd = cwd or os.getcwd()
         self._codex_bin = codex_bin
         self._codex_home = codex_home
+        self._extra_skill_roots = [
+            os.path.realpath(os.path.expanduser(root))
+            for root in (extra_skill_roots or [])
+            if root
+        ]
+        self._skill_fingerprints: Optional[dict[str, tuple[int, int]]] = None
+        self._skill_roots_registered = not self._extra_skill_roots
+        self._turn_started_once = False
         self._permission_profile = (
             permission_profile or _HERMES_TO_CODEX_PERMISSION_PROFILE.get(
                 os.environ.get("HERMES_TERMINAL_SECURITY_MODE", "auto"),
@@ -220,12 +246,25 @@ class CodexAppServerSession:
             )
         )
         self._approval_callback = approval_callback
+        self._clarify_callback = clarify_callback
+        self._clarify_cancel_callback = clarify_cancel_callback
         self._on_event = on_event  # Display hook (kawaii spinner ticks etc.)
         self._routing = request_routing or _ServerRequestRouting()
         self._client_factory = client_factory or CodexAppServerClient
+        self._developer_instructions = developer_instructions or ""
+        self._dynamic_tools = list(dynamic_tools or [])
+        self._initial_history_items = list(initial_history_items or [])
+        self._dynamic_tool_handler = dynamic_tool_handler
 
         self._client: Optional[CodexAppServerClient] = None
         self._thread_id: Optional[str] = None
+        self._active_turn_id: Optional[str] = None
+        self._dynamic_tool_responses: dict[
+            tuple[str, str, str], tuple[str, dict[str, Any]]
+        ] = {}
+        self._request_user_input_responses: dict[
+            tuple[str, str, str], tuple[str, str, Any]
+        ] = {}
         self._interrupt_event = threading.Event()
         # Pending file-change items, keyed by item id. Populated on
         # item/started for fileChange items; consumed by the approval
@@ -237,20 +276,57 @@ class CodexAppServerSession:
 
     # ---------- lifecycle ----------
 
+    def _register_extra_skill_roots(self) -> bool:
+        """Best-effort registration that remains retryable for this thread."""
+        if self._skill_roots_registered:
+            return True
+        if not self._extra_skill_roots or self._client is None:
+            return False
+        try:
+            self._client.request(
+                "skills/extraRoots/set",
+                {"extraRoots": self._extra_skill_roots},
+                timeout=15,
+            )
+        except (CodexAppServerError, TimeoutError):
+            logger.warning(
+                "codex app-server could not register Hermes skill roots",
+                exc_info=True,
+            )
+            return False
+        self._skill_roots_registered = True
+        return True
+
     def ensure_started(self) -> str:
         """Spawn the subprocess, do the initialize handshake, and start a
-        thread. Returns the codex thread id. Idempotent — repeated calls
-        return the same thread id."""
+        thread. Returns the codex thread id. Repeated calls reuse the thread and
+        retry any skill-root registration that previously failed."""
         if self._thread_id is not None:
+            self._register_extra_skill_roots()
             return self._thread_id
         if self._client is None:
-            self._client = self._client_factory(
-                codex_bin=self._codex_bin, codex_home=self._codex_home
+            extra_args = (
+                ["--enable", "default_mode_request_user_input"]
+                if self._clarify_callback is not None
+                else None
             )
+            self._client = self._client_factory(
+                codex_bin=self._codex_bin,
+                codex_home=self._codex_home,
+                extra_args=extra_args,
+            )
+        capabilities = {}
+        if (
+            self._dynamic_tools
+            or self._initial_history_items
+            or self._clarify_callback is not None
+        ):
+            capabilities["experimentalApi"] = True
         self._client.initialize(
             client_name="hermes",
             client_title="Hermes Agent",
             client_version=_get_hermes_version(),
+            capabilities=capabilities,
         )
         # Permission selection is intentionally NOT sent on thread/start.
         # Two reasons (live-tested against codex 0.130.0):
@@ -268,6 +344,10 @@ class CodexAppServerSession:
         # Users who want a write-capable profile configure it in their
         # ~/.codex/config.toml the same way they would for any codex usage.
         params: dict[str, Any] = {"cwd": self._cwd}
+        if self._developer_instructions:
+            params["developerInstructions"] = self._developer_instructions
+        if self._dynamic_tools:
+            params["dynamicTools"] = self._dynamic_tools
         result = self._client.request("thread/start", params, timeout=15)
         # Cross-fill thread.id/sessionId — different codex versions have
         # serialized this under either key. Mirrors openclaw beta.8's
@@ -280,15 +360,25 @@ class CodexAppServerSession:
             or result.get("sessionId")
             or result.get("threadId")
         )
-        if not thread_id:
+        if not isinstance(thread_id, str) or not thread_id.strip():
             raise CodexAppServerError(
                 code=-32603,
                 message=(
-                    "codex thread/start returned no thread id "
+                    "codex thread/start returned no thread id or an invalid thread id "
                     f"(payload keys: {sorted(result.keys())})"
                 ),
             )
         self._thread_id = thread_id
+        self._register_extra_skill_roots()
+        if self._initial_history_items:
+            self._client.request(
+                "thread/inject_items",
+                {
+                    "threadId": self._thread_id,
+                    "items": self._initial_history_items,
+                },
+                timeout=15,
+            )
         logger.info(
             "codex app-server thread started: id=%s profile=%s cwd=%s",
             self._thread_id[:8],
@@ -308,6 +398,9 @@ class CodexAppServerSession:
                 pass
             self._client = None
         self._thread_id = None
+        self._active_turn_id = None
+        self._dynamic_tool_responses.clear()
+        self._request_user_input_responses.clear()
 
     def __enter__(self) -> "CodexAppServerSession":
         return self
@@ -363,7 +456,124 @@ class CodexAppServerSession:
 
     # ---------- per-turn ----------
 
+    def _reload_changed_skills(
+        self,
+    ) -> tuple[list[dict[str, str]], Optional[dict[str, tuple[int, int]]]]:
+        """Reload Codex's catalog and return Hermes skills changed since the
+        previous turn.
+
+        Codex injects the available-skills catalog when a thread's first turn
+        starts, but ``skills/list(forceReload=True)`` alone does not update that
+        already-running thread. Changed skills are therefore returned as native
+        ``SkillUserInput`` items for the next ``turn/start`` request.
+        """
+        if (
+            not self._extra_skill_roots
+            or self._client is None
+            or not self._skill_roots_registered
+        ):
+            return [], None
+
+        try:
+            response = self._client.request(
+                "skills/list",
+                {"cwds": [self._cwd], "forceReload": True},
+                timeout=30,
+            )
+        except (CodexAppServerError, TimeoutError):
+            logger.warning(
+                "codex app-server could not reload Hermes skills",
+                exc_info=True,
+            )
+            return [], None
+
+        current: dict[str, tuple[int, int]] = {}
+        metadata: dict[str, dict[str, str]] = {}
+        for entry in response.get("data") or []:
+            if not isinstance(entry, dict):
+                continue
+            for skill in entry.get("skills") or []:
+                if not isinstance(skill, dict) or skill.get("enabled") is False:
+                    continue
+                name = skill.get("name")
+                path = skill.get("path")
+                if not isinstance(name, str) or not isinstance(path, str):
+                    continue
+                real_path = os.path.realpath(path)
+                try:
+                    belongs_to_hermes = any(
+                        os.path.commonpath((real_path, root)) == root
+                        for root in self._extra_skill_roots
+                    )
+                except ValueError:
+                    belongs_to_hermes = False
+                if not belongs_to_hermes:
+                    continue
+                try:
+                    stat = os.stat(real_path)
+                except OSError:
+                    continue
+                current[real_path] = (stat.st_mtime_ns, stat.st_size)
+                metadata[real_path] = {
+                    "type": "skill",
+                    "name": name,
+                    "path": real_path,
+                }
+
+        changed: list[dict[str, str]] = []
+        if self._skill_fingerprints is not None:
+            changed = [
+                metadata[path]
+                for path, fingerprint in current.items()
+                if self._skill_fingerprints.get(path) != fingerprint
+            ]
+        elif self._turn_started_once:
+            # The thread already accepted a turn without a committed baseline:
+            # either root registration recovered late or the initial reload
+            # failed. Attach the full root once so no skill is silently absorbed
+            # into the first successful snapshot.
+            changed = list(metadata.values())
+        return changed, current
+
     def run_turn(
+        self,
+        user_input: Any,
+        *,
+        turn_timeout: float = 600.0,
+        notification_poll_timeout: float = 0.25,
+        post_tool_quiet_timeout: float = 90.0,
+    ) -> TurnResult:
+        """Run one Codex turn and fail closed on unexpected processing errors."""
+        try:
+            return self._run_turn_impl(
+                user_input,
+                turn_timeout=turn_timeout,
+                notification_poll_timeout=notification_poll_timeout,
+                post_tool_quiet_timeout=post_tool_quiet_timeout,
+            )
+        except Exception:
+            # A projection/callback failure must not leave Codex computing or
+            # allow active identities and replay responses to bleed into a
+            # later turn. Preserve the original exception even if interrupting
+            # the provider fails.
+            active_turn_id = self._active_turn_id
+            try:
+                if active_turn_id is not None:
+                    self._issue_interrupt(active_turn_id)
+            except Exception:
+                logger.warning(
+                    "Failed to interrupt codex turn after processing failure",
+                    exc_info=True,
+                )
+            finally:
+                self.close()
+            raise
+        finally:
+            self._active_turn_id = None
+            self._dynamic_tool_responses.clear()
+            self._request_user_input_responses.clear()
+
+    def _run_turn_impl(
         self,
         user_input: Any,
         *,
@@ -400,19 +610,27 @@ class CodexAppServerSession:
         assert self._client is not None and self._thread_id is not None
         result.thread_id = self._thread_id
 
+        changed_skills, skill_fingerprints = self._reload_changed_skills()
+
         self._interrupt_event.clear()
+        self._active_turn_id = None
+        self._dynamic_tool_responses.clear()
+        self._request_user_input_responses.clear()
         projector = CodexEventProjector()
 
         user_input_text = _coerce_turn_input_text(user_input)
 
-        # Send turn/start with the user input. Text-only for now (codex
-        # supports rich content but Hermes' text path is the common case).
+        # Send turn/start with the user input. Any Hermes skill created or
+        # modified since the previous turn is attached once through Codex's
+        # native SkillUserInput path so the running thread receives it without
+        # being restarted.
         try:
             ts = self._client.request(
                 "turn/start",
                 {
                     "threadId": self._thread_id,
-                    "input": [{"type": "text", "text": user_input_text}],
+                    "input": changed_skills
+                    + [{"type": "text", "text": user_input_text}],
                 },
                 timeout=10,
             )
@@ -443,7 +661,20 @@ class CodexAppServerSession:
             result.should_retire = True
             return result
 
-        result.turn_id = (ts.get("turn") or {}).get("id")
+        # Native skill inputs belong to the persistent thread only after
+        # turn/start accepts them. Keep the previous snapshot on request errors
+        # so the same changed skill is attached again on the next attempt.
+        if skill_fingerprints is not None:
+            self._skill_fingerprints = skill_fingerprints
+        self._turn_started_once = True
+
+        response_turn_id = (ts.get("turn") or {}).get("id") or ts.get("turnId")
+        result.turn_id = (
+            response_turn_id
+            if isinstance(response_turn_id, str) and response_turn_id.strip()
+            else None
+        )
+        self._active_turn_id = result.turn_id
         deadline = time.monotonic() + turn_timeout
         turn_complete = False
         # Post-tool watchdog state. last_tool_completion_at is set whenever
@@ -451,6 +682,142 @@ class CodexAppServerSession:
         # within post_tool_quiet_timeout and the turn hasn't completed, we
         # fast-fail and retire the session.
         last_tool_completion_at: Optional[float] = None
+        deferred_turn_complete = False
+        terminal_pending_request_count: Optional[int] = None
+
+        def _matches_current_item_notification(note: dict) -> bool:
+            """Require exact item-event correlation before any side effect."""
+            if not isinstance(self._thread_id, str) or not self._thread_id.strip():
+                return False
+            if not isinstance(result.turn_id, str) or not result.turn_id.strip():
+                return False
+            params = note.get("params")
+            if not isinstance(params, dict):
+                return False
+            notification_thread_id = params.get("threadId")
+            notification_turn_id = params.get("turnId")
+            if (
+                not isinstance(notification_thread_id, str)
+                or not notification_thread_id.strip()
+                or notification_thread_id != self._thread_id
+                or not isinstance(notification_turn_id, str)
+                or not notification_turn_id.strip()
+                or notification_turn_id != result.turn_id
+            ):
+                return False
+            return True
+
+        def _process_notification(note: dict, *, defer_terminal: bool = False) -> None:
+            """Apply one notification identically on normal and approval drains."""
+            nonlocal deferred_turn_complete, last_tool_completion_at
+            nonlocal terminal_pending_request_count, turn_complete
+
+            method = note.get("method", "")
+            if deferred_turn_complete and method.startswith("item/"):
+                logger.warning(
+                    "Ignoring post-terminal codex item notification %s for "
+                    "thread=%r turn=%r",
+                    method,
+                    self._thread_id,
+                    result.turn_id,
+                )
+                return
+            if method.startswith("item/") and not _matches_current_item_notification(note):
+                logger.warning(
+                    "Ignoring stale codex item notification %s for active "
+                    "thread=%r turn=%r",
+                    method,
+                    self._thread_id,
+                    result.turn_id,
+                )
+                return
+            if method == "thread/compacted" and not _matches_current_item_notification(note):
+                logger.warning(
+                    "Ignoring stale thread/compacted notification for active "
+                    "thread=%r turn=%r",
+                    self._thread_id,
+                    result.turn_id,
+                )
+                return
+            if self._on_event is not None:
+                try:
+                    self._on_event(note)
+                except Exception:  # pragma: no cover - display callback
+                    logger.debug("on_event callback raised", exc_info=True)
+
+            _apply_token_usage_notification(result, note)
+            _apply_compaction_notification(result, note)
+            if method == "turn/started":
+                self._bind_turn_started_notification(result, note)
+
+            # Track in-progress fileChange items so the approval bridge can
+            # surface a real change summary when codex requests approval.
+            self._track_pending_file_change(note)
+
+            projection = projector.project(note)
+            if projection.messages:
+                result.projected_messages.extend(projection.messages)
+            if projection.is_tool_iteration:
+                result.tool_iterations += 1
+                last_tool_completion_at = time.monotonic()
+            elif projection.messages or projection.final_text is not None:
+                # Non-tool projected activity means codex is still producing.
+                last_tool_completion_at = None
+            if projection.final_text is not None:
+                result.final_text = projection.final_text
+                if _has_turn_aborted_marker(projection.final_text):
+                    if defer_terminal:
+                        deferred_turn_complete = True
+                    else:
+                        turn_complete = True
+                    terminal_pending_request_count = (
+                        self._client.pending_server_request_count()
+                    )
+                    result.interrupted = True
+                    result.error = result.error or "codex reported turn_aborted"
+
+            if method != "turn/completed":
+                return
+            if not self._matches_current_turn_notification(result, note):
+                params = note.get("params")
+                params = params if isinstance(params, dict) else {}
+                turn_obj = params.get("turn")
+                turn_obj = turn_obj if isinstance(turn_obj, dict) else {}
+                logger.warning(
+                    "Ignoring unbound codex turn/completed notification "
+                    "(thread=%r turn=%r expected_thread=%r expected_turn=%r)",
+                    params.get("threadId"),
+                    turn_obj.get("id"),
+                    self._thread_id,
+                    result.turn_id,
+                )
+                return
+
+            if defer_terminal:
+                # A completion can be queued alongside more server requests.
+                # Reply to every already-pending request before terminating.
+                deferred_turn_complete = True
+            else:
+                turn_complete = True
+            terminal_pending_request_count = (
+                self._client.pending_server_request_count()
+            )
+            turn_obj = (note.get("params") or {}).get("turn") or {}
+            turn_status = turn_obj.get("status")
+            if turn_status and turn_status not in {"completed", "interrupted"}:
+                err_obj = turn_obj.get("error")
+                if err_obj:
+                    err_msg = _format_responses_error(err_obj, str(turn_status))
+                    assert self._client is not None
+                    stderr_blob = "\n".join(self._client.stderr_tail(40))
+                    hint = _classify_oauth_failure(err_msg, stderr_blob)
+                    if hint is not None:
+                        result.error = hint
+                        result.should_retire = True
+                    else:
+                        result.error = self._format_error_with_stderr(
+                            f"turn ended status={turn_status}", err_msg
+                        )
 
         while time.monotonic() < deadline and not turn_complete:
             if self._interrupt_event.is_set():
@@ -497,36 +864,96 @@ class CodexAppServerSession:
             # reading notifications, so the codex side isn't blocked.
             sreq = self._client.take_server_request(timeout=0)
             if sreq is not None:
-                # Drain any pending notifications first so per-turn state
-                # (e.g. _pending_file_changes for fileChange approvals) is
-                # up to date when we make the approval decision. Bounded
-                # to avoid starving the server-request response.
-                for _ in range(8):
+                # Drain the finite snapshot of notifications that was already
+                # queued before this server request. This keeps per-turn state
+                # current and ensures a terminal event cannot hide just beyond
+                # a fixed lookahead while a slow approval crosses the deadline.
+                pending_notification_count = self._client.pending_notification_count()
+                for _ in range(pending_notification_count):
                     pending = self._client.take_notification(timeout=0)
                     if pending is None:
                         break
-                    _apply_token_usage_notification(result, pending)
-                    _apply_compaction_notification(result, pending)
-                    self._track_pending_file_change(pending)
-                    proj = projector.project(pending)
-                    if proj.messages:
-                        result.projected_messages.extend(proj.messages)
-                    if proj.is_tool_iteration:
-                        result.tool_iterations += 1
-                        last_tool_completion_at = time.monotonic()
-                    if proj.final_text is not None:
-                        result.final_text = proj.final_text
-                        if _has_turn_aborted_marker(proj.final_text):
-                            turn_complete = True
-                            result.interrupted = True
-                            result.error = (
-                                result.error
-                                or "codex reported turn_aborted"
-                            )
-                self._handle_server_request(sreq)
+                    _process_notification(pending, defer_terminal=True)
+
+                server_requests = [sreq]
+                terminal_drain_overflow = False
+                if deferred_turn_complete:
+                    # Snapshot requests that were already pending at the
+                    # terminal boundary before invoking any potentially slow
+                    # handler. Do not wait for requests that arrive later.
+                    pending_count = terminal_pending_request_count or 0
+                    accepted_count = min(
+                        pending_count,
+                        _MAX_TERMINAL_SERVER_REQUEST_DRAIN - 1,
+                    )
+                    for _ in range(accepted_count):
+                        pending_request = self._client.take_server_request(timeout=0)
+                        if pending_request is None:
+                            break
+                        server_requests.append(pending_request)
+                    overflow_count = pending_count - accepted_count
+                    for _ in range(overflow_count):
+                        overflow_request = self._client.take_server_request(timeout=0)
+                        if overflow_request is None:
+                            break
+                        self._client.respond_error(
+                            overflow_request.get("id"),
+                            code=-32000,
+                            message=(
+                                "Too many server requests pending at codex "
+                                "turn completion"
+                            ),
+                        )
+                        terminal_drain_overflow = True
+                    terminal_pending_request_count = 0
+
+                server_request_failed = False
+                server_request_deadline = None if deferred_turn_complete else deadline
+                for pending_request in server_requests:
+                    try:
+                        self._handle_server_request(
+                            pending_request,
+                            deadline=server_request_deadline,
+                        )
+                    except _ClarifyCancellationFailed as exc:
+                        self._issue_interrupt(result.turn_id)
+                        result.error = str(exc)
+                        result.interrupted = True
+                        result.should_retire = True
+                        server_request_failed = True
+                        break
+                    except RuntimeError as exc:
+                        # The subprocess can exit after the liveness check above but
+                        # before the JSON-RPC reply reaches stdin. Retire the broken
+                        # client and fall through to the normal per-turn cleanup so
+                        # active identity and replay caches never leak into a retry.
+                        result.error = self._format_error_with_stderr(
+                            "failed to reply to codex server request", exc
+                        )
+                        result.interrupted = True
+                        result.should_retire = True
+                        server_request_failed = True
+                        break
+                if server_request_failed:
+                    break
+                if terminal_drain_overflow:
+                    result.error = (
+                        "codex queued more than "
+                        f"{_MAX_TERMINAL_SERVER_REQUEST_DRAIN} server requests "
+                        "at turn completion"
+                    )
+                    result.interrupted = True
+                    result.should_retire = True
+                    break
                 # Activity counts as live signal — reset the post-tool
                 # quiet timer so an approval round-trip doesn't trip it.
                 last_tool_completion_at = None
+                if deferred_turn_complete:
+                    turn_complete = True
+                continue
+
+            if deferred_turn_complete:
+                turn_complete = True
                 continue
 
             note = self._client.take_notification(
@@ -535,77 +962,69 @@ class CodexAppServerSession:
             if note is None:
                 continue
 
-            method = note.get("method", "")
-            if self._on_event is not None:
+            _process_notification(note)
+
+        if turn_complete and terminal_pending_request_count:
+            pending_count = terminal_pending_request_count
+            accepted_count = min(
+                pending_count,
+                _MAX_TERMINAL_SERVER_REQUEST_DRAIN,
+            )
+            terminal_requests: list[dict] = []
+            for _ in range(accepted_count):
+                pending_request = self._client.take_server_request(timeout=0)
+                if pending_request is None:
+                    break
+                terminal_requests.append(pending_request)
+
+            overflow_count = pending_count - accepted_count
+            terminal_drain_overflow = False
+            for _ in range(overflow_count):
+                overflow_request = self._client.take_server_request(timeout=0)
+                if overflow_request is None:
+                    break
+                self._client.respond_error(
+                    overflow_request.get("id"),
+                    code=-32000,
+                    message="Too many server requests pending at codex turn completion",
+                )
+                terminal_drain_overflow = True
+
+            server_request_failed = False
+            for request_index, pending_request in enumerate(terminal_requests):
                 try:
-                    self._on_event(note)
-                except Exception:  # pragma: no cover - display callback
-                    logger.debug("on_event callback raised", exc_info=True)
-
-            _apply_token_usage_notification(result, note)
-            _apply_compaction_notification(result, note)
-
-            # Track in-progress fileChange items so the approval bridge
-            # can surface a real change summary when codex requests
-            # approval (the approval params themselves don't carry the
-            # changeset). Quirk #4 fix.
-            self._track_pending_file_change(note)
-
-            # Project into messages
-            projection = projector.project(note)
-            if projection.messages:
-                result.projected_messages.extend(projection.messages)
-            if projection.is_tool_iteration:
-                result.tool_iterations += 1
-                # Arm/refresh the post-tool quiet watchdog whenever a
-                # tool-shaped item completes.
-                last_tool_completion_at = time.monotonic()
-            else:
-                # Any non-tool projected activity (assistant message,
-                # status update, etc.) means codex is still producing
-                # output — clear the quiet timer so we don't fast-fail.
-                if projection.messages or projection.final_text is not None:
-                    last_tool_completion_at = None
-            if projection.final_text is not None:
-                # Codex can emit multiple agentMessage items in one turn
-                # (e.g. partial then final). Take the last one as canonical.
-                result.final_text = projection.final_text
-                # Some codex builds tear a turn down by emitting a
-                # `<turn_aborted>` marker in the agent message text and
-                # never sending turn/completed. Treat the marker itself
-                # as terminal so we don't burn the full deadline.
-                if _has_turn_aborted_marker(projection.final_text):
-                    turn_complete = True
-                    result.interrupted = True
-                    result.error = (
-                        result.error or "codex reported turn_aborted"
+                    self._handle_server_request(pending_request, deadline=None)
+                except (_ClarifyCancellationFailed, RuntimeError) as exc:
+                    result.error = self._format_error_with_stderr(
+                        "failed to reply to codex terminal server request", exc
                     )
-
-            if method == "turn/completed":
-                turn_complete = True
-                turn_status = (
-                    (note.get("params") or {}).get("turn") or {}
-                ).get("status")
-                if turn_status and turn_status not in {"completed", "interrupted"}:
-                    err_obj = (
-                        (note.get("params") or {}).get("turn") or {}
-                    ).get("error")
-                    if err_obj:
-                        err_msg = _format_responses_error(err_obj, str(turn_status))
-                        # If the turn failed for an auth/refresh reason,
-                        # rewrite the error into a re-auth hint AND mark
-                        # the session for retirement.
-                        stderr_blob = "\n".join(
-                            self._client.stderr_tail(40)
-                        )
-                        hint = _classify_oauth_failure(err_msg, stderr_blob)
-                        if hint is not None:
-                            result.error = hint
-                            result.should_retire = True
-                        else:
-                            result.error = self._format_error_with_stderr(
-                                f"turn ended status={turn_status}", err_msg
+                    result.interrupted = True
+                    result.should_retire = True
+                    for abandoned_request in terminal_requests[request_index:]:
+                        try:
+                            self._client.respond_error(
+                                abandoned_request.get("id"),
+                                code=-32000,
+                                message="Turn server request handling aborted",
                             )
+                        except RuntimeError:
+                            logger.warning(
+                                "Failed to reject abandoned terminal server request %r",
+                                abandoned_request.get("id"),
+                                exc_info=True,
+                            )
+                    server_request_failed = True
+                    break
+
+            terminal_pending_request_count = 0
+            if terminal_drain_overflow and not server_request_failed:
+                result.error = (
+                    "codex queued more than "
+                    f"{_MAX_TERMINAL_SERVER_REQUEST_DRAIN} server requests "
+                    "at turn completion"
+                )
+                result.interrupted = True
+                result.should_retire = True
 
         if (
             not turn_complete
@@ -633,9 +1052,44 @@ class CodexAppServerSession:
                 )
             result.should_retire = True
 
+        self._active_turn_id = None
+        self._dynamic_tool_responses.clear()
+        self._request_user_input_responses.clear()
         return result
 
     def compact_thread(
+        self,
+        *,
+        turn_timeout: float = 600.0,
+        notification_poll_timeout: float = 0.25,
+    ) -> TurnResult:
+        """Trigger Codex-native history compaction and always clear turn state."""
+        try:
+            return self._compact_thread_impl(
+                turn_timeout=turn_timeout,
+                notification_poll_timeout=notification_poll_timeout,
+            )
+        except Exception:
+            # An unexpected projection/processing failure must not leave the
+            # provider computing an active compaction turn in the background.
+            active_turn_id = self._active_turn_id
+            try:
+                if active_turn_id is not None:
+                    self._issue_interrupt(active_turn_id)
+            except Exception:
+                logger.warning(
+                    "Failed to interrupt active compaction turn during cleanup",
+                    exc_info=True,
+                )
+            finally:
+                self.close()
+            raise
+        finally:
+            self._active_turn_id = None
+            self._dynamic_tool_responses.clear()
+            self._request_user_input_responses.clear()
+
+    def _compact_thread_impl(
         self,
         *,
         turn_timeout: float = 600.0,
@@ -659,15 +1113,24 @@ class CodexAppServerSession:
             return result
 
         assert self._client is not None and self._thread_id is not None
+        client = self._client
         result.thread_id = self._thread_id
         self._interrupt_event.clear()
+        self._active_turn_id = None
+        self._dynamic_tool_responses.clear()
+        self._request_user_input_responses.clear()
         projector = CodexEventProjector()
 
+        # The app-server response is the authoritative request boundary. Every
+        # notification dispatched at or before it predates this compaction turn;
+        # using the inbound sequence makes this atomic with stdout dispatch.
         try:
-            self._client.request(
-                "thread/compact/start",
-                {"threadId": self._thread_id},
-                timeout=10,
+            _response, compaction_response_sequence = (
+                client.request_with_response_sequence(
+                    "thread/compact/start",
+                    {"threadId": self._thread_id},
+                    timeout=10,
+                )
             )
         except CodexAppServerError as exc:
             stderr_blob = "\n".join(self._client.stderr_tail(40))
@@ -689,8 +1152,187 @@ class CodexAppServerSession:
             result.should_retire = True
             return result
 
+        def _take_compaction_notification(timeout: float = 0.0) -> Optional[dict]:
+            deadline = time.monotonic() + max(timeout, 0.0)
+            while True:
+                wait = max(0.0, deadline - time.monotonic()) if timeout > 0 else 0.0
+                received = client.take_notification_with_sequence(timeout=wait)
+                if received is None:
+                    return None
+                receive_sequence, note = received
+                if receive_sequence > compaction_response_sequence:
+                    return note
+                logger.warning(
+                    "Discarding pre-response compaction notification %s for thread=%r",
+                    note.get("method", ""),
+                    self._thread_id,
+                )
+                if timeout > 0 and time.monotonic() >= deadline:
+                    return None
+
+        started = time.monotonic()
         deadline = time.monotonic() + turn_timeout
         turn_complete = False
+
+        def _bind_compaction_turn(note: dict) -> bool:
+            """Bind the first valid post-request turn/started notification."""
+            params = note.get("params")
+            if not isinstance(params, dict):
+                return False
+            turn_obj = params.get("turn")
+            turn_obj = turn_obj if isinstance(turn_obj, dict) else {}
+            notification_thread_id = params.get("threadId")
+            notification_turn_id = turn_obj.get("id")
+            if (
+                not isinstance(notification_thread_id, str)
+                or not notification_thread_id.strip()
+                or notification_thread_id != self._thread_id
+                or not isinstance(notification_turn_id, str)
+                or not notification_turn_id.strip()
+            ):
+                return False
+            if result.turn_id is not None and result.turn_id != notification_turn_id:
+                return False
+            result.turn_id = notification_turn_id
+            self._active_turn_id = notification_turn_id
+            return True
+
+        def _matches_compaction_item(note: dict) -> bool:
+            params = note.get("params")
+            if not isinstance(params, dict):
+                return False
+            return bool(
+                isinstance(result.turn_id, str)
+                and result.turn_id.strip()
+                and params.get("threadId") == self._thread_id
+                and params.get("turnId") == result.turn_id
+            )
+
+        terminal_pending_request_count: int | None = None
+
+        def _process_compaction_notification(note: dict) -> None:
+            nonlocal turn_complete, terminal_pending_request_count
+            method = note.get("method", "")
+            if turn_complete:
+                logger.warning(
+                    "Ignoring post-terminal compaction notification %s for "
+                    "thread=%r turn=%r",
+                    method,
+                    self._thread_id,
+                    result.turn_id,
+                )
+                return
+
+            if method == "turn/started":
+                if not _bind_compaction_turn(note):
+                    logger.warning(
+                        "Ignoring unbound compaction turn/started notification"
+                    )
+                    return
+            elif method.startswith("item/"):
+                if not _matches_compaction_item(note):
+                    logger.warning(
+                        "Ignoring stale compaction item notification %s for "
+                        "thread=%r turn=%r",
+                        method,
+                        self._thread_id,
+                        result.turn_id,
+                    )
+                    return
+            elif method == "turn/completed":
+                if not self._matches_current_turn_notification(result, note):
+                    logger.warning(
+                        "Ignoring unbound compaction turn/completed notification"
+                    )
+                    return
+            elif method == "thread/compacted":
+                if not _matches_compaction_item(note):
+                    logger.warning(
+                        "Ignoring stale thread/compacted notification for "
+                        "compaction thread=%r turn=%r",
+                        self._thread_id,
+                        result.turn_id,
+                    )
+                    return
+            else:
+                params = note.get("params")
+                if (
+                    isinstance(params, dict)
+                    and "turnId" in params
+                    and not _matches_compaction_item(note)
+                ):
+                    logger.warning(
+                        "Ignoring stale compaction notification %s for "
+                        "thread=%r turn=%r",
+                        method,
+                        self._thread_id,
+                        result.turn_id,
+                    )
+                    return
+
+            if self._on_event is not None:
+                try:
+                    self._on_event(note)
+                except Exception:  # pragma: no cover - display callback
+                    logger.debug("on_event callback raised", exc_info=True)
+
+            _apply_token_usage_notification(result, note)
+            _apply_compaction_notification(result, note)
+            self._track_pending_file_change(note)
+
+            projection = projector.project(note)
+            if projection.messages:
+                result.projected_messages.extend(projection.messages)
+            if projection.is_tool_iteration:
+                result.tool_iterations += 1
+            if projection.final_text is not None:
+                result.final_text = projection.final_text
+                if _has_turn_aborted_marker(projection.final_text):
+                    turn_complete = True
+                    terminal_pending_request_count = (
+                        client.pending_server_request_count()
+                    )
+                    result.interrupted = True
+                    result.error = result.error or "codex reported turn_aborted"
+
+            if method == "turn/completed":
+                turn_complete = True
+                terminal_pending_request_count = (
+                    client.pending_server_request_count()
+                )
+                turn_obj = (note.get("params") or {}).get("turn") or {}
+                turn_status = turn_obj.get("status")
+                if turn_status == "interrupted":
+                    result.interrupted = True
+                    result.error = result.error or "compact turn interrupted"
+                elif turn_status and turn_status != "completed":
+                    err_obj = turn_obj.get("error")
+                    err_msg = _format_responses_error(err_obj, str(turn_status))
+                    stderr_blob = "\n".join(client.stderr_tail(40))
+                    hint = _classify_oauth_failure(err_msg, stderr_blob)
+                    if hint is not None:
+                        result.error = hint
+                        result.should_retire = True
+                    else:
+                        result.error = self._format_error_with_stderr(
+                            f"compact turn ended status={turn_status}",
+                            err_msg,
+                        )
+
+        def _reject_aborted_server_requests(requests: list[dict]) -> None:
+            for request in requests:
+                try:
+                    client.respond_error(
+                        request.get("id"),
+                        code=-32000,
+                        message="Compaction server request handling aborted",
+                    )
+                except RuntimeError:
+                    logger.warning(
+                        "Failed to reject abandoned compaction server request %r",
+                        request.get("id"),
+                        exc_info=True,
+                    )
 
         while time.monotonic() < deadline and not turn_complete:
             if self._interrupt_event.is_set():
@@ -713,64 +1355,143 @@ class CodexAppServerSession:
 
             sreq = self._client.take_server_request(timeout=0)
             if sreq is not None:
-                self._handle_server_request(sreq)
+                pending_notification_count = (
+                    self._client.pending_notification_count()
+                )
+                for _ in range(pending_notification_count):
+                    pending = _take_compaction_notification(timeout=0)
+                    if pending is None:
+                        break
+                    _process_compaction_notification(pending)
+
+                server_requests = [sreq]
+                terminal_drain_overflow = False
+                if turn_complete:
+                    pending_count = terminal_pending_request_count or 0
+                    accepted_count = min(
+                        pending_count,
+                        _MAX_TERMINAL_SERVER_REQUEST_DRAIN - 1,
+                    )
+                    for _ in range(accepted_count):
+                        pending_request = self._client.take_server_request(timeout=0)
+                        if pending_request is None:
+                            break
+                        server_requests.append(pending_request)
+                    overflow_count = pending_count - accepted_count
+                    for _ in range(overflow_count):
+                        overflow_request = self._client.take_server_request(timeout=0)
+                        if overflow_request is None:
+                            break
+                        self._client.respond_error(
+                            overflow_request.get("id"),
+                            code=-32000,
+                            message=(
+                                "Too many server requests pending at codex "
+                                "turn completion"
+                            ),
+                        )
+                        terminal_drain_overflow = True
+                    terminal_pending_request_count = 0
+
+                server_request_failed = False
+                server_request_deadline = None if turn_complete else deadline
+                for request_index, pending_request in enumerate(server_requests):
+                    try:
+                        self._handle_server_request(
+                            pending_request,
+                            deadline=server_request_deadline,
+                        )
+                    except (_ClarifyCancellationFailed, RuntimeError) as exc:
+                        result.error = self._format_error_with_stderr(
+                            "failed to reply to codex compaction server request", exc
+                        )
+                        result.interrupted = True
+                        result.should_retire = True
+                        _reject_aborted_server_requests(
+                            server_requests[request_index:]
+                        )
+                        server_request_failed = True
+                        break
+                if server_request_failed:
+                    break
+                if terminal_drain_overflow:
+                    result.error = (
+                        "codex queued more than "
+                        f"{_MAX_TERMINAL_SERVER_REQUEST_DRAIN} server requests "
+                        "at turn completion"
+                    )
+                    result.interrupted = True
+                    result.should_retire = True
+                    break
                 continue
 
-            note = self._client.take_notification(
-                timeout=notification_poll_timeout
-            )
+            note = _take_compaction_notification(timeout=notification_poll_timeout)
             if note is None:
                 continue
+            _process_compaction_notification(note)
 
-            method = note.get("method", "")
-            if self._on_event is not None:
+        if turn_complete:
+            post_terminal_count = self._client.pending_notification_count()
+            for _ in range(post_terminal_count):
+                post_terminal_note = _take_compaction_notification(timeout=0)
+                if post_terminal_note is None:
+                    break
+                logger.warning(
+                    "Ignoring post-terminal compaction notification %s for "
+                    "thread=%r turn=%r",
+                    post_terminal_note.get("method", ""),
+                    self._thread_id,
+                    result.turn_id,
+                )
+
+            pending_request_count = terminal_pending_request_count or 0
+            accepted_count = min(
+                pending_request_count, _MAX_TERMINAL_SERVER_REQUEST_DRAIN
+            )
+            terminal_requests: list[dict] = []
+            for _ in range(accepted_count):
+                pending_request = self._client.take_server_request(timeout=0)
+                if pending_request is None:
+                    break
+                terminal_requests.append(pending_request)
+
+            overflow_count = pending_request_count - accepted_count
+            for _ in range(overflow_count):
+                overflow_request = self._client.take_server_request(timeout=0)
+                if overflow_request is None:
+                    break
+                self._client.respond_error(
+                    overflow_request.get("id"),
+                    code=-32000,
+                    message=(
+                        "Too many server requests pending at codex turn completion"
+                    ),
+                )
+
+            terminal_request_failed = False
+            for request_index, pending_request in enumerate(terminal_requests):
                 try:
-                    self._on_event(note)
-                except Exception:  # pragma: no cover - display callback
-                    logger.debug("on_event callback raised", exc_info=True)
-
-            _apply_token_usage_notification(result, note)
-            _apply_compaction_notification(result, note)
-            self._track_pending_file_change(note)
-
-            projection = projector.project(note)
-            if projection.messages:
-                result.projected_messages.extend(projection.messages)
-            if projection.is_tool_iteration:
-                result.tool_iterations += 1
-            if projection.final_text is not None:
-                result.final_text = projection.final_text
-                if _has_turn_aborted_marker(projection.final_text):
-                    turn_complete = True
-                    result.interrupted = True
-                    result.error = (
-                        result.error or "codex reported turn_aborted"
+                    self._handle_server_request(pending_request, deadline=None)
+                except (_ClarifyCancellationFailed, RuntimeError) as exc:
+                    result.error = self._format_error_with_stderr(
+                        "failed to reply to codex compaction server request", exc
                     )
-
-            if method == "turn/started":
-                turn_obj = (note.get("params") or {}).get("turn") or {}
-                result.turn_id = turn_obj.get("id") or result.turn_id
-            elif method == "turn/completed":
-                turn_complete = True
-                turn_obj = (note.get("params") or {}).get("turn") or {}
-                result.turn_id = turn_obj.get("id") or result.turn_id
-                turn_status = turn_obj.get("status")
-                if turn_status == "interrupted":
                     result.interrupted = True
-                    result.error = result.error or "compact turn interrupted"
-                elif turn_status and turn_status != "completed":
-                    err_obj = turn_obj.get("error")
-                    err_msg = _format_responses_error(err_obj, str(turn_status))
-                    stderr_blob = "\n".join(self._client.stderr_tail(40))
-                    hint = _classify_oauth_failure(err_msg, stderr_blob)
-                    if hint is not None:
-                        result.error = hint
-                        result.should_retire = True
-                    else:
-                        result.error = self._format_error_with_stderr(
-                            f"compact turn ended status={turn_status}",
-                            err_msg,
-                        )
+                    result.should_retire = True
+                    _reject_aborted_server_requests(
+                        terminal_requests[request_index:]
+                    )
+                    terminal_request_failed = True
+                    break
+
+            if overflow_count and not terminal_request_failed:
+                result.error = (
+                    "codex queued more than "
+                    f"{_MAX_TERMINAL_SERVER_REQUEST_DRAIN} server requests "
+                    "at turn completion"
+                )
+                result.interrupted = True
+                result.should_retire = True
 
         if not turn_complete and not result.interrupted:
             self._issue_interrupt(result.turn_id)
@@ -781,9 +1502,62 @@ class CodexAppServerSession:
                 )
             result.should_retire = True
 
+        self._active_turn_id = None
+        self._dynamic_tool_responses.clear()
+        self._request_user_input_responses.clear()
         return result
 
     # ---------- internals ----------
+
+    def _matches_current_turn_notification(
+        self, result: TurnResult, note: dict
+    ) -> bool:
+        """Return whether a notification is bound to turn/start's identity."""
+        params = note.get("params")
+        if not isinstance(params, dict):
+            return False
+        turn_obj = params.get("turn")
+        notification_turn_id = (
+            turn_obj.get("id") if isinstance(turn_obj, dict) else None
+        )
+        notification_thread_id = params.get("threadId")
+        expected_turn_id = result.turn_id
+        return bool(
+            isinstance(notification_thread_id, str)
+            and notification_thread_id.strip()
+            and notification_thread_id == self._thread_id
+            and isinstance(expected_turn_id, str)
+            and expected_turn_id.strip()
+            and isinstance(notification_turn_id, str)
+            and notification_turn_id.strip()
+            and notification_turn_id == expected_turn_id
+        )
+
+    def _bind_turn_started_notification(
+        self, result: TurnResult, note: dict
+    ) -> None:
+        """Accept turn/started only when it confirms turn/start's identity.
+
+        The turn/start response is the correlation authority. A notification
+        cannot create or replace the active identity because delayed events
+        from an earlier turn share the same thread and may arrive while a new
+        stateful dynamic-tool request is pending.
+        """
+        if not self._matches_current_turn_notification(result, note):
+            params = note.get("params")
+            params = params if isinstance(params, dict) else {}
+            turn_obj = params.get("turn")
+            turn_obj = turn_obj if isinstance(turn_obj, dict) else {}
+            logger.warning(
+                "Ignoring unbound codex turn/started notification "
+                "(thread=%r turn=%r expected_thread=%r expected_turn=%r)",
+                params.get("threadId"),
+                turn_obj.get("id"),
+                self._thread_id,
+                result.turn_id,
+            )
+            return
+        self._active_turn_id = result.turn_id
 
     def _issue_interrupt(self, turn_id: Optional[str]) -> None:
         if self._client is None or self._thread_id is None or turn_id is None:
@@ -800,7 +1574,323 @@ class CodexAppServerSession:
         except TimeoutError:
             logger.warning("turn/interrupt timed out")
 
-    def _handle_server_request(self, req: dict) -> None:
+    def _invoke_clarify_callback(
+        self,
+        prompt: str,
+        choices: Optional[list[str]],
+        *,
+        deadline: Optional[float],
+    ) -> tuple[str, Any]:
+        """Run the blocking Hermes UI callback without pinning the turn loop."""
+        assert self._clarify_callback is not None
+        if self._clarify_cancel_callback is None:
+            return (
+                "unavailable",
+                RuntimeError("Hermes clarify callback has no cancellation hook"),
+            )
+        outcome: queue.Queue[tuple[str, Any]] = queue.Queue(maxsize=1)
+
+        def _worker() -> None:
+            try:
+                value = self._clarify_callback(prompt, choices)
+            except Exception as exc:
+                outcome.put(("error", exc))
+            else:
+                outcome.put(("result", value))
+
+        worker = threading.Thread(
+            target=_worker,
+            name="codex-request-user-input",
+            daemon=True,
+        )
+        worker.start()
+
+        def _cancel_worker(kind: str) -> tuple[str, Any]:
+            try:
+                self._clarify_cancel_callback()
+            except Exception as exc:
+                logger.exception("clarify cancellation callback raised")
+                return ("cancel_failed", exc)
+            worker.join(timeout=0.2)
+            if worker.is_alive():
+                return (
+                    "cancel_failed",
+                    RuntimeError("Hermes clarify callback did not stop after cancellation"),
+                )
+            return (kind, None)
+
+        while True:
+            if self._interrupt_event.is_set():
+                return _cancel_worker("cancelled")
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return _cancel_worker("timeout")
+                wait_for = min(0.05, remaining)
+            else:
+                wait_for = 0.05
+            if self._client is None or not self._client.is_alive():
+                return _cancel_worker("transport_error")
+            try:
+                return outcome.get(timeout=wait_for)
+            except queue.Empty:
+                continue
+
+    def _handle_request_user_input(
+        self,
+        rid: Any,
+        params: Any,
+        *,
+        deadline: Optional[float] = None,
+    ) -> None:
+        """Relay Codex's native request_user_input flow through Hermes' UI.
+
+        Correlation is intentionally strict because App Server multiplexes
+        notifications and requests. Duplicate requests are answered from the
+        per-turn cache so a retried JSON-RPC request never prompts twice.
+        """
+        if self._client is None:
+            return
+        if self._clarify_callback is None:
+            self._client.respond_error(
+                rid,
+                code=-32601,
+                message="Hermes user-input UI is unavailable",
+            )
+            return
+        if not isinstance(params, dict):
+            self._client.respond_error(
+                rid, code=-32602, message="Invalid request_user_input parameters"
+            )
+            return
+
+        thread_id = params.get("threadId")
+        turn_id = params.get("turnId")
+        item_id = params.get("itemId")
+        if (
+            not isinstance(item_id, str)
+            or not item_id.strip()
+            or not isinstance(thread_id, str)
+            or not thread_id.strip()
+            or not isinstance(turn_id, str)
+            or not turn_id.strip()
+            or thread_id != self._thread_id
+            or turn_id != self._active_turn_id
+            or not self._active_turn_id
+        ):
+            self._client.respond_error(
+                rid,
+                code=-32602,
+                message="Unbound request_user_input identity",
+            )
+            return
+
+        request_key = (thread_id, turn_id, item_id)
+
+        questions = params.get("questions")
+        if not isinstance(questions, list) or not questions:
+            self._client.respond_error(
+                rid, code=-32602, message="request_user_input requires questions"
+            )
+            return
+
+        prepared: list[
+            tuple[str, str, Optional[list[str]], dict[str, str]]
+        ] = []
+        seen_question_ids: set[str] = set()
+        for question_obj in questions:
+            if not isinstance(question_obj, dict):
+                self._client.respond_error(
+                    rid, code=-32602, message="Invalid request_user_input question"
+                )
+                return
+            question_id = question_obj.get("id")
+            question = question_obj.get("question")
+            if (
+                not isinstance(question_id, str)
+                or not question_id.strip()
+                or question_id in seen_question_ids
+                or not isinstance(question, str)
+                or not question.strip()
+            ):
+                self._client.respond_error(
+                    rid,
+                    code=-32602,
+                    message="Invalid request_user_input question identity",
+                )
+                return
+            is_secret = question_obj.get("isSecret")
+            if is_secret is True:
+                self._client.respond_error(
+                    rid,
+                    code=-32602,
+                    message="Secret input is not supported by the Hermes UI",
+                )
+                return
+            if is_secret is not False:
+                self._client.respond_error(
+                    rid,
+                    code=-32602,
+                    message="Invalid request_user_input isSecret flag",
+                )
+                return
+            seen_question_ids.add(question_id)
+
+            header = question_obj.get("header")
+            prompt = question.strip()
+            if isinstance(header, str) and header.strip() and header.strip() != prompt:
+                prompt = f"{header.strip()}\n\n{prompt}"
+
+            options = question_obj.get("options")
+            choices: Optional[list[str]] = None
+            canonical_choices: dict[str, str] = {}
+            canonical_labels: set[str] = set()
+            if options is not None:
+                if not isinstance(options, list) or len(options) > 4:
+                    self._client.respond_error(
+                        rid,
+                        code=-32602,
+                        message="request_user_input supports at most four options",
+                    )
+                    return
+                rendered_choices: list[str] = []
+                for option in options:
+                    if not isinstance(option, dict):
+                        self._client.respond_error(
+                            rid,
+                            code=-32602,
+                            message="Invalid request_user_input option",
+                        )
+                        return
+                    label = option.get("label")
+                    if not isinstance(label, str) or not label.strip():
+                        self._client.respond_error(
+                            rid,
+                            code=-32602,
+                            message="Invalid request_user_input option label",
+                        )
+                        return
+                    canonical_label = label.strip()
+                    if canonical_label in canonical_labels:
+                        self._client.respond_error(
+                            rid,
+                            code=-32602,
+                            message="Duplicate canonical request_user_input option",
+                        )
+                        return
+                    canonical_labels.add(canonical_label)
+                    description = option.get("description")
+                    rendered = canonical_label
+                    if isinstance(description, str) and description.strip():
+                        rendered = f"{rendered}: {description.strip()}"
+                    if rendered in canonical_choices:
+                        self._client.respond_error(
+                            rid,
+                            code=-32602,
+                            message="Duplicate rendered request_user_input option",
+                        )
+                        return
+                    rendered_choices.append(rendered)
+                    canonical_choices[rendered] = canonical_label
+                choices = rendered_choices or None
+            prepared.append((question_id, prompt, choices, canonical_choices))
+
+        request_fingerprint = json.dumps(
+            questions, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        )
+        cached = self._request_user_input_responses.get(request_key)
+        if cached is not None:
+            cached_fingerprint, response_kind, payload = cached
+            if cached_fingerprint != request_fingerprint:
+                self._client.respond_error(
+                    rid,
+                    code=-32602,
+                    message="Conflicting duplicate request_user_input payload",
+                )
+                return
+            if response_kind == "error":
+                code, message = payload
+                self._client.respond_error(rid, code=code, message=message)
+            else:
+                self._client.respond(rid, payload)
+            return
+
+        answers: dict[str, dict[str, list[str]]] = {}
+        try:
+            for question_id, prompt, choices, canonical_choices in prepared:
+                outcome_kind, answer = self._invoke_clarify_callback(
+                    prompt, choices, deadline=deadline
+                )
+                if outcome_kind != "result":
+                    if outcome_kind == "error":
+                        raise answer
+                    error = {
+                        "cancelled": (
+                            -32800,
+                            "Hermes user-input request was cancelled",
+                        ),
+                        "timeout": (
+                            -32001,
+                            "Hermes user-input request timed out",
+                        ),
+                        "transport_error": (
+                            -32603,
+                            "Hermes user-input transport stopped",
+                        ),
+                        "unavailable": (
+                            -32603,
+                            "Hermes user-input UI is not cancellable",
+                        ),
+                        "cancel_failed": (
+                            -32603,
+                            "Hermes user-input UI failed to cancel",
+                        ),
+                    }[outcome_kind]
+                    self._request_user_input_responses[request_key] = (
+                        request_fingerprint,
+                        "error",
+                        error,
+                    )
+                    self._client.respond_error(
+                        rid, code=error[0], message=error[1]
+                    )
+                    if outcome_kind == "cancel_failed":
+                        raise _ClarifyCancellationFailed(error[1])
+                    return
+                if answer is None:
+                    answer_values: list[str] = []
+                else:
+                    answer_text = str(answer)
+                    canonical = canonical_choices.get(
+                        answer_text,
+                        canonical_choices.get(answer_text.strip(), answer_text),
+                    )
+                    answer_values = [canonical]
+                answers[question_id] = {"answers": answer_values}
+        except _ClarifyCancellationFailed:
+            raise
+        except Exception:
+            logger.exception("clarify_callback raised on request_user_input")
+            error = (-32603, "Hermes user-input UI failed")
+            self._request_user_input_responses[request_key] = (
+                request_fingerprint,
+                "error",
+                error,
+            )
+            self._client.respond_error(rid, code=error[0], message=error[1])
+            return
+
+        response = {"answers": answers}
+        self._request_user_input_responses[request_key] = (
+            request_fingerprint,
+            "result",
+            response,
+        )
+        self._client.respond(rid, response)
+
+    def _handle_server_request(
+        self, req: dict, *, deadline: Optional[float] = None
+    ) -> None:
         """Translate a codex server request (approval) into Hermes' approval
         flow, then send the response.
 
@@ -818,11 +1908,125 @@ class CodexAppServerSession:
         rid = req.get("id")
         params = req.get("params") or {}
 
-        if method == "item/commandExecution/requestApproval":
-            decision = self._decide_exec_approval(params)
+        def _matches_active_turn_request() -> bool:
+            if not isinstance(params, dict):
+                return False
+            thread_id = params.get("threadId")
+            turn_id = params.get("turnId")
+            return bool(
+                isinstance(thread_id, str)
+                and thread_id.strip()
+                and thread_id == self._thread_id
+                and isinstance(turn_id, str)
+                and turn_id.strip()
+                and turn_id == self._active_turn_id
+                and self._active_turn_id
+            )
+
+        def _matches_active_item_request() -> bool:
+            if not _matches_active_turn_request():
+                return False
+            item_id = params.get("itemId")
+            return bool(isinstance(item_id, str) and item_id.strip())
+
+        if method == "item/tool/requestUserInput":
+            self._handle_request_user_input(rid, params, deadline=deadline)
+        elif method == "item/tool/call":
+            failure = {
+                "success": False,
+                "contentItems": [{
+                    "type": "inputText",
+                    "text": "Hermes dynamic tool request was rejected",
+                }],
+            }
+            if not isinstance(params, dict):
+                self._client.respond(rid, failure)
+                return
+            thread_id = params.get("threadId")
+            turn_id = params.get("turnId")
+            call_id = params.get("callId")
+            if (
+                not isinstance(call_id, str)
+                or not call_id.strip()
+                or not isinstance(thread_id, str)
+                or not thread_id.strip()
+                or thread_id != self._thread_id
+                or not isinstance(turn_id, str)
+                or not turn_id.strip()
+                or turn_id != self._active_turn_id
+                or not self._active_turn_id
+            ):
+                self._client.respond(rid, failure)
+                return
+            call_key = (thread_id, turn_id, call_id)
+            try:
+                request_fingerprint = json.dumps(
+                    {
+                        "namespace": params.get("namespace"),
+                        "tool": params.get("tool"),
+                        "arguments": params.get("arguments"),
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                )
+            except (TypeError, ValueError):
+                self._client.respond_error(
+                    rid,
+                    code=-32602,
+                    message="Invalid Hermes dynamic tool payload",
+                )
+                return
+            cached = self._dynamic_tool_responses.get(call_key)
+            if cached is not None:
+                cached_fingerprint, cached_response = cached
+                if cached_fingerprint != request_fingerprint:
+                    self._client.respond_error(
+                        rid,
+                        code=-32602,
+                        message="Conflicting duplicate Hermes dynamic tool payload",
+                    )
+                    return
+                self._client.respond(rid, cached_response)
+                return
+            if self._dynamic_tool_handler is None:
+                response = {
+                    "success": False,
+                    "contentItems": [{
+                        "type": "inputText",
+                        "text": "Hermes dynamic tool bridge is unavailable",
+                    }],
+                }
+            else:
+                try:
+                    response = self._dynamic_tool_handler(params)
+                except Exception:
+                    logger.exception("dynamic_tool_handler raised")
+                    response = {
+                        "success": False,
+                        "contentItems": [{
+                            "type": "inputText",
+                            "text": "Hermes dynamic tool failed",
+                        }],
+                    }
+            self._dynamic_tool_responses[call_key] = (
+                request_fingerprint,
+                response,
+            )
+            self._client.respond(rid, response)
+        elif method == "item/commandExecution/requestApproval":
+            decision = (
+                self._decide_exec_approval(params)
+                if _matches_active_item_request()
+                else "decline"
+            )
             self._client.respond(rid, {"decision": decision})
         elif method == "item/fileChange/requestApproval":
-            decision = self._decide_apply_patch_approval(params)
+            decision = (
+                self._decide_apply_patch_approval(params)
+                if _matches_active_item_request()
+                else "decline"
+            )
             self._client.respond(rid, {"decision": decision})
         elif method == "item/permissions/requestApproval":
             # Codex sometimes asks to escalate permissions mid-turn. We
@@ -834,13 +2038,15 @@ class CodexAppServerSession:
             # Codex's MCP layer asks the user for structured input on
             # behalf of an MCP server (e.g. tool-call confirmation,
             # OAuth, form data). For our own hermes-tools callback we
-            # auto-accept — the user already approved Hermes' tools
-            # by enabling the runtime, and we never expose anything
-            # codex's built-in shell can't already do. For other MCP
-            # servers we decline so the user explicitly opts in via
-            # codex's own auth flow.
+            # auto-accept only when the elicitation's protocol-level thread and
+            # turn identities match the active turn. The Codex elicitation
+            # schema has no itemId, so there is no item identity to validate.
+            # The user already approved Hermes' tools by enabling the runtime,
+            # and we never expose anything codex's built-in shell can't already
+            # do. For other MCP servers we decline so the user explicitly opts
+            # in via codex's own auth flow.
             server_name = params.get("serverName") or ""
-            if server_name == "hermes-tools":
+            if server_name == "hermes-tools" and _matches_active_turn_request():
                 self._client.respond(
                     rid,
                     {"action": "accept", "content": None, "_meta": None},

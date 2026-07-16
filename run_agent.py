@@ -451,6 +451,7 @@ class AIAgent:
         thinking_callback: callable = None,
         reasoning_callback: callable = None,
         clarify_callback: callable = None,
+        clarify_cancel_callback: callable = None,
         read_terminal_callback: callable = None,
         step_callback: callable = None,
         stream_delta_callback: callable = None,
@@ -527,6 +528,7 @@ class AIAgent:
             thinking_callback=thinking_callback,
             reasoning_callback=reasoning_callback,
             clarify_callback=clarify_callback,
+            clarify_cancel_callback=clarify_cancel_callback,
             read_terminal_callback=read_terminal_callback,
             step_callback=step_callback,
             stream_delta_callback=stream_delta_callback,
@@ -5923,10 +5925,23 @@ class AIAgent:
         messages: List[Dict[str, Any]],
         effective_task_id: str,
         should_review_memory: bool = False,
+        active_system_prompt: str = "",
+        plugin_user_context: str = "",
+        ext_prefetch_cache: str = "",
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.codex_runtime.run_codex_app_server_turn``."""
         from agent.codex_runtime import run_codex_app_server_turn
-        return run_codex_app_server_turn(self, user_message=user_message, original_user_message=original_user_message, messages=messages, effective_task_id=effective_task_id, should_review_memory=should_review_memory)
+        return run_codex_app_server_turn(
+            self,
+            user_message=user_message,
+            original_user_message=original_user_message,
+            messages=messages,
+            effective_task_id=effective_task_id,
+            should_review_memory=should_review_memory,
+            active_system_prompt=active_system_prompt,
+            plugin_user_context=plugin_user_context,
+            ext_prefetch_cache=ext_prefetch_cache,
+        )
 
 def main(
     query: str = None,

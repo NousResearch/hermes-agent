@@ -665,7 +665,11 @@ export type GatewayEvent =
       type: 'moa.reference'
     }
   | { payload?: { aggregator?: string }; session_id?: string; type: 'moa.aggregating' }
-  | { payload: { name?: string; preview?: string }; session_id?: string; type: 'tool.progress' }
+  | {
+      payload: { name?: string; preview?: string; text?: string; tool_id?: string }
+      session_id?: string
+      type: 'tool.progress'
+    }
   | { payload: { name?: string }; session_id?: string; type: 'tool.generating' }
   | {
       payload: { args_text?: string; context?: string; name?: string; tool_id: string; todos?: unknown[] }

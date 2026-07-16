@@ -461,6 +461,35 @@ def test_tui_tool_output_risk_event_exposes_metadata_without_raw_output(monkeypa
     assert "result" not in events[0][2]
 
 
+def test_tui_tool_progress_preserves_stable_tool_id(monkeypatch):
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    monkeypatch.setitem(server._sessions, "progress-test", {"tool_progress_mode": "all"})
+
+    server._on_tool_progress(
+        "progress-test",
+        "tool.progress",
+        "exec_command",
+        "collecting tests...",
+        tool_call_id="codex_exec_cmd-1",
+    )
+
+    assert events == [
+        (
+            "tool.progress",
+            "progress-test",
+            {
+                "tool_id": "codex_exec_cmd-1",
+                "name": "exec_command",
+                "preview": "collecting tests...",
+                "text": "collecting tests...",
+            },
+        )
+    ]
+
+
 def test_dispatch_rejects_non_object_request():
     resp = server.dispatch([])
 
@@ -1401,6 +1430,14 @@ def test_status_callback_accepts_single_message_argument():
         "sid",
         {"kind": "status", "text": "thinking..."},
     )
+
+
+def test_clarify_cancel_callback_releases_only_its_session():
+    with patch("tui_gateway.server._clear_pending") as clear_pending:
+        cb = server._agent_cbs("sid")["clarify_cancel_callback"]
+        cb()
+
+    clear_pending.assert_called_once_with("sid")
 
 
 def test_resolve_model_uses_inference_model_env(monkeypatch):

@@ -200,7 +200,6 @@ class TestTomlValueFormatter:
         crash), the temp file must be cleaned up. Otherwise repeated
         failed migrations would pile up .config.toml.* files."""
         from pathlib import Path as _Path
-        original_replace = _Path.replace
 
         def failing_replace(self, target):
             raise OSError("simulated disk full")
@@ -488,7 +487,7 @@ class TestMigrate:
     def test_expose_hermes_tools_writes_callback_mcp_entry(self, tmp_path):
         """When expose_hermes_tools=True (production default), an
         [mcp_servers.hermes-tools] entry is written so codex calls back
-        into Hermes for browser/web/delegate_task/vision/memory tools.
+        into Hermes for complementary browser/extraction/vision/TTS tools.
 
         This is the fix for 'all other tools that codex doesn't provide
         should be useable by hermes' — quirk #7."""
@@ -502,6 +501,14 @@ class TestMigrate:
         # Must include startup + tool timeouts so codex doesn't give up
         assert "startup_timeout_sec" in text
         assert "tool_timeout_sec" in text
+        # Codex-native web search stays authoritative. Keep Hermes image and
+        # skill callbacks because they add capabilities Codex's native surface
+        # does not cover: configured image editing/reference inputs plus
+        # external/plugin-qualified skill discovery and loading.
+        assert 'disabled_tools = ["web_search"]' in text
+        assert "image_generate" not in text
+        assert "skill_view" not in text
+        assert "skills_list" not in text
         # And the entry is reported
         assert "hermes-tools" in report.migrated
 

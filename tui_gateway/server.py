@@ -3723,6 +3723,15 @@ def _on_tool_progress(
         }
         _emit("tool.output_risk", sid, payload)
         return
+    if event_type == "tool.progress" and name:
+        payload: dict[str, object] = {
+            "tool_id": str(_kwargs.get("tool_call_id") or ""),
+            "name": str(name),
+            "preview": str(preview or ""),
+            "text": str(preview or ""),
+        }
+        _emit("tool.progress", sid, payload)
+        return
     if event_type == "reasoning.available" and preview:
         payload: dict[str, object] = {"text": str(preview)}
         if _session_verbose(sid):
@@ -3946,6 +3955,7 @@ def _agent_cbs(sid: str) -> dict:
         "clarify_callback": lambda q, c: _block(
             "clarify.request", sid, {"question": q, "choices": c}
         ),
+        "clarify_cancel_callback": lambda: _clear_pending(sid),
         # read_terminal tool (desktop GUI): same blocking bridge as clarify — the
         # renderer answers terminal.read.respond with the serialized buffer.
         "read_terminal_callback": lambda start=None, count=None: _block(

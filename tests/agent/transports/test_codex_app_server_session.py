@@ -7,9 +7,12 @@ deadline timeouts. These tests pin all of that without spawning real codex.
 
 from __future__ import annotations
 
+import os
+import sys
+import threading
 import time
-from unittest.mock import patch
 from typing import Any, Optional
+from unittest.mock import patch
 
 import pytest
 
@@ -36,6 +39,9 @@ class FakeClient:
         self._initialized = False
         self._closed = False
         self._notifications: list[dict] = []
+        self._compaction_notifications: list[dict] = []
+        self._notification_sequences: dict[int, int] = {}
+        self._receive_sequence = 0
         self._server_requests: list[dict] = []
         self._request_handler = None  # Optional[Callable[[str, dict], dict]]
 
@@ -47,6 +53,10 @@ class FakeClient:
 
     def request(self, method: str, params: Optional[dict] = None, timeout: float = 30.0):
         self.requests.append((method, params or {}))
+        if method == "thread/compact/start" and self._compaction_notifications:
+            for note in self._compaction_notifications:
+                self._enqueue_notification(note)
+            self._compaction_notifications.clear()
         if self._request_handler is not None:
             return self._request_handler(method, params or {})
         # Sensible defaults for protocol methods used by the session
@@ -59,6 +69,29 @@ class FakeClient:
             return {}
         return {}
 
+    def request_with_response_sequence(
+        self, method: str, params: Optional[dict] = None, timeout: float = 30.0
+    ):
+        self.requests.append((method, params or {}))
+        if self._request_handler is not None:
+            result = self._request_handler(method, params or {})
+        elif method == "thread/start":
+            result = {
+                "thread": {"id": "thread-fake-001"},
+                "activePermissionProfile": {"id": "workspace-write"},
+            }
+        elif method == "turn/start":
+            result = {"turn": {"id": "turn-fake-001"}}
+        else:
+            result = {}
+        self._receive_sequence += 1
+        response_sequence = self._receive_sequence
+        if method == "thread/compact/start" and self._compaction_notifications:
+            for note in self._compaction_notifications:
+                self._enqueue_notification(note)
+            self._compaction_notifications.clear()
+        return result, response_sequence
+
     def notify(self, method: str, params=None):
         pass
 
@@ -69,8 +102,13 @@ class FakeClient:
         self.error_responses.append((request_id, code, message))
 
     def take_notification(self, timeout: float = 0.0):
+        received = self.take_notification_with_sequence(timeout)
+        return received[1] if received is not None else None
+
+    def take_notification_with_sequence(self, timeout: float = 0.0):
         if self._notifications:
-            return self._notifications.pop(0)
+            note = self._notifications.pop(0)
+            return self._notification_sequences.pop(id(note)), note
         # Honor a tiny sleep so the loop doesn't hot-spin; the real client
         # blocks on a queue. For tests we want determinism.
         if timeout > 0:
@@ -81,6 +119,12 @@ class FakeClient:
         if self._server_requests:
             return self._server_requests.pop(0)
         return None
+
+    def pending_notification_count(self):
+        return len(self._notifications)
+
+    def pending_server_request_count(self):
+        return len(self._server_requests)
 
     def close(self):
         self._closed = True
@@ -94,10 +138,33 @@ class FakeClient:
         return list(getattr(self, "_stderr_tail", []))[-n:]
 
     # Test helpers
+    def _enqueue_notification(self, note: dict) -> None:
+        self._receive_sequence += 1
+        self._notification_sequences[id(note)] = self._receive_sequence
+        self._notifications.append(note)
+
     def queue_notification(self, method: str, **params):
-        self._notifications.append({"method": method, "params": params})
+        if method.startswith("item/"):
+            params.setdefault("threadId", "thread-fake-001")
+            params.setdefault("turnId", "turn-fake-001")
+        self._enqueue_notification({"method": method, "params": params})
+
+    def queue_compaction_notification(self, method: str, **params):
+        """Queue a notification that arrives after thread/compact/start."""
+        if method.startswith("item/"):
+            params.setdefault("threadId", "thread-fake-001")
+            params.setdefault("turnId", "compact-turn-1")
+        self._compaction_notifications.append({"method": method, "params": params})
 
     def queue_server_request(self, method: str, request_id: Any = "srv-1", **params):
+        if method in {
+            "item/commandExecution/requestApproval",
+            "item/fileChange/requestApproval",
+            "item/permissions/requestApproval",
+        }:
+            params.setdefault("threadId", "thread-fake-001")
+            params.setdefault("turnId", "turn-fake-001")
+            params.setdefault("itemId", "item-fake-001")
         self._server_requests.append({"id": request_id, "method": method, "params": params})
 
     def set_stderr_tail(self, lines):
@@ -106,6 +173,8 @@ class FakeClient:
 
 
 def make_session(client: FakeClient, **kwargs) -> CodexAppServerSession:
+    if kwargs.get("clarify_callback") is not None:
+        kwargs.setdefault("clarify_cancel_callback", lambda: None)
     return CodexAppServerSession(
         cwd="/tmp",
         client_factory=lambda **kw: client,
@@ -149,6 +218,137 @@ class TestLifecycle:
         method_calls = [m for (m, _) in client.requests if m == "thread/start"]
         assert len(method_calls) == 1
 
+    def test_stale_item_completion_does_not_mutate_canonical_turn_state(self):
+        client = FakeClient()
+        client.queue_notification(
+            "item/completed",
+            item={
+                "type": "commandExecution",
+                "id": "stale-command",
+                "command": "printf STALE",
+                "cwd": "/tmp",
+                "status": "completed",
+                "aggregatedOutput": "STALE",
+                "exitCode": 0,
+            },
+            threadId="thread-fake-001",
+            turnId="turn-stale",
+        )
+        client.queue_notification(
+            "item/completed",
+            item={"type": "agentMessage", "id": "answer", "text": "done"},
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        result = make_session(client).run_turn("hi", turn_timeout=1.0)
+
+        assert result.final_text == "done"
+        assert result.tool_iterations == 0
+        assert all("STALE" not in str(message) for message in result.projected_messages)
+
+    def test_item_notification_without_turn_correlation_is_quarantined(self):
+        client = FakeClient()
+        client.queue_notification(
+            "item/completed",
+            item={
+                "type": "commandExecution",
+                "id": "unbound-command",
+                "command": "printf LEAK",
+                "aggregatedOutput": "LEAK",
+                "exitCode": 0,
+            },
+            threadId=None,
+            turnId=None,
+        )
+        client.queue_notification(
+            "item/completed",
+            item={"type": "agentMessage", "id": "answer", "text": "done"},
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        result = make_session(client).run_turn("hi", turn_timeout=1.0)
+
+        assert result.final_text == "done"
+        assert result.tool_iterations == 0
+        assert all("LEAK" not in str(message) for message in result.projected_messages)
+
+    def test_same_item_id_conflicting_type_does_not_duplicate_canonical_tool(self):
+        client = FakeClient()
+        client.queue_notification(
+            "item/started",
+            item={
+                "type": "commandExecution",
+                "id": "shared-item",
+                "command": "pwd",
+                "cwd": "/tmp",
+            },
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+        )
+        client.queue_notification(
+            "item/completed",
+            item={
+                "type": "dynamicToolCall",
+                "id": "shared-item",
+                "namespace": "hermes",
+                "tool": "memory",
+                "arguments": {"action": "add"},
+                "success": True,
+            },
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+        )
+        client.queue_notification(
+            "item/completed",
+            item={
+                "type": "commandExecution",
+                "id": "shared-item",
+                "command": "pwd",
+                "cwd": "/tmp",
+                "aggregatedOutput": "/tmp\n",
+                "exitCode": 0,
+            },
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        result = make_session(client).run_turn("hi", turn_timeout=1.0)
+
+        assert result.tool_iterations == 1
+        assert (
+            len([
+                message
+                for message in result.projected_messages
+                if message.get("tool_calls")
+            ])
+            == 1
+        )
+        assert (
+            len([
+                message
+                for message in result.projected_messages
+                if message.get("role") == "tool"
+            ])
+            == 1
+        )
+
     def test_thread_start_passes_cwd_only(self):
         """thread/start carries cwd. We intentionally do NOT pass `permissions`
         on this codex version (experimentalApi-gated + requires matching
@@ -160,6 +360,959 @@ class TestLifecycle:
         method, params = next(r for r in client.requests if r[0] == "thread/start")
         assert params["cwd"] == "/tmp"
         assert "permissions" not in params  # see session.ensure_started() comment
+
+    def test_thread_start_bridges_developer_context_dynamic_tools_and_history(self):
+        client = FakeClient()
+        dynamic_tools = [{
+            "type": "namespace",
+            "name": "hermes",
+            "description": "Hermes live tools",
+            "tools": [],
+        }]
+        history = [{
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "earlier answer"}],
+        }]
+        s = make_session(
+            client,
+            developer_instructions="HERMES SOUL AND MEMORY",
+            dynamic_tools=dynamic_tools,
+            initial_history_items=history,
+        )
+
+        s.ensure_started()
+
+        assert client._initialized is True
+        method, params = next(r for r in client.requests if r[0] == "thread/start")
+        assert method == "thread/start"
+        assert params["developerInstructions"] == "HERMES SOUL AND MEMORY"
+        assert params["dynamicTools"] == dynamic_tools
+        inject = next(r for r in client.requests if r[0] == "thread/inject_items")
+        assert inject[1] == {"threadId": "thread-fake-001", "items": history}
+
+    @pytest.mark.parametrize("invalid_thread_id", ["   ", 123, {}])
+    def test_thread_start_rejects_malformed_thread_identity(self, invalid_thread_id):
+        client = FakeClient()
+
+        def request_handler(method, params):
+            if method == "thread/start":
+                return {"thread": {"id": invalid_thread_id}}
+            return {}
+
+        client._request_handler = request_handler
+        s = make_session(client)
+
+        with pytest.raises(session_mod.CodexAppServerError, match="thread id"):
+            s.ensure_started()
+
+    def test_native_request_user_input_is_relayed_through_hermes_ui(self):
+        client = FakeClient()
+        prompts = []
+
+        def clarify_callback(question, choices):
+            prompts.append((question, choices))
+            # Hermes UIs return the rendered choice text. Codex expects the
+            # canonical option label, without the display-only description.
+            return "Staging: Safe preview"
+
+        client.queue_server_request(
+            "item/tool/requestUserInput",
+            request_id="input-1",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            itemId="item-input-1",
+            questions=[{
+                "id": "target",
+                "header": "Target",
+                "question": "Which target should I use?",
+                "options": [
+                    {"label": "Production", "description": "Live system"},
+                    {"label": "Staging", "description": "Safe preview"},
+                ],
+                "isOther": True,
+                "isSecret": False,
+            }],
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        s = make_session(client, clarify_callback=clarify_callback)
+        s.run_turn("ask me", turn_timeout=1.0)
+
+        assert prompts == [(
+            "Target\n\nWhich target should I use?",
+            ["Production: Live system", "Staging: Safe preview"],
+        )]
+        assert client.responses == [("input-1", {
+            "answers": {"target": {"answers": ["Staging"]}},
+        })]
+
+    def test_request_user_input_rejects_duplicate_rendered_option_labels(self):
+        client = FakeClient()
+        seen = []
+        client.queue_server_request(
+            "item/tool/requestUserInput",
+            request_id="input-1",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            itemId="item-input-1",
+            questions=[{
+                "id": "target",
+                "question": "Which target should I use?",
+                "options": [
+                    {"label": "Deploy", "description": "now"},
+                    {"label": "Deploy: now", "description": ""},
+                ],
+                "isSecret": False,
+            }],
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        s = make_session(
+            client,
+            clarify_callback=lambda question, choices: seen.append(question),
+        )
+        s.run_turn("ask me", turn_timeout=1.0)
+
+        assert seen == []
+        assert client.error_responses == [(
+            "input-1", -32602, "Duplicate rendered request_user_input option"
+        )]
+
+    def test_request_user_input_rejects_duplicate_canonical_option_labels(self):
+        client = FakeClient()
+        seen = []
+        client.queue_server_request(
+            "item/tool/requestUserInput",
+            request_id="input-1",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            itemId="item-input-1",
+            questions=[{
+                "id": "target",
+                "question": "Which target should I use?",
+                "options": [
+                    {"label": "Deploy", "description": "production"},
+                    {"label": "Deploy", "description": "staging"},
+                ],
+                "isSecret": False,
+            }],
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        s = make_session(
+            client,
+            clarify_callback=lambda question, choices: seen.append(question),
+        )
+        s.run_turn("ask me", turn_timeout=1.0)
+
+        assert seen == []
+        assert client.error_responses == [(
+            "input-1", -32602, "Duplicate canonical request_user_input option"
+        )]
+
+    @pytest.mark.parametrize("reply_method, callback_raises", [
+        ("respond", False),
+        ("respond_error", True),
+    ])
+    def test_request_user_input_reply_transport_failure_retires_and_cleans_up(
+        self, reply_method, callback_raises
+    ):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/tool/requestUserInput",
+            request_id="input-1",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            itemId="item-input-1",
+            questions=[{
+                "id": "target",
+                "question": "Which target should I use?",
+                "options": None,
+                "isSecret": False,
+            }],
+        )
+
+        def clarify_callback(question, choices):
+            if callback_raises:
+                raise RuntimeError("UI disconnected")
+            return "Staging"
+
+        def fail_reply(*args, **kwargs):
+            client._closed = True
+            raise RuntimeError("codex app-server stdin closed unexpectedly")
+
+        setattr(client, reply_method, fail_reply)
+        s = make_session(client, clarify_callback=clarify_callback)
+
+        result = s.run_turn("ask me", turn_timeout=1.0)
+
+        assert result.should_retire is True
+        assert result.interrupted is True
+        assert "failed to reply to codex server request" in result.error
+        assert s._active_turn_id is None
+        assert s._request_user_input_responses == {}
+        assert s._dynamic_tool_responses == {}
+
+    def test_native_request_user_input_enables_codex_feature(self):
+        client = FakeClient()
+        factory_kwargs = []
+
+        def client_factory(**kwargs):
+            factory_kwargs.append(kwargs)
+            return client
+
+        s = CodexAppServerSession(
+            cwd="/tmp",
+            client_factory=client_factory,
+            clarify_callback=lambda question, choices: "ok",
+        )
+        s.ensure_started()
+
+        assert factory_kwargs == [{
+            "codex_bin": "codex",
+            "codex_home": None,
+            "extra_args": ["--enable", "default_mode_request_user_input"],
+        }]
+
+    def test_request_user_input_without_cancel_hook_fails_closed(self):
+        client = FakeClient()
+        seen = []
+        client.queue_server_request(
+            "item/tool/requestUserInput",
+            request_id="input-1",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            itemId="item-input-1",
+            questions=[{
+                "id": "target",
+                "question": "Which target should I use?",
+                "options": None,
+                "isSecret": False,
+            }],
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        s = CodexAppServerSession(
+            cwd="/tmp",
+            client_factory=lambda **kwargs: client,
+            clarify_callback=lambda question, choices: seen.append(question),
+        )
+
+        s.run_turn("ask me", turn_timeout=1.0)
+
+        assert seen == []
+        assert client.error_responses == [(
+            "input-1", -32603, "Hermes user-input UI is not cancellable"
+        )]
+
+
+    def test_duplicate_request_user_input_is_replayed_without_reprompt(self):
+        client = FakeClient()
+        seen = []
+        params = {
+            "threadId": "thread-fake-001",
+            "turnId": "turn-fake-001",
+            "itemId": "item-input-1",
+            "questions": [{
+                "id": "note",
+                "header": "",
+                "question": "What should I remember?",
+                "options": None,
+                "isOther": False,
+                "isSecret": False,
+            }],
+        }
+        client.queue_server_request(
+            "item/tool/requestUserInput", request_id="input-1", **params
+        )
+        client.queue_server_request(
+            "item/tool/requestUserInput", request_id="input-2", **params
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        def clarify_callback(question, choices):
+            seen.append((question, choices))
+            return "Keep the bridge native-first"
+
+        s = make_session(client, clarify_callback=clarify_callback)
+        s.run_turn("ask me", turn_timeout=1.0)
+
+        expected = {
+            "answers": {
+                "note": {"answers": ["Keep the bridge native-first"]},
+            },
+        }
+        assert seen == [("What should I remember?", None)]
+        assert client.responses == [("input-1", expected), ("input-2", expected)]
+
+    def test_duplicate_request_user_input_revalidates_secret_payload(self):
+        client = FakeClient()
+        base_params = {
+            "threadId": "thread-fake-001",
+            "turnId": "turn-fake-001",
+            "itemId": "item-input-1",
+            "questions": [{
+                "id": "note",
+                "question": "What should I remember?",
+                "options": None,
+                "isSecret": False,
+            }],
+        }
+        secret_params = {
+            **base_params,
+            "questions": [{
+                **base_params["questions"][0],
+                "isSecret": True,
+            }],
+        }
+        client.queue_server_request(
+            "item/tool/requestUserInput", request_id="input-1", **base_params
+        )
+        client.queue_server_request(
+            "item/tool/requestUserInput", request_id="input-2", **secret_params
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        seen = []
+        s = make_session(
+            client,
+            clarify_callback=lambda question, choices: seen.append(question) or "safe",
+        )
+
+        s.run_turn("ask me", turn_timeout=1.0)
+
+        assert seen == ["What should I remember?"]
+        assert client.responses == [(
+            "input-1", {"answers": {"note": {"answers": ["safe"]}}}
+        )]
+        assert client.error_responses == [(
+            "input-2", -32602, "Secret input is not supported by the Hermes UI"
+        )]
+
+    def test_duplicate_request_user_input_rejects_changed_valid_payload(self):
+        client = FakeClient()
+        base_params = {
+            "threadId": "thread-fake-001",
+            "turnId": "turn-fake-001",
+            "itemId": "item-input-1",
+            "questions": [{
+                "id": "note",
+                "question": "What should I remember?",
+                "options": None,
+                "isSecret": False,
+            }],
+        }
+        changed_params = {
+            **base_params,
+            "questions": [{
+                **base_params["questions"][0],
+                "question": "What should I forget?",
+            }],
+        }
+        client.queue_server_request(
+            "item/tool/requestUserInput", request_id="input-1", **base_params
+        )
+        client.queue_server_request(
+            "item/tool/requestUserInput", request_id="input-2", **changed_params
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        seen = []
+        s = make_session(
+            client,
+            clarify_callback=lambda question, choices: seen.append(question) or "safe",
+        )
+
+        s.run_turn("ask me", turn_timeout=1.0)
+
+        assert seen == ["What should I remember?"]
+        assert client.responses == [(
+            "input-1", {"answers": {"note": {"answers": ["safe"]}}}
+        )]
+        assert client.error_responses == [(
+            "input-2", -32602, "Conflicting duplicate request_user_input payload"
+        )]
+
+    def test_duplicate_request_user_input_replays_callback_failure_without_reprompt(self):
+        client = FakeClient()
+        seen = []
+        params = {
+            "threadId": "thread-fake-001",
+            "turnId": "turn-fake-001",
+            "itemId": "item-input-1",
+            "questions": [
+                {
+                    "id": "first",
+                    "question": "First question?",
+                    "options": None,
+                    "isSecret": False,
+                },
+                {
+                    "id": "second",
+                    "question": "Second question?",
+                    "options": None,
+                    "isSecret": False,
+                },
+            ],
+        }
+        client.queue_server_request(
+            "item/tool/requestUserInput", request_id="input-1", **params
+        )
+        client.queue_server_request(
+            "item/tool/requestUserInput", request_id="input-2", **params
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        def clarify_callback(question, choices):
+            seen.append((question, choices))
+            if question == "Second question?":
+                raise RuntimeError("UI disconnected")
+            return "first answer"
+
+        s = make_session(client, clarify_callback=clarify_callback)
+        s.run_turn("ask me", turn_timeout=1.0)
+
+        assert seen == [
+            ("First question?", None),
+            ("Second question?", None),
+        ]
+        assert client.error_responses == [
+            ("input-1", -32603, "Hermes user-input UI failed"),
+            ("input-2", -32603, "Hermes user-input UI failed"),
+        ]
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"itemId": ""},
+            {"itemId": None},
+            {"threadId": "foreign-thread"},
+            {"threadId": None},
+            {"turnId": "foreign-turn"},
+            {"turnId": None},
+        ],
+    )
+    def test_request_user_input_rejects_unbound_identity(self, overrides):
+        client = FakeClient()
+        params = {
+            "threadId": "thread-fake-001",
+            "turnId": "turn-fake-001",
+            "itemId": "item-input-1",
+            "questions": [{
+                "id": "q1",
+                "question": "Proceed?",
+                "options": None,
+                "isSecret": False,
+            }],
+        }
+        params.update(overrides)
+        client.queue_server_request(
+            "item/tool/requestUserInput", request_id="input-1", **params
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        seen = []
+        s = make_session(
+            client,
+            clarify_callback=lambda question, choices: seen.append(question),
+        )
+        s.run_turn("ask me", turn_timeout=1.0)
+
+        assert seen == []
+        assert client.error_responses[0][0:2] == ("input-1", -32602)
+
+    def test_request_user_input_rejects_secret_without_prompting(self):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/tool/requestUserInput",
+            request_id="input-1",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            itemId="item-input-1",
+            questions=[{
+                "id": "token",
+                "question": "Paste the token",
+                "options": None,
+                "isSecret": True,
+            }],
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        seen = []
+        s = make_session(
+            client,
+            clarify_callback=lambda question, choices: seen.append(question),
+        )
+        s.run_turn("ask me", turn_timeout=1.0)
+
+        assert seen == []
+        assert client.error_responses == [(
+            "input-1", -32602, "Secret input is not supported by the Hermes UI"
+        )]
+
+    @pytest.mark.parametrize("secret_value", [None, "false", 0, 1, []])
+    def test_request_user_input_rejects_malformed_secret_flag(self, secret_value):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/tool/requestUserInput",
+            request_id="input-1",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            itemId="item-input-1",
+            questions=[{
+                "id": "token",
+                "question": "Paste the token",
+                "options": None,
+                "isSecret": secret_value,
+            }],
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        seen = []
+        s = make_session(
+            client,
+            clarify_callback=lambda question, choices: seen.append(question),
+        )
+        s.run_turn("ask me", turn_timeout=1.0)
+
+        assert seen == []
+        assert client.error_responses == [(
+            "input-1", -32602, "Invalid request_user_input isSecret flag"
+        )]
+
+    def test_request_user_input_rejects_missing_secret_flag(self):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/tool/requestUserInput",
+            request_id="input-1",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            itemId="item-input-1",
+            questions=[{
+                "id": "token",
+                "question": "Paste the token",
+                "options": None,
+            }],
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        seen = []
+        s = make_session(
+            client,
+            clarify_callback=lambda question, choices: seen.append(question),
+        )
+        s.run_turn("ask me", turn_timeout=1.0)
+
+        assert seen == []
+        assert client.error_responses == [(
+            "input-1", -32602, "Invalid request_user_input isSecret flag"
+        )]
+
+    @pytest.mark.parametrize("cancel_mode", ["deadline", "interrupt"])
+    def test_blocked_request_user_input_respects_turn_cancellation(self, cancel_mode):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/tool/requestUserInput",
+            request_id="input-1",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            itemId="item-input-1",
+            questions=[{
+                "id": "target",
+                "question": "Which target should I use?",
+                "options": None,
+                "isSecret": False,
+            }],
+        )
+        entered = threading.Event()
+        release = threading.Event()
+        cancel_called = threading.Event()
+
+        def clarify_callback(question, choices):
+            entered.set()
+            release.wait(timeout=1.0)
+            return "late answer"
+
+        def cancel_clarify_callback():
+            cancel_called.set()
+            release.set()
+
+        s = make_session(
+            client,
+            clarify_callback=clarify_callback,
+            clarify_cancel_callback=cancel_clarify_callback,
+        )
+        if cancel_mode == "interrupt":
+            def interrupt_after_prompt():
+                assert entered.wait(timeout=0.5)
+                s.request_interrupt()
+
+            threading.Thread(target=interrupt_after_prompt, daemon=True).start()
+
+        started = time.monotonic()
+        try:
+            result = s.run_turn("ask me", turn_timeout=0.1)
+            live_callback_threads = [
+                thread
+                for thread in threading.enumerate()
+                if thread.name == "codex-request-user-input" and thread.is_alive()
+            ]
+        finally:
+            release.set()
+
+        assert time.monotonic() - started < 0.5
+        assert result.interrupted is True
+        assert cancel_called.is_set()
+        assert live_callback_threads == []
+        if cancel_mode == "deadline":
+            assert result.should_retire is True
+            assert "turn timed out after 0.1s" in result.error
+
+    @pytest.mark.parametrize("cancel_raises", [False, True])
+    def test_noncooperative_clarify_cancellation_retires_session(self, cancel_raises):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/tool/requestUserInput",
+            request_id="input-1",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            itemId="item-input-1",
+            questions=[{
+                "id": "target",
+                "question": "Which target should I use?",
+                "options": None,
+                "isSecret": False,
+            }],
+        )
+        entered = threading.Event()
+        release = threading.Event()
+
+        def clarify_callback(question, choices):
+            entered.set()
+            release.wait(timeout=1.0)
+            return "late answer"
+
+        def clarify_cancel_callback():
+            if cancel_raises:
+                raise RuntimeError("clarify UI failed to cancel")
+
+        s = make_session(
+            client,
+            clarify_callback=clarify_callback,
+            clarify_cancel_callback=clarify_cancel_callback,
+        )
+
+        def interrupt_after_prompt():
+            assert entered.wait(timeout=0.5)
+            s.request_interrupt()
+
+        threading.Thread(target=interrupt_after_prompt, daemon=True).start()
+        try:
+            result = s.run_turn("ask me", turn_timeout=1.0)
+        finally:
+            release.set()
+
+        assert result.interrupted is True
+        assert result.should_retire is True
+        assert result.error == "Hermes user-input UI failed to cancel"
+        assert client.error_responses == [(
+            "input-1", -32603, "Hermes user-input UI failed to cancel"
+        )]
+
+    def test_dynamic_tool_server_request_is_dispatched_to_hermes(self):
+        client = FakeClient()
+        seen = []
+
+        def handler(params):
+            seen.append(params)
+            return {
+                "success": True,
+                "contentItems": [{"type": "inputText", "text": "remembered"}],
+            }
+
+        client.queue_server_request(
+            "item/tool/call",
+            request_id="dyn-1",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            callId="call-1",
+            namespace="hermes",
+            tool="session_search",
+            arguments={"query": "old decision"},
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        s = make_session(client, dynamic_tool_handler=handler)
+        s.run_turn("remember", turn_timeout=1.0)
+
+        assert seen == [{
+            "threadId": "thread-fake-001",
+            "turnId": "turn-fake-001",
+            "callId": "call-1",
+            "namespace": "hermes",
+            "tool": "session_search",
+            "arguments": {"query": "old decision"},
+        }]
+        assert client.responses == [("dyn-1", {
+            "success": True,
+            "contentItems": [{"type": "inputText", "text": "remembered"}],
+        })]
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"callId": ""},
+            {"callId": "   "},
+            {"callId": None},
+            {"threadId": "wrong-thread"},
+            {"threadId": None},
+            {"turnId": "wrong-turn"},
+            {"turnId": None},
+        ],
+    )
+    def test_dynamic_tool_server_request_rejects_unbound_identity(self, overrides):
+        client = FakeClient()
+        seen = []
+        params = {
+            "threadId": "thread-fake-001",
+            "turnId": "turn-fake-001",
+            "callId": "call-1",
+            "namespace": "hermes",
+            "tool": "todo",
+            "arguments": {},
+        }
+        params.update(overrides)
+        client.queue_server_request("item/tool/call", request_id="dyn-1", **params)
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        s = make_session(client, dynamic_tool_handler=lambda payload: seen.append(payload))
+        s.run_turn("remember", turn_timeout=1.0)
+
+        assert seen == []
+        assert client.responses[0][0] == "dyn-1"
+        assert client.responses[0][1]["success"] is False
+
+    @pytest.mark.parametrize(
+        "notification_thread_id",
+        ["thread-fake-001", "foreign-thread"],
+    )
+    def test_stale_or_foreign_turn_started_cannot_rebind_dynamic_dispatch(
+        self, notification_thread_id
+    ):
+        client = FakeClient()
+        seen = []
+        client.queue_notification(
+            "turn/started",
+            threadId=notification_thread_id,
+            turn={"id": "stale-turn"},
+        )
+        client.queue_server_request(
+            "item/tool/call",
+            request_id="dyn-stale",
+            threadId="thread-fake-001",
+            turnId="stale-turn",
+            callId="call-stale",
+            namespace="hermes",
+            tool="todo",
+            arguments={},
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        s = make_session(client, dynamic_tool_handler=lambda payload: seen.append(payload))
+        s.run_turn("remember", turn_timeout=1.0)
+
+        assert seen == []
+        assert client.responses == [("dyn-stale", {
+            "success": False,
+            "contentItems": [{
+                "type": "inputText",
+                "text": "Hermes dynamic tool request was rejected",
+            }],
+        })]
+
+    def test_turn_started_cannot_activate_tools_without_turn_start_response_id(self):
+        client = FakeClient()
+        seen = []
+
+        def request_handler(method, params):
+            if method == "thread/start":
+                return {"thread": {"id": "thread-fake-001"}}
+            if method == "turn/start":
+                return {"turn": {}}
+            return {}
+
+        client._request_handler = request_handler
+        client.queue_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "notification-only-turn"},
+        )
+        client.queue_server_request(
+            "item/tool/call",
+            request_id="dyn-unbound",
+            threadId="thread-fake-001",
+            turnId="notification-only-turn",
+            callId="call-unbound",
+            namespace="hermes",
+            tool="todo",
+            arguments={},
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "notification-only-turn", "status": "completed", "error": None},
+        )
+
+        s = make_session(client, dynamic_tool_handler=lambda payload: seen.append(payload))
+        s.run_turn("remember", turn_timeout=0.05)
+
+        assert seen == []
+        assert client.responses[0][0] == "dyn-unbound"
+        assert client.responses[0][1]["success"] is False
+
+    def test_duplicate_dynamic_call_id_is_replayed_without_redispatch(self):
+        client = FakeClient()
+        seen = []
+        params = {
+            "threadId": "thread-fake-001",
+            "turnId": "turn-fake-001",
+            "callId": "call-1",
+            "namespace": "hermes",
+            "tool": "todo",
+            "arguments": {},
+        }
+        client.queue_server_request("item/tool/call", request_id="dyn-1", **params)
+        client.queue_server_request("item/tool/call", request_id="dyn-2", **params)
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        def handler(payload):
+            seen.append(payload)
+            return {
+                "success": True,
+                "contentItems": [{"type": "inputText", "text": "once"}],
+            }
+
+        s = make_session(client, dynamic_tool_handler=handler)
+        s.run_turn("remember", turn_timeout=1.0)
+
+        assert len(seen) == 1
+        assert client.responses == [
+            ("dyn-1", {"success": True, "contentItems": [{"type": "inputText", "text": "once"}]}),
+            ("dyn-2", {"success": True, "contentItems": [{"type": "inputText", "text": "once"}]}),
+        ]
+
+    @pytest.mark.parametrize(
+        "conflicting_overrides",
+        [
+            {"namespace": "other"},
+            {"tool": "memory"},
+            {"arguments": {"todos": [{"id": "conflict"}]}},
+        ],
+    )
+    def test_conflicting_duplicate_dynamic_call_id_is_rejected_without_redispatch(
+        self, conflicting_overrides
+    ):
+        client = FakeClient()
+        seen = []
+        first = {
+            "threadId": "thread-fake-001",
+            "turnId": "turn-fake-001",
+            "callId": "call-1",
+            "namespace": "hermes",
+            "tool": "todo",
+            "arguments": {"todos": []},
+        }
+        conflicting = {**first, **conflicting_overrides}
+        client.queue_server_request("item/tool/call", request_id="dyn-1", **first)
+        client.queue_server_request(
+            "item/tool/call", request_id="dyn-2", **conflicting
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        def handler(payload):
+            seen.append(payload)
+            return {
+                "success": True,
+                "contentItems": [{"type": "inputText", "text": "once"}],
+            }
+
+        s = make_session(client, dynamic_tool_handler=handler)
+        s.run_turn("remember", turn_timeout=1.0)
+
+        assert seen == [first]
+        assert client.responses == [
+            ("dyn-1", {
+                "success": True,
+                "contentItems": [{"type": "inputText", "text": "once"}],
+            }),
+        ]
+        assert client.error_responses == [(
+            "dyn-2",
+            -32602,
+            "Conflicting duplicate Hermes dynamic tool payload",
+        )]
 
     def test_close_idempotent(self):
         client = FakeClient()
@@ -173,18 +1326,65 @@ class TestLifecycle:
 # ---- turn loop ----
 
 class TestRunTurn:
-    def test_simple_text_turn_returns_final_message(self):
+    @pytest.mark.parametrize(
+        "notification_thread_id,notification_turn_id",
+        [
+            ("foreign-thread", "turn-fake-001"),
+            ("thread-fake-001", "foreign-turn"),
+            ("", "turn-fake-001"),
+            ("thread-fake-001", ""),
+            (None, "turn-fake-001"),
+            ("thread-fake-001", None),
+        ],
+    )
+    def test_foreign_or_malformed_turn_completed_does_not_end_active_turn(
+        self, notification_thread_id, notification_turn_id
+    ):
         client = FakeClient()
-        client.queue_notification("turn/started", threadId="t", turn={"id": "tu1"})
+        client.queue_notification(
+            "turn/completed",
+            threadId=notification_thread_id,
+            turn={
+                "id": notification_turn_id,
+                "status": "completed",
+                "error": None,
+            },
+        )
         client.queue_notification(
             "item/completed",
-            item={"type": "agentMessage", "id": "m1", "text": "hello world"},
-            threadId="t", turnId="tu1",
+            item={"type": "agentMessage", "id": "m1", "text": "real result"},
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
         )
         client.queue_notification(
             "turn/completed",
-            threadId="t",
-            turn={"id": "tu1", "status": "completed", "error": None},
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        result = make_session(client).run_turn("hi", turn_timeout=1.0)
+
+        assert result.final_text == "real result"
+        assert result.turn_id == "turn-fake-001"
+        assert result.interrupted is False
+        assert result.error is None
+
+    def test_simple_text_turn_returns_final_message(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001"},
+        )
+        client.queue_notification(
+            "item/completed",
+            item={"type": "agentMessage", "id": "m1", "text": "hello world"},
+            threadId="thread-fake-001", turnId="turn-fake-001",
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
         )
         s = make_session(client)
         r = s.run_turn("hi", turn_timeout=2.0)
@@ -193,8 +1393,372 @@ class TestRunTurn:
         assert r.error is None
         assert any(m["role"] == "assistant" and m.get("content") == "hello world"
                    for m in r.projected_messages)
-        # turn_id propagated for downstream session-DB linkage
+        # turn_id remains bound to the authoritative turn/start response.
         assert r.turn_id == "turn-fake-001"
+
+    def test_extra_skill_roots_are_set_and_force_reloaded_before_turn_start(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        s = make_session(client, extra_skill_roots=["/tmp/hermes-skills"])
+
+        s.run_turn("hi", turn_timeout=2.0)
+
+        methods = [method for method, _ in client.requests]
+        assert methods.index("thread/start") < methods.index("skills/extraRoots/set")
+        assert methods.index("skills/extraRoots/set") < methods.index("skills/list")
+        assert methods.index("skills/list") < methods.index("turn/start")
+        expected_root = os.path.realpath("/tmp/hermes-skills")
+        assert (
+            "skills/extraRoots/set",
+            {"extraRoots": [expected_root]},
+        ) in client.requests
+        assert (
+            "skills/list",
+            {"cwds": ["/tmp"], "forceReload": True},
+        ) in client.requests
+
+    def test_changed_hermes_skill_is_attached_to_the_next_turn(self, tmp_path):
+        skill_path = tmp_path / "skills" / "testing" / "bridge" / "SKILL.md"
+        skill_path.parent.mkdir(parents=True)
+        skill_path.write_text("initial", encoding="utf-8")
+
+        client = FakeClient()
+        original_request = client.request
+
+        def request(method, params=None, timeout=10.0):
+            if method == "skills/list":
+                return {
+                    "data": [
+                        {
+                            "cwd": "/tmp",
+                            "errors": [],
+                            "skills": [
+                                {
+                                    "name": "bridge",
+                                    "path": str(skill_path),
+                                    "enabled": True,
+                                }
+                            ],
+                        }
+                    ]
+                }
+            return original_request(method, params, timeout)
+
+        client.request = request
+        s = make_session(client, extra_skill_roots=[str(tmp_path / "skills")])
+
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        s.run_turn("first", turn_timeout=2.0)
+
+        skill_path.write_text("changed content", encoding="utf-8")
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        s.run_turn("second", turn_timeout=2.0)
+
+        turn_starts = [params for method, params in client.requests if method == "turn/start"]
+        assert turn_starts[0]["input"] == [{"type": "text", "text": "first"}]
+        assert turn_starts[1]["input"] == [
+            {"type": "skill", "name": "bridge", "path": str(skill_path)},
+            {"type": "text", "text": "second"},
+        ]
+
+    def test_changed_hermes_skill_is_retried_after_turn_start_rejection(
+        self, tmp_path
+    ):
+        from agent.transports.codex_app_server import CodexAppServerError
+
+        skill_path = tmp_path / "skills" / "testing" / "bridge" / "SKILL.md"
+        skill_path.parent.mkdir(parents=True)
+        skill_path.write_text("initial", encoding="utf-8")
+
+        client = FakeClient()
+        original_request = client.request
+        reject_next_turn = [False]
+
+        def request(method, params=None, timeout=10.0):
+            if method == "skills/list":
+                return {
+                    "data": [
+                        {
+                            "cwd": "/tmp",
+                            "errors": [],
+                            "skills": [
+                                {
+                                    "name": "bridge",
+                                    "path": str(skill_path),
+                                    "enabled": True,
+                                }
+                            ],
+                        }
+                    ]
+                }
+            if method == "turn/start" and reject_next_turn[0]:
+                reject_next_turn[0] = False
+                client.requests.append((method, params or {}))
+                raise CodexAppServerError(code=-32600, message="rejected")
+            return original_request(method, params, timeout)
+
+        client.request = request
+        s = make_session(client, extra_skill_roots=[str(tmp_path / "skills")])
+
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        s.run_turn("first", turn_timeout=2.0)
+
+        skill_path.write_text("changed content", encoding="utf-8")
+        reject_next_turn[0] = True
+        rejected = s.run_turn("second", turn_timeout=2.0)
+        assert rejected.error is not None
+        assert rejected.should_retire is False
+
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        retried = s.run_turn("third", turn_timeout=2.0)
+        assert retried.error is None
+
+        turn_starts = [
+            params for method, params in client.requests if method == "turn/start"
+        ]
+        expected_skill = {
+            "type": "skill",
+            "name": "bridge",
+            "path": str(skill_path),
+        }
+        assert turn_starts[1]["input"][0] == expected_skill
+        assert turn_starts[2]["input"][0] == expected_skill
+
+    def test_extra_skill_roots_registration_retries_on_the_next_turn(self, tmp_path):
+        from agent.transports.codex_app_server import CodexAppServerError
+
+        skill_path = tmp_path / "skills" / "testing" / "bridge" / "SKILL.md"
+        skill_path.parent.mkdir(parents=True)
+        skill_path.write_text("content", encoding="utf-8")
+
+        client = FakeClient()
+        original_request = client.request
+        registration_attempts = [0]
+
+        def request(method, params=None, timeout=10.0):
+            if method == "skills/extraRoots/set":
+                client.requests.append((method, params or {}))
+                registration_attempts[0] += 1
+                if registration_attempts[0] == 1:
+                    raise CodexAppServerError(code=-32603, message="temporary failure")
+                return {}
+            if method == "skills/list":
+                client.requests.append((method, params or {}))
+                return {
+                    "data": [
+                        {
+                            "cwd": "/tmp",
+                            "errors": [],
+                            "skills": [
+                                {
+                                    "name": "bridge",
+                                    "path": str(skill_path),
+                                    "enabled": True,
+                                }
+                            ],
+                        }
+                    ]
+                }
+            return original_request(method, params, timeout)
+
+        client.request = request
+        s = make_session(client, extra_skill_roots=[str(tmp_path / "skills")])
+
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        first = s.run_turn("first", turn_timeout=2.0)
+        assert first.error is None
+
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        second = s.run_turn("second", turn_timeout=2.0)
+        assert second.error is None
+        assert registration_attempts[0] == 2
+
+        turn_starts = [
+            params for method, params in client.requests if method == "turn/start"
+        ]
+        assert turn_starts[0]["input"] == [{"type": "text", "text": "first"}]
+        assert turn_starts[1]["input"] == [
+            {"type": "skill", "name": "bridge", "path": str(skill_path)},
+            {"type": "text", "text": "second"},
+        ]
+
+    def test_initial_skill_reload_failure_preserves_missing_baseline(self, tmp_path):
+        from agent.transports.codex_app_server import CodexAppServerError
+
+        root = tmp_path / "skills"
+        root.mkdir()
+        skill_path = root / "testing" / "bridge" / "SKILL.md"
+
+        client = FakeClient()
+        original_request = client.request
+        reload_attempts = [0]
+
+        def request(method, params=None, timeout=10.0):
+            if method == "skills/list":
+                client.requests.append((method, params or {}))
+                reload_attempts[0] += 1
+                if reload_attempts[0] == 1:
+                    raise CodexAppServerError(
+                        code=-32603, message="temporary reload failure"
+                    )
+                skills = []
+                if skill_path.exists():
+                    skills.append(
+                        {
+                            "name": "bridge",
+                            "path": str(skill_path),
+                            "enabled": True,
+                        }
+                    )
+                return {"data": [{"cwd": "/tmp", "errors": [], "skills": skills}]}
+            return original_request(method, params, timeout)
+
+        client.request = request
+        s = make_session(client, extra_skill_roots=[str(root)])
+
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        first = s.run_turn("first", turn_timeout=2.0)
+        assert first.error is None
+
+        skill_path.parent.mkdir(parents=True)
+        skill_path.write_text("content", encoding="utf-8")
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        second = s.run_turn("second", turn_timeout=2.0)
+        assert second.error is None
+
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        third = s.run_turn("third", turn_timeout=2.0)
+        assert third.error is None
+
+        turn_starts = [
+            params for method, params in client.requests if method == "turn/start"
+        ]
+        assert turn_starts[0]["input"] == [{"type": "text", "text": "first"}]
+        assert turn_starts[1]["input"] == [
+            {"type": "skill", "name": "bridge", "path": str(skill_path)},
+            {"type": "text", "text": "second"},
+        ]
+        assert turn_starts[2]["input"] == [{"type": "text", "text": "third"}]
+
+    def test_skill_path_outside_extra_root_is_ignored(self, tmp_path):
+        root = tmp_path / "skills"
+        root.mkdir()
+        outside = tmp_path / "outside" / "SKILL.md"
+        outside.parent.mkdir()
+        outside.write_text("outside", encoding="utf-8")
+
+        client = FakeClient()
+        original_request = client.request
+
+        def request(method, params=None, timeout=10.0):
+            if method == "skills/list":
+                return {
+                    "data": [
+                        {
+                            "cwd": "/tmp",
+                            "errors": [],
+                            "skills": [
+                                {
+                                    "name": "outside",
+                                    "path": str(outside),
+                                    "enabled": True,
+                                }
+                            ],
+                        }
+                    ]
+                }
+            return original_request(method, params, timeout)
+
+        client.request = request
+        s = make_session(client, extra_skill_roots=[str(root)])
+        s.ensure_started()
+
+        changed, fingerprints = s._reload_changed_skills()
+        assert changed == []
+        assert fingerprints == {}
+
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Symlinks require elevated privileges on Windows",
+    )
+    def test_symlinked_skill_escaping_extra_root_is_ignored(self, tmp_path):
+        root = tmp_path / "skills"
+        symlink_path = root / "testing" / "bridge" / "SKILL.md"
+        symlink_path.parent.mkdir(parents=True)
+        outside = tmp_path / "outside" / "SKILL.md"
+        outside.parent.mkdir()
+        outside.write_text("outside", encoding="utf-8")
+        symlink_path.symlink_to(outside)
+
+        client = FakeClient()
+        original_request = client.request
+
+        def request(method, params=None, timeout=10.0):
+            if method == "skills/list":
+                return {
+                    "data": [
+                        {
+                            "cwd": "/tmp",
+                            "errors": [],
+                            "skills": [
+                                {
+                                    "name": "bridge",
+                                    "path": str(symlink_path),
+                                    "enabled": True,
+                                }
+                            ],
+                        }
+                    ]
+                }
+            return original_request(method, params, timeout)
+
+        client.request = request
+        s = make_session(client, extra_skill_roots=[str(root)])
+        s.ensure_started()
+
+        changed, fingerprints = s._reload_changed_skills()
+        assert changed == []
+        assert fingerprints == {}
 
     def test_token_usage_notification_is_captured(self):
         client = FakeClient()
@@ -234,8 +1798,8 @@ class TestRunTurn:
         client = FakeClient()
         client.queue_notification(
             "turn/completed",
-            threadId="t",
-            turn={"id": "tu1", "status": "completed", "error": None},
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
         )
         s = make_session(client)
         r = s.run_turn(
@@ -271,22 +1835,69 @@ class TestRunTurn:
                     "status": "completed", "aggregatedOutput": "ok",
                     "exitCode": 0, "commandActions": [],
                 },
-                threadId="t", turnId="tu1",
+                threadId="thread-fake-001", turnId="turn-fake-001",
             )
         client.queue_notification(
             "item/completed",
             item={"type": "agentMessage", "id": "m1", "text": "done"},
-            threadId="t", turnId="tu1",
+            threadId="thread-fake-001", turnId="turn-fake-001",
         )
         client.queue_notification(
-            "turn/completed", threadId="t",
-            turn={"id": "tu1", "status": "completed", "error": None},
+            "turn/completed", threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
         )
         s = make_session(client)
         r = s.run_turn("do stuff", turn_timeout=2.0)
         assert r.tool_iterations == 2
         # Each tool item produces (assistant, tool) — 2*2 + final assistant = 5 msgs
         assert len(r.projected_messages) == 5
+
+    def test_replayed_completed_tool_is_persisted_once(self):
+        client = FakeClient()
+        completed_item = {
+            "type": "commandExecution",
+            "id": "exec-replayed",
+            "command": "printf replay-safe",
+            "cwd": "/tmp",
+            "status": "completed",
+            "aggregatedOutput": "replay-safe",
+            "exitCode": 0,
+            "commandActions": [],
+        }
+        for _ in range(2):
+            client.queue_notification(
+                "item/completed",
+                item=completed_item,
+                threadId="thread-fake-001",
+                turnId="turn-fake-001",
+            )
+        client.queue_notification(
+            "item/completed",
+            item={"type": "agentMessage", "id": "m-replay", "text": "done"},
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        result = make_session(client).run_turn("do stuff", turn_timeout=2.0)
+
+        projected_tool_calls = [
+            message
+            for message in result.projected_messages
+            if message.get("role") == "assistant" and message.get("tool_calls")
+        ]
+        projected_tool_results = [
+            message
+            for message in result.projected_messages
+            if message.get("role") == "tool"
+        ]
+        assert len(projected_tool_calls) == 1
+        assert len(projected_tool_results) == 1
+        assert result.tool_iterations == 1
 
     def test_turn_start_failure_returns_error(self):
         client = FakeClient()
@@ -437,8 +2048,8 @@ class TestRunTurn:
     def test_failed_turn_records_error_from_turn_completed(self):
         client = FakeClient()
         client.queue_notification(
-            "turn/completed", threadId="t",
-            turn={"id": "tu1", "status": "failed",
+            "turn/completed", threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "failed",
                   "error": {"message": "model error"}},
         )
         s = make_session(client)
@@ -480,28 +2091,697 @@ class TestRunTurn:
 
         assert r.compacted is True
 
-
-class TestCompactThread:
-    def test_compact_thread_sends_rpc_and_waits_for_completion(self):
+    def test_run_turn_ignores_stale_thread_compacted_notification(self):
         client = FakeClient()
         client.queue_notification(
+            "thread/compacted",
+            threadId="thread-fake-001",
+            turnId="stale-turn",
+        )
+        client.queue_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            item={"type": "agentMessage", "id": "m1", "text": "real result"},
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        result = make_session(client).run_turn("x", turn_timeout=0.05)
+
+        assert result.compacted is False
+        assert result.turn_id == "turn-fake-001"
+        assert result.final_text == "real result"
+        assert result.error is None
+
+    def test_run_turn_drains_request_arriving_with_terminal_notification(self):
+        class TerminalRaceClient(FakeClient):
+            injected = False
+
+            def take_notification(self, timeout: float = 0.0):
+                note = super().take_notification(timeout)
+                if (
+                    not self.injected
+                    and note is not None
+                    and note.get("method") == "turn/completed"
+                ):
+                    self.injected = True
+                    self.queue_server_request(
+                        "item/commandExecution/requestApproval",
+                        request_id="approval-at-terminal",
+                        command="pwd",
+                        cwd="/tmp",
+                    )
+                return note
+
+        client = TerminalRaceClient()
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        result = make_session(
+            client,
+            approval_callback=lambda *args, **kwargs: "once",
+        ).run_turn("x", turn_timeout=1.0)
+
+        assert result.error is None
+        assert client.responses == [
+            ("approval-at-terminal", {"decision": "accept"})
+        ]
+        assert client.pending_server_request_count() == 0
+
+    def test_run_turn_closes_when_interrupt_after_projection_failure_raises(
+        self, monkeypatch
+    ):
+        client = FakeClient()
+        session = make_session(client)
+        session.ensure_started()
+        client.queue_notification(
+            "item/started",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            item={
+                "type": "commandExecution",
+                "id": "projection-failure",
+                "command": "pwd",
+                "cwd": "/tmp",
+            },
+        )
+
+        original_error = RuntimeError("projection failed")
+
+        def fail_projection(self, note):
+            session._dynamic_tool_responses[("thread", "turn", "stale")] = (
+                "signature",
+                {},
+            )
+            session._request_user_input_responses[("thread", "turn", "stale")] = (
+                "signature",
+                "choice",
+                {},
+            )
+            raise original_error
+
+        interrupt_attempts = []
+
+        def fail_interrupt(turn_id):
+            interrupt_attempts.append(turn_id)
+            raise RuntimeError("interrupt failed")
+
+        monkeypatch.setattr(session_mod.CodexEventProjector, "project", fail_projection)
+        monkeypatch.setattr(session, "_issue_interrupt", fail_interrupt)
+
+        with pytest.raises(RuntimeError, match="projection failed") as exc_info:
+            session.run_turn("x", turn_timeout=1.0)
+
+        assert exc_info.value is original_error
+        assert interrupt_attempts == ["turn-fake-001"]
+        assert client._closed is True
+        assert session._client is None
+        assert session._active_turn_id is None
+        assert session._dynamic_tool_responses == {}
+        assert session._request_user_input_responses == {}
+
+
+class TestCompactThread:
+    def test_compact_thread_ignores_uncorrelated_thread_compacted_notification(self):
+        client = FakeClient()
+        client.queue_compaction_notification(
             "turn/started",
             threadId="thread-fake-001",
             turn={"id": "compact-turn-1"},
         )
+        client.queue_compaction_notification(
+            "thread/compacted",
+            threadId="foreign-thread",
+        )
+        client.queue_compaction_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1", "status": "completed", "error": None},
+        )
+
+        result = make_session(client).compact_thread(turn_timeout=1.0)
+
+        assert result.compacted is False
+        assert result.thread_id == "thread-fake-001"
+        assert result.turn_id == "compact-turn-1"
+        assert result.error is None
+
+    def test_compact_thread_discards_stale_started_turn_before_request_boundary(self):
+        client = FakeClient()
         client.queue_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "stale-turn"},
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "stale-turn", "status": "completed", "error": None},
+        )
+        client.queue_compaction_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        client.queue_compaction_notification(
             "item/completed",
             threadId="thread-fake-001",
             turnId="compact-turn-1",
             item={"type": "contextCompaction", "id": "compact-item-1"},
         )
-        client.queue_notification(
+        client.queue_compaction_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1", "status": "completed", "error": None},
+        )
+
+        result = make_session(client).compact_thread(turn_timeout=2.0)
+
+        assert result.error is None
+        assert result.turn_id == "compact-turn-1"
+        assert result.compacted is True
+        assert client.pending_notification_count() == 0
+
+    def test_compact_thread_rejects_stale_turn_enqueued_during_request_race(self):
+        class RequestRaceClient(FakeClient):
+            def __init__(self) -> None:
+                super().__init__()
+                self._race_injected = False
+
+            def _inject_stale_turn(self) -> None:
+                if self._race_injected:
+                    return
+                self._race_injected = True
+                self.queue_notification(
+                    "turn/started",
+                    threadId="thread-fake-001",
+                    turn={"id": "stale-race-turn"},
+                )
+                self.queue_notification(
+                    "turn/completed",
+                    threadId="thread-fake-001",
+                    turn={
+                        "id": "stale-race-turn",
+                        "status": "completed",
+                        "error": None,
+                    },
+                )
+
+            def pending_notification_count(self):
+                count = super().pending_notification_count()
+                self._inject_stale_turn()
+                return count
+
+            def request_with_response_sequence(self, method, params=None, timeout=30.0):
+                if method == "thread/compact/start":
+                    self._inject_stale_turn()
+                return super().request_with_response_sequence(method, params, timeout)
+
+        client = RequestRaceClient()
+        client.queue_compaction_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        client.queue_compaction_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="compact-turn-1",
+            item={"type": "contextCompaction", "id": "compact-item-1"},
+        )
+        client.queue_compaction_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1", "status": "completed", "error": None},
+        )
+
+        result = make_session(client).compact_thread(turn_timeout=2.0)
+
+        assert result.error is None
+        assert result.turn_id == "compact-turn-1"
+        assert result.compacted is True
+        assert client.pending_notification_count() == 0
+
+    def test_compact_thread_ignores_stale_items_before_and_after_turn_binding(self):
+        client = FakeClient()
+        seen_events: list[dict] = []
+        stale_item = {
+            "type": "commandExecution",
+            "id": "stale-command",
+            "command": "printf STALE",
+            "cwd": "/tmp",
+            "status": "completed",
+            "aggregatedOutput": "STALE",
+            "exitCode": 0,
+        }
+        client.queue_compaction_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="stale-before-bind",
+            item=stale_item,
+        )
+        client.queue_compaction_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        client.queue_compaction_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="stale-after-bind",
+            item={**stale_item, "id": "stale-command-2"},
+        )
+        client.queue_compaction_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="compact-turn-1",
+            item={"type": "contextCompaction", "id": "compact-item-1"},
+        )
+        client.queue_compaction_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1", "status": "completed", "error": None},
+        )
+
+        session = make_session(client, on_event=seen_events.append)
+        result = session.compact_thread(turn_timeout=2.0)
+
+        assert result.error is None
+        assert result.turn_id == "compact-turn-1"
+        assert result.compacted is True
+        assert result.tool_iterations == 0
+        assert all("STALE" not in str(message) for message in result.projected_messages)
+        assert all(
+            (event.get("params") or {}).get("turnId")
+            not in {"stale-before-bind", "stale-after-bind"}
+            for event in seen_events
+        )
+        assert session._active_turn_id is None
+
+    def test_compact_thread_ignores_stale_terminal_before_authoritative_start(self):
+        client = FakeClient()
+        client.queue_compaction_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "stale-turn", "status": "completed", "error": None},
+        )
+        client.queue_compaction_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        client.queue_compaction_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="compact-turn-1",
+            item={"type": "contextCompaction", "id": "compact-item-1"},
+        )
+        client.queue_compaction_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1", "status": "completed", "error": None},
+        )
+
+        result = make_session(client).compact_thread(turn_timeout=2.0)
+
+        assert result.error is None
+        assert result.turn_id == "compact-turn-1"
+        assert result.compacted is True
+        assert client.pending_notification_count() == 0
+
+    def test_compact_thread_quarantines_post_terminal_notifications(self):
+        client = FakeClient()
+        seen_events: list[dict] = []
+        client.queue_compaction_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        client.queue_compaction_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1", "status": "completed", "error": None},
+        )
+        client.queue_compaction_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="compact-turn-1",
+            item={
+                "type": "commandExecution",
+                "id": "post-terminal-command",
+                "command": "printf LEAK",
+                "cwd": "/tmp",
+                "aggregatedOutput": "LEAK",
+                "exitCode": 0,
+            },
+        )
+
+        result = make_session(client, on_event=seen_events.append).compact_thread(
+            turn_timeout=2.0
+        )
+
+        assert result.error is None
+        assert result.tool_iterations == 0
+        assert all("LEAK" not in str(message) for message in result.projected_messages)
+        assert all(
+            (event.get("params") or {}).get("item", {}).get("id")
+            != "post-terminal-command"
+            for event in seen_events
+        )
+        assert client.pending_notification_count() == 0
+
+    def test_compact_thread_drains_terminal_server_requests_without_turn_deadline(self):
+        class TerminalRequestClient(FakeClient):
+            injected = False
+
+            def take_notification_with_sequence(self, timeout: float = 0.0):
+                received = super().take_notification_with_sequence(timeout)
+                note = received[1] if received is not None else None
+                if (
+                    note is not None
+                    and note.get("method") == "turn/completed"
+                    and not self.injected
+                ):
+                    self.injected = True
+                    for index in range(2):
+                        self.queue_server_request(
+                            "item/commandExecution/requestApproval",
+                            request_id=f"approval-{index}",
+                            threadId="thread-fake-001",
+                            turnId="compact-turn-1",
+                            itemId=f"command-{index}",
+                            command="pwd",
+                            cwd="/tmp",
+                        )
+                return received
+
+        client = TerminalRequestClient()
+        client.queue_compaction_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        client.queue_compaction_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1", "status": "completed", "error": None},
+        )
+
+        def slow_approval(*_args, **_kwargs):
+            time.sleep(0.08)
+            return "once"
+
+        result = make_session(
+            client, approval_callback=slow_approval
+        ).compact_thread(turn_timeout=0.05)
+
+        assert result.error is None
+        assert result.interrupted is False
+        assert client.responses == [
+            ("approval-0", {"decision": "accept"}),
+            ("approval-1", {"decision": "accept"}),
+        ]
+        assert client.pending_server_request_count() == 0
+
+    def test_compact_thread_terminal_server_request_drain_is_bounded(self, monkeypatch):
+        monkeypatch.setattr(session_mod, "_MAX_TERMINAL_SERVER_REQUEST_DRAIN", 2)
+
+        class TerminalRequestClient(FakeClient):
+            injected = False
+
+            def take_notification_with_sequence(self, timeout: float = 0.0):
+                received = super().take_notification_with_sequence(timeout)
+                note = received[1] if received is not None else None
+                if (
+                    note is not None
+                    and note.get("method") == "turn/completed"
+                    and not self.injected
+                ):
+                    self.injected = True
+                    for index in range(4):
+                        self.queue_server_request(
+                            "item/commandExecution/requestApproval",
+                            request_id=f"approval-{index}",
+                            threadId="thread-fake-001",
+                            turnId="compact-turn-1",
+                            itemId=f"command-{index}",
+                            command="pwd",
+                            cwd="/tmp",
+                        )
+                return received
+
+        client = TerminalRequestClient()
+        client.queue_compaction_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        client.queue_compaction_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1", "status": "completed", "error": None},
+        )
+
+        result = make_session(client).compact_thread(turn_timeout=2.0)
+
+        assert client.responses == [
+            ("approval-0", {"decision": "decline"}),
+            ("approval-1", {"decision": "decline"}),
+        ]
+        assert client.error_responses == [
+            (
+                "approval-2",
+                -32000,
+                "Too many server requests pending at codex turn completion",
+            ),
+            (
+                "approval-3",
+                -32000,
+                "Too many server requests pending at codex turn completion",
+            ),
+        ]
+        assert client.pending_server_request_count() == 0
+        assert result.interrupted is True
+        assert result.should_retire is True
+        assert result.error and "more than 2 server requests" in result.error
+
+    def test_compact_thread_rejects_remaining_terminal_requests_after_handler_error(
+        self,
+    ):
+        class TerminalRequestClient(FakeClient):
+            injected = False
+
+            def take_notification_with_sequence(self, timeout: float = 0.0):
+                received = super().take_notification_with_sequence(timeout)
+                note = received[1] if received is not None else None
+                if (
+                    note is not None
+                    and note.get("method") == "turn/completed"
+                    and not self.injected
+                ):
+                    self.injected = True
+                    for index in range(3):
+                        self.queue_server_request(
+                            "item/commandExecution/requestApproval",
+                            request_id=f"approval-{index}",
+                            threadId="thread-fake-001",
+                            turnId="compact-turn-1",
+                            itemId=f"command-{index}",
+                            command="pwd",
+                            cwd="/tmp",
+                        )
+                return received
+
+        client = TerminalRequestClient()
+        client.queue_compaction_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        client.queue_compaction_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1", "status": "completed", "error": None},
+        )
+        session = make_session(client)
+
+        def fail_request(req, *, deadline=None):
+            raise RuntimeError("reply transport failed")
+
+        session._handle_server_request = fail_request
+        result = session.compact_thread(turn_timeout=2.0)
+
+        assert result.interrupted is True
+        assert result.should_retire is True
+        assert client.pending_server_request_count() == 0
+        assert client.error_responses == [
+            ("approval-0", -32000, "Compaction server request handling aborted"),
+            ("approval-1", -32000, "Compaction server request handling aborted"),
+            ("approval-2", -32000, "Compaction server request handling aborted"),
+        ]
+
+    def test_compact_thread_latches_delayed_terminal_before_slow_request_deadline(self):
+        class RequestAfterStartClient(FakeClient):
+            injected = False
+
+            def take_notification_with_sequence(self, timeout: float = 0.0):
+                received = super().take_notification_with_sequence(timeout)
+                note = received[1] if received is not None else None
+                if (
+                    note is not None
+                    and note.get("method") == "turn/started"
+                    and not self.injected
+                ):
+                    self.injected = True
+                    self.queue_server_request(
+                        "item/commandExecution/requestApproval",
+                        request_id="approval-delayed-terminal",
+                        threadId="thread-fake-001",
+                        turnId="compact-turn-1",
+                        itemId="command-delayed-terminal",
+                        command="pwd",
+                        cwd="/tmp",
+                    )
+                return received
+
+        client = RequestAfterStartClient()
+        client.queue_compaction_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        for _ in range(8):
+            client.queue_compaction_notification(
+                "turn/tokenUsage/updated",
+                threadId="thread-fake-001",
+                turnId="compact-turn-1",
+            )
+        client.queue_compaction_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1", "status": "completed", "error": None},
+        )
+
+        def slow_approval(*_args, **_kwargs):
+            time.sleep(0.08)
+            return "once"
+
+        result = make_session(
+            client, approval_callback=slow_approval
+        ).compact_thread(turn_timeout=0.05)
+
+        assert client.responses == [
+            ("approval-delayed-terminal", {"decision": "accept"})
+        ]
+        assert result.error is None
+        assert result.interrupted is False
+        assert result.should_retire is False
+        assert result.turn_id == "compact-turn-1"
+        assert client.pending_notification_count() == 0
+
+    def test_compact_thread_cleans_turn_state_when_projection_raises(self, monkeypatch):
+        client = FakeClient()
+        client.queue_compaction_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        session = make_session(client)
+
+        def seed_replay_caches(_note):
+            session._dynamic_tool_responses[("thread", "turn", "dynamic")] = (
+                "fingerprint",
+                {"ok": True},
+            )
+            session._request_user_input_responses[("thread", "turn", "input")] = (
+                "fingerprint",
+                "question",
+                "yes",
+            )
+
+        def fail_projection(_projector, _note):
+            raise RuntimeError("projection failed")
+
+        session._on_event = seed_replay_caches
+        monkeypatch.setattr(
+            session_mod.CodexEventProjector,
+            "project",
+            fail_projection,
+        )
+
+        with pytest.raises(RuntimeError, match="projection failed"):
+            session.compact_thread(turn_timeout=2.0)
+
+        assert session._active_turn_id is None
+        assert session._dynamic_tool_responses == {}
+        assert session._request_user_input_responses == {}
+        assert (
+            "turn/interrupt",
+            {"threadId": "thread-fake-001", "turnId": "compact-turn-1"},
+        ) in client.requests
+        assert client._closed is True
+        assert session._client is None
+
+    def test_compact_thread_closes_when_interrupt_after_projection_failure_raises(
+        self, monkeypatch
+    ):
+        client = FakeClient()
+        session = make_session(client)
+        session.ensure_started()
+        client.queue_compaction_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+
+        def fail_projection(_projector, _note):
+            raise RuntimeError("projection failed")
+
+        def fail_interrupt(method, _params):
+            if method == "turn/interrupt":
+                raise RuntimeError("interrupt failed")
+            return {}
+
+        setattr(client, "_request_handler", fail_interrupt)
+        monkeypatch.setattr(
+            session_mod.CodexEventProjector,
+            "project",
+            fail_projection,
+        )
+
+        with pytest.raises(RuntimeError, match="projection failed"):
+            session.compact_thread(turn_timeout=2.0)
+
+        assert client._closed is True
+        assert session._client is None
+
+    def test_compact_thread_sends_rpc_and_waits_for_completion(self):
+        client = FakeClient()
+        client.queue_compaction_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        client.queue_compaction_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="compact-turn-1",
+            item={"type": "contextCompaction", "id": "compact-item-1"},
+        )
+        client.queue_compaction_notification(
             "item/completed",
             threadId="thread-fake-001",
             turnId="compact-turn-1",
             item={"type": "agentMessage", "id": "m1", "text": "compacted"},
         )
-        client.queue_notification(
+        client.queue_compaction_notification(
             "thread/tokenUsage/updated",
             threadId="thread-fake-001",
             turnId="compact-turn-1",
@@ -511,7 +2791,7 @@ class TestCompactThread:
                 "modelContextWindow": 200000,
             },
         )
-        client.queue_notification(
+        client.queue_compaction_notification(
             "turn/completed",
             threadId="thread-fake-001",
             turn={"id": "compact-turn-1", "status": "completed", "error": None},
@@ -530,12 +2810,12 @@ class TestCompactThread:
 
     def test_compact_thread_interrupted_returns_non_success(self):
         client = FakeClient()
-        client.queue_notification(
+        client.queue_compaction_notification(
             "turn/started",
             threadId="thread-fake-001",
             turn={"id": "compact-turn-1"},
         )
-        client.queue_notification(
+        client.queue_compaction_notification(
             "turn/completed",
             threadId="thread-fake-001",
             turn={"id": "compact-turn-1", "status": "interrupted", "error": None},
@@ -609,8 +2889,8 @@ class TestServerRequestRouting:
         client.queue_server_request(
             "item/fileChange/requestApproval", request_id="req-2",
             itemId="fc-1",
-            turnId="t1",
-            threadId="th",
+            turnId="turn-fake-001",
+            threadId="thread-fake-001",
             startedAtMs=1234567890,
             reason="create new file with hello() function",
         )
@@ -647,19 +2927,59 @@ class TestServerRequestRouting:
         client = FakeClient()
         client.queue_server_request(
             "mcpServer/elicitation/request", request_id="elic-1",
-            threadId="t", turnId="tu1",
+            threadId="thread-fake-001", turnId="turn-fake-001",
             serverName="hermes-tools",
             mode="form",
             message="confirm",
             requestedSchema={"type": "object", "properties": {}},
         )
         client.queue_notification(
-            "turn/completed", threadId="t",
-            turn={"id": "tu1", "status": "completed", "error": None},
+            "turn/completed", threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
         )
         s = make_session(client)
         s.run_turn("hi", turn_timeout=1.0)
         assert ("elic-1", {"action": "accept", "content": None, "_meta": None}) in client.responses
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"threadId": "stale-thread"},
+            {"threadId": ""},
+            {"threadId": None},
+            {"turnId": "stale-turn"},
+            {"turnId": ""},
+            {"turnId": None},
+        ],
+    )
+    def test_mcp_elicitation_for_hermes_tools_declines_unbound_identity(
+        self, overrides
+    ):
+        client = FakeClient()
+        params = {
+            "threadId": "thread-fake-001",
+            "turnId": "turn-fake-001",
+            "serverName": "hermes-tools",
+            "mode": "form",
+            "message": "confirm",
+            "requestedSchema": {"type": "object", "properties": {}},
+        }
+        params.update(overrides)
+        client.queue_server_request(
+            "mcpServer/elicitation/request", request_id="elic-stale", **params
+        )
+        client.queue_notification(
+            "turn/completed", threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        s = make_session(client)
+        s.run_turn("hi", turn_timeout=1.0)
+
+        assert client.responses == [(
+            "elic-stale",
+            {"action": "decline", "content": None, "_meta": None},
+        )]
 
     def test_mcp_elicitation_for_other_servers_declines(self):
         """For third-party MCP servers we decline by default so users
@@ -694,6 +3014,31 @@ class TestServerRequestRouting:
             auto_approve_exec=True))
         s.run_turn("hi", turn_timeout=1.0)
         assert ("r1", {"decision": "accept"}) in client.responses
+
+    def test_stale_exec_approval_is_declined_even_when_auto_approve_is_enabled(self):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/commandExecution/requestApproval",
+            request_id="stale-approval",
+            command="touch /tmp/should-not-run",
+            cwd="/tmp",
+            threadId="thread-fake-001",
+            turnId="turn-stale",
+            itemId="cmd-stale",
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        session = make_session(
+            client,
+            request_routing=_ServerRequestRouting(auto_approve_exec=True),
+        )
+        session.run_turn("hi", turn_timeout=1.0)
+
+        assert ("stale-approval", {"decision": "decline"}) in client.responses
 
     def test_callback_raises_falls_back_to_decline(self):
         client = FakeClient()
@@ -753,25 +3098,29 @@ class TestApprovalPromptEnrichment:
                       {"kind": {"type": "add"}, "path": "/tmp/new.py"},
                       {"kind": {"type": "update"}, "path": "/tmp/old.py"},
                   ]},
-            threadId="t", turnId="tu1",
+            threadId="thread-fake-001", turnId="turn-fake-001",
         )
         client.queue_server_request(
             "item/fileChange/requestApproval", request_id="req-2",
-            itemId="fc-1", turnId="tu1", threadId="t",
+            itemId="fc-1", turnId="turn-fake-001", threadId="thread-fake-001",
             startedAtMs=1234567890,
             reason="add and update files",
         )
         client.queue_notification(
-            "turn/completed", threadId="t",
-            turn={"id": "tu1", "status": "completed", "error": None},
+            "turn/completed", threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
         )
         captured = {}
+        live_events = []
         def cb(command, description, *, allow_permanent=True):
             captured["command"] = command
             captured["description"] = description
             return "once"
-        s = make_session(client, approval_callback=cb)
+        s = make_session(client, approval_callback=cb, on_event=live_events.append)
         s.run_turn("hi", turn_timeout=1.0)
+        # Notifications drained ahead of an approval request still belong to
+        # the live display stream; otherwise the later completion is orphaned.
+        assert any(note.get("method") == "item/started" for note in live_events)
         # Both add and update kinds should be in the summary
         assert "1 add" in captured["command"] or "1 add" in captured["description"]
         assert "1 update" in captured["command"] or "1 update" in captured["description"]
@@ -779,13 +3128,314 @@ class TestApprovalPromptEnrichment:
         joined = captured["command"] + " " + captured["description"]
         assert "/tmp/new.py" in joined or "/tmp/old.py" in joined
 
+    def test_turn_completion_drained_before_approval_is_terminal(self):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/commandExecution/requestApproval",
+            request_id="req-drained-completion",
+            command="pwd",
+            cwd="/tmp",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+        )
+        # The run loop sees the pending request first and drains this completion
+        # before answering it. It must still apply normal terminal processing.
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        result = make_session(
+            client,
+            approval_callback=lambda *args, **kwargs: "once",
+        ).run_turn("hi", turn_timeout=0.1)
+
+        assert result.error is None
+        assert result.interrupted is False
+        assert result.should_retire is False
+
+    def test_turn_completion_beyond_pre_request_lookahead_is_terminal(self):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/commandExecution/requestApproval",
+            request_id="req-delayed-completion",
+            command="pwd",
+            cwd="/tmp",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+        )
+        for _ in range(8):
+            client.queue_notification(
+                "turn/tokenUsage/updated",
+                threadId="thread-fake-001",
+                turnId="turn-fake-001",
+            )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        def slow_approval(*args, **kwargs):
+            time.sleep(0.08)
+            return "once"
+
+        result = make_session(
+            client,
+            approval_callback=slow_approval,
+        ).run_turn("hi", turn_timeout=0.05)
+
+        assert client.responses == [("req-delayed-completion", {"decision": "accept"})]
+        assert result.error is None
+        assert result.interrupted is False
+        assert result.should_retire is False
+
+    def test_item_after_deferred_turn_completion_is_quarantined(self):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/commandExecution/requestApproval",
+            request_id="req-terminal-boundary",
+            command="pwd",
+            cwd="/tmp",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        client.queue_notification(
+            "item/completed",
+            item={
+                "type": "commandExecution",
+                "id": "post-terminal-command",
+                "command": "printf should-not-project",
+                "cwd": "/tmp",
+                "aggregatedOutput": "should-not-project",
+                "exitCode": 0,
+            },
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+        )
+        live_events = []
+
+        result = make_session(
+            client,
+            approval_callback=lambda *args, **kwargs: "once",
+            on_event=live_events.append,
+        ).run_turn("hi", turn_timeout=1.0)
+
+        assert [note["method"] for note in live_events] == ["turn/completed"]
+        assert result.projected_messages == []
+        assert result.tool_iterations == 0
+        assert result.error is None
+        assert result.interrupted is False
+
+    def test_deferred_completion_drains_pending_approvals_past_deadline(self):
+        client = FakeClient()
+        for request_id in ("approval-1", "approval-2"):
+            client.queue_server_request(
+                "item/commandExecution/requestApproval",
+                request_id=request_id,
+                command="pwd",
+                cwd="/tmp",
+                threadId="thread-fake-001",
+                turnId="turn-fake-001",
+            )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        def slow_approval(*args, **kwargs):
+            time.sleep(0.08)
+            return "once"
+
+        result = make_session(
+            client,
+            approval_callback=slow_approval,
+        ).run_turn("hi", turn_timeout=0.05)
+
+        assert client.responses == [
+            ("approval-1", {"decision": "accept"}),
+            ("approval-2", {"decision": "accept"}),
+        ]
+        assert result.error is None
+        assert result.interrupted is False
+        assert result.should_retire is False
+
+    def test_deferred_completion_handles_request_user_input_past_deadline(self):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/tool/requestUserInput",
+            request_id="input-terminal-boundary",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            itemId="item-input-terminal-boundary",
+            questions=[{
+                "id": "confirm",
+                "question": "Continue?",
+                "options": [{"label": "Yes"}, {"label": "No"}],
+                "isOther": False,
+                "isSecret": False,
+            }],
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        def slow_clarify(*args, **kwargs):
+            time.sleep(0.08)
+            return "Yes"
+
+        result = make_session(
+            client,
+            clarify_callback=slow_clarify,
+        ).run_turn("hi", turn_timeout=0.05)
+
+        assert client.responses == [(
+            "input-terminal-boundary",
+            {"answers": {"confirm": {"answers": ["Yes"]}}},
+        )], client.error_responses
+        assert client.error_responses == []
+        assert result.error is None
+        assert result.interrupted is False
+        assert result.should_retire is False
+
+    def test_deferred_abort_drains_pending_approvals_past_deadline(self):
+        client = FakeClient()
+        for request_id in ("approval-1", "approval-2"):
+            client.queue_server_request(
+                "item/commandExecution/requestApproval",
+                request_id=request_id,
+                command="pwd",
+                cwd="/tmp",
+                threadId="thread-fake-001",
+                turnId="turn-fake-001",
+            )
+        client.queue_notification(
+            "item/completed",
+            item={
+                "type": "agentMessage",
+                "id": "abort-message",
+                "text": "partial output <turn_aborted>",
+            },
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+        )
+
+        def slow_approval(*args, **kwargs):
+            time.sleep(0.08)
+            return "once"
+
+        result = make_session(
+            client,
+            approval_callback=slow_approval,
+        ).run_turn("hi", turn_timeout=0.05)
+
+        assert client.responses == [
+            ("approval-1", {"decision": "accept"}),
+            ("approval-2", {"decision": "accept"}),
+        ]
+        assert result.interrupted is True
+        assert result.error == "codex reported turn_aborted"
+        assert result.should_retire is False
+
+    def test_deferred_terminal_request_drain_is_bounded(self, monkeypatch):
+        monkeypatch.setattr(session_mod, "_MAX_TERMINAL_SERVER_REQUEST_DRAIN", 2)
+        client = FakeClient()
+        for request_id in ("approval-1", "approval-2", "approval-3", "approval-4"):
+            client.queue_server_request(
+                "item/commandExecution/requestApproval",
+                request_id=request_id,
+                command="pwd",
+                cwd="/tmp",
+                threadId="thread-fake-001",
+                turnId="turn-fake-001",
+            )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        result = make_session(
+            client,
+            approval_callback=lambda *args, **kwargs: "once",
+        ).run_turn("hi", turn_timeout=1.0)
+
+        assert [request_id for request_id, _ in client.responses] == [
+            "approval-1",
+            "approval-2",
+        ]
+        assert client.error_responses == [
+            (
+                "approval-3",
+                -32000,
+                "Too many server requests pending at codex turn completion",
+            ),
+            (
+                "approval-4",
+                -32000,
+                "Too many server requests pending at codex turn completion",
+            ),
+        ]
+        assert client._server_requests == []
+        assert result.interrupted is True
+        assert result.should_retire is True
+        assert "more than 2 server requests" in (result.error or "")
+
+    def test_turn_aborted_drained_before_requests_replies_to_all_pending(self):
+        client = FakeClient()
+        for request_id, item_id in (("input-1", "item-1"), ("input-2", "item-2")):
+            client.queue_server_request(
+                "item/tool/requestUserInput",
+                request_id=request_id,
+                threadId="thread-fake-001",
+                turnId="turn-fake-001",
+                itemId=item_id,
+                questions=[{
+                    "id": "answer",
+                    "question": "Continue?",
+                    "options": None,
+                    "isSecret": False,
+                }],
+            )
+        client.queue_notification(
+            "item/completed",
+            item={
+                "type": "agentMessage",
+                "id": "abort-message",
+                "text": "partial output <turn_aborted>",
+            },
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+        )
+
+        result = make_session(
+            client,
+            clarify_callback=lambda question, choices: "continue",
+        ).run_turn("hi", turn_timeout=1.0)
+
+        assert [request_id for request_id, _ in client.responses] == [
+            "input-1",
+            "input-2",
+        ]
+        assert result.interrupted is True
+        assert result.error == "codex reported turn_aborted"
+
     def test_apply_patch_prompt_works_without_cached_summary(self):
         """When approval arrives before item/started (or without changes
         info), prompt falls back to whatever codex provided."""
         client = FakeClient()
         client.queue_server_request(
             "item/fileChange/requestApproval", request_id="req-2",
-            itemId="fc-orphan", turnId="tu1", threadId="t",
+            itemId="fc-orphan", turnId="turn-fake-001", threadId="thread-fake-001",
             startedAtMs=1234567890,
             reason="apply some changes",
         )
@@ -807,14 +3457,14 @@ class TestApprovalPromptEnrichment:
 
 class TestSessionRetirement:
     """Mirrors openclaw beta.8's resilience fixes:
-      - retire timed-out app-server clients (should_retire on deadline)
-      - post-tool completion watchdog (don't burn the full deadline after a
-        tool result if codex goes silent)
-      - <turn_aborted> raw marker as terminal (don't wait for turn/completed
-        that never comes)
-      - OAuth refresh failure classification (suggest `codex login` instead
-        of raw RPC error strings)
-      - dead subprocess detection between iterations
+    - retire timed-out app-server clients (should_retire on deadline)
+    - post-tool completion watchdog (don't burn the full deadline after a
+      tool result if codex goes silent)
+    - <turn_aborted> raw marker as terminal (don't wait for turn/completed
+      that never comes)
+    - OAuth refresh failure classification (suggest `codex login` instead
+      of raw RPC error strings)
+    - dead subprocess detection between iterations
     """
 
     def test_deadline_marks_session_for_retirement(self):
@@ -837,11 +3487,11 @@ class TestSessionRetirement:
         client.queue_notification(
             "item/completed",
             item={"type": "agentMessage", "id": "m1", "text": "hi"},
-            threadId="t", turnId="tu1",
+            threadId="thread-fake-001", turnId="turn-fake-001",
         )
         client.queue_notification(
-            "turn/completed", threadId="t",
-            turn={"id": "tu1", "status": "completed", "error": None},
+            "turn/completed", threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
         )
         s = make_session(client)
         r = s.run_turn("hi", turn_timeout=1.0)
@@ -855,8 +3505,8 @@ class TestSessionRetirement:
         client.queue_notification(
             "item/completed",
             item={"type": "agentMessage", "id": "m1", "text": "done"},
-            threadId="t",
-            turnId="tu1",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
         )
         s = make_session(client)
         r = s.run_turn(
@@ -887,7 +3537,7 @@ class TestSessionRetirement:
                 "status": "completed", "aggregatedOutput": "hi",
                 "exitCode": 0, "commandActions": [],
             },
-            threadId="t", turnId="tu1",
+            threadId="thread-fake-001", turnId="turn-fake-001",
         )
         s = make_session(client)
         r = s.run_turn(
@@ -912,7 +3562,7 @@ class TestSessionRetirement:
                 "status": "completed", "aggregatedOutput": "hi",
                 "exitCode": 0, "commandActions": [],
             },
-            threadId="t", turnId="tu1",
+            threadId="thread-fake-001", turnId="turn-fake-001",
         )
         s = make_session(client)
         monotonic_values = iter([1000.0, 999.0, 999.0, 999.0, 1000.2])
@@ -943,17 +3593,17 @@ class TestSessionRetirement:
                 "status": "completed", "aggregatedOutput": "hi",
                 "exitCode": 0, "commandActions": [],
             },
-            threadId="t", turnId="tu1",
+            threadId="thread-fake-001", turnId="turn-fake-001",
         )
         # Non-tool activity immediately after — resets watchdog.
         client.queue_notification(
             "item/completed",
             item={"type": "agentMessage", "id": "m1", "text": "tool finished"},
-            threadId="t", turnId="tu1",
+            threadId="thread-fake-001", turnId="turn-fake-001",
         )
         client.queue_notification(
-            "turn/completed", threadId="t",
-            turn={"id": "tu1", "status": "completed", "error": None},
+            "turn/completed", threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
         )
         s = make_session(client)
         r = s.run_turn(
@@ -979,7 +3629,7 @@ class TestSessionRetirement:
                 "type": "agentMessage", "id": "m1",
                 "text": "partial output... <turn_aborted>",
             },
-            threadId="t", turnId="tu1",
+            threadId="thread-fake-001", turnId="turn-fake-001",
         )
         # Deliberately NO turn/completed notification queued.
         s = make_session(client)
@@ -1000,7 +3650,7 @@ class TestSessionRetirement:
             "item/completed",
             item={"type": "agentMessage", "id": "m1",
                   "text": "<turn_aborted/>"},
-            threadId="t", turnId="tu1",
+            threadId="thread-fake-001", turnId="turn-fake-001",
         )
         s = make_session(client)
         r = s.run_turn("x", turn_timeout=2.0,
@@ -1058,9 +3708,9 @@ class TestSessionRetirement:
         triggers the re-auth hint + retirement."""
         client = FakeClient()
         client.queue_notification(
-            "turn/completed", threadId="t",
+            "turn/completed", threadId="thread-fake-001",
             turn={
-                "id": "tu1", "status": "failed",
+                "id": "turn-fake-001", "status": "failed",
                 "error": {"message": "401 Unauthorized: please reauthenticate"},
             },
         )
@@ -1076,9 +3726,9 @@ class TestSessionRetirement:
         re-auth hint. Conservative classifier."""
         client = FakeClient()
         client.queue_notification(
-            "turn/completed", threadId="t",
+            "turn/completed", threadId="thread-fake-001",
             turn={
-                "id": "tu1", "status": "failed",
+                "id": "turn-fake-001", "status": "failed",
                 "error": {"message": "rate limit exceeded"},
             },
         )

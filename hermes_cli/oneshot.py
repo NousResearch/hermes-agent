@@ -414,6 +414,7 @@ def _run_agent(
         #   - dangerous-command approval → bypassed via HERMES_YOLO_MODE=1
         #   - skill secret capture → returns gracefully when no callback set
         clarify_callback=_oneshot_clarify_callback,
+        clarify_cancel_callback=lambda: None,
     )
 
     # Belt-and-braces: make sure AIAgent doesn't invoke any streaming

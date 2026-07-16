@@ -5,7 +5,7 @@ sidebar_label: Codex App-Server Runtime
 
 # Codex App-Server Runtime
 
-Hermes can optionally hand `openai/*` and `openai-codex/*` turns to the [Codex CLI app-server](https://github.com/openai/codex) instead of running its own tool loop. When enabled, terminal commands, file edits, sandboxing, and MCP tool calls all execute inside Codex's runtime — Hermes becomes the shell around it (sessions DB, slash commands, gateway, memory and skill review).
+Hermes can optionally hand `openai/*` and `openai-codex/*` turns to the [Codex CLI app-server](https://github.com/openai/codex) instead of running its own tool loop. When enabled, terminal commands, file edits, sandboxing, and MCP tool calls all execute inside Codex's runtime — Hermes remains the shell around it, supplying sessions, resumed history, assembled developer context, memory/plugin recall, slash commands, gateway integration, and governed stateful tools.
 
 This is **opt-in only**. Default Hermes behavior is unchanged unless you flip the flag. Hermes never auto-routes you onto this runtime.
 
@@ -18,22 +18,26 @@ Not using OpenAI Codex? `hermes setup --portal` configures a non-Codex backend w
 - Run OpenAI agent turns against your **ChatGPT subscription** (no API key required) using the same auth flow Codex CLI uses.
 - Use **Codex's own toolset and sandbox** — `shell` for terminal/read/write/search, `apply_patch` for structured edits, `update_plan` for planning, all running inside seatbelt/landlock sandboxing.
 - **Native Codex plugins** — Linear, GitHub, Gmail, Calendar, Canva, etc. — installed via `codex plugin` are auto-migrated and active in your Hermes session.
-- **Hermes' richer tools come along** — web_search, web_extract, browser automation, vision, image generation, skills, and TTS work via an MCP callback. Codex calls back into Hermes for tools it doesn't have built in.
+- **Hermes' complementary tools come along** — web extraction, browser automation, URL/data vision, TTS, configured image editing/reference workflows, and external/plugin skill access work via an MCP callback. Codex-native web search remains authoritative; Codex's native image and skill capabilities remain available alongside the non-equivalent Hermes extensions.
+- **Hermes context and resumed sessions follow you** — the developer instructions assembled for the active Hermes profile, prior user/assistant history, and current memory/plugin recall are bridged into the Codex thread without duplicating ephemeral recall in durable history.
+- **Stateful Hermes tools remain available** — active `memory`, `session_search`, `todo`, `delegate_task`, and `skill_manage` tools are exposed through Codex's dynamic-tool protocol and execute through the live AIAgent rather than a stateless subprocess.
 - **Memory and skill nudges keep working** — Codex's events are projected into Hermes' message shape so the self-improvement loop sees a normal-looking transcript.
 
 ## What tools the model actually has
 
-This is the part most users want to know up front. When this runtime is on, the model running your turn has three independent sources of tools:
+This is the part most users want to know up front. When this runtime is on, the model running your turn has four independent sources of tools:
 
 ### 1. Codex's built-in toolset (always on)
 
-These ship with `codex app-server` itself — no Hermes involvement, no MCP, no plugins. All five are available the moment the runtime starts:
+These ship with `codex app-server` itself — no Hermes callback is involved. Core tools include:
 
 - **`shell`** — runs arbitrary shell commands inside the sandbox. This is how the model reads files (`cat`, `head`, `tail`), writes them (`echo > foo`, heredocs), searches them (`find`, `rg`, `grep`), navigates directories (`ls`, `cd`), runs builds, manages processes, and anything else you'd do in bash.
 - **`apply_patch`** — applies a structured multi-file diff in Codex's patch format. The model uses this for non-trivial code edits (adding a function, refactoring across files); shell heredocs are still available for one-off writes.
 - **`update_plan`** — codex's internal todo / plan tracker. Equivalent of Hermes' `todo` tool, but managed entirely inside codex's runtime.
 - **`view_image`** — load a local image file into the conversation so the model can see it.
-- **`web_search`** — codex has its own built-in web search when configured. Hermes also exposes `web_search` (Firecrawl-backed) via the callback below; the model picks whichever it prefers.
+- **`web_search`** — Codex's own web search. The duplicate Hermes callback tool is disabled on this runtime.
+- **native image generation** — Codex's image-generation capability remains available for basic generation; Hermes' callback remains available for configured backends, image-to-image edits, and reference images.
+- **`request_user_input`** — asks one or more structured questions through the active Hermes interface when it supports clarification.
 
 So **anything you'd do via terminal — read/write/search/find/run — codex does natively**. The sandbox profile (`:workspace` by default when you enable the runtime) controls what's writable.
 
@@ -57,25 +61,32 @@ What's NOT migrated:
 
 ### 3. Hermes tool callback (MCP server, registered in `~/.codex/config.toml`)
 
-Hermes registers itself as an MCP server so codex can call back for tools codex doesn't ship with. Available via the callback:
+Hermes registers itself as an MCP server so Codex can call back for tools it does not provide natively. Available via the callback include:
 
-- **`web_search`** / **`web_extract`** — Firecrawl-backed; tends to be cleaner than scraping for structured content.
+- **`web_extract`** — extracts structured page content without duplicating Codex's native web search.
 - **`browser_navigate` / `browser_click` / `browser_type` / `browser_press` / `browser_snapshot` / `browser_scroll` / `browser_back` / `browser_get_images` / `browser_console` / `browser_vision`** — full browser automation via Camofox or Browserbase.
 - **`vision_analyze`** — call a separate vision model to inspect an image (different from codex's `view_image` which loads it into the conversation).
-- **`image_generate`** — image generation through Hermes' image_gen plugin chain.
-- **`skill_view` / `skills_list`** — read from Hermes' skill library.
 - **`text_to_speech`** — TTS through Hermes' configured provider.
+- **`image_generate`** — use Hermes' configured image backend, including image-to-image editing and reference-image inputs when supported.
+- **`skills_list` / `skill_view`** — discover and load configured external skill directories and plugin-qualified skills that are not represented by Codex's native skill roots.
 
-When the model wants one of these, codex spawns the `hermes_tools_mcp_server` subprocess via stdio MCP, the call is dispatched through `model_tools.handle_function_call()` (same code path as Hermes' default runtime), and the result is returned to codex like any other MCP response.
+When the model wants one of these, Codex spawns the `hermes_tools_mcp_server` subprocess via stdio MCP, the call is dispatched through `model_tools.handle_function_call()` (same code path as Hermes' default runtime), and the result is returned to Codex like any other MCP response. Hermes writes `disabled_tools` only for `web_search`, whose native Codex equivalent covers the same role. The image and skill callbacks remain because their Hermes-specific modalities are not fully represented by Codex's native surface.
 
-### What's NOT available on this runtime
+### 4. Live Hermes stateful tools (Codex dynamic tools)
 
-These four Hermes tools require the running AIAgent context (mid-loop state) to dispatch, and a stateless MCP callback can't drive them. Switch back to the default runtime (`/codex-runtime auto`) when you need any of them:
+The stateful tools that require the running AIAgent cannot use the stateless MCP callback. Hermes instead advertises only active, allowlisted definitions under Codex's `hermes` dynamic-tool namespace and dispatches each call through the current AIAgent:
 
-- **`delegate_task`** — spawn subagents
-- **`memory`** — Hermes' persistent memory store
-- **`session_search`** — cross-session search
-- **`todo`** — Hermes' todo store (codex's `update_plan` is the in-runtime equivalent)
+- **`delegate_task`** — spawn subagents with the current task/session context
+- **`memory`** — read or update Hermes' persistent memory store
+- **`session_search`** — search resumed and prior Hermes sessions
+- **`todo`** — use Hermes' persistent todo store; Codex's built-in `update_plan` remains available as a separate in-thread plan
+- **`skill_manage`** — create and improve persistent Hermes skills; Codex handles native-root discovery while the MCP callback covers Hermes external/plugin skill sources
+
+Availability follows the agent's active tool configuration: a disabled or unavailable tool is not advertised to Codex. Calls keep Hermes' existing middleware, guardrails, stores, task identity, and delegation behavior.
+
+### Native clarification
+
+When the active Hermes surface provides a clarification callback, Hermes enables Codex's native `request_user_input` capability and relays its structured questions to that interface. Answers are correlated to the active thread, turn, and item before being returned to Codex. Hermes does not expose a second `clarify` tool, and non-interactive surfaces continue without this capability.
 
 ## Workflow features (`/goal`, kanban, cron)
 
@@ -92,7 +103,7 @@ These four Hermes tools require the running AIAgent context (mid-loop state) to 
 What works inside a codex-runtime worker:
 - Codex's full toolset (shell, apply_patch, update_plan, view_image, web_search) — the worker does its actual task work natively
 - The migrated codex plugins — Linear, GitHub, etc.
-- The Hermes tool callback for browser_*, vision, image_gen, skills, TTS
+- The complementary Hermes callback for browser automation, web extraction, vision, and TTS
 
 What also works because the MCP callback exposes them:
 - **`kanban_complete` / `kanban_block` / `kanban_comment` / `kanban_heartbeat`** — the worker handoff tools. These read `HERMES_KANBAN_TASK` from env (set by the dispatcher), gate access correctly, and write to the per-board SQLite DB pinned by `HERMES_KANBAN_DB`. Without these in the callback, a worker on this runtime could do its task but couldn't report back, hanging until the dispatcher's timeout.
@@ -103,23 +114,27 @@ The kanban tools are gated by `HERMES_KANBAN_TASK` env var the dispatcher sets �
 
 ### Cron jobs
 
-**Not specifically tested.** Cron jobs run via `cronjob` → `AIAgent.run_conversation`, the same code path as the CLI. If the cron job's config has `openai_runtime: codex_app_server` it'll run on codex. The same tool-availability rules apply — codex built-ins + plugins + MCP callback work, agent-loop tools (delegate_task, memory, session_search, todo) don't. If your cron job relies on those, scope the cron to a profile that uses the default runtime.
+**Not specifically tested.** Cron jobs run via `cronjob` → `AIAgent.run_conversation`, the same code path as the CLI. If the cron job's config has `openai_runtime: codex_app_server` it'll run on codex. Codex built-ins, plugins, the MCP callback, and active allowlisted stateful tools follow the cron agent's configured tool availability.
 
 ## Trade-offs
 
 |  | Hermes default runtime | Codex app-server (opt-in) |
 |---|---|---|
-| `delegate_task` subagents | yes | not available — needs agent loop context |
-| `memory`, `session_search`, `todo` | yes | not available — needs agent loop context |
-| `web_search`, `web_extract` | yes | yes (via MCP callback) |
+| `delegate_task` subagents | yes | yes (live dynamic-tool bridge, when active) |
+| `memory`, `session_search`, `todo` | yes | yes (live dynamic-tool bridge, when active) |
+| `web_search` | yes | yes (Codex native) |
+| `web_extract` | yes | yes (via MCP callback) |
 | Browser automation (Camofox/Browserbase) | yes | yes (via MCP callback) |
-| `vision_analyze`, `image_generate` | yes | yes (via MCP callback) |
-| `skill_view`, `skills_list` | yes | yes (via MCP callback) |
+| `vision_analyze` | yes | yes (via MCP callback for URL/data or specialized fallback) |
+| Image generation/editing | yes | yes (Codex native plus Hermes MCP for configured editing/reference workflows) |
+| Skill discovery/loading | yes | yes (Codex native roots plus Hermes MCP for external/plugin skills) |
+| `skill_manage` | yes | yes (live dynamic-tool bridge, when active) |
 | `text_to_speech` | yes | yes (via MCP callback) |
 | Codex `shell` (terminal/read/write/search/find/run) | — | yes (Codex built-in) |
 | Codex `apply_patch` (structured multi-file edits) | — | yes (Codex built-in) |
 | Codex `update_plan` (in-runtime todo) | — | yes (Codex built-in) |
 | Codex `view_image` (load image into conversation) | — | yes (Codex built-in) |
+| Structured user clarification | yes | yes (Codex-native request relayed through Hermes UI) |
 | Codex sandbox (seatbelt/landlock, profiles) | — | yes (Codex built-in) |
 | ChatGPT subscription auth | — | yes (via `openai-codex` provider) |
 | Native Codex plugins (Linear, GitHub, etc.) | — | yes (auto-migrated) |
@@ -166,6 +181,7 @@ That command:
 - Migrates user MCP servers from `~/.hermes/config.yaml` to `~/.codex/config.toml`.
 - **Discovers and migrates installed native Codex plugins** (Linear, GitHub, Gmail, Calendar, Canva, etc.) by querying Codex's `plugin/list` RPC.
 - **Registers Hermes' own tools as an MCP server** so the codex subprocess can call back for tools codex doesn't ship with.
+- **Disables the duplicate Hermes `web_search` callback** so Codex's native web search remains authoritative, while preserving Hermes-only callbacks such as image generation and skill discovery.
 - **Writes `default_permissions = ":workspace"`** so the sandbox allows writes within the workspace without prompting for every operation.
 - Tells you what was migrated. Takes effect on the **next** session — the current cached agent keeps the prior runtime so prompt caches stay valid.
 
@@ -363,7 +379,13 @@ When the model calls `web_search` (or another exposed Hermes tool), codex spawns
 
 **Tools available via the callback:** `web_search`, `web_extract`, `browser_navigate`, `browser_click`, `browser_type`, `browser_press`, `browser_snapshot`, `browser_scroll`, `browser_back`, `browser_get_images`, `browser_console`, `browser_vision`, `vision_analyze`, `image_generate`, `skill_view`, `skills_list`, `text_to_speech`.
 
-**Tools NOT available:** `delegate_task`, `memory`, `session_search`, `todo`. These need the running AIAgent context to dispatch (mid-loop state) and a stateless MCP callback can't drive them. Use the default Hermes runtime (`/codex-runtime auto`) when you need these.
+The MCP callback remains intentionally stateless. `delegate_task`, `memory`, `session_search`, and `todo` therefore do not travel through this subprocess; they use the live dynamic-tool bridge described below.
+
+## Live Hermes context and stateful-tool bridge
+
+For a new Codex thread, Hermes sends the assembled developer context for the active profile. When resuming a Hermes session, prior user/assistant messages are replayed through `thread/inject_items`. Current external-memory and plugin recall is attached only to the active turn, so it does not become duplicate durable user history.
+
+Hermes also passes active allowlisted `memory`, `session_search`, `todo`, and `delegate_task` definitions through Codex's `dynamicTools` capability. A correlated `item/tool/call` is routed back through the live parent `AIAgent._invoke_tool` path, preserving the current task/session context, stores, middleware, guardrails, and delegation semantics. Malformed, inactive, or failed calls are returned to Codex as failed tool results rather than terminating the turn.
 
 ## Disabling
 
@@ -387,11 +409,11 @@ This runtime is **opt-in beta**. Working as of Hermes Agent 2026.5 + Codex CLI 0
 - Toggle on/off cycle
 - Memory and skill nudge counters (verified live via integration tests)
 - Hermes web_search through codex (verified live: "OpenAI Codex CLI – Getting Started" returned end-to-end)
+- Hermes developer context, resumed history, ephemeral recall, and live stateful dynamic tools
 
 Known limitations:
 
 - **Hermes auth and codex auth are separate sessions.** You need both `codex login` AND `hermes auth login codex` for the cleanest UX (the runtime uses codex's session for the LLM call). This is a deliberate design choice in Hermes' `_import_codex_cli_tokens` — Hermes won't share OAuth state with codex CLI to avoid clobbering each other on token refresh.
-- **`delegate_task`, `memory`, `session_search`, `todo` are unavailable on this runtime.** They need the running AIAgent context which a stateless MCP callback can't provide. Use `/codex-runtime auto` when you need these.
 - **No inline patch preview in approval prompts when codex doesn't track the changeset.** Codex's `fileChange` approval params don't always carry the changeset. Hermes caches the data from the corresponding `item/started` notification when possible, but if approval arrives before the item has streamed, the prompt falls back to whatever `reason` codex provides.
 - **Sub-second cancellation isn't guaranteed.** Mid-stream interrupts (Ctrl+C while codex is responding) are sent via `turn/interrupt`, but if codex has already flushed the final message, you get the response anyway.
 
@@ -401,8 +423,8 @@ If you find a bug, [open an issue](https://github.com/NousResearch/hermes-agent/
 
 ```
                 ┌─── Hermes shell (CLI / TUI / gateway) ───┐
-                │  sessions DB · slash commands · memory   │
-                │  & skill review · cron · session pickers │
+                │ sessions · context/history · slash cmds  │
+                │ stateful tools · reviews · cron · gateway│
                 └──┬──────────────────────────────────────┬┘
                    │ user_message               final     │
                    ▼                            text +    │
@@ -412,12 +434,13 @@ If you find a bug, [open an issue](https://github.com/NousResearch/hermes-agent/
         │     → CodexAppServerSession       │              │
         │   else: chat_completions / codex_responses (default)
         └────┬─────────────────────────────┘              │
-             │ JSON-RPC over stdio                        │
+             │ developer context + history + turn input   │
+             │ + dynamicTools over JSON-RPC/stdio         │
              ▼                                            │
         ┌──────────────────────────────────┐              │
         │  codex app-server (subprocess)    │──────────────┘
         │   thread/start, turn/start        │
-        │   item/* notifications            │
+        │   item/* notifications + tool/call │
         │   shell + apply_patch + update_plan│
         │   view_image + sandbox            │
         │   ┌─────────────────────────┐     │
@@ -442,4 +465,4 @@ If you find a bug, [open an issue](https://github.com/NousResearch/hermes-agent/
         └──────────────────────────────────────────────────────────┘
 ```
 
-For implementation details, see [PR #24182](https://github.com/NousResearch/hermes-agent/pull/24182) and the [Codex app-server protocol README](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md).
+Stateful `hermes.*` dynamic calls return directly to the live AIAgent rather than the MCP subprocess. For implementation details, see `agent/codex_bridge.py`, `agent/transports/codex_app_server_session.py`, [PR #24182](https://github.com/NousResearch/hermes-agent/pull/24182), and the [Codex app-server protocol README](https://github.com/openai/codex/blob/main/codex-rs/app-server/README.md).

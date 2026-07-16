@@ -190,50 +190,59 @@ def _build_server() -> Any:
     for name in EXPOSED_TOOLS:
         spec = all_defs.get(name)
         if spec is None:
-            logger.debug(
-                "skipping %s — not registered in this Hermes process", name
-            )
+            logger.debug("skipping %s — not registered in this Hermes process", name)
             continue
 
         description = spec.get("description") or f"Hermes {name} tool"
         params_schema = spec.get("parameters") or {"type": "object", "properties": {}}
 
-        # FastMCP wants a Python callable. Build a closure that takes the
-        # arguments dict, dispatches via handle_function_call, and returns
-        # the result string. We use add_tool() for full control over the
-        # input schema (FastMCP's @tool() decorator inspects type hints,
-        # which we can't get from a JSON schema at runtime).
-        def _make_handler(tool_name: str, schema: dict | None):
-            sig, annots = _signature_from_schema(schema)
+        # FastMCP derives both validation and the advertised input schema from
+        # a Python callable's signature. Give the generic dispatcher a dynamic
+        # keyword-only signature matching the authoritative Hermes schema,
+        # then replace FastMCP's lossy ``Any`` schema with the original JSON
+        # schema so descriptions, enums, and nested objects survive intact.
+        def _make_handler(
+            tool_name: str,
+            tool_description: str,
+            schema: dict[str, Any],
+        ):
+            signature, annotations = _signature_from_schema(schema)
 
             def _dispatch(**kwargs: Any) -> str:
                 try:
-                    # Filter out None values before dispatch so unset optionals
-                    # aren't forwarded to the handler.
-                    args = {k: v for k, v in kwargs.items() if v is not None}
-                    return handle_function_call(tool_name, args or {})
+                    # Optional signature parameters default to None. Omit them
+                    # from Hermes dispatch just as a normal model tool call
+                    # would, while preserving falsey values such as 0/False.
+                    arguments = {
+                        key: value for key, value in kwargs.items() if value is not None
+                    }
+                    return handle_function_call(tool_name, arguments)
                 except Exception as exc:
                     logger.exception("tool %s raised", tool_name)
                     return json.dumps({"error": str(exc), "tool": tool_name})
 
             _dispatch.__name__ = tool_name
-            _dispatch.__doc__ = description
-            _dispatch.__signature__ = sig
-            _dispatch.__annotations__ = {**annots, "return": str}
+            _dispatch.__doc__ = tool_description
+            _dispatch.__signature__ = signature  # type: ignore[attr-defined]
+            _dispatch.__annotations__ = {**annotations, "return": str}
             return _dispatch
 
         try:
-            mcp.add_tool(
-                _make_handler(name, params_schema),
-                name=name,
-                description=description,
-            )
-        except TypeError:
-            # Older mcp SDK signature — fall back to decorator-style. The
-            # synthesized __signature__ on the handler still drives schema
-            # generation there.
-            handler = _make_handler(name, params_schema)
-            handler = mcp.tool(name=name, description=description)(handler)
+            handler = _make_handler(name, description, params_schema)
+            try:
+                mcp.add_tool(handler, name=name, description=description)
+            except TypeError:
+                # Older MCP SDKs expose decorator-style registration only.
+                mcp.tool(name=name, description=description)(handler)
+
+            manager = getattr(mcp, "_tool_manager", None)
+            registered = manager.get_tool(name) if manager is not None else None
+            if registered is None:
+                raise RuntimeError(f"FastMCP did not register tool {name!r}")
+            registered.parameters = params_schema
+        except (TypeError, ValueError, RuntimeError) as exc:
+            logger.warning("skipping %s — MCP registration failed: %s", name, exc)
+            continue
 
         exposed_count += 1
 

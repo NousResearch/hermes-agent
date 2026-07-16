@@ -28,7 +28,6 @@ Counters tracked alongside projection:
 
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -37,19 +36,61 @@ from typing import Any, Optional
 def _deterministic_call_id(item_type: str, item_id: str) -> str:
     """Stable id for tool_call message correlation.
 
-    Uses the codex item id directly when present (already a uuid); falls back
-    to a content hash so replay produces the same id across sessions and
-    prefix caches stay valid. See AGENTS.md Pitfall #16 (deterministic IDs in
-    tool call history)."""
-    if item_id:
-        return f"codex_{item_type}_{item_id}"
-    digest = hashlib.sha256(f"{item_type}".encode()).hexdigest()[:16]
-    return f"codex_{item_type}_{digest}"
+    Codex item ids are the only protocol identity stable across replay. Never
+    fabricate an id for malformed/id-less tool items: doing so conflates
+    distinct calls and corrupts tool-call/result correlation.
+    """
+    if not isinstance(item_type, str) or not item_type.strip():
+        raise ValueError("item_type must be a non-empty string")
+    if not isinstance(item_id, str) or not item_id.strip():
+        raise ValueError("item_id must be a non-empty string")
+    # Length-prefix the first component so underscore placement cannot make
+    # distinct (type, id) pairs collapse onto the same opaque correlation id.
+    return f"codex_{len(item_type)}_{item_type}_{item_id}"
 
 
 def _format_tool_args(d: dict) -> str:
     """Format a dict as JSON the way Hermes' existing tool_calls path does."""
     return json.dumps(d, ensure_ascii=False, sort_keys=True)
+
+
+def _dynamic_tool_call_id_type(namespace: str, tool: str) -> str:
+    """Encode the full dynamic callable identity without delimiter collisions."""
+    return f"dyn_{len(namespace)}_{namespace}_{len(tool)}_{tool}"
+
+
+def _mcp_tool_call_id_type(server: str, tool: str) -> str:
+    """Encode the full MCP callable identity without delimiter collisions."""
+    return f"mcp_{len(server)}_{server}_{len(tool)}_{tool}"
+
+
+def _provider_tool_identity(item_type: str, item: dict) -> Optional[tuple[str, ...]]:
+    """Return the provider-visible tool identity when the item supplies one."""
+    if item_type == "commandExecution":
+        return ("exec",)
+    if item_type == "fileChange":
+        return ("apply_patch",)
+    if item_type == "dynamicToolCall":
+        namespace = item.get("namespace")
+        tool = item.get("tool")
+        if (
+            isinstance(namespace, str)
+            and namespace.strip()
+            and isinstance(tool, str)
+            and tool.strip()
+        ):
+            return (namespace, tool)
+    if item_type == "mcpToolCall":
+        server = item.get("server")
+        tool = item.get("tool")
+        if (
+            isinstance(server, str)
+            and server.strip()
+            and isinstance(tool, str)
+            and tool.strip()
+        ):
+            return (server, tool)
+    return None
 
 
 @dataclass
@@ -74,12 +115,50 @@ class CodexEventProjector:
 
     def __init__(self) -> None:
         self._pending_reasoning: list[str] = []
+        self._completed_item_keys: set[str] = set()
+        self._item_types_by_id: dict[str, str] = {}
+        self._item_tool_identities_by_id: dict[str, tuple[str, ...]] = {}
 
     def project(self, notification: dict) -> ProjectionResult:
         """Project a single notification. Idempotent for non-completion events;
         only `item/completed` and `turn/completed` materialize messages."""
         method = notification.get("method", "")
         params = notification.get("params", {}) or {}
+
+        # Bind every stable provider item id to its start-time type. A delayed
+        # completion with the same id but a different type must not create a
+        # second canonical tool occurrence or consume the valid completion.
+        if method == "item/started":
+            item = params.get("item") or {}
+            if not isinstance(item, dict):
+                return ProjectionResult()
+            item_type = item.get("type")
+            item_id = item.get("id")
+            if (
+                isinstance(item_type, str)
+                and item_type.strip()
+                and isinstance(item_id, str)
+                and item_id.strip()
+            ):
+                tool_identity = _provider_tool_identity(item_type, item)
+                if (
+                    item_type in {"mcpToolCall", "dynamicToolCall"}
+                    and tool_identity is None
+                ):
+                    return ProjectionResult()
+                expected_item_type = self._item_types_by_id.get(item_id)
+                if expected_item_type is not None and expected_item_type != item_type:
+                    return ProjectionResult()
+                expected_tool_identity = self._item_tool_identities_by_id.get(item_id)
+                if (
+                    expected_tool_identity is not None
+                    and expected_tool_identity != tool_identity
+                ):
+                    return ProjectionResult()
+                self._item_types_by_id.setdefault(item_id, item_type)
+                if tool_identity is not None:
+                    self._item_tool_identities_by_id.setdefault(item_id, tool_identity)
+            return ProjectionResult()
 
         # We only materialize messages on `item/completed`. Streaming deltas
         # (`item/<type>/outputDelta`, `item/<type>/delta`) are display-only and
@@ -89,8 +168,40 @@ class CodexEventProjector:
             return ProjectionResult()
 
         item = params.get("item") or {}
+        if not isinstance(item, dict):
+            return ProjectionResult()
         item_type = item.get("type") or ""
         item_id = item.get("id") or ""
+
+        # Codex may replay terminal notifications after reconnects. Persisting
+        # the same completed item twice creates duplicate tool-call/result
+        # pairs with an identical deterministic call id. Item ids are also the
+        # only stable occurrence identity the protocol gives us. Drop malformed
+        # id-less terminal events rather than collapsing distinct reasoning by
+        # content or fabricating colliding tool ids.
+        if not isinstance(item_type, str) or not item_type.strip():
+            return ProjectionResult()
+        if not isinstance(item_id, str) or not item_id.strip():
+            return ProjectionResult()
+        expected_item_type = self._item_types_by_id.get(item_id)
+        if expected_item_type is not None and expected_item_type != item_type:
+            return ProjectionResult()
+        tool_identity = _provider_tool_identity(item_type, item)
+        if item_type in {"mcpToolCall", "dynamicToolCall"} and tool_identity is None:
+            return ProjectionResult()
+        expected_tool_identity = self._item_tool_identities_by_id.get(item_id)
+        if (
+            expected_tool_identity is not None
+            and expected_tool_identity != tool_identity
+        ):
+            return ProjectionResult()
+        self._item_types_by_id.setdefault(item_id, item_type)
+        if tool_identity is not None:
+            self._item_tool_identities_by_id.setdefault(item_id, tool_identity)
+        completed_key = f"id:{item_id}"
+        if completed_key in self._completed_item_keys:
+            return ProjectionResult()
+        self._completed_item_keys.add(completed_key)
 
         if item_type == "agentMessage":
             return self._project_agent_message(item)
@@ -215,11 +326,13 @@ class CodexEventProjector:
         )
 
     def _project_mcp_tool_call(self, item: dict, item_id: str) -> ProjectionResult:
-        server = item.get("server") or "mcp"
-        tool = item.get("tool") or "unknown"
-        # Mirror the native MCP tool-name convention (mcp__server__tool) so the
-        # deterministic call_id input stays consistent with registration names.
-        call_id = _deterministic_call_id(f"mcp__{server}__{tool}", item_id)
+        tool_identity = _provider_tool_identity("mcpToolCall", item)
+        if tool_identity is None:
+            return ProjectionResult()
+        server, tool = tool_identity
+        call_id = _deterministic_call_id(
+            _mcp_tool_call_id_type(server, tool), item_id
+        )
         args = item.get("arguments") or {}
         if not isinstance(args, dict):
             args = {"arguments": args}
@@ -260,8 +373,13 @@ class CodexEventProjector:
     def _project_dynamic_tool_call(
         self, item: dict, item_id: str
     ) -> ProjectionResult:
-        tool = item.get("tool") or "unknown"
-        call_id = _deterministic_call_id(f"dyn_{tool}", item_id)
+        tool_identity = _provider_tool_identity("dynamicToolCall", item)
+        if tool_identity is None:
+            return ProjectionResult()
+        namespace, tool = tool_identity
+        call_id = _deterministic_call_id(
+            _dynamic_tool_call_id_type(namespace, tool), item_id
+        )
         args = item.get("arguments") or {}
         if not isinstance(args, dict):
             args = {"arguments": args}
@@ -284,7 +402,14 @@ class CodexEventProjector:
             self._pending_reasoning = []
         content_items = item.get("contentItems") or []
         if isinstance(content_items, list) and content_items:
-            content = json.dumps(content_items, ensure_ascii=False)[:4000]
+            text_items = [
+                entry.get("text")
+                for entry in content_items
+                if isinstance(entry, dict) and isinstance(entry.get("text"), str)
+            ]
+            content = "\n".join(text_items)[:4000] if text_items else json.dumps(
+                content_items, ensure_ascii=False
+            )[:4000]
         else:
             success = item.get("success")
             content = f"success={success}"

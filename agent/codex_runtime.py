@@ -16,13 +16,191 @@ compatibility.
 
 from __future__ import annotations
 
+import json
 import logging
-import os
 import time
 from types import SimpleNamespace
 from typing import Any, Dict, List
 
+from hermes_constants import get_hermes_home
+
 logger = logging.getLogger(__name__)
+
+_CODEX_LIVE_OUTPUT_MAX_PENDING_CHARS = 1_000_000
+_CODEX_LIVE_OUTPUT_DISPLAY_CHARS = 2_000
+
+
+def _codex_tool_identity(item: dict) -> tuple[str, str, str, dict] | None:
+    """Return ``(call_id, tool_name, preview, display_args)`` for a Codex item.
+
+    IDs deliberately match :class:`CodexEventProjector` so the live tool card
+    and the persisted tool call hydrate as the same invocation.
+    """
+    if not isinstance(item, dict):
+        return None
+
+    from agent.transports.codex_event_projector import (
+        _deterministic_call_id,
+        _dynamic_tool_call_id_type,
+        _mcp_tool_call_id_type,
+    )
+
+    item_type = item.get("type") or ""
+    item_id = item.get("id") or ""
+    if not isinstance(item_id, str) or not item_id.strip():
+        return None
+    if item_type == "commandExecution":
+        command = item.get("command") or ""
+        return (
+            _deterministic_call_id("exec", item_id),
+            "exec_command",
+            command,
+            {"command": command, "cwd": item.get("cwd") or ""},
+        )
+
+    if item_type == "fileChange":
+        changes = item.get("changes") or []
+        preview = "file changes"
+        changes_summary = []
+        if isinstance(changes, list) and changes:
+            paths = [
+                str(change.get("path"))
+                for change in changes
+                if isinstance(change, dict) and change.get("path")
+            ]
+            for change in changes:
+                if not isinstance(change, dict):
+                    continue
+                kind = change.get("kind") or {}
+                kind_name = kind.get("type") if isinstance(kind, dict) else str(kind)
+                changes_summary.append(
+                    {"kind": kind_name or "update", "path": change.get("path") or ""}
+                )
+            if paths:
+                preview = ", ".join(paths[:3])
+                if len(paths) > 3:
+                    preview += f", +{len(paths) - 3} more"
+        return (
+            _deterministic_call_id("apply_patch", item_id),
+            "apply_patch",
+            preview,
+            {"changes": changes_summary},
+        )
+
+    if item_type == "mcpToolCall":
+        server = item.get("server")
+        tool = item.get("tool")
+        if (
+            not isinstance(server, str)
+            or not server.strip()
+            or not isinstance(tool, str)
+            or not tool.strip()
+        ):
+            return None
+        args = item.get("arguments") or {}
+        if not isinstance(args, dict):
+            args = {"arguments": args}
+        return (
+            _deterministic_call_id(_mcp_tool_call_id_type(server, tool), item_id),
+            f"mcp.{server}.{tool}",
+            tool,
+            args,
+        )
+
+    if item_type == "dynamicToolCall":
+        namespace = item.get("namespace")
+        tool = item.get("tool")
+        if (
+            not isinstance(namespace, str)
+            or not namespace.strip()
+            or not isinstance(tool, str)
+            or not tool.strip()
+        ):
+            return None
+        args = item.get("arguments") or {}
+        if not isinstance(args, dict):
+            args = {"arguments": args}
+        return (
+            _deterministic_call_id(
+                _dynamic_tool_call_id_type(namespace, tool), item_id
+            ),
+            tool,
+            tool,
+            args,
+        )
+
+    return None
+
+
+def _codex_tool_result(item: dict) -> str:
+    """Format a completed Codex tool item like the persisted projector does."""
+    item_type = item.get("type") or ""
+    if item_type == "commandExecution":
+        output = item.get("aggregatedOutput") or ""
+        exit_code = item.get("exitCode")
+        if exit_code is not None and exit_code != 0:
+            return f"[exit {exit_code}]\n{output}"
+        return output
+    if item_type == "fileChange":
+        return (
+            f"apply_patch status={item.get('status') or 'unknown'}, "
+            f"{len(item.get('changes') or [])} change(s)"
+        )
+    if item_type == "mcpToolCall":
+        if item.get("error"):
+            return f"[error] {json.dumps(item['error'], ensure_ascii=False)}"
+        if item.get("result") is not None:
+            return json.dumps(item["result"], ensure_ascii=False)
+        return ""
+    if item_type == "dynamicToolCall":
+        content_items = item.get("contentItems") or []
+        if isinstance(content_items, list) and content_items:
+            text_items = [
+                str(entry["text"])
+                for entry in content_items
+                if isinstance(entry, dict) and isinstance(entry.get("text"), str)
+            ]
+            if text_items:
+                return "\n".join(text_items)
+            return json.dumps(content_items, ensure_ascii=False)
+        return f"success={item.get('success')}"
+    return ""
+
+
+def _redact_codex_live_display_text(value: object) -> str:
+    """Return a force-redacted live display string, or nothing on failure."""
+    try:
+        from agent.redact import (
+            _redact_http_request_target_query_params,
+            _redact_url_query_params,
+            _redact_url_userinfo,
+            redact_sensitive_text,
+        )
+
+        redacted = redact_sensitive_text(str(value), force=True)
+        # Global redaction intentionally preserves ordinary web URLs because
+        # they may be actionable OAuth/magic links. Live tool display is a
+        # stricter security boundary: query credentials and URL userinfo must
+        # never be broadcast to gateways or ACP clients.
+        redacted = _redact_url_query_params(redacted)
+        redacted = _redact_http_request_target_query_params(redacted)
+        redacted = _redact_url_userinfo(redacted)
+        return redacted if isinstance(redacted, str) else ""
+    except Exception:
+        logger.debug("codex live-display redaction failed; omitting text", exc_info=True)
+        return ""
+
+
+def _redact_codex_live_display_args(args: dict) -> dict:
+    """Return force-redacted live display args, failing closed on any error."""
+    try:
+        raw = json.dumps(args, ensure_ascii=False, default=str)
+        redacted = _redact_codex_live_display_text(raw)
+        display_args = json.loads(redacted)
+        return display_args if isinstance(display_args, dict) else {}
+    except Exception:
+        logger.debug("codex live-display argument redaction failed; omitting args", exc_info=True)
+        return {}
 
 
 def _codex_note_to_tool_progress(note: dict) -> tuple[str, str, dict] | None:
@@ -38,46 +216,11 @@ def _codex_note_to_tool_progress(note: dict) -> tuple[str, str, dict] | None:
     if not isinstance(note, dict) or note.get("method") != "item/started":
         return None
     params = note.get("params") or {}
-    item = params.get("item") or {}
-    if not isinstance(item, dict):
+    identity = _codex_tool_identity(params.get("item") or {})
+    if identity is None:
         return None
-
-    item_type = item.get("type") or ""
-    if item_type == "commandExecution":
-        command = item.get("command") or ""
-        return "exec_command", command, {"command": command, "cwd": item.get("cwd") or ""}
-
-    if item_type == "fileChange":
-        changes = item.get("changes") or []
-        preview = "file changes"
-        if isinstance(changes, list) and changes:
-            paths = [
-                str(change.get("path"))
-                for change in changes
-                if isinstance(change, dict) and change.get("path")
-            ]
-            if paths:
-                preview = ", ".join(paths[:3])
-                if len(paths) > 3:
-                    preview += f", +{len(paths) - 3} more"
-        return "apply_patch", preview, {"changes": changes}
-
-    if item_type == "mcpToolCall":
-        server = item.get("server") or "mcp"
-        tool = item.get("tool") or "unknown"
-        args = item.get("arguments") or {}
-        if not isinstance(args, dict):
-            args = {"arguments": args}
-        return f"mcp.{server}.{tool}", tool, args
-
-    if item_type == "dynamicToolCall":
-        tool = item.get("tool") or "unknown"
-        args = item.get("arguments") or {}
-        if not isinstance(args, dict):
-            args = {"arguments": args}
-        return tool, tool, args
-
-    return None
+    _call_id, tool_name, preview, args = identity
+    return tool_name, preview, args
 
 
 def _coerce_usage_int(value: Any) -> int:
@@ -330,6 +473,9 @@ def run_codex_app_server_turn(
     messages: List[Dict[str, Any]],
     effective_task_id: str,
     should_review_memory: bool = False,
+    active_system_prompt: str = "",
+    plugin_user_context: str = "",
+    ext_prefetch_cache: str = "",
 ) -> Dict[str, Any]:
     """Codex app-server runtime path. Hands the entire turn to a `codex
     app-server` subprocess and projects its events back into Hermes'
@@ -338,14 +484,40 @@ def run_codex_app_server_turn(
     Called from run_conversation() when agent.api_mode == "codex_app_server".
     Returns the same dict shape as the chat_completions path.
     """
+    from agent.codex_bridge import (
+        build_dynamic_tools,
+        build_history_items,
+        build_turn_input,
+        make_dynamic_tool_handler,
+    )
     from agent.transports.codex_app_server_session import (
         CodexAppServerSession,
         _ServerRequestRouting,
     )
 
-    # Lazy session: one CodexAppServerSession per AIAgent instance.
-    # Spawned on first turn, reused across turns, closed at AIAgent
-    # shutdown (see _cleanup hook).
+    dynamic_tools = build_dynamic_tools(
+        getattr(agent, "tools", []) or [],
+        getattr(agent, "valid_tool_names", set()) or set(),
+    )
+    clarify_callback = getattr(agent, "clarify_callback", None)
+    clarify_cancel_callback = getattr(agent, "clarify_cancel_callback", None)
+    bridge_signature = (
+        active_system_prompt,
+        json.dumps(dynamic_tools, sort_keys=True, separators=(",", ":")),
+        clarify_callback is not None,
+        clarify_cancel_callback is not None,
+    )
+    existing_session = getattr(agent, "_codex_session", None)
+    if (
+        existing_session is not None
+        and getattr(agent, "_codex_bridge_signature", None) != bridge_signature
+    ):
+        existing_session.close()
+        agent._codex_session = None
+
+    # Lazy session: one CodexAppServerSession per stable Hermes bridge config.
+    # A prompt/tool-catalog change starts a fresh Codex thread so App Server's
+    # thread-scoped developerInstructions and dynamicTools cannot go stale.
     if not hasattr(agent, "_codex_session") or agent._codex_session is None:
         from agent.runtime_cwd import resolve_agent_cwd
 
@@ -380,58 +552,355 @@ def run_codex_app_server_turn(
                 exc_info=True,
             )
 
-        def _on_codex_event(note: dict) -> None:
-            # Bridge Codex app-server item/started notifications to Hermes
-            # tool-progress so gateways show verbose "running X" breadcrumbs
-            # on this route too (#38835).
-            progress_callback = getattr(agent, "tool_progress_callback", None)
-            if progress_callback is None:
-                return
-            mapped = _codex_note_to_tool_progress(note)
-            if mapped is None:
-                return
-            tool_name, preview, args = mapped
-            try:
-                progress_callback("tool.started", tool_name, preview, args)
-            except Exception:
-                logger.debug("codex tool-progress callback raised", exc_info=True)
+        live_codex_tools: dict[str, tuple[str, str, dict]] = {}
+        live_codex_output_pending: dict[str, str] = {}
+        live_codex_output_display: dict[str, str] = {}
+        blocked_codex_output: set[str] = set()
+        live_codex_item_types: dict[str, str] = {}
+        completed_codex_items: set[str] = set()
+        live_codex_turn_key: tuple[str, str] | None = None
 
+        def _reset_live_codex_state() -> None:
+            nonlocal live_codex_turn_key
+            live_codex_tools.clear()
+            live_codex_output_pending.clear()
+            live_codex_output_display.clear()
+            blocked_codex_output.clear()
+            live_codex_item_types.clear()
+            completed_codex_items.clear()
+            live_codex_turn_key = None
+
+        def _on_codex_event(note: dict) -> None:
+            """Project non-terminal Codex notifications onto Hermes callbacks.
+
+            ``CodexEventProjector`` intentionally materializes only terminal
+            items for canonical history. Live clients still need the deltas and
+            lifecycle notifications while the turn is running, so mirror them
+            through the same callback contract used by every other provider.
+            """
+            nonlocal live_codex_turn_key
+            if not isinstance(note, dict):
+                return
+            method = note.get("method") or ""
+            params = note.get("params") or {}
+            if not isinstance(params, dict):
+                return
+
+            # Every live item callback belongs to one active, correlated
+            # thread/turn. Codex may deliver buffered notifications before a
+            # turn starts or after it completes; explicit metadata may also
+            # identify a stale turn. None of those may reach the live UI.
+            if method.startswith("item/"):
+                session = getattr(agent, "_codex_session", None)
+                current_thread_id = getattr(session, "_thread_id", None)
+                current_turn_id = getattr(session, "_active_turn_id", None)
+                current_key = (
+                    (current_thread_id, current_turn_id)
+                    if isinstance(current_thread_id, str)
+                    and current_thread_id.strip()
+                    and isinstance(current_turn_id, str)
+                    and current_turn_id.strip()
+                    else None
+                )
+                if live_codex_turn_key is None or live_codex_turn_key != current_key:
+                    _reset_live_codex_state()
+                    return
+                expected_thread_id, expected_turn_id = live_codex_turn_key
+                notification_thread_id = params.get("threadId")
+                notification_turn_id = params.get("turnId")
+                if (
+                    not isinstance(notification_thread_id, str)
+                    or not notification_thread_id.strip()
+                    or notification_thread_id != expected_thread_id
+                    or not isinstance(notification_turn_id, str)
+                    or not notification_turn_id.strip()
+                    or notification_turn_id != expected_turn_id
+                ):
+                    return
+
+            delta = params.get("delta")
+            if method == "item/agentMessage/delta" and isinstance(delta, str) and delta:
+                try:
+                    agent._fire_stream_delta(delta)
+                except Exception:
+                    logger.debug("codex stream-delta callback raised", exc_info=True)
+
+            reasoning_methods = {
+                "item/reasoning/delta",  # older Codex app-server builds
+                "item/reasoning/summaryTextDelta",
+                "item/reasoning/textDelta",
+            }
+            if method in reasoning_methods and isinstance(delta, str) and delta:
+                try:
+                    agent._fire_reasoning_delta(delta)
+                except Exception:
+                    logger.debug("codex reasoning-delta callback raised", exc_info=True)
+
+            if method in {"turn/started", "turn/completed"}:
+                # The session adapter deliberately ignores stale/unbound turn
+                # notifications. Keep the live lifecycle cache on the same
+                # correlation boundary so a delayed completion cannot reset
+                # deduplication state for the active turn.
+                session = getattr(agent, "_codex_session", None)
+                turn_obj = params.get("turn")
+                turn_obj = turn_obj if isinstance(turn_obj, dict) else {}
+                notification_thread_id = params.get("threadId")
+                notification_turn_id = turn_obj.get("id")
+                if (
+                    session is not None
+                    and isinstance(notification_thread_id, str)
+                    and notification_thread_id.strip()
+                    and notification_thread_id == getattr(session, "_thread_id", None)
+                    and isinstance(notification_turn_id, str)
+                    and notification_turn_id.strip()
+                    and notification_turn_id
+                    == getattr(session, "_active_turn_id", None)
+                ):
+                    turn_key = (notification_thread_id, notification_turn_id)
+                    if method == "turn/completed" or live_codex_turn_key != turn_key:
+                        _reset_live_codex_state()
+                    live_codex_turn_key = (
+                        None if method == "turn/completed" else turn_key
+                    )
+                return
+
+            if method == "item/commandExecution/outputDelta":
+                item_id = params.get("itemId")
+                if not isinstance(item_id, str) or not item_id.strip():
+                    return
+                live_tool = live_codex_tools.get(item_id)
+                progress_callback = getattr(agent, "tool_progress_callback", None)
+                if (
+                    live_tool is not None
+                    and progress_callback is not None
+                    and isinstance(delta, str)
+                ):
+                    call_id, tool_name, display_args = live_tool
+                    display_output = live_codex_output_display.get(item_id, "")
+                    if item_id in blocked_codex_output:
+                        # A line that exceeded the pending cap is never emitted.
+                        # Resume only after its newline boundary.
+                        if "\n" in delta:
+                            blocked_codex_output.discard(item_id)
+                            pending_output = delta.rsplit("\n", 1)[1]
+                        else:
+                            pending_output = ""
+                    else:
+                        pending_output = (
+                            live_codex_output_pending.get(item_id, "") + delta
+                        )
+                        if len(pending_output) > _CODEX_LIVE_OUTPUT_MAX_PENDING_CHARS:
+                            # Fail closed rather than truncate raw text and lose
+                            # the key/prefix needed to recognize a credential.
+                            if "\n" in pending_output:
+                                pending_output = pending_output.rsplit("\n", 1)[1]
+                            else:
+                                blocked_codex_output.add(item_id)
+                                pending_output = ""
+                        elif "\n" in pending_output:
+                            complete_output, pending_output = pending_output.rsplit(
+                                "\n", 1
+                            )
+                            redacted_output = _redact_codex_live_display_text(
+                                complete_output + "\n"
+                            )
+                            display_output = (display_output + redacted_output)[
+                                -_CODEX_LIVE_OUTPUT_DISPLAY_CHARS:
+                            ]
+                    live_codex_output_pending[item_id] = pending_output
+                    live_codex_output_display[item_id] = display_output
+                    try:
+                        progress_callback(
+                            "tool.progress",
+                            tool_name,
+                            display_output,
+                            display_args,
+                            tool_call_id=call_id,
+                        )
+                    except Exception:
+                        logger.debug("codex tool-output callback raised", exc_info=True)
+                return
+
+            if method not in {"item/started", "item/completed"}:
+                return
+            item = params.get("item")
+            if not isinstance(item, dict):
+                return
+            item_id = item.get("id")
+            if not isinstance(item_id, str) or not item_id.strip():
+                return
+            item_type = item.get("type")
+            if not isinstance(item_type, str) or not item_type.strip():
+                return
+            identity = _codex_tool_identity(item)
+
+            if method == "item/started":
+                if item_id in completed_codex_items:
+                    return
+                existing_type = live_codex_item_types.get(item_id)
+                if existing_type is not None:
+                    # The first provider type owns this item ID. Replays and
+                    # cross-type starts cannot create a conflicting live card.
+                    return
+                if item_type in {
+                    "commandExecution",
+                    "fileChange",
+                    "mcpToolCall",
+                    "dynamicToolCall",
+                } and identity is None:
+                    # Malformed tool starts fail before binding provider ID
+                    # state, so a later valid start can still use the ID.
+                    return
+                live_codex_item_types[item_id] = item_type
+                if identity is None:
+                    return
+                call_id, tool_name, preview, args = identity
+                display_args = _redact_codex_live_display_args(args)
+                display_preview = _redact_codex_live_display_text(preview)
+                live_codex_tools[item_id] = (call_id, tool_name, display_args)
+                progress_callback = getattr(agent, "tool_progress_callback", None)
+                if progress_callback is not None:
+                    try:
+                        progress_callback(
+                            "tool.started",
+                            tool_name,
+                            display_preview,
+                            display_args,
+                            tool_call_id=call_id,
+                        )
+                    except Exception:
+                        logger.debug("codex tool-progress callback raised", exc_info=True)
+                start_callback = getattr(agent, "tool_start_callback", None)
+                if start_callback is not None:
+                    try:
+                        start_callback(call_id, tool_name, display_args)
+                    except Exception:
+                        logger.debug("codex tool-start callback raised", exc_info=True)
+                return
+
+            if item_id in completed_codex_items:
+                return
+            if live_codex_item_types.get(item_id) != item_type:
+                return
+            if identity is None:
+                if item_type not in {
+                    "commandExecution",
+                    "fileChange",
+                    "mcpToolCall",
+                    "dynamicToolCall",
+                }:
+                    completed_codex_items.add(item_id)
+                    live_codex_item_types.pop(item_id, None)
+                return
+            live_tool = live_codex_tools.get(item_id)
+            if live_tool is None:
+                # A completion without a displayed start would create an
+                # orphan card and cannot recover authoritative start-time
+                # arguments. Match the SSE bridge policy and drop it.
+                return
+            completion_call_id, completion_tool_name, _, _ = identity
+            call_id, tool_name, display_args = live_tool
+            if (
+                completion_call_id != call_id
+                or completion_tool_name != tool_name
+            ):
+                # A provider item ID reused for another tool identity must not
+                # close the original card or consume its valid completion.
+                return
+            result = _redact_codex_live_display_text(_codex_tool_result(item))
+            if item_type == "mcpToolCall":
+                result = result[: 1008 if item.get("error") else 4000]
+            elif item_type == "dynamicToolCall":
+                result = result[:4000]
+            completed_codex_items.add(item_id)
+            progress_callback = getattr(agent, "tool_progress_callback", None)
+            if progress_callback is not None:
+                try:
+                    progress_callback(
+                        "tool.completed",
+                        tool_name,
+                        None,
+                        display_args,
+                        result=result,
+                        tool_call_id=call_id,
+                    )
+                except Exception:
+                    logger.debug("codex tool-progress callback raised", exc_info=True)
+            complete_callback = getattr(agent, "tool_complete_callback", None)
+            if complete_callback is not None:
+                try:
+                    complete_callback(call_id, tool_name, display_args, result)
+                except Exception:
+                    logger.debug("codex tool-complete callback raised", exc_info=True)
+            live_codex_tools.pop(item_id, None)
+            live_codex_item_types.pop(item_id, None)
+            live_codex_output_pending.pop(item_id, None)
+            live_codex_output_display.pop(item_id, None)
+            blocked_codex_output.discard(item_id)
+
+        initial_history_items = build_history_items(messages[:-1])
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
+            extra_skill_roots=[str(get_hermes_home() / "skills")],
             approval_callback=approval_callback,
+            clarify_callback=clarify_callback,
+            clarify_cancel_callback=clarify_cancel_callback,
             request_routing=_ServerRequestRouting(
                 auto_approve_exec=auto_approve_requests,
                 auto_approve_apply_patch=auto_approve_requests,
             ),
+            developer_instructions=active_system_prompt,
+            dynamic_tools=dynamic_tools,
+            initial_history_items=initial_history_items,
+            dynamic_tool_handler=make_dynamic_tool_handler(agent),
             on_event=_on_codex_event,
         )
+        setattr(
+            agent._codex_session,
+            "_hermes_live_state_reset",
+            _reset_live_codex_state,
+        )
+        agent._codex_bridge_signature = bridge_signature
 
     # NOTE: the user message is ALREADY appended to messages by the
     # standard run_conversation() flow (line ~11823) before the early
     # return reaches us. Do NOT append again — that would duplicate.
 
+    codex_turn_input = build_turn_input(
+        user_message,
+        external_memory_context=ext_prefetch_cache,
+        plugin_user_context=plugin_user_context,
+    )
+    codex_session = agent._codex_session
+    reset_live_state = getattr(codex_session, "_hermes_live_state_reset", None)
+    if callable(reset_live_state):
+        reset_live_state()
     try:
-        turn = agent._codex_session.run_turn(user_input=user_message)
-    except Exception as exc:
-        logger.exception("codex app-server turn failed")
-        # Crash → unconditionally drop the session so the next turn
-        # respawns from scratch instead of reusing a dead client.
         try:
-            agent._codex_session.close()
-        except Exception:
-            pass
-        agent._codex_session = None
-        return {
-            "final_response": (
-                f"Codex app-server turn failed: {exc}. "
-                f"Fall back to default runtime with `/codex-runtime auto`."
-            ),
-            "messages": messages,
-            "api_calls": 0,
-            "completed": False,
-            "partial": True,
-            "error": str(exc),
-        }
+            turn = codex_session.run_turn(user_input=codex_turn_input)
+        except Exception as exc:
+            logger.exception("codex app-server turn failed")
+            # Crash → unconditionally drop the session so the next turn
+            # respawns from scratch instead of reusing a dead client.
+            try:
+                codex_session.close()
+            except Exception:
+                pass
+            agent._codex_session = None
+            return {
+                "final_response": (
+                    f"Codex app-server turn failed: {exc}. "
+                    f"Fall back to default runtime with `/codex-runtime auto`."
+                ),
+                "messages": messages,
+                "api_calls": 0,
+                "completed": False,
+                "partial": True,
+                "error": str(exc),
+            }
+    finally:
+        if callable(reset_live_state):
+            reset_live_state()
 
     # If the turn signalled the underlying client is wedged (deadline
     # blown, post-tool watchdog tripped, OAuth refresh died, subprocess
@@ -452,8 +921,17 @@ def run_codex_app_server_turn(
     # Splice projected messages into the conversation. The projector emits
     # standard {role, content, tool_calls, tool_call_id} entries, which
     # is exactly what curator.py / sessions DB expect.
-    if turn.projected_messages:
-        messages.extend(turn.projected_messages)
+    # Hermes already owns and persisted the inbound user message before this
+    # early-return path. Codex also emits that input as a completed userMessage;
+    # dropping it here avoids both a duplicate row and persistence of the
+    # ephemeral memory/plugin suffix added only for the model-facing turn.
+    projected_messages = [
+        message
+        for message in (turn.projected_messages or [])
+        if message.get("role") != "user"
+    ]
+    if projected_messages:
+        messages.extend(projected_messages)
 
         # Persist the newly-projected assistant/tool messages ourselves.
         # This path is an early return that bypasses conversation_loop, whose

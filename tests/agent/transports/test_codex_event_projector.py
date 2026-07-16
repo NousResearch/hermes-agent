@@ -12,6 +12,7 @@ import pytest
 from agent.transports.codex_event_projector import (
     CodexEventProjector,
     _deterministic_call_id,
+    _dynamic_tool_call_id_type,
     _format_tool_args,
 )
 
@@ -71,6 +72,25 @@ class TestProjectionInvariants:
         r = p.project({"method": "totally/unknown", "params": {}})
         assert r.messages == []
 
+    def test_mcp_tool_identity_encoding_is_collision_free(self) -> None:
+        def projected_call_id(server: str, tool: str) -> str:
+            projected = CodexEventProjector().project(
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "item": {
+                            "type": "mcpToolCall",
+                            "id": "same-provider-id",
+                            "server": server,
+                            "tool": tool,
+                        }
+                    },
+                }
+            )
+            return projected.messages[0]["tool_calls"][0]["id"]
+
+        assert projected_call_id("a__b", "c") != projected_call_id("a", "b__c")
+
 
 class TestCommandExecutionProjection:
     """Real captured notification → assistant tool_call + tool result."""
@@ -122,6 +142,231 @@ class TestCommandExecutionProjection:
         a = p1.project(COMMAND_EXEC_COMPLETED).messages
         b = p2.project(COMMAND_EXEC_COMPLETED).messages
         assert a[0]["tool_calls"][0]["id"] == b[0]["tool_calls"][0]["id"]
+
+    def test_completed_item_replay_is_not_projected_twice(self) -> None:
+        projector = CodexEventProjector()
+
+        first = projector.project(COMMAND_EXEC_COMPLETED)
+        replay = projector.project(COMMAND_EXEC_COMPLETED)
+
+        assert len(first.messages) == 2
+        assert first.is_tool_iteration is True
+        assert replay.messages == []
+        assert replay.is_tool_iteration is False
+
+    def test_idless_completed_items_are_dropped_without_colliding(self) -> None:
+        projector = CodexEventProjector()
+
+        notifications = [
+            {"type": "reasoning", "summary": ["same"]},
+            {"type": "reasoning", "summary": ["same"]},
+            {"type": "commandExecution", "command": "first"},
+            {"type": "commandExecution", "command": "second"},
+        ]
+
+        for item in notifications:
+            result = projector.project(
+                {"method": "item/completed", "params": {"item": item}}
+            )
+            assert result.messages == []
+            assert result.is_tool_iteration is False
+
+    @pytest.mark.parametrize("item_type", ["", " ", "\t"])
+    def test_blank_item_type_does_not_consume_item_id(self, item_type: str) -> None:
+        projector = CodexEventProjector()
+        malformed = projector.project({
+            "method": "item/completed",
+            "params": {"item": {"type": item_type, "id": "shared-blank-type"}},
+        })
+        valid = projector.project({
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "type": "commandExecution",
+                    "id": "shared-blank-type",
+                    "command": "pwd",
+                    "cwd": "/tmp",
+                    "status": "completed",
+                    "aggregatedOutput": "/tmp\n",
+                    "exitCode": 0,
+                }
+            },
+        })
+
+        assert malformed.messages == []
+        assert malformed.is_tool_iteration is False
+        assert len(valid.messages) == 2
+        assert valid.is_tool_iteration is True
+
+    def test_conflicting_same_id_completion_preserves_started_identity(self) -> None:
+        projector = CodexEventProjector()
+        projector.project({
+            "method": "item/started",
+            "params": {
+                "item": {
+                    "type": "commandExecution",
+                    "id": "shared-1",
+                    "command": "pwd",
+                    "cwd": "/tmp",
+                }
+            },
+        })
+
+        conflict = projector.project({
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "type": "dynamicToolCall",
+                    "id": "shared-1",
+                    "namespace": "hermes",
+                    "tool": "memory",
+                    "arguments": {"action": "add"},
+                    "success": True,
+                }
+            },
+        })
+        valid = projector.project({
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "type": "commandExecution",
+                    "id": "shared-1",
+                    "command": "pwd",
+                    "cwd": "/tmp",
+                    "aggregatedOutput": "/tmp\n",
+                    "exitCode": 0,
+                }
+            },
+        })
+
+        assert conflict.messages == []
+        assert conflict.is_tool_iteration is False
+        assert len(valid.messages) == 2
+        assert valid.is_tool_iteration is True
+        assert valid.messages[0]["tool_calls"][0]["id"] == "codex_4_exec_shared-1"
+
+    @pytest.mark.parametrize(
+        "conflicting_item",
+        [
+            {
+                "type": "dynamicToolCall",
+                "id": "shared-start",
+                "namespace": "hermes",
+                "tool": "memory",
+            },
+            {
+                "type": "mcpToolCall",
+                "id": "shared-start",
+                "server": "honcho",
+                "tool": "search",
+            },
+        ],
+    )
+    def test_conflicting_tool_start_does_not_mutate_existing_identity(
+        self, conflicting_item: dict
+    ) -> None:
+        projector = CodexEventProjector()
+        projector.project({
+            "method": "item/started",
+            "params": {"item": {"type": "plan", "id": "shared-start"}},
+        })
+
+        conflict = projector.project({
+            "method": "item/started",
+            "params": {"item": conflicting_item},
+        })
+        valid = projector.project({
+            "method": "item/completed",
+            "params": {
+                "item": {"type": "plan", "id": "shared-start", "text": "valid"}
+            },
+        })
+
+        assert conflict.messages == []
+        assert projector._item_types_by_id == {"shared-start": "plan"}
+        assert projector._item_tool_identities_by_id == {}
+        assert len(valid.messages) == 1
+        assert "[codex plan]" in valid.messages[0]["content"]
+
+    @pytest.mark.parametrize(
+        "started, conflicting, valid",
+        [
+            (
+                {"type": "dynamicToolCall", "id": "same-dyn", "namespace": "hermes", "tool": "memory"},
+                {"type": "dynamicToolCall", "id": "same-dyn", "namespace": "hermes", "tool": "terminal"},
+                {"type": "dynamicToolCall", "id": "same-dyn", "namespace": "hermes", "tool": "memory"},
+            ),
+            (
+                {
+                    "type": "mcpToolCall",
+                    "id": "same-mcp",
+                    "server": "honcho",
+                    "tool": "search",
+                },
+                {
+                    "type": "mcpToolCall",
+                    "id": "same-mcp",
+                    "server": "honcho",
+                    "tool": "conclude",
+                },
+                {
+                    "type": "mcpToolCall",
+                    "id": "same-mcp",
+                    "server": "honcho",
+                    "tool": "search",
+                },
+            ),
+        ],
+    )
+    def test_same_type_conflicting_tool_name_does_not_consume_identity(
+        self, started: dict, conflicting: dict, valid: dict
+    ) -> None:
+        projector = CodexEventProjector()
+        projector.project({"method": "item/started", "params": {"item": started}})
+
+        conflict = projector.project({
+            "method": "item/completed",
+            "params": {"item": {**conflicting, "success": True}},
+        })
+        accepted = projector.project({
+            "method": "item/completed",
+            "params": {"item": {**valid, "success": True}},
+        })
+
+        assert conflict.messages == []
+        assert conflict.is_tool_iteration is False
+        assert len(accepted.messages) == 2
+        assert accepted.is_tool_iteration is True
+
+    def test_dynamic_namespace_conflict_does_not_consume_identity(self) -> None:
+        projector = CodexEventProjector()
+        started = {
+            "type": "dynamicToolCall",
+            "id": "same-dyn-namespace",
+            "namespace": "hermes",
+            "tool": "memory",
+        }
+        projector.project({"method": "item/started", "params": {"item": started}})
+
+        conflict = projector.project({
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    **started,
+                    "namespace": "foreign",
+                    "success": True,
+                }
+            },
+        })
+        accepted = projector.project({
+            "method": "item/completed",
+            "params": {"item": {**started, "success": True}},
+        })
+
+        assert conflict.messages == []
+        assert conflict.is_tool_iteration is False
+        assert len(accepted.messages) == 2
+        assert accepted.is_tool_iteration is True
 
 
 class TestAgentMessageProjection:
@@ -258,18 +503,156 @@ class TestHelpers:
         assert _deterministic_call_id("exec", "abc") == _deterministic_call_id("exec", "abc")
         assert _deterministic_call_id("exec", "abc") != _deterministic_call_id("exec", "xyz")
 
-    def test_deterministic_call_id_handles_missing_id(self) -> None:
-        # Should not raise, should be stable for same item type
-        a = _deterministic_call_id("exec", "")
-        b = _deterministic_call_id("exec", "")
-        assert a == b
-        assert "exec" in a
+    def test_deterministic_call_id_rejects_missing_id(self) -> None:
+        with pytest.raises(ValueError, match="item_id"):
+            _deterministic_call_id("exec", "")
+
+    def test_deterministic_call_id_is_unambiguous_across_underscore_boundaries(self) -> None:
+        assert _deterministic_call_id("dyn_a_b", "c") != _deterministic_call_id(
+            "dyn_a", "b_c"
+        )
+
+    def test_dynamic_identity_type_is_unambiguous_across_components(self) -> None:
+        assert _dynamic_tool_call_id_type("a_b", "c") != _dynamic_tool_call_id_type(
+            "a", "b_c"
+        )
 
     def test_format_tool_args_sorted_keys(self) -> None:
         # Sorted keys = deterministic across replays = prefix cache stays valid
         a = _format_tool_args({"b": 1, "a": 2})
         b = _format_tool_args({"a": 2, "b": 1})
         assert a == b
+
+
+class TestDynamicToolProjection:
+    @pytest.mark.parametrize(
+        ("item_type", "incomplete_identity", "valid_identity"),
+        [
+            ("mcpToolCall", {"server": "srv"}, {"server": "srv", "tool": "search"}),
+            (
+                "dynamicToolCall",
+                {"namespace": "hermes"},
+                {"namespace": "hermes", "tool": "memory"},
+            ),
+            (
+                "dynamicToolCall",
+                {"tool": "memory"},
+                {"namespace": "hermes", "tool": "memory"},
+            ),
+        ],
+    )
+    @pytest.mark.parametrize("start_incomplete", [False, True])
+    def test_incomplete_tool_identity_does_not_materialize_or_consume_item_id(
+        self,
+        item_type: str,
+        incomplete_identity: dict,
+        valid_identity: dict,
+        start_incomplete: bool,
+    ) -> None:
+        projector = CodexEventProjector()
+        item_id = f"incomplete-{item_type}-{start_incomplete}"
+        incomplete_item = {
+            "type": item_type,
+            "id": item_id,
+            **incomplete_identity,
+        }
+        if start_incomplete:
+            projector.project(
+                {"method": "item/started", "params": {"item": incomplete_item}}
+            )
+            assert projector._item_types_by_id == {}
+            assert projector._item_tool_identities_by_id == {}
+            assert projector._completed_item_keys == set()
+
+        rejected = projector.project(
+            {"method": "item/completed", "params": {"item": incomplete_item}}
+        )
+        accepted = projector.project(
+            {
+                "method": "item/completed",
+                "params": {
+                    "item": {
+                        "type": item_type,
+                        "id": item_id,
+                        **valid_identity,
+                        "arguments": {},
+                        "result": None,
+                        "error": None,
+                        "contentItems": [],
+                        "success": True,
+                    }
+                },
+            }
+        )
+
+        assert rejected.messages == []
+        assert rejected.is_tool_iteration is False
+        assert len(accepted.messages) == 2
+        assert accepted.is_tool_iteration is True
+
+    @pytest.mark.parametrize(
+        "malformed_identity",
+        [
+            {"tool": "memory"},
+            {"namespace": "", "tool": "memory"},
+            {"namespace": "   ", "tool": "memory"},
+            {"namespace": "\t", "tool": "memory"},
+            {"namespace": "hermes"},
+            {"namespace": "hermes", "tool": ""},
+        ],
+    )
+    def test_malformed_dynamic_start_does_not_bind_item_type(
+        self, malformed_identity: dict
+    ) -> None:
+        projector = CodexEventProjector()
+        item_id = "reusable-after-malformed-dynamic-start"
+
+        projector.project({
+            "method": "item/started",
+            "params": {
+                "item": {
+                    "type": "dynamicToolCall",
+                    "id": item_id,
+                    **malformed_identity,
+                }
+            },
+        })
+        accepted = projector.project({
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "type": "commandExecution",
+                    "id": item_id,
+                    "command": "pwd",
+                    "cwd": "/tmp",
+                    "aggregatedOutput": "/tmp\n",
+                    "exitCode": 0,
+                }
+            },
+        })
+
+        assert len(accepted.messages) == 2
+        assert accepted.is_tool_iteration is True
+
+    def test_input_text_content_is_projected_without_transport_envelope(self) -> None:
+        item = {
+            "type": "dynamicToolCall",
+            "id": "d-text",
+            "namespace": "hermes",
+            "tool": "todo",
+            "arguments": {},
+            "status": "completed",
+            "contentItems": [
+                {"type": "inputText", "text": '{"todos": []}'},
+            ],
+            "success": True,
+        }
+
+        messages = CodexEventProjector().project(
+            {"method": "item/completed", "params": {"item": item}}
+        ).messages
+
+        assert messages[1]["content"] == '{"todos": []}'
 
 
 class TestRoleAlternationInvariant:
@@ -287,7 +670,7 @@ class TestRoleAlternationInvariant:
             {"type": "mcpToolCall", "id": "m1", "server": "s", "tool": "t",
              "status": "completed", "arguments": {}, "result": None,
              "error": None},
-            {"type": "dynamicToolCall", "id": "d1", "tool": "x",
+            {"type": "dynamicToolCall", "id": "d1", "namespace": "hermes", "tool": "x",
              "arguments": {}, "status": "completed",
              "contentItems": [], "success": True},
         ],

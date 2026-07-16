@@ -127,14 +127,13 @@ def make_tool_progress_cb(
 
     Emits ``ToolCallStart`` for ``tool.started`` events and tracks IDs in a FIFO
     queue per tool name so duplicate/parallel same-name calls still complete
-    against the correct ACP tool call.  Other event types (``tool.completed``,
-    ``reasoning.available``) are silently ignored.
+    against the correct ACP tool call.  Codex App Server bypasses Hermes'
+    conversation loop and therefore supplies a stable ``tool_call_id`` on both
+    ``tool.started`` and ``tool.completed``; complete those calls directly here.
+    Other event types (for example ``reasoning.available``) are ignored.
     """
 
     def _tool_progress(event_type: str, name: str = None, preview: str = None, args: Any = None, **kwargs) -> None:
-        # Only emit ACP ToolCallStart for tool.started; ignore other event types
-        if event_type != "tool.started":
-            return
         if isinstance(args, str):
             try:
                 args = json.loads(args)
@@ -143,7 +142,55 @@ def make_tool_progress_cb(
         if not isinstance(args, dict):
             args = {}
 
-        tc_id = make_tool_call_id()
+        stable_id = kwargs.get("tool_call_id")
+        if not isinstance(stable_id, str) or not stable_id.strip():
+            stable_id = None
+
+        if event_type == "tool.completed":
+            # The regular Hermes loop completes ACP cards through step_callback.
+            # Codex App Server has no such step, so only consume completions that
+            # carry a stable ID and correlate to a start displayed by this callback.
+            if stable_id is None:
+                return
+            meta = tool_call_meta.get(stable_id)
+            if meta is None:
+                return
+            started_name = meta.get("name")
+            if not isinstance(started_name, str) or started_name != name:
+                # Stable protocol ids are bound to the tool identity captured
+                # at start. A conflicting completion must not close the card or
+                # consume the valid completion that may arrive afterward.
+                return
+            tool_call_meta.pop(stable_id, None)
+            queue = tool_call_ids.get(started_name or "")
+            if queue:
+                try:
+                    queue.remove(stable_id)
+                except ValueError:
+                    pass
+                if not queue:
+                    tool_call_ids.pop(started_name, None)
+            result = kwargs.get("result")
+            update = build_tool_complete(
+                stable_id,
+                name,
+                result=str(result) if result is not None else None,
+                function_args=args or meta.get("args"),
+                snapshot=meta.get("snapshot"),
+            )
+            _send_update(conn, session_id, loop, update)
+            if name == "todo":
+                plan_update = _build_plan_update_from_todo_result(result)
+                if plan_update is not None:
+                    _send_update(conn, session_id, loop, plan_update)
+            return
+
+        if event_type != "tool.started":
+            return
+
+        tc_id = stable_id or make_tool_call_id()
+        if tc_id in tool_call_meta:
+            return
         queue = tool_call_ids.get(name)
         if queue is None:
             queue = deque()
@@ -161,7 +208,11 @@ def make_tool_progress_cb(
                 snapshot = capture_local_edit_snapshot(name, args)
             except Exception:
                 logger.debug("Failed to capture ACP edit snapshot for %s", name, exc_info=True)
-        tool_call_meta[tc_id] = {"args": args, "snapshot": snapshot}
+        tool_call_meta[tc_id] = {
+            "name": name,
+            "args": args,
+            "snapshot": snapshot,
+        }
 
         edit_diff = None
         if name in {"write_file", "patch"} and edit_approval_policy_getter is not None:

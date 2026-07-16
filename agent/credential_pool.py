@@ -1743,9 +1743,19 @@ class CredentialPool:
             return None, None, f"No credential #{index}."
         return None, None, f'No credential matching "{raw}".'
 
-    def add_entry(self, entry: PooledCredential) -> PooledCredential:
-        entry = replace(entry, priority=_next_priority(self._entries))
-        self._entries.append(entry)
+    def add_entry(self, entry: PooledCredential, *, make_first: bool = False) -> PooledCredential:
+        if make_first:
+            # Fresh interactive re-auth flows should be able to make the newly
+            # added credential the next fill-first selection without requiring
+            # the user to delete or exhaust older entries first. Shift existing
+            # priorities down and persist the normalized order so a subsequent
+            # `hermes auth list` / new process observes the same current entry.
+            entry = replace(entry, priority=0)
+            self._entries = [replace(existing, priority=idx + 1) for idx, existing in enumerate(self._entries)]
+            self._entries.insert(0, entry)
+        else:
+            entry = replace(entry, priority=_next_priority(self._entries))
+            self._entries.append(entry)
         self._persist()
         return entry
 

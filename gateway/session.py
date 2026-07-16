@@ -341,6 +341,24 @@ that requires raw IDs).  Discord is excluded because mentions use ``<@user_id>``
 and the LLM needs the real ID to tag users."""
 
 
+def _is_pii_redaction_eligible(platform: Any) -> bool:
+    """Return whether identifiers may be pseudonymized for *platform*.
+
+    Built-in platforms use ``_PII_SAFE_PLATFORMS``. Plugin platforms opt in
+    through their registry entry's ``pii_safe`` capability. The helper accepts
+    either a :class:`Platform` or its string value so prompt construction and
+    MCP metadata forwarding share exactly the same eligibility policy.
+    """
+    platform_name = platform.value if isinstance(platform, Platform) else str(platform)
+    if any(safe_platform.value == platform_name for safe_platform in _PII_SAFE_PLATFORMS):
+        return True
+
+    from gateway.platform_registry import platform_registry
+
+    entry = platform_registry.get(platform_name)
+    return bool(entry and entry.pii_safe)
+
+
 def _discord_tools_loaded() -> bool:
     """True iff the agent will actually have Discord tools this session.
 
@@ -413,24 +431,21 @@ def build_session_context_prompt(
     - What platforms are connected
     - Where it can deliver scheduled task outputs
 
-    When *redact_pii* is True **and** the source platform is in
-    ``_PII_SAFE_PLATFORMS``, phone numbers are stripped and user/chat IDs
-    are replaced with deterministic hashes before being sent to the LLM.
-    Platforms like Discord are excluded because mentions need real IDs.
-    Routing still uses the original values (they stay in SessionSource).
+    When *redact_pii* is True **and** the source platform is an eligible
+    built-in or has opted in through its plugin registry entry, phone numbers
+    are stripped and user/chat IDs are replaced with deterministic hashes
+    before being sent to the LLM. Platforms like Discord are excluded because
+    mentions need real IDs. Routing still uses the original values (they stay
+    in SessionSource).
     """
     # Only apply redaction on platforms where IDs aren't needed for mentions.
-    # Check both the hardcoded set (builtins) and the plugin registry.
-    _is_pii_safe = context.source.platform in _PII_SAFE_PLATFORMS
-    if not _is_pii_safe:
+    if redact_pii:
         try:
-            from gateway.platform_registry import platform_registry
-            entry = platform_registry.get(context.source.platform.value)
-            if entry and entry.pii_safe:
-                _is_pii_safe = True
+            redact_pii = _is_pii_redaction_eligible(context.source.platform)
         except Exception:
-            pass
-    redact_pii = redact_pii and _is_pii_safe
+            # Preserve the historical prompt behavior: registry failures leave
+            # identifiers raw instead of breaking prompt construction.
+            redact_pii = False
     lines = [
         "## Current Session Context",
         "",

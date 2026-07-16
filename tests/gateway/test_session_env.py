@@ -10,6 +10,9 @@ from gateway.session_context import (
     get_session_env,
     set_session_vars,
     clear_session_vars,
+    reset_session_vars,
+    session_redact_pii_enabled,
+    _SESSION_REDACT_PII,
     _VAR_MAP,
     _UNSET,
 )
@@ -24,10 +27,14 @@ def _reset_contextvars():
     context, so a clear_session_vars() from test A (which sets vars to "")
     would leak into test B.  This fixture ensures each test starts clean.
     """
+    for var in _VAR_MAP.values():
+        var.set(_UNSET)
+    _SESSION_REDACT_PII.set(_UNSET)
     yield
     for var in _VAR_MAP.values():
         # Can't use var.reset() without a token; just set back to sentinel.
         var.set(_UNSET)
+    _SESSION_REDACT_PII.set(_UNSET)
 
 
 def test_set_session_env_sets_contextvars(monkeypatch):
@@ -52,7 +59,7 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     monkeypatch.delenv("HERMES_SESSION_USER_NAME", raising=False)
     monkeypatch.delenv("HERMES_SESSION_THREAD_ID", raising=False)
 
-    tokens = runner._set_session_env(context)
+    tokens = runner._set_session_env(context, redact_pii=True)
 
     # Values should be readable via get_session_env (contextvar path)
     assert get_session_env("HERMES_SESSION_PLATFORM") == "telegram"
@@ -62,6 +69,7 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     assert get_session_env("HERMES_SESSION_USER_ID") == "123456"
     assert get_session_env("HERMES_SESSION_USER_NAME") == "alice"
     assert get_session_env("HERMES_SESSION_THREAD_ID") == "17585"
+    assert session_redact_pii_enabled() is True
 
     # os.environ should NOT be touched
     assert os.getenv("HERMES_SESSION_PLATFORM") is None
@@ -70,6 +78,31 @@ def test_set_session_env_sets_contextvars(monkeypatch):
 
     # Clean up
     runner._clear_session_env(tokens)
+    assert session_redact_pii_enabled() is False
+
+
+def test_redact_pii_policy_lifecycle_keeps_raw_identity_unmapped():
+    """Privacy policy is per-turn state, not a legacy env-backed identity."""
+    assert _SESSION_REDACT_PII not in _VAR_MAP.values()
+    assert session_redact_pii_enabled() is False
+
+    tokens = set_session_vars(
+        platform="telegram",
+        chat_id="telegram:+15550101001",
+        user_id="+15550101002",
+        redact_pii=True,
+    )
+    assert session_redact_pii_enabled() is True
+    assert get_session_env("HERMES_SESSION_CHAT_ID") == "telegram:+15550101001"
+    assert get_session_env("HERMES_SESSION_USER_ID") == "+15550101002"
+
+    clear_session_vars(tokens)
+    assert session_redact_pii_enabled() is False
+
+    set_session_vars(redact_pii=True)
+    assert session_redact_pii_enabled() is True
+    reset_session_vars()
+    assert session_redact_pii_enabled() is False
 
 
 def test_session_source_uses_contextvars(monkeypatch):

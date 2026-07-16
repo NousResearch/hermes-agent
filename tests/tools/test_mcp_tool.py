@@ -943,6 +943,193 @@ class TestToolHandler:
         finally:
             clear_session_vars(tokens)
 
+    def test_session_context_meta_redacts_eligible_platform_without_mutating_context(self):
+        from gateway.session import _hash_chat_id, _hash_id, _hash_sender_id
+        from gateway.session_context import (
+            clear_session_vars,
+            get_session_env,
+            set_session_vars,
+        )
+        from tools.mcp_tool import _build_session_context_meta
+
+        raw_chat_id = "telegram:+15550101001"
+        raw_thread_id = "telegram:+15550101002"
+        raw_user_id = "+15550101003"
+        raw_session_key = (
+            "agent:main:telegram:dm:"
+            f"{raw_chat_id}:{raw_thread_id}:{raw_user_id}"
+        )
+        tokens = set_session_vars(
+            platform="telegram",
+            chat_id=raw_chat_id,
+            thread_id=raw_thread_id,
+            user_id=raw_user_id,
+            session_key=raw_session_key,
+            session_id="20260716_120000_abcd",
+            message_id="message-public-1",
+            redact_pii=True,
+        )
+
+        try:
+            meta = _build_session_context_meta()
+            assert meta == {
+                "com.nousresearch.hermes/platform": "telegram",
+                "com.nousresearch.hermes/session_id": "20260716_120000_abcd",
+                "com.nousresearch.hermes/session_key": (
+                    f"session_{_hash_id(raw_session_key)}"
+                ),
+                "com.nousresearch.hermes/chat_id": _hash_chat_id(raw_chat_id),
+                "com.nousresearch.hermes/thread_id": _hash_chat_id(raw_thread_id),
+                "com.nousresearch.hermes/user_id": _hash_sender_id(raw_user_id),
+                "com.nousresearch.hermes/message_id": "message-public-1",
+            }
+            assert _build_session_context_meta() == meta
+
+            forwarded = json.dumps(meta)
+            for raw_identifier in (
+                raw_chat_id,
+                raw_thread_id,
+                raw_user_id,
+                raw_session_key,
+                "+15550101001",
+                "+15550101002",
+                "+15550101003",
+            ):
+                assert raw_identifier not in forwarded
+
+            # Routing still sees the original identifiers.
+            assert get_session_env("HERMES_SESSION_CHAT_ID") == raw_chat_id
+            assert get_session_env("HERMES_SESSION_THREAD_ID") == raw_thread_id
+            assert get_session_env("HERMES_SESSION_USER_ID") == raw_user_id
+            assert get_session_env("HERMES_SESSION_KEY") == raw_session_key
+        finally:
+            clear_session_vars(tokens)
+
+    @pytest.mark.parametrize(
+        ("redact_pii", "platform"),
+        [(False, "telegram"), (True, "discord")],
+        ids=["disabled", "ineligible-platform"],
+    )
+    def test_session_context_meta_keeps_raw_values_when_redaction_does_not_apply(
+        self, redact_pii, platform
+    ):
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools.mcp_tool import _build_session_context_meta
+
+        tokens = set_session_vars(
+            platform=platform,
+            chat_id="raw-chat-id",
+            thread_id="raw-thread-id",
+            user_id="raw-user-id",
+            session_key="agent:main:raw-session-key",
+            session_id="raw-session-id",
+            message_id="raw-message-id",
+            redact_pii=redact_pii,
+        )
+        try:
+            assert _build_session_context_meta() == {
+                "com.nousresearch.hermes/platform": platform,
+                "com.nousresearch.hermes/session_id": "raw-session-id",
+                "com.nousresearch.hermes/session_key": "agent:main:raw-session-key",
+                "com.nousresearch.hermes/chat_id": "raw-chat-id",
+                "com.nousresearch.hermes/thread_id": "raw-thread-id",
+                "com.nousresearch.hermes/user_id": "raw-user-id",
+                "com.nousresearch.hermes/message_id": "raw-message-id",
+            }
+        finally:
+            clear_session_vars(tokens)
+
+    def test_session_context_meta_honors_plugin_pii_safe_capability(self, monkeypatch):
+        from gateway.platform_registry import platform_registry
+        from gateway.session import _hash_chat_id
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools.mcp_tool import _build_session_context_meta
+
+        monkeypatch.setattr(
+            platform_registry,
+            "get",
+            lambda name: SimpleNamespace(pii_safe=name == "private_chat_plugin"),
+        )
+        tokens = set_session_vars(
+            platform="private_chat_plugin",
+            chat_id="plugin-chat-pii",
+            session_key="agent:main:private_chat_plugin:plugin-chat-pii",
+            session_id="session-public",
+            message_id="message-public",
+            redact_pii=True,
+        )
+        try:
+            meta = _build_session_context_meta()
+            assert meta is not None
+            assert (
+                meta["com.nousresearch.hermes/chat_id"]
+                == _hash_chat_id("plugin-chat-pii")
+            )
+            assert "plugin-chat-pii" not in json.dumps(meta)
+        finally:
+            clear_session_vars(tokens)
+
+    def test_session_context_meta_plugin_policy_lookup_failure_fails_closed(
+        self, monkeypatch, caplog
+    ):
+        from gateway.platform_registry import platform_registry
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools.mcp_tool import _build_session_context_meta
+
+        def _raise_registry_error(_name):
+            raise RuntimeError("plugin registry unavailable")
+
+        monkeypatch.setattr(platform_registry, "get", _raise_registry_error)
+        raw_chat_id = "plugin-raw-chat-pii"
+        raw_user_id = "plugin-raw-user-pii"
+        tokens = set_session_vars(
+            platform="private_chat_plugin",
+            chat_id=raw_chat_id,
+            user_id=raw_user_id,
+            session_key=f"agent:main:private_chat_plugin:{raw_chat_id}:{raw_user_id}",
+            session_id="session-public",
+            message_id="message-public",
+            redact_pii=True,
+        )
+        try:
+            with caplog.at_level("WARNING"):
+                meta = _build_session_context_meta()
+            assert meta is None
+            assert raw_chat_id not in json.dumps(meta)
+            assert raw_user_id not in json.dumps(meta)
+            assert "omitting it to avoid exposing PII" in caplog.text
+        finally:
+            clear_session_vars(tokens)
+
+    def test_session_context_meta_redaction_failure_fails_closed(
+        self, monkeypatch, caplog
+    ):
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools.mcp_tool import _build_session_context_meta
+
+        def _raise_redaction_error(_value):
+            raise RuntimeError("redaction unavailable")
+
+        monkeypatch.setattr(
+            "gateway.session._hash_chat_id",
+            _raise_redaction_error,
+        )
+        tokens = set_session_vars(
+            platform="telegram",
+            chat_id="raw-chat-pii",
+            user_id="raw-user-pii",
+            session_key="agent:main:telegram:raw-chat-pii:raw-user-pii",
+            session_id="session-public",
+            message_id="message-public",
+            redact_pii=True,
+        )
+        try:
+            with caplog.at_level("WARNING"):
+                assert _build_session_context_meta() is None
+            assert "omitting it to avoid exposing PII" in caplog.text
+        finally:
+            clear_session_vars(tokens)
+
     def test_mcp_error_result(self):
         from tools.mcp_tool import _make_tool_handler, _servers
 

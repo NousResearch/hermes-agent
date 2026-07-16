@@ -4047,7 +4047,11 @@ def _build_session_context_meta() -> Optional[Dict[str, str]]:
     identifiers. An incomplete or empty context is not attested.
     """
     try:
-        from gateway.session_context import _UNSET, _VAR_MAP
+        from gateway.session_context import (
+            _UNSET,
+            _VAR_MAP,
+            session_redact_pii_enabled,
+        )
     except Exception as exc:
         logger.warning(
             "Unable to read gateway session ContextVars; omitting MCP session metadata: %s",
@@ -4070,7 +4074,54 @@ def _build_session_context_meta() -> Optional[Dict[str, str]]:
         meta[meta_key] = "" if value is None else str(value)
     if not any(meta.values()):
         return None
-    return meta
+
+    try:
+        redact_pii = session_redact_pii_enabled()
+    except Exception as exc:
+        logger.warning(
+            "Unable to read MCP session privacy policy; omitting metadata: %s",
+            exc,
+        )
+        return None
+
+    if not redact_pii:
+        return meta
+
+    # Preserve the raw ContextVars for routing and pseudonymize only this
+    # outgoing metadata copy. If an active privacy transformation cannot be
+    # completed, fail closed instead of forwarding a partially raw identity.
+    try:
+        from gateway.session import (
+            _hash_chat_id,
+            _hash_id,
+            _hash_sender_id,
+            _is_pii_redaction_eligible,
+        )
+
+        platform_key = "com.nousresearch.hermes/platform"
+        if not _is_pii_redaction_eligible(meta[platform_key]):
+            return meta
+
+        redacted = dict(meta)
+        chat_key = "com.nousresearch.hermes/chat_id"
+        thread_key = "com.nousresearch.hermes/thread_id"
+        user_key = "com.nousresearch.hermes/user_id"
+        session_key = "com.nousresearch.hermes/session_key"
+        if redacted[chat_key]:
+            redacted[chat_key] = _hash_chat_id(redacted[chat_key])
+        if redacted[thread_key]:
+            redacted[thread_key] = _hash_chat_id(redacted[thread_key])
+        if redacted[user_key]:
+            redacted[user_key] = _hash_sender_id(redacted[user_key])
+        if redacted[session_key]:
+            redacted[session_key] = f"session_{_hash_id(redacted[session_key])}"
+        return redacted
+    except Exception as exc:
+        logger.warning(
+            "Unable to redact MCP session metadata; omitting it to avoid exposing PII: %s",
+            exc,
+        )
+        return None
 
 
 def _should_forward_session_context(server_name: str) -> bool:

@@ -93,6 +93,12 @@ _SESSION_MESSAGE_ID: ContextVar = ContextVar("HERMES_SESSION_MESSAGE_ID", defaul
 
 _SESSION_PROFILE: ContextVar = ContextVar("HERMES_SESSION_PROFILE", default=_UNSET)
 
+# Per-turn snapshot of ``privacy.redact_pii``. This is deliberately not part
+# of ``_VAR_MAP``: it is an in-process policy decision, not session identity or
+# a legacy environment variable. MCP forwarding reads it only after collecting
+# the raw routing ContextVars, then transforms the outgoing metadata copy.
+_SESSION_REDACT_PII: ContextVar = ContextVar("HERMES_SESSION_REDACT_PII", default=_UNSET)
+
 # Whether the current session's delivery channel can route an ASYNC completion
 # back to the agent AFTER the current turn ends (i.e. wake a fresh turn).
 #
@@ -169,6 +175,7 @@ def set_session_vars(
     cwd: str = "",
     async_delivery: bool = True,
     ui_session_id: str = "",
+    redact_pii: bool = False,
 ) -> list:
     """Set all session context variables and return reset tokens.
 
@@ -184,6 +191,9 @@ def set_session_vars(
     background completion back to the agent after the turn ends (see
     ``_SESSION_ASYNC_DELIVERY`` / ``async_delivery_supported``). Stateless
     request/response adapters (the API server) pass ``False``.
+
+    ``redact_pii`` snapshots the per-turn privacy policy used when opt-in MCP
+    servers receive session metadata. Raw routing values remain unchanged.
     """
     # Mark the session-context machinery engaged for this process. The
     # subprocess-env bridge uses this to switch from "os.environ fallback" to
@@ -204,6 +214,7 @@ def set_session_vars(
         _SESSION_MESSAGE_ID.set(message_id),
         _SESSION_PROFILE.set(profile),
         _SESSION_ASYNC_DELIVERY.set(bool(async_delivery)),
+        _SESSION_REDACT_PII.set(bool(redact_pii)),
     ]
     try:
         from agent.runtime_cwd import set_session_cwd
@@ -245,6 +256,7 @@ def clear_session_vars(tokens: list) -> None:
     # behavior (CLI / unaware paths), not be mistaken for an opted-out
     # stateless adapter.
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
+    _SESSION_REDACT_PII.set(_UNSET)
     try:
         from agent.runtime_cwd import clear_session_cwd
 
@@ -278,14 +290,11 @@ def reset_session_vars() -> None:
     tests/tools/test_local_env_session_leak.py and
     tests/gateway/test_session_context_inheritance.py.
 
-    Note ``_SESSION_ASYNC_DELIVERY`` lives outside ``_VAR_MAP`` (it is a bool
-    capability flag read via :func:`async_delivery_supported`, not a string
-    ``HERMES_SESSION_*`` env var read via :func:`get_session_env`), so it is
-    reset explicitly below. Without it, a task spawned from a context where a
-    sibling adapter bound ``async_delivery=False`` (the stateless API server)
-    inherits that ``False`` through the pre-bind window, and
-    ``async_delivery_supported`` wrongly reports the new turn's channel as
-    unable to route a background completion until ``set_session_vars`` runs.
+    ``_SESSION_ASYNC_DELIVERY`` and ``_SESSION_REDACT_PII`` live outside
+    ``_VAR_MAP`` (they are bool policy/capability flags, not string
+    ``HERMES_SESSION_*`` env vars), so they are reset explicitly below.
+    Without this, a newly spawned task could temporarily inherit a sibling's
+    delivery capability or privacy policy before binding its own session.
     """
     for var in _VAR_MAP.values():
         var.set(_UNSET)
@@ -293,6 +302,7 @@ def reset_session_vars() -> None:
     # same inheritance-leak reason as the mapped vars above — see clear_session_vars,
     # which resets this var on the handler-exit path for the symmetric concern.
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
+    _SESSION_REDACT_PII.set(_UNSET)
     try:
         from agent.runtime_cwd import clear_session_cwd
 
@@ -343,4 +353,16 @@ def async_delivery_supported() -> bool:
     value = _SESSION_ASYNC_DELIVERY.get()
     if value is _UNSET:
         return True
+    return bool(value)
+
+
+def session_redact_pii_enabled() -> bool:
+    """Whether the active turn opted into PII pseudonymization.
+
+    An unbound or cleared context is disabled. Unlike session identity, this
+    policy never falls back to ``os.environ``.
+    """
+    value = _SESSION_REDACT_PII.get()
+    if value is _UNSET:
+        return False
     return bool(value)

@@ -779,10 +779,6 @@ export default function ProfileBuilderPage() {
                 value={description.trim() || "—"}
               />
               <ReviewRow
-                label={copy.description}
-                value={description.trim() || "—"}
-              />
-              <ReviewRow
                 label={copy.model}
                 value={pickedModel ? pickedModel.label : copy.defaultLater}
               />

@@ -10,6 +10,7 @@ import { useStore } from '@nanostores/react'
 import { type PointerEvent as ReactPointerEvent, useCallback, useMemo, useRef, useSyncExternalStore } from 'react'
 
 import { useContributions } from '@/contrib/react/use-contributions'
+import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $paneStates, type PaneStateSnapshot, setPaneHeightOverride, setPaneWidthOverride } from '@/store/panes'
 
@@ -67,6 +68,7 @@ function useSubtreeOverrides(paneIds: readonly string[]): TrackContext['override
 }
 
 export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boolean; rootRow?: boolean }) {
+  const { t } = useI18n()
   const containerRef = useRef<HTMLDivElement>(null)
   const panes = useContributions('panes')
   const hiddenPanes = useStore($hiddenTreePanes)
@@ -168,6 +170,14 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
       e.preventDefault()
 
+      // A horizontal split mirrors under RTL (flex-row reverses the children's
+      // physical order), so the previous-sibling seam sits on the child's
+      // physical RIGHT edge and a rightward drag must grow the RIGHT-hand pane.
+      // Read the live computed direction so a pointer delta maps to the same
+      // grow-A/shrink-B shiftPx semantics in both directions. Vertical splits
+      // never mirror.
+      const rtl = horizontal && window.getComputedStyle(container).direction === 'rtl'
+
       const handle = e.currentTarget
       const { pointerId } = e
       const rect = container.getBoundingClientRect()
@@ -235,7 +245,8 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
       document.body.style.userSelect = 'none'
 
       const onMove = (ev: PointerEvent) => {
-        const shiftPx = Math.max(lo, Math.min(hi, (horizontal ? ev.clientX : ev.clientY) - start))
+        const rawDelta = (horizontal ? ev.clientX : ev.clientY) - start
+        const shiftPx = Math.max(lo, Math.min(hi, rtl ? -rawDelta : rawDelta))
 
         if (a.fixed) {
           a.paneIds.forEach(id => setOverride(id, Math.round(a0px + shiftPx)))
@@ -472,6 +483,7 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
               <Sash
                 disabled={minimized || tracks[partner].minimized}
                 horizontal={horizontal}
+                label={t.common.resizePane(allPaneIds(child)[0] ?? '')}
                 onDoubleClick={() => resetBoundary(partner, i)}
                 onPointerDown={e => startSash(partner, i, e)}
               />
@@ -494,19 +506,28 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 function Sash({
   disabled,
   horizontal,
+  label,
   onDoubleClick,
   onPointerDown
 }: {
   disabled?: boolean
   horizontal: boolean
+  label?: string
   onDoubleClick?: () => void
   onPointerDown: (e: ReactPointerEvent<HTMLDivElement>) => void
 }) {
   return (
     <div
+      aria-label={label}
+      aria-orientation={horizontal ? 'vertical' : 'horizontal'}
       className={cn(
         'group absolute z-20 [-webkit-app-region:no-drag]',
-        horizontal ? 'inset-y-0 left-0 w-[9px] -translate-x-1/2' : 'inset-x-0 top-0 h-[9px] -translate-y-1/2',
+        // The seam is the child's inline-START edge. Under RTL that edge is on
+        // the physical right, so mirror the anchor + centering translate; a
+        // vertical (row) seam is unaffected by direction.
+        horizontal
+          ? 'inset-y-0 left-0 w-[9px] -translate-x-1/2 rtl:left-auto rtl:right-0 rtl:translate-x-1/2'
+          : 'inset-x-0 top-0 h-[9px] -translate-y-1/2',
         disabled ? 'pointer-events-none' : horizontal ? 'cursor-col-resize' : 'cursor-row-resize'
       )}
       onDoubleClick={disabled ? undefined : onDoubleClick}

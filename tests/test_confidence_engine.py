@@ -2,7 +2,7 @@
 """Tests for confidence_engine.py — generic core"""
 
 import json, sys, tempfile, os
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 from confidence_engine import (
     preprocess, assess, assess_batch, validate_profile,
     _default_profiles, _apply_decay, _map_thresholds, _detect_bonus,

@@ -842,7 +842,7 @@ export default function ProfileBuilderPage() {
           <Button
             disabled={!canAdvance}
             onClick={() =>
-              setStep(STEPS[Math.min(STEPS.length - 1, stepIndex + 1)].id)
+              setStep(STEP_IDS[Math.min(STEP_IDS.length - 1, stepIndex + 1)])
             }
           >
             {copy.next}

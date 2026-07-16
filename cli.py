@@ -13576,9 +13576,24 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             # --- Approval selection: confirm the highlighted choice ---
             if self._approval_state:
+                # Snapshot buffer text and images before resolving — the
+                # approval handler clears _approval_state when the choice
+                # is anything other than "view".
+                text = event.app.current_buffer.text.strip()
+                has_images = bool(self._attached_images)
                 self._handle_approval_selection()
-                event.app.invalidate()
-                return
+                # Forward buffered input only when the approval was actually
+                # resolved (not when "view" expanded the command in-place).
+                # When there is pending content, fall through to the normal
+                # input routing below so ALL busy_input_mode semantics
+                # (queue / interrupt / steer) and inline command handling
+                # (/model, /steer) are preserved — not hardcoded.
+                if self._approval_state is None and (text or has_images):
+                    # Approval resolved with pending input — fall through.
+                    pass
+                else:
+                    event.app.invalidate()
+                    return
 
             # --- Slash-command confirmation: submit typed or highlighted choice ---
             if self._slash_confirm_state:

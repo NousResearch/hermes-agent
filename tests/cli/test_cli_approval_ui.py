@@ -769,3 +769,127 @@ class TestClearOverlaysForInterrupt:
         assert not t.is_alive(), "worker thread never unblocked"
         assert result["value"] == "deny"
 
+
+
+class TestApprovalBufferForward:
+    """Behavioral tests for buffer-text forwarding after approval resolves.
+
+    These tests verify the STATE transition after _handle_approval_selection()
+    — that when approval resolves and there's buffer text, the text is
+    preserved for the normal input routing to pick up (no early return, no
+    manual re-queueing in the test). The actual queueing path is verified by
+    the AST-level structural test in test_cli_approval_ast.py.
+    """
+
+    def test_approval_resolved_preserves_buffer_text(self):
+        """After a non-view approval resolves, buffer text is preserved for
+        normal routing fall-through (issue #35999)."""
+        cli = _make_cli_stub()
+        cli._pending_input = queue.Queue()
+        cli._interrupt_queue = queue.Queue()
+        cli._attached_images = []
+        cli._approval_state = {
+            "command": "rm -rf /tmp/test",
+            "description": "recursive delete",
+            "choices": ["once", "session", "always", "deny"],
+            "selected": 0,
+            "response_queue": queue.Queue(),
+        }
+        cli._approval_deadline = time.time() + 30
+
+        # Simulate buffer text typed while approval panel was showing
+        cli._app.current_buffer = _FakeBuffer("also clean /var/tmp")
+
+        text = cli._app.current_buffer.text.strip()
+        has_images = bool(cli._attached_images)
+        assert text == "also clean /var/tmp"
+
+        cli._handle_approval_selection()
+
+        # Approval resolved — state cleared
+        assert cli._approval_state is None
+
+        # Buffer text preserved for fall-through (not consumed/reset)
+        assert cli._app.current_buffer.text == "also clean /var/tmp"
+
+        # No manual queueing happened here — the actual routing happens
+        # in the normal input section of handle_enter.
+        assert cli._pending_input.empty()
+        assert cli._interrupt_queue.empty()
+
+    def test_approval_view_does_not_resolve(self):
+        """When 'view' is selected, approval_state is NOT cleared and buffer
+        text must NOT be forwarded — the approval panel stays open."""
+        cli = _make_cli_stub()
+        cli._pending_input = queue.Queue()
+        cli._interrupt_queue = queue.Queue()
+        cli._attached_images = []
+        cli._approval_state = {
+            "command": "rm -rf /tmp/test",
+            "description": "recursive delete",
+            "choices": ["once", "session", "always", "deny", "view"],
+            "selected": 4,  # "view" selected
+            "response_queue": queue.Queue(),
+        }
+        cli._approval_deadline = time.time() + 30
+        cli._app.current_buffer = _FakeBuffer("also clean /var/tmp")
+
+        cli._handle_approval_selection()
+
+        # Approval still active (view expanded in-place)
+        assert cli._approval_state is not None
+        assert cli._approval_state["show_full"] is True
+        assert "view" not in cli._approval_state["choices"]
+
+        # No messages queued — did NOT fall through to normal routing
+        assert cli._pending_input.empty()
+        assert cli._interrupt_queue.empty()
+
+    def test_approval_with_images_preserves_images(self):
+        """When images are attached during approval, they're preserved for
+        normal routing fall-through after approval resolves."""
+        cli = _make_cli_stub()
+        cli._pending_input = queue.Queue()
+        cli._interrupt_queue = queue.Queue()
+        cli._attached_images = ["data:image/png;base64,abc123"]
+        cli._approval_state = {
+            "command": "rm -rf /tmp/test",
+            "description": "recursive delete",
+            "choices": ["once", "session", "always", "deny"],
+            "selected": 0,
+            "response_queue": queue.Queue(),
+        }
+        cli._approval_deadline = time.time() + 30
+
+        cli._handle_approval_selection()
+
+        # Approval resolved
+        assert cli._approval_state is None
+
+        # Images still attached (normal routing will snapshot and clear)
+        assert cli._attached_images == ["data:image/png;base64,abc123"]
+
+    def test_approval_resolved_without_buffer_no_fallthrough(self):
+        """When approval resolves with no buffer text, nothing extra happens."""
+        cli = _make_cli_stub()
+        cli._pending_input = queue.Queue()
+        cli._interrupt_queue = queue.Queue()
+        cli._attached_images = []
+        cli._approval_state = {
+            "command": "rm -rf /tmp/test",
+            "description": "recursive delete",
+            "choices": ["once", "session", "always", "deny"],
+            "selected": 0,
+            "response_queue": queue.Queue(),
+        }
+        cli._approval_deadline = time.time() + 30
+
+        cli._handle_approval_selection()
+
+        # Approval resolved
+        assert cli._approval_state is None
+
+        # No content to forward — empty buffer stays empty
+        assert cli._app.current_buffer.text == ""
+        assert cli._pending_input.empty()
+        assert cli._interrupt_queue.empty()

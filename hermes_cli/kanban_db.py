@@ -5909,6 +5909,14 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Terminal status signals in PR handoff comments.  When the latest PR comment
+# says the PR is already closed/merged, the active_pr guard must release the
+# card for review/follow-up instead of livelocking it in ready forever.
+_RESPAWN_GUARD_PR_TERMINAL_RE = re.compile(
+    r"\b(?:closed|merged|merge\s+complete)\b|머지(?:\s*완료)?",
+    re.IGNORECASE,
+)
+
 
 @dataclass
 class DispatchResult:
@@ -7257,12 +7265,19 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #    A newer handoff comment that marks that PR closed/merged releases the
+    #    guard; otherwise review cards can livelock forever after the PR closes.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+        "SELECT body FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ? "
+        "ORDER BY created_at DESC, id DESC",
         (task_id, pr_cutoff),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+        body = c["body"] or ""
+        if _RESPAWN_GUARD_PR_URL_RE.search(body):
+            if _RESPAWN_GUARD_PR_TERMINAL_RE.search(body):
+                return None
             return "active_pr"
 
     return None

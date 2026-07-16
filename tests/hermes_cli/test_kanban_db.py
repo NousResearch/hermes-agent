@@ -1929,6 +1929,46 @@ def test_respawn_guard_active_pr_in_comment(kanban_home):
     assert reason == "active_pr"
 
 
+def test_respawn_guard_closed_pr_comment_not_guarded(kanban_home):
+    """A closed/merged PR handoff releases the active_pr guard."""
+    terminal_comments = [
+        "PR MERGED: https://github.com/totemx-AI/subsidysmart/pull/42",
+        "PR CLOSED: https://github.com/totemx-AI/subsidysmart/pull/43",
+        "머지 완료: https://github.com/totemx-AI/subsidysmart/pull/44",
+    ]
+    with kb.connect() as conn:
+        for body in terminal_comments:
+            t = kb.create_task(conn, title="closed-pr", assignee="alice")
+            kb.add_comment(conn, t, "worker", body)
+            assert kb.check_respawn_guard(conn, t) is None
+
+
+def test_respawn_guard_latest_pr_comment_controls_terminal_state(kanban_home):
+    """A newer merged handoff overrides an older open PR handoff."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="merged-after-open", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', ?, ?)",
+            (
+                t,
+                "PR created: https://github.com/totemx-AI/subsidysmart/pull/42",
+                now - 60,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'worker', ?, ?)",
+            (
+                t,
+                "PR merged: https://github.com/totemx-AI/subsidysmart/pull/42",
+                now,
+            ),
+        )
+        assert kb.check_respawn_guard(conn, t) is None
+
+
 def test_respawn_guard_old_pr_comment_not_guarded(kanban_home):
     """A GitHub PR URL in a comment older than the PR window does not block."""
     with kb.connect() as conn:

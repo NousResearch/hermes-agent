@@ -201,13 +201,15 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
         pid: Optional[int] = None,
         window_id: Optional[int] = None,
     ) -> CaptureResult:
-        self.calls.append(("capture", {
+        capture_args = {
             "mode": mode,
             "app": app,
-            "window_title": window_title,
             "pid": pid,
             "window_id": window_id,
-        }))
+        }
+        if window_title is not None:
+            capture_args["window_title"] = window_title
+        self.calls.append(("capture", capture_args))
         return CaptureResult(mode=mode, width=1024, height=768, png_b64=None,
                              elements=[], app=app or "", window_title="")
 
@@ -224,15 +226,11 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
         return ActionResult(ok=True, action="scroll")
 
     def type_text(self, text: str, **kw) -> ActionResult:
-        payload = {"text": text}
-        payload.update(kw)
-        self.calls.append(("type", payload))
+        self.calls.append(("type", {"text": text, **kw}))
         return ActionResult(ok=True, action="type")
 
     def key(self, keys: str, **kw) -> ActionResult:
-        payload = {"keys": keys}
-        payload.update(kw)
-        self.calls.append(("key", payload))
+        self.calls.append(("key", {"keys": keys, **kw}))
         return ActionResult(ok=True, action="key")
 
     def list_apps(self) -> List[Dict[str, Any]]:
@@ -243,21 +241,8 @@ class _NoopBackend(ComputerUseBackend):  # pragma: no cover
         self.calls.append(("list_windows", {}))
         return []
 
-    def focus_app(
-        self,
-        app: Optional[str] = None,
-        raise_window: bool = False,
-        window_title: Optional[str] = None,
-        pid: Optional[int] = None,
-        window_id: Optional[int] = None,
-    ) -> ActionResult:
-        self.calls.append(("focus_app", {
-            "app": app,
-            "raise": raise_window,
-            "window_title": window_title,
-            "pid": pid,
-            "window_id": window_id,
-        }))
+    def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
+        self.calls.append(("focus_app", {"app": app, "raise": raise_window}))
         return ActionResult(ok=True, action="focus_app")
 
     def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
@@ -381,13 +366,14 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         mode = str(args.get("mode", "som"))
         if mode not in {"som", "vision", "ax"}:
             return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
-        capture_kwargs = {"mode": mode, "app": args.get("app")}
+        capture_kwargs: Dict[str, Any] = {"mode": mode, "app": args.get("app")}
         if args.get("window_title") is not None:
             capture_kwargs["window_title"] = args.get("window_title")
-        if args.get("pid") is not None:
-            capture_kwargs["pid"] = args.get("pid")
-        if args.get("window_id") is not None:
-            capture_kwargs["window_id"] = args.get("window_id")
+        if args.get("pid") is not None or args.get("window_id") is not None:
+            capture_kwargs.update({
+                "pid": args.get("pid"),
+                "window_id": args.get("window_id"),
+            })
         cap = backend.capture(**capture_kwargs)
         return _capture_response(cap, max_elements=_coerce_max_elements(args.get("max_elements")))
 
@@ -406,15 +392,9 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
 
     if action == "focus_app":
         app = args.get("app")
-        if not app and not args.get("window_title") and args.get("pid") is None and args.get("window_id") is None:
-            return json.dumps({"error": "focus_app requires app, window_title, pid, or window_id"})
-        res = backend.focus_app(
-            app=app,
-            raise_window=bool(args.get("raise_window")),
-            window_title=args.get("window_title"),
-            pid=args.get("pid"),
-            window_id=args.get("window_id"),
-        )
+        if not app:
+            return json.dumps({"error": "focus_app requires `app`"})
+        res = backend.focus_app(app, raise_window=bool(args.get("raise_window")))
         return _maybe_follow_capture(backend, res, capture_after)
 
     if action in {"click", "double_click", "right_click", "middle_click"}:
@@ -610,21 +590,17 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
     image_dimensions = _image_dimensions_from_b64(cap.png_b64 or "") if cap.png_b64 else None
     response_width = image_dimensions[0] if image_dimensions else cap.width
     response_height = image_dimensions[1] if image_dimensions else cap.height
-    if response_width <= 0 or response_height <= 0:
+    guard_name = f"{cap.app} {cap.window_title}".casefold()
+    is_zero_size_guard = (
+        "mutter-x11-frames" in guard_name or "mutter guard" in guard_name
+    )
+    if is_zero_size_guard and (response_width <= 0 or response_height <= 0):
         return json.dumps({
             "error": "capture returned zero-size window",
-            "mode": cap.mode,
             "width": response_width,
             "height": response_height,
             "app": cap.app,
             "window_title": cap.window_title,
-            "elements": total_elements,
-            "hint": (
-                "The selected native window has no visible capture surface "
-                "(common with mutter-x11-frames/guard windows on GNOME). "
-                "Call list_windows and retry capture with window_title, pid, "
-                "or window_id."
-            ),
             "retry": {"action": "list_windows"},
         })
     image_too_small = bool(
@@ -929,11 +905,16 @@ def _maybe_follow_capture(
     if not res.ok:
         return _text_response(res)
     try:
-        # Preserve the app context established by the preceding capture/focus_app so
-        # that capture_after=True re-captures the same app rather than the frontmost
-        # window (which may have changed if the action caused a focus shift).
-        last_app = getattr(backend, "_last_app", None)
-        cap = backend.capture(mode="som", app=last_app)
+        # Preserve the exact selected window when possible. Linux may expose a
+        # generic app name for several unrelated windows, so app-only recapture
+        # can silently switch targets after a successful action.
+        target = getattr(backend, "_last_target", None) or {}
+        pid = target.get("pid")
+        window_id = target.get("window_id")
+        if pid is not None and window_id is not None:
+            cap = backend.capture(mode="som", pid=pid, window_id=window_id)
+        else:
+            cap = backend.capture(mode="som", app=getattr(backend, "_last_app", None))
     except Exception as e:
         logger.warning("follow-up capture failed: %s", e)
         return _text_response(res)

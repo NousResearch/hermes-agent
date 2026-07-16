@@ -122,36 +122,19 @@ def _install_dependencies(provider_name: str) -> None:
 
     print(f"\n  Installing dependencies: {', '.join(missing)}")
 
-    import shutil
+    from hermes_cli.tools_config import _pip_install
 
-    uv_path = shutil.which("uv")
-    if uv_path:
-        install_cmd = [uv_path, "pip", "install", "--python", sys.executable, "--quiet"] + missing
-        manual_cmd = f"uv pip install --python {sys.executable} {' '.join(missing)}"
-    else:
-        pip_cmd = shutil.which("pip3") or shutil.which("pip")
-        if not pip_cmd:
-            print("  ⚠ uv not found — cannot install dependencies")
-            print("  Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh")
-            print("  Then re-run: hermes memory setup")
-            return
-        print("  ⚠ uv not found. Falling back to standard pip...")
-        install_cmd = [sys.executable, "-m", "pip", "install", "--quiet"] + missing
-        manual_cmd = f"{sys.executable} -m pip install {' '.join(missing)}"
-
+    manual_cmd = f"uv pip install {' '.join(missing)}"
     try:
-        subprocess.run(
-            install_cmd,
-            check=True, timeout=120,
-            capture_output=True,
-        )
-        print(f"  ✓ Installed {', '.join(missing)}")
-    except subprocess.CalledProcessError as e:
-        print(f"  ⚠ Failed to install {', '.join(missing)}")
-        stderr = (e.stderr or b"").decode()[:200]
-        if stderr:
-            print(f"    {stderr}")
-        print(f"  Run manually: {manual_cmd}")
+        result = _pip_install(["--quiet"] + missing, timeout=120)
+        if result.returncode == 0:
+            print(f"  ✓ Installed {', '.join(missing)}")
+        else:
+            print(f"  ⚠ Failed to install {', '.join(missing)}")
+            stderr = (result.stderr or "")[:200]
+            if stderr:
+                print(f"    {stderr}")
+            print(f"  Run manually: {manual_cmd}")
     except Exception as e:
         print(f"  ⚠ Install failed: {e}")
         print(f"  Run manually: {manual_cmd}")

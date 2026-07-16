@@ -177,20 +177,17 @@ class ComputerUseBackend(ABC):
     def list_apps(self) -> List[Dict[str, Any]]:
         """Return running apps with bundle IDs, PIDs, window counts."""
 
-    @abstractmethod
     def list_windows(self) -> List[Dict[str, Any]]:
-        """Return targetable windows with app/title/pid/window_id/z-order."""
+        """Return visible native windows with PID and window identifiers.
+
+        Optional compatibility hook: backends that predate window discovery
+        remain instantiable and simply report no windows.
+        """
+        return []
 
     @abstractmethod
-    def focus_app(
-        self,
-        app: Optional[str] = None,
-        raise_window: bool = False,
-        window_title: Optional[str] = None,
-        pid: Optional[int] = None,
-        window_id: Optional[int] = None,
-    ) -> ActionResult:
-        """Route input to a window by app/title/pid/window_id without raising."""
+    def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
+        """Route input to `app` (by name or bundle ID). Default: focus without raise."""
 
     # ── Native-value mutation ────────────────────────────────────────
     @abstractmethod

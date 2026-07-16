@@ -85,26 +85,23 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
             "window_title": {
                 "type": "string",
                 "description": (
-                    "Optional. Target a window by case-insensitive title "
-                    "substring. Works with action='capture' and "
-                    "action='focus_app'. Use action='list_windows' first "
-                    "when app-name matching is ambiguous."
+                    "Optional case-insensitive title substring for capture. "
+                    "Use action='list_windows' first when app matching is ambiguous."
                 ),
             },
             "pid": {
                 "type": "integer",
                 "description": (
-                    "Optional. Target an exact OS process id for "
-                    "action='capture' or action='focus_app'. Prefer pairing "
-                    "with window_id when multiple windows share a pid."
+                    "Optional exact process target for action='capture'. Pair "
+                    "with window_id when discovery cannot resolve an X11 app."
                 ),
             },
             "window_id": {
                 "type": "integer",
                 "description": (
-                    "Optional. Target an exact native window id for "
-                    "action='capture' or action='focus_app'. Get ids from "
-                    "action='list_windows'."
+                    "Optional exact native window target for action='capture'. "
+                    "Pair with pid when an external cua-driver list_windows "
+                    "lookup has already identified the window."
                 ),
             },
             "max_elements": {
@@ -144,9 +141,9 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "minItems": 2,
                 "maxItems": 2,
                 "description": (
-                    "Pixel coordinates [x, y] in logical screen space (as "
-                    "returned by capture width/height). Only use this if "
-                    "no element index is available."
+                    "Pixel coordinates [x, y] relative to the captured window "
+                    "screenshot (top-left origin). Only use this if no element "
+                    "index is available."
                 ),
             },
             "button": {
@@ -169,14 +166,11 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "type": "string",
                 "enum": ["background", "foreground"],
                 "description": (
-                    "Optional input delivery rung for cua-driver action tools. "
-                    "`background` (default) routes without raising/activating "
-                    "the target window. `foreground` is the explicit escalation "
-                    "for focus-sensitive pixel/keyboard paths after a background "
-                    "attempt is observed not to land."
+                    "Optional cua-driver delivery mode. Foreground is an "
+                    "explicit escalation and may still be unverifiable on Linux."
                 ),
             },
-            # ── drag ───────────────────────────────────────────────
+            # ── drag ────────────────────────────────────────────────
             "from_element": {"type": "integer",
                               "description": "Source element index (drag)."},
             "to_element": {"type": "integer",

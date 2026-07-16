@@ -1,5 +1,5 @@
 import { attachedImageNotice, introMsg, toTranscriptMessages } from '../../../domain/messages.js'
-import { TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
+import { sessionScopedModelArg, TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
 import type {
   BackgroundStartResponse,
   ConfigGetValueResponse,
@@ -20,9 +20,6 @@ import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
 
 const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\s|$)`)
-const TUI_SESSION_STRIP_RE = new RegExp(`\\s*${TUI_SESSION_MODEL_FLAG}\\b\\s*`, 'g')
-
-const stripTuiSessionFlag = (trimmed: string) => trimmed.replace(TUI_SESSION_STRIP_RE, ' ').replace(/\s+/g, ' ').trim()
 
 const modelValueForConfigSet = (arg: string) => {
   const trimmed = arg.trim()
@@ -32,7 +29,7 @@ const modelValueForConfigSet = (arg: string) => {
   }
 
   if (TUI_SESSION_MODEL_RE.test(trimmed)) {
-    return stripTuiSessionFlag(trimmed)
+    return sessionScopedModelArg(trimmed)
   }
 
   return trimmed

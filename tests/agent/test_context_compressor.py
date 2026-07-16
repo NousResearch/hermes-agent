@@ -1,5 +1,6 @@
 """Tests for agent/context_compressor.py — compression logic, thresholds, truncation fallback."""
 
+import json
 import pytest
 import time
 from unittest.mock import patch, MagicMock
@@ -9,6 +10,7 @@ from agent.context_compressor import (
     HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,
     COMPRESSED_SUMMARY_METADATA_KEY,
+    _summarize_tool_result,
 )
 from hermes_state import SessionDB
 
@@ -25,6 +27,49 @@ def compressor():
             quiet_mode=True,
         )
         return c
+
+
+class TestSummarizeToolResultWebExtract:
+    """Pre-compression pruning must survive web_extract calls whose ``urls`` are
+    web_search result dicts ({"url"/"href": ...}), which models routinely forward
+    straight into web_extract.
+    """
+
+    CONTENT = "x" * 500  # >200 chars so the pruning pass actually summarizes
+
+    def test_multiple_dict_urls_do_not_crash(self):
+        # Two dict URLs previously hit ``dict + str`` -> TypeError, aborting
+        # _prune_old_tool_results() (and thus compress()).
+        args = json.dumps({
+            "urls": [
+                {"url": "https://example.com/a", "title": "A"},
+                {"url": "https://example.org/b", "title": "B"},
+            ]
+        })
+        summary = _summarize_tool_result("web_extract", args, self.CONTENT)
+        assert summary == "[web_extract] https://example.com/a (+1 more) (500 chars)"
+
+    def test_single_dict_url_is_unwrapped_not_stringified(self):
+        args = json.dumps({"urls": [{"url": "https://example.com/a", "title": "A"}]})
+        summary = _summarize_tool_result("web_extract", args, self.CONTENT)
+        assert summary == "[web_extract] https://example.com/a (500 chars)"
+        assert "{" not in summary  # no raw dict repr leaked into the summary
+
+    def test_href_key_is_unwrapped(self):
+        args = json.dumps({"urls": [{"href": "https://example.com/h"}]})
+        summary = _summarize_tool_result("web_extract", args, self.CONTENT)
+        assert summary == "[web_extract] https://example.com/h (500 chars)"
+
+    def test_malformed_dict_falls_back_to_placeholder(self):
+        args = json.dumps({"urls": [{"title": "no url here"}, {"title": "still none"}]})
+        summary = _summarize_tool_result("web_extract", args, self.CONTENT)
+        assert summary == "[web_extract] ? (+1 more) (500 chars)"
+
+    def test_plain_string_urls_unchanged(self):
+        # Regression guard: the normal (already-working) string path is intact.
+        args = json.dumps({"urls": ["https://example.com/a", "https://example.org/b"]})
+        summary = _summarize_tool_result("web_extract", args, self.CONTENT)
+        assert summary == "[web_extract] https://example.com/a (+1 more) (500 chars)"
 
 
 class TestShouldCompress:
@@ -64,7 +109,6 @@ class TestUpdateFromResponse:
     def test_missing_fields_default_zero(self, compressor):
         compressor.update_from_response({})
         assert compressor.last_prompt_tokens == 0
-
 
 class TestPreflightDeferral:
     def test_defers_when_recent_real_usage_fit_and_rough_growth_is_small(self, compressor):
@@ -2305,8 +2349,8 @@ class TestSummaryTargetRatio:
         """Tail token budget should be threshold_tokens * summary_target_ratio."""
         with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
             c = ContextCompressor(model="test", quiet_mode=True, summary_target_ratio=0.40)
-        # 200K * 0.50 threshold * 0.40 ratio = 40K
-        assert c.tail_token_budget == 40_000
+        # 200K < 512K → threshold floored at 75%: 150K * 0.40 ratio = 60K
+        assert c.tail_token_budget == 60_000
 
         with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
             c = ContextCompressor(model="test", quiet_mode=True, summary_target_ratio=0.40)
@@ -2314,14 +2358,14 @@ class TestSummaryTargetRatio:
         assert c.tail_token_budget == 200_000
 
     def test_summary_cap_scales_with_context(self):
-        """Max summary tokens should be 5% of context, capped at 12K."""
+        """Max summary tokens should be 5% of context, capped at 10K."""
         with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
             c = ContextCompressor(model="test", quiet_mode=True)
         assert c.max_summary_tokens == 10_000  # 200K * 0.05
 
         with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
             c = ContextCompressor(model="test", quiet_mode=True)
-        assert c.max_summary_tokens == 12_000  # capped at 12K ceiling
+        assert c.max_summary_tokens == 10_000  # capped at 10K ceiling
 
     def test_ratio_clamped(self):
         """Ratio should be clamped to [0.10, 0.80]."""
@@ -2333,20 +2377,20 @@ class TestSummaryTargetRatio:
             c = ContextCompressor(model="test", quiet_mode=True, summary_target_ratio=0.95)
         assert c.summary_target_ratio == 0.80
 
-    def test_default_threshold_is_50_percent(self):
-        """Default compression threshold should be 50%, with a 64K floor."""
+    def test_default_threshold_floored_at_75_percent_below_512k(self):
+        """Sub-512K models get the 75% small-context threshold floor."""
         with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
             c = ContextCompressor(model="test", quiet_mode=True)
-        assert c.threshold_percent == 0.50
-        # 50% of 100K = 50K, but the floor is 64K
-        assert c.threshold_tokens == 64_000
+        assert c.threshold_percent == 0.75
+        # 75% of 100K = 75K, above the 64K minimum floor
+        assert c.threshold_tokens == 75_000
 
-    def test_threshold_floor_does_not_apply_above_128k(self):
-        """On large-context models the 50% percentage is used directly."""
-        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+    def test_configured_threshold_used_at_512k_and_above(self):
+        """At 512K+ the configured (default 50%) percentage is used directly."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=512_000):
             c = ContextCompressor(model="test", quiet_mode=True)
-        # 50% of 200K = 100K, which is above the 64K floor
-        assert c.threshold_tokens == 100_000
+        assert c.threshold_percent == 0.50
+        assert c.threshold_tokens == 256_000
 
     def test_default_protect_last_n_is_20(self):
         """Default protect_last_n should be 20."""

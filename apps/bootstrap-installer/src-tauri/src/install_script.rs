@@ -8,7 +8,7 @@
 //!   3. Network: download from GitHub raw at a pinned commit or branch.
 //!      Commit pins are immutable; branch pins are HEAD-tracking.
 //!
-//! Mirrors `apps/desktop/electron/bootstrap-runner.cjs`'s `resolveInstallScript`,
+//! Mirrors `apps/desktop/electron/bootstrap-runner.ts`'s `resolveInstallScript`,
 //! but the dev-checkout resolution is driven by an env var rather than the
 //! Electron app's APP_ROOT/../.. trick, because Hermes-Setup.exe is meant
 //! to live OUTSIDE any repo checkout.
@@ -64,7 +64,7 @@ impl ScriptKind {
 }
 
 /// Validates a string looks like a git SHA (7+ hex chars). Mirrors
-/// `STAMP_COMMIT_RE` from bootstrap-runner.cjs.
+/// `STAMP_COMMIT_RE` from bootstrap-runner.ts.
 fn is_valid_commit(s: &str) -> bool {
     let len = s.len();
     (7..=40).contains(&len) && s.chars().all(|c| c.is_ascii_hexdigit())

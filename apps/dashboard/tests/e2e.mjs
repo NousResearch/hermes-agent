@@ -484,6 +484,17 @@ await page.waitForSelector(".widget-news .tab:has-text('E2e Custom')", { timeout
 await page.locator(".widget-news .tab", { hasText: "E2e Custom" }).click();
 await page.waitForSelector(".news-item", { timeout: 10000 });
 check("custom topic tab renders stories", true);
+// follow-a-search creates a Google News topic
+const followOk = await page.evaluate(async () => {
+  const post = (body) => fetch("/api/feeds", { method: "POST",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((r) => r.json());
+  const snap = await post({ op: "add_search", name: "E2E Search", query: "quantum computing" });
+  const key = Object.keys(snap.sources).find((k) => k.includes("e2e-search"));
+  const ok = key && snap.sources[key][0].url.includes("news.google.com/rss/search");
+  await post({ op: "remove_topic", name: "e2e-search" }); // cleanup
+  return ok;
+});
+check("follow-a-search creates a Google News topic", followOk === true);
 // clean up so reruns stay deterministic
 await page.evaluate(async () => {
   await fetch("/api/feeds", { method: "POST", headers: { "Content-Type": "application/json" },

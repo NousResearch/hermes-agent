@@ -170,6 +170,19 @@ class FeedConfig:
             self._topics[key] = []
             self._save()
 
+    GOOGLE_NEWS = "https://news.google.com/rss/search?q={q}&hl=en-US&gl=US&ceid=US:en"
+
+    def add_search(self, name: str, query: str) -> None:
+        """Follow an arbitrary news search as a topic (Google News RSS)."""
+        query = " ".join((query or "").split())[:120]
+        if not query:
+            raise ApiError(400, "search needs a query")
+        name = (name.strip() or query)[:40]
+        self.add_topic(name)  # validates + slugifies; raises on dupes
+        key = re.sub(r"[^a-z0-9-]", "", name.lower().replace(" ", "-"))[:24]
+        url = self.GOOGLE_NEWS.format(q=urllib.parse.quote(query))
+        self.add_source(key, f"Google News: {query[:40]}", url)
+
     def remove_topic(self, name: str) -> None:
         with self._lock:
             if name not in self._topics:
@@ -1754,6 +1767,8 @@ class Api:
         op = body.get("op")
         if op == "add_topic":
             self.feeds.add_topic(str(body.get("name", "")))
+        elif op == "add_search":
+            self.feeds.add_search(str(body.get("name", "")), str(body.get("query", "")))
         elif op == "remove_topic":
             self.feeds.remove_topic(str(body.get("name", "")))
         elif op == "add_source":
@@ -1764,7 +1779,7 @@ class Api:
         elif op == "reset":
             self.feeds.reset()
         else:
-            raise ApiError(400, "op must be add_topic, remove_topic, add_source, remove_source or reset")
+            raise ApiError(400, "op must be add_topic, add_search, remove_topic, add_source, remove_source or reset")
         CACHE.clear()  # cached merged topics may now be stale
         return self.feeds.snapshot()
 

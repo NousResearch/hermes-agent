@@ -96,6 +96,7 @@ export async function openSources() {
     }
 
     const topicInput = h("input.input", { type: "text", placeholder: "New topic name (becomes a tab)", "aria-label": "New topic name" });
+    const searchInput = h("input.input", { type: "text", placeholder: "Follow a search, e.g. “Fed rate decision”, “$NVDA”…", "aria-label": "Follow a news search" });
     body.append(
       h("form.sources-add.sources-newtopic", {
         onsubmit: (ev) => {
@@ -103,6 +104,12 @@ export async function openSources() {
           run("add_topic", { name: topicInput.value }, "Topic added");
         },
       }, topicInput, h("button.btn.btn-primary", { type: "submit" }, "Add topic")),
+      h("form.sources-add.sources-search", {
+        onsubmit: (ev) => {
+          ev.preventDefault();
+          run("add_search", { name: searchInput.value, query: searchInput.value }, "Now following that search");
+        },
+      }, searchInput, h("button.btn", { type: "submit" }, "Follow search")),
       h("div.sources-footer", {},
         h("span.muted.small", {}, "Any RSS/Atom URL works: sites, YouTube channels, subreddits (.rss), podcasts."),
         h("button.link-btn", {

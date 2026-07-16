@@ -453,6 +453,15 @@ class FeedConfigTests(unittest.TestCase):
         news = self.api.news({"topic": ["gaming-news"], "limit": ["4"]})
         self.assertEqual(news["source"], "sample")
 
+    def test_follow_a_search_creates_google_news_topic(self):
+        self.api.feeds_op({"op": "add_search", "name": "Fed rate", "query": "Fed rate decision"})
+        self.assertIn("fed-rate", self.api.feeds.topics())
+        src = self.api.feeds.snapshot()["sources"]["fed-rate"][0]
+        self.assertIn("news.google.com/rss/search", src["url"])
+        self.assertIn("Fed%20rate%20decision", src["url"])
+        with self.assertRaises(server.ApiError):     # empty query rejected
+            self.api.feeds_op({"op": "add_search", "name": "x", "query": ""})
+
     def test_validation_errors(self):
         with self.assertRaises(server.ApiError):
             self.api.feeds_op({"op": "add_topic", "name": "!!!"})

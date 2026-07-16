@@ -2292,3 +2292,406 @@ class TestSignalsInReport:
         assert "memory_management" in raw
         assert "cron_autonomy" in raw
         assert "session_abandonment" in raw
+
+
+# =========================================================================
+# Regression: user_id scoping (cross-user data leak prevention)
+# Issue 1 — CRITICAL SECURITY
+# =========================================================================
+
+class TestUserScoping:
+    """Regression tests for user_id filtering — prevents cross-user data leaks.
+
+    On a multi-user gateway, user A running /behavior must NOT see user B's
+    sessions, messages, or signals.  These tests create two users' data in a
+    temp DB, run generate(user_id="user_a"), and assert user_b's content is
+    absent from signals, the LLM prompt, and the report.
+    """
+
+    @pytest.fixture()
+    def multi_user_db(self, db):
+        """Create a DB with sessions from two different users."""
+        now = time.time()
+        day = 86400
+
+        # User A — CLI session with distinctive content
+        db.create_session(
+            session_id="ua_s1", source="cli", model="test-model",
+            user_id="user_a",
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = 'ua_s1'",
+            (now - 2 * day,),
+        )
+        db.end_session("ua_s1", end_reason="user_exit")
+        db.append_message("ua_s1", role="user", content="USER_A_SECRET_PLANS hello world this is a test")
+        db.append_message("ua_s1", role="assistant", content="I will help with that.")
+        db.append_message("ua_s1", role="assistant", content="Running terminal.",
+                          tool_calls=[{"function": {"name": "terminal"}}])
+        db.append_message("ua_s1", role="tool", content="done", tool_name="terminal")
+
+        # User B — Telegram session with distinctive content
+        db.create_session(
+            session_id="ub_s1", source="telegram", model="test-model",
+            user_id="user_b",
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = 'ub_s1'",
+            (now - 1 * day,),
+        )
+        db.end_session("ub_s1", end_reason="user_exit")
+        db.append_message("ub_s1", role="user", content="USER_B_SECRET_DATA hello world test message")
+        db.append_message("ub_s1", role="assistant", content="Working on it.")
+        db.append_message("ub_s1", role="assistant", content="Searching.",
+                          tool_calls=[{"function": {"name": "search_files"}}])
+        db.append_message("ub_s1", role="tool", content="found", tool_name="search_files")
+
+        db._conn.commit()
+        return db
+
+    def test_user_a_does_not_see_user_b_sessions(self, multi_user_db):
+        """generate(user_id='user_a') must not include user_b's sessions."""
+        analyzer = BehavioralAnalyzer(multi_user_db)
+        with patch.object(analyzer, "_call_llm_for_scoring", return_value=None):
+            report = analyzer.generate(days=30, user_id="user_a")
+        assert not report["empty"]
+        # Only user_a's session should appear
+        session_ids = {s["id"] for s in report["signals"]["sessions"]}
+        assert "ua_s1" in session_ids
+        assert "ub_s1" not in session_ids
+
+    def test_user_a_does_not_see_user_b_messages(self, multi_user_db):
+        """User B's distinctive content must not appear in any signal."""
+        analyzer = BehavioralAnalyzer(multi_user_db)
+        cutoff = time.time() - 30 * 86400
+        signals = analyzer._extract_signals(cutoff, user_id="user_a")
+
+        # Check all user message content
+        user_msgs = analyzer._get_user_messages(cutoff, user_id="user_a")
+        for msg in user_msgs:
+            assert "USER_B_SECRET_DATA" not in msg.get("content", "")
+
+        # Check go-to prompts don't include user_b's content
+        go_to = signals["go_to_prompts"]["top"]
+        for p in go_to:
+            assert "USER_B_SECRET_DATA" not in p["prompt"]
+
+    def test_user_b_does_not_see_user_a_messages(self, multi_user_db):
+        """Symmetric: user_b must not see user_a's content."""
+        analyzer = BehavioralAnalyzer(multi_user_db)
+        user_msgs = analyzer._get_user_messages(
+            time.time() - 30 * 86400, user_id="user_b"
+        )
+        for msg in user_msgs:
+            assert "USER_A_SECRET_PLANS" not in msg.get("content", "")
+
+    def test_user_scoping_tool_diversity(self, multi_user_db):
+        """Tool diversity query must also respect user_id."""
+        analyzer = BehavioralAnalyzer(multi_user_db)
+        # user_a uses 'terminal', user_b uses 'search_files'
+        td_a = analyzer._extract_tool_diversity(
+            time.time() - 30 * 86400, user_id="user_a"
+        )
+        tool_names_a = set(td_a["tool_counts"].keys())
+        assert "terminal" in tool_names_a
+        assert "search_files" not in tool_names_a
+
+    def test_user_scoping_session_abandonment(self, multi_user_db):
+        """Session abandonment query must respect user_id."""
+        analyzer = BehavioralAnalyzer(multi_user_db)
+        sa_a = analyzer._extract_session_abandonment(
+            time.time() - 30 * 86400, user_id="user_a"
+        )
+        # Only user_a's session (1 session)
+        assert sa_a["total_sessions"] == 1
+
+    def test_user_scoping_cron_autonomy(self, db):
+        """Cron autonomy query must respect user_id."""
+        now = time.time()
+        day = 86400
+        # User A cron session
+        db.create_session(
+            session_id="ca1", source="cron", model="m", user_id="user_a",
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, end_reason = 'cron_complete' WHERE id = 'ca1'",
+            (now - day,),
+        )
+        # User B cron session
+        db.create_session(
+            session_id="cb1", source="cron", model="m", user_id="user_b",
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, end_reason = 'cron_complete' WHERE id = 'cb1'",
+            (now - day,),
+        )
+        db._conn.commit()
+
+        analyzer = BehavioralAnalyzer(db)
+        ca_a = analyzer._extract_cron_autonomy(
+            time.time() - 30 * 86400, user_id="user_a"
+        )
+        assert ca_a["cron_session_count"] == 1
+
+    def test_user_scoping_llm_prompt(self, multi_user_db):
+        """The LLM prompt built from user_a's signals must not contain
+        user_b's content or source."""
+        analyzer = BehavioralAnalyzer(multi_user_db)
+        cutoff = time.time() - 30 * 86400
+        signals = analyzer._extract_signals(cutoff, user_id="user_a")
+        signals["days"] = 30
+        prompt = analyzer._build_llm_prompt(signals)
+        # User A's session is from "cli" — should appear in the source line
+        assert "cli: 1" in prompt
+        # User B's session is from "telegram" — must NOT appear
+        assert "telegram" not in prompt
+        # User B's distinctive content must not appear anywhere in the prompt
+        assert "USER_B_SECRET_DATA" not in prompt
+        assert "USER_B" not in prompt
+
+    def test_no_user_id_sees_all(self, multi_user_db):
+        """user_id=None (CLI path) sees both users' data."""
+        analyzer = BehavioralAnalyzer(multi_user_db)
+        with patch.object(analyzer, "_call_llm_for_scoring", return_value=None):
+            report = analyzer.generate(days=30, user_id=None)
+        assert not report["empty"]
+        session_ids = {s["id"] for s in report["signals"]["sessions"]}
+        assert "ua_s1" in session_ids
+        assert "ub_s1" in session_ids
+
+    def test_persisted_scores_have_user_id(self, multi_user_db):
+        """behavioral_scores table must store user_id for each run."""
+        analyzer = BehavioralAnalyzer(multi_user_db)
+        with patch.object(analyzer, "_call_llm_for_scoring", return_value=None):
+            analyzer.generate(days=30, user_id="user_a")
+        cursor = multi_user_db._conn.execute(
+            "SELECT user_id FROM behavioral_scores ORDER BY id DESC LIMIT 1"
+        )
+        row = cursor.fetchone()
+        assert row is not None
+        assert row["user_id"] == "user_a"
+
+    def test_persisted_scores_user_id_null_for_cli(self, db):
+        """CLI path (user_id=None) must persist NULL user_id."""
+        db.create_session(session_id="s", source="cli", model="m")
+        db.append_message("s", role="user", content="hello world test message")
+        db.append_message("s", role="assistant", content="hi")
+        db._conn.commit()
+        analyzer = BehavioralAnalyzer(db)
+        with patch.object(analyzer, "_call_llm_for_scoring", return_value=None):
+            analyzer.generate(days=30, user_id=None)
+        cursor = db._conn.execute(
+            "SELECT user_id FROM behavioral_scores ORDER BY id DESC LIMIT 1"
+        )
+        row = cursor.fetchone()
+        assert row is not None
+        assert row["user_id"] is None
+
+
+# =========================================================================
+# Regression: rewound messages excluded (active/compacted filter)
+# Issue 2
+# =========================================================================
+
+class TestActiveCompactedFilter:
+    """Regression tests for (m.active = 1 OR m.compacted = 1) filter.
+
+    Messages with active=0 and compacted=0 are rewound (user took them back)
+    and must NOT appear in any behavioral signal.  Messages with active=0 and
+    compacted=1 are archived-by-compaction and SHOULD appear (they represent
+    real conversation history that was summarized, not retracted).
+    """
+
+    @pytest.fixture()
+    def rewound_db(self, db):
+        """DB with an active message and a rewound (active=0) message."""
+        now = time.time()
+        db.create_session(session_id="s1", source="cli", model="m", user_id="u1")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = 's1'", (now - 3600,)
+        )
+        # Active user message
+        db.append_message("s1", role="user", content="ACTIVE_MESSAGE hello world test")
+        # Rewound user message (active=0, compacted=0)
+        db.append_message("s1", role="user", content="REWOUND_MESSAGE this should not appear")
+        db._conn.execute(
+            "UPDATE messages SET active = 0, compacted = 0 "
+            "WHERE content = 'REWOUND_MESSAGE this should not appear'"
+        )
+        # Compacted (archived) user message (active=0, compacted=1) — should appear
+        db.append_message("s1", role="user", content="COMPACTED_MESSAGE this should appear")
+        db._conn.execute(
+            "UPDATE messages SET active = 0, compacted = 1 "
+            "WHERE content = 'COMPACTED_MESSAGE this should appear'"
+        )
+        db._conn.commit()
+        return db
+
+    def test_rewound_message_excluded_from_user_messages(self, rewound_db):
+        """get_user_messages must exclude active=0, compacted=0 rows."""
+        analyzer = BehavioralAnalyzer(rewound_db)
+        msgs = analyzer._get_user_messages(time.time() - 86400)
+        contents = [m.get("content", "") for m in msgs]
+        assert "ACTIVE_MESSAGE hello world test" in contents
+        assert "REWOUND_MESSAGE this should not appear" not in contents
+
+    def test_compacted_message_included(self, rewound_db):
+        """get_user_messages must include compacted=1 rows (archived)."""
+        analyzer = BehavioralAnalyzer(rewound_db)
+        msgs = analyzer._get_user_messages(time.time() - 86400)
+        contents = [m.get("content", "") for m in msgs]
+        assert "COMPACTED_MESSAGE this should appear" in contents
+
+    def test_rewound_excluded_from_signals(self, rewound_db):
+        """Rewound content must not appear in any signal dict."""
+        analyzer = BehavioralAnalyzer(rewound_db)
+        signals = analyzer._extract_signals(time.time() - 86400)
+        # Check go-to prompts
+        go_to = signals["go_to_prompts"]["top"]
+        for p in go_to:
+            assert "REWOUND_MESSAGE" not in p["prompt"]
+        # Check prompt length — rewound message should not be counted
+        pl = signals["prompt_length"]
+        # 2 active/compacted messages with content → total 2
+        assert pl["total"] == 2
+
+    def test_rewound_excluded_from_tool_messages(self, db):
+        """Tool messages with active=0 must be excluded."""
+        now = time.time()
+        db.create_session(session_id="s1", source="cli", model="m")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = 's1'", (now - 3600,)
+        )
+        db.append_message("s1", role="tool", content="active tool result", tool_name="terminal")
+        db.append_message("s1", role="tool", content="rewound tool result", tool_name="search_files")
+        db._conn.execute(
+            "UPDATE messages SET active = 0 WHERE content = 'rewound tool result'"
+        )
+        db._conn.commit()
+        analyzer = BehavioralAnalyzer(db)
+        msgs = analyzer._get_tool_messages(time.time() - 86400)
+        contents = [m.get("content", "") for m in msgs]
+        assert "active tool result" in contents
+        assert "rewound tool result" not in contents
+
+    def test_rewound_excluded_from_assistant_messages(self, db):
+        """Assistant messages with active=0 must be excluded."""
+        now = time.time()
+        db.create_session(session_id="s1", source="cli", model="m")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = 's1'", (now - 3600,)
+        )
+        db.append_message("s1", role="assistant", content="active assistant reply")
+        db.append_message("s1", role="assistant", content="rewound assistant reply")
+        db._conn.execute(
+            "UPDATE messages SET active = 0 WHERE content = 'rewound assistant reply'"
+        )
+        db._conn.commit()
+        analyzer = BehavioralAnalyzer(db)
+        msgs = analyzer._get_assistant_messages(time.time() - 86400)
+        contents = [m.get("content", "") for m in msgs]
+        assert "active assistant reply" in contents
+        assert "rewound assistant reply" not in contents
+
+    def test_rewound_excluded_from_tool_diversity(self, db):
+        """Tool diversity query must exclude active=0, compacted=0 messages."""
+        now = time.time()
+        db.create_session(session_id="s1", source="cli", model="m")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = 's1'", (now - 3600,)
+        )
+        db.append_message("s1", role="tool", content="r", tool_name="terminal")
+        db.append_message(
+            "s1", role="assistant", content="r",
+            tool_calls=[{"function": {"name": "search_files"}}],
+        )
+        # Mark the search_files call as rewound
+        db._conn.execute(
+            "UPDATE messages SET active = 0 WHERE role = 'assistant' AND content = 'r'"
+        )
+        db._conn.commit()
+        analyzer = BehavioralAnalyzer(db)
+        td = analyzer._extract_tool_diversity(time.time() - 86400)
+        assert "terminal" in td["tool_counts"]
+        assert "search_files" not in td["tool_counts"]
+
+
+# =========================================================================
+# Regression: days propagation to LLM prompt
+# Issue 3 — hardcoded 30-day window
+# =========================================================================
+
+class TestDaysPropagation:
+    """Regression tests for signals['days'] propagation.
+
+    _build_llm_prompt reads signals.get('days', 30) but generate() never
+    added 'days' to the signals dict, so the prompt always said "last 30
+    days" regardless of the actual days parameter.
+    """
+
+    def test_days_7_in_signals(self, db):
+        """generate(days=7) must set signals['days'] = 7."""
+        db.create_session(session_id="s", source="cli", model="m")
+        db.append_message("s", role="user", content="hello world test message here")
+        db.append_message("s", role="assistant", content="hi there")
+        db._conn.commit()
+        analyzer = BehavioralAnalyzer(db)
+        with patch.object(analyzer, "_call_llm_for_scoring", return_value=None):
+            report = analyzer.generate(days=7)
+        assert report["signals"]["days"] == 7
+
+    def test_days_90_in_signals(self, db):
+        """generate(days=90) must set signals['days'] = 90."""
+        db.create_session(session_id="s", source="cli", model="m")
+        db.append_message("s", role="user", content="hello world test message here")
+        db.append_message("s", role="assistant", content="hi there")
+        db._conn.commit()
+        analyzer = BehavioralAnalyzer(db)
+        with patch.object(analyzer, "_call_llm_for_scoring", return_value=None):
+            report = analyzer.generate(days=90)
+        assert report["signals"]["days"] == 90
+
+    def test_days_7_in_llm_prompt(self, db):
+        """_build_llm_prompt with days=7 must say 'last 7 days'."""
+        db.create_session(session_id="s", source="cli", model="m")
+        db.append_message("s", role="user", content="hello world test message here")
+        db.append_message("s", role="assistant", content="hi there")
+        db._conn.commit()
+        analyzer = BehavioralAnalyzer(db)
+        with patch.object(analyzer, "_call_llm_for_scoring", return_value=None):
+            report = analyzer.generate(days=7)
+        prompt = analyzer._build_llm_prompt(report["signals"])
+        assert "last 7 days" in prompt
+        assert "last 30 days" not in prompt
+
+    def test_days_90_in_llm_prompt(self, db):
+        """_build_llm_prompt with days=90 must say 'last 90 days'."""
+        db.create_session(session_id="s", source="cli", model="m")
+        db.append_message("s", role="user", content="hello world test message here")
+        db.append_message("s", role="assistant", content="hi there")
+        db._conn.commit()
+        analyzer = BehavioralAnalyzer(db)
+        with patch.object(analyzer, "_call_llm_for_scoring", return_value=None):
+            report = analyzer.generate(days=90)
+        prompt = analyzer._build_llm_prompt(report["signals"])
+        assert "last 90 days" in prompt
+        assert "last 30 days" not in prompt
+
+    def test_days_default_30_still_works(self, db):
+        """Default days=30 should still produce 'last 30 days'."""
+        db.create_session(session_id="s", source="cli", model="m")
+        db.append_message("s", role="user", content="hello world test message here")
+        db.append_message("s", role="assistant", content="hi there")
+        db._conn.commit()
+        analyzer = BehavioralAnalyzer(db)
+        with patch.object(analyzer, "_call_llm_for_scoring", return_value=None):
+            report = analyzer.generate(days=30)
+        prompt = analyzer._build_llm_prompt(report["signals"])
+        assert "last 30 days" in prompt
+
+    def test_days_in_empty_report_signals(self, db):
+        """Even an empty report (no messages) should have days in signals."""
+        analyzer = BehavioralAnalyzer(db)
+        report = analyzer.generate(days=7)
+        assert report["empty"] is True
+        assert report["signals"]["days"] == 7

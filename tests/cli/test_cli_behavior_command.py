@@ -17,8 +17,8 @@ class _BehavioralAnalyzerStub:
         self.db = db
         self.config = config
 
-    def generate(self, *, days=30, source=None):
-        self.calls.append({"days": days, "source": source})
+    def generate(self, *, days=30, source=None, user_id=None):
+        self.calls.append({"days": days, "source": source, "user_id": user_id})
         return {"days": days, "source": source, "empty": False,
                 "scores": {}, "cards": {}, "session_count": 1,
                 "llm_available": False}
@@ -74,30 +74,30 @@ class TestBehaviorConfigGate:
 class TestBehaviorArgParsing:
     def test_default_days_30(self, capsys):
         calls, db = _run_show_behavior("/behavior")
-        assert calls == [{"days": 30, "source": None}]
+        assert calls == [{"days": 30, "source": None, "user_id": None}]
         db.close.assert_called_once()
         assert "days=30 source=None" in capsys.readouterr().out
 
     def test_positional_days(self, capsys):
         calls, db = _run_show_behavior("/behavior 7")
-        assert calls == [{"days": 7, "source": None}]
+        assert calls == [{"days": 7, "source": None, "user_id": None}]
         db.close.assert_called_once()
         assert "days=7 source=None" in capsys.readouterr().out
 
     def test_days_flag(self, capsys):
         calls, db = _run_show_behavior("/behavior --days 14")
-        assert calls == [{"days": 14, "source": None}]
+        assert calls == [{"days": 14, "source": None, "user_id": None}]
         db.close.assert_called_once()
         assert "days=14 source=None" in capsys.readouterr().out
 
     def test_source_flag(self, capsys):
         calls, db = _run_show_behavior("/behavior --source discord")
-        assert calls == [{"days": 30, "source": "discord"}]
+        assert calls == [{"days": 30, "source": "discord", "user_id": None}]
         db.close.assert_called_once()
 
     def test_days_and_source_flags(self, capsys):
         calls, db = _run_show_behavior("/behavior --days 14 --source discord")
-        assert calls == [{"days": 14, "source": "discord"}]
+        assert calls == [{"days": 14, "source": "discord", "user_id": None}]
         db.close.assert_called_once()
         assert "days=14 source=discord" in capsys.readouterr().out
 
@@ -111,7 +111,7 @@ class TestBehaviorArgParsing:
     def test_positional_and_flag_combined(self, capsys):
         """Positional days followed by --source flag."""
         calls, db = _run_show_behavior("/behavior 7 --source cli")
-        assert calls == [{"days": 7, "source": "cli"}]
+        assert calls == [{"days": 7, "source": "cli", "user_id": None}]
 
 
 # =========================================================================
@@ -127,7 +127,7 @@ class TestBehaviorConfigPassed:
             def __init__(self, db, config=None):
                 captured_config.append(config)
 
-            def generate(self, *, days=30, source=None):
+            def generate(self, *, days=30, source=None, user_id=None):
                 return {"days": days, "source": source, "empty": False,
                         "scores": {}, "cards": {}, "session_count": 0,
                         "llm_available": False}

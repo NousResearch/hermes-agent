@@ -135,33 +135,56 @@ def _quote_bash_path(path: str) -> str:
     return shlex.quote(_bash_safe_path(path))
 
 
+def _is_usable_cwd(path: str) -> bool:
+    """True if *path* is a directory the current process can actually enter.
+
+    ``os.path.isdir`` alone is NOT sufficient: a directory that exists but is
+    not searchable by the runtime user still passes it, because ``stat``
+    succeeds through the parent directory.  The classic case is ``/root``
+    under a non-root runtime (systemd ``User=hermes``, cron): ``isdir('/root')``
+    returns True, but ``subprocess.Popen(..., cwd='/root')`` raises
+    ``PermissionError: [Errno 13] Permission denied: '/root'`` the moment it
+    tries to ``chdir`` into it (#65583).  Require execute/search access
+    (``os.X_OK``) too so callers fall back to an accessible ancestor instead
+    of wedging every terminal/file-tool call.
+    """
+    return bool(path) and os.path.isdir(path) and os.access(path, os.X_OK)
+
+
 def _resolve_safe_cwd(cwd: str) -> str:
-    """Return ``cwd`` if it exists as a directory, else the nearest existing
+    """Return ``cwd`` if it is a usable directory, else the nearest usable
     ancestor.  Falls back to ``tempfile.gettempdir()`` only if walking up the
-    path can't find any existing directory (effectively never on a healthy
+    path can't find any usable directory (effectively never on a healthy
     filesystem, but cheap belt-and-braces).
 
+    "Usable" means the directory both exists AND is searchable by the current
+    process (see ``_is_usable_cwd``).  A present-but-inaccessible directory
+    (e.g. ``/root`` under a non-root systemd/cron runtime) is treated the same
+    as a missing one so recovery walks up to an accessible ancestor.
+
     On Windows, also normalizes Git Bash / MSYS-style POSIX paths
-    (``/c/Users/x``) to native Windows form before the isdir check so a
+    (``/c/Users/x``) to native Windows form before the check so a
     perfectly valid ``pwd -P`` result from bash doesn't get rejected as
     "missing" (see ``_msys_to_windows_path``).
 
-    Used by ``_run_bash`` to recover when the configured cwd is gone — most
-    commonly because a previous tool call deleted its own working directory
-    (issue #17558).  Without this guard, ``subprocess.Popen(..., cwd=...)``
-    raises ``FileNotFoundError`` before bash starts, wedging every subsequent
-    terminal call until the gateway restarts.
+    Used by ``_run_bash`` to recover when the configured cwd is unusable —
+    either because a previous tool call deleted its own working directory
+    (``FileNotFoundError``, issue #17558) or because the configured cwd is a
+    directory the runtime user can't enter (``PermissionError``, issue
+    #65583).  Without this guard, ``subprocess.Popen(..., cwd=...)`` raises
+    before bash starts, wedging every subsequent terminal call until the
+    gateway restarts.
     """
     cwd = _msys_to_windows_path(cwd) if _IS_WINDOWS else cwd
-    if cwd and os.path.isdir(cwd):
+    if _is_usable_cwd(cwd):
         return cwd
     parent = os.path.dirname(cwd) if cwd else ""
     while parent:
-        if os.path.isdir(parent):
+        if _is_usable_cwd(parent):
             return parent
         next_parent = os.path.dirname(parent)
         if next_parent == parent:
-            # Reached the filesystem root and it doesn't exist either —
+            # Reached the filesystem root and it isn't usable either —
             # genuinely nothing to fall back to except the temp dir.
             break
         parent = next_parent
@@ -1234,12 +1257,15 @@ class LocalEnvironment(BaseEnvironment):
         if safe_cwd != self.cwd:
             # MSYS → Windows translation alone shouldn't surface as a warning
             # (it's a benign normalization, not a recovery). Only warn when
-            # the directory really doesn't exist on disk.
+            # the directory is genuinely unusable — either missing on disk or
+            # present but inaccessible to the runtime user (e.g. ``/root``
+            # under a non-root systemd/cron runtime, #65583).
             normalized = _msys_to_windows_path(self.cwd) if _IS_WINDOWS else self.cwd
             if safe_cwd != normalized:
                 logger.warning(
-                    "LocalEnvironment cwd %r is missing on disk; "
-                    "falling back to %r so terminal commands keep working.",
+                    "LocalEnvironment cwd %r is unusable (missing or "
+                    "inaccessible); falling back to %r so terminal commands "
+                    "keep working.",
                     self.cwd,
                     safe_cwd,
                 )

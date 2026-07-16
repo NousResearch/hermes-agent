@@ -186,6 +186,18 @@ def test_decompose_fanout_false_preserves_existing_assignee(kanban_home):
     assert task.title == "Tightened title"
 
 
+def test_assigned_triage_task_remains_auto_decompose_eligible(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="assigned rough idea",
+            assignee="engineer",
+            triage=True,
+        )
+
+    assert tid in decomp.list_triage_ids()
+
+
 def test_decompose_fanout_false_uses_valid_llm_assignee(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="route me", triage=True)

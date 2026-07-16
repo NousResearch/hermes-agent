@@ -606,6 +606,49 @@ def test_dispatch_dry_run(client):
     assert isinstance(body, dict)
 
 
+def test_manual_orchestration_can_nudge_prepared_work_to_dispatch(client, monkeypatch):
+    import json as jsonlib
+
+    manual = client.put(
+        "/api/plugins/kanban/orchestration",
+        json={"auto_decompose": False},
+    )
+    assert manual.status_code == 200
+    assert manual.json()["auto_decompose"] is False
+
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "rough work", "assignee": "worker", "triage": True},
+    ).json()["task"]
+    assert task["status"] == "triage"
+
+    _patch_specifier_response(
+        monkeypatch,
+        content=jsonlib.dumps(
+            {"title": "prepared work", "body": "Ready for dispatch."}
+        ),
+    )
+    specified = client.post(
+        f"/api/plugins/kanban/tasks/{task['id']}/specify",
+        json={"author": "ui-tester"},
+    )
+    assert specified.status_code == 200
+    assert specified.json()["ok"] is True
+
+    prepared = client.get(
+        f"/api/plugins/kanban/tasks/{task['id']}"
+    ).json()["task"]
+    assert prepared["status"] == "ready"
+
+    monkeypatch.setattr("hermes_cli.profiles.profile_exists", lambda _name: True)
+    release = client.post(
+        "/api/plugins/kanban/dispatch?dry_run=true&max=1"
+    )
+    assert release.status_code == 200
+    spawned_ids = {row[0] for row in release.json()["spawned"]}
+    assert task["id"] in spawned_ids
+
+
 # ---------------------------------------------------------------------------
 # Triage column (new v1 status)
 # ---------------------------------------------------------------------------
@@ -1198,6 +1241,27 @@ def test_config_reads_dashboard_kanban_section(tmp_path, monkeypatch, client):
     assert data["lane_by_profile"] is False
     assert data["include_archived_by_default"] is True
     assert data["render_markdown"] is False
+
+
+def test_orchestration_manual_mode_keeps_dispatch_gate_unchanged(client):
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "config.yaml").write_text(
+        "kanban:\n"
+        "  dispatch_in_gateway: true\n",
+        encoding="utf-8",
+    )
+
+    r = client.put(
+        "/api/plugins/kanban/orchestration",
+        json={"auto_decompose": False},
+    )
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["auto_decompose"] is False
+    saved = (home / "config.yaml").read_text(encoding="utf-8")
+    assert "auto_decompose: false" in saved
+    assert "dispatch_in_gateway: true" in saved
 
 
 # ---------------------------------------------------------------------------

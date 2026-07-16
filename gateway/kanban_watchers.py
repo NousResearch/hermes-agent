@@ -55,6 +55,26 @@ def _resolve_auto_decompose_settings(
     return enabled, per_tick
 
 
+def _resolve_dispatch_in_gateway_enabled(load_config: Callable[[], Any]) -> bool:
+    """Resolve the live embedded-dispatch gate.
+
+    ``kanban.dispatch_in_gateway`` is the safety switch for launching workers
+    from the gateway. Honour explicit false-y env overrides first so operators
+    can stop dispatch without reading config. Otherwise read config live and
+    fail closed on errors; a transient config read failure must not spawn work
+    while the operator is trying to pause gateway dispatch.
+    """
+    env_override = os.environ.get("HERMES_KANBAN_DISPATCH_IN_GATEWAY", "").strip().lower()
+    if env_override in {"0", "false", "no", "off"}:
+        return False
+    try:
+        cfg = load_config()
+    except Exception:
+        return False
+    kcfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+    return bool(kcfg.get("dispatch_in_gateway", True))
+
+
 def _acquire_singleton_lock(lock_path) -> "tuple[Optional[object], str]":
     """Take an exclusive, non-blocking advisory lock for the sole dispatcher.
 
@@ -658,10 +678,10 @@ class GatewayKanbanWatchersMixin:
         in-flight ``to_thread`` returns on its own after the current
         ``dispatch_once`` call finishes (typically <1ms on an idle board).
         """
-        # Read config once at boot. If the user flips the flag later, they
-        # restart the gateway; same pattern as every other background
-        # watcher here. Honours HERMES_KANBAN_DISPATCH_IN_GATEWAY env var
-        # as an escape hatch (false-y value disables without editing YAML).
+        # Read config once at boot to decide whether this gateway should own
+        # the embedded dispatcher at all. The loop below re-reads the same gate
+        # every tick so changes to ``dispatch_in_gateway`` take effect without
+        # a gateway restart.
         try:
             from hermes_cli.config import load_config as _load_config
         except Exception:
@@ -1125,6 +1145,9 @@ class GatewayKanbanWatchersMixin:
                 logger.exception("kanban dispatcher: zombie reaper failed")
 
             try:
+                if not _resolve_dispatch_in_gateway_enabled(_load_config):
+                    await asyncio.sleep(interval)
+                    continue
                 # Re-read the auto-decompose toggle live each tick so a user
                 # flipping kanban.auto_decompose=false to STOP runaway fan-out
                 # takes effect on the next tick, not on gateway restart (#49638).

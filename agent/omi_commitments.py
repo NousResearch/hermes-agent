@@ -22,6 +22,7 @@ import hashlib
 import json
 import logging
 import time
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import load_config
@@ -56,25 +57,67 @@ def _cfg() -> Dict[str, Any]:
     return section if isinstance(section, dict) else {}
 
 
+def _maybe_json(value: Any) -> Any:
+    """Parse *value* as JSON if it's a string that looks like JSON, else return it.
+
+    The Omi MCP server double-encodes: dispatch returns a JSON string whose
+    ``result`` key is *itself* a JSON string (e.g. '{"conversations": [...]}').
+    A single parse leaves a str where the caller expects a list/dict, so unwrap
+    one more level when the payload is still a JSON-looking string.
+    """
+    if not isinstance(value, str):
+        return value
+    stripped = value.strip()
+    if not stripped or stripped[0] not in "[{":
+        return value
+    try:
+        return json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
+        return value
+
+
+def _ensure_mcp_ready() -> bool:
+    """Ensure the omi MCP server is connected, discovering it if needed.
+
+    Returns True if the omi server is registered afterwards. When run inside a
+    live gateway this is a no-op (already discovered); when run standalone it
+    performs the one-time connect. Fail-soft: returns False on any error rather
+    than raising, so the caller can report a clean summary.
+    """
+    try:
+        from tools.registry import registry
+
+        if registry.get_entry("mcp__omi__get_conversations") is not None:
+            return True
+    except Exception:
+        pass
+    try:
+        from tools.mcp_tool import discover_mcp_tools
+
+        names = discover_mcp_tools()
+        return any(n.startswith("mcp__omi__") for n in names)
+    except Exception as exc:
+        logger.warning("omi_commitments: MCP discovery failed: %s", exc)
+        return False
+
+
 def _call_mcp(tool: str, args: Dict[str, Any]) -> Any:
-    """Call an omi MCP tool, returning the parsed 'result' or None on error.
+    """Call an omi MCP tool, returning the fully-parsed 'result' or None on error.
 
     MCP handlers return a JSON *string*; a failed fetch is returned as
-    ``{"error": ...}`` rather than raised, so we must branch explicitly.
+    ``{"error": ...}`` rather than raised, so we must branch explicitly. The
+    Omi server additionally double-encodes the payload (``result`` is itself a
+    JSON string), so we unwrap that inner layer too.
     """
     from tools.registry import registry
 
     raw = registry.dispatch(f"mcp__omi__{tool}", args)
-    try:
-        data = json.loads(raw) if isinstance(raw, str) else raw
-    except (json.JSONDecodeError, TypeError) as exc:
-        logger.warning("omi_commitments: could not parse %s response: %s", tool, exc)
-        return None
+    data = _maybe_json(raw)
     if isinstance(data, dict) and "error" in data:
         logger.warning("omi_commitments: %s returned error: %s", tool, data["error"])
         return None
     if isinstance(data, dict) and "result" in data:
-        return data["result"]
+        return _maybe_json(data["result"])
     return data
 
 
@@ -144,10 +187,22 @@ def _conversation_id(conversation: Dict[str, Any]) -> Optional[str]:
 
 
 def _conversation_timestamp(conversation: Dict[str, Any]) -> Optional[float]:
+    """Best-effort epoch seconds from a conversation's timestamp field.
+
+    Handles both numeric epochs and ISO-8601 strings — the live Omi API
+    returns strings like '2026-07-15 17:04:45.543993+00:00'. Returns None if
+    no field is parseable (the caller then treats the conversation as
+    always-in-window rather than silently dropping it).
+    """
     for key in ("created_at", "started_at", "timestamp", "finished_at"):
         val = conversation.get(key)
         if isinstance(val, (int, float)):
             return float(val)
+        if isinstance(val, str) and val.strip():
+            try:
+                return datetime.fromisoformat(val.strip()).timestamp()
+            except ValueError:
+                continue
     return None
 
 
@@ -173,6 +228,13 @@ def run_omi_commitment_scan() -> Dict[str, Any]:
     from hermes_state import SessionDB
 
     db = SessionDB(get_hermes_home() / "state.db")
+
+    # Ensure the omi MCP server is connected. When run standalone (e.g.
+    # `hermes omi scan` or a --no-agent cron job) there is no gateway to have
+    # connected it, so the registry would return "Unknown tool" and the scan
+    # would silently find nothing. Idempotent — a no-op if already discovered.
+    if not _ensure_mcp_ready():
+        return {"error": "omi MCP server not available (discovery failed)"}
 
     conversations = _call_mcp("get_conversations", {"limit": max_convs})
     if not isinstance(conversations, list):

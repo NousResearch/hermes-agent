@@ -36,6 +36,16 @@ def cfg_patch():
     return _apply
 
 
+@pytest.fixture(autouse=True)
+def _mcp_ready():
+    """Stub the MCP-discovery bootstrap so tests that mock _call_mcp simulate
+    an already-connected omi server (the discovery step is exercised live, not
+    here). Tests that need discovery to fail can override this locally.
+    """
+    with patch.object(oc, "_ensure_mcp_ready", return_value=True):
+        yield
+
+
 def _list_cards():
     from hermes_cli import kanban_db as kb
 
@@ -50,6 +60,20 @@ def test_disabled_skips_without_mcp(cfg_patch):
     with cfg_patch(enabled=False), patch.object(oc, "_call_mcp") as mcp:
         result = oc.run_omi_commitment_scan()
     assert result == {"skipped": "disabled"}
+    mcp.assert_not_called()
+
+
+def test_mcp_discovery_failure_reported(cfg_patch):
+    # When the omi MCP server can't be connected (e.g. standalone process with
+    # no gateway and discovery fails), the scan reports an error instead of a
+    # silent scanned=0 — the exact live bug this guard fixes.
+    with (
+        cfg_patch(),
+        patch.object(oc, "_ensure_mcp_ready", return_value=False),
+        patch.object(oc, "_call_mcp") as mcp,
+    ):
+        result = oc.run_omi_commitment_scan()
+    assert "error" in result
     mcp.assert_not_called()
 
 
@@ -219,6 +243,40 @@ def test_notification_suppressed_when_budget_denies(cfg_patch):
     assert result["created"] == 1  # card still filed
     assert result["notified"] == 0  # but no ping
     send.assert_not_called()
+
+
+class TestMaybeJson:
+    """_maybe_json unwraps the Omi server's double-encoded payload."""
+
+    def test_parses_json_string(self):
+        assert oc._maybe_json('{"conversations": []}') == {"conversations": []}
+
+    def test_passes_through_dict(self):
+        assert oc._maybe_json({"a": 1}) == {"a": 1}
+
+    def test_passes_through_plain_string(self):
+        assert oc._maybe_json("not json") == "not json"
+
+    def test_passes_through_non_json_looking(self):
+        # Only strings starting with [ or { are parse-attempted.
+        assert oc._maybe_json("2026-07-15") == "2026-07-15"
+
+
+class TestConversationTimestamp:
+    """_conversation_timestamp handles both epoch and ISO-8601 (live Omi)."""
+
+    def test_epoch_numeric(self):
+        assert oc._conversation_timestamp({"created_at": 1000.0}) == 1000.0
+
+    def test_iso_string_with_offset(self):
+        # The live Omi API returns this exact shape.
+        ts = oc._conversation_timestamp({
+            "started_at": "2026-07-15 17:04:45.543993+00:00"
+        })
+        assert ts is not None and ts > 0
+
+    def test_unparseable_returns_none(self):
+        assert oc._conversation_timestamp({"started_at": "not a date"}) is None
 
 
 class TestParseCommitments:

@@ -265,12 +265,44 @@ def _get_scope_lock_path(scope: str, identity: str) -> Path:
     return _get_lock_dir() / f"{scope}-{_scope_hash(identity)}.lock"
 
 
+def _parse_linux_proc_stat_suffix(raw: str) -> list[str]:
+    """Return fields 3 onward from a Linux ``/proc/<pid>/stat`` row.
+
+    Field 2 is a parenthesized process name that may contain spaces and right
+    parentheses, so fixed-position whitespace splitting is unsafe. Kernel
+    fields resume after the final ``)`` delimiter.
+    """
+    open_paren = raw.find("(")
+    close_paren = raw.rfind(")")
+    if open_paren <= 0 or close_paren <= open_paren:
+        raise ValueError("malformed /proc stat comm field")
+
+    suffix_fields = raw[close_paren + 1:].split()
+    if not suffix_fields:
+        raise ValueError("truncated /proc stat row")
+
+    state = suffix_fields[0]
+    if len(state) != 1 or not state.isascii() or not state.isalpha():
+        raise ValueError("invalid /proc stat state field")
+    return suffix_fields
+
+
+def _parse_linux_proc_stat_start_time(raw: str) -> int:
+    """Parse field 22 (``starttime``) from a Linux proc stat row."""
+    suffix_fields = _parse_linux_proc_stat_suffix(raw)
+    if len(suffix_fields) <= 19:
+        raise ValueError("truncated /proc stat row")
+    return int(suffix_fields[19])
+
+
 def _get_process_start_time(pid: int) -> Optional[int]:
     """Per-process start-time fingerprint (PID-reuse guard), or None: ``/proc/<pid>/stat`` field 22
     on Linux, else psutil ``create_time()`` in centiseconds. Units differ per platform; the guard
     only compares same-host values."""
     with contextlib.suppress(IndexError, ValueError, OSError):
-        return int(Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[21])
+        return _parse_linux_proc_stat_start_time(
+            Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        )
     try:
         import psutil  # type: ignore
         return int(round(psutil.Process(pid).create_time() * 100))
@@ -601,8 +633,10 @@ def _pid_exists(pid: int) -> bool:
 def _posix_is_zombie(pid: int) -> bool:
     """Zombie via ``/proc/<pid>/stat`` field 3, or ``ps -o state=`` without /proc (macOS/BSD)."""
     try:
-        stat_fields = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()
-        return len(stat_fields) > 2 and stat_fields[2] == "Z"
+        stat_suffix = _parse_linux_proc_stat_suffix(
+            Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        )
+        return stat_suffix[0] == "Z"
     except FileNotFoundError:
         with contextlib.suppress(Exception):
             # --compile-bytecode: uv does NOT write __pycache__ by default (pip does), so without it the
@@ -617,7 +651,7 @@ def _posix_is_zombie(pid: int) -> bool:
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
             )
             return r.returncode == 0 and r.stdout.strip().startswith("Z")
-    except (IndexError, PermissionError, OSError):
+    except (IndexError, PermissionError, ValueError, OSError):
         pass
     return False
 

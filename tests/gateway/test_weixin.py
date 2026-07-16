@@ -1205,3 +1205,77 @@ class TestWeixinApiTimeout:
             )
         )
         assert result == {"ret": 0, "msgs": [], "get_updates_buf": "buf-123"}
+
+
+class TestWeixinInboundTaskAnchoring:
+    """Fire-and-forget inbound-message tasks must hold a strong reference.
+
+    asyncio keeps only a weak reference to a bare ``create_task`` result, so a
+    still-pending handler with no other referent can be garbage-collected
+    mid-flight — silently dropping the message it was processing. The poll loop
+    must route dispatch through ``_track_task`` so the task is anchored until it
+    finishes.
+    """
+
+    @pytest.mark.asyncio
+    async def test_track_task_anchors_then_releases(self):
+        adapter = _make_adapter()
+        release = asyncio.Event()
+
+        async def _work():
+            await release.wait()
+
+        task = adapter._track_task(asyncio.create_task(_work()))
+        # Held while pending → not GC-eligible.
+        assert task in adapter._background_tasks
+        release.set()
+        await task
+        await asyncio.sleep(0)  # let the done-callback run
+        # Discarded on completion → the set never grows unbounded.
+        assert task not in adapter._background_tasks
+
+    @pytest.mark.asyncio
+    async def test_poll_loop_anchors_inbound_message_task(self, monkeypatch):
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._poll_session = AsyncMock()
+
+        release = asyncio.Event()
+        processed = []
+
+        async def _fake_process(message):
+            processed.append(message)
+            await release.wait()  # stay pending so the anchor is observable
+
+        monkeypatch.setattr(adapter, "_process_message_safe", _fake_process)
+
+        calls = {"n": 0}
+
+        async def _fake_get_updates(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"ret": 0, "errcode": 0, "msgs": [{"id": "m1"}],
+                        "get_updates_buf": ""}
+            adapter._running = False  # break the loop on the next poll
+            return {"ret": 0, "errcode": 0, "msgs": [], "get_updates_buf": ""}
+
+        monkeypatch.setattr(weixin, "_get_updates", _fake_get_updates)
+        monkeypatch.setattr(weixin, "_load_sync_buf", lambda *a, **k: "")
+        monkeypatch.setattr(weixin, "_save_sync_buf", lambda *a, **k: None)
+
+        await adapter._poll_loop()
+
+        # The dispatched task is anchored at create time — before it even runs —
+        # so a bare create_task would instead leave it GC-eligible with no
+        # referent.
+        assert len(adapter._background_tasks) == 1
+        # Let the anchored task run up to its release.wait() suspension.
+        await asyncio.sleep(0)
+        assert processed == [{"id": "m1"}]
+        assert len(adapter._background_tasks) == 1  # still pending, still held
+
+        release.set()
+        for task in list(adapter._background_tasks):
+            await task
+        await asyncio.sleep(0)
+        assert len(adapter._background_tasks) == 0

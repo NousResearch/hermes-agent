@@ -2,15 +2,17 @@
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from tools.send_message_tool import (
     SEND_MESSAGE_SCHEMA,
     _SEND_MESSAGE_ENRICHERS,
+    _SEND_MESSAGE_SCHEMA_FRAGMENTS,
     _parse_target_ref,
     _send_to_platform,
+    get_send_message_schema,
     register_send_message_enricher,
 )
 
@@ -19,27 +21,10 @@ from tools.send_message_tool import (
 def _reset_enrichers():
     """Clear the enricher registry before and after every test."""
     _SEND_MESSAGE_ENRICHERS.clear()
-    # Also clear any schema fragments injected by previous tests
-    for key in list(SEND_MESSAGE_SCHEMA["parameters"]["properties"]):
-        if key not in {
-            "action",
-            "target",
-            "message",
-            "emoji",
-            "message_id",
-        }:
-            SEND_MESSAGE_SCHEMA["parameters"]["properties"].pop(key, None)
+    _SEND_MESSAGE_SCHEMA_FRAGMENTS.clear()
     yield
     _SEND_MESSAGE_ENRICHERS.clear()
-    for key in list(SEND_MESSAGE_SCHEMA["parameters"]["properties"]):
-        if key not in {
-            "action",
-            "target",
-            "message",
-            "emoji",
-            "message_id",
-        }:
-            SEND_MESSAGE_SCHEMA["parameters"]["properties"].pop(key, None)
+    _SEND_MESSAGE_SCHEMA_FRAGMENTS.clear()
 
 
 class TestParseTargetRef:
@@ -69,27 +54,45 @@ class TestParseTargetRef:
 
 
 class TestSchemaMerge:
-    def test_schema_fragment_merged(self):
-        """Schema fragments are injected into SEND_MESSAGE_SCHEMA."""
+    def test_schema_fragment_stored(self):
+        """Schema fragments are stored in _SEND_MESSAGE_SCHEMA_FRAGMENTS."""
         register_send_message_enricher(
             "myplatform",
             AsyncMock(),
             schema_fragment={"voice": {"type": "string", "description": "Voice setting"}},
         )
-        props = SEND_MESSAGE_SCHEMA["parameters"]["properties"]
-        assert "voice" in props
-        assert props["voice"]["type"] == "string"
+        assert "myplatform" in _SEND_MESSAGE_SCHEMA_FRAGMENTS
+        assert _SEND_MESSAGE_SCHEMA_FRAGMENTS["myplatform"]["voice"]["type"] == "string"
+
+    def test_get_send_message_schema_assembles_fragments(self):
+        """get_send_message_schema returns a copy with fragments merged."""
+        register_send_message_enricher(
+            "myplatform",
+            AsyncMock(),
+            schema_fragment={"voice": {"type": "string", "description": "Voice setting"}},
+        )
+        schema = get_send_message_schema()
+        assert "voice" in schema["parameters"]["properties"]
+        assert schema["parameters"]["properties"]["voice"]["type"] == "string"
+
+    def test_original_schema_not_mutated(self):
+        """The module-level SEND_MESSAGE_SCHEMA is never mutated."""
+        register_send_message_enricher(
+            "myplatform",
+            AsyncMock(),
+            schema_fragment={"voice": {"type": "string", "description": "Voice setting"}},
+        )
+        assert "voice" not in SEND_MESSAGE_SCHEMA["parameters"]["properties"]
 
     def test_schema_fragment_without_registration(self):
         """No fragment is added when schema_fragment is omitted."""
         register_send_message_enricher("myplatform", AsyncMock())
-        props = SEND_MESSAGE_SCHEMA["parameters"]["properties"]
-        assert "voice" not in props
+        assert "myplatform" not in _SEND_MESSAGE_SCHEMA_FRAGMENTS
 
 
 class TestHandlerRouting:
-    def test_enricher_handler_invoked(self):
-        """The enricher handler receives correct arguments."""
+    def test_async_handler_invoked(self):
+        """The async enricher handler receives correct arguments."""
         handler = AsyncMock(return_value={"success": True, "message_id": "msg_1"})
         register_send_message_enricher("myplatform", handler)
 
@@ -112,8 +115,32 @@ class TestHandlerRouting:
         assert call_args[2] == "myplatform"
         assert call_args[3] is pconfig
 
-    def test_enricher_handler_result(self):
-        """Enricher result is returned verbatim."""
+    def test_sync_handler_invoked(self):
+        """The sync enricher handler is called directly (not awaited)."""
+        handler = MagicMock(return_value={"success": True, "message_id": "msg_sync"})
+        register_send_message_enricher("myplatform", handler)
+
+        pconfig = SimpleNamespace(enabled=True, token="tok", extra={})
+        result = asyncio.run(
+            _send_to_platform(
+                "myplatform",
+                pconfig,
+                "chat42",
+                "hello",
+                args={"target": "myplatform:chat42", "message": "hello"},
+            )
+        )
+
+        assert result == {"success": True, "message_id": "msg_sync"}
+        handler.assert_called_once()
+        call_args = handler.call_args.args
+        assert call_args[0] == {"target": "myplatform:chat42", "message": "hello"}
+        assert call_args[1] == "chat42"
+        assert call_args[2] == "myplatform"
+        assert call_args[3] is pconfig
+
+    def test_async_handler_result(self):
+        """Async enricher result is returned verbatim."""
         handler = AsyncMock(return_value={"success": True, "message_id": "msg_1"})
         register_send_message_enricher("myplatform", handler)
 
@@ -127,8 +154,23 @@ class TestHandlerRouting:
         )
         assert result == {"success": True, "message_id": "msg_1"}
 
-    def test_enricher_handler_error(self):
-        """Enricher exceptions are caught and surfaced as error dicts."""
+    def test_sync_handler_result(self):
+        """Sync enricher result is returned verbatim."""
+        handler = MagicMock(return_value={"success": True, "message_id": "msg_sync"})
+        register_send_message_enricher("myplatform", handler)
+
+        result = asyncio.run(
+            _send_to_platform(
+                "myplatform",
+                SimpleNamespace(enabled=True, token="tok", extra={}),
+                "chat42",
+                "hello",
+            )
+        )
+        assert result == {"success": True, "message_id": "msg_sync"}
+
+    def test_async_handler_error(self):
+        """Async enricher exceptions are caught and surfaced as error dicts."""
         handler = AsyncMock(side_effect=RuntimeError("boom"))
         register_send_message_enricher("myplatform", handler)
 
@@ -142,6 +184,22 @@ class TestHandlerRouting:
         )
         assert "error" in result
         assert "boom" in result["error"]
+
+    def test_sync_handler_error(self):
+        """Sync enricher exceptions are caught and surfaced as error dicts."""
+        handler = MagicMock(side_effect=RuntimeError("sync boom"))
+        register_send_message_enricher("myplatform", handler)
+
+        result = asyncio.run(
+            _send_to_platform(
+                "myplatform",
+                SimpleNamespace(enabled=True, token="tok", extra={}),
+                "chat42",
+                "hello",
+            )
+        )
+        assert "error" in result
+        assert "sync boom" in result["error"]
 
 
 class TestFallback:

@@ -316,15 +316,23 @@ class TestActiveFeatures:
         assert "memory.hindsight" not in active
         assert "platform.slack" not in active
 
-    def test_multi_package_feature_active_if_any_present(self, monkeypatch):
-        # platform.slack has 3 packages; only one needs to be present
-        # for the feature to count as active (user activated it before,
-        # one transitive may have been uninstalled separately).
+    def test_multi_package_feature_active_if_primary_present(self, monkeypatch):
+        # The first spec is the feature's primary package. Secondary packages
+        # may be shared by unrelated backends.
         monkeypatch.setattr(
             ld, "_is_present",
             lambda spec: ld._pkg_name_from_spec(spec) == "slack-bolt",
         )
         assert "platform.slack" in ld.active_features()
+
+    def test_shared_secondary_package_does_not_activate_feature(self, monkeypatch):
+        # aiohttp is a core/shared dependency and must not make an otherwise
+        # unused Matrix backend look active during `hermes update`.
+        monkeypatch.setattr(
+            ld, "_is_present",
+            lambda spec: ld._pkg_name_from_spec(spec) == "aiohttp",
+        )
+        assert "platform.matrix" not in ld.active_features()
 
 
 class TestRefreshActiveFeatures:

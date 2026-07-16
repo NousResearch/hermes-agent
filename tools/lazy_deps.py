@@ -858,16 +858,18 @@ def feature_install_command(feature: str) -> Optional[str]:
 def active_features() -> list[str]:
     """Return the list of features the user has ever lazy-installed.
 
-    A feature counts as "active" if at least one of its declared packages
-    is currently installed in the venv (presence check, ignoring version).
-    Features the user has never enabled stay quiet.
+    A feature counts as "active" when its primary package (the first spec in
+    :data:`LAZY_DEPS`) is currently installed in the venv, ignoring version.
+    Secondary specs are often shared core dependencies (for example aiohttp),
+    so treating any declared package as proof of activation causes unrelated
+    backends to be installed during every update.
 
     Used by ``hermes update`` to figure out which lazy backends need a
     refresh pass when pins move in :data:`LAZY_DEPS`.
     """
     active = []
     for feature, specs in LAZY_DEPS.items():
-        if any(_is_present(s) for s in specs):
+        if specs and _is_present(specs[0]):
             active.append(feature)
     return active
 

@@ -1,0 +1,11 @@
+{
+  "name": "hermes-metrics",
+  "label": "Metrics",
+  "description": "Fleet spend, budgets, throughput, agent load and quality — cost per lane/profile, task cycle times, corrections and follow-up pressure.",
+  "icon": "Activity",
+  "version": "1.0.0",
+  "tab": { "path": "/metrics", "position": "after:kanban" },
+  "entry": "dist/index.js",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

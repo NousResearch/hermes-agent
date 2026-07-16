@@ -1,0 +1,87 @@
+/* hermes-metrics dashboard styles.
+ * Chrome/ink uses the host dashboard theme tokens (--color-*) so the page
+ * follows the host light/dark theme automatically. Series colors use the
+ * validated reference dataviz palette: slot 1 blue + slot 2 aqua for the two
+ * billing lanes (fixed assignment, never cycled); status colors are reserved
+ * for the budget meters and always paired with a text label. */
+.hm-page { display: flex; flex-direction: column; gap: 1rem; }
+.hm-page {
+  --hm-series-1: #2a78d6;      /* blue — categorical slot 1 / single-hue bars */
+  --hm-lane-api: #2a78d6;      /* api_key lane = slot 1 blue */
+  --hm-lane-oauth: #1baf7a;    /* personal_oauth lane = slot 2 aqua */
+  --hm-good: #0ca30c;
+  --hm-warning: #fab219;
+  --hm-critical: #d03b3b;
+}
+@media (prefers-color-scheme: dark) {
+  .hm-page {
+    --hm-series-1: #3987e5;
+    --hm-lane-api: #3987e5;
+    --hm-lane-oauth: #199e70;
+  }
+}
+
+.hm-header h1 { margin: 0; font-size: clamp(1.6rem, 3vw, 2.4rem); letter-spacing: -0.04em; }
+.hm-section { margin: .4rem 0 0; font-size: .8rem; text-transform: uppercase; letter-spacing: .14em; color: var(--color-muted-foreground); }
+.hm-row { display: flex; gap: .75rem; flex-wrap: wrap; align-items: stretch; }
+.hm-grow { flex: 1 1 320px; min-width: 280px; }
+
+.hm-card { border: 1px solid var(--color-border); background: color-mix(in srgb, var(--color-card) 92%, transparent); padding: .9rem 1rem; border-radius: .5rem; }
+.hm-label { color: var(--color-muted-foreground); font-size: .72rem; text-transform: uppercase; letter-spacing: .12em; margin-bottom: .4rem; }
+.hm-hint { color: var(--color-muted-foreground); font-size: .78rem; margin: .2rem 0 0; }
+.hm-empty { color: var(--color-muted-foreground); font-size: .85rem; }
+
+/* budget meters */
+.hm-meter { min-width: 230px; flex: 0 1 280px; }
+.hm-meter-head { display: flex; justify-content: space-between; gap: .5rem; align-items: baseline; }
+.hm-hero { font-size: 1.7rem; font-weight: 750; letter-spacing: -0.03em; }
+.hm-cap { color: var(--color-muted-foreground); font-size: .85rem; }
+.hm-meter-bar { margin-top: .5rem; height: 8px; border-radius: 4px; background: color-mix(in srgb, var(--color-border) 60%, transparent); overflow: hidden; }
+.hm-meter-fill { height: 100%; border-radius: 4px; }
+.hm-fill-good { background: var(--hm-good); }
+.hm-fill-warning { background: var(--hm-warning); }
+.hm-fill-critical { background: var(--hm-critical); }
+.hm-meter-foot { margin-top: .3rem; font-size: .75rem; }
+.hm-status-good { color: var(--color-muted-foreground); }
+.hm-status-warning { color: var(--color-foreground); }
+.hm-status-critical { color: var(--hm-critical); font-weight: 650; }
+.hm-badge { font-size: .66rem; text-transform: uppercase; letter-spacing: .08em; padding: .15rem .45rem; border-radius: .35rem; }
+.hm-badge-critical { background: color-mix(in srgb, var(--hm-critical) 18%, transparent); color: var(--hm-critical); border: 1px solid var(--hm-critical); }
+
+/* stat tiles */
+.hm-stat { min-width: 120px; flex: 1 1 130px; }
+.hm-stat-value { font-size: 1.5rem; font-weight: 750; letter-spacing: -0.03em; margin-top: .1rem; }
+
+/* charts */
+.hm-chart { position: relative; }
+.hm-svg { width: 100%; height: auto; display: block; }
+.hm-svg rect { cursor: default; }
+.hm-svg rect:hover { opacity: .85; }
+.hm-tick { font-size: 9px; fill: var(--color-muted-foreground); font-variant-numeric: tabular-nums; }
+.hm-series-1 { fill: var(--hm-series-1); background: var(--hm-series-1); }
+.hm-lane-api_key { fill: var(--hm-lane-api); background: var(--hm-lane-api); }
+.hm-lane-personal_oauth { fill: var(--hm-lane-oauth); background: var(--hm-lane-oauth); }
+.hm-legend { display: flex; gap: .9rem; margin-top: .35rem; flex-wrap: wrap; }
+.hm-legend-item { display: inline-flex; align-items: center; gap: .35rem; font-size: .75rem; color: var(--color-muted-foreground); }
+.hm-swatch { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+.hm-tooltip { position: absolute; z-index: 10; pointer-events: none; background: var(--color-card); border: 1px solid var(--color-border); border-radius: .4rem; padding: .4rem .6rem; font-size: .75rem; box-shadow: 0 4px 14px rgba(0,0,0,.25); max-width: 240px; }
+.hm-tooltip-title { font-weight: 650; margin-bottom: .15rem; }
+
+/* horizontal bars */
+.hm-hbars { display: flex; flex-direction: column; gap: .35rem; }
+.hm-hbar-row { display: grid; grid-template-columns: 9.5rem 1fr 4.5rem; gap: .6rem; align-items: center; }
+.hm-hbar-label { font-size: .8rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hm-hbar-track { height: 10px; border-radius: 4px; background: color-mix(in srgb, var(--color-border) 45%, transparent); overflow: hidden; }
+.hm-hbar-fill { height: 100%; border-radius: 4px; }
+.hm-hbar-value { font-size: .78rem; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* tables */
+.hm-tablewrap { overflow-x: auto; padding: .4rem .4rem; }
+.hm-table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+.hm-table th { text-align: left; padding: .45rem .6rem; color: var(--color-muted-foreground); font-weight: 550; font-size: .7rem; text-transform: uppercase; letter-spacing: .07em; border-bottom: 1px solid var(--color-border); white-space: nowrap; }
+.hm-table td { padding: .4rem .6rem; border-bottom: 1px solid color-mix(in srgb, var(--color-border) 45%, transparent); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.hm-table tr:last-child td { border-bottom: none; }
+.hm-td-name { font-weight: 600; max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+.hm-num-good { color: var(--hm-good); }
+.hm-num-warn { color: color-mix(in srgb, var(--hm-warning) 70%, var(--color-foreground)); font-weight: 600; }
+.hm-num-bad { color: var(--hm-critical); font-weight: 600; }

@@ -631,6 +631,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
     app.router.add_delete("/v1/responses/{response_id}", adapter._handle_delete_response)
+    app.router.add_post("/v1/runs", adapter._handle_runs)
     return app
 
 
@@ -1793,6 +1794,154 @@ class TestDeriveChatSessionId:
         """None system prompt doesn't crash."""
         sid = _derive_chat_session_id(None, "test")
         assert isinstance(sid, str) and len(sid) > 4
+
+
+# ---------------------------------------------------------------------------
+# /v1/runs endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestRunsEndpoint:
+    @staticmethod
+    async def _post_run_and_wait(cli, adapter, payload):
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "ok", "messages": [], "api_calls": 1}
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+
+        with patch.object(adapter, "_create_agent", return_value=mock_agent):
+            resp = await cli.post("/v1/runs", json=payload)
+            data = await resp.json()
+            assert resp.status == 202
+
+            task = adapter._active_run_tasks.get(data["run_id"])
+            if task is not None:
+                await asyncio.wait_for(task, timeout=2)
+
+            assert mock_agent.run_conversation.called
+            return mock_agent.run_conversation.call_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_multimodal_last_input_message_reaches_run_conversation(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            call_kwargs = await self._post_run_and_wait(
+                cli,
+                adapter,
+                {
+                    "model": "hermes-agent",
+                    "input": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": "Describe this"},
+                                {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+                            ],
+                        }
+                    ],
+                },
+            )
+
+        assert call_kwargs["conversation_history"] == []
+        assert call_kwargs["user_message"] == [
+            {"type": "text", "text": "Describe this"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_explicit_conversation_history_preserves_multimodal_content(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            call_kwargs = await self._post_run_and_wait(
+                cli,
+                adapter,
+                {
+                    "model": "hermes-agent",
+                    "input": "continue",
+                    "conversation_history": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "Earlier image"},
+                                {"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}},
+                            ],
+                        }
+                    ],
+                },
+            )
+
+        assert call_kwargs["user_message"] == "continue"
+        assert call_kwargs["conversation_history"] == [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Earlier image"},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/cat.png"}},
+                ],
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_multimessage_input_history_preserves_multimodal_content(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            call_kwargs = await self._post_run_and_wait(
+                cli,
+                adapter,
+                {
+                    "model": "hermes-agent",
+                    "input": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "Remember this image"},
+                                {"type": "input_image", "image_url": "https://example.com/diagram.jpg"},
+                            ],
+                        },
+                        {"role": "assistant", "content": "noted"},
+                        {"role": "user", "content": "What did I send?"},
+                    ],
+                },
+            )
+
+        assert call_kwargs["user_message"] == "What did I send?"
+        assert call_kwargs["conversation_history"] == [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Remember this image"},
+                    {"type": "image_url", "image_url": {"url": "https://example.com/diagram.jpg"}},
+                ],
+            },
+            {"role": "assistant", "content": "noted"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_invalid_multimodal_input_returns_400(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "model": "hermes-agent",
+                        "input": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "input_image", "image_url": "file_123"},
+                                ],
+                            }
+                        ],
+                    },
+                )
+                data = await resp.json()
+
+        assert resp.status == 400
+        assert data["error"]["code"] == "invalid_image_url"
+        assert data["error"]["param"] == "input[0].content"
+        mock_create.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

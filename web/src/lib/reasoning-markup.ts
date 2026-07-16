@@ -21,6 +21,17 @@ export function hasReasoningMarkup(content: string): boolean {
   });
 }
 
+/**
+ * Structured reasoning UI is for assistant output only. User prompts and tool
+ * results may contain literal known tags that should stay on the Markdown path.
+ */
+export function shouldRenderStructuredReasoning(
+  role: string,
+  content: string,
+): boolean {
+  return role === "assistant" && hasReasoningMarkup(content);
+}
+
 export function parseReasoningMarkup(content: string): ReasoningMarkupSegment[] {
   return mergeAdjacentProse(
     splitFenceAware(content).flatMap((chunk) =>

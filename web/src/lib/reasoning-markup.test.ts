@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { hasReasoningMarkup, parseReasoningMarkup } from "./reasoning-markup";
+import {
+  hasReasoningMarkup,
+  parseReasoningMarkup,
+  shouldRenderStructuredReasoning,
+} from "./reasoning-markup";
 
 describe("reasoning markup parsing", () => {
   it("unwraps thinking prose", () => {
@@ -50,5 +54,16 @@ describe("reasoning markup parsing", () => {
     expect(parseReasoningMarkup(content)).toEqual([
       { type: "prose", content },
     ]);
+  });
+
+  it("keeps literal known tags on the Markdown path for user and tool roles", () => {
+    const content =
+      'Please echo <action>tool_call</action> and <result>{"ok":true}</result>';
+
+    expect(hasReasoningMarkup(content)).toBe(true);
+    expect(shouldRenderStructuredReasoning("assistant", content)).toBe(true);
+    expect(shouldRenderStructuredReasoning("user", content)).toBe(false);
+    expect(shouldRenderStructuredReasoning("tool", content)).toBe(false);
+    expect(shouldRenderStructuredReasoning("system", content)).toBe(false);
   });
 });

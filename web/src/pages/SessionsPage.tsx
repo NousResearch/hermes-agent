@@ -42,7 +42,7 @@ import { timeAgo } from "@/lib/utils";
 import { Markdown } from "@/components/Markdown";
 import { StructuredReasoning } from "@/components/StructuredReasoning";
 import { PlatformsCard } from "@/components/PlatformsCard";
-import { hasReasoningMarkup } from "@/lib/reasoning-markup";
+import { shouldRenderStructuredReasoning } from "@/lib/reasoning-markup";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
@@ -327,7 +327,7 @@ function MessageBubble({
           <div className="text-sm text-foreground whitespace-pre-wrap leading-relaxed">
             {msg.content}
           </div>
-        ) : hasReasoningMarkup(msg.content) ? (
+        ) : shouldRenderStructuredReasoning(msg.role, msg.content) ? (
           <StructuredReasoning
             content={msg.content}
             highlightTerms={highlightTerms}

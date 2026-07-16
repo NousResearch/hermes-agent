@@ -212,6 +212,20 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    # Install-time security gates. Fired at the sole plugin/MCP install choke
+    # points, AFTER argument parsing and reference resolution but BEFORE the
+    # artifact is trusted (plugin promoted into ~/.hermes/plugins; MCP entry
+    # written to config.yaml). A callback returns None to allow, or a non-empty
+    # str / list[str] of block reasons to REJECT — mirroring the built-in
+    # validate_mcp_server_entry() gate. Reasons abort the operation.
+    #
+    # pre_plugin_install kwargs: name: str, git_url: str, subdir: str | None,
+    #   path: str (local dir of the freshly cloned, not-yet-trusted plugin),
+    #   manifest: dict.
+    # pre_mcp_add kwargs: name: str, server_config: dict (fully resolved:
+    #   command/args/url/env/headers/connect_timeout).
+    "pre_plugin_install",
+    "pre_mcp_add",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

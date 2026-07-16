@@ -128,6 +128,7 @@ jobs:
           path: ${{ runner.temp }}
 
       - name: Apply patch and push to bot branch
+        id: apply
         env:
           BOT_BRANCH: bot/js-autofix
         run: |
@@ -136,6 +137,7 @@ jobs:
           # Empty patch = nothing to do.
           if [ ! -s "$RUNNER_TEMP/js-fix.patch" ]; then
             echo "Patch is empty. No fixes to apply."
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -156,8 +158,10 @@ jobs:
           # If the branch was deleted after a previous PR merge, this
           # recreates it.
           git push --force origin HEAD:"$BOT_BRANCH"
+          echo "has_changes=true" >> "$GITHUB_OUTPUT"
 
       - name: Create/update PR and enable auto-merge
+        if: steps.apply.outputs.has_changes == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BOT_BRANCH: bot/js-autofix
@@ -181,6 +185,7 @@ jobs:
           gh pr merge "$PR_NUM" --auto --squash || true
 
       - name: Wait for merge, auto-close on failure or stale
+        if: steps.apply.outputs.has_changes == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           START_SHA: ${{ github.sha }}

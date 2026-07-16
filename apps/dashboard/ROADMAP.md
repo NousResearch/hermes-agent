@@ -16,8 +16,9 @@ L = multi-day). Items are ordered by value-to-effort within each tier.
 - ✅ **2.3 Routing overrides UI** — shipped (`data/routing.json` + panel).
 - ✅ **2.4 Structured tasks** — shipped (due + priority; recurrence still open).
 - ✅ **3.3 Accent presets** — shipped (cyan/amber/green/magenta).
+- ✅ **3.4 Backup download/upload** — shipped (server backup get/import + menu).
 - ⬜ **1.1 Web Push**, **2.2 Plan preview**, **3.1 Palette execution**,
-  **3.2 Per-widget intervals**, **3.4 Backup download/upload** — still open.
+  **3.2 Per-widget intervals** — still open.
 
 ---
 

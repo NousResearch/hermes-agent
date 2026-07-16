@@ -18,7 +18,8 @@ document.addEventListener("keydown", (ev) => {
 });
 
 const STATUS_LABEL = {
-  pending: "PENDING", applied: "APPLIED", "auto-applied": "AUTO-APPLIED", dismissed: "DISMISSED",
+  pending: "PENDING", applied: "APPLIED", "auto-applied": "AUTO-APPLIED",
+  dismissed: "DISMISSED", "rolled-back": "ROLLED BACK",
 };
 
 export async function openEvolve() {
@@ -91,7 +92,19 @@ function proposalRow(p, redraw, actionable) {
           catch (err) { toast(err.message, "error"); }
         },
       }, "Dismiss"))
-    : h("span.evolve-status", { class: `evolve-status evolve-${p.status}` }, STATUS_LABEL[p.status] || p.status);
+    : h("div.evolve-history-actions", {},
+      h("span.evolve-status", { class: `evolve-status evolve-${p.status}` }, STATUS_LABEL[p.status] || p.status),
+      // Applied changes that captured a snapshot can be reverted in one click.
+      (p.status === "applied" || p.status === "auto-applied") && p.snapshot
+        ? h("button.btn.evolve-rollback", {
+            type: "button",
+            title: "Restore the snapshot taken before this change",
+            onclick: async () => {
+              try { await api.evolveProposal("rollback", p.id); toast("Rolled back (snapshot restored)"); redraw(); }
+              catch (err) { toast(err.message, "error"); }
+            },
+          }, "Roll back")
+        : null);
 
   return h("div.evolve-row", {},
     h("div.evolve-main", {},

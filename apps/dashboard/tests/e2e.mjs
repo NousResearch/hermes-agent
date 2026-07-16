@@ -342,6 +342,11 @@ await page.locator(".evolve-row .evolve-actions .btn-primary").first().click(); 
 await page.waitForFunction((n) =>
   document.querySelectorAll(".evolve-row .evolve-actions").length < n, pendingBefore, { timeout: 10000 });
 check("applying a proposal clears it from the queue", true);
+// applied proposal lands in HISTORY with a one-click rollback affordance;
+// the rollback itself restores a snapshot (disruptive) so it's exercised at
+// the very end of this run, below, where nothing depends on it.
+check("applied proposal offers rollback in history",
+  (await page.locator(".evolve-rollback").count()) >= 1);
 await page.keyboard.press("Escape");
 await page.waitForSelector(".sum-pop", { state: "detached" });
 
@@ -684,6 +689,20 @@ await page.locator(".menu-wrap > .btn").click();
 await page.locator(".accent-swatch[aria-label='Accent cyan']").click();
 check("accent reset clears override", await page.evaluate(() =>
   document.documentElement.style.getPropertyValue("--accent") === ""));
+
+// ---- evolution rollback (Phase 6 audit) -------------------------------------
+// Runs last: rollback restores a snapshot, which advances the sync rev and
+// re-renders the board, so nothing downstream may depend on it.
+await page.locator(".menu-wrap > .btn").click();
+await page.locator(".menu-item", { hasText: "Agent proposals" }).click();
+await page.waitForSelector(".evolve-rollback", { timeout: 10000 });
+await page.locator(".evolve-rollback").first().click();
+await page.waitForFunction(() =>
+  [...document.querySelectorAll(".evolve-status")].some((el) => el.textContent.includes("ROLLED BACK")),
+  null, { timeout: 10000 });
+check("rollback marks the proposal rolled back", true);
+await page.keyboard.press("Escape");
+await page.waitForSelector(".sum-pop", { state: "detached" });
 
 // ---- console health -----------------------------------------------------------------
 const realErrors = errors.filter((e) => !e.includes("favicon"));

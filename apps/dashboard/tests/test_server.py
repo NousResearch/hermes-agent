@@ -1023,7 +1023,7 @@ class BackupTests(unittest.TestCase):
 
         result = self.api.backup_restore({"name": name})
         self.assertEqual(set(result["restored"]),
-                         {"state", "feeds", "calendars", "automations", "memory"})
+                         {"state", "feeds", "calendars", "automations", "memory", "agent_notes"})
         self.assertEqual(self.api.state_store.get()["state"]["marker"], "A")
         self.assertTrue(any(c["url"] == "https://example.org/work.ics"
                             for c in self.api.calendars.list()))
@@ -1174,6 +1174,41 @@ class EvolveTests(unittest.TestCase):
         api.evolve.apply(pid)
         with self.assertRaises(ValueError):
             api.evolve.apply(pid)
+
+    def test_rollback_reverts_applied_addendum(self):
+        api = self._api()
+        for _ in range(2):
+            api.telemetry.record({"kind": "tool", "name": "open_url", "ok": False, "approved": False})
+        api.evolve.reflect()
+        pid = next(p["id"] for p in api.evolve.list_proposals() if p["status"] == "pending")
+        api.evolve.apply(pid)
+        self.assertIn("open_url", api.agent_notes_read())          # guideline written
+        rolled = api.evolve.rollback(pid)
+        self.assertEqual(rolled["status"], "rolled-back")
+        self.assertNotIn("open_url", api.agent_notes_read())        # snapshot reverted it
+
+    def test_rollback_requires_applied_with_snapshot(self):
+        api = self._api()
+        for _ in range(2):
+            api.telemetry.record({"kind": "tool", "name": "add_app", "ok": False, "approved": False})
+        api.evolve.reflect()
+        pid = next(p["id"] for p in api.evolve.list_proposals() if p["status"] == "pending")
+        with self.assertRaises(ValueError):        # pending, not applied
+            api.evolve.rollback(pid)
+
+    def test_history_lists_completed_newest_first(self):
+        api = self._api()
+        api.memory_append("x"); api.memory_append("x")           # → auto-applied prune
+        for _ in range(2):
+            api.telemetry.record({"kind": "tool", "name": "add_app", "ok": False, "approved": False})
+        api.evolve.reflect()
+        pid = next(p["id"] for p in api.evolve.list_proposals() if p["status"] == "pending")
+        api.evolve.dismiss(pid)
+        history = api.evolve.history()
+        self.assertTrue(history)
+        self.assertTrue(all(p["status"] != "pending" for p in history))
+        # newest-first: the dismissed addendum was completed after the auto prune
+        self.assertEqual(history[0]["id"], pid)
 
     def test_reflect_automation_action(self):
         api = self._api()

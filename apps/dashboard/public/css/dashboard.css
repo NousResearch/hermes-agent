@@ -811,6 +811,10 @@ a { color: inherit; }
 .evolve-status { font-family: ui-monospace, Menlo, monospace; font-size: 10px; letter-spacing: 0.08em; color: var(--muted); flex: 0 0 auto; }
 .evolve-applied, .evolve-auto-applied { color: var(--delta-up); }
 .evolve-dismissed { color: var(--muted); }
+.evolve-rolled-back { color: var(--status-warning); }
+.evolve-history-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.evolve-rollback { padding: 3px 9px; font-size: 11px; color: var(--muted); }
+.evolve-rollback:hover { color: var(--status-warning); border-color: color-mix(in srgb, var(--status-warning) 45%, transparent); }
 
 /* ---------- focus timer ---------- */
 

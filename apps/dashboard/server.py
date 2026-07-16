@@ -1314,6 +1314,13 @@ class Api:
     def evolve_list(self, params: dict) -> dict:
         return {"proposals": self.evolve.list_proposals(), "pending": self.evolve.pending_count()}
 
+    def evolve_history(self, params: dict) -> dict:
+        try:
+            limit = max(1, min(int(params.get("limit", ["30"])[0]), 100))
+        except ValueError:
+            raise ApiError(400, "limit must be an integer") from None
+        return {"history": self.evolve.history(limit)}
+
     def evolve_reflect(self, body: dict) -> dict:
         created = self.evolve.reflect()
         return {"created": created, "pending": self.evolve.pending_count()}
@@ -1329,11 +1336,13 @@ class Api:
                 return {"proposal": self.evolve.apply(pid)}
             if op == "dismiss":
                 return {"proposal": self.evolve.dismiss(pid)}
+            if op == "rollback":
+                return {"proposal": self.evolve.rollback(pid)}
         except KeyError:
             raise ApiError(404, "no such proposal") from None
         except ValueError as exc:
             raise ApiError(400, str(exc)) from None
-        raise ApiError(400, "op must be apply or dismiss")
+        raise ApiError(400, "op must be apply, dismiss or rollback")
 
     # -- kill switch (Phase 4) ----------------------------------------------
     def killswitch_get(self, params: dict) -> dict:
@@ -1381,6 +1390,7 @@ class Api:
             "calendars": self.calendars.list(),
             "automations": self.automations.list_rules(),
             "memory": self.memory_read(),
+            "agent_notes": self.agent_notes_read(),
         }
         self.backups_dir.mkdir(parents=True, exist_ok=True)
         name = f"hub-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}.json"
@@ -1436,6 +1446,13 @@ class Api:
                 self.memory_path.parent.mkdir(parents=True, exist_ok=True)
                 self.memory_path.write_text(snap["memory"], encoding="utf-8")
             restored.append("memory")
+        # agent_notes is restored even when empty so a rolled-back learned
+        # guideline reverts to the pre-apply (possibly empty) state.
+        if isinstance(snap.get("agent_notes"), str):
+            with self._memory_lock:
+                self.agent_notes_path.parent.mkdir(parents=True, exist_ok=True)
+                self.agent_notes_path.write_text(snap["agent_notes"], encoding="utf-8")
+            restored.append("agent_notes")
         CACHE.clear()
         self._ics_epoch += 1
         return {"restored": restored,
@@ -1539,6 +1556,7 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/assistant/telemetry": "telemetry_get",
         "/api/killswitch": "killswitch_get",
         "/api/evolve": "evolve_list",
+        "/api/evolve/history": "evolve_history",
     }
 
     POST_ROUTES = {

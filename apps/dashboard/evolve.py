@@ -183,5 +183,37 @@ class Reflection:
             self._save()
             return json.loads(json.dumps(prop))
 
+    def rollback(self, proposal_id: int) -> dict:
+        """Undo an applied proposal by restoring its pre-apply snapshot.
+
+        Every apply snapshots the whole hub first; rollback replays that
+        snapshot so a learned guideline or memory prune can be reverted with a
+        single click. Only applied proposals that captured a snapshot qualify.
+        """
+        with self._lock:
+            prop = self._find(proposal_id)
+            if prop is None:
+                raise KeyError("no such proposal")
+            if prop["status"] not in ("applied", "auto-applied"):
+                raise ValueError(f"proposal is {prop['status']}, not applied")
+            snapshot = prop.get("snapshot")
+            if not snapshot:
+                raise ValueError("no snapshot was captured for this proposal")
+            try:
+                self.api.backup_restore({"name": snapshot})
+            except Exception as exc:  # ApiError etc. → surface as a value error
+                raise ValueError(f"rollback failed: {exc}") from None
+            prop["status"] = "rolled-back"
+            prop["rolled_back_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            self._save()
+            return json.loads(json.dumps(prop))
+
+    def history(self, limit: int = 30) -> list[dict]:
+        """Applied/dismissed/rolled-back proposals, newest first (the audit view)."""
+        with self._lock:
+            done = [p for p in self._data["proposals"]
+                    if p["status"] not in ("pending",)]
+        return json.loads(json.dumps(done[::-1][:limit]))
+
     def _find(self, proposal_id: int) -> dict | None:
         return next((p for p in self._data["proposals"] if p["id"] == proposal_id), None)

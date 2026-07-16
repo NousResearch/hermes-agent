@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import os
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -724,6 +725,316 @@ def test_stale_claim_reclaim_event_records_diagnostic_payload(
         assert payload["last_heartbeat_at"] == hb_at
         assert payload["worker_pid"] == 12345
         assert payload["host_local"] is True
+
+
+# ── Operator-driven reclaim (reclaim_task / reassign_task) PGID hardening ──
+# The automatic reclaim paths (release_stale_claims / detect_stale_running /
+# enforce_max_runtime / detect_crashed_workers) already signal the worker's
+# whole process GROUP and defer-on-survival. These tests pin the same
+# guarantee onto the OPERATOR path — the "reclaim" button used during a tense
+# manual recovery — which historically killed only worker_pid and then reset
+# to ``ready`` unconditionally, leaving a forked grandchild alive for the next
+# tick to spawn a duplicate beside (the exact dual-execution hazard 1/7).
+
+
+def _spawn_session_leader_with_grandchild(gpid_path):
+    """Spawn a real ``start_new_session=True`` worker that forks a grandchild.
+
+    Returns ``(popen, leader_pid, grandchild_pid)``. The leader is its own
+    process-group leader (pgid == pid) and the grandchild it forks stays in
+    that same group, so ``os.killpg(leader_pid, ...)`` must reach BOTH. Both
+    processes block on a long sleep; the leader writes the grandchild's pid to
+    ``gpid_path`` so the test can check the grandchild's liveness directly.
+    """
+    code = (
+        "import os, sys, time\n"
+        "gpid_path = sys.argv[1]\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        "    time.sleep(300)\n"
+        "    os._exit(0)\n"
+        "else:\n"
+        "    with open(gpid_path, 'w') as f:\n"
+        "        f.write(str(pid))\n"
+        "    time.sleep(300)\n"
+    )
+    popen = subprocess.Popen(
+        [sys.executable, "-c", code, str(gpid_path)],
+        start_new_session=True,
+    )
+    # Wait for the leader to publish the grandchild's pid.
+    grandchild_pid = None
+    for _ in range(200):  # up to ~10s
+        try:
+            text = Path(gpid_path).read_text().strip()
+        except (FileNotFoundError, OSError):
+            text = ""
+        if text:
+            grandchild_pid = int(text)
+            break
+        time.sleep(0.05)
+    assert grandchild_pid is not None, "grandchild pid never published"
+    return popen, popen.pid, grandchild_pid
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "killpg") or not hasattr(os, "fork"),
+    reason="process groups / fork are POSIX-only",
+)
+def test_operator_reclaim_kills_whole_group_or_defers(kanban_home, tmp_path):
+    """T-P canary: operator reclaim of a worker WITH a live forked grandchild.
+
+    After ``reclaim_task`` the invariant that closes hazard 1/7 must hold:
+    EITHER the grandchild is DEAD (``os.killpg`` reached it and the claim was
+    released) OR the claim was DEFERRED (task held ``running``, not reset to
+    ``ready`` beside a live group member). In NO case may a duplicate claim
+    succeed beside a still-alive orphan.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    def _alive(pid):
+        try:
+            os.kill(pid, 0)
+        except (ProcessLookupError, PermissionError):
+            return False
+        return True
+
+    gpid_path = tmp_path / "grandchild.pid"
+    popen, leader_pid, grandchild_pid = _spawn_session_leader_with_grandchild(
+        gpid_path,
+    )
+    try:
+        # Sanity: both members are live and share the leader's group.
+        assert _alive(leader_pid)
+        assert _alive(grandchild_pid)
+        assert os.getpgid(grandchild_pid) == leader_pid
+
+        with kb.connect() as conn:
+            t = kb.create_task(conn, title="tense-recovery", assignee="w")
+            host = _kb._claimer_id().split(":", 1)[0]
+            kb.claim_task(conn, t, claimer=f"{host}:worker")
+            # _set_worker_pid stamps worker_pgid = getpgid(leader) = leader.
+            _kb._register_worker_pid(leader_pid)
+            kb._set_worker_pid(conn, t, leader_pid)
+            assert conn.execute(
+                "SELECT worker_pgid FROM tasks WHERE id = ?", (t,),
+            ).fetchone()[0] == leader_pid
+
+            # Real reclaim — real os.killpg via the production signal path.
+            result = kb.reclaim_task(conn, t, reason="operator abort")
+
+            # Reap the leader zombie we own so liveness reflects reality.
+            _kb.reap_worker_zombies()
+            # Give the group a beat to fully tear down.
+            for _ in range(40):
+                if not _alive(grandchild_pid):
+                    break
+                time.sleep(0.05)
+
+            status = kb.get_task(conn, t).status
+            grandchild_alive = _alive(grandchild_pid)
+            kinds = [
+                r["kind"] for r in conn.execute(
+                    "SELECT kind FROM task_events WHERE task_id = ?", (t,),
+                ).fetchall()
+            ]
+
+            # The core safety invariant, stated disjunctively.
+            if grandchild_alive:
+                # Survived the kill → MUST have deferred, never reset to ready.
+                assert result is False
+                assert status == "running"
+                assert "reclaim_deferred" in kinds
+            else:
+                # killpg reached the grandchild → clean release is allowed.
+                assert status in ("ready", "running")
+
+            # No duplicate beside a LIVE orphan: if the slot is free (ready),
+            # the orphan must be dead; if the orphan is alive, the slot must
+            # still be held (running) so a second claim cannot land.
+            if status == "ready":
+                assert not grandchild_alive
+                # A fresh claim is only safe because nothing is running.
+                assert kb.claim_task(conn, t, claimer=f"{host}:worker2")
+            else:
+                # Held: the still-running task refuses a second claim.
+                assert not kb.claim_task(conn, t, claimer=f"{host}:worker2")
+    finally:
+        # Clean up every process we spawned (best-effort).
+        try:
+            os.killpg(leader_pid, signal.SIGKILL)
+        except (ProcessLookupError, OSError):
+            pass
+        for pid in (grandchild_pid, leader_pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, OSError, PermissionError):
+                pass
+        try:
+            popen.wait(timeout=5)
+        except Exception:
+            pass
+
+
+def test_operator_reclaim_defers_when_group_survives(kanban_home, monkeypatch):
+    """Operator reclaim must DEFER (not reset to ready) when the worker group
+    survives termination — mirrors the automatic-path survival guard.
+
+    A forked grandchild that outlives SIGTERM+SIGKILL (uninterruptible I/O, a
+    throttled fork) makes ``_terminate_reclaimed_worker`` report the worker as
+    NOT terminated. Resetting to ``ready`` there would let the next dispatch
+    tick spawn a duplicate; instead the claim is held and a ``reclaim_deferred``
+    event is emitted. ``reclaim_task`` returns False.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="wedged-fork", assignee="w")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 4242)
+
+        # Simulate a host-local worker group that survives the kill.
+        monkeypatch.setattr(
+            _kb, "_terminate_reclaimed_worker",
+            lambda *a, **k: {
+                "termination_attempted": True,
+                "host_local": True,
+                "terminated": False,
+            },
+        )
+
+        result = kb.reclaim_task(conn, t, reason="operator abort")
+        assert result is False
+        assert kb.get_task(conn, t).status == "running"  # held, not freed
+        # worker not orphaned by a premature reset.
+        assert conn.execute(
+            "SELECT worker_pid FROM tasks WHERE id = ?", (t,),
+        ).fetchone()[0] == 4242
+
+        kinds = [
+            r["kind"] for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ?", (t,),
+            ).fetchall()
+        ]
+        assert "reclaim_deferred" in kinds
+        assert "reclaimed" not in kinds
+
+        # A second claim cannot land beside the live worker → no duplicate.
+        assert not kb.claim_task(conn, t, claimer=f"{host}:worker2")
+
+
+def test_operator_reclaim_passes_pgid_and_releases_on_clean_kill(
+    kanban_home, monkeypatch,
+):
+    """reclaim_task must forward the row's ``worker_pgid`` into the group-kill
+    and, when termination succeeds, release the claim as before."""
+    import hermes_cli.kanban_db as _kb
+
+    seen = {}
+
+    def _fake_terminate(pid, claim_lock, *, pgid=None, signal_fn=None):
+        seen["pid"] = pid
+        seen["pgid"] = pgid
+        return {
+            "termination_attempted": True,
+            "host_local": True,
+            "terminated": True,
+        }
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="clean-kill", assignee="w")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 5150)  # stamps worker_pgid = 5150
+        monkeypatch.setattr(_kb, "_terminate_reclaimed_worker", _fake_terminate)
+
+        result = kb.reclaim_task(conn, t, reason="operator abort")
+        assert result is True
+        assert kb.get_task(conn, t).status == "ready"
+        # The pgid persisted at spawn was threaded through to the group kill.
+        assert seen["pid"] == 5150
+        assert seen["pgid"] == 5150
+
+
+def test_operator_reclaim_legacy_null_pgid_falls_back_to_pid_kill(
+    kanban_home, monkeypatch,
+):
+    """Legacy rows written before worker_pgid existed carry NULL pgid.
+
+    reclaim_task must still work: it forwards ``pgid=None`` (a pid-only kill in
+    ``_terminate_reclaimed_worker`` / ``_kill_worker_group``) and, on success,
+    releases the claim. Baseline-safe — no regression for pre-migration tasks.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    seen = {}
+
+    def _fake_terminate(pid, claim_lock, *, pgid=None, signal_fn=None):
+        seen["pid"] = pid
+        seen["pgid"] = pgid
+        return {
+            "termination_attempted": True,
+            "host_local": True,
+            "terminated": True,
+        }
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="legacy-row", assignee="w")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 6006)
+        # Simulate a pre-migration row: pgid column NULL despite a live pid.
+        conn.execute(
+            "UPDATE tasks SET worker_pgid = NULL WHERE id = ?", (t,),
+        )
+        monkeypatch.setattr(_kb, "_terminate_reclaimed_worker", _fake_terminate)
+
+        result = kb.reclaim_task(conn, t, reason="operator abort")
+        assert result is True
+        assert kb.get_task(conn, t).status == "ready"
+        assert seen["pid"] == 6006
+        assert seen["pgid"] is None  # pid-only fallback for legacy rows
+
+
+def test_reassign_reclaim_first_inherits_group_defer(kanban_home, monkeypatch):
+    """reassign_task(reclaim_first=True) must inherit reclaim_task's defer.
+
+    When the worker group survives, the delegated reclaim defers (holds the
+    task ``running``); assign_task's still-running guard then refuses the
+    reassign and reassign_task returns False — the safe outcome (no reassign +
+    duplicate spawn beside a live orphan).
+    """
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="reassign-wedged", assignee="w")
+        host = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        kb._set_worker_pid(conn, t, 7373)
+
+        monkeypatch.setattr(
+            _kb, "_terminate_reclaimed_worker",
+            lambda *a, **k: {
+                "termination_attempted": True,
+                "host_local": True,
+                "terminated": False,
+            },
+        )
+
+        ok = kb.reassign_task(
+            conn, t, "other-profile", reclaim_first=True, reason="model broken",
+        )
+        assert ok is False  # refused — worker still alive
+        task = kb.get_task(conn, t)
+        assert task.status == "running"  # held, not reassigned beside a worker
+        assert task.assignee == "w"  # profile unchanged
+        kinds = [
+            r["kind"] for r in conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ?", (t,),
+            ).fetchall()
+        ]
+        assert "reclaim_deferred" in kinds
 
 
 def test_detect_crashed_workers_systemic_failure_fast_block(
@@ -3841,6 +4152,36 @@ def test_dispatch_max_in_progress_spawns_up_to_cap(kanban_home, all_assignees_sp
     assert len(spawns) == 2, f"expected 2 spawns (cap 3 - 1 running), got {len(spawns)}"
 
 
+def test_dispatch_combined_caps_fill_partially_occupied_fleet(
+    kanban_home, all_assignees_spawnable
+):
+    """Equal live caps still fill the final slot when one worker is running."""
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        running = kb.create_task(conn, title="running", assignee="alice")
+        ready_a = kb.create_task(conn, title="ready-a", assignee="bob")
+        ready_b = kb.create_task(conn, title="ready-b", assignee="carol")
+        kb.claim_task(conn, running)
+
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=fake_spawn,
+            max_spawn=2,
+            max_in_progress=2,
+        )
+
+        assert [task_id for task_id, _assignee, _workspace in res.spawned] == [
+            ready_a
+        ]
+        assert spawns == [ready_a]
+        assert kb.get_task(conn, ready_a).status == "running"
+        assert kb.get_task(conn, ready_b).status == "ready"
+
+
 def test_dispatch_max_in_progress_none_is_unlimited(kanban_home, all_assignees_spawnable):
     """Default None means no limit — all ready tasks are spawned."""
     spawns = []
@@ -4749,30 +5090,90 @@ def test_write_txn_check_reads_correct_header_fields(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def _reset_worker_registry(*pids):
+    """Clear the module-level spawned-pid registry and seed it with ``pids``.
+
+    ``reap_worker_zombies`` is scoped to ``_SPAWNED_WORKER_PIDS`` — it only
+    waits on pids this dispatcher spawned — so these unit tests register the
+    pids they want reaped up front. Clearing first avoids leakage between
+    tests sharing the process.
+    """
+    kb._SPAWNED_WORKER_PIDS.clear()
+    for p in pids:
+        kb._SPAWNED_WORKER_PIDS.add(int(p))
+
+
 def test_reap_worker_zombies_returns_count():
-    """reap_worker_zombies() returns the list of reaped PIDs."""
+    """reap_worker_zombies() returns the list of reaped (registered) PIDs."""
     from unittest.mock import patch
 
-    fake_pids = [12345, 67890, 11111]
-    call_count = [0]
+    _reset_worker_registry(12345, 67890, 11111)
 
     def fake_waitpid(pid, flags):
-        if call_count[0] < len(fake_pids):
-            p = fake_pids[call_count[0]]
-            call_count[0] += 1
-            return p, 0
-        return 0, 0
+        # Scoped reap waits on each registered pid individually.
+        return pid, 0
 
     with patch("hermes_cli.kanban_db.os.waitpid", side_effect=fake_waitpid):
         with patch("hermes_cli.kanban_db._record_worker_exit"):
             pids = kb.reap_worker_zombies()
-    assert pids == [12345, 67890, 11111]
+    assert sorted(pids) == [11111, 12345, 67890]
+    # All reaped pids are removed from the registry.
+    assert kb._SPAWNED_WORKER_PIDS == set()
+
+
+def test_reap_worker_zombies_ignores_foreign_child_pid():
+    """Scoped reap never waits on a pid it did not spawn (foreign gateway child).
+
+    A real child process that the dispatcher did NOT register must be left
+    entirely alone: reap must not waitpid it (stealing its exit status from
+    whoever spawned it) nor classify it as a crashed worker.
+    """
+    import os as _os
+    from unittest.mock import patch
+
+    # A real, registered worker child that exits — should be reaped.
+    # NOTE: never call ``.poll()``/``.wait()`` on these Popen objects before
+    # the reap under test — Popen's own waitpid would reap the child first
+    # and our scoped reaper would then see ChildProcessError.
+    worker = subprocess.Popen(["true"])
+    # A real, FOREIGN child (not registered) that also exits.
+    foreign = subprocess.Popen(["true"])
+    foreign_pid = foreign.pid
+    worker_pid = worker.pid
+    _reset_worker_registry(worker_pid)
+    # Give both a moment to exit into a reapable zombie state.
+    time.sleep(0.3)
+
+    waited_pids = []
+    real_waitpid = _os.waitpid
+
+    def spy_waitpid(pid, flags):
+        waited_pids.append(pid)
+        return real_waitpid(pid, flags)
+
+    recorded = []
+    with patch("hermes_cli.kanban_db.os.waitpid", side_effect=spy_waitpid):
+        with patch(
+            "hermes_cli.kanban_db._record_worker_exit",
+            side_effect=lambda p, s: recorded.append(p),
+        ):
+            reaped = kb.reap_worker_zombies()
+
+    # Reap only ever waited on the registered worker pid, never the foreign one.
+    assert foreign_pid not in waited_pids
+    assert worker_pid in reaped
+    assert foreign_pid not in recorded
+    # The foreign child is still ours to reap directly (reap didn't steal it).
+    foreign.wait(timeout=5)
+    # Silence Popen's __del__ warning for the already-reaped worker.
+    worker.returncode = 0
 
 
 def test_reap_worker_zombies_noop_on_windows(monkeypatch):
     """reap_worker_zombies() returns 0 and never calls os.waitpid on Windows."""
     from unittest.mock import patch
 
+    _reset_worker_registry(12345)
     monkeypatch.setattr("hermes_cli.kanban_db.os.name", "nt")
     with patch("hermes_cli.kanban_db.os.waitpid") as mock_waitpid:
         result = kb.reap_worker_zombies()
@@ -4781,26 +5182,29 @@ def test_reap_worker_zombies_noop_on_windows(monkeypatch):
 
 
 def test_reap_worker_zombies_noop_no_children():
-    """reap_worker_zombies() returns 0 without error when there are no children."""
+    """reap_worker_zombies() returns [] without error when a child is gone.
+
+    ChildProcessError (pid is not/no longer our child) is swallowed and the
+    pid is dropped from the registry.
+    """
     from unittest.mock import patch
 
+    _reset_worker_registry(12345)
     with patch("hermes_cli.kanban_db.os.waitpid", side_effect=ChildProcessError):
         result = kb.reap_worker_zombies()
     assert result == []
+    assert kb._SPAWNED_WORKER_PIDS == set()
 
 
 def test_reap_worker_zombies_records_exit_status():
     """reap_worker_zombies() calls _record_worker_exit for each reaped pid."""
     from unittest.mock import patch
 
+    _reset_worker_registry(12345)
     calls = []
-    call_count = [0]
 
     def fake_waitpid(pid, flags):
-        call_count[0] += 1
-        if call_count[0] == 1:
-            return 12345, 0
-        return 0, 0
+        return 12345, 0
 
     with patch("hermes_cli.kanban_db.os.waitpid", side_effect=fake_waitpid):
         with patch(
@@ -4816,6 +5220,7 @@ def test_reap_worker_zombies_handles_waitpid_os_error():
     """reap_worker_zombies() does not propagate generic OSError from os.waitpid."""
     from unittest.mock import patch
 
+    _reset_worker_registry(12345)
     with patch("hermes_cli.kanban_db.os.waitpid", side_effect=OSError("test error")):
         result = kb.reap_worker_zombies()
     assert result == []
@@ -4825,13 +5230,10 @@ def test_zombie_reaper_runs_despite_board_connect_failure():
     """reap_worker_zombies runs even when a board tick raises an error."""
     from unittest.mock import patch
 
-    call_count = [0]
+    _reset_worker_registry(12345, 67890)
 
     def fake_waitpid(pid, flags):
-        call_count[0] += 1
-        if call_count[0] <= 2:
-            return [12345, 67890][call_count[0] - 1], 0
-        return 0, 0
+        return pid, 0
 
     with patch("hermes_cli.kanban_db.os.waitpid", side_effect=fake_waitpid):
         with patch("hermes_cli.kanban_db._record_worker_exit"):
@@ -4844,7 +5246,7 @@ def test_zombie_reaper_runs_despite_board_connect_failure():
             # Reaper still runs independently
             pids = kb.reap_worker_zombies()
 
-    assert pids == [12345, 67890]
+    assert sorted(pids) == [12345, 67890]
 
 
 def test_zombie_reaper_survives_all_boards_failing():
@@ -4853,23 +5255,14 @@ def test_zombie_reaper_survives_all_boards_failing():
 
     total_reaped = 0
 
-    def make_fake_waitpid(zombie_pids):
-        call_count = [0]
-
-        def fake_waitpid(pid, flags):
-            if call_count[0] < len(zombie_pids):
-                p = zombie_pids[call_count[0]]
-                call_count[0] += 1
-                return p, 0
-            return 0, 0
-
-        return fake_waitpid
+    def fake_waitpid(pid, flags):
+        return pid, 0
 
     # 5 ticks, 2 zombies per tick = 10 total
     for tick in range(5):
-        pids = [tick * 100 + 1, tick * 100 + 2]
+        _reset_worker_registry(tick * 100 + 1, tick * 100 + 2)
         with patch(
-            "hermes_cli.kanban_db.os.waitpid", side_effect=make_fake_waitpid(pids)
+            "hermes_cli.kanban_db.os.waitpid", side_effect=fake_waitpid
         ):
             with patch("hermes_cli.kanban_db._record_worker_exit"):
                 pids = kb.reap_worker_zombies()
@@ -4882,13 +5275,10 @@ def test_dispatch_once_still_reaps_via_extracted_fn(kanban_home):
     """The reaper inside dispatch_once still works after refactor to reap_worker_zombies()."""
     from unittest.mock import patch
 
-    call_count = [0]
+    _reset_worker_registry(99999)
 
     def fake_waitpid(pid, flags):
-        call_count[0] += 1
-        if call_count[0] == 1:
-            return 99999, 0
-        return 0, 0
+        return 99999, 0
 
     with patch("hermes_cli.kanban_db.os.waitpid", side_effect=fake_waitpid):
         with patch("hermes_cli.kanban_db._record_worker_exit"):

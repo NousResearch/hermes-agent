@@ -522,6 +522,21 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_comment.add_argument("--max-len", type=int, default=None,
                            help="Trim the stored comment body to this many characters")
 
+    p_review_request = sub.add_parser(
+        "review-request",
+        help="Submit a running maker card for exact-head checker review",
+    )
+    p_review_request.add_argument("task_id")
+    p_review_request.add_argument("--maker", required=True,
+                                  help="Current maker actor (must match assignee)")
+    p_review_request.add_argument("--checker", required=True,
+                                  help="Independent checker actor")
+    p_review_request.add_argument("--pr", required=True, help="PR #N or N")
+    p_review_request.add_argument("--head", required=True,
+                                  help="Exact 40-character lowercase git head")
+    p_review_request.add_argument("--summary", default=None,
+                                  help="Concise maker handoff for the checker")
+
     p_complete = sub.add_parser("complete", help="Mark one or more tasks done")
     p_complete.add_argument("task_ids", nargs="+",
                             help="One or more task ids (only --result applies to all of them)")
@@ -951,6 +966,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "unlink":   _cmd_unlink,
             "claim":    _cmd_claim,
             "comment":  _cmd_comment,
+            "review-request": _cmd_review_request,
             "complete": _cmd_complete,
             "edit":     _cmd_edit,
             "block":    _cmd_block,
@@ -1848,6 +1864,33 @@ def _cmd_comment(args: argparse.Namespace) -> int:
     with kb.connect_closing() as conn:
         kb.add_comment(conn, args.task_id, author, body)
     print(f"Comment added to {args.task_id}")
+    return 0
+
+
+def _cmd_review_request(args: argparse.Namespace) -> int:
+    try:
+        with kb.connect_closing() as conn:
+            ok = kb.request_task_review(
+                conn,
+                args.task_id,
+                maker=args.maker,
+                checker=args.checker,
+                pr=args.pr,
+                head=args.head,
+                summary=args.summary,
+                expected_run_id=_worker_run_id_for(args.task_id),
+            )
+    except (ValueError, RuntimeError) as exc:
+        print(f"kanban review-request: {exc}", file=sys.stderr)
+        return 2
+    if not ok:
+        print(
+            f"cannot request review for {args.task_id} "
+            "(unknown id or task is not running)",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"Review requested for {args.task_id} → {args.checker} at {args.head}")
     return 0
 
 

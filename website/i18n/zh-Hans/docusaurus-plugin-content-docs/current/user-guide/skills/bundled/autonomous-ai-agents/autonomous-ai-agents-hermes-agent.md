@@ -481,16 +481,17 @@ hermes config set privacy.redact_pii false   # 禁用（默认）
 
 ### 命令审批提示
 
-默认情况下（`approvals.mode: smart`），Hermes 会让辅助 LLM 评估被标记为破坏性的 shell 命令（`rm -rf`、`git reset --hard` 等）。模式如下：
+默认情况下（`approvals.mode: manual`），Hermes 会要求用户明确审批被标记为破坏性的 shell 命令（`rm -rf`、`git reset --hard` 等）。模式如下：
 
-- `smart` — 低风险命令仅批准一次，高风险命令拒绝，不确定时提示（默认）
-- `manual` — 始终提示
+- `manual` — 始终提示（默认）
 - `off` — 跳过所有审批提示（等同于 `--yolo`）
 
 ```bash
-hermes config set approvals.mode smart       # 推荐的折中方案
+hermes config set approvals.mode manual      # 保留明确的用户授权
 hermes config set approvals.mode off         # 绕过一切（不推荐）
 ```
+
+旧配置中的 `approvals.mode: smart` 会迁移为 `manual`。
 
 单次调用绕过（不更改配置）：
 - `hermes --yolo …`

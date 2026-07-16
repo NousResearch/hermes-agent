@@ -94,7 +94,7 @@ def test_register_auxiliary_task_with_custom_defaults():
     assert entry["defaults"]["provider"] == "auto"
 
 
-def test_register_auxiliary_task_rejects_builtin_keys():
+def test_register_auxiliary_task_rejects_builtin_and_authority_keys():
     ctx, _ = _make_ctx()
     for builtin in (
         "vision",
@@ -106,7 +106,7 @@ def test_register_auxiliary_task_rejects_builtin_keys():
         "skills_hub",
         "curator",
     ):
-        with pytest.raises(ValueError, match="reserved for a built-in task"):
+        with pytest.raises(ValueError, match="reserved by Hermes"):
             ctx.register_auxiliary_task(
                 key=builtin,
                 display_name="x",
@@ -116,7 +116,17 @@ def test_register_auxiliary_task_rejects_builtin_keys():
 
 def test_register_auxiliary_task_rejects_invalid_key_shapes():
     ctx, _ = _make_ctx()
-    for bad in ("", "with-dash", "with.dot", "with space", "with/slash"):
+    for bad in (
+        "",
+        "Approval",
+        "APPROVAL",
+        "1_starts_with_digit",
+        "unicode_é",
+        "with-dash",
+        "with.dot",
+        "with space",
+        "with/slash",
+    ):
         with pytest.raises(ValueError):
             ctx.register_auxiliary_task(
                 key=bad,

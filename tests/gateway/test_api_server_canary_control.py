@@ -1072,6 +1072,14 @@ async def test_stop_keeps_run_nonterminal_until_blocking_revoke_confirms(
             events_response = await client.get(f"/v1/runs/{run_id}/events")
             events = _run_event_payloads(await events_response.text())
             assert any(event["event"] == "run.completed" for event in events)
+            assert all(event["event"] != "run.cancelled" for event in events)
+            final_status = await (
+                await client.get(f"/v1/runs/{run_id}")
+            ).json()
+            assert final_status["status"] == "completed"
+            assert final_status["terminal"] is True
+            assert run_id not in adapter._active_run_tasks
+            assert run_id not in adapter._run_approval_sessions
     finally:
         release_revoke.set()
 

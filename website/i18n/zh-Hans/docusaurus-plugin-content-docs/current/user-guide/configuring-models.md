@@ -7,7 +7,7 @@ sidebar_position: 3
 Hermes 使用两类模型槽位：
 
 - **主模型** — agent 的思考核心。每条用户消息、每个工具调用循环、每次流式响应都经由该模型处理。
-- **辅助模型** — agent 卸载给较小模型的边缘任务。包括上下文压缩、视觉（图像分析）、网页摘要、审批评分、MCP 工具路由、会话标题生成和技能搜索。每项任务有独立槽位，可单独覆盖。
+- **辅助模型** — agent 卸载给较小模型的边缘任务。包括上下文压缩、视觉（图像分析）、网页摘要、MCP 工具路由、会话标题生成和技能搜索。每项任务有独立槽位，可单独覆盖。
 
 本页介绍如何通过仪表板配置上述两类模型。如需使用配置文件或 CLI，请跳至底部的[其他方法](#alternative-methods)。
 
@@ -43,7 +43,7 @@ Hermes 使用两类模型槽位：
 
 ## 设置辅助模型
 
-点击 **Show auxiliary** 展开 11 个任务槽位：
+点击 **Show auxiliary** 展开可配置的辅助任务槽位：
 
 ![辅助面板展开状态](/img/docs/dashboard-models/auxiliary-expanded.png)
 
@@ -56,7 +56,6 @@ Hermes 使用两类模型槽位：
 | **Title Gen（标题生成）** | 几乎总是。$0.10/M 的 flash 模型生成会话标题的效果与 Opus 相当。默认配置在 OpenRouter 上将此项设为 `google/gemini-3-flash-preview`。 |
 | **Vision（视觉）** | 当主模型是不支持视觉的编程模型时（如 Kimi、DeepSeek）。将其指向 `google/gemini-2.5-flash` 或 `gpt-4o-mini`。 |
 | **Compression（压缩）** | 当你在用 Opus/M2.7 的推理 token 来摘要上下文时。快速聊天模型以 1/50 的成本即可完成此工作。 |
-| **Approval（审批）** | 用于 `approval_mode: smart` — 由快速/廉价模型（haiku、flash、gpt-5-mini）决定是否自动批准低风险命令。此处使用昂贵模型是浪费。 |
 | **Web Extract（网页提取）** | 当你大量使用 `web_extract` 时。逻辑同压缩 — 摘要任务不需要推理能力。 |
 | **Skills Hub（技能中心）** | `hermes skills search` 使用此槽位。通常保持 `auto` 即可。 |
 | **MCP** | MCP 工具路由。通常保持 `auto` 即可。 |

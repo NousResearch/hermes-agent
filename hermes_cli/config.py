@@ -1652,15 +1652,6 @@ DEFAULT_CONFIG = {
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
         },
-        "approval": {
-            "provider": "auto",
-            "model": "",           # fast/cheap model recommended (e.g. gemini-flash, haiku)
-            "base_url": "",
-            "api_key": "",
-            "timeout": 30,
-            "extra_body": {},
-            "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
-        },
         "mcp": {
             "provider": "auto",
             "model": "",

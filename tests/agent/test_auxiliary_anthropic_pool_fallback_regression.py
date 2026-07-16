@@ -6,9 +6,8 @@ its refresh_token was stale, so `_select_pool_entry("anthropic")` returned
 `(True, None)` — pool exists, no selectable entry. The old `_try_anthropic`
 hard-failed on that branch (`return None, None`), even though a perfectly
 valid `ANTHROPIC_TOKEN` / credentials-file token was available. This wedged
-every auxiliary task routed to Anthropic (goal judge → "no auxiliary client
-configured"), while the MAIN session stayed healthy because it resolves the
-env token directly.
+every auxiliary task routed to Anthropic (for example web extraction), while
+the MAIN session stayed healthy because it resolves the env token directly.
 
 openrouter (test_try_openrouter_pool_exhausted_falls_back_to_env) and codex
 (TestBuildCodexClient.test_pool_without_selected_entry_falls_back_to_auth_store)

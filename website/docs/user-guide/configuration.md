@@ -944,7 +944,6 @@ $ hermes model
 [ ] title_generation     currently: openrouter / google/gemini-3-flash-preview
 [ ] tts_audio_tags       currently: auto / main model
 [ ] compression          currently: auto / main model
-[ ] approval             currently: auto / main model
 [ ] triage_specifier     currently: auto / main model
 [ ] kanban_decomposer    currently: auto / main model
 [ ] profile_describer    currently: auto / main model
@@ -1034,14 +1033,6 @@ auxiliary:
     api_key: ""
     timeout: 360               # seconds (6min) — per-attempt LLM summarization
 
-  # Dangerous command approval classifier
-  approval:
-    provider: "auto"
-    model: ""
-    base_url: ""
-    api_key: ""
-    timeout: 30                # seconds
-
   # Gemini 3.1 TTS hidden audio-tag insertion
   tts_audio_tags:
     provider: "auto"
@@ -1101,7 +1092,7 @@ auxiliary:
 ```
 
 :::tip
-Each auxiliary task has a configurable `timeout` (in seconds). Defaults: vision 120s, web_extract 360s, approval 30s, compression 120s. Increase these if you use slow local models for auxiliary tasks. Vision also has a separate `download_timeout` (default 30s) for the HTTP image download — increase this for slow connections or self-hosted image servers.
+Each auxiliary task has a configurable `timeout` (in seconds). Defaults include vision 120s, web_extract 360s, and compression 120s. Increase these if you use slow local models for auxiliary tasks. Vision also has a separate `download_timeout` (default 30s) for the HTTP image download — increase this for slow connections or self-hosted image servers.
 :::
 
 :::info
@@ -1134,7 +1125,7 @@ Each entry supports the same three knobs as any auxiliary task config:
 | `model` | Model name for that provider |
 | `base_url` | (Optional) Custom OpenAI-compatible endpoint |
 
-`fallback_chain` is available on any auxiliary task — `compression`, `vision`, `web_extract`, `approval`, `skills_hub`, `mcp`, etc.
+`fallback_chain` is available on any auxiliary task — `compression`, `vision`, `web_extract`, `skills_hub`, `mcp`, etc.
 
 ### OpenRouter routing & Pareto Code for auxiliary tasks
 

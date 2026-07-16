@@ -46,6 +46,10 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
     "lomliev@gmail.com": "lomliev",
+    "agent@agents-Mac-mini.local": "momomojo",  # Upstream PR #43692 (commit carried an unlinked local identity)
+    "git@hode.co.uk": "okisdev",  # Upstream commits authored under the contributor's local identity
+    "jakub.wolniewicz@gmail.com": "frizikk",  # Upstream contributor identity
+    "markvlcek@gmail.com": "MarkVLK",  # Upstream contributor identity
     "daniel.laforce@argobox.com": "KeyArgo",
     "gigakun@agentmail.to": "gigakun3030",  # PR #61163 (models: remove unavailable OpenCode Zen free models)
     "41409874+2751738943@users.noreply.github.com": "2751738943",  # PR #54785 salvage (tui: post-turn completion ownership routing)
@@ -62,7 +66,7 @@ AUTHOR_MAP = {
     "KCAYAAI@users.noreply.github.com": "KCAYAAI",  # PR #62248 partial salvage (resume typing after clarify reply)
     "jake.long.vu@vucar.net": "jakelongvu-bot",  # PR #36683 partial salvage (approval: honor canonical approvals.timeout in gateway waits)
     "luigi@users.noreply.github.com": "Tortugasaur",  # PR #43205 salvage (desktop: profile-aware three-way approval mode statusbar control)
-    "kavi@local.hermes": "kavioavio",  # Issue #46544 / PR #47705 evolution (smart DENY exact-operation owner override)
+    "kavi@local.hermes": "kavioavio",  # Issue #46544 / PR #47705 evolution (exact-operation owner approval boundary)
     "135129512+ansel-f@users.noreply.github.com": "ansel-f",  # PR #62388 salvage (approval: allow exact verifier temp cleanup without broadening rm safety boundary)
     "robert@modern-minds.ai": "Hopfensaft",  # PR #31933 salvage (dashboard: align approvals.mode dropdown with canonical engine values)
     "palmer@dugoutfantasy.com": "professorpalmer",  # PR #48591 salvage (sessions: CLI workspace filter + restore-cwd-on-resume)

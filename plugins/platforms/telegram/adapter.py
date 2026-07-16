@@ -4868,7 +4868,6 @@ class TelegramAdapter(BasePlatformAdapter):
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
         allow_permanent: bool = True,
-        smart_denied: bool = False,
     ) -> SendResult:
         """Send an inline-keyboard approval prompt with interactive buttons.
 
@@ -4885,9 +4884,6 @@ class TelegramAdapter(BasePlatformAdapter):
                 f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
                 f"Reason: {_html.escape(description)}"
             )
-            if smart_denied:
-                text += "\n\n<b>Smart DENY:</b> owner override applies to this one operation only."
-
             # Resolve thread context for thread replies
             thread_id = self._metadata_thread_id(metadata)
 
@@ -4902,14 +4898,13 @@ class TelegramAdapter(BasePlatformAdapter):
             buttons = [
                 InlineKeyboardButton("✅ Allow Once", callback_data=f"ea:once:{approval_id}")
             ]
-            if not smart_denied:
+            buttons.append(
+                InlineKeyboardButton("✅ Session", callback_data=f"ea:session:{approval_id}")
+            )
+            if allow_permanent:
                 buttons.append(
-                    InlineKeyboardButton("✅ Session", callback_data=f"ea:session:{approval_id}")
+                    InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}")
                 )
-                if allow_permanent:
-                    buttons.append(
-                        InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}")
-                    )
             buttons.append(InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"))
             keyboard = InlineKeyboardMarkup([buttons])
 

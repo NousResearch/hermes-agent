@@ -193,7 +193,6 @@ Hermes uses separate lightweight models for side tasks. Each task has its own pr
 | Compression | Context compression summaries | `auxiliary.compression` |
 | Skills Hub | Skill search and discovery | `auxiliary.skills_hub` |
 | MCP | MCP helper operations | `auxiliary.mcp` |
-| Approval | Smart command-approval classification | `auxiliary.approval` |
 | Title Generation | Session title summaries | `auxiliary.title_generation` |
 | Triage Specifier | `hermes kanban specify` / dashboard ✨ button — fleshes out a one-liner triage task into a real spec | `auxiliary.triage_specifier` |
 
@@ -425,7 +424,6 @@ See [Scheduled Tasks (Cron)](/user-guide/features/cron) for full configuration d
 | Context compression | Layered (see above); degrades to no-summary if all layers unavailable | `auxiliary.compression` |
 | Skills hub | Layered (see above) | `auxiliary.skills_hub` |
 | MCP helpers | Layered (see above) | `auxiliary.mcp` |
-| Approval classification | Layered (see above) | `auxiliary.approval` |
 | Title generation | Layered (see above) | `auxiliary.title_generation` |
 | Triage specifier | Layered (see above) | `auxiliary.triage_specifier` |
 | Delegation | Provider override only (no automatic fallback) | `delegation.provider` / `delegation.model` |

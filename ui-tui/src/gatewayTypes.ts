@@ -697,7 +697,6 @@ export type GatewayEvent =
         choices?: string[]
         command: string
         description: string
-        smart_denied?: boolean
       }
       session_id?: string
       type: 'approval.request'

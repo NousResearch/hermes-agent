@@ -205,7 +205,7 @@ TIPS = [
 
     # --- Security ---
     "Dangerous command approval has 4 tiers: once, session, always (permanent allowlist), deny.",
-    "Smart approval mode uses an LLM to auto-approve safe commands and flag dangerous ones.",
+    "Dangerous commands require explicit owner approval unless approvals.mode is set to off.",
     "SSRF protection blocks private networks, loopback, link-local, and cloud metadata addresses.",
     "Tirith pre-exec scanning detects homograph URL spoofing and pipe-to-interpreter patterns.",
     "MCP subprocesses receive a filtered environment — only safe system vars pass through.",

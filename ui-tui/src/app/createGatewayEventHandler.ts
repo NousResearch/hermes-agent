@@ -790,8 +790,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             allowPermanent,
             choices: ev.payload.choices,
             command: String(ev.payload.command ?? ''),
-            description,
-            smartDenied: ev.payload.smart_denied === true
+            description
           }
         })
         setStatus('approval needed')

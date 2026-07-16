@@ -39,6 +39,7 @@ import importlib.util
 import inspect
 import logging
 import os
+import re
 import sys
 import threading
 import types
@@ -1105,20 +1106,25 @@ class PluginContext:
                 f"Plugin '{self.manifest.name}' tried to register auxiliary task "
                 f"with invalid key {key!r}"
             )
-        if not all(c.isalnum() or c == "_" for c in key):
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", key):
             raise ValueError(
                 f"Plugin '{self.manifest.name}' auxiliary task key {key!r} "
-                f"must contain only alphanumeric characters and underscores"
+                "must be ASCII lowercase snake_case"
             )
 
         # Lazy import to avoid circular: hermes_cli.main imports plugins indirectly
         from hermes_cli.main import _AUX_TASKS as _BUILTIN_AUX_TASKS
 
         builtin_keys = {k for k, _name, _desc in _BUILTIN_AUX_TASKS}
-        if key in builtin_keys:
+        # ``approval`` is deliberately not an auxiliary model task: owner
+        # authorization is a deterministic authority boundary.  Keep the
+        # legacy name reserved so a plugin cannot recreate a model-authored
+        # approval path under the old configuration key.
+        reserved_keys = builtin_keys | {"approval"}
+        if key in reserved_keys:
             raise ValueError(
                 f"Plugin '{self.manifest.name}' cannot register auxiliary task "
-                f"{key!r} — that key is reserved for a built-in task. "
+                f"{key!r} — that key is reserved by Hermes. "
                 f"Pick a plugin-namespaced key (e.g. '{self.manifest.name}_{key}')."
             )
 

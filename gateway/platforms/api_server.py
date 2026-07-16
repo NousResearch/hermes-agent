@@ -7945,6 +7945,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     cleanup_handle: Optional[_APIServerCleanupHandle] = None
                     result: Any = None
                     execution_error: Optional[Exception] = None
+                    stop_requested_before_execution_finished = False
                     try:
                         try:
                             # Bind approval/session identity for this API run via
@@ -8017,6 +8018,14 @@ class APIServerAdapter(BasePlatformAdapter):
                                     _cleanup_state_callback,
                                 )
                     finally:
+                        # Linearize stop ownership at the execution/cleanup
+                        # boundary. A stop received while the model is still
+                        # executing cancels the run; a later stop received
+                        # while exact capability revoke is blocking must not
+                        # rewrite an already model-completed outcome.
+                        stop_requested_before_execution_finished = (
+                            run_id in self._stopping_run_ids
+                        )
                         try:
                             if cleanup_handle is not None:
                                 self._attempt_api_server_cleanup_once(
@@ -8046,7 +8055,13 @@ class APIServerAdapter(BasePlatformAdapter):
                         "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
                         "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
                     }
-                    return result, usage, execution_error, cleanup_handle
+                    return (
+                        result,
+                        usage,
+                        execution_error,
+                        cleanup_handle,
+                        stop_requested_before_execution_finished,
+                    )
 
                 async def _own_run_sync(executor_future):
                     outcome = await asyncio.shield(executor_future)
@@ -8073,6 +8088,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     usage,
                     execution_error,
                     cleanup_handle,
+                    stop_requested_before_execution_finished,
                 ) = await asyncio.shield(completion_owner)
                 if not self._api_cleanup_allows_terminal(cleanup_ref):
                     state = cleanup_ref[0] if cleanup_ref else None
@@ -8090,7 +8106,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     return
                 if execution_error is not None:
                     raise execution_error
-                if run_id in self._stopping_run_ids:
+                if stop_requested_before_execution_finished:
                     cancelled_fields = {
                         "completed": False,
                         "partial": False,
@@ -8139,6 +8155,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 status_fields = {
                     "output": final_response,
                     "usage": usage,
+                    "terminal": True,
                     "last_event": outcome["run_event"],
                     **outcome_fields,
                 }
@@ -8176,6 +8193,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     run_id,
                     "failed",
                     error=_redact_api_error_text(exc),
+                    terminal=True,
                     completed=False,
                     partial=False,
                     interrupted=False,

@@ -165,8 +165,10 @@ def test_installed_wheel_exposes_capability_runtime_and_verifier(tmp_path):
     assert value["codex_refresh_token_leased"] is False
     assert value["direct_discord_in_gateway"] is False
     assert value["discord_dm_enabled"] is False
+    assert value["approval_auxiliary_enabled"] is False
+    assert value["retired_semantic_auxiliary_tasks_present"] is False
     assert value["goal_judge_enabled"] is False
-    assert value["goal_continuations_enabled"] is False
+    assert value["goal_continuations_enabled"] is True
     assert value["mcp_auto_discovery_enabled"] is False
     assert value["gateway_event_hooks_enabled"] is False
     assert value["shell_hooks_enabled"] is False

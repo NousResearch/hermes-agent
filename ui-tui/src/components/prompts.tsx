@@ -10,7 +10,6 @@ import { TextInput } from './textInput.js'
 const APPROVAL_OPTS = ['once', 'session', 'always', 'deny'] as const
 // tirith warning present → backend downgrades "always" to session scope, so drop it.
 const APPROVAL_OPTS_NO_ALWAYS = APPROVAL_OPTS.filter(o => o !== 'always')
-const APPROVAL_OPTS_SMART_DENY = ['once', 'deny'] as const
 const LABELS = { always: 'Always allow', deny: 'Deny', once: 'Allow once', session: 'Allow this session' } as const
 const CMD_PREVIEW_LINES = 10
 
@@ -19,10 +18,6 @@ type ApprovalChoice = 'always' | 'deny' | 'once' | 'session'
 export function approvalOptions(req: ApprovalReq): readonly ApprovalChoice[] {
   if (req.choices) {
     return req.choices.filter((choice): choice is ApprovalChoice => APPROVAL_OPTS.includes(choice as ApprovalChoice))
-  }
-
-  if (req.smartDenied) {
-    return APPROVAL_OPTS_SMART_DENY
   }
 
   return req.allowPermanent === false ? APPROVAL_OPTS_NO_ALWAYS : APPROVAL_OPTS

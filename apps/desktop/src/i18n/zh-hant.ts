@@ -752,7 +752,6 @@ export const zhHant = defineLocale({
         web_extract: { label: '網頁擷取', hint: '頁面摘要' },
         compression: { label: '壓縮', hint: '上下文壓縮' },
         skills_hub: { label: '技能中心', hint: '技能搜尋' },
-        approval: { label: '核准', hint: '智慧自動核准' },
         mcp: { label: 'MCP', hint: 'MCP 工具路由' },
         title_generation: { label: '標題生成', hint: '工作階段標題' },
         curator: { label: '策展器', hint: '技能使用審查' }
@@ -1958,8 +1957,6 @@ export const zhHant = defineLocale({
       ariaLabel: mode => `核准模式：${mode}`,
       manual: '手動',
       manualDescription: '執行需要核准的操作前詢問',
-      smart: '智慧',
-      smartDescription: '自動評估操作，並在需要時詢問',
       off: '關閉',
       offDescription: '不顯示核准提示，直接執行'
     },

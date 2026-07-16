@@ -170,12 +170,9 @@ _AUXILIARY_TASKS = (
     "web_extract",
     "compression",
     "skills_hub",
-    "approval",
     "mcp",
     "title_generation",
     "tts_audio_tags",
-    "triage_specifier",
-    "kanban_decomposer",
     "profile_describer",
     "curator",
     "monitor",
@@ -188,12 +185,9 @@ _AUXILIARY_DEFAULTS: Mapping[str, Mapping[str, Any]] = {
     "web_extract": {"timeout": 360},
     "compression": {"timeout": 120},
     "skills_hub": {"timeout": 30},
-    "approval": {"timeout": 30},
     "mcp": {"timeout": 30},
     "title_generation": {"timeout": 30, "language": ""},
     "tts_audio_tags": {"timeout": 30},
-    "triage_specifier": {"timeout": 120},
-    "kanban_decomposer": {"timeout": 180},
     "profile_describer": {"timeout": 60},
     "curator": {"timeout": 600},
     "monitor": {"timeout": 60},
@@ -487,6 +481,11 @@ def overlay_production_gateway_config(
     compression["abort_on_summary_failure"] = True
 
     auxiliary = _mapping(target, "auxiliary")
+    # These legacy semantic side-model slots are retired in Cloud Muncho.
+    # Strip them deterministically rather than pinning dormant decision
+    # surfaces into the production source of truth.
+    for retired_task in ("approval", "goal_judge", "triage_specifier", "kanban_decomposer"):
+        auxiliary.pop(retired_task, None)
     for name, item in auxiliary.items():
         if name == "transient_retries":
             if type(item) is not int or not 0 <= item <= 6:
@@ -689,6 +688,11 @@ def validate_production_gateway_config(raw: Mapping[str, Any]) -> None:
     auxiliary = raw.get("auxiliary")
     if not isinstance(auxiliary, Mapping):
         raise ProductionContractError("production_auxiliary_not_exact")
+    if any(
+        retired_task in auxiliary
+        for retired_task in ("approval", "goal_judge", "triage_specifier", "kanban_decomposer")
+    ):
+        raise ProductionContractError("production_retired_auxiliary_present")
     for task in _AUXILIARY_TASKS:
         item = auxiliary.get(task)
         if not isinstance(item, Mapping) or any(

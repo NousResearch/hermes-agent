@@ -54,6 +54,18 @@ auxiliary:
     base_url: ''
     api_key: ''
     timeout: 120
+  approval:
+    provider: auto
+    model: ''
+  goal_judge:
+    provider: auto
+    model: ''
+  triage_specifier:
+    provider: auto
+    model: ''
+  kanban_decomposer:
+    provider: auto
+    model: ''
 curator:
   enabled: false
   consolidate: false
@@ -147,6 +159,12 @@ def test_apply_requires_plan_and_writes_exact_backup(tmp_path, monkeypatch):
         "api_key": "",
         "timeout": 120,
     }
+    assert not {
+        "approval",
+        "goal_judge",
+        "triage_specifier",
+        "kanban_decomposer",
+    }.intersection(effective["auxiliary"])
     assert effective["plugins"] == {"enabled": [], "disabled": []}
     assert effective["hooks"] == {}
     assert effective["hooks_auto_accept"] is False

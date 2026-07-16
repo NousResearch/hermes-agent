@@ -429,6 +429,26 @@ class TestWrapCommandWindowsNativeCwd:
         assert "builtin cd -- /c/Users/liush || exit 126" in wrapped
         assert r"builtin cd -- C:\Users\liush || exit 126" not in wrapped
 
+    def test_wrap_command_rewrites_atomic_snapshot_template(self, monkeypatch):
+        """The per-command mktemp path must use the same MSYS form as the
+        live snapshot destination, not a raw drive-qualified Windows path."""
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+
+        with patch.object(
+            LocalEnvironment, "init_session", autospec=True, return_value=None
+        ):
+            env = LocalEnvironment(cwd=r"C:\Users\Alexander", timeout=10)
+
+        snap = "C:/Users/Alexander/.hermes/cache/terminal/hermes-snap-x.sh"
+        env._snapshot_path = snap
+        env._cwd_file = snap + ".cwd"
+        env._snapshot_ready = True
+        wrapped = env._wrap_command("echo ok", r"C:\Users\Alexander")
+
+        assert "mktemp /c/Users/Alexander/.hermes/cache/terminal/hermes-snap-x.sh.tmp.XXXXXX" in wrapped
+        assert "C:/Users/Alexander" not in wrapped
+        assert r"C:\Users\Alexander" not in wrapped
+
     def test_init_session_bootstrap_converts_native_cwd_for_cd(self, monkeypatch):
         """The snapshot bootstrap ``cd`` must also use the Git-Bash path form,
         not just ``_wrap_command`` — otherwise ``pwd -P`` captures the login

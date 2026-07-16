@@ -1732,8 +1732,6 @@ export interface Translations {
       ariaLabel: (mode: string) => string
       manual: string
       manualDescription: string
-      smart: string
-      smartDescription: string
       off: string
       offDescription: string
     }

@@ -535,8 +535,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             : undefined,
           command,
           description,
-          sessionId: sessionId ?? null,
-          smartDenied: payload?.smart_denied === true
+          sessionId: sessionId ?? null
         })
 
         if (sessionId) {

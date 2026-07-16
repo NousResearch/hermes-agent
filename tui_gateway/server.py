@@ -1153,9 +1153,7 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
     seam so all approval transports redact consistently."""
     payload = dict(data or {})
     if "choices" not in payload:
-        if payload.get("smart_denied"):
-            payload["choices"] = ["once", "deny"]
-        elif payload.get("allow_permanent") is False:
+        if payload.get("allow_permanent") is False:
             payload["choices"] = ["once", "session", "deny"]
         elif "allow_permanent" in payload:
             payload["choices"] = ["once", "session", "always", "deny"]
@@ -9449,11 +9447,11 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
 
         # A user prompt that arrived mid-turn (interrupt + queue) wins over
         # every auto follow-up below — drain it first and skip them this cycle;
-        # the goal judge / notifications re-evaluate at the end of that turn.
+        # model-authored goal state / notifications re-evaluate at turn end.
         if _drain_queued_prompt(rid, sid, session):
             return
 
-        # Chain a goal-continuation turn if the judge said so. We do
+        # Chain a goal-continuation turn if the primary model recorded one. We do
         # this AFTER the finally releases session["running"], so the
         # nested _run_prompt_submit doesn't deadlock on the busy
         # guard. A real user prompt that races us wins because

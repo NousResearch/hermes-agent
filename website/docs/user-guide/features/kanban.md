@@ -431,7 +431,7 @@ The dispatcher emits one `--skills <name>` flag per skill listed, so the worker 
 
 ### Goal-mode cards (`--goal`)
 
-By default each worker gets **one shot** at its card — do the work, call `kanban_complete`/`kanban_block`, exit. Pass `--goal` (CLI) or `goal_mode=True` (the `kanban_create` tool / dashboard) to instead run that worker in a **goal loop**, the same Ralph-style engine behind the `/goal` slash command: after every turn an auxiliary judge checks the worker's output against the card's title + body (treated as the acceptance criteria), and if the work isn't done — and the turn budget remains — the worker keeps going **in the same session** until the judge agrees, the worker terminates the task itself, or the budget runs out (which **blocks** the card for human review rather than exiting silently).
+By default each worker gets **one shot** at its card — do the work, call `kanban_complete`/`kanban_block`, exit. Pass `--goal` (CLI) or `goal_mode=True` (the `kanban_create` tool / dashboard) to instead run that worker in a **goal loop**, the same Ralph-style engine behind the `/goal` slash command. After every turn the primary model records an exact structured `continue`, verified `complete`, or genuinely `blocked` outcome against the card's title + body (treated as the acceptance criteria). If work remains and the turn budget allows it, the worker keeps going **in the same session** until completion, a real blocker, explicit task termination, or budget exhaustion (which **blocks** the card for human review rather than exiting silently).
 
 ```bash
 hermes kanban create "Translate the docs site to French" \
@@ -441,7 +441,7 @@ hermes kanban create "Translate the docs site to French" \
     --goal-max-turns 15      # optional; default 20
 ```
 
-Use it for open-ended, multi-step, or "keep going until X is true" cards. Skip it for cheap one-shot work — the per-turn judge overhead isn't worth it, and the dispatcher's existing retry/circuit-breaker already handles transient worker failures. The judge is only as good as your goal text, so write the body as **explicit acceptance criteria**.
+Use it for open-ended, multi-step, or "keep going until X is true" cards. Skip it for cheap one-shot work, where the dispatcher's existing retry/circuit-breaker already handles transient worker failures. The primary model can verify only the criteria you gave it, so write the body as **explicit acceptance criteria**.
 
 ### How the orchestrator behaves
 

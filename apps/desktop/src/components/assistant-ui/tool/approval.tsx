@@ -118,7 +118,7 @@ const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline'
   const busy = submitting !== null
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   const allowPermanent = request.allowPermanent !== false
-  const choices = request.choices ?? (request.smartDenied ? ['once', 'deny'] : undefined)
+  const choices = request.choices
   const allowSession = choices ? choices.includes('session') : true
   const allowAlways = choices ? choices.includes('always') : allowPermanent
   const hasMoreOptions = allowSession || allowAlways

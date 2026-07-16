@@ -157,6 +157,10 @@ def _source_mapping() -> dict:
                 "timeout": 120,
             },
             "vision": {"provider": "auto", "model": ""},
+            "approval": {"provider": "auto", "model": ""},
+            "goal_judge": {"provider": "auto", "model": ""},
+            "triage_specifier": {"provider": "auto", "model": ""},
+            "kanban_decomposer": {"provider": "auto", "model": ""},
         },
         "context": {"engine": "compressor"},
         "memory": {
@@ -461,6 +465,12 @@ def test_producer_preserves_unrelated_config_and_seals_target() -> None:
     }
     assert effective["auxiliary"]["vision"]["provider"] == "openai-codex"
     assert effective["auxiliary"]["vision"]["fallback_chain"] == []
+    assert not {
+        "approval",
+        "goal_judge",
+        "triage_specifier",
+        "kanban_decomposer",
+    }.intersection(effective["auxiliary"])
     assert effective["curator"]["interval_hours"] == 168
     assert effective["kanban"]["failure_limit"] == 2
     assert effective["agent"]["adaptive_reasoning"] == {

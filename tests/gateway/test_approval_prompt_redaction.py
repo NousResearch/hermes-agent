@@ -152,7 +152,14 @@ class TestApprovalCommandWiring:
         assert value.args[0].value == "allow_permanent"
         assert isinstance(value.args[1], ast.Constant)
         assert value.args[1].value is True
-        assert "smart_denied" not in keywords
+        assert set(keywords) == {
+            "chat_id",
+            "command",
+            "session_key",
+            "description",
+            "metadata",
+            "allow_permanent",
+        }
 
 
 class TestApprovalTextFallbackContract:

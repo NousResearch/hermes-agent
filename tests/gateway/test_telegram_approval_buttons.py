@@ -106,7 +106,7 @@ class TestTelegramExecApproval:
         assert kwargs["reply_markup"] is not None  # InlineKeyboardMarkup
 
     @pytest.mark.asyncio
-    async def test_smart_deny_owner_override_only_offers_once_and_deny(self, monkeypatch):
+    async def test_non_permanent_approval_preserves_session_choice(self, monkeypatch):
         adapter = _make_adapter()
         adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
         buttons = []
@@ -120,16 +120,14 @@ class TestTelegramExecApproval:
 
         await adapter.send_exec_approval(
             chat_id="12345", command="rm -rf /", session_key="s",
-            allow_permanent=False, smart_denied=True,
+            allow_permanent=False,
         )
 
         labels = [label for label, _ in buttons]
-        assert labels == ["✅ Allow Once", "❌ Deny"]
-        text = adapter._bot.send_message.call_args.kwargs["text"]
-        assert "one operation" in text.lower()
+        assert labels == ["✅ Allow Once", "✅ Session", "❌ Deny"]
 
     @pytest.mark.asyncio
-    async def test_non_smart_allow_permanent_false_keeps_session(self, monkeypatch):
+    async def test_permanent_approval_includes_always_choice(self, monkeypatch):
         adapter = _make_adapter()
         adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
         buttons = []
@@ -143,10 +141,10 @@ class TestTelegramExecApproval:
 
         await adapter.send_exec_approval(
             chat_id="12345", command="curl example.test", session_key="s",
-            allow_permanent=False,
+            allow_permanent=True,
         )
 
-        assert buttons == ["✅ Allow Once", "✅ Session", "❌ Deny"]
+        assert buttons == ["✅ Allow Once", "✅ Session", "✅ Always", "❌ Deny"]
 
     @pytest.mark.asyncio
     async def test_stores_approval_state(self):

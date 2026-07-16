@@ -949,7 +949,7 @@ describe('createGatewayEventHandler', () => {
     })
   })
 
-  it('preserves Smart DENY and explicit approval choices on the overlay', () => {
+  it('preserves explicit approval choices on the overlay', () => {
     const onEvent = createGatewayEventHandler(buildCtx([]))
 
     onEvent({
@@ -957,13 +957,12 @@ describe('createGatewayEventHandler', () => {
         allow_permanent: true,
         choices: ['once', 'deny'],
         command: 'rm -rf /tmp/x',
-        description: 'smart deny override',
-        smart_denied: true
+        description: 'bounded owner choices'
       },
       type: 'approval.request'
     } as any)
 
-    expect(getOverlayState().approval).toMatchObject({ choices: ['once', 'deny'], smartDenied: true })
+    expect(getOverlayState().approval).toMatchObject({ choices: ['once', 'deny'] })
   })
 
   it('still surfaces terminal turn failures as errors', () => {

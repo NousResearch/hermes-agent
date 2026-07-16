@@ -2718,10 +2718,10 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
         # entry must not wedge auxiliary tasks when a valid standalone
         # credential (ANTHROPIC_TOKEN, credentials file, API key) exists. This
         # matches the openrouter and codex paths, which already fall back to
-        # their env/auth-store credential on (True, None). Without this, the
-        # goal judge and every other Anthropic-routed side channel died with
-        # "no auxiliary client configured" while the main session stayed
-        # healthy (it resolves the env token directly).
+        # their env/auth-store credential on (True, None). Without this,
+        # Anthropic-routed auxiliary tasks died with "no auxiliary client
+        # configured" while the main session stayed healthy (it resolves the
+        # env token directly).
         entry = None
         token = explicit_api_key or resolve_anthropic_token()
     if not token:

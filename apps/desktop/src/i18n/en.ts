@@ -735,7 +735,6 @@ export const en: Translations = {
         web_extract: { label: 'Web extract', hint: 'Page summarization' },
         compression: { label: 'Compression', hint: 'Context compaction' },
         skills_hub: { label: 'Skills hub', hint: 'Skill search' },
-        approval: { label: 'Approval', hint: 'Smart auto-approve' },
         mcp: { label: 'MCP', hint: 'MCP tool routing' },
         title_generation: { label: 'Title gen', hint: 'Session titles' },
         curator: { label: 'Curator', hint: 'Skill-usage review' }
@@ -2103,8 +2102,6 @@ export const en: Translations = {
       ariaLabel: mode => `Approval mode: ${mode}`,
       manual: 'Manual',
       manualDescription: 'Ask before actions that require approval',
-      smart: 'Smart',
-      smartDescription: 'Automatically assess actions and ask when needed',
       off: 'Off',
       offDescription: 'Run without approval prompts'
     },

@@ -1099,7 +1099,6 @@ class TeamsAdapter(BasePlatformAdapter):
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
         allow_permanent: bool = True,
-        smart_denied: bool = False,
     ) -> SendResult:
         """Send an Adaptive Card approval prompt with Allow/Deny buttons."""
         if not self._app:
@@ -1117,16 +1116,15 @@ class TeamsAdapter(BasePlatformAdapter):
             title="Allow Once", verb="hermes_approve",
             data={**btn_data_base, "hermes_action": "approve_once"}, style="positive",
         )]
-        if not smart_denied:
+        actions.append(ExecuteAction(
+            title="Allow Session", verb="hermes_approve",
+            data={**btn_data_base, "hermes_action": "approve_session"},
+        ))
+        if allow_permanent:
             actions.append(ExecuteAction(
-                title="Allow Session", verb="hermes_approve",
-                data={**btn_data_base, "hermes_action": "approve_session"},
+                title="Always Allow", verb="hermes_approve",
+                data={**btn_data_base, "hermes_action": "approve_always"},
             ))
-            if allow_permanent:
-                actions.append(ExecuteAction(
-                    title="Always Allow", verb="hermes_approve",
-                    data={**btn_data_base, "hermes_action": "approve_always"},
-                ))
         actions.append(ExecuteAction(
             title="Deny", verb="hermes_approve",
             data={**btn_data_base, "hermes_action": "deny"}, style="destructive",
@@ -1136,10 +1134,6 @@ class TeamsAdapter(BasePlatformAdapter):
             TextBlock(text=f"```\n{cmd_preview}\n```", wrap=True),
             TextBlock(text=f"Reason: {description}", wrap=True, isSubtle=True),
         ]
-        if smart_denied:
-            body.append(TextBlock(
-                text="Smart DENY: owner override applies to this one operation only.", wrap=True
-            ))
         card = AdaptiveCard().with_version("1.4").with_body(body).with_actions(actions)
 
         try:

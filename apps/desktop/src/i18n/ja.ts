@@ -775,7 +775,6 @@ export const ja = defineLocale({
         web_extract: { label: 'ウェブ抽出', hint: 'ページの要約' },
         compression: { label: '圧縮', hint: 'コンテキストの圧縮' },
         skills_hub: { label: 'スキルハブ', hint: 'スキル検索' },
-        approval: { label: '承認', hint: 'スマート自動承認' },
         mcp: { label: 'MCP', hint: 'MCP ツールルーティング' },
         title_generation: { label: 'タイトル生成', hint: 'セッションタイトル' },
         curator: { label: 'キュレーター', hint: 'スキル使用レビュー' }
@@ -2023,8 +2022,6 @@ export const ja = defineLocale({
       ariaLabel: mode => `承認モード: ${mode}`,
       manual: '手動',
       manualDescription: '承認が必要な操作の前に確認します',
-      smart: 'スマート',
-      smartDescription: '必要な場合にのみ確認します',
       off: 'オフ',
       offDescription: '承認プロンプトなしで実行します'
     },

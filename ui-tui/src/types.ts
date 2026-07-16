@@ -95,7 +95,6 @@ export interface ApprovalReq {
   choices?: string[]
   command: string
   description: string
-  smartDenied?: boolean
 }
 
 export interface ConfirmReq {

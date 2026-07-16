@@ -8,7 +8,7 @@ Covers the canonical fix for issues #4146, #27303, #30882, #33057:
   2. Both execute_code RPC threads are wrapped with that helper (source guard).
   3. tools.approval.check_execute_code_guard — the entry-point guard decision
      matrix (isolated backends, yolo/off, cron-deny, headless-local,
-     gateway approve/deny/timeout/missing-notify, smart mode).
+     gateway approve/deny/timeout/missing-notify, retired smart-to-manual migration).
   4. tools.code_execution_tool._scrub_child_env — broad HERMES_ prefix dropped,
      operational allowlist kept, DSN/WEBHOOK blocked, passthrough precedence.
 """

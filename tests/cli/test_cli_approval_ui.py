@@ -67,7 +67,7 @@ def _make_background_cli_stub():
 
 
 class TestCliApprovalUi:
-    def test_smart_denied_callback_offers_only_once_and_deny(self):
+    def test_non_permanent_callback_preserves_session_choice(self):
         cli = _make_cli_stub()
         result = {}
 
@@ -76,7 +76,6 @@ class TestCliApprovalUi:
                 "rm -rf /tmp/example",
                 "recursive delete",
                 allow_permanent=False,
-                smart_denied=True,
             )
 
         thread = threading.Thread(target=_run_callback, daemon=True)
@@ -87,16 +86,16 @@ class TestCliApprovalUi:
             time.sleep(0.01)
 
         assert cli._approval_state is not None
-        assert cli._approval_state["choices"] == ["once", "deny"]
+        assert cli._approval_state["choices"] == ["once", "session", "deny"]
 
         cli._approval_state["response_queue"].put("deny")
         thread.join(timeout=2)
         assert result["value"] == "deny"
 
-    def test_non_smart_non_permanent_callback_preserves_session_choice(self):
+    def test_non_permanent_choice_helper_preserves_session_choice(self):
         cli = _make_cli_stub()
         assert cli._approval_choices(
-            "rm -rf /tmp/example", allow_permanent=False, smart_denied=False
+            "rm -rf /tmp/example", allow_permanent=False
         ) == ["once", "session", "deny"]
 
     def test_sudo_prompt_restores_existing_draft_after_response(self):

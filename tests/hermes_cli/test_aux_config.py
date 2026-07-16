@@ -50,6 +50,7 @@ def test_session_search_no_longer_appears_in_auxiliary_model_config():
 
 def test_approval_authority_never_appears_as_an_auxiliary_model_task():
     """An auxiliary model must not be selectable as an authorization source."""
+    assert "approval" not in DEFAULT_CONFIG["auxiliary"]
     assert "approval" not in {key for key, _name, _desc in _AUX_TASKS}
 
 

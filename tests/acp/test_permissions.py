@@ -23,7 +23,7 @@ def _invoke_callback(
     outcome,
     *,
     allow_permanent=True,
-    smart_denied=False,
+    legacy_callback_kwargs=None,
     timeout=60.0,
     use_prompt_path=False,
 ):
@@ -46,7 +46,6 @@ def _invoke_callback(
                 "rm -rf /",
                 "dangerous command",
                 allow_permanent=allow_permanent,
-                smart_denied=smart_denied,
                 approval_callback=cb,
             )
         else:
@@ -54,7 +53,7 @@ def _invoke_callback(
                 "rm -rf /",
                 "dangerous command",
                 allow_permanent=allow_permanent,
-                smart_denied=smart_denied,
+                **(legacy_callback_kwargs or {}),
             )
 
     scheduled["coro"].close()
@@ -118,28 +117,16 @@ class TestApprovalBridge:
         assert result == "session"
         assert option_ids == ["allow_once", "allow_session", "deny", "deny_always"]
 
-    def test_smart_deny_prompt_only_offers_once_and_deny(self):
-        result, kwargs, _, _, _ = _invoke_callback(
-            AllowedOutcome(option_id="allow_once", outcome="selected"),
-            allow_permanent=False,
-            smart_denied=True,
-            use_prompt_path=True,
-        )
-
-        assert result == "once"
-        assert [option.option_id for option in kwargs["options"]] == [
-            "allow_once", "deny",
-        ]
-
-    def test_smart_deny_rejects_disallowed_session_outcome(self):
+    def test_unknown_legacy_callback_metadata_does_not_change_owner_options(self):
         result, kwargs, _, _, _ = _invoke_callback(
             AllowedOutcome(option_id="allow_session", outcome="selected"),
-            smart_denied=True,
+            allow_permanent=False,
+            legacy_callback_kwargs={"retired_hint": True},
         )
 
-        assert result == "deny"
+        assert result == "session"
         assert [option.option_id for option in kwargs["options"]] == [
-            "allow_once", "deny",
+            "allow_once", "allow_session", "deny", "deny_always",
         ]
 
     def test_reject_always_outcome_denies_without_changing_policy(self):

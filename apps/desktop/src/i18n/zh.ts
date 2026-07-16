@@ -924,7 +924,6 @@ export const zh: Translations = {
         web_extract: { label: '网页提取', hint: '页面总结' },
         compression: { label: '压缩', hint: '上下文压缩' },
         skills_hub: { label: '技能中心', hint: '技能搜索' },
-        approval: { label: '审批', hint: '智能自动批准' },
         mcp: { label: 'MCP', hint: 'MCP 工具路由' },
         title_generation: { label: '标题生成', hint: '会话标题' },
         curator: { label: '维护器', hint: '技能使用审查' }
@@ -2268,8 +2267,6 @@ export const zh: Translations = {
       ariaLabel: mode => `审批模式：${mode}`,
       manual: '手动',
       manualDescription: '执行需要审批的操作前询问',
-      smart: '智能',
-      smartDescription: '自动评估操作，并在需要时询问',
       off: '关闭',
       offDescription: '不显示审批提示，直接运行'
     },

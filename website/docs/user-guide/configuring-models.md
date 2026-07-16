@@ -7,7 +7,7 @@ sidebar_position: 3
 Hermes uses two kinds of model slots:
 
 - **Main model** — what the agent thinks with. Every user message, every tool-call loop, every streamed response goes through this model.
-- **Auxiliary models** — smaller side-jobs the agent offloads. Context compression, vision (image analysis), web-page summarization, approval scoring, MCP tool routing, session-title generation, and skill search. Each has its own slot and can be overridden independently.
+- **Auxiliary models** — smaller side-jobs the agent offloads. Context compression, vision (image analysis), web-page summarization, MCP tool routing, session-title generation, and skill search. Each has its own slot and can be overridden independently.
 
 This page covers configuring both from the dashboard. If you prefer config files or the CLI, jump to [Alternative methods](#alternative-methods) at the bottom.
 

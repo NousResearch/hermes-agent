@@ -366,7 +366,8 @@ def run_codex_app_server_turn(
         # in config, the /yolo session toggle, or --yolo / HERMES_YOLO_MODE —
         # honor that and let codex's own sandbox permission profile
         # (~/.codex/config.toml) be the policy gate instead of double-gating
-        # with a missing Hermes UI. Defaults (manual/smart/unset) preserve the
+        # with a missing Hermes UI. Defaults (manual/unset, including migrated
+        # legacy values) preserve the
         # current fail-closed behavior — this is a no-op for those users.
         auto_approve_requests = False
         try:

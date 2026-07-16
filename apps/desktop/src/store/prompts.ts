@@ -76,7 +76,6 @@ export interface ApprovalRequest extends KeyedPrompt {
   choices?: string[]
   command: string
   description: string
-  smartDenied?: boolean
 }
 
 export interface SudoRequest extends KeyedPrompt {

@@ -733,6 +733,12 @@ def test_plan_renders_exact_model_owned_first_wave():
         and route["fallback_chain"] == []
         for route in config["auxiliary"].values()
     )
+    assert not {
+        "approval",
+        "goal_judge",
+        "triage_specifier",
+        "kanban_decomposer",
+    }.intersection(config["auxiliary"])
     assert config["platform_toolsets"]["api_server"] == list(
         runtime.FIRST_WAVE_TOOLSETS
     )
@@ -7671,6 +7677,8 @@ def test_contract_is_non_semantic_and_secret_free():
     assert contract["codex_refresh_token_leased"] is False
     assert contract["discord_credential_in_gateway"] is False
     assert contract["mac_ops_credential_in_gateway"] is False
+    assert contract["approval_auxiliary_enabled"] is False
+    assert contract["retired_semantic_auxiliary_tasks_present"] is False
     assert contract["goal_judge_enabled"] is False
     assert contract["model_authored_goal_outcome_enabled"] is True
     assert contract["goal_continuations_enabled"] is True

@@ -56,6 +56,7 @@ MUTATIONS = (
     "agent.environment_hint.remove_stale_gpt_5_5_clause",
     "compression.abort_on_summary_failure=true",
     "auxiliary.compression={provider:openai-codex,model:gpt-5.6-sol}",
+    "auxiliary.retired_semantic_slots=absent",
     "kanban.auxiliary_planning_enabled=false",
     "kanban.dispatch_in_gateway=false",
     "tools.tool_search={enabled:off}",
@@ -302,6 +303,8 @@ def _target_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
     compression["abort_on_summary_failure"] = True
 
     auxiliary = _required_mapping(target, "auxiliary")
+    for retired_task in ("approval", "goal_judge", "triage_specifier", "kanban_decomposer"):
+        auxiliary.pop(retired_task, None)
     auxiliary_compression = _required_mapping(auxiliary, "compression")
     expected_auxiliary_source = {
         "provider": "auto",

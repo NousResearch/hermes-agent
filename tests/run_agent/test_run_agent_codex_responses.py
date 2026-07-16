@@ -3219,11 +3219,12 @@ def test_run_conversation_codex_invalid_encrypted_content_without_replay_state_d
     assert result["messages"][0].get("codex_reasoning_items") is None
 
 
-def test_run_conversation_codex_nudges_after_unreplayable_reasoning_only_interim(monkeypatch):
+def test_run_conversation_codex_retries_unreplayable_reasoning_without_user_nudge(monkeypatch):
     """A reasoning-only interim with NO encrypted_content (the shape
     grok-4.20 on xai-oauth returns when it never emits a message output
-    item) replays as nothing — without a nudge every continuation request
-    is byte-identical to the one that just came back incomplete."""
+    item) may replay as nothing. The bounded continuation rail may retry the
+    provider, but it must not inject a synthetic user instruction into the
+    model-authored turn."""
     agent = _build_agent(monkeypatch)
     requests = []
     responses = [
@@ -3247,16 +3248,15 @@ def test_run_conversation_codex_nudges_after_unreplayable_reasoning_only_interim
     assert len(requests) == 2
 
     replay_input = requests[1]["input"]
-    nudges = [
+    synthetic_nudges = [
         item for item in replay_input
         if isinstance(item, dict)
         and item.get("role") == "user"
         and "only internal reasoning" in str(item.get("content"))
     ]
-    assert len(nudges) == 1, (
-        "Continuation after an unreplayable reasoning-only interim must "
-        "append the nudge user message; otherwise the retry request is "
-        "identical to the one that just failed."
+    assert synthetic_nudges == [], (
+        "Protocol recovery must not manufacture a user instruction; the same "
+        "model remains responsible for authoring the completion."
     )
 
 

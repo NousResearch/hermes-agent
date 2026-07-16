@@ -2001,7 +2001,6 @@ class MatrixAdapter(BasePlatformAdapter):
         description: str = "dangerous command",
         metadata: Optional[dict] = None,
         allow_permanent: bool = True,
-        smart_denied: bool = False,
     ) -> SendResult:
         """Send a reaction-based exec approval prompt for Matrix."""
         if not self._client:
@@ -2009,13 +2008,9 @@ class MatrixAdapter(BasePlatformAdapter):
 
         requester_user_id = str((metadata or {}).get("requester_user_id") or "") or None
         cmd_preview = command[:2000] + "..." if len(command) > 2000 else command
-        scope_choices = ""
-        if smart_denied:
-            scope_choices = "Smart DENY: owner override applies to this one operation only.\n"
-        else:
-            scope_choices = "Reply `!approve session` to approve this pattern for the session, "
-            if allow_permanent:
-                scope_choices += "`!approve always` to approve permanently, "
+        scope_choices = "Reply `!approve session` to approve this pattern for the session, "
+        if allow_permanent:
+            scope_choices += "`!approve always` to approve permanently, "
         text = (
             "⚠️ **Dangerous command requires approval**\n"
             f"```\n{cmd_preview}\n```\n"
@@ -2043,7 +2038,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._approval_prompts_by_event[result.message_id] = prompt
         self._approval_prompt_by_session[session_key] = result.message_id
 
-        reactions = ("✅", "❌") if smart_denied or not allow_permanent else ("✅", "♾️", "❌")
+        reactions = ("✅", "❌") if not allow_permanent else ("✅", "♾️", "❌")
         for emoji in reactions:
             try:
                 reaction_result = await self._send_reaction(chat_id, result.message_id, emoji)

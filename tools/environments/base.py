@@ -492,7 +492,9 @@ class BaseEnvironment(ABC):
         # ``$$`` remains the parent PID in ``&``-launched subshells.  Let
         # ``mktemp`` create a same-directory file atomically instead of deriving
         # identity from shell-version-specific PID variables.
-        _snap_template = shlex.quote(self._snapshot_path + ".tmp.XXXXXX")
+        _snap_template = self._quote_shell_path(
+            self._snapshot_path + ".tmp.XXXXXX"
+        )
         bootstrap = (
             f"umask 077\n"
             f"__hermes_snap_tmp=$(mktemp {_snap_template}) || exit 1\n"
@@ -612,7 +614,9 @@ class BaseEnvironment(ABC):
         # macOS bash 3.2 leaves BASHPID unset, making all concurrent writers use
         # the same temp path.  The template remains beside the destination so
         # the final rename is atomic on one filesystem.
-        _snap_template = shlex.quote(self._snapshot_path + ".tmp.XXXXXX")
+        _snap_template = self._quote_shell_path(
+            self._snapshot_path + ".tmp.XXXXXX"
+        )
 
         parts = []
 

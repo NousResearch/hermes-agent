@@ -174,6 +174,10 @@ def _reinstall_sidecar_deps() -> None:
     if not npm:
         logger.warning("[photon] cannot reinstall stale sidecar deps: npm not on PATH")
         return
+    # Windows: suppress the console flash these short-lived npm runs would
+    # otherwise pop (0 elsewhere). Same helper as the sidecar spawn below.
+    from hermes_cli._subprocess_compat import windows_hide_flags
+
     try:
         result = subprocess.run(  # noqa: S603
             [npm, "ci"],
@@ -182,6 +186,7 @@ def _reinstall_sidecar_deps() -> None:
             text=True,
             check=False,
             timeout=_NPM_REINSTALL_TIMEOUT,
+            creationflags=windows_hide_flags(),
         )
         if result.returncode != 0:
             logger.warning(
@@ -194,6 +199,7 @@ def _reinstall_sidecar_deps() -> None:
                 text=True,
                 check=False,
                 timeout=_NPM_REINSTALL_TIMEOUT,
+                creationflags=windows_hide_flags(),
             )
     except subprocess.TimeoutExpired:
         # A wedged npm (dead registry, network blackhole) must not stall the

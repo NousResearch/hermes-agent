@@ -358,7 +358,9 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         provided = self._string_or_none(notification.get("clientState"))
         if provided is None:
             return False
-        return hmac.compare_digest(provided, expected)
+        # Compare as bytes: ``compare_digest`` raises TypeError on a str with
+        # non-ASCII characters, and clientState comes from the request body.
+        return hmac.compare_digest(provided.encode(), expected.encode())
 
     def _has_seen_receipt(self, receipt_key: str) -> bool:
         return receipt_key in self._seen_receipts

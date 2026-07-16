@@ -1233,7 +1233,7 @@ def handle_function_call(
                 from tools.registry import registry as _tool_registry
                 _ok, _err = _validate_tool_arguments(
                     function_name, function_args, _tool_registry,
-                    task_id=task_id, check_existence=False, check_required=True,
+                    task_id=task_id, check_existence=True, check_required=True,
                 )
                 if not _ok:
                     return json.dumps({"error": _err}, ensure_ascii=False)

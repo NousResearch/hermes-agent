@@ -273,8 +273,11 @@ class TestPreToolCallBlocking:
         assert result == {"error": "Blocked"}
         assert notifications == []
 
-    def test_invalid_hook_returns_do_not_block(self, monkeypatch):
+    def test_invalid_hook_returns_do_not_block(self, monkeypatch, tmp_path):
         """Malformed hook returns should be ignored — tool executes normally."""
+        real_file = tmp_path / "test.txt"
+        real_file.write_text("hello", encoding="utf-8")
+
         def fake_invoke_hook(hook_name, **kwargs):
             if hook_name == "pre_tool_call":
                 return [
@@ -288,7 +291,7 @@ class TestPreToolCallBlocking:
         monkeypatch.setattr("model_tools.registry.dispatch",
                             lambda *a, **kw: json.dumps({"ok": True}))
 
-        result = json.loads(handle_function_call("read_file", {"path": "test.txt"}, task_id="t1"))
+        result = json.loads(handle_function_call("read_file", {"path": str(real_file)}, task_id="t1"))
         assert result == {"ok": True}
 
     def test_skip_flag_prevents_double_fire(self, monkeypatch):

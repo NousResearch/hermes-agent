@@ -39,6 +39,7 @@ import json
 import logging
 import re
 import subprocess
+import sys
 import time
 from collections import deque
 from typing import Any, Deque, Dict, List, Optional
@@ -251,14 +252,21 @@ class WebhookAdapter(BasePlatformAdapter):
         await self._runner.setup()
         # Do not probe only one address family before binding. With the
         # dual-stack default, an IPv6-only listener can already own this port
-        # while 127.0.0.1 still looks free. Also disable SO_REUSEADDR for the
-        # listener: on macOS, two wildcard/specific sockets with SO_REUSEADDR
-        # can silently split traffic while both servers report success.
+        # while 127.0.0.1 still looks free.
+        #
+        # SO_REUSEADDR is platform-dependent:
+        #   - macOS (BSD semantics): two wildcard/specific sockets with
+        #     SO_REUSEADDR can silently split traffic while both servers
+        #     report success — so disable it there.
+        #   - Linux: SO_REUSEADDR only permits rebinding past TIME_WAIT
+        #     (a second live listener needs SO_REUSEPORT, which we never
+        #     set). Disabling it would make a quick gateway restart fail
+        #     to bind for up to ~60s — so keep the default (enabled).
         site = web.TCPSite(
             self._runner,
             self._host,
             self._port,
-            reuse_address=False,
+            reuse_address=False if sys.platform == "darwin" else None,
         )
         try:
             await site.start()

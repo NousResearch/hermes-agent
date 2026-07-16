@@ -30,6 +30,7 @@ Configuration in config.yaml::
           scope: "read write"                   # default: server-provided
           redirect_port: 0                      # 0 = auto-pick free port
           redirect_uri: "https://proxy/callback"  # default: loopback callback
+          redirect_host: "localhost"            # loopback hostname (WAF-safe)
           client_name: "My Custom Client"       # default: "Hermes Agent"
 """
 
@@ -923,12 +924,23 @@ def _resolve_redirect_uri(cfg: dict, port: int) -> str:
 
     A configured ``redirect_uri`` lets the callback go through a proxy (e.g. a
     Tailscale Funnel exposing a public HTTPS URL that forwards to localhost);
-    otherwise we default to ``http://127.0.0.1:<port>/callback``. An empty value
-    is treated as unset. Both the client metadata and any pre-registered client
-    info must derive the redirect_uri here so they stay identical — a mismatch
-    makes the authorization server reject the callback.
+    otherwise we default to ``http://<redirect_host>:<port>/callback``. An empty
+    value is treated as unset. Both the client metadata and any pre-registered
+    client info must derive the redirect_uri here so they stay identical — a
+    mismatch makes the authorization server reject the callback.
+
+    ``redirect_host`` (default ``127.0.0.1``) tweaks only the hostname of the
+    loopback callback. Some providers' WAFs (e.g. Reclaim.ai's AWS API Gateway)
+    reject any authorize request whose query string contains a literal
+    ``127.0.0.1``, returning ``{"message":"Forbidden"}``; ``redirect_host:
+    localhost`` works around that. The callback listener still binds
+    ``127.0.0.1`` either way.
     """
-    return cfg.get("redirect_uri") or f"http://127.0.0.1:{port}/callback"
+    configured = cfg.get("redirect_uri")
+    if configured:
+        return configured
+    host = cfg.get("redirect_host") or "127.0.0.1"
+    return f"http://{host}:{port}/callback"
 
 
 def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":

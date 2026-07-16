@@ -77,8 +77,13 @@ export async function readDesktopFileText(path: string): Promise<HermesReadFileT
 // Save UTF-8 text back to a file. Local writes go through the hardened Electron
 // IPC; remote writes hit the dashboard's POST /api/fs/write-text (same path
 // hardening, parent-must-exist, size cap) so the editor behaves identically in
-// both modes. Stale-on-disk detection is the caller's job (re-read before save).
-export async function writeDesktopFileText(path: string, content: string): Promise<{ path: string }> {
+// both modes. Supplying the last read hash makes the write compare-and-replace;
+// a stale editor receives FILE_CHANGED instead of overwriting newer content.
+export async function writeDesktopFileText(
+  path: string,
+  content: string,
+  options: { expectedHash?: string } = {}
+): Promise<{ contentHash: string; path: string }> {
   const desktop = bridge()
 
   if (!isDesktopFsRemoteMode()) {
@@ -86,12 +91,16 @@ export async function writeDesktopFileText(path: string, content: string): Promi
       throw new Error('Saving is not available')
     }
 
-    return desktop.writeTextFile(path, content)
+    return desktop.writeTextFile(path, content, options)
   }
 
-  const result = await remoteFsApi<{ ok?: boolean; path?: string }>('/api/fs/write-text', { content, path })
+  const result = await remoteFsApi<{ contentHash: string; ok?: boolean; path?: string }>('/api/fs/write-text', {
+    content,
+    path,
+    ...(options.expectedHash ? { expectedHash: options.expectedHash } : {})
+  })
 
-  return { path: result.path || path }
+  return { contentHash: result.contentHash, path: result.path || path }
 }
 
 export async function readDesktopFileDataUrl(path: string): Promise<string> {

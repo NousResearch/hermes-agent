@@ -525,6 +525,7 @@ export function useMessageStream({
     flushQueuedDeltas,
     queryClient,
     refreshHermesConfig,
+    sessionStateByRuntimeIdRef,
     sessionInterrupted,
     updateSessionState,
     upsertToolCall

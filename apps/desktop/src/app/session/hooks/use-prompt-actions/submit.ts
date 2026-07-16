@@ -14,6 +14,7 @@ import {
 } from '@/store/composer'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
+import { bindReviewTurnBaseline, captureReviewTurnBaseline } from '@/store/review'
 import { setAwaitingResponse, setBusy, setMessages } from '@/store/session'
 
 import type { ClientSessionState } from '../../../types'
@@ -159,6 +160,12 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       _submitInFlight.add(submitLockKey)
       let submitLockReleased = false
+
+      // Capture the main workspace before the agent can mutate it. Secondary
+      // session tiles have their own cwd and must not replace this baseline.
+      if (scope === MAIN_SUBMIT_SCOPE) {
+        await captureReviewTurnBaseline()
+      }
 
       const releaseSubmitLock = () => {
         if (!submitLockReleased) {
@@ -333,6 +340,10 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         // Re-pin the baseline to the created chat for the rest of the
         // pipeline; the closures (seedOptimistic et al) see the new value.
+        if (scope === MAIN_SUBMIT_SCOPE) {
+          bindReviewTurnBaseline(sessionId)
+        }
+
         startingStoredSessionId = selectedStoredSessionIdRef.current
         startingRouteToken = getRouteToken()
 

@@ -26,7 +26,8 @@ export const ESCAPE_PRIORITY = {
   // An in-flight pane drag: Esc means "abort the drag", never ALSO exit edit
   // mode / close the overlay the drag started over. Registered only for the
   // drag's few-hundred-ms lifetime (drag-session.ts).
-  drag: 50
+  drag: 50,
+  annotation: 60
 } as const
 
 const active = new Map<symbol, number>()

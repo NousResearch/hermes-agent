@@ -2,7 +2,7 @@ import { isDesktopFsRemoteMode, readDesktopFileText } from '@/lib/desktop-fs'
 import type { PreviewTarget } from '@/store/preview'
 
 const HTML_EXTENSIONS = new Set(['.htm', '.html'])
-const IMAGE_EXTENSIONS = new Set(['.bmp', '.gif', '.jpeg', '.jpg', '.png', '.svg', '.webp'])
+const IMAGE_EXTENSIONS = new Set(['.bmp', '.gif', '.jpeg', '.jpg', '.png', '.webp'])
 
 const LANGUAGE_BY_EXT: Record<string, string> = {
   '.c': 'c',
@@ -29,6 +29,7 @@ const LANGUAGE_BY_EXT: Record<string, string> = {
   '.sh': 'shell',
   '.sql': 'sql',
   '.svg': 'xml',
+  '.tex': 'latex',
   '.toml': 'toml',
   '.ts': 'typescript',
   '.tsx': 'tsx',
@@ -92,6 +93,9 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
 
   const ext = extension(path)
   const isHtml = HTML_EXTENSIONS.has(ext)
+  const isPdf = ext === '.pdf'
+  const isSvg = ext === '.svg'
+  const isTex = ext === '.tex'
   const isImage = IMAGE_EXTENSIONS.has(ext)
 
   return {
@@ -102,14 +106,20 @@ export function localPreviewTarget(rawTarget: string, cwd?: string | null): Prev
     // Renderer fallback can't stat/sniff without reading; assume text unless
     // image/html extension says otherwise. LocalFilePreview still guards
     // binary/large files when readFileText/readFileDataUrl returns metadata.
-    previewKind: isHtml ? 'html' : isImage ? 'image' : 'text',
+    previewKind: isHtml ? 'html' : isSvg ? 'svg' : isImage ? 'image' : isPdf ? 'pdf' : isTex ? 'tex' : 'text',
     source: raw,
     url: pathToFileUrl(path)
   }
 }
 
 async function enrichPreviewTarget(target: PreviewTarget | null): Promise<PreviewTarget | null> {
-  if (!isDesktopFsRemoteMode() || !target || target.kind !== 'file' || target.previewKind === 'image') {
+  if (
+    !isDesktopFsRemoteMode() ||
+    !target ||
+    target.kind !== 'file' ||
+    target.previewKind === 'image' ||
+    target.previewKind === 'pdf'
+  ) {
     return target
   }
 

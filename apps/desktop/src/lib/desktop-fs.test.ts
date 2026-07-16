@@ -10,12 +10,14 @@ import {
   readDesktopFileDataUrl,
   readDesktopFileText,
   selectDesktopPaths,
-  setDesktopFsRemotePicker
+  setDesktopFsRemotePicker,
+  writeDesktopFileText
 } from './desktop-fs'
 
 const readDir = vi.fn(async () => ({ entries: [{ name: 'local', path: '/local', isDirectory: true }] }))
 const readFileText = vi.fn(async () => ({ path: '/local/file.txt', text: 'local', byteSize: 5 }))
 const readFileDataUrl = vi.fn(async () => 'data:text/plain;base64,bG9jYWw=')
+const writeTextFile = vi.fn(async () => ({ contentHash: 'local-next-hash', path: '/local/file.txt' }))
 const gitRoot = vi.fn(async () => '/local')
 const selectPaths = vi.fn(async () => ['/local'])
 
@@ -40,6 +42,10 @@ const api = vi.fn(async ({ path }: { path: string }) => {
     return { cwd: '/backend/project', branch: 'main' }
   }
 
+  if (path === '/api/fs/write-text') {
+    return { contentHash: 'remote-next-hash', ok: true, path: '/remote/file.txt' }
+  }
+
   if (path.startsWith('/api/git/file-diff?')) {
     return { diff: 'remote diff' }
   }
@@ -55,7 +61,8 @@ function stubBridge() {
       readDir,
       readFileDataUrl,
       readFileText,
-      selectPaths
+      selectPaths,
+      writeTextFile
     }
   })
 }
@@ -83,12 +90,17 @@ describe('desktop filesystem facade', () => {
     await expect(readDesktopFileDataUrl('/work/file.txt')).resolves.toBe('data:text/plain;base64,bG9jYWw=')
     await expect(desktopGitRoot('/work')).resolves.toBe('/local')
     await expect(selectDesktopPaths({ directories: true })).resolves.toEqual(['/local'])
+    await expect(writeDesktopFileText('/work/file.txt', 'next', { expectedHash: 'local-old-hash' })).resolves.toEqual({
+      contentHash: 'local-next-hash',
+      path: '/local/file.txt'
+    })
 
     expect(readDir).toHaveBeenCalledWith('/work')
     expect(readFileText).toHaveBeenCalledWith('/work/file.txt')
     expect(readFileDataUrl).toHaveBeenCalledWith('/work/file.txt')
     expect(gitRoot).toHaveBeenCalledWith('/work')
     expect(selectPaths).toHaveBeenCalledWith({ directories: true })
+    expect(writeTextFile).toHaveBeenCalledWith('/work/file.txt', 'next', { expectedHash: 'local-old-hash' })
     expect(api).not.toHaveBeenCalled()
   })
 
@@ -110,6 +122,22 @@ describe('desktop filesystem facade', () => {
     expect(readFileText).not.toHaveBeenCalled()
     expect(readFileDataUrl).not.toHaveBeenCalled()
     expect(gitRoot).not.toHaveBeenCalled()
+  })
+
+  it('forwards compare-and-replace hashes to remote file writes', async () => {
+    $connection.set({ mode: 'remote', profile: 'remote-docker' } as never)
+
+    await expect(
+      writeDesktopFileText('/remote/file.txt', 'next', { expectedHash: 'remote-old-hash' })
+    ).resolves.toEqual({ contentHash: 'remote-next-hash', path: '/remote/file.txt' })
+
+    expect(api).toHaveBeenCalledWith({
+      body: { content: 'next', expectedHash: 'remote-old-hash', path: '/remote/file.txt' },
+      method: 'POST',
+      path: '/api/fs/write-text',
+      profile: 'remote-docker'
+    })
+    expect(writeTextFile).not.toHaveBeenCalled()
   })
 
   it('targets the active profile backend so a remote profile never reads local disk', async () => {

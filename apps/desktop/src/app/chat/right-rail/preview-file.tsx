@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import type {
   ComponentProps,
@@ -13,12 +14,18 @@ import { Streamdown } from 'streamdown'
 import { requestComposerFocus, requestComposerInsertRefs } from '@/app/chat/composer/focus'
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
+import { contentFingerprint } from '@/app/review/annotations/anchors'
+import { AnnotatableText } from '@/app/review/annotations/annotatable-text'
+import { HtmlAnnotationPreview, HtmlZoomControls } from '@/app/review/annotations/html-preview'
+import { ANNOTATION_NAVIGATE_EVENT } from '@/app/review/annotations/navigation'
+import { VisualAnnotationPreview } from '@/app/review/annotations/visual-preview'
 import { isAddSelectionShortcut } from '@/app/right-sidebar/terminal/selection'
 import { RichCodeBlock } from '@/components/assistant-ui/embeds'
 import { CodeEditor } from '@/components/chat/code-editor'
 import { FileDiffPanel } from '@/components/chat/diff-lines'
 import { chunkTextLines, useFixedRowWindow } from '@/components/chat/fixed-row-window'
 import { PageLoader } from '@/components/page-loader'
+import type { HermesPdfDocument, HermesTexCompileResult } from '@/global'
 import { translateNow, useI18n } from '@/i18n'
 import {
   desktopFileDiff,
@@ -27,13 +34,29 @@ import {
   readDesktopFileText,
   writeDesktopFileText
 } from '@/lib/desktop-fs'
+import { cancelTexDocument, closePdfDocument, compileTexDocument, openPdfDocument } from '@/lib/document-preview'
 import { Check, Pencil, X } from '@/lib/icons'
 import { shikiLanguageForFilename } from '@/lib/markdown-code'
 import { cn } from '@/lib/utils'
+import {
+  $annotationDraft,
+  $annotationEditorCollapsed,
+  $annotations,
+  activateAnnotationContext,
+  beginAnnotation,
+  type DiffAnnotationAnchor,
+  documentReviewContext,
+  reopenAnnotationEditor,
+  type ReviewContext,
+  type SourceAnnotationAnchor
+} from '@/store/annotations'
+import { $planReviews, contextForPlanArtifact } from '@/store/plan-review'
 import type { PreviewTarget } from '@/store/preview'
 import { setPreviewDirty } from '@/store/preview-edit'
-import { $currentCwd } from '@/store/session'
+import { $activeSessionId, $currentCwd, $selectedStoredSessionId } from '@/store/session'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
+
+import { PdfPreview } from './pdf-preview'
 
 const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
@@ -142,13 +165,21 @@ export function PreviewEmptyState({
 interface LocalPreviewState {
   binary?: boolean
   byteSize?: number
+  contentHash?: string
+  compiling?: boolean
+  compileError?: string
   dataUrl?: string
   /** Working-tree-vs-HEAD unified diff, when the file has uncommitted changes. */
   diff?: string
   error?: string
   language?: string
   loading: boolean
+  /** Path whose bytes/revision produced this state. Prevents a new target from
+   * being paired with the previous target's content while an async load starts. */
+  loadedPath?: string
+  pdfDocument?: HermesPdfDocument
   text?: string
+  texCompile?: HermesTexCompileResult
   truncated?: boolean
 }
 
@@ -327,13 +358,15 @@ const MARKDOWN_COMPONENTS = {
   code: MarkdownCode
 }
 
-function MarkdownPreview({ text }: { text: string }) {
+function MarkdownPreview({ path, reviewContext, text }: { path: string; reviewContext: ReviewContext; text: string }) {
   return (
-    <div className="preview-markdown mx-auto max-w-3xl px-4 py-3 text-sm text-foreground" data-selectable-text="true">
-      <Streamdown components={MARKDOWN_COMPONENTS} controls={false} mode="static" parseIncompleteMarkdown={false}>
-        {text}
-      </Streamdown>
-    </div>
+    <AnnotatableText kind="markdown" path={path} reviewContext={reviewContext} text={text}>
+      <div className="preview-markdown mx-auto max-w-3xl px-4 py-3 text-sm text-foreground" data-selectable-text="true">
+        <Streamdown components={MARKDOWN_COMPONENTS} controls={false} mode="static" parseIncompleteMarkdown={false}>
+          {text}
+        </Streamdown>
+      </div>
+    </AnnotatableText>
   )
 }
 
@@ -429,6 +462,18 @@ interface LineSelection {
   start: number
 }
 
+export function sourceLinesForQuote(text: string, quote: string, selectedOffset?: number): LineSelection | null {
+  const offset = selectedOffset ?? text.indexOf(quote)
+
+  if (!quote || offset < 0) {
+    return null
+  }
+
+  const start = text.slice(0, offset).split('\n').length
+
+  return { end: start + quote.split('\n').length - 1, start }
+}
+
 function startLineDrag(event: ReactDragEvent<HTMLElement>, filePath: string, { end, start }: LineSelection) {
   const lineEnd = end > start ? end : undefined
   const label = lineEnd ? `${filePath}:${start}-${end}` : `${filePath}:${start}`
@@ -438,8 +483,26 @@ function startLineDrag(event: ReactDragEvent<HTMLElement>, filePath: string, { e
   event.dataTransfer.effectAllowed = 'copy'
 }
 
-function SourceView({ filePath, language, text }: { filePath: string; language: string; text: string }) {
+function SourceView({
+  filePath,
+  language,
+  reviewContext,
+  text
+}: {
+  filePath: string
+  language: string
+  reviewContext: ReviewContext
+  text: string
+}) {
   const { t } = useI18n()
+  const annotations = useStore($annotations)
+  const contentHash = useMemo(() => contentFingerprint(text), [text])
+
+  const sourceAnnotations = annotations.filter(
+    (item): item is typeof item & { anchor: SourceAnnotationAnchor } =>
+      item.anchor.kind === 'source' && item.anchor.path === filePath
+  )
+
   const chunks = useMemo(() => chunkTextLines(text, SOURCE_CHUNK_LINES), [text])
   const lastChunk = chunks.at(-1)
   const totalLines = lastChunk ? lastChunk.start + lastChunk.lines.length : 0
@@ -456,23 +519,103 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
   const inSelection = (line: number) => selection != null && line >= selection.start && line <= selection.end
 
   const handleLineClick = (event: ReactMouseEvent, line: number) => {
-    if (event.shiftKey && selection) {
-      setSelection({ end: Math.max(selection.end, line), start: Math.min(selection.start, line) })
+    const next =
+      event.shiftKey && selection
+        ? { end: Math.max(selection.end, line), start: Math.min(selection.start, line) }
+        : { end: line, start: line }
 
-      return
-    }
+    setSelection(next)
 
-    if (selection?.start === line && selection.end === line) {
-      setSelection(null)
+    const excerpt = text
+      .split('\n')
+      .slice(next.start - 1, next.end)
+      .join('\n')
 
-      return
-    }
+    const rect = event.currentTarget.getBoundingClientRect()
+    const surface = scrollerRef.current?.getBoundingClientRect()
 
-    setSelection({ end: line, start: line })
+    beginAnnotation(
+      {
+        contentHash,
+        excerpt,
+        kind: 'source',
+        lineEnd: next.end,
+        lineStart: next.start,
+        path: filePath
+      },
+      {
+        boundary: surface
+          ? { height: surface.height, width: surface.width, x: surface.left, y: surface.top }
+          : undefined,
+        height: rect.height,
+        width: rect.width,
+        x: rect.left,
+        y: rect.top
+      },
+      reviewContext
+    )
   }
 
   const handleDragStart = (event: ReactDragEvent<HTMLElement>, line: number) => {
     startLineDrag(event, filePath, inSelection(line) && selection ? selection : { end: line, start: line })
+  }
+
+  const captureTextSelection = (event: ReactMouseEvent<HTMLDivElement>) => {
+    const native = window.getSelection()
+
+    if (!native || native.isCollapsed || native.rangeCount === 0 || !event.currentTarget.contains(native.anchorNode)) {
+      return
+    }
+
+    const quote = native.toString().trim()
+
+    if (!quote) {
+      return
+    }
+
+    const range = native.getRangeAt(0).cloneRange()
+
+    const startElement =
+      range.startContainer instanceof Element ? range.startContainer : range.startContainer.parentElement
+
+    const sourceChunk = startElement?.closest<HTMLElement>('[data-source-offset]')
+    let selectedOffset: number | undefined
+
+    if (sourceChunk) {
+      const prefixRange = range.cloneRange()
+      prefixRange.selectNodeContents(sourceChunk)
+      prefixRange.setEnd(range.startContainer, range.startOffset)
+      selectedOffset = Number(sourceChunk.dataset.sourceOffset) + prefixRange.toString().length
+    }
+
+    const lines = sourceLinesForQuote(text, quote, selectedOffset)
+
+    if (!lines) {
+      return
+    }
+
+    const rect = range.getBoundingClientRect()
+    const surface = event.currentTarget.getBoundingClientRect()
+
+    setSelection(lines)
+    beginAnnotation(
+      {
+        contentHash,
+        excerpt: quote,
+        kind: 'source',
+        lineEnd: lines.end,
+        lineStart: lines.start,
+        path: filePath
+      },
+      {
+        boundary: { height: surface.height, width: surface.width, x: surface.left, y: surface.top },
+        height: rect.height,
+        width: rect.width,
+        x: rect.left,
+        y: rect.top
+      },
+      reviewContext
+    )
   }
 
   // ⌘/Ctrl+L with a line selection drops the same `@line:path:start-end` ref the
@@ -509,8 +652,32 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
     return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
   }, [filePath, selection])
 
+  useEffect(() => {
+    const navigate = (event: Event) => {
+      const anchor = (event as CustomEvent<{ anchor?: SourceAnnotationAnchor }>).detail?.anchor
+
+      if (!anchor || anchor.kind !== 'source' || anchor.path !== filePath) {
+        return
+      }
+
+      if (scrollerRef.current) {
+        scrollerRef.current.scrollTop = Math.max(0, (anchor.lineStart - 1) * SOURCE_LINE_PX)
+      }
+    }
+
+    window.addEventListener(ANNOTATION_NAVIGATE_EVENT, navigate)
+
+    return () => window.removeEventListener(ANNOTATION_NAVIGATE_EVENT, navigate)
+  }, [filePath, scrollerRef])
+
   return (
-    <div className="h-full overflow-auto" onScroll={onScroll} ref={scrollerRef}>
+    <div
+      className="relative h-full overflow-auto"
+      data-annotation-surface=""
+      onMouseUp={captureTextSelection}
+      onScroll={onScroll}
+      ref={scrollerRef}
+    >
       <div className="grid min-w-max grid-cols-[auto_minmax(0,1fr)] font-mono text-[0.7rem] leading-relaxed">
         {beforeRows > 0 && <div aria-hidden className="col-span-2" style={{ height: beforeRows * SOURCE_LINE_PX }} />}
         {visibleChunks.map(chunk => (
@@ -520,13 +687,19 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
                 const line = chunk.start + offset + 1
                 const selected = inSelection(line)
 
+                const annotated = sourceAnnotations.some(
+                  annotation => line >= annotation.anchor.lineStart && line <= annotation.anchor.lineEnd
+                )
+
                 return (
                   <div
                     className={cn(
                       'h-5 w-9 cursor-pointer pr-2 leading-5 tabular-nums transition-colors',
                       selected
                         ? 'bg-amber-200/45 text-amber-900 dark:bg-amber-300/20 dark:text-amber-100'
-                        : 'hover:text-foreground'
+                        : annotated
+                          ? 'bg-(--ui-accent)/18 text-(--ui-accent)'
+                          : 'hover:text-foreground'
                     )}
                     draggable
                     key={line}
@@ -539,7 +712,11 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
                 )
               })}
             </div>
-            <div className="preview-source-code min-w-0 [&_pre]:m-0" data-selectable-text="true">
+            <div
+              className="preview-source-code min-w-0 [&_pre]:m-0"
+              data-selectable-text="true"
+              data-source-offset={text.split('\n').slice(0, chunk.start).join('\n').length + (chunk.start > 0 ? 1 : 0)}
+            >
               <ShikiHighlighter
                 addDefaultStyles={false}
                 as="div"
@@ -564,11 +741,25 @@ type PreviewViewMode = 'diff' | 'rendered' | 'source'
 
 export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; target: PreviewTarget }) {
   const { t } = useI18n()
+  const activeSessionId = useStore($activeSessionId)
+  const annotationDraft = useStore($annotationDraft)
+  const annotationCollapsed = useStore($annotationEditorCollapsed)
+  const annotations = useStore($annotations)
+  const planReviews = useStore($planReviews)
+  const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const [state, setState] = useState<LocalPreviewState>({ loading: true })
   const [forcePreview, setForcePreview] = useState(false)
   // User-picked view; null = auto (diff when changed, else rendered markdown,
   // else source). Reset when the previewed file changes.
   const [userMode, setUserMode] = useState<null | PreviewViewMode>(null)
+  const [htmlZoom, setHtmlZoom] = useState(100)
+  const [htmlPan, setHtmlPan] = useState(false)
+
+  const changeHtmlZoom = useCallback((zoom: number) => {
+    setUserMode('rendered')
+    setHtmlZoom(zoom)
+  }, [])
+
   // Spot-editor state. The editor owns its buffer (keyed by `editorKey`); the
   // live draft + the snapshot the user started from live in refs so typing
   // never re-renders this (large) component — `dirty` is the only render-worthy
@@ -577,21 +768,64 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   const [editing, setEditing] = useState(false)
   const draftRef = useRef('')
   const baselineRef = useRef('')
+  const baselineHashRef = useRef<string | undefined>(undefined)
   const [dirty, setDirty] = useState(false)
   const [editorKey, setEditorKey] = useState(0)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<null | string>(null)
   const [conflict, setConflict] = useState(false)
   const [selfReload, setSelfReload] = useState(0)
+  const reloadDocument = useCallback(() => setSelfReload(value => value + 1), [])
   // For the bare-`e` shortcut: the read-view root (to detect focus-within) and a
   // hover flag (no state — only the keydown handler reads it).
   const readViewRef = useRef<HTMLDivElement>(null)
+  const loadedStatePathRef = useRef(filePathForTarget(target))
   const hoverRef = useRef(false)
+  const texRequestRef = useRef<string | null>(null)
   const filePath = filePathForTarget(target)
   const isImage = target.previewKind === 'image'
+  const isHtml = target.previewKind === 'html'
+  const isPdf = target.previewKind === 'pdf'
+  const isSvg = target.previewKind === 'svg'
+  const isTex = target.previewKind === 'tex'
+
+  const documentHash = useMemo(() => {
+    if (state.loadedPath !== filePath) {
+      return null
+    }
+
+    // TeX annotations belong to the source revision, not the ephemeral PDF
+    // handle produced by each compile.
+    if (isTex) {
+      return state.contentHash ?? (state.text === undefined ? null : contentFingerprint(state.text))
+    }
+
+    return (
+      state.pdfDocument?.revision ??
+      state.contentHash ??
+      (state.text === undefined ? null : contentFingerprint(state.text))
+    )
+  }, [filePath, isTex, state.contentHash, state.loadedPath, state.pdfDocument?.revision, state.text])
+
+  const reviewContext = useMemo(
+    () =>
+      documentHash
+        ? (contextForPlanArtifact(filePath, documentHash, planReviews, [activeSessionId, selectedStoredSessionId]) ??
+          documentReviewContext(filePath, documentHash))
+        : null,
+    [activeSessionId, documentHash, filePath, planReviews, selectedStoredSessionId]
+  )
+
+  useEffect(() => {
+    if (reviewContext) {
+      activateAnnotationContext(reviewContext, { carryStale: true })
+    }
+  }, [reviewContext])
 
   useEffect(() => {
     setUserMode(null)
+    setHtmlZoom(100)
+    setHtmlPan(false)
     setEditing(false)
     setDirty(false)
     setSaving(false)
@@ -599,14 +833,12 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     setConflict(false)
     draftRef.current = ''
     baselineRef.current = ''
+    baselineHashRef.current = undefined
   }, [filePath, reloadKey])
 
-  // HTML files are rendered as source code, not in a webview - so they take
-  // the same path as plain text files. `previewKind === 'binary'` arrives
-  // when the file is forcibly previewed past the binary refusal screen.
-  const isText = target.previewKind === 'text' || target.previewKind === 'binary' || target.previewKind === 'html'
+  const isText = target.previewKind === 'text' || target.previewKind === 'binary' || isHtml || isSvg || isTex
 
-  const blockedByTarget = !isImage && !forcePreview && (target.binary || target.large)
+  const blockedByTarget = !isImage && !isPdf && !isTex && !forcePreview && (target.binary || target.large)
 
   useEffect(() => {
     let active = true
@@ -618,22 +850,60 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         return
       }
 
-      if (!isImage && !isText) {
+      if (!isImage && !isText && !isPdf) {
         setState({ loading: false })
 
         return
       }
 
-      setState({ loading: true })
+      const preserveCompiledDocument = isTex && loadedStatePathRef.current === filePath
+      loadedStatePathRef.current = filePath
+      setState(previous =>
+        preserveCompiledDocument && previous.pdfDocument
+          ? { ...previous, compileError: undefined, compiling: true, loading: false }
+          : { compiling: isTex, loading: true }
+      )
 
       try {
-        if (isImage) {
+        if (isImage || isSvg) {
           // Prefer bytes the caller already handed us (a pasted/dropped
           // screenshot) over re-reading a path that may be transient/unreadable.
           const dataUrl = target.dataUrl || (await readDesktopFileDataUrl(filePath))
 
+          if (active && isImage) {
+            setState({ contentHash: contentFingerprint(dataUrl), dataUrl, loadedPath: filePath, loading: false })
+          }
+
+          if (isImage) {
+            return
+          }
+
+          const result = await readTextPreview(filePath)
+
           if (active) {
-            setState({ dataUrl, loading: false })
+            setState({
+              binary: false,
+              byteSize: result.byteSize,
+              contentHash: result.contentHash,
+              dataUrl,
+              language: result.language || 'xml',
+              loadedPath: filePath,
+              loading: false,
+              text: result.text,
+              truncated: result.truncated
+            })
+          }
+
+          return
+        }
+
+        if (isPdf) {
+          const pdfDocument = await openPdfDocument(filePath)
+
+          if (active) {
+            setState({ loadedPath: filePath, loading: false, pdfDocument })
+          } else {
+            await closePdfDocument(pdfDocument).catch(() => false)
           }
 
           return
@@ -642,16 +912,54 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         const result = await readTextPreview(filePath)
 
         if (active) {
-          const shouldBlock = !forcePreview && (result.binary || (result.byteSize ?? 0) > TEXT_PREVIEW_MAX_BYTES)
+          const shouldBlock =
+            !forcePreview && !isTex && (result.binary || (result.byteSize ?? 0) > TEXT_PREVIEW_MAX_BYTES)
 
-          setState({
+          setState(previous => ({
             binary: result.binary,
             byteSize: result.byteSize,
+            compiling: isTex,
+            contentHash: result.contentHash,
+            pdfDocument: isTex ? previous.pdfDocument : undefined,
             language: result.language || target.language || 'text',
+            loadedPath: filePath,
             loading: false,
             text: shouldBlock ? undefined : result.text,
             truncated: result.truncated
-          })
+          }))
+
+          if (isTex && !shouldBlock) {
+            const requestId = globalThis.crypto?.randomUUID?.() ?? `tex-${Date.now()}-${Math.random()}`
+            texRequestRef.current = requestId
+
+            try {
+              const compiled = await compileTexDocument(filePath, requestId, $currentCwd.get())
+
+              if (active && !compiled.stale) {
+                setState(previous => ({
+                  ...previous,
+                  compileError: undefined,
+                  compiling: false,
+                  pdfDocument: compiled.pdfDocument ?? previous.pdfDocument,
+                  texCompile: compiled
+                }))
+              } else if (compiled.pdfDocument) {
+                await closePdfDocument(compiled.pdfDocument).catch(() => false)
+              }
+            } catch (error) {
+              if (active) {
+                setState(previous => ({
+                  ...previous,
+                  compileError: error instanceof Error ? error.message : String(error),
+                  compiling: false
+                }))
+              }
+            } finally {
+              if (texRequestRef.current === requestId) {
+                texRequestRef.current = null
+              }
+            }
+          }
 
           // Best-effort: fetch the file's working-tree-vs-HEAD diff so the
           // preview can offer a DIFF view when there are uncommitted changes.
@@ -671,10 +979,12 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         }
       } catch (error) {
         if (active) {
-          setState({
+          setState(previous => ({
+            ...(isTex && previous.pdfDocument ? previous : {}),
+            compiling: false,
             error: error instanceof Error ? error.message : String(error),
             loading: false
-          })
+          }))
         }
       }
     }
@@ -683,8 +993,36 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
 
     return () => {
       active = false
+      const requestId = texRequestRef.current
+
+      if (requestId) {
+        texRequestRef.current = null
+        void cancelTexDocument(requestId).catch(() => undefined)
+      }
     }
-  }, [blockedByTarget, filePath, forcePreview, isImage, isText, reloadKey, selfReload, target.dataUrl, target.language])
+  }, [
+    blockedByTarget,
+    filePath,
+    forcePreview,
+    isImage,
+    isPdf,
+    isSvg,
+    isTex,
+    isText,
+    reloadKey,
+    selfReload,
+    target.dataUrl,
+    target.language
+  ])
+
+  useEffect(
+    () => () => {
+      if (state.pdfDocument) {
+        void closePdfDocument(state.pdfDocument).catch(() => false)
+      }
+    },
+    [state.pdfDocument]
+  )
 
   // Editing is only offered for whole, readable text — never images, binaries,
   // or files we only loaded the first 512 KB of (saving would drop the tail).
@@ -711,6 +1049,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   const beginEdit = () => {
     const text = state.text ?? ''
     baselineRef.current = text
+    baselineHashRef.current = state.contentHash
     draftRef.current = text
     setDirty(false)
     setEditorKey(key => key + 1)
@@ -799,15 +1138,27 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
         }
       }
 
-      await writeDesktopFileText(filePath, draftRef.current)
+      const written = await writeDesktopFileText(
+        filePath,
+        draftRef.current,
+        force ? {} : { expectedHash: baselineHashRef.current }
+      )
+
       baselineRef.current = draftRef.current
+      baselineHashRef.current = written.contentHash
       setDirty(false)
       setConflict(false)
       setEditing(false)
       notifyWorkspaceChanged()
       setSelfReload(n => n + 1)
     } catch (error) {
-      setSaveError(error instanceof Error ? error.message : String(error))
+      const message = error instanceof Error ? error.message : String(error)
+
+      if (message.includes('FILE_CHANGED')) {
+        setConflict(true)
+      } else {
+        setSaveError(message)
+      }
     } finally {
       setSaving(false)
     }
@@ -871,12 +1222,27 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
     return <PageLoader label={t.preview.loading} />
   }
 
-  if (state.error) {
+  if (state.error && !(isTex && (state.pdfDocument || state.text !== undefined))) {
     return <PreviewEmptyState body={state.error} title={t.preview.unavailable} />
+  }
+
+  if (isPdf && state.pdfDocument) {
+    const activeReviewContext = reviewContext ?? documentReviewContext(filePath, state.pdfDocument.revision)
+
+    return (
+      <PdfPreview
+        annotationPath={filePath}
+        descriptor={state.pdfDocument}
+        label={target.label}
+        onReload={reloadDocument}
+        reviewContext={activeReviewContext}
+      />
+    )
   }
 
   if (
     !isImage &&
+    !isPdf &&
     !forcePreview &&
     (target.binary || target.large || state.binary || (state.byteSize ?? 0) > TEXT_PREVIEW_MAX_BYTES)
   ) {
@@ -894,25 +1260,32 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   }
 
   if (isImage && state.dataUrl) {
+    const activeReviewContext = reviewContext ?? documentReviewContext(filePath, contentFingerprint(state.dataUrl))
+    const lowerPath = filePath.toLowerCase()
+
     return (
-      <div className="flex h-full w-full items-center justify-center overflow-auto bg-transparent p-4">
-        <img
-          alt={target.label}
-          className="max-h-full max-w-full rounded-lg object-contain shadow-sm"
-          draggable={false}
-          src={state.dataUrl}
-        />
-      </div>
+      <VisualAnnotationPreview
+        contentHash={documentHash ?? undefined}
+        dataUrl={state.dataUrl}
+        filePath={filePath}
+        label={target.label}
+        mediaKind={lowerPath.endsWith('.png') ? 'png' : 'jpeg'}
+        reviewContext={activeReviewContext}
+      />
     )
   }
 
   if (isText && state.text !== undefined) {
     const isMarkdown = (state.language || target.language) === 'markdown'
+    const hasRenderedView = isMarkdown || isHtml || isSvg || (isTex && Boolean(state.pdfDocument))
     const hasDiff = Boolean(state.diff && state.diff.trim())
+    // The load effect above activates this exact revision before annotations
+    // render. Text is defined in this branch, so the context is non-null.
+    const activeReviewContext = reviewContext ?? documentReviewContext(filePath, contentFingerprint(state.text))
     // Order the toggle reads left→right; default lands on the most useful view.
     const modes: PreviewViewMode[] = []
 
-    if (isMarkdown) {
+    if (hasRenderedView) {
       modes.push('rendered')
     }
 
@@ -922,8 +1295,46 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
       modes.push('diff')
     }
 
-    const autoMode: PreviewViewMode = hasDiff ? 'diff' : isMarkdown ? 'rendered' : 'source'
+    const autoMode: PreviewViewMode =
+      isTex && state.pdfDocument ? 'rendered' : hasDiff ? 'diff' : hasRenderedView ? 'rendered' : 'source'
+
     const mode = userMode && modes.includes(userMode) ? userMode : autoMode
+
+    const draftForFile =
+      annotationDraft?.contextId === activeReviewContext.id && annotationDraft.anchor.path === filePath
+
+    const annotationAction = (
+      <button
+        className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[0.625rem] font-bold text-muted-foreground hover:bg-accent hover:text-foreground"
+        onClick={event => {
+          if (draftForFile && annotationCollapsed) {
+            reopenAnnotationEditor()
+
+            return
+          }
+
+          const rect = event.currentTarget.getBoundingClientRect()
+          const surface = readViewRef.current?.getBoundingClientRect()
+
+          beginAnnotation(
+            { contentHash: documentHash ?? undefined, kind: 'file', path: filePath },
+            {
+              boundary: surface
+                ? { height: surface.height, width: surface.width, x: surface.left, y: surface.top }
+                : undefined,
+              height: rect.height,
+              width: rect.width,
+              x: rect.left,
+              y: rect.top
+            },
+            activeReviewContext
+          )
+        }}
+        type="button"
+      >
+        {draftForFile && annotationCollapsed ? t.desktop.annotations.reopen : t.desktop.annotations.add}
+      </button>
+    )
 
     return (
       <div
@@ -941,32 +1352,136 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
             {t.preview.truncated}
           </div>
         )}
+        {isTex && state.texCompile && state.texCompile.status !== 'success' && (
+          <details className="shrink-0 border-b border-amber-400/30 bg-amber-500/8 px-3 py-1.5 text-[0.68rem] text-amber-800 dark:text-amber-200">
+            <summary className="cursor-pointer font-semibold">
+              {state.texCompile.status === 'missing-engine'
+                ? t.desktop.annotations.preview.tex.engineUnavailable
+                : t.desktop.annotations.preview.tex.compilationFailed}
+            </summary>
+            {state.texCompile.diagnostics.slice(0, 5).map((diagnostic, index) => (
+              <div className="mt-1 font-mono" key={`${diagnostic.file}:${diagnostic.line}:${index}`}>
+                {diagnostic.file ? `${diagnostic.file}${diagnostic.line ? `:${diagnostic.line}` : ''}: ` : ''}
+                {diagnostic.message}
+              </div>
+            ))}
+            <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded bg-black/5 p-2 font-mono text-[0.62rem] dark:bg-black/20">
+              {state.texCompile.log}
+            </pre>
+          </details>
+        )}
+        {isTex && state.compileError && (
+          <div className="shrink-0 border-b border-destructive/30 bg-destructive/8 px-3 py-1.5 text-[0.68rem] text-destructive">
+            {state.compileError}
+          </div>
+        )}
+        {isTex && state.compiling && state.pdfDocument && (
+          <div className="shrink-0 border-b border-border/50 bg-muted/25 px-3 py-1 text-[0.65rem] text-muted-foreground">
+            {t.desktop.annotations.preview.tex.updating}
+          </div>
+        )}
         <PreviewModeSwitcher
           active={mode}
           modes={modes}
           onSelect={setUserMode}
           trailing={
-            canEdit ? (
-              <button
-                className="flex items-center gap-1 text-[0.625rem] font-bold text-muted-foreground underline-offset-4 transition-colors hover:text-foreground"
-                onClick={beginEdit}
-                title={`${t.preview.edit} (e)`}
-                type="button"
-              >
-                <Pencil className="size-3" />
-                {t.preview.edit}
-              </button>
-            ) : null
+            <>
+              {isHtml ? (
+                <HtmlZoomControls
+                  onPanChange={enabled => {
+                    setUserMode('rendered')
+                    setHtmlPan(enabled)
+                  }}
+                  onZoomChange={changeHtmlZoom}
+                  panEnabled={htmlPan}
+                  zoom={htmlZoom}
+                />
+              ) : null}
+              {annotationAction}
+              {canEdit ? (
+                <button
+                  className="flex items-center gap-1 text-[0.625rem] font-bold text-muted-foreground underline-offset-4 transition-colors hover:text-foreground"
+                  onClick={beginEdit}
+                  title={`${t.preview.edit} (e)`}
+                  type="button"
+                >
+                  <Pencil className="size-3" />
+                  {t.preview.edit}
+                </button>
+              ) : null}
+            </>
           }
         />
-        <div className="min-h-0 flex-1 overflow-auto">
+        <div className="relative min-h-0 flex-1 overflow-auto" data-annotation-surface="">
           {mode === 'rendered' ? (
-            <MarkdownPreview text={state.text} />
+            isMarkdown ? (
+              <MarkdownPreview path={filePath} reviewContext={activeReviewContext} text={state.text} />
+            ) : isHtml ? (
+              <HtmlAnnotationPreview
+                contentHash={documentHash ?? undefined}
+                filePath={filePath}
+                html={state.text}
+                panEnabled={htmlPan}
+                reviewContext={activeReviewContext}
+                zoom={htmlZoom}
+              />
+            ) : isSvg && state.dataUrl ? (
+              <VisualAnnotationPreview
+                contentHash={documentHash ?? undefined}
+                dataUrl={state.dataUrl}
+                filePath={filePath}
+                label={target.label}
+                mediaKind="svg"
+                reviewContext={activeReviewContext}
+                svgSource={state.text}
+              />
+            ) : isTex && state.pdfDocument ? (
+              <PdfPreview
+                annotationPath={filePath}
+                descriptor={state.pdfDocument}
+                documentKind="tex"
+                label={target.label}
+                onReload={reloadDocument}
+                reviewContext={activeReviewContext}
+              />
+            ) : (
+              <SourceView
+                filePath={filePath}
+                language={shikiLanguageForFilename(filePath) || state.language || 'text'}
+                reviewContext={activeReviewContext}
+                text={state.text}
+              />
+            )
           ) : mode === 'diff' ? (
             <FileDiffPanel
+              annotateLineLabel={line => `${t.desktop.annotations.add}: ${line}`}
+              annotations={annotations
+                .filter(
+                  item =>
+                    item.status !== 'stale' &&
+                    item.status !== 'orphaned' &&
+                    item.anchor.kind === 'diff' &&
+                    item.anchor.path === filePath
+                )
+                .map(item => item.anchor as DiffAnnotationAnchor)}
               className="mx-0 mb-0 h-full max-h-none"
               diff={state.diff ?? ''}
               fullText={state.text}
+              onAnnotateLine={({ editorAnchor, excerpt, line, side }) =>
+                beginAnnotation(
+                  {
+                    contentHash: contentFingerprint(state.diff ?? ''),
+                    excerpt,
+                    kind: 'diff',
+                    lineEnd: line,
+                    lineStart: line,
+                    path: filePath,
+                    side
+                  },
+                  editorAnchor,
+                  activeReviewContext
+                )
+              }
               path={filePath}
               showLineNumbers
             />
@@ -974,6 +1489,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
             <SourceView
               filePath={filePath}
               language={shikiLanguageForFilename(filePath) || state.language || 'text'}
+              reviewContext={activeReviewContext}
               text={state.text}
             />
           )}

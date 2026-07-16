@@ -9,6 +9,7 @@ import { chunkLines, type LineChunk, useFixedRowWindow } from '@/components/chat
 import { exceedsHighlightBudget, SHIKI_THEME } from '@/components/chat/shiki-highlighter'
 import { shikiLanguageForFilename } from '@/lib/markdown-code'
 import { cn } from '@/lib/utils'
+import type { AnnotationEditorAnchor, DiffAnnotationAnchor } from '@/store/annotations'
 
 /**
  * Renders a unified diff for a tool's file edit. Two paths share one parse:
@@ -323,11 +324,13 @@ function useThemeName() {
 
 function PreviewDiffRows({
   afterLines = 0,
+  annotations = [],
   beforeLines = 0,
   chunks,
   tokens
 }: {
   afterLines?: number
+  annotations?: DiffAnnotationAnchor[]
   beforeLines?: number
   chunks: Array<LineChunk<DiffLine>>
   tokens?: ThemedToken[][] | null
@@ -341,8 +344,19 @@ function PreviewDiffRows({
             const index = chunk.start + offset
             const rowTokens = tokens?.[index] ?? []
 
+            const annotated = annotations.some(annotation => {
+              const lineNumber = annotation.side === 'old' ? line.oldNo : line.newNo
+
+              return lineNumber != null && lineNumber >= annotation.lineStart && lineNumber <= annotation.lineEnd
+            })
+
             return (
-              <span className={cn(PREVIEW_DIFF_LINE_BASE, DIFF_KIND_TINT[line.kind])} key={`${index}-${line.text}`}>
+              <span
+                className={cn(PREVIEW_DIFF_LINE_BASE, DIFF_KIND_TINT[line.kind], annotated && 'bg-(--ui-accent)/18')}
+                data-diff-new-line={line.newNo}
+                data-diff-old-line={line.oldNo}
+                key={`${index}-${line.text}`}
+              >
                 {rowTokens.length > 0
                   ? rowTokens.map((token, tokenIndex) => (
                       <span key={`${tokenIndex}-${token.offset}`} style={tokenStyle(token)}>
@@ -362,6 +376,7 @@ function PreviewDiffRows({
 
 function TokenizedDiffBody({
   afterLines,
+  annotations,
   beforeLines,
   chunked = false,
   chunks,
@@ -369,6 +384,7 @@ function TokenizedDiffBody({
   lines
 }: {
   afterLines?: number
+  annotations?: DiffAnnotationAnchor[]
   beforeLines?: number
   chunked?: boolean
   chunks?: Array<LineChunk<DiffLine>>
@@ -404,6 +420,7 @@ function TokenizedDiffBody({
     return chunked ? (
       <PreviewDiffRows
         afterLines={afterLines}
+        annotations={annotations}
         beforeLines={beforeLines}
         chunks={chunks ?? chunkLines(lines, PREVIEW_CHUNK_LINES)}
       />
@@ -416,6 +433,7 @@ function TokenizedDiffBody({
     return (
       <PreviewDiffRows
         afterLines={afterLines}
+        annotations={annotations}
         beforeLines={beforeLines}
         chunks={chunks ?? chunkLines(lines, PREVIEW_CHUNK_LINES)}
         tokens={tokens}
@@ -441,6 +459,146 @@ function TokenizedDiffBody({
         )
       })}
     </>
+  )
+}
+
+function UnifiedPreviewDiffRows({
+  afterRows,
+  annotateLineLabel,
+  annotations,
+  beforeRows,
+  canHighlight,
+  chunks,
+  language,
+  lines,
+  onAnnotateLine
+}: {
+  afterRows: number
+  annotateLineLabel?: (line: number) => string
+  annotations: DiffAnnotationAnchor[]
+  beforeRows: number
+  canHighlight: boolean
+  chunks: Array<LineChunk<DiffLine>>
+  language: string
+  lines: DiffLine[]
+  onAnnotateLine?: FileDiffPanelProps['onAnnotateLine']
+}) {
+  const code = React.useMemo(() => lines.map(line => line.text).join('\n'), [lines])
+  const theme = useThemeName()
+  const [tokens, setTokens] = React.useState<ThemedToken[][] | null>(null)
+
+  React.useEffect(() => {
+    if (!canHighlight) {
+      setTokens([])
+
+      return
+    }
+
+    let cancelled = false
+    setTokens(null)
+    void codeToTokens(code, { lang: language as BundledLanguage, theme })
+      .then(result => {
+        if (!cancelled) {
+          setTokens(result.tokens)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setTokens([])
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [canHighlight, code, language, theme])
+
+  return (
+    <div className="w-max min-w-full">
+      {beforeRows > 0 && <div aria-hidden style={{ height: beforeRows * PREVIEW_LINE_PX }} />}
+      {chunks.flatMap(chunk =>
+        chunk.lines.map((line, offset) => {
+          const index = chunk.start + offset
+          const side = line.kind === 'remove' ? 'old' : 'new'
+          const lineNumber = side === 'old' ? line.oldNo : line.newNo
+
+          const annotated = annotations.some(
+            annotation =>
+              annotation.side === side &&
+              lineNumber != null &&
+              lineNumber >= annotation.lineStart &&
+              lineNumber <= annotation.lineEnd
+          )
+
+          const rowTokens = tokens?.[index] ?? []
+
+          return (
+            <div
+              className="grid h-5 min-w-full grid-cols-[2.25rem_max-content] leading-5"
+              data-diff-row={index}
+              key={`${index}-${line.oldNo}-${line.newNo}-${line.text}`}
+            >
+              <button
+                aria-label={lineNumber ? annotateLineLabel?.(lineNumber) : undefined}
+                className={cn(
+                  'sticky left-0 z-1 h-5 w-9 bg-(--ui-editor-surface-background) pr-2 text-right leading-5 tabular-nums text-muted-foreground/55',
+                  lineNumber && onAnnotateLine && 'cursor-pointer hover:text-foreground',
+                  annotated && 'text-(--ui-accent)'
+                )}
+                disabled={!lineNumber || !onAnnotateLine}
+                onClick={event => {
+                  if (!lineNumber || !onAnnotateLine) {
+                    return
+                  }
+
+                  const rect = event.currentTarget.getBoundingClientRect()
+
+                  const surface = event.currentTarget
+                    .closest<HTMLElement>('[data-annotation-surface]')
+                    ?.getBoundingClientRect()
+
+                  onAnnotateLine({
+                    editorAnchor: {
+                      boundary: surface
+                        ? { height: surface.height, width: surface.width, x: surface.left, y: surface.top }
+                        : undefined,
+                      height: rect.height,
+                      width: rect.width,
+                      x: rect.left,
+                      y: rect.top
+                    },
+                    excerpt: line.text,
+                    line: lineNumber,
+                    side
+                  })
+                }}
+                type="button"
+              >
+                {lineNumber ?? ''}
+              </button>
+              <span
+                className={cn(
+                  'block h-5 min-w-max whitespace-pre px-2.5 leading-5',
+                  DIFF_KIND_TINT[line.kind],
+                  annotated && 'bg-(--ui-accent)/18'
+                )}
+                data-diff-new-line={line.newNo}
+                data-diff-old-line={line.oldNo}
+              >
+                {rowTokens.length > 0
+                  ? rowTokens.map((token, tokenIndex) => (
+                      <span key={`${tokenIndex}-${token.offset}`} style={tokenStyle(token)}>
+                        {token.content}
+                      </span>
+                    ))
+                  : line.text || ' '}
+              </span>
+            </div>
+          )
+        })
+      )}
+      {afterRows > 0 && <div aria-hidden style={{ height: afterRows * PREVIEW_LINE_PX }} />}
+    </div>
   )
 }
 
@@ -555,13 +713,30 @@ interface FileDiffPanelProps {
   /** Current file text. When provided, the panel expands hunked diffs into a
    *  full-file view so unchanged lines are preserved between hunks. */
   fullText?: string
+  annotations?: DiffAnnotationAnchor[]
+  annotateLineLabel?: (line: number) => string
+  onAnnotateLine?: (input: {
+    editorAnchor: AnnotationEditorAnchor
+    excerpt: string
+    line: number
+    side: 'new' | 'old'
+  }) => void
   path?: string
   /** Render an old/new line-number gutter (the full preview diff). The compact
    *  tool-card + inline review diff leave this off. */
   showLineNumbers?: boolean
 }
 
-export function FileDiffPanel({ className, diff, fullText, path, showLineNumbers = false }: FileDiffPanelProps) {
+export function FileDiffPanel({
+  annotations = [],
+  annotateLineLabel,
+  className,
+  diff,
+  fullText,
+  onAnnotateLine,
+  path,
+  showLineNumbers = false
+}: FileDiffPanelProps) {
   const lines = React.useMemo(
     () => (fullText != null ? parseFullFileDiff(diff, fullText) : parseDiff(diff)),
     [diff, fullText]
@@ -585,13 +760,19 @@ export function FileDiffPanel({ className, diff, fullText, path, showLineNumbers
   // can't collapse. Compact tool/review diffs let Shiki own the rows.
   const body = !canHighlight ? (
     showLineNumbers ? (
-      <PreviewDiffRows afterLines={afterRows} beforeLines={beforeRows} chunks={visibleLineChunks} />
+      <PreviewDiffRows
+        afterLines={afterRows}
+        annotations={annotations}
+        beforeLines={beforeRows}
+        chunks={visibleLineChunks}
+      />
     ) : (
       <DiffBody lines={lines} />
     )
   ) : fullText != null ? (
     <TokenizedDiffBody
       afterLines={afterRows}
+      annotations={annotations}
       beforeLines={beforeRows}
       chunked={showLineNumbers}
       chunks={visibleLineChunks}
@@ -615,31 +796,23 @@ export function FileDiffPanel({ className, diff, fullText, path, showLineNumbers
   // removals — with an overview ruler pinned to the right edge. The inner div
   // owns the scroll so the ruler (an absolute sibling) stays viewport-fixed.
   return (
-    <div className={cn(DIFF_BOX_CLASS, 'relative overflow-hidden', className)} data-slot="file-diff-panel">
+    <div
+      className={cn(DIFF_BOX_CLASS, 'relative overflow-hidden', className)}
+      data-annotation-surface=""
+      data-slot="file-diff-panel"
+    >
       <div className="absolute inset-0 overflow-auto pr-2.5" onScroll={onScroll} ref={scrollerRef}>
-        <div className="grid min-w-max grid-cols-[auto_minmax(0,1fr)]">
-          <div className="sticky left-0 z-1 select-none bg-(--ui-editor-surface-background) py-3 text-muted-foreground/55">
-            {beforeRows > 0 && <div aria-hidden style={{ height: beforeRows * PREVIEW_LINE_PX }} />}
-            {visibleLineChunks.map(chunk => (
-              <div className="block" key={chunk.start}>
-                {chunk.lines.map((line, offset) => {
-                  const index = chunk.start + offset
-
-                  return (
-                    <div
-                      className="h-5 w-9 pr-2 text-right leading-5 tabular-nums"
-                      key={`${index}-${line.oldNo}-${line.newNo}`}
-                    >
-                      {line.newNo ?? ''}
-                    </div>
-                  )
-                })}
-              </div>
-            ))}
-            {afterRows > 0 && <div aria-hidden style={{ height: afterRows * PREVIEW_LINE_PX }} />}
-          </div>
-          <div className="min-w-0">{body}</div>
-        </div>
+        <UnifiedPreviewDiffRows
+          afterRows={afterRows}
+          annotateLineLabel={annotateLineLabel}
+          annotations={annotations}
+          beforeRows={beforeRows}
+          canHighlight={canHighlight}
+          chunks={visibleLineChunks}
+          language={language}
+          lines={lines}
+          onAnnotateLine={onAnnotateLine}
+        />
       </div>
       <DiffOverviewRuler lines={lines} />
     </div>

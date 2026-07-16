@@ -2161,6 +2161,86 @@ export interface Translations {
     noClipboardImage: string
     clipboardPasteFailed: string
     dropFiles: string
+    annotations: {
+      add: string
+      clear: string
+      comment: string
+      commentPlaceholder: string
+      concern: string
+      discard: string
+      discardDescription: string
+      discardReplaceTitle: string
+      discardTitle: string
+      edit: string
+      labels: Record<'accessibility' | 'bug' | 'performance' | 'security' | 'style' | 'testing', string>
+      lastTurnTracking: string
+      listTitle: string
+      planApprove: string
+      planApproved: string
+      planAvailable: string
+      planRequestChanges: string
+      planReview: string
+      remove: string
+      reopen: string
+      save: string
+      scopeBranch: string
+      scopeLastTurn: string
+      scopeUncommitted: string
+      sendToAgent: string
+      storageError: string
+      statusOrphaned: string
+      statusSent: string
+      statusStale: string
+      suggestedReplacement: string
+      suggestion: string
+      suggestionPlaceholder: string
+      title: string
+      preview: {
+        annotateSelection: string
+        documentComment: string
+        minimizeEditor: string
+        html: {
+          decrease: string
+          increase: string
+          pan: string
+          reset: (zoom: number) => string
+          zoom: string
+        }
+        image: {
+          decrease: string
+          deleteMarkup: string
+          externalResourcesBlocked: string
+          increase: string
+          reset: (zoom: number) => string
+          undoMarkup: string
+          zoom: string
+        }
+        ocr: {
+          label: string
+          language: string
+          languages: Record<'chi_sim' | 'chi_tra' | 'eng' | 'jpn', string>
+          recognizing: string
+          unavailable: string
+        }
+        pdf: {
+          couldNotOpen: string
+          find: string
+          fit: string
+          incorrectPassword: string
+          open: string
+          page: string
+          passwordProtected: string
+          search: string
+          width: string
+        }
+        tex: {
+          compilationFailed: string
+          engineUnavailable: string
+          updating: string
+        }
+        tools: Record<'arrow' | 'pan' | 'pen' | 'pin' | 'rectangle' | 'select' | 'text', string>
+      }
+    }
     handoff: {
       pickPlatform: string
       success: (platform: string) => string

@@ -2,15 +2,23 @@ import { atom, computed } from 'nanostores'
 
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
-import type { HermesReviewFile, HermesReviewShipInfo } from '@/global'
+import type { HermesReviewFile, HermesReviewScope, HermesReviewShipInfo } from '@/global'
 import { matchesQuery } from '@/hooks/use-media-query'
 import { desktopGit } from '@/lib/desktop-git'
 import { isExcludedPath } from '@/lib/excluded-paths'
 import { requestOneShot } from '@/lib/oneshot'
 import { Codecs, persistentAtom } from '@/lib/persisted'
 
+import {
+  $annotationContext,
+  $annotationDraft,
+  $annotations,
+  activateAnnotationContext,
+  gitReviewContext,
+  type ReviewContext
+} from './annotations'
 import { refreshRepoStatus } from './coding-status'
-import { $busy, $currentCwd } from './session'
+import { $activeSessionId, $busy, $currentCwd, $selectedStoredSessionId } from './session'
 import { $workspaceChangeTick } from './workspace-events'
 
 // State for the review pane: the working-tree changed-file list, the selected
@@ -18,9 +26,9 @@ import { $workspaceChangeTick } from './workspace-events'
 // session's cwd is the repo; the pane reads git as the source of truth, the
 // same bounded "re-probe on structural edges" model as the coding rail.
 //
-// Scope is always "uncommitted" — Hermes' flow is agent edits you review BEFORE
-// committing, so branch/last-turn scopes are almost always empty here (unlike
-// Codex, which commits per turn). We show the one view that's always populated.
+// Review scopes all resolve to exact Git trees. "Last turn" uses a per-session
+// anonymous tree captured immediately before prompt submission, so pre-existing
+// workspace dirt is excluded without touching the index or working tree.
 
 // Must match the review <Pane id> in desktop-controller (the forced-reveal
 // event is addressed by pane id).
@@ -30,6 +38,7 @@ const OPEN_KEY = 'hermes.desktop.reviewOpen'
 const COMMIT_DEFAULT_KEY = 'hermes.desktop.reviewCommitDefault'
 const TREE_MODE_KEY = 'hermes.desktop.reviewTreeMode'
 const SELECTED_KEY = 'hermes.desktop.reviewSelectedPath'
+const SCOPE_KEY = 'hermes.desktop.reviewScope'
 const REVIEW_REFRESH_DEBOUNCE_MS = 100
 const SHIP_INFO_STALE_MS = 30_000
 
@@ -51,6 +60,14 @@ export const $reviewTreeMode = persistentAtom<ReviewTreeMode>(TREE_MODE_KEY, 'tr
   decode: raw => (raw === 'list' ? 'list' : 'tree'),
   encode: value => value
 })
+
+export const $reviewScope = persistentAtom<HermesReviewScope>(SCOPE_KEY, 'uncommitted', {
+  decode: raw => (raw === 'branch' || raw === 'lastTurn' ? raw : 'uncommitted'),
+  encode: value => value
+})
+export const $reviewLastTurnBaseRef = atom<null | string>(null)
+export const $reviewHeadSha = atom<null | string>(null)
+export const $reviewAnnotationContext = atom<ReviewContext | null>(null)
 
 export function toggleReviewTreeMode(): void {
   $reviewTreeMode.set($reviewTreeMode.get() === 'tree' ? 'list' : 'tree')
@@ -91,6 +108,71 @@ let reviewRefreshTimer: ReturnType<typeof setTimeout> | null = null
 let shipInfoSeq = 0
 let shipInfoLastCheckedAt = 0
 
+interface ReviewTurnBaseline {
+  cwd: string
+  ref: string
+}
+
+const MAX_TURN_BASELINES = 100
+const reviewTurnBaselines = new Map<string, ReviewTurnBaseline>()
+let pendingDraftBaseline: ReviewTurnBaseline | null = null
+
+const runtimeBaselineKey = (id: string): string => `runtime:${id}`
+const storedBaselineKey = (id: string): string => `stored:${id}`
+
+function rememberTurnBaseline(key: string, baseline: ReviewTurnBaseline): void {
+  reviewTurnBaselines.delete(key)
+  reviewTurnBaselines.set(key, baseline)
+
+  while (reviewTurnBaselines.size > MAX_TURN_BASELINES) {
+    const oldest = reviewTurnBaselines.keys().next().value
+
+    if (!oldest) {
+      break
+    }
+
+    reviewTurnBaselines.delete(oldest)
+  }
+}
+
+function currentTurnBaseline(): ReviewTurnBaseline | null {
+  const cwd = repoCwd()
+
+  if (!cwd) {
+    return null
+  }
+
+  const storedId = $selectedStoredSessionId.get()
+  const runtimeId = $activeSessionId.get()
+
+  const baseline =
+    (storedId ? reviewTurnBaselines.get(storedBaselineKey(storedId)) : null) ??
+    (runtimeId ? reviewTurnBaselines.get(runtimeBaselineKey(runtimeId)) : null) ??
+    (!storedId && !runtimeId ? pendingDraftBaseline : null)
+
+  return baseline?.cwd === cwd ? baseline : null
+}
+
+function syncCurrentTurnBaseline(): void {
+  $reviewLastTurnBaseRef.set(currentTurnBaseline()?.ref ?? null)
+}
+
+$activeSessionId.listen(syncCurrentTurnBaseline)
+$currentCwd.listen(syncCurrentTurnBaseline)
+$selectedStoredSessionId.listen(storedId => {
+  const runtimeId = $activeSessionId.get()
+  const runtimeBaseline = runtimeId ? reviewTurnBaselines.get(runtimeBaselineKey(runtimeId)) : null
+
+  // A new backend session learns its durable id after the runtime binding.
+  // Alias the same snapshot so losing/recreating that runtime does not lose
+  // the turn's review scope.
+  if (storedId && runtimeBaseline) {
+    rememberTurnBaseline(storedBaselineKey(storedId), runtimeBaseline)
+  }
+
+  syncCurrentTurnBaseline()
+})
+
 // The two things every review op needs: the repo cwd + the IPC bridge. Null when
 // either is missing (no session, remote backend), so callers bail in one line.
 function reviewCtx(): { cwd: string; review: ReviewBridge } | null {
@@ -109,6 +191,7 @@ export async function refreshReview(): Promise<void> {
   if (!$reviewOpen.get() || !ctx) {
     $reviewFiles.set([])
     $reviewIsRepo.set(Boolean(ctx))
+    $reviewAnnotationContext.set(null)
 
     // Critical: clear loading on the no-cwd / not-a-repo path too. It's set
     // true (optimistically) before a refresh is scheduled, so skipping it here
@@ -126,7 +209,13 @@ export async function refreshReview(): Promise<void> {
   $reviewLoading.set(true)
 
   try {
-    const result = await review.list(cwd, 'uncommitted', null)
+    const scope = $reviewScope.get()
+    const baseRef = scope === 'lastTurn' ? $reviewLastTurnBaseRef.get() : null
+
+    const [result, headSha] = await Promise.all([
+      review.list(cwd, scope, baseRef),
+      review.revParse(cwd, 'HEAD').catch(() => null)
+    ])
 
     // Ignore a result that resolved after the cwd moved on.
     if (seq !== reviewRefreshSeq || repoCwd() !== cwd) {
@@ -138,6 +227,32 @@ export async function refreshReview(): Promise<void> {
     const files = result.files.filter(file => !isExcludedPath(file.path))
 
     $reviewFiles.set(files)
+    $reviewHeadSha.set(headSha)
+    const annotationContext = $annotationContext.get()
+
+    const annotationSurfaceIsInitial =
+      annotationContext.kind === 'document' &&
+      !annotationContext.artifactPath &&
+      !$annotationDraft.get() &&
+      $annotations.get().length === 0
+
+    const gitContext = gitReviewContext({
+      baseRef: result.base ?? baseRef,
+      contentHash: result.revision ?? undefined,
+      cwd,
+      headSha: headSha ?? undefined,
+      reviewScope: scope
+    })
+
+    $reviewAnnotationContext.set(gitContext)
+
+    // Background workspace refreshes must not pull the global annotation
+    // editor away from an open plan or source-document review. The git pane
+    // owns the context only while it is already active, or before the user has
+    // started reviewing another surface.
+    if (annotationContext.kind === 'git' || annotationSurfaceIsInitial) {
+      activateAnnotationContext(gitContext, { carryStale: true })
+    }
 
     // Drop the selection if the file is gone (staged away, reverted) so the diff
     // pane doesn't strand on a ghost; otherwise lazily fetch its diff so a
@@ -190,7 +305,9 @@ export async function selectReviewFile(file: HermesReviewFile): Promise<void> {
   $reviewDiffLoading.set(true)
 
   try {
-    const diff = await ctx.review.diff(ctx.cwd, file.path, 'uncommitted', null, file.staged)
+    const scope = $reviewScope.get()
+    const baseRef = scope === 'lastTurn' ? $reviewLastTurnBaseRef.get() : null
+    const diff = await ctx.review.diff(ctx.cwd, file.path, scope, baseRef, file.staged)
 
     if ($reviewSelectedPath.get() === file.path) {
       $reviewDiff.set(diff || '')
@@ -210,6 +327,90 @@ export function clearReviewSelection(): void {
   $reviewSelectedPath.set(null)
   $reviewDiff.set(null)
   $reviewDiffLoading.set(false)
+}
+
+export function setReviewScope(scope: HermesReviewScope): void {
+  if ($reviewScope.get() === scope) {
+    return
+  }
+
+  $reviewScope.set(scope)
+  clearReviewSelection()
+  void refreshReview()
+}
+
+export async function captureReviewTurnBaseline(): Promise<void> {
+  if (!$reviewOpen.get() || $reviewScope.get() !== 'lastTurn') {
+    const runtimeId = $activeSessionId.get()
+    const storedId = $selectedStoredSessionId.get()
+
+    if (runtimeId) {
+      reviewTurnBaselines.delete(runtimeBaselineKey(runtimeId))
+    }
+
+    if (storedId) {
+      reviewTurnBaselines.delete(storedBaselineKey(storedId))
+    }
+
+    if (!runtimeId && !storedId) {
+      pendingDraftBaseline = null
+    }
+
+    syncCurrentTurnBaseline()
+
+    return
+  }
+
+  const ctx = reviewCtx()
+
+  if (!ctx) {
+    $reviewLastTurnBaseRef.set(null)
+
+    return
+  }
+
+  const ref = await ctx.review.snapshot(ctx.cwd).catch(() => null)
+
+  if (!ref) {
+    $reviewLastTurnBaseRef.set(null)
+
+    return
+  }
+
+  const baseline = { cwd: ctx.cwd, ref }
+  const runtimeId = $activeSessionId.get()
+  const storedId = $selectedStoredSessionId.get()
+
+  if (runtimeId) {
+    rememberTurnBaseline(runtimeBaselineKey(runtimeId), baseline)
+  }
+
+  if (storedId) {
+    rememberTurnBaseline(storedBaselineKey(storedId), baseline)
+  }
+
+  pendingDraftBaseline = runtimeId || storedId ? null : baseline
+  $reviewLastTurnBaseRef.set(ref)
+}
+
+/** Attach a first-turn draft snapshot to the runtime session it just created. */
+export function bindReviewTurnBaseline(runtimeId: string): void {
+  if (!pendingDraftBaseline || pendingDraftBaseline.cwd !== repoCwd()) {
+    syncCurrentTurnBaseline()
+
+    return
+  }
+
+  rememberTurnBaseline(runtimeBaselineKey(runtimeId), pendingDraftBaseline)
+
+  const storedId = $selectedStoredSessionId.get()
+
+  if (storedId) {
+    rememberTurnBaseline(storedBaselineKey(storedId), pendingDraftBaseline)
+  }
+
+  pendingDraftBaseline = null
+  syncCurrentTurnBaseline()
 }
 
 // ── View state ───────────────────────────────────────────────────────────────

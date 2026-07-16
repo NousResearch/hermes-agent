@@ -267,6 +267,15 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           help="Switch to the new board after creating it")
     b_create.add_argument("--default-workdir", default=None,
                           help="Default workspace path for tasks created on this board")
+    b_create.add_argument(
+        "--allowed-profile",
+        action="append",
+        default=None,
+        help=(
+            "Profile allowed to own/execute board work (repeatable). "
+            "Omit for unrestricted."
+        ),
+    )
 
     b_rm = boards_sub.add_parser(
         "rm", aliases=["remove", "delete"],
@@ -302,6 +311,22 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     b_set_wd.add_argument("slug")
     b_set_wd.add_argument("path", nargs="?", default=None,
                           help="Absolute path to use as default workdir. Omit to clear.")
+
+    b_set_profiles = boards_sub.add_parser(
+        "set-allowed-profiles",
+        help="Restrict board execution to an explicit profile allowlist",
+    )
+    b_set_profiles.add_argument("slug")
+    b_set_profiles.add_argument(
+        "profiles",
+        nargs="*",
+        help="Allowed profile names. No names means deny all profiles.",
+    )
+    b_set_profiles.add_argument(
+        "--unrestricted",
+        action="store_true",
+        help="Remove the allowlist and restore unrestricted profile routing",
+    )
 
     # --- create ---
     p_create = sub.add_parser("create", help="Create a new task")
@@ -1031,6 +1056,8 @@ def _dispatch_boards(args: argparse.Namespace) -> int:
         return _cmd_boards_rename(args)
     if sub == "set-default-workdir":
         return _cmd_boards_set_default_workdir(args)
+    if sub == "set-allowed-profiles":
+        return _cmd_boards_set_allowed_profiles(args)
     print(f"kanban boards: unknown action {sub!r}", file=sys.stderr)
     return 2
 
@@ -1095,6 +1122,12 @@ def _cmd_boards_create(args: argparse.Namespace) -> int:
         print("kanban boards create: slug is required", file=sys.stderr)
         return 2
     already = kb.board_exists(normed) and normed != kb.DEFAULT_BOARD
+    allowed_profiles = getattr(args, "allowed_profile", None)
+    policy_kwargs = (
+        {"allowed_profiles": allowed_profiles}
+        if allowed_profiles is not None
+        else {}
+    )
     meta = kb.create_board(
         normed,
         name=args.name,
@@ -1102,6 +1135,7 @@ def _cmd_boards_create(args: argparse.Namespace) -> int:
         icon=args.icon,
         color=args.color,
         default_workdir=args.default_workdir,
+        **policy_kwargs,
     )
     verb = "already exists" if already else "created"
     print(f"Board {meta['slug']!r} {verb}.")
@@ -1166,6 +1200,13 @@ def _cmd_boards_show(args: argparse.Namespace) -> int:
     if meta.get("description"):
         print(f"  Description:  {meta['description']}")
     print(f"  DB path:      {meta['db_path']}")
+    allowed_profiles = meta.get("allowed_profiles")
+    if allowed_profiles is None:
+        print("  Profiles:     unrestricted")
+    elif allowed_profiles:
+        print(f"  Profiles:     {', '.join(allowed_profiles)}")
+    else:
+        print("  Profiles:     none (board execution frozen)")
     print(f"  Tasks:        {total} total"
           + (f" ({', '.join(f'{k}={v}' for k, v in sorted(counts.items()))})"
              if counts else ""))
@@ -1203,6 +1244,39 @@ def _cmd_boards_set_default_workdir(args: argparse.Namespace) -> int:
         print(f"Board {normed!r} default workdir set to {new_val!r}.")
     else:
         print(f"Board {normed!r} default workdir cleared.")
+    return 0
+
+
+def _cmd_boards_set_allowed_profiles(args: argparse.Namespace) -> int:
+    command = "kanban boards set-allowed-profiles"
+    try:
+        normed = kb._normalize_board_slug(args.slug)
+    except ValueError as exc:
+        print(f"{command}: {exc}", file=sys.stderr)
+        return 2
+    if not normed or not kb.board_exists(normed):
+        print(f"{command}: board {args.slug!r} does not exist", file=sys.stderr)
+        return 1
+    profiles = list(getattr(args, "profiles", None) or [])
+    unrestricted = bool(getattr(args, "unrestricted", False))
+    if unrestricted and profiles:
+        print(f"{command}: --unrestricted cannot be combined with profile names", file=sys.stderr)
+        return 2
+    try:
+        meta = kb.write_board_metadata(
+            normed,
+            allowed_profiles=None if unrestricted else profiles,
+        )
+    except ValueError as exc:
+        print(f"{command}: {exc}", file=sys.stderr)
+        return 2
+    allowed = meta.get("allowed_profiles")
+    if allowed is None:
+        print(f"Board {normed!r} profile routing is unrestricted.")
+    elif allowed:
+        print(f"Board {normed!r} allowed profiles: {', '.join(allowed)}")
+    else:
+        print(f"Board {normed!r} allows no profiles; execution is frozen.")
     return 0
 
 
@@ -1325,30 +1399,35 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    with kb.connect_closing() as conn:
-        task_id = kb.create_task(
-            conn,
-            title=args.title,
-            body=args.body,
-            assignee=args.assignee,
-            created_by=args.created_by or _profile_author(),
-            workspace_kind=ws_kind,
-            workspace_path=ws_path,
-            branch_name=branch_name,
-            project_id=getattr(args, "project", None),
-            tenant=args.tenant,
-            priority=args.priority,
-            parents=tuple(args.parent or ()),
-            triage=bool(getattr(args, "triage", False)),
-            idempotency_key=getattr(args, "idempotency_key", None),
-            max_runtime_seconds=max_runtime,
-            skills=getattr(args, "skills", None) or None,
-            max_retries=max_retries,
-            goal_mode=bool(getattr(args, "goal_mode", False)),
-            goal_max_turns=getattr(args, "goal_max_turns", None),
-            initial_status=getattr(args, "initial_status", "running"),
-        )
-        task = kb.get_task(conn, task_id)
+    try:
+        with kb.connect_closing() as conn:
+            task_id = kb.create_task(
+                conn,
+                title=args.title,
+                body=args.body,
+                assignee=args.assignee,
+                created_by=args.created_by or _profile_author(),
+                workspace_kind=ws_kind,
+                workspace_path=ws_path,
+                branch_name=branch_name,
+                project_id=getattr(args, "project", None),
+                tenant=args.tenant,
+                priority=args.priority,
+                parents=tuple(args.parent or ()),
+                triage=bool(getattr(args, "triage", False)),
+                idempotency_key=getattr(args, "idempotency_key", None),
+                max_runtime_seconds=max_runtime,
+                skills=getattr(args, "skills", None) or None,
+                max_retries=max_retries,
+                goal_mode=bool(getattr(args, "goal_mode", False)),
+                goal_max_turns=getattr(args, "goal_max_turns", None),
+                initial_status=getattr(args, "initial_status", "running"),
+                board=kb.get_current_board(),
+            )
+            task = kb.get_task(conn, task_id)
+    except ValueError as exc:
+        print(f"kanban create: {exc}", file=sys.stderr)
+        return 2
     if getattr(args, "json", False):
         print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))
     else:
@@ -1388,6 +1467,7 @@ def _cmd_swarm(args: argparse.Namespace) -> int:
             created_by=args.created_by or _profile_author(),
             priority=args.priority,
             idempotency_key=getattr(args, "idempotency_key", None),
+            board=kb.get_current_board(),
         )
     if getattr(args, "json", False):
         print(json.dumps(created.as_dict(), indent=2, ensure_ascii=False))
@@ -1617,8 +1697,14 @@ def _cmd_show(args: argparse.Namespace) -> int:
 
 def _cmd_assign(args: argparse.Namespace) -> int:
     profile = None if args.profile.lower() in {"none", "-", "null"} else args.profile
-    with kb.connect_closing() as conn:
-        ok = kb.assign_task(conn, args.task_id, profile)
+    try:
+        with kb.connect_closing() as conn:
+            ok = kb.assign_task(
+                conn, args.task_id, profile, board=kb.get_current_board()
+            )
+    except ValueError as exc:
+        print(f"kanban assign: {exc}", file=sys.stderr)
+        return 2
     if not ok:
         print(f"no such task: {args.task_id}", file=sys.stderr)
         return 1
@@ -1644,12 +1730,17 @@ def _cmd_reclaim(args: argparse.Namespace) -> int:
 
 def _cmd_reassign(args: argparse.Namespace) -> int:
     profile = None if args.profile.lower() in {"none", "-", "null"} else args.profile
-    with kb.connect_closing() as conn:
-        ok = kb.reassign_task(
-            conn, args.task_id, profile,
-            reclaim_first=bool(getattr(args, "reclaim", False)),
-            reason=getattr(args, "reason", None),
-        )
+    try:
+        with kb.connect_closing() as conn:
+            ok = kb.reassign_task(
+                conn, args.task_id, profile,
+                reclaim_first=bool(getattr(args, "reclaim", False)),
+                reason=getattr(args, "reason", None),
+                board=kb.get_current_board(),
+            )
+    except ValueError as exc:
+        print(f"kanban reassign: {exc}", file=sys.stderr)
+        return 2
     if not ok:
         print(
             f"cannot reassign {args.task_id} "
@@ -1815,7 +1906,12 @@ def _cmd_unlink(args: argparse.Namespace) -> int:
 
 def _cmd_claim(args: argparse.Namespace) -> int:
     with kb.connect_closing() as conn:
-        task = kb.claim_task(conn, args.task_id, ttl_seconds=args.ttl)
+        task = kb.claim_task(
+            conn,
+            args.task_id,
+            ttl_seconds=args.ttl,
+            board=kb.get_current_board(),
+        )
         if task is None:
             # Report why
             existing = kb.get_task(conn, args.task_id)
@@ -2159,6 +2255,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             max_spawn=max_spawn,
             max_in_progress=max_in_progress,
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
+            board=kb.get_current_board(),
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
         )
@@ -2176,6 +2273,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             ],
             "skipped_unassigned": res.skipped_unassigned,
             "skipped_nonspawnable": res.skipped_nonspawnable,
+            "skipped_disallowed": res.skipped_disallowed,
             "skipped_per_profile_capped": [
                 {"task_id": tid, "assignee": who, "current": current}
                 for (tid, who, current) in res.skipped_per_profile_capped
@@ -2208,6 +2306,11 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         )
     if res.skipped_unassigned:
         print(f"Skipped (unassigned): {', '.join(res.skipped_unassigned)}")
+    if res.skipped_disallowed:
+        print(
+            "Skipped (assignee excluded by board allowed_profiles): "
+            + ", ".join(res.skipped_disallowed)
+        )
     if res.skipped_per_profile_capped:
         for tid, who, current in res.skipped_per_profile_capped:
             print(
@@ -2341,7 +2444,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
         """
         try:
             with kb.connect_closing() as conn:
-                return kb.has_spawnable_ready(conn)
+                return kb.has_spawnable_ready(conn, board=kb.get_current_board())
         except Exception:
             return False
 

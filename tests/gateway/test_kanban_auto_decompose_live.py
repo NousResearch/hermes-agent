@@ -9,9 +9,13 @@ called every tick, reading the current config.
 
 from __future__ import annotations
 
+import os
+import threading
+
 import pytest
 
 from gateway.kanban_watchers import _resolve_auto_decompose_settings
+from hermes_cli import kanban_db as kb
 
 
 def test_enabled_by_default_when_key_absent():
@@ -81,3 +85,39 @@ def test_live_toggle_takes_effect_between_calls():
     # User edits config.yaml mid-run.
     state["kanban"]["auto_decompose"] = False
     assert _resolve_auto_decompose_settings(lambda: state)[0] is False
+
+
+def test_scoped_board_context_does_not_leak_between_threads(monkeypatch, tmp_path):
+    """A slow decomposer must not change concurrent requests' active board."""
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+    kb._INITIALIZED_PATHS.clear()
+    kb.create_board("decomposed-board")
+    entered = threading.Barrier(2)
+    release = threading.Barrier(2)
+    observed: dict[str, str] = {}
+
+    def auto_decomposer_thread():
+        with kb.scoped_current_board("decomposed-board"):
+            observed["inside"] = kb.get_current_board()
+            entered.wait()
+            release.wait()
+        observed["after"] = kb.get_current_board()
+
+    thread = threading.Thread(target=auto_decomposer_thread)
+    thread.start()
+    entered.wait()
+    observed["parallel"] = kb.get_current_board()
+    observed["env"] = os.environ["HERMES_KANBAN_BOARD"]
+    release.wait()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert observed == {
+        "inside": "decomposed-board",
+        "parallel": "default",
+        "env": "default",
+        "after": "default",
+    }
+    kb._INITIALIZED_PATHS.clear()

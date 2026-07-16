@@ -1798,6 +1798,26 @@ def test_board_param_routes_create_to_alt_board(multi_board_env):
         assert kb.get_task(conn, new_tid) is None
 
 
+def test_board_param_create_enforces_target_board_allowlist(multi_board_env):
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    kb.write_board_metadata("alt", allowed_profiles=["alex"])
+    out = json.loads(
+        kt._handle_create(
+            {
+                "title": "must-not-exist",
+                "assignee": "goggins",
+                "board": "alt",
+            }
+        )
+    )
+
+    assert "not allowed on board 'alt'" in out["error"]
+    with kb.connect(board="alt") as conn:
+        assert all(task.title != "must-not-exist" for task in kb.list_tasks(conn))
+
+
 def test_board_param_routes_list_to_alt_board(multi_board_env):
     """kanban_list filters by the board parameter, not env-active."""
     from tools import kanban_tools as kt

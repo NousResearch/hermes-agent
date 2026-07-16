@@ -23,31 +23,96 @@ export function normalizeTerminalMode(value: unknown): TerminalMode {
 }
 
 export function terminalModeConfigPath(hermesHome: string): string {
-  return path.join(hermesHome, 'desktop-terminal.json')
+  return path.join(hermesHome, 'config.yaml')
+}
+
+function stripYamlScalar(value: string): string {
+  const withoutComment = value.replace(/\s+#.*$/, '').trim()
+  const quote = withoutComment[0]
+
+  if ((quote === '"' || quote === "'") && withoutComment.endsWith(quote)) {
+    return withoutComment.slice(1, -1)
+  }
+
+  return withoutComment
 }
 
 export function readTerminalMode(hermesHome: string): TerminalMode {
-  const envMode = normalizeTerminalMode(process.env.HERMES_WINDOWS_EXECUTION_MODE)
-
-  if (process.env.HERMES_WINDOWS_EXECUTION_MODE) {
-    return envMode
-  }
-
   try {
-    const parsed = JSON.parse(fs.readFileSync(terminalModeConfigPath(hermesHome), 'utf8'))
+    const lines = fs.readFileSync(terminalModeConfigPath(hermesHome), 'utf8').split(/\r?\n/)
+    let inTerminal = false
 
-    return normalizeTerminalMode(parsed?.mode)
+    for (const line of lines) {
+      if (!/^\s/.test(line)) {
+        inTerminal = /^terminal\s*:\s*(?:#.*)?$/.test(line)
+        continue
+      }
+
+      if (inTerminal) {
+        const match = /^\s+windows_execution_mode\s*:\s*(.*?)\s*$/.exec(line)
+        if (match) {
+          return normalizeTerminalMode(stripYamlScalar(match[1]))
+        }
+      }
+    }
   } catch {
-    return 'smart'
+    // Missing or unreadable config falls back to the documented default.
   }
+
+  return 'smart'
 }
 
 export function writeTerminalMode(hermesHome: string, value: unknown): TerminalMode {
   const mode = normalizeTerminalMode(value)
   const target = terminalModeConfigPath(hermesHome)
   fs.mkdirSync(path.dirname(target), { recursive: true })
-  fs.writeFileSync(target, `${JSON.stringify({ mode }, null, 2)}\n`, 'utf8')
 
+  let text = ''
+  try {
+    text = fs.readFileSync(target, 'utf8')
+  } catch {
+    // A fresh install may not have config.yaml yet.
+  }
+
+  const lines = text ? text.split(/\r?\n/) : []
+  let terminalStart = -1
+  let terminalEnd = lines.length
+  let modeLine = -1
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    if (!/^\s/.test(line)) {
+      if (/^terminal\s*:\s*(?:#.*)?$/.test(line)) {
+        terminalStart = index
+        terminalEnd = lines.length
+      } else if (terminalStart >= 0) {
+        terminalEnd = index
+        break
+      }
+      continue
+    }
+
+    if (terminalStart >= 0 && /^\s+windows_execution_mode\s*:/.test(line)) {
+      modeLine = index
+    }
+  }
+
+  if (modeLine >= 0) {
+    const indent = /^\s*/.exec(lines[modeLine])?.[0] || '  '
+    lines[modeLine] = `${indent}windows_execution_mode: ${mode}`
+  } else if (terminalStart >= 0) {
+    lines.splice(terminalEnd, 0, `  windows_execution_mode: ${mode}`)
+  } else {
+    while (lines.length && lines[lines.length - 1] === '') {
+      lines.pop()
+    }
+    if (lines.length) {
+      lines.push('')
+    }
+    lines.push('terminal:', `  windows_execution_mode: ${mode}`)
+  }
+
+  fs.writeFileSync(target, `${lines.join('\n').replace(/\n+$/, '')}\n`, 'utf8')
   return mode
 }
 
@@ -145,7 +210,6 @@ export function resolveWindowsTerminalMode({
       : { distribution: null, mode: 'windows-native' }
   }
 
-  // configuredMode === 'wsl2'
   const distribution = pathDistribution || wslDistributions[0] || null
 
   return { distribution, mode: 'wsl2' }

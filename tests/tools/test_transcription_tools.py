@@ -54,6 +54,18 @@ def sample_ogg(tmp_path):
     return str(ogg_path)
 
 
+@pytest.fixture
+def oversized_wav(tmp_path):
+    """Create a sparse WAV-shaped file just above the remote upload cap."""
+    from tools.transcription_tools import MAX_FILE_SIZE
+
+    wav_path = tmp_path / "oversized.wav"
+    with wav_path.open("wb") as audio_file:
+        audio_file.seek(MAX_FILE_SIZE)
+        audio_file.write(b"\0")
+    return str(wav_path)
+
+
 pytestmark = pytest.mark.usefixtures("disable_lazy_stt_install")
 
 
@@ -845,6 +857,39 @@ class TestTranscribeAudioDispatch:
 
         assert result["success"] is True
         mock_local.assert_called_once()
+
+    def test_oversized_local_file_reaches_dispatcher(self, oversized_wav):
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "local"}), \
+             patch("tools.transcription_tools._get_provider", return_value="local"), \
+             patch("tools.transcription_tools._transcribe_local",
+                   return_value={"success": True, "transcript": "hi"}) as mock_local:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(oversized_wav)
+
+        assert result["success"] is True
+        mock_local.assert_called_once()
+
+    def test_oversized_local_command_file_reaches_dispatcher(self, oversized_wav):
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "local_command"}), \
+             patch("tools.transcription_tools._get_provider", return_value="local_command"), \
+             patch("tools.transcription_tools._transcribe_local_command",
+                   return_value={"success": True, "transcript": "hi"}) as mock_command:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(oversized_wav)
+
+        assert result["success"] is True
+        mock_command.assert_called_once()
+
+    def test_oversized_remote_file_is_rejected_before_dispatch(self, oversized_wav):
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "openai"}), \
+             patch("tools.transcription_tools._get_provider", return_value="openai"), \
+             patch("tools.transcription_tools._transcribe_openai") as mock_openai:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(oversized_wav)
+
+        assert result["success"] is False
+        assert "File too large" in result["error"]
+        mock_openai.assert_not_called()
 
     def test_dispatches_to_openai(self, sample_ogg):
         with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "openai"}), \

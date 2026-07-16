@@ -396,7 +396,7 @@ class TestTranscribeCommandSTT:
         audio = _make_silent_wav(tmp_path / "input.wav")
         # Write the model into the transcript so we can assert it propagated.
         interpreter = sys.executable
-        payload = "import sys; open(sys.argv[2], 'w').write(sys.argv[1])"
+        payload = "import sys; open(sys.argv[2], 'w', encoding='utf-8').write(sys.argv[1])"
         cfg = {
             "command": f'"{interpreter}" -c "{payload}" {{model}} {{output_path}}',
             "model": "config-model",
@@ -410,7 +410,7 @@ class TestTranscribeCommandSTT:
     def test_config_model_used_when_no_override(self, tmp_path):
         audio = _make_silent_wav(tmp_path / "input.wav")
         interpreter = sys.executable
-        payload = "import sys; open(sys.argv[2], 'w').write(sys.argv[1])"
+        payload = "import sys; open(sys.argv[2], 'w', encoding='utf-8').write(sys.argv[1])"
         cfg = {
             "command": f'"{interpreter}" -c "{payload}" {{model}} {{output_path}}',
             "model": "config-model",
@@ -421,7 +421,7 @@ class TestTranscribeCommandSTT:
     def test_language_from_provider_config_wins(self, tmp_path):
         audio = _make_silent_wav(tmp_path / "input.wav")
         interpreter = sys.executable
-        payload = "import sys; open(sys.argv[2], 'w').write(sys.argv[1])"
+        payload = "import sys; open(sys.argv[2], 'w', encoding='utf-8').write(sys.argv[1])"
         cfg = {
             "command": f'"{interpreter}" -c "{payload}" {{language}} {{output_path}}',
             "language": "fr",
@@ -435,7 +435,7 @@ class TestTranscribeCommandSTT:
     def test_language_falls_back_to_stt_section(self, tmp_path):
         audio = _make_silent_wav(tmp_path / "input.wav")
         interpreter = sys.executable
-        payload = "import sys; open(sys.argv[2], 'w').write(sys.argv[1])"
+        payload = "import sys; open(sys.argv[2], 'w', encoding='utf-8').write(sys.argv[1])"
         cfg = {
             "command": f'"{interpreter}" -c "{payload}" {{language}} {{output_path}}',
         }
@@ -447,7 +447,7 @@ class TestTranscribeCommandSTT:
     def test_language_defaults_to_en(self, tmp_path):
         audio = _make_silent_wav(tmp_path / "input.wav")
         interpreter = sys.executable
-        payload = "import sys; open(sys.argv[2], 'w').write(sys.argv[1])"
+        payload = "import sys; open(sys.argv[2], 'w', encoding='utf-8').write(sys.argv[1])"
         cfg = {
             "command": f'"{interpreter}" -c "{payload}" {{language}} {{output_path}}',
         }
@@ -485,6 +485,24 @@ class TestTranscribeAudioDispatchToCommandProvider:
         assert result["success"] is True
         assert result["transcript"] == "dispatched via command"
         assert result["provider"] == "fake-cli"
+
+    def test_oversized_command_provider_file_is_rejected(self, tmp_path):
+        from tools.transcription_tools import MAX_FILE_SIZE
+
+        audio = tmp_path / "oversized.wav"
+        with audio.open("wb") as audio_file:
+            audio_file.seek(MAX_FILE_SIZE)
+            audio_file.write(b"\0")
+        cfg = self._config_with_command_provider("fake-cli", "unused {input_path}")
+
+        with patch("tools.transcription_tools._load_stt_config", return_value=cfg), \
+             patch("tools.transcription_tools._transcribe_command_stt",
+                   return_value={"success": True, "transcript": "hi"}) as mock_command:
+            result = transcribe_audio(str(audio))
+
+        assert result["success"] is False
+        assert "File too large" in result["error"]
+        mock_command.assert_not_called()
 
     def test_builtin_name_shadow_does_not_route_to_command(self, tmp_path):
         # User mis-configures stt.providers.openai as a command — must NOT

@@ -13,6 +13,7 @@ import gateway.run as gateway_run
 from gateway.config import Platform
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionSource
+from gateway.slash_commands import GatewaySlashCommandsMixin
 
 
 def _make_event(text="/reasoning", platform=Platform.TELEGRAM, user_id="12345", chat_id="67890"):
@@ -64,6 +65,12 @@ class _CapturingAgent:
 
 
 class TestReasoningCommand:
+    def test_gateway_runner_uses_slash_command_mixin_handler(self):
+        assert (
+            gateway_run.GatewayRunner._handle_reasoning_command
+            is GatewaySlashCommandsMixin._handle_reasoning_command
+        )
+
     @pytest.mark.asyncio
     async def test_reasoning_in_help_output(self):
         runner = _make_runner()
@@ -84,6 +91,54 @@ class TestReasoningCommand:
     def test_parse_reasoning_command_args_accepts_ascii_and_smart_global_flags(self):
         assert gateway_run.GatewayRunner._parse_reasoning_command_args("high --global") == ("high", True)
         assert gateway_run.GatewayRunner._parse_reasoning_command_args("—global xhigh") == ("xhigh", True)
+
+    @pytest.mark.parametrize(
+        "effort, expected_override",
+        [
+            ("max", {"enabled": True, "effort": "max"}),
+            ("none", {"enabled": False}),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_handle_reasoning_command_accepts_session_override(
+        self,
+        tmp_path,
+        monkeypatch,
+        effort,
+        expected_override,
+    ):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text("agent:\n  reasoning_effort: medium\n", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        runner = _make_runner()
+        event = _make_event(f"/reasoning {effort}")
+        session_key = runner._session_key_for_source(event.source)
+
+        result = await runner._handle_reasoning_command(event)
+
+        saved = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert saved["agent"]["reasoning_effort"] == "medium"
+        assert runner._session_reasoning_overrides[session_key] == expected_override
+        assert effort in result
+
+    @pytest.mark.asyncio
+    async def test_handle_reasoning_command_rejects_ultra(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("agent:\n  reasoning_effort: medium\n", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        runner = _make_runner()
+        result = await runner._handle_reasoning_command(_make_event("/reasoning ultra"))
+
+        assert "Unknown" in result or "unknown" in result
+        assert "max" in result
+        assert "ultra" not in result.split("Valid", 1)[-1]
 
     @pytest.mark.asyncio
     async def test_reasoning_command_reloads_current_state_from_config(self, tmp_path, monkeypatch):

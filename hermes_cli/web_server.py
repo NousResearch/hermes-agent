@@ -53,6 +53,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes_cli import __version__, __release_date__
+from hermes_constants import VALID_REASONING_EFFORTS
 from hermes_cli.config import (
     cfg_get,
     DEFAULT_CONFIG,
@@ -696,7 +697,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "delegation.reasoning_effort": {
         "type": "select",
         "description": "Reasoning effort for delegated subagents",
-        "options": ["", "low", "medium", "high"],
+        "options": ["", "none", *VALID_REASONING_EFFORTS],
     },
     "updates.non_interactive_local_changes": {
         "type": "select",

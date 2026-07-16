@@ -1971,6 +1971,17 @@ class TestWebServerEndpoints:
         assert len(data["category_order"]) > 0
         assert "general" in data["category_order"]
 
+    def test_delegation_reasoning_schema_matches_generic_contract(self):
+        from hermes_constants import VALID_REASONING_EFFORTS
+
+        resp = self.client.get("/api/config/schema")
+        assert resp.status_code == 200
+        options = resp.json()["fields"]["delegation.reasoning_effort"]["options"]
+
+        assert options == ["", "none", *VALID_REASONING_EFFORTS]
+        assert "max" in options
+        assert "ultra" not in options
+
     def test_get_config_defaults(self):
         resp = self.client.get("/api/config/defaults")
         assert resp.status_code == 200

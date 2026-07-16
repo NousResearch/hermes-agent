@@ -1286,7 +1286,7 @@ Control how much "thinking" the model does before responding:
 
 ```yaml
 agent:
-  reasoning_effort: ""   # empty = medium (default). Options: none, minimal, low, medium, high, xhigh (max)
+  reasoning_effort: ""   # empty = medium (default). Options: none, minimal, low, medium, high, xhigh, max
 ```
 
 When unset (default), reasoning effort defaults to "medium" — a balanced level that works well for most tasks. Setting a value overrides it — higher reasoning effort gives better results on complex tasks at the cost of more tokens and latency.
@@ -1295,11 +1295,11 @@ When unset (default), reasoning effort defaults to "medium" — a balanced level
 These models use *adaptive* thinking and don't accept the usual `reasoning.effort`
 field — OpenRouter ignores it for them. Hermes transparently routes your
 `reasoning_effort` to OpenRouter's `verbosity` parameter instead (which maps to
-Anthropic's `output_config.effort`), so the same `low`/`medium`/`high`/`xhigh`
+Anthropic's `output_config.effort`), so the same `low`/`medium`/`high`/`xhigh`/`max`
 knob keeps working — no extra configuration needed. `none` (or unset) leaves the
-model on its own adaptive default. (`max` is accepted on the wire but is not a
-selectable `reasoning_effort` value; `xhigh` is the configurable ceiling.) The
-native Anthropic provider already controls effort directly and is unaffected.
+model on its own adaptive default. `max` is selectable, and `xhigh` remains a
+distinct level below `max`. The native Anthropic provider already controls
+effort directly and is unaffected.
 :::
 
 You can also change the reasoning effort at runtime with the `/reasoning` command:

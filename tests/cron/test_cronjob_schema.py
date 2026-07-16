@@ -39,3 +39,13 @@ def test_cronjob_schema_required_array_unchanged():
     from tools.cronjob_tools import CRONJOB_SCHEMA
 
     assert CRONJOB_SCHEMA["parameters"]["required"] == ["action"]
+
+
+def test_cronjob_schema_reasoning_effort_matches_generic_contract():
+    from hermes_constants import VALID_REASONING_EFFORTS
+    from tools.cronjob_tools import CRONJOB_SCHEMA
+
+    enum = CRONJOB_SCHEMA["parameters"]["properties"]["reasoning_effort"]["enum"]
+    assert enum == [*VALID_REASONING_EFFORTS, "none"]
+    assert "max" in enum
+    assert "ultra" not in enum

@@ -10,11 +10,19 @@ from gateway.config import PlatformConfig
 
 
 def _ensure_discord_mock():
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
+    def _describe(**kwargs):
+        def decorator(fn):
+            fn.__discord_app_commands_param_description__ = kwargs
+            return fn
+
+        return decorator
+
+    existing = sys.modules.get("discord")
+    if existing is not None and isinstance(getattr(existing, "__file__", None), str):
         # Real discord is installed — nothing to do.
         return
 
-    if sys.modules.get("discord") is None:
+    if existing is None:
         discord_mod = MagicMock()
         discord_mod.Intents.default.return_value = MagicMock()
         discord_mod.DMChannel = type("DMChannel", (), {})
@@ -44,7 +52,7 @@ def _ensure_discord_mock():
                 self.parent = parent
 
         discord_mod.app_commands = SimpleNamespace(
-            describe=lambda **kwargs: (lambda fn: fn),
+            describe=_describe,
             choices=lambda **kwargs: (lambda fn: fn),
             autocomplete=lambda **kwargs: (lambda fn: fn),
             Choice=lambda **kwargs: SimpleNamespace(**kwargs),
@@ -66,6 +74,11 @@ def _ensure_discord_mock():
     # need onto discord.app_commands — the flat /skill command uses
     # @app_commands.autocomplete and not every other mock stub exposes it.
     _app = getattr(sys.modules["discord"], "app_commands", None)
+    if _app is not None:
+        try:
+            _app.describe = _describe
+        except Exception:
+            pass
     if _app is not None and not hasattr(_app, "autocomplete"):
         try:
             _app.autocomplete = lambda **kwargs: (lambda fn: fn)
@@ -84,6 +97,7 @@ class FakeTree:
 
     def command(self, *, name, description):
         def decorator(fn):
+            fn.__discord_description__ = description
             self.commands[name] = fn
             return fn
 
@@ -156,6 +170,26 @@ async def test_registers_native_restart_slash_command(adapter):
         "/restart",
         "Restart requested~",
     )
+
+
+@pytest.mark.asyncio
+async def test_registers_native_reasoning_descriptions_mention_max(adapter):
+    adapter._run_simple_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    command = adapter._client.tree.commands["reasoning"]
+    command_description = getattr(command, "__discord_description__", "").lower()
+    parameter_descriptions = getattr(
+        command,
+        "__discord_app_commands_param_description__",
+        {},
+    )
+    effort_description = parameter_descriptions.get("effort", "").lower()
+
+    assert "max" in command_description
+    assert "ultra" not in command_description
+    assert "max" in effort_description
+    assert "ultra" not in effort_description
 
 
 @pytest.mark.asyncio

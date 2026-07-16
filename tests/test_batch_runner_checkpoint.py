@@ -10,7 +10,7 @@ import pytest
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from batch_runner import BatchRunner, _process_batch_worker
+from batch_runner import BatchRunner, _process_batch_worker, main as run_batch
 
 
 @pytest.fixture
@@ -84,6 +84,56 @@ class TestSaveCheckpoint:
         tmp_files = [f for f in runner.checkpoint_file.parent.iterdir()
                      if ".tmp" in f.name]
         assert len(tmp_files) == 0
+
+
+def test_run_batch_accepts_max_reasoning_effort(tmp_path, monkeypatch, capsys):
+    dataset = tmp_path / "prompts.jsonl"
+    dataset.write_text('{"prompt": "hi"}\n', encoding="utf-8")
+    captured = {}
+
+    class _FakeBatchRunner:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def run(self, *, resume=False):
+            captured["resume"] = resume
+
+    monkeypatch.setattr("batch_runner.BatchRunner", _FakeBatchRunner)
+
+    run_batch(
+        dataset_file=str(dataset),
+        batch_size=1,
+        run_name="reasoning-max",
+        reasoning_effort="max",
+        api_key="test",
+    )
+
+    assert captured["reasoning_config"] == {"enabled": True, "effort": "max"}
+    assert "Reasoning effort: max" in capsys.readouterr().out
+
+
+def test_run_batch_rejects_ultra_reasoning_effort(tmp_path, monkeypatch, capsys):
+    dataset = tmp_path / "prompts.jsonl"
+    dataset.write_text('{"prompt": "hi"}\n', encoding="utf-8")
+
+    class _FakeBatchRunner:
+        def __init__(self, **kwargs):
+            raise AssertionError("BatchRunner should not be constructed")
+
+    monkeypatch.setattr("batch_runner.BatchRunner", _FakeBatchRunner)
+
+    run_batch(
+        dataset_file=str(dataset),
+        batch_size=1,
+        run_name="reasoning-ultra",
+        reasoning_effort="ultra",
+        api_key="test",
+    )
+
+    out = capsys.readouterr().out
+    assert "must be one of" in out
+    assert "max" in out
+    assert "ultra" not in out.split("must be one of", 1)[-1]
 
 
 class TestLoadCheckpoint:

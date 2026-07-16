@@ -66,6 +66,15 @@ class TestTool:
         assert res.get("success") is True
         assert get_job(res["job_id"])["reasoning_effort"] == "medium"
 
+    def test_tool_create_accepts_max_reasoning_effort(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CRONJOB_TOOL", "1")
+        res = self._call(
+            action="create", prompt="brief", schedule="every 1h",
+            reasoning_effort="max",
+        )
+        assert res.get("success") is True
+        assert get_job(res["job_id"])["reasoning_effort"] == "max"
+
     def test_tool_update_threads_reasoning_effort(self, monkeypatch):
         monkeypatch.setenv("HERMES_CRONJOB_TOOL", "1")
         created = self._call(action="create", prompt="brief", schedule="every 1h")
@@ -119,3 +128,6 @@ class TestResolution:
 
     def test_none_disables_reasoning(self):
         assert _resolve("none", "xhigh") == {"enabled": False}
+
+    def test_max_resolves(self):
+        assert _resolve("max", "medium") == {"enabled": True, "effort": "max"}

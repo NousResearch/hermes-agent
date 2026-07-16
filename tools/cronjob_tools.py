@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from hermes_constants import display_hermes_home
+from hermes_constants import VALID_REASONING_EFFORTS, display_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -1139,8 +1139,8 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "reasoning_effort": {
                 "type": "string",
-                "enum": ["minimal", "low", "medium", "high", "xhigh", "none"],
-                "description": "Optional per-job reasoning effort override for LLM-driven jobs. When set, this job uses this reasoning level instead of the global config.yaml agent.reasoning_effort — useful to run a cheap recurring job at 'minimal'/'low' or a hard one at 'xhigh' without changing the global default that every session and other cron uses. 'none' disables reasoning for the job. Ignored for no_agent jobs. On update, pass an empty string to clear the override (restores the config.yaml fallback)."
+                "enum": [*VALID_REASONING_EFFORTS, "none"],
+                "description": "Optional per-job reasoning effort override for LLM-driven jobs. When set, this job uses this reasoning level instead of the global config.yaml agent.reasoning_effort — useful to run a cheap recurring job at 'minimal'/'low' or a hard one at 'xhigh'/'max' without changing the global default that every session and other cron uses. 'none' disables reasoning for the job. Ignored for no_agent jobs. On update, pass an empty string to clear the override (restores the config.yaml fallback)."
             },
         },
         "required": ["action"]

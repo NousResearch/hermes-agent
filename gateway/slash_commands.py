@@ -40,6 +40,7 @@ from gateway.session import (
     is_shared_multi_user_session,
 )
 from hermes_cli.config import atomic_config_write, cfg_get, clear_model_endpoint_credentials
+from hermes_constants import parse_reasoning_effort
 from utils import (
     atomic_json_write,
     base_url_host_matches,
@@ -3271,11 +3272,8 @@ class GatewaySlashCommandsMixin:
             )
             await self._announce_switch(event.source, "Reasoning", _old_effort, _new_effort)
             return t("gateway.reasoning.reset_done")
-        if effort == "none":
-            parsed = {"enabled": False}
-        elif effort in {"minimal", "low", "medium", "high", "xhigh"}:
-            parsed = {"enabled": True, "effort": effort}
-        else:
+        parsed = parse_reasoning_effort(effort)
+        if parsed is None:
             return t(
                 "gateway.reasoning.unknown_arg",
                 arg=effort or raw_args.lower(),

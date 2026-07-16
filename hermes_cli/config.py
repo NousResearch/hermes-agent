@@ -740,8 +740,8 @@ def get_container_exec_info() -> Optional[dict]:
 # Config paths
 # =============================================================================
 
-# Re-export from hermes_constants — canonical definition lives there.
-from hermes_constants import get_hermes_home  # noqa: F811,E402
+# Re-export from hermes_constants — canonical definitions live there.
+from hermes_constants import VALID_REASONING_EFFORTS, get_hermes_home  # noqa: F811,E402
 from utils import atomic_replace, fast_safe_load
 
 def get_config_path() -> Path:
@@ -2321,8 +2321,8 @@ DEFAULT_CONFIG = {
                                      # (API, tools, iteration budget), never a delegation
                                      # stopwatch. Set a positive number of seconds
                                      # (floor 30s) to enforce a hard cap.
-        "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
-                                 # "low", "minimal", "none" (empty = inherit parent's level)
+        "reasoning_effort": "",  # reasoning effort for subagents: "max", "xhigh", "high",
+                                  # "medium", "low", "minimal", "none" (empty = inherit parent's level)
         "max_concurrent_children": 3,  # unified concurrency cap: max parallel children per batch
                                        # AND max concurrent background (background=true)
                                        # delegation units. New async dispatches beyond the cap
@@ -5436,13 +5436,13 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                     # Optional per-entry reasoning_effort override (#21256).
                     _re = entry.get("reasoning_effort")
                     if _re is not None and str(_re).strip():
-                        _valid = {"none", "minimal", "low", "medium", "high", "xhigh"}
+                        _valid = {"none", *VALID_REASONING_EFFORTS}
                         if str(_re).strip().lower() not in _valid:
                             issues.append(ConfigIssue(
                                 "warning",
                                 f"fallback_model[{i}] has invalid reasoning_effort "
                                 f"'{_re}' — ignored (global effort used)",
-                                "Use one of: none, minimal, low, medium, high, xhigh",
+                                f"Use one of: {', '.join(('none', *VALID_REASONING_EFFORTS))}",
                             ))
         elif not isinstance(fb, dict):
             issues.append(ConfigIssue(

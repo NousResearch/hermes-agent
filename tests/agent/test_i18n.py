@@ -169,6 +169,18 @@ def test_t_unknown_language_uses_english():
     assert i18n.t("approval.denied", lang="klingon") == i18n.t("approval.denied", lang="en")
 
 
+@pytest.mark.parametrize("lang", list(i18n.SUPPORTED_LANGUAGES))
+def test_reasoning_help_advertises_max_but_not_ultra(lang: str):
+    raw = _load_raw(lang)
+    status = raw["gateway"]["reasoning"]["status"]
+    unknown = raw["gateway"]["reasoning"]["unknown_arg"]
+
+    assert "xhigh|max|reset" in status
+    assert "high, xhigh, max" in unknown
+    assert "ultra" not in status.lower()
+    assert "ultra" not in unknown.lower()
+
+
 # ---------------------------------------------------------------------------
 # _locales_dir resolution ladder -- regression for #23943 / #27632 / #35374.
 # Sealed installs (Nix store venv, pip wheel) have no source tree next to

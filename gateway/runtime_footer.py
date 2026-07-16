@@ -194,7 +194,7 @@ def format_runtime_footer(
             elif context_tokens and context_tokens > 0:
                 parts.append(_humanize_tok(context_tokens))
         elif field == "reasoning":
-            # Model reasoning-effort level (none/minimal/low/medium/high/xhigh).
+            # Model reasoning-effort level (none/minimal/low/medium/high/xhigh/max).
             r = (reasoning or "").strip()
             if r:
                 parts.append(f"r:{r}")

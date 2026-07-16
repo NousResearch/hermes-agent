@@ -1,5 +1,6 @@
 """Tests for hermes_constants module."""
 
+import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -488,6 +489,21 @@ class TestParseReasoningEffort:
         """
         documented = {"minimal", "low", "medium", "high", "xhigh", "max"}
         assert documented.issubset(set(VALID_REASONING_EFFORTS))
+
+    def test_web_reasoning_contract_matches_python_source_of_truth(self):
+        """The Web dashboard must not drift from the generic Python contract."""
+        contract_path = (
+            Path(__file__).parents[1]
+            / "web"
+            / "src"
+            / "lib"
+            / "reasoning-effort-values.json"
+        )
+        web_efforts = json.loads(contract_path.read_text(encoding="utf-8"))
+
+        assert isinstance(VALID_REASONING_EFFORTS, tuple)
+        assert web_efforts == list(VALID_REASONING_EFFORTS)
+        assert "ultra" not in web_efforts
 
 
 class TestSecureParentDir:

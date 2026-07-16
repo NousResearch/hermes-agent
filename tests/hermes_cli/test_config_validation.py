@@ -146,6 +146,31 @@ class TestFallbackModelValidation:
         fb_issues = [i for i in issues if "fallback" in i.message.lower()]
         assert len(fb_issues) == 0
 
+    def test_fallback_reasoning_effort_accepts_max(self):
+        issues = validate_config_structure({
+            "fallback_model": [
+                {
+                    "provider": "openrouter",
+                    "model": "anthropic/claude-sonnet-4",
+                    "reasoning_effort": "max",
+                },
+            ],
+        })
+        fb_issues = [i for i in issues if "reasoning_effort" in i.message]
+        assert len(fb_issues) == 0
+
+    def test_fallback_reasoning_effort_rejects_ultra(self):
+        issues = validate_config_structure({
+            "fallback_model": [
+                {
+                    "provider": "openrouter",
+                    "model": "anthropic/claude-sonnet-4",
+                    "reasoning_effort": "ultra",
+                },
+            ],
+        })
+        assert any("reasoning_effort" in i.message and "ultra" in i.message for i in issues)
+
     def test_fallback_list_entry_missing_provider(self):
         issues = validate_config_structure({
             "fallback_model": [

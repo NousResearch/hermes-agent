@@ -1283,14 +1283,16 @@ def test_session_cwd_set_profile_session_updates_profile_db(monkeypatch, tmp_pat
     captured = {}
 
     class ProfileDB:
-        def update_session_cwd(self, session_id, cwd, git_branch=None, git_repo_root=None):
+        def replace_session_workspace(
+            self, session_id, cwd, git_branch=None, git_repo_root=None
+        ):
             captured["profile_update"] = (session_id, cwd)
 
         def close(self):
             captured["profile_closed"] = True
 
     class LaunchDB:
-        def update_session_cwd(self, *_args):
+        def replace_session_workspace(self, *_args):
             captured["launch_update"] = True
 
     profile_db = ProfileDB()

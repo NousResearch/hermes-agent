@@ -1322,9 +1322,45 @@ class TestWebServerEndpoints:
         assert resp.json()["cwd"] == str(workspace.resolve())
         db = SessionDB()
         try:
-            assert db.get_session("move-me")["cwd"] == str(workspace.resolve())
+            session = db.get_session("move-me")
+            assert session["cwd"] == str(workspace.resolve())
+            assert session["git_branch"] is None
+            assert session["git_repo_root"] is None
         finally:
             db.close()
+
+    def test_move_session_workspace_targets_requested_profile(self, tmp_path):
+        from hermes_state import SessionDB
+        from hermes_cli import profiles as profiles_mod
+
+        workspace = tmp_path / "worker-project"
+        workspace.mkdir()
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_home.mkdir(parents=True)
+
+        default_db = SessionDB()
+        worker_db = SessionDB(db_path=worker_home / "state.db")
+        try:
+            default_db.create_session(session_id="shared-id", source="desktop", cwd="/default")
+            worker_db.create_session(session_id="shared-id", source="desktop", cwd="/worker")
+        finally:
+            default_db.close()
+            worker_db.close()
+
+        resp = self.client.patch(
+            "/api/sessions/shared-id",
+            json={"cwd": str(workspace), "profile": "worker"},
+        )
+
+        assert resp.status_code == 200
+        default_db = SessionDB()
+        worker_db = SessionDB(db_path=worker_home / "state.db")
+        try:
+            assert default_db.get_session("shared-id")["cwd"] == "/default"
+            assert worker_db.get_session("shared-id")["cwd"] == str(workspace.resolve())
+        finally:
+            default_db.close()
+            worker_db.close()
 
     def test_move_session_workspace_rejects_missing_directory(self, tmp_path):
         from hermes_state import SessionDB

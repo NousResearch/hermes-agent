@@ -169,6 +169,41 @@ class TestSessionLifecycle:
 
         assert db.get_session("s1")["git_repo_root"] == "/work/repo"
 
+    def test_replace_session_workspace_clears_stale_git_metadata(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.update_session_cwd(
+            "s1", "/work/old", git_branch="old-branch", git_repo_root="/work/old"
+        )
+
+        db.replace_session_workspace("s1", "/work/new")
+
+        session = db.get_session("s1")
+        assert session["cwd"] == "/work/new"
+        assert session["git_branch"] is None
+        assert session["git_repo_root"] is None
+
+    def test_async_git_metadata_does_not_cross_workspace_moves(self, db):
+        db.create_session(session_id="s1", source="cli", cwd="/work/new")
+
+        db.update_session_git_metadata_if_cwd(
+            "s1", "/work/old", git_branch="old-branch", git_repo_root="/work/old"
+        )
+
+        session = db.get_session("s1")
+        assert session["cwd"] == "/work/new"
+        assert session["git_branch"] is None
+        assert session["git_repo_root"] is None
+
+    def test_async_git_metadata_partial_probe_preserves_existing_fields(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.replace_session_workspace("s1", "/work/new", "main", "/work/new")
+
+        db.update_session_git_metadata_if_cwd("s1", "/work/new", git_branch="feature")
+
+        session = db.get_session("s1")
+        assert session["git_branch"] == "feature"
+        assert session["git_repo_root"] == "/work/new"
+
     def test_distinct_session_cwds_aggregates_history(self, db):
         db.create_session("s1", "cli", cwd="/repo")
         db.create_session("s2", "cli", cwd="/repo")

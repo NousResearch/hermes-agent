@@ -1858,7 +1858,7 @@ def _persist_session_git_meta(session: dict, cwd: str) -> None:
                 return
             with _session_db(db_session) as db:
                 if db is not None:
-                    db.update_session_cwd(session_key, cwd, branch, root)
+                    db.update_session_git_metadata_if_cwd(session_key, cwd, branch, root)
         except Exception:
             logger.debug("failed to persist session git metadata", exc_info=True)
 
@@ -1880,7 +1880,7 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
     with _session_db(session) as db:
         if db is not None:
             try:
-                db.update_session_cwd(session.get("session_key", ""), resolved)
+                db.replace_session_workspace(session.get("session_key", ""), resolved)
             except Exception:
                 logger.debug("failed to persist session cwd", exc_info=True)
     # Branch/repo-root probes are git subprocesses — capture them off the hot path.

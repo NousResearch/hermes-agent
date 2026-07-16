@@ -10107,7 +10107,7 @@ async def update_session_endpoint(session_id: str, body: SessionUpdate):
             result["archived"] = bool(body.archived)
         if workspace_update is not None:
             cwd, branch, repo_root = workspace_update
-            db.update_session_cwd(sid, cwd, branch, repo_root)
+            db.replace_session_workspace(sid, cwd, branch, repo_root)
             result.update({"cwd": cwd, "branch": branch, "git_repo_root": repo_root})
         return result
     finally:

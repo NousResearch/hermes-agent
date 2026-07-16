@@ -22,6 +22,7 @@ import {
   setSessions,
   workspaceCwdForNewSession
 } from '@/store/session'
+import { $sessionTiles } from '@/store/session-states'
 import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
 // First-class, per-profile Projects (named, multi-folder workspaces). State is
@@ -216,8 +217,12 @@ export async function moveSessionToProject(
     throw new Error(translateNow('sidebar.row.moveProjectWrongProfile'))
   }
 
-  const isActive = session.id === $selectedStoredSessionId.get()
-  const runtimeId = isActive ? $activeSessionId.get() : null
+  const isPrimary = session.id === $selectedStoredSessionId.get()
+
+  const runtimeId = isPrimary
+    ? $activeSessionId.get()
+    : ($sessionTiles.get().find(tile => tile.storedSessionId === session.id)?.runtimeId ?? null)
+
   let result: SessionWorkspaceUpdateResponse
 
   if (runtimeId) {
@@ -255,7 +260,7 @@ export async function moveSessionToProject(
     )
   )
 
-  if (isActive) {
+  if (isPrimary) {
     setCurrentCwd(result.cwd)
     setCurrentBranch(result.branch)
   }

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { $sidebarAgentsGrouped } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $activeSessionId, $currentCwd, $selectedStoredSessionId, $sessions, setSessions } from '@/store/session'
+import { $sessionTiles } from '@/store/session-states'
 
 import {
   $activeProjectId,
@@ -114,8 +115,10 @@ describe('moveSessionToProject', () => {
     vi.clearAllMocks()
     $activeSessionId.set(null)
     $activeGatewayProfile.set('default')
+    $currentCwd.set('/old')
     $selectedStoredSessionId.set(null)
     $projectTree.set([project])
+    $sessionTiles.set([])
     setSessions([
       {
         archived: false,
@@ -180,6 +183,30 @@ describe('moveSessionToProject', () => {
       git_branch: 'feature',
       git_repo_root: '/srv/demo'
     })
+  })
+
+  it('moves an idle session tile through its live runtime', async () => {
+    $sessionTiles.set([{ runtimeId: 'tile-runtime-1', storedSessionId: 'stored-1' }])
+
+    const request = vi.fn(async (method: string) => {
+      if (method === 'session.cwd.set') {
+        return { branch: 'main', cwd: '/srv/demo' }
+      }
+
+      return { projects: [project], scoped_session_ids: [] }
+    })
+
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+
+    await moveSessionToProject({ id: 'stored-1' }, project)
+
+    expect(request).toHaveBeenCalledWith('session.cwd.set', {
+      cwd: '/srv/demo',
+      session_id: 'tile-runtime-1'
+    })
+    expect(setSessionWorkspace).not.toHaveBeenCalled()
+    expect($currentCwd.get()).not.toBe('/srv/demo')
+    expect($sessions.get()[0]?.cwd).toBe('/srv/demo')
   })
 
   it('refuses to move a background-profile session with the active profile project list', async () => {

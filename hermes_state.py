@@ -2230,6 +2230,66 @@ class SessionDB:
 
         self._execute_write(_do)
 
+    def replace_session_workspace(
+        self, session_id: str, cwd: str, git_branch: str = None, git_repo_root: str = None
+    ) -> None:
+        """Replace a session's workspace and its derived Git metadata.
+
+        Unlike :meth:`update_session_cwd`, this deliberately clears empty
+        branch/root values.  An explicit workspace move must not leave the
+        previous repository's metadata attached while fresh probes run.
+        """
+        if not session_id or not cwd:
+            return
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET cwd = ?, git_branch = ?, git_repo_root = ? WHERE id = ?",
+                (
+                    cwd,
+                    (git_branch or "").strip() or None,
+                    (git_repo_root or "").strip() or None,
+                    session_id,
+                ),
+            )
+
+        self._execute_write(_do)
+
+    def update_session_git_metadata_if_cwd(
+        self, session_id: str, cwd: str, git_branch: str = None, git_repo_root: str = None
+    ) -> None:
+        """Persist probed Git metadata only if ``cwd`` is still current.
+
+        Git probes run asynchronously.  The compare-and-set guard prevents a
+        slow probe for workspace A from overwriting metadata after the user has
+        already moved the session to workspace B.
+        """
+        if not session_id or not cwd:
+            return
+
+        branch = (git_branch or "").strip()
+        repo_root = (git_repo_root or "").strip()
+        sets = []
+        params = []
+        if branch:
+            sets.append("git_branch = ?")
+            params.append(branch)
+        if repo_root:
+            sets.append("git_repo_root = ?")
+            params.append(repo_root)
+        if not sets:
+            return
+
+        params.extend((session_id, cwd))
+
+        def _do(conn):
+            conn.execute(
+                f"UPDATE sessions SET {', '.join(sets)} WHERE id = ? AND cwd = ?",
+                params,
+            )
+
+        self._execute_write(_do)
+
     def backfill_repo_roots(self, cwd_to_root: Dict[str, str]) -> None:
         """Persist resolved git repo roots for cwds that don't have one yet.
 

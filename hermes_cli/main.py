@@ -4030,7 +4030,12 @@ def _prompt_reasoning_effort_selection(efforts, current_effort=""):
 
 
 
-def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
+def _prompt_api_key(
+    pconfig,
+    existing_key: str,
+    provider_id: str = "",
+    existing_source: str = "",
+) -> tuple:
     """Shared API-key entry point for ``hermes setup`` / ``hermes model``.
 
     Handles both first-time entry and the already-configured case.  When a key
@@ -4084,8 +4089,14 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
         # Nothing we can rewrite; just acknowledge and move on.
         print()
         return existing_key, False
+    pool_backed = existing_source.startswith("credential_pool:")
+    menu = (
+        "  [K]eep / [R]eplace (default K): "
+        if pool_backed
+        else "  [K]eep / [R]eplace / [C]lear (default K): "
+    )
     try:
-        choice = input("  [K]eep / [R]eplace / [C]lear (default K): ").strip().lower()
+        choice = input(menu).strip().lower()
     except (KeyboardInterrupt, EOFError):
         print()
         choice = "k"
@@ -4101,7 +4112,7 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
         print()
         return new_key, False
 
-    if choice.startswith("c"):
+    if choice.startswith("c") and not pool_backed:
         save_env_value(key_env, "")
         print(
             f"  API key cleared.  Re-run `hermes setup` to configure {pconfig.name} again."

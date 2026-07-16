@@ -75,6 +75,13 @@ def bedrock_model_routable_from_region(model_id: str, region_name: str) -> bool:
     return matched_geo == geo
 
 
+def _existing_api_key_for_model_flow(provider_id: str, pconfig) -> tuple[str, str]:
+    """Resolve an existing wizard credential without changing its storage."""
+    from hermes_cli.auth import _resolve_api_key_provider_secret
+
+    return _resolve_api_key_provider_secret(provider_id, pconfig)
+
+
 def _prune_replaced_custom_model_config_credentials(
     base_url: str,
     *,
@@ -176,8 +183,6 @@ def _model_flow_openrouter(config, current_model=""):
         _save_model_choice,
         deactivate_provider,
     )
-    from hermes_cli.config import get_env_value
-
     # Route through _prompt_api_key so users can replace a stale/broken key
     # in-flow (K/R/C) instead of having to edit ~/.hermes/.env by hand. The
     # previous bypass-when-key-exists branch left no way to recover from a
@@ -189,11 +194,16 @@ def _model_flow_openrouter(config, current_model=""):
         auth_type="api_key",
         api_key_env_vars=("OPENROUTER_API_KEY",),
     )
-    existing_key = get_env_value("OPENROUTER_API_KEY") or ""
+    existing_key, existing_source = _existing_api_key_for_model_flow("openrouter", pconfig)
     if not existing_key:
         print("Get one at: https://openrouter.ai/keys")
         print()
-    _resolved, abort = _prompt_api_key(pconfig, existing_key, provider_id="openrouter")
+    _resolved, abort = _prompt_api_key(
+        pconfig,
+        existing_key,
+        provider_id="openrouter",
+        existing_source=existing_source,
+    )
     if abort:
         return
 
@@ -1955,14 +1965,13 @@ def _model_flow_kimi(config, current_model=""):
     base_url_env = pconfig.base_url_env_var or ""
 
     # Step 1: Check / prompt for API key
-    existing_key = ""
-    for ev in pconfig.api_key_env_vars:
-        existing_key = get_env_value(ev) or os.getenv(ev, "")
-        if existing_key:
-            break
+    existing_key, existing_source = _existing_api_key_for_model_flow(provider_id, pconfig)
 
     existing_key, abort = _prompt_api_key(
-        pconfig, existing_key, provider_id=provider_id
+        pconfig,
+        existing_key,
+        provider_id=provider_id,
+        existing_source=existing_source,
     )
     if abort:
         return
@@ -2040,14 +2049,13 @@ def _model_flow_stepfun(config, current_model=""):
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
 
-    existing_key = ""
-    for ev in pconfig.api_key_env_vars:
-        existing_key = get_env_value(ev) or os.getenv(ev, "")
-        if existing_key:
-            break
+    existing_key, existing_source = _existing_api_key_for_model_flow(provider_id, pconfig)
 
     existing_key, abort = _prompt_api_key(
-        pconfig, existing_key, provider_id=provider_id
+        pconfig,
+        existing_key,
+        provider_id=provider_id,
+        existing_source=existing_source,
     )
     if abort:
         return
@@ -2622,14 +2630,13 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     base_url_env = pconfig.base_url_env_var or ""
 
     # Check / prompt for API key
-    existing_key = ""
-    for ev in pconfig.api_key_env_vars:
-        existing_key = get_env_value(ev) or os.getenv(ev, "")
-        if existing_key:
-            break
+    existing_key, existing_source = _existing_api_key_for_model_flow(provider_id, pconfig)
 
     existing_key, abort = _prompt_api_key(
-        pconfig, existing_key, provider_id=provider_id
+        pconfig,
+        existing_key,
+        provider_id=provider_id,
+        existing_source=existing_source,
     )
     if abort:
         return

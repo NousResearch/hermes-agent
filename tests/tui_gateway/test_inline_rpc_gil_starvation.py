@@ -19,6 +19,7 @@ import json
 import sys
 import threading
 import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -147,6 +148,195 @@ def test_dispatch_pet_info_does_not_block_prompt_submit(server):
     )
 
     released.set()
+
+
+def test_on_demand_model_options_does_not_block_inline_requests(server):
+    """Desktop model pickers invoke model.options on demand, but its provider,
+    config, and model-catalog I/O must still run outside the dispatch thread.
+    """
+    released = threading.Event()
+
+    def blocked_model_options(rid, params):
+        released.wait(timeout=1)
+        return server._ok(rid, {"providers": []})
+
+    server._methods["model.options"] = blocked_model_options
+    server._methods["fast.check"] = lambda rid, params: server._ok(rid, {"ok": True})
+
+    try:
+        t0 = time.monotonic()
+        assert server.dispatch(
+            {"id": "models", "method": "model.options", "params": {}}
+        ) is None
+
+        fast_resp = server.dispatch(
+            {"id": "fast", "method": "fast.check", "params": {}}
+        )
+        fast_elapsed = time.monotonic() - t0
+
+        assert fast_resp["result"] == {"ok": True}
+        assert fast_elapsed < 0.5
+    finally:
+        released.set()
+
+
+def test_model_options_pool_uses_request_time_runtime_snapshot(server, monkeypatch):
+    """A queued model-options read must report one coherent pre-dispatch runtime."""
+    from hermes_cli.inventory import ConfigContext
+
+    agent = SimpleNamespace(
+        model="transitional-live-model",
+        provider="transitional-live-provider",
+        base_url="https://transitional.invalid/v1",
+        _primary_runtime={
+            "model": "request-model",
+            "provider": "request-provider",
+            "base_url": "https://request.invalid/v1",
+        },
+    )
+    server._sessions["session-1"] = {"agent": agent}
+
+    monkeypatch.setattr(
+        "hermes_cli.inventory.load_picker_context",
+        lambda: ConfigContext(
+            current_provider="disk-provider",
+            current_model="disk-model",
+            current_base_url="https://disk.invalid/v1",
+            user_providers={},
+            custom_providers=[],
+        ),
+    )
+
+    def build_payload(ctx, **_kwargs):
+        return {
+            "providers": [],
+            "model": ctx.current_model,
+            "provider": ctx.current_provider,
+            "base_url": ctx.current_base_url,
+        }
+
+    monkeypatch.setattr("hermes_cli.inventory.build_models_payload", build_payload)
+
+    worker_entered = threading.Event()
+    release_worker = threading.Event()
+    response_written = threading.Event()
+    original_handle_request = server.handle_request
+
+    def blocked_handle_request(request):
+        if request.get("method") == "model.options":
+            worker_entered.set()
+            if not release_worker.wait(timeout=2):
+                raise TimeoutError("model.options worker was not released")
+        return original_handle_request(request)
+
+    monkeypatch.setattr(server, "handle_request", blocked_handle_request)
+
+    class CaptureTransport:
+        def __init__(self):
+            self.frames = []
+
+        def write(self, frame):
+            self.frames.append(frame)
+            response_written.set()
+            return True
+
+        def close(self):
+            pass
+
+    transport = CaptureTransport()
+    request = {
+        "id": "models",
+        "method": "model.options",
+        "params": {"session_id": "session-1", "explicit_only": True},
+    }
+
+    try:
+        assert server.dispatch(request, transport) is None
+        assert worker_entered.wait(timeout=1)
+
+        agent.model = "half-switched-model"
+        agent.provider = "half-switched-provider"
+        agent.base_url = "https://half-switched.invalid/v1"
+        agent._primary_runtime = {
+            "model": "later-model",
+            "provider": "later-provider",
+            "base_url": "https://later.invalid/v1",
+        }
+        release_worker.set()
+
+        assert response_written.wait(timeout=2)
+    finally:
+        release_worker.set()
+
+    assert request == {
+        "id": "models",
+        "method": "model.options",
+        "params": {"session_id": "session-1", "explicit_only": True},
+    }
+    assert transport.frames == [
+        {
+            "jsonrpc": "2.0",
+            "id": "models",
+            "result": {
+                "providers": [],
+                "model": "request-model",
+                "provider": "request-provider",
+                "base_url": "https://request.invalid/v1",
+            },
+        }
+    ]
+
+
+def test_model_options_pool_snapshot_preserves_custom_provider_identity(server, monkeypatch):
+    """The worker's frozen runtime keeps the picker on its canonical custom row."""
+    from hermes_cli.inventory import ConfigContext
+
+    monkeypatch.setattr(
+        "hermes_cli.inventory.load_picker_context",
+        lambda: ConfigContext(
+            current_provider="custom:configured-provider",
+            current_model="disk-model",
+            current_base_url="https://disk.invalid/v1",
+            user_providers={},
+            custom_providers=[],
+        ),
+    )
+    canonical = MagicMock(return_value="custom:request-provider")
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.canonical_custom_identity",
+        canonical,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.inventory.build_models_payload",
+        lambda ctx, **_kwargs: {
+            "providers": [],
+            "model": ctx.current_model,
+            "provider": ctx.current_provider,
+            "base_url": ctx.current_base_url,
+        },
+    )
+
+    response = server._methods["model.options"](
+        "custom",
+        {
+            server._MODEL_OPTIONS_RUNTIME_SNAPSHOT: {
+                "model": "request-model",
+                "provider": "custom",
+                "base_url": "https://request.invalid/v1",
+            },
+        },
+    )
+
+    assert response["result"] == {
+        "providers": [],
+        "model": "request-model",
+        "provider": "custom:request-provider",
+        "base_url": "https://request.invalid/v1",
+    }
+    canonical.assert_called_once_with(
+        base_url="https://request.invalid/v1",
+        config_provider="custom:configured-provider",
+    )
 
 
 def test_rpc_pool_workers_supports_concurrent_long_handlers(server):

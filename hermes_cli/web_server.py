@@ -44,6 +44,11 @@ import urllib.error
 import urllib.parse
 import zipfile
 
+try:
+    import faulthandler
+except ImportError:  # pragma: no cover - optional in exotic Python builds
+    faulthandler = None
+
 from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_flags
 import urllib.request
 from pathlib import Path
@@ -19853,19 +19858,38 @@ def start_server(
                 _log.debug("loop noise filter install skipped: %s", exc)
 
             # ── Loop heartbeat watchdog (CF-1) ───────────────────────────
-            # Confirm the GIL-pressure hypothesis in production. Re-arm a 2s
-            # tick and measure the drift between when it *should* fire and
-            # when it actually does: a healthy loop drifts ~0, but a turn that
-            # holds the GIL blocks the loop and the next tick fires late by the
-            # stall duration. We log that so a stalled-loop WS drop is
-            # diagnosable from the gateway log. Uses loop.time() (monotonic)
-            # for drift, and call_later (not a task) so it dies with the loop —
-            # nothing to cancel on shutdown.
+            # The asyncio heartbeat logs drift after recovery. A one-shot
+            # faulthandler watchdog runs on Python's internal watchdog thread,
+            # so a sustained GIL stall also captures every Python thread while
+            # the stall is still active. Each healthy heartbeat resets the
+            # deadline; repeat=False prevents duplicate dumps during one stall.
             _hb_interval = 2.0
             _hb_stall_threshold = 5.0
+            _hb_dump_delay = _hb_interval + _hb_stall_threshold
             _hb_loop = asyncio.get_running_loop()
+            _hb_handle = None
+
+            def _arm_stall_dump() -> None:
+                try:
+                    if faulthandler is not None:
+                        faulthandler.dump_traceback_later(
+                            _hb_dump_delay,
+                            repeat=False,
+                            file=sys.stderr,
+                            exit=False,
+                        )
+                except Exception as exc:  # best-effort diagnostic only
+                    _log.debug("stall traceback watchdog unavailable: %s", exc)
+
+            def _cancel_stall_dump() -> None:
+                try:
+                    if faulthandler is not None:
+                        faulthandler.cancel_dump_traceback_later()
+                except Exception as exc:  # best-effort diagnostic only
+                    _log.debug("stall traceback watchdog cleanup skipped: %s", exc)
 
             def _loop_heartbeat(expected: float) -> None:
+                nonlocal _hb_handle
                 now = _hb_loop.time()
                 drift = now - expected
                 if drift > _hb_stall_threshold:
@@ -19873,17 +19897,25 @@ def start_server(
                         "event loop stalled %.1fs (GIL pressure suspected)",
                         drift,
                     )
-                _hb_loop.call_later(
+                _arm_stall_dump()
+                _hb_handle = _hb_loop.call_later(
                     _hb_interval, _loop_heartbeat, now + _hb_interval
                 )
 
-            _hb_loop.call_later(
-                _hb_interval, _loop_heartbeat, _hb_loop.time() + _hb_interval
-            )
-
-            await server.main_loop()
-            if server.started:
-                await server.shutdown()
+            try:
+                _arm_stall_dump()
+                _hb_handle = _hb_loop.call_later(
+                    _hb_interval,
+                    _loop_heartbeat,
+                    _hb_loop.time() + _hb_interval,
+                )
+                await server.main_loop()
+                if server.started:
+                    await server.shutdown()
+            finally:
+                if _hb_handle is not None:
+                    _hb_handle.cancel()
+                _cancel_stall_dump()
 
     # On POSIX, keep the long-standing ``asyncio.run(_serve())`` behavior
     # unchanged — Python's default loop there is already a SelectorEventLoop

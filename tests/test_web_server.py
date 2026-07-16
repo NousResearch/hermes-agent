@@ -6,6 +6,10 @@ Config + Server + asyncio.run to capture kwargs without starting an event loop.
 
 import asyncio
 import contextlib
+import io
+from types import SimpleNamespace
+
+import pytest
 
 import uvicorn
 
@@ -51,6 +55,13 @@ def _stub_uvicorn(monkeypatch):
         servers: list = []
         lifespan = None
 
+        def __init__(self):
+            self.main_loop_called = False
+            self.main_loop_error = None
+            self.main_loop_hook = None
+            self.shutdown_called = False
+            self.shutdown_error = None
+
         @staticmethod
         def capture_signals():
             return contextlib.nullcontext()
@@ -59,13 +70,21 @@ def _stub_uvicorn(monkeypatch):
             pass
 
         async def main_loop(self):
-            pass
+            self.main_loop_called = True
+            if self.main_loop_hook is not None:
+                self.main_loop_hook()
+            if self.main_loop_error is not None:
+                raise self.main_loop_error
 
         async def shutdown(self, sockets=None):
-            pass
+            self.shutdown_called = True
+            if self.shutdown_error is not None:
+                raise self.shutdown_error
 
+    fake_server = _FakeServer()
+    captured["server"] = fake_server
     monkeypatch.setattr(uvicorn, "Config", _FakeConfig)
-    monkeypatch.setattr(uvicorn, "Server", lambda config: _FakeServer())
+    monkeypatch.setattr(uvicorn, "Server", lambda config: fake_server)
     return captured
 
 
@@ -83,6 +102,53 @@ def test_start_server_applies_process_local_ssh_bootstrap_state(monkeypatch):
     assert web_server._SESSION_TOKEN == "s" * 64
     assert web_server._SSH_OWNER_NONCE == "0123456789abcdef"
     assert captured["port"] == 0
+class _FakeTimerHandle:
+    def __init__(self):
+        self.cancelled = False
+
+    def cancel(self):
+        self.cancelled = True
+
+
+class _FakeHeartbeatLoop:
+    def __init__(self):
+        self.now = 100.0
+        self.scheduled = []
+
+    def time(self):
+        return self.now
+
+    def call_later(self, delay, callback, *args):
+        handle = _FakeTimerHandle()
+        self.scheduled.append((delay, callback, args, handle))
+        return handle
+
+    def fire_next(self):
+        delay, callback, args, _handle = self.scheduled.pop(0)
+        self.now += delay
+        callback(*args)
+
+
+def _fake_faulthandler(monkeypatch):
+    arms = []
+    cancels = []
+
+    def dump_traceback_later(timeout, **kwargs):
+        arms.append((timeout, kwargs))
+
+    def cancel_dump_traceback_later():
+        cancels.append(True)
+
+    monkeypatch.setattr(
+        web_server,
+        "faulthandler",
+        SimpleNamespace(
+            dump_traceback_later=dump_traceback_later,
+            cancel_dump_traceback_later=cancel_dump_traceback_later,
+        ),
+        raising=False,
+    )
+    return arms, cancels
 
 
 def test_start_server_disables_ws_ping_on_loopback(monkeypatch):
@@ -226,3 +292,71 @@ def test_start_server_keeps_bare_asyncio_run_on_posix(monkeypatch):
     assert runner_called["hit"] is False, (
         "POSIX must not take the Windows loop-factory branch"
     )
+
+
+def test_start_server_arms_rearms_and_cancels_stall_traceback(monkeypatch):
+    captured = _stub_uvicorn(monkeypatch)
+    server = captured["server"]
+    loop = _FakeHeartbeatLoop()
+    arms, cancels = _fake_faulthandler(monkeypatch)
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
+    monkeypatch.setattr("tui_gateway.loop_noise.install_loop_noise_filter", lambda _loop: None)
+    server.main_loop_hook = loop.fire_next
+
+    web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
+
+    assert [timeout for timeout, _kwargs in arms] == [7.0, 7.0]
+    assert all(
+        kwargs == {"repeat": False, "file": web_server.sys.stderr, "exit": False}
+        for _timeout, kwargs in arms
+    )
+    assert cancels == [True]
+    assert loop.scheduled[-1][3].cancelled is True
+
+
+@pytest.mark.parametrize("failure_stage", ["main_loop", "shutdown"])
+def test_start_server_cancels_stall_traceback_on_server_error(monkeypatch, failure_stage):
+    captured = _stub_uvicorn(monkeypatch)
+    server = captured["server"]
+    loop = _FakeHeartbeatLoop()
+    arms, cancels = _fake_faulthandler(monkeypatch)
+    monkeypatch.setattr(asyncio, "get_running_loop", lambda: loop)
+    monkeypatch.setattr("tui_gateway.loop_noise.install_loop_noise_filter", lambda _loop: None)
+    setattr(server, f"{failure_stage}_error", RuntimeError(f"{failure_stage} failed"))
+
+    with pytest.raises(RuntimeError, match=f"{failure_stage} failed"):
+        web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
+
+    assert len(arms) == 1
+    assert cancels == [True]
+    assert loop.scheduled[-1][3].cancelled is True
+
+
+def test_start_server_ignores_unsupported_stall_traceback_api(monkeypatch):
+    captured = _stub_uvicorn(monkeypatch)
+    server = captured["server"]
+    attempts = {"arm": 0, "cancel": 0}
+
+    def unsupported_dump(*_args, **_kwargs):
+        attempts["arm"] += 1
+        raise io.UnsupportedOperation("stderr has no fileno")
+
+    def unsupported_cancel():
+        attempts["cancel"] += 1
+        raise RuntimeError("watchdog unavailable")
+
+    monkeypatch.setattr(
+        web_server,
+        "faulthandler",
+        SimpleNamespace(
+            dump_traceback_later=unsupported_dump,
+            cancel_dump_traceback_later=unsupported_cancel,
+        ),
+        raising=False,
+    )
+
+    web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
+
+    assert server.main_loop_called is True
+    assert server.shutdown_called is True
+    assert attempts == {"arm": 1, "cancel": 1}

@@ -267,5 +267,67 @@ class TestNormalizeReasoningDelta(unittest.TestCase):
         self.assertEqual(fired, ["Let me ", "think about ", "merging."])
 
 
+class TestExtractReasoningDetailsDedup(unittest.TestCase):
+    """extract_reasoning must not double reasoning when a streamed response
+    carries BOTH the accumulated ``reasoning`` string AND reasoning_details
+    thinking blocks of the same content (dogfood-observed 2026-07-16:
+    state.db reasoning columns byte-identical to blocks-joined × 2, because
+    the old dedup was exact list membership and each individual block never
+    equals the accumulated string)."""
+
+    def _agent(self):
+        return SimpleNamespace()
+
+    def test_accumulated_plus_matching_blocks_not_doubled(self):
+        from agent.agent_runtime_helpers import extract_reasoning
+
+        blocks = [
+            {"type": "thinking", "thinking": "First chunk of thinking."},
+            {"type": "thinking", "thinking": "Second, different chunk."},
+        ]
+        accumulated = "First chunk of thinking.\n\nSecond, different chunk."
+        msg = SimpleNamespace(
+            reasoning=accumulated,
+            reasoning_content=None,
+            reasoning_details=blocks,
+            content="final answer",
+        )
+        self.assertEqual(extract_reasoning(self._agent(), msg), accumulated)
+
+    def test_distinct_blocks_all_survive(self):
+        from agent.agent_runtime_helpers import extract_reasoning
+
+        msg = SimpleNamespace(
+            reasoning=None,
+            reasoning_content=None,
+            reasoning_details=[
+                {"type": "thinking", "thinking": "Alpha block."},
+                {"type": "thinking", "thinking": "Beta block, different."},
+            ],
+            content="x",
+        )
+        self.assertEqual(
+            extract_reasoning(self._agent(), msg),
+            "Alpha block.\n\nBeta block, different.",
+        )
+
+    def test_genuinely_new_detail_content_kept(self):
+        from agent.agent_runtime_helpers import extract_reasoning
+
+        msg = SimpleNamespace(
+            reasoning="Streamed text.",
+            reasoning_content=None,
+            reasoning_details=[
+                {"type": "thinking", "thinking": "Streamed text."},
+                {"type": "thinking", "thinking": "Novel unseen block."},
+            ],
+            content="x",
+        )
+        self.assertEqual(
+            extract_reasoning(self._agent(), msg),
+            "Streamed text.\n\nNovel unseen block.",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

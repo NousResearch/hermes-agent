@@ -1385,7 +1385,17 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
                     or detail.get('content')
                     or detail.get('text')
                 )
-                if summary and summary not in reasoning_parts:
+                # Substring containment, NOT list membership: streamed
+                # responses carry the SAME reasoning twice — once as the
+                # accumulated ``reasoning``/``reasoning_content`` string and
+                # again chunked across reasoning_details thinking blocks.
+                # Each individual block != the accumulated string exactly,
+                # so an equality test appends every block on top of the
+                # full text and the stored reasoning comes out doubled
+                # (observed 2026-07-16: state.db rows byte-identical to
+                # blocks-joined × 2). A block whose text already appears
+                # inside a collected part is a re-delivery, not new content.
+                if summary and not any(summary in part for part in reasoning_parts):
                     reasoning_parts.append(summary)
 
     # Some providers embed reasoning directly inside assistant content

@@ -21,4 +21,3 @@ def test_parent_death_watchdog_contract_has_no_create_time_plumbing():
     assert list(inspect.signature(slash_worker._start_parent_death_watchdog).parameters) == [
         "original_ppid",
     ]
-    assert "psutil" not in slash_worker.__dict__

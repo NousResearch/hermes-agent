@@ -120,7 +120,7 @@ _REFERENCE_SYSTEM_PROMPT = (
 
 
 def _slot_label(slot: dict[str, str]) -> str:
-    return f"{slot.get('provider', '').strip()}:{slot.get('model', '').strip()}"
+    return f"{(slot.get('provider') or '').strip()}:{(slot.get('model') or '').strip()}"
 
 
 def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
@@ -173,18 +173,19 @@ def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
     return out
 
 
-def _maybe_apply_advisor_cache_control(
+def _maybe_apply_moa_cache_control(
     messages: list[dict[str, Any]],
     runtime: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    """Decorate an advisor request with cache_control when its route honors it.
+    """Decorate an advisor or aggregator request with cache_control when its
+    route honors it.
 
     Reuses the SAME policy function as the main agent loop
-    (``anthropic_prompt_cache_policy``) resolved against the advisor slot's
-    own provider/base_url/api_mode/model, and the SAME breakpoint layout
-    (``apply_anthropic_cache_control``, system_and_3). This keeps advisor
-    calls decorated exactly like an acting agent on that provider would be —
-    no MoA-specific caching logic to drift.
+    (``anthropic_prompt_cache_policy``) resolved against the slot's own
+    provider/base_url/api_mode/model, and the SAME breakpoint layout
+    (``apply_anthropic_cache_control``, system_and_3). This keeps advisor and
+    aggregator calls decorated exactly like an acting agent on that provider
+    would be — no MoA-specific caching logic to drift.
 
     Returns the messages unchanged on any resolution error or when the
     policy says the route doesn't honor markers.
@@ -196,8 +197,8 @@ def _maybe_apply_advisor_cache_control(
         from agent.prompt_caching import apply_anthropic_cache_control
 
         # The policy function reads agent.* only as fallbacks for kwargs we
-        # don't pass; provide a stub so an advisor slot is judged purely on
-        # its own resolved runtime.
+        # don't pass; provide a stub so the slot is judged purely on its own
+        # resolved runtime.
         stub = SimpleNamespace(provider="", base_url="", api_mode="", model="")
         should_cache, native_layout = anthropic_prompt_cache_policy(
             stub,
@@ -212,7 +213,7 @@ def _maybe_apply_advisor_cache_control(
             messages, native_anthropic=native_layout
         )
     except Exception as exc:  # pragma: no cover - decoration must never break a call
-        logger.debug("advisor cache_control decoration skipped: %s", exc)
+        logger.debug("MoA cache_control decoration skipped: %s", exc)
         return messages
 
 
@@ -268,7 +269,7 @@ def _run_reference(
         # caching is opt-in per request. OpenAI-family advisors are untouched
         # (their caching is automatic; markers are ignored harmlessly, but we
         # only decorate when the policy says the route honors them).
-        messages = _maybe_apply_advisor_cache_control(messages, runtime)
+        messages = _maybe_apply_moa_cache_control(messages, runtime)
         response = call_llm(
             task="moa_reference",
             messages=messages,
@@ -617,13 +618,27 @@ def aggregate_moa_context(
     )
 
     agg_label = _slot_label(aggregator)
+    agg_runtime = _slot_runtime(aggregator)
     try:
+        # Same cache_control decoration as _run_reference's advisor calls
+        # (see _maybe_apply_moa_cache_control) — this synthesis call is a
+        # third, independent MoA call path that 22c5048d9 did not cover (it
+        # only restored caching for the acting-aggregator turn in the
+        # persistent `provider: moa` model and for advisor fan-out). Without
+        # it, the one-shot `/moa <prompt>` command's synthesis call re-bills
+        # its full input (system-less prompt containing every joined
+        # reference output) on every invocation with zero cache_control
+        # breakpoints, even when the resolved aggregator slot is a
+        # cache-honoring route (e.g. Claude on OpenRouter/native Anthropic).
+        agg_messages = _maybe_apply_moa_cache_control(
+            [{"role": "user", "content": synth_prompt}], agg_runtime
+        )
         response = call_llm(
             task="moa_aggregator",
-            messages=[{"role": "user", "content": synth_prompt}],
+            messages=agg_messages,
             temperature=aggregator_temperature,
             max_tokens=max_tokens,
-            **_slot_runtime(aggregator),
+            **agg_runtime,
         )
         synthesis = _extract_text(response)
     except Exception as exc:

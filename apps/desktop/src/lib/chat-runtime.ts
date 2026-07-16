@@ -383,3 +383,61 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
     }
   } as ThreadMessage
 }
+
+export type ToolMergeCache = WeakMap<
+  ChatMessage,
+  { merged: ChatMessage; parts: ChatMessagePart[]; prev: ChatMessage; prevParts: ChatMessagePart[] }
+>
+
+export function createToolMergeCache(): ToolMergeCache {
+  return new WeakMap()
+}
+
+// A settled assistant message with only tool calls — no prose, no reasoning.
+// The model routinely emits a follow-up batch of calls as its own text-less
+// message; on screen it looks like one continuous run, but assistant-ui can't
+// group tool calls across a message boundary.
+function isToolOnlyAssistant(message: ChatMessage): boolean {
+  return (
+    message.role === 'assistant' &&
+    !message.pending &&
+    !message.error &&
+    !message.hidden &&
+    message.parts.length > 0 &&
+    message.parts.every(part => part.type === 'tool-call')
+  )
+}
+
+/**
+ * Fold each settled tool-only assistant message into the preceding assistant
+ * message so its calls join that message's tool group (and can collapse into
+ * the auto-scrolling window). Render-only — never mutates the `$messages` store
+ * — and settle-only: pending messages are left alone, so a live turn is never
+ * merged/un-merged mid-stream. `cache` keys merged results by source identity,
+ * so a stable turn yields stable merged objects (no re-render churn).
+ */
+export function coalesceToolOnlyAssistants(messages: ChatMessage[], cache: ToolMergeCache): ChatMessage[] {
+  const out: ChatMessage[] = []
+
+  for (const message of messages) {
+    const prev = out.at(-1)
+
+    if (prev && prev.role === 'assistant' && !prev.pending && !prev.hidden && isToolOnlyAssistant(message)) {
+      const cached = cache.get(message)
+
+      const merged =
+        cached && cached.prev === prev && cached.prevParts === prev.parts && cached.parts === message.parts
+          ? cached.merged
+          : { ...prev, parts: [...prev.parts, ...message.parts] }
+
+      cache.set(message, { merged, parts: message.parts, prev, prevParts: prev.parts })
+      out[out.length - 1] = merged
+
+      continue
+    }
+
+    out.push(message)
+  }
+
+  return out
+}

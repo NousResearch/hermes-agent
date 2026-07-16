@@ -19,7 +19,7 @@ import {
   setSessions,
   setYoloActive
 } from '@/store/session'
-import { reportBackendContract } from '@/store/updates'
+import { reportBackendContract, reportInstallMethodWarning } from '@/store/updates'
 import type { SessionCreateResponse, SessionInfo, SessionRuntimeInfo } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../../types'
@@ -269,6 +269,8 @@ export function applyRuntimeInfo(info: SessionRuntimeInfo | undefined): SessionR
   if (info.credential_warning) {
     requestDesktopOnboarding(info.credential_warning)
   }
+
+  reportInstallMethodWarning(info.install_warning)
 
   if (typeof info.model === 'string') {
     setCurrentModel(info.model)

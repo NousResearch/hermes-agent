@@ -3,9 +3,11 @@ from types import SimpleNamespace
 import pytest
 
 from agent.codex_responses_adapter import (
+    _chat_messages_to_responses_input,
     _format_responses_error,
     _normalize_codex_response,
     _preflight_codex_api_kwargs,
+    _preflight_codex_input_items,
 )
 
 
@@ -137,6 +139,128 @@ def test_normalize_codex_response_in_progress_message_still_incomplete():
     _assistant_message, finish_reason = _normalize_codex_response(response)
 
     assert finish_reason == "incomplete"
+
+
+# ---------------------------------------------------------------------------
+# Replayed assistant message items with an oversized server-assigned ``id``
+# (Codex issues 400+ char base64 blobs) must never reach the API — the
+# Responses endpoint caps input[].id at 64 chars and rejects the whole
+# request with a non-retryable HTTP 400, permanently bricking the session
+# (every subsequent turn replays the same bad id). Short ids (msg_...) are
+# still worth keeping for prefix-cache hits, so this is a length guard, not
+# a blanket strip.
+# ---------------------------------------------------------------------------
+
+_OVERSIZED_ITEM_ID = "x" * 408
+_VALID_ITEM_ID = "msg_abc123"
+
+
+def test_chat_messages_to_responses_input_drops_oversized_message_id():
+    messages = [
+        {
+            "role": "assistant",
+            "content": "pong",
+            "codex_message_items": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "pong"}],
+                    "id": _OVERSIZED_ITEM_ID,
+                    "phase": "final_answer",
+                }
+            ],
+        }
+    ]
+
+    items = _chat_messages_to_responses_input(messages)
+
+    message_item = next(item for item in items if item.get("type") == "message")
+    assert "id" not in message_item
+    assert message_item["phase"] == "final_answer"
+    assert message_item["content"] == [{"type": "output_text", "text": "pong"}]
+
+
+def test_chat_messages_to_responses_input_keeps_short_message_id():
+    messages = [
+        {
+            "role": "assistant",
+            "content": "pong",
+            "codex_message_items": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "pong"}],
+                    "id": _VALID_ITEM_ID,
+                }
+            ],
+        }
+    ]
+
+    items = _chat_messages_to_responses_input(messages)
+
+    message_item = next(item for item in items if item.get("type") == "message")
+    assert message_item["id"] == _VALID_ITEM_ID
+
+
+def test_preflight_codex_input_items_drops_oversized_message_id():
+    items = _preflight_codex_input_items(
+        [
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "pong"}],
+                "id": _OVERSIZED_ITEM_ID,
+                "phase": "final_answer",
+            }
+        ]
+    )
+
+    assert "id" not in items[0]
+    assert items[0]["phase"] == "final_answer"
+
+
+def test_preflight_codex_input_items_keeps_short_message_id():
+    items = _preflight_codex_input_items(
+        [
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "pong"}],
+                "id": _VALID_ITEM_ID,
+            }
+        ]
+    )
+
+    assert items[0]["id"] == _VALID_ITEM_ID
+
+
+def test_preflight_codex_api_kwargs_drops_oversized_message_id_end_to_end():
+    kwargs = _preflight_codex_api_kwargs(
+        {
+            "model": "gpt-5.5",
+            "instructions": "You are Hermes.",
+            "input": [
+                {"role": "user", "content": "ping"},
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "pong"}],
+                    "id": _OVERSIZED_ITEM_ID,
+                    "phase": "final_answer",
+                },
+            ],
+            "tools": [],
+            "store": False,
+        }
+    )
+
+    message_item = next(item for item in kwargs["input"] if item.get("type") == "message")
+    assert "id" not in message_item
 
 
 # ---------------------------------------------------------------------------

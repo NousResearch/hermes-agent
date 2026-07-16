@@ -1385,6 +1385,84 @@ class TestExportImport:
 
         assert not any("__pycache__" in n for n in names)
 
+    def test_export_default_uses_allowlist_for_unrelated_dirs(self, profile_env, tmp_path):
+        """Unrelated directories under HERMES_HOME are excluded by allow-list (#58394).
+
+        Docker/custom deployments often set HERMES_HOME to a working
+        directory that also contains unrelated user projects (``x11-dev/``,
+        etc.).  The root-level allow-list filters those out so only known
+        Hermes artifacts end up in the archive. Replaces the old
+        exhaustive blacklist.
+        """
+        default_dir = get_profile_dir("default")
+        (default_dir / "config.yaml").write_text("ok")
+        (default_dir / "SOUL.md").write_text("soul")
+        # Allowed subdirectory with content
+        (default_dir / "skills" / "demo").mkdir(parents=True)
+        (default_dir / "skills" / "demo" / "SKILL.md").write_text("hi")
+        # Unrelated directory — should NOT appear in the archive
+        unrelated = default_dir / "x11-dev" / "usr" / "lib"
+        unrelated.mkdir(parents=True)
+        (unrelated / "libXi.so").write_text("data")
+
+        output = tmp_path / "export" / "default.tar.gz"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        result = export_profile("default", str(output))
+
+        with tarfile.open(str(result), "r:gz") as tf:
+            names = set(tf.getnames())
+
+        # Allowed artifacts present
+        assert any(n.endswith("config.yaml") for n in names)
+        assert any(n.endswith("SOUL.md") for n in names)
+        assert any(n.endswith("skills/demo/SKILL.md") for n in names)
+        # Unrelated artifact excluded
+        assert not any("x11-dev" in n for n in names)
+        assert not any("libXi.so" in n for n in names)
+
+    def test_export_default_handles_broken_symlinks(self, profile_env, tmp_path):
+        """Broken symlinks inside allowed artifacts are preserved, not crashed (#58394).
+
+        ``shutil.copytree``'s default is ``symlinks=False``, which follows
+        symlinks and crashes on broken ones. Use ``symlinks=True`` so stale
+        symlinks inside *allowed* artifacts (e.g. ``skills/``) survive as
+        symlinks; the link and its target are both retained.
+        """
+        default_dir = get_profile_dir("default")
+        (default_dir / "config.yaml").write_text("ok")
+        # Place broken symlink *inside* the allowed ``skills/`` tree so the
+        # root-level allow-list passes the directory through; the
+        # symlinks=True flag must then preserve the link instead of
+        # following and crashing.
+        broken_dir = default_dir / "skills" / "with-broken-links"
+        broken_dir.mkdir(parents=True)
+        (broken_dir / "broken_link").symlink_to("/nonexistent/path")
+        # Valid symlink for comparison
+        (broken_dir / "valid_target.txt").write_text("real data")
+        (broken_dir / "valid_link").symlink_to(
+            broken_dir / "valid_target.txt"
+        )
+
+        output = tmp_path / "export" / "default.tar.gz"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        result = export_profile("default", str(output))
+
+        assert result.exists()
+        with tarfile.open(str(result), "r:gz") as tf:
+            names = set(tf.getnames())
+        # Allowed artifact survived
+        assert any(n.endswith("config.yaml") for n in names)
+        # Broken symlink inside an allowed dir was preserved as a symlink
+        # (without crashing) — tar entry name recorded as the link path.
+        assert any(
+            "with-broken-links/broken_link" in n for n in names
+        ), (
+            f"broken_link should survive; tarfile names: {sorted(names)[:30]}"
+        )
+        # Valid symlink + target also kept
+        assert any("valid_link" in n for n in names)
+        assert any("valid_target.txt" in n for n in names)
+
     def test_import_default_without_name_raises(self, profile_env, tmp_path):
         """Importing a default export without --name gives clear guidance."""
         default_dir = get_profile_dir("default")

@@ -15,7 +15,6 @@ export interface SubmitPromptDeps {
   enqueue: (text: string) => void
   expand: (text: string) => string
   gw: GatewayClient
-  maybeGoodVibes: (text: string) => void
   setLastUserMsg: (value: string) => void
   sys: (text: string) => void
 }
@@ -61,7 +60,6 @@ export function submitPrompt(text: string, deps: SubmitPromptDeps, showUserMessa
     }
 
     turnController.clearStatusTimer()
-    deps.maybeGoodVibes(submitText)
     deps.setLastUserMsg(text)
 
     if (show) {

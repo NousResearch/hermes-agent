@@ -342,6 +342,19 @@ class TestPasswordLoginRoute:
         # Malicious absolute URL dropped → lands at root.
         assert resp.json()["next"] == "/"
 
+    def test_browser_normalized_authority_next_is_dropped(self, gated_app):
+        resp = gated_app.post(
+            "/auth/password-login",
+            json={
+                "provider": "testpw",
+                "username": "admin",
+                "password": "hunter2",
+                "next": "/\\evil.example",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["next"] == "/"
+
     def test_route_is_public_unauthenticated(self, gated_app):
         # The login route itself must be reachable without a session —
         # otherwise you could never log in.

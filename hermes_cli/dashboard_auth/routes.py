@@ -388,6 +388,14 @@ def _validate_post_login_target(raw: str) -> str:
         return ""
     from urllib.parse import unquote
     decoded = unquote(raw)
+    # WHATWG URL parsing treats backslashes as authority separators for
+    # special schemes. A seemingly relative ``/\\evil.example`` therefore
+    # resolves cross-origin in browsers. Controls are stripped or normalized
+    # inconsistently across clients, so neither belongs in a redirect target.
+    if "\\" in decoded or any(
+        ord(char) < 0x20 or ord(char) == 0x7F for char in decoded
+    ):
+        return ""
     if not decoded.startswith("/") or decoded.startswith("//"):
         return ""
     # Don't loop back to login pages or auth flow.

@@ -850,6 +850,21 @@ class TestValidatePostLoginTarget:
         assert _validate_post_login_target("//evil.com") == ""
         assert _validate_post_login_target("%2F%2Fevil.com") == ""
 
+    @pytest.mark.parametrize(
+        "target",
+        (
+            "/\\evil.example",
+            "%2F%5Cevil.example",
+            "/sessions\x00ignored",
+            "%2Fsessions%0Aignored",
+            "/sessions\x7fignored",
+        ),
+    )
+    def test_rejects_browser_normalized_authorities_and_controls(self, target):
+        from hermes_cli.dashboard_auth.routes import _validate_post_login_target
+
+        assert _validate_post_login_target(target) == ""
+
     def test_rejects_login_loop(self):
         from hermes_cli.dashboard_auth.routes import _validate_post_login_target
         assert _validate_post_login_target("/login") == ""

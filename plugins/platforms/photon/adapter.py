@@ -216,6 +216,8 @@ def _reinstall_sidecar_deps() -> None:
 
 def validate_config(cfg: PlatformConfig) -> bool:
     extra = cfg.extra or {}
+    if _local_mode_enabled(extra):
+        return True
     project_id = extra.get("project_id") or os.getenv("PHOTON_PROJECT_ID")
     project_secret = extra.get("project_secret") or os.getenv("PHOTON_PROJECT_SECRET")
     if not project_id or not project_secret:
@@ -235,10 +237,15 @@ def _env_enablement() -> Optional[dict]:
     The special ``home_channel`` key is handled by the core plugin hook and
     becomes a proper ``HomeChannel`` on ``PlatformConfig``.
     """
+    local_mode = _local_mode_enabled()
     project_id, project_secret = load_project_credentials()
-    if not (project_id and project_secret):
+    if not local_mode and not (project_id and project_secret):
         return None
-    seed: dict = {"project_id": project_id, "project_secret": project_secret}
+    seed: dict = {}
+    if local_mode:
+        seed["local"] = True
+    if project_id and project_secret:
+        seed.update({"project_id": project_id, "project_secret": project_secret})
     home = os.getenv("PHOTON_HOME_CHANNEL", "").strip()
     if home:
         seed["home_channel"] = {
@@ -246,6 +253,19 @@ def _env_enablement() -> Optional[dict]:
             "name": os.getenv("PHOTON_HOME_CHANNEL_NAME", "Home"),
         }
     return seed
+
+
+def _truthy(value: Any) -> bool:
+    return str(value).strip().lower() in {"true", "1", "yes", "on"}
+
+
+def _local_mode_enabled(extra: Optional[dict] = None) -> bool:
+    """Use the local macOS Messages/iMessage bridge instead of Photon Cloud."""
+    extra = extra or {}
+    value = extra.get("local")
+    if value is None:
+        value = os.getenv("PHOTON_LOCAL")
+    return _truthy(value)
 
 
 def _markdown_enabled() -> bool:
@@ -280,6 +300,7 @@ class PhotonAdapter(BasePlatformAdapter):
         # Project credentials (env wins, then config.extra, then auth.json).
         # ``project_id`` here is the project's spectrumProjectId — the value
         # the spectrum-ts SDK authenticates with.
+        self._local_mode = _local_mode_enabled(extra)
         stored_id, stored_sec = load_project_credentials()
         self._project_id: str = (
             os.getenv("PHOTON_PROJECT_ID")
@@ -417,11 +438,11 @@ class PhotonAdapter(BasePlatformAdapter):
                 "MISSING_DEP", "httpx not installed", retryable=False
             )
             return False
-        if not self._project_id or not self._project_secret:
+        if not self._local_mode and (not self._project_id or not self._project_secret):
             self._set_fatal_error(
                 "MISSING_CREDENTIALS",
-                "PHOTON_PROJECT_ID and PHOTON_PROJECT_SECRET are required. "
-                "Run: hermes photon setup",
+                "PHOTON_PROJECT_ID and PHOTON_PROJECT_SECRET are required "
+                "unless PHOTON_LOCAL=true. Run: hermes photon setup",
                 retryable=False,
             )
             return False
@@ -934,8 +955,11 @@ class PhotonAdapter(BasePlatformAdapter):
         await self._reap_stale_sidecar()
 
         env = os.environ.copy()
-        env["PHOTON_PROJECT_ID"] = self._project_id
-        env["PHOTON_PROJECT_SECRET"] = self._project_secret
+        env["PHOTON_LOCAL"] = "1" if self._local_mode else "0"
+        if self._project_id:
+            env["PHOTON_PROJECT_ID"] = self._project_id
+        if self._project_secret:
+            env["PHOTON_PROJECT_SECRET"] = self._project_secret
         env["PHOTON_SIDECAR_PORT"] = str(self._sidecar_port)
         env["PHOTON_SIDECAR_BIND"] = self._sidecar_bind
         env["PHOTON_SIDECAR_TOKEN"] = self._sidecar_token
@@ -1755,7 +1779,10 @@ def register(ctx) -> None:
         check_fn=check_requirements,
         validate_config=validate_config,
         is_connected=is_connected,
-        required_env=["PHOTON_PROJECT_ID", "PHOTON_PROJECT_SECRET"],
+        # validate_config handles the mutually exclusive setup shapes:
+        # Photon Cloud needs project credentials, while local iMessage uses
+        # PHOTON_LOCAL=true and has no cloud id/secret.
+        required_env=[],
         install_hint=(
             "Run: hermes photon setup  (logs in via device flow, creates a "
             "Spectrum project, links your phone number, installs the "

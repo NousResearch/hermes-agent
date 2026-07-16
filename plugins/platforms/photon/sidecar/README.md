@@ -1,17 +1,17 @@
 # Photon sidecar
 
-Small Node helper that bridges Hermes Agent to Photon's Spectrum SDK
-(`spectrum-ts`).  Hermes is Python; Photon has no public HTTP
-send-message endpoint today; replies therefore go through this sidecar.
+Small Node helper that bridges Hermes Agent to Spectrum's SDK
+(`spectrum-ts`). Hermes is Python; Spectrum is TypeScript-first, so both
+inbound and outbound iMessage traffic go through this sidecar.
 
 The sidecar:
 
 - runs `Spectrum({ projectId, projectSecret, providers: [imessage.config()] })`
+  for Photon Cloud, or `Spectrum({ providers: [imessage.config({ local: true })] })`
+  when `PHOTON_LOCAL=true`
 - exposes a loopback-only HTTP control channel for the Python adapter
   to push send/typing requests (auth via `X-Hermes-Sidecar-Token`)
-- drains the inbound message stream so `spectrum-ts` keeps its
-  reconnect/heartbeat machinery alive (real inbound delivery is via
-  Photon's signed webhook hitting our Python aiohttp server)
+- streams inbound SDK messages to the Python adapter over loopback NDJSON
 
 ## Install
 
@@ -29,6 +29,14 @@ For debugging:
 
 ```bash
 PHOTON_PROJECT_ID=... PHOTON_PROJECT_SECRET=... \
+PHOTON_SIDECAR_PORT=8789 PHOTON_SIDECAR_TOKEN=$(openssl rand -hex 16) \
+node index.mjs
+```
+
+Local macOS iMessage debugging:
+
+```bash
+PHOTON_LOCAL=true \
 PHOTON_SIDECAR_PORT=8789 PHOTON_SIDECAR_TOKEN=$(openssl rand -hex 16) \
 node index.mjs
 ```

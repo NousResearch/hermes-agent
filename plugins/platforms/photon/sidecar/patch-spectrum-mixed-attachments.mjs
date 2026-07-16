@@ -148,6 +148,10 @@ export function patchSpectrumTs(root = scriptDir()) {
         !original.includes("const rebuildFromAppleMessage = async")) {
       continue;
     }
+    if (original.includes("const buildUnwrappedContentMessage = async") &&
+        original.includes("toOrderedParts(message.content.text, attachments)")) {
+      return { patched: false, file, reason: "upstream fixed" };
+    }
     let patched = original;
     patched = patchRebuild(patched);
     patched = patchInbound(patched);

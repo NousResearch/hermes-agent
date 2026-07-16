@@ -1389,7 +1389,7 @@ agent:
 
 ## Tool-Loop Guardrails
 
-Hermes detects when the agent is stuck in an unproductive tool-calling loop — the same tool call failing repeatedly, the same tool failing over and over, or an idempotent call returning the same result with no progress. By default it injects a **warning** into the tool result so the model self-corrects; it does not hard-stop, since a person watching the CLI/TUI can intervene.
+Hermes detects when the agent is stuck in an unproductive tool-calling loop — the same tool call failing repeatedly, the same tool failing over and over, an idempotent call returning the same result with no progress, or the same substantial result recurring across otherwise-different calls. By default it injects a **warning** into the tool result so the model self-corrects; it does not hard-stop, since a person watching the CLI/TUI can intervene.
 
 For unattended gateway / server deployments, enable hard stops so a stuck agent is circuit-broken instead of burning the iteration budget:
 
@@ -1401,13 +1401,18 @@ tool_loop_guardrails:
     exact_failure: 2           # identical failing call repeated N times
     same_tool_failure: 3       # same tool failing N times (different args)
     idempotent_no_progress: 2  # same result, no progress, N times
+    repeated_result: 3         # same result content, regardless of tool/args, N times
   hard_stop_after:
     exact_failure: 5
     same_tool_failure: 8
     idempotent_no_progress: 5
+    repeated_result: 5
+  repeated_result_min_chars: 200  # results shorter than this never count (default: 200)
 ```
 
 `hard_stop_enabled` defaults to `false` because interactive sessions have a human in the loop. In unattended deployments (gateway, cron, kanban workers) set it to `true` so repeated failures are blocked rather than only warned. See also [Docker / unattended deployments](docker.md).
+
+The `repeated_result` axis is independent of tool name, arguments, and whether the call was classified as a failure — it catches the shape where a call keeps "succeeding" with different arguments each time but returns the same blocked/error body (e.g. a fetch tool retried against a source that consistently 404s or soft-blocks). It normalizes multimodal results before hashing so a repeated placeholder caption around a base64 image payload is still detected as repetition.
 
 ## TTS Configuration
 

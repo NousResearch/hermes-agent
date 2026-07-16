@@ -353,3 +353,66 @@ def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
     assert halt_text in text_deltas, (
         f"halt message was never streamed; callback only saw {deltas!r}"
     )
+
+
+def _multimodal_tool_result(image_b64: str) -> dict:
+    """Shape returned by a native vision-analysis tool."""
+    return {
+        "_multimodal": True,
+        "content": [
+            {"type": "text", "text": "Image loaded into your context." + " " * 250},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
+        ],
+        "text_summary": "Image attached natively for the main model.",
+    }
+
+
+def _seed_repeated_multimodal(agent: AIAgent, result: dict, count: int = 2) -> None:
+    for i in range(count):
+        agent._tool_guardrails.after_call(
+            "vision_analyze", {"image_url": f"/tmp/seed_{i}.png"}, result, failed=False
+        )
+
+
+def test_sequential_path_appends_guidance_to_repeated_multimodal_result():
+    """A repeated-result warning on a multimodal (dict) tool result must keep
+    the dict shape all the way into the tool message instead of raising on
+    string concatenation, and the guidance must be visible in the content the
+    model receives."""
+    agent = _make_agent("vision_analyze")
+    same = _multimodal_tool_result("A" * 2000)
+    _seed_repeated_multimodal(agent, same)
+    tc = _mock_tool_call("vision_analyze", json.dumps({"image_url": "/tmp/s3.png"}), "c-mm-seq")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with patch("run_agent.handle_function_call", return_value=dict(same)):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    assert [m["role"] for m in messages] == ["tool"]
+    assert messages[0]["tool_call_id"] == "c-mm-seq"
+    content_str = str(messages[0]["content"])
+    assert "Tool loop warning" in content_str
+    assert "repeated_result_warning" in content_str
+    assert agent._tool_guardrail_halt_decision is None
+
+
+def test_concurrent_path_appends_guidance_to_repeated_multimodal_result():
+    """Same as the sequential case but through the concurrent executor, which
+    routes results through its own _append_guardrail_observation call site."""
+    agent = _make_agent("vision_analyze")
+    same = _multimodal_tool_result("B" * 2000)
+    _seed_repeated_multimodal(agent, same)
+    tc = _mock_tool_call("vision_analyze", json.dumps({"image_url": "/tmp/s3.png"}), "c-mm-con")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with patch("run_agent.handle_function_call", return_value=dict(same)):
+        agent._execute_tool_calls_concurrent(msg, messages, "task-1")
+
+    assert [m["role"] for m in messages] == ["tool"]
+    assert messages[0]["tool_call_id"] == "c-mm-con"
+    content_str = str(messages[0]["content"])
+    assert "Tool loop warning" in content_str
+    assert "repeated_result_warning" in content_str
+    assert agent._tool_guardrail_halt_decision is None

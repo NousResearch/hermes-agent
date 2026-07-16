@@ -5723,10 +5723,10 @@ class AIAgent:
         self,
         tool_name: str,
         function_args: dict,
-        function_result: str,
+        function_result: str | dict,
         *,
         failed: bool,
-    ) -> str:
+    ) -> str | dict:
         decision = self._tool_guardrails.after_call(
             tool_name,
             function_args,

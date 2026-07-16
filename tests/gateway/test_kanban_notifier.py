@@ -2,6 +2,7 @@ import asyncio
 import multiprocessing
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 
@@ -10,6 +11,7 @@ from gateway.kanban_status_card import (
     render_kanban_active_task_index,
     render_kanban_status_card,
 )
+from gateway.kanban_watchers import _active_index_link_label
 from gateway.platforms.base import SendResult
 from gateway.run import GatewayRunner
 from hermes_cli import kanban_db as kb
@@ -1685,6 +1687,17 @@ def test_active_index_keeps_terminal_lifecycle_after_current_run_closes(tmp_path
     assert overview.count("⚠️ После") == 3
     assert "⏳ " not in overview
     assert all(f"После {kind}" in overview for kind in ("crashed", "timed_out", "gave_up"))
+
+
+def test_active_index_link_label_matches_the_visible_truncated_title():
+    task = SimpleNamespace(
+        id="t_long",
+        title="Enable verified press-hold-drag capability in the Workout Logger Maestro harness",
+    )
+
+    label = _active_index_link_label(("Planner", task, []))
+
+    assert label == "Enable verified press-hold-drag capability in the Workout Logger…"
 
 
 def test_active_task_index_pins_one_message_for_three_tasks_in_one_topic(tmp_path, monkeypatch):

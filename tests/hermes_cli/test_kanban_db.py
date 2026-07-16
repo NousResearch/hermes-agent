@@ -4929,6 +4929,32 @@ def test_reconcile_replaces_stale_terminal_review_receipt(
     assert spawned == [tid]
 
 
+def test_reconcile_does_not_respawn_an_escalated_reviewer_review(
+    kanban_home, all_assignees_spawnable, tmp_path,
+):
+    """An exhausted review remains visible until a new handoff is requested."""
+    spawned = []
+
+    def reviewer_spawn(task, workspace, board=None):
+        spawned.append(task.id)
+        return 5555
+
+    with kb.connect() as conn:
+        tid, _ = _request_review_with_workspace(conn, tmp_path)
+        conn.execute(
+            "UPDATE kanban_review_jobs SET status='needs_reviewer', attempts=2 WHERE task_id=?",
+            (tid,),
+        )
+        result = kb.dispatch_once(conn, reviewer_spawn_fn=reviewer_spawn)
+        job = conn.execute(
+            "SELECT status, attempts FROM kanban_review_jobs WHERE task_id=?", (tid,),
+        ).fetchone()
+
+    assert result.reviewer_spawned == []
+    assert spawned == []
+    assert dict(job) == {"status": "needs_reviewer", "attempts": 2}
+
+
 
 # Stale detection — detect_stale_running
 # ---------------------------------------------------------------------------

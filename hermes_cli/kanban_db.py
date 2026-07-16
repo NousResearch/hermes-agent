@@ -8212,6 +8212,16 @@ def _reconcile_review_jobs(conn: sqlite3.Connection) -> list[str]:
             if handoff_event_id is None:
                 continue
 
+            # ``needs_reviewer`` is an operator-visible terminal escalation.
+            # Recreating the same receipt here immediately re-spawns the
+            # reviewer after its retry budget is exhausted, turning a bounded
+            # failure into an endless review loop. A fresh request_review
+            # carries a new handoff event and is reconciled independently.
+            if (
+                row["current_status"] == "needs_reviewer"
+                and int(row["current_handoff_event_id"] or 0) == int(handoff_event_id)
+            ):
+                continue
             terminal_job_status = {"accepted", "rejected", "needs_reviewer"}
             must_recreate = (
                 row["current_handoff_event_id"] is None

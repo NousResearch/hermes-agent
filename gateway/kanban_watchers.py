@@ -22,6 +22,7 @@ from typing import Any, Callable, Optional
 
 from agent.i18n import t
 from gateway.kanban_status_card import (
+    _clean_text,
     render_kanban_active_task_index,
     render_kanban_status_card,
     user_facing_title,
@@ -55,13 +56,16 @@ _KANBAN_DOCUMENT_SUFFIXES = frozenset({
 # surface so an upgraded gateway can re-render stale cards once without posting
 # a replacement message or repeating that edit on a later restart.
 _KANBAN_STATUS_RENDERER_VERSION = "2026-07-15.5"
-_KANBAN_ACTIVE_INDEX_RENDERER_VERSION = "2026-07-15.6"
+# Entity-only changes (such as Telegram text links) do not alter the rendered
+# text hash. Bump this version so existing durable indexes receive the new
+# entities on their next refresh instead of remaining visually stale forever.
+_KANBAN_ACTIVE_INDEX_RENDERER_VERSION = "2026-07-16.2"
 
 
 def _active_index_link_label(item: tuple[Any, ...]) -> str:
     """Return the rendered, mobile-safe title span used by an index entry."""
     task, timeline = item[1], item[2]
-    return " ".join(user_facing_title(task, timeline, str(getattr(task, "id", ""))).split())[:72]
+    return _clean_text(user_facing_title(task, timeline, str(getattr(task, "id", ""))), 72)
 
 
 

@@ -51,6 +51,36 @@ What you'll see:
 
 Works identically on the CLI and every gateway platform (Telegram, Discord, Slack, Matrix, Signal, WhatsApp, SMS, iMessage, Webhook, API server, and the web dashboard).
 
+:::note The command is singular
+The built-in command is `/goal`, not `/goals`.
+:::
+
+## Scope and parallel goals
+
+:::tip Yes — multiple `/goal` loops can run in parallel
+The one-goal limit is **per session**, not global. If Telegram Topic A and Telegram Topic B are separate sessions, each can have its own active `/goal`, and both loops can run at the same time. Using a separate repository for each topic is the safest setup.
+:::
+
+A standing goal is scoped to one **Hermes session**, not to the whole gateway, Telegram bot, profile, or machine. Goal state is stored under `goal:<session_id>`. "One standing goal per session" therefore means:
+
+| Where commands are sent | Result |
+|---|---|
+| Topic A: `/goal Work on Repo A`<br/>Topic B: `/goal Work on Repo B` | **Both goals remain active and can run concurrently.** Neither overwrites the other. |
+| Topic A: `/goal First task`, then Topic A: `/goal Second task` | The second goal replaces the first because both commands target the same session. |
+| Different Telegram chats or channels | Each chat session can have its own active goal. |
+
+- Running `/goal <new text>` in the **same session** replaces that session's existing goal and clears its subgoals.
+- Goals in **other sessions** are unaffected and can remain active at the same time.
+- `/goal` drives that session's primary agent in a multi-turn loop. It does **not** automatically create a delegated child agent, but that does not prevent other sessions from running their own `/goal` loops in parallel. The agent may also call `delegate_task` when delegation is available and the task benefits from it.
+
+On Telegram, each forum topic or private-chat topic has its own session key because the topic's `thread_id` is part of the key. You can therefore run a different `/goal` in each topic without one topic overwriting another. Those topic sessions can make progress concurrently, subject to your gateway resources, provider rate limits, and delegation concurrency settings. The top-level `max_concurrent_sessions` setting can cap active sessions; `null` or `0` leaves them unlimited.
+
+:::warning Session isolation is not filesystem isolation
+The goal and conversation state are separate, but the session key contains no project or working-directory component. Two topics that modify the same repository can still collide on files, branches, builds, or deployments. Use separate Git worktrees (or serialize the work) when parallel topic goals touch the same repository.
+:::
+
+Within one topic/session, use `/subgoal` to add acceptance criteria to the current goal. If you need multiple independent jobs from the same topic, use separate Telegram topics, `/background`, or the multi-agent Kanban workflow instead of setting a second `/goal`.
+
 ## Completion contracts
 
 A bare `/goal <text>` works fine, but a *vague* goal makes for vague judging — the judge can only check what you told it to want. Codex's `/goal` guidance makes the same point: a durable objective works best when it names **what done means, how to prove it, what not to break, what's in scope, and when to stop**. Hermes adapts this as an optional **completion contract** layered on top of the existing goal loop.

@@ -63,7 +63,42 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/api/jobs/{job_id}/pause", adapter._handle_pause_job)
     app.router.add_post("/api/jobs/{job_id}/resume", adapter._handle_resume_job)
     app.router.add_post("/api/jobs/{job_id}/run", adapter._handle_run_job)
+    app.router.add_get("/api/jobs/{job_id}/runs", adapter._handle_list_job_runs)
     return app
+
+
+@pytest.mark.asyncio
+async def test_job_runs_are_bounded_metadata_only(adapter):
+    adapter._session_db = MagicMock()
+    adapter._session_db.list_cron_job_runs.return_value = [{
+        "id": "cron_aabbccddeeff_1",
+        "title": "Nightly checks",
+        "started_at": 10,
+        "ended_at": 20,
+        "end_reason": "completed",
+        "message_count": 3,
+        "tool_call_count": 2,
+        "last_active": 20,
+        "preview": "private prompt",
+        "system_prompt": "private system prompt",
+    }]
+    app = _create_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.get(f"/api/jobs/{VALID_JOB_ID}/runs?limit=999")
+        assert resp.status == 200
+        data = await resp.json()
+
+    adapter._session_db.list_cron_job_runs.assert_called_once_with(VALID_JOB_ID, limit=20)
+    assert data == {"object": "list", "job_id": VALID_JOB_ID, "data": [{
+        "session_id": "cron_aabbccddeeff_1",
+        "title": "Nightly checks",
+        "started_at": 10,
+        "ended_at": 20,
+        "last_active": 20,
+        "status": "completed",
+        "message_count": 3,
+        "tool_call_count": 2,
+    }]}
 
 
 @pytest.fixture

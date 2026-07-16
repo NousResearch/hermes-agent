@@ -4,6 +4,7 @@ from gateway.mobile_notifications import (
     FCMNotifier,
     MobileDevice,
     MobileDeviceStore,
+    MobilePairingStore,
     build_fcm_message,
 )
 
@@ -49,7 +50,7 @@ def test_device_store_replaces_same_installation(tmp_path, monkeypatch):
     assert [item.token for item in store.list()] == ["new"]
 
 
-def test_fcm_payload_contains_status_only():
+def test_fcm_payload_contains_bounded_status_v2_only():
     payload = build_fcm_message(_device(), {
         "event": "session.completed",
         "session_id": "session-1",
@@ -57,11 +58,17 @@ def test_fcm_payload_contains_status_only():
         "title": "Release checks",
         "state": "completed",
         "active_count": 2,
+        "latest_status": "  Running   checks  " + "x" * 300,
+        "timestamp": 123.5,
+        "tasks_completed": 4,
+        "tasks_total": 8,
+        "active_subagents": 2,
+        "error_category": "network",
         "output": "private assistant response must not leave the host",
     })
 
     data = payload["message"]["data"]
-    assert payload["message"]["fid"] == "secret-device-token"
+    assert payload["message"]["token"] == "secret-device-token"
     assert data == {
         "event": "session.completed",
         "host_profile_id": "mobile-host-1",
@@ -70,8 +77,49 @@ def test_fcm_payload_contains_status_only():
         "title": "Release checks",
         "state": "completed",
         "active_count": "2",
+        "latest_status": "Running checks " + "x" * 165,
+        "timestamp": "123.5",
+        "tasks_completed": "4",
+        "tasks_total": "8",
+        "active_subagents": "2",
+        "error_category": "network",
     }
     assert "private assistant response" not in str(payload)
+
+
+def test_fcm_payload_drops_unapproved_error_categories():
+    data = build_fcm_message(_device(), {"error_category": "raw traceback"})["message"]["data"]
+    assert "error_category" not in data
+
+
+def test_pairing_grant_is_single_use_and_tokens_are_hashed(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = MobilePairingStore()
+    grant = store.create_grant(now=100)
+
+    paired = store.exchange(
+        grant.secret,
+        installation_id="install-1",
+        device_name="Pixel",
+        now=101,
+    )
+    assert paired.scope == "mobile.full"
+    assert store.authenticate(paired.token) is True
+    assert paired.token not in (tmp_path / "runtime" / "mobile_pairing.json").read_text()
+    assert store.exchange(grant.secret, installation_id="install-2", now=102) is None
+
+
+def test_pairing_grant_expires_and_manual_code_works(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    store = MobilePairingStore()
+    grant = store.create_grant(now=100)
+
+    assert store.exchange(grant.secret, installation_id="late", now=401) is None
+    fresh = store.create_grant(now=500)
+    paired = store.exchange(fresh.code, installation_id="manual", now=501)
+    assert paired is not None
+    assert store.revoke(paired.device_id) is True
+    assert store.authenticate(paired.token) is False
 
 
 def test_notifier_is_noop_until_explicitly_enabled(tmp_path, monkeypatch):

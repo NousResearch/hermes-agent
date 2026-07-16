@@ -1018,12 +1018,12 @@ class TestCapabilitiesEndpoint:
                 assert data["features"]["run_permission_mode"] is True
                 assert data["features"]["run_task_updates"] is True
                 assert data["features"]["run_subagent_updates"] is True
-                assert data["features"]["mobile_notifications"] is True
+                assert data["features"]["mobile_notifications"] is False
                 assert data["features"]["active_session_registry"] is True
                 assert data["features"]["active_session_cleanup"] is True
                 assert data["features"]["session_activity_history"] is True
                 assert data["features"]["session_activity_stream"] is True
-                assert data["extensions"]["hermes.mobile"]["version"] == "1.1"
+                assert "hermes.mobile" not in data["extensions"]
                 assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
                 assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
                 assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
@@ -1107,21 +1107,22 @@ class TestMobileControlPlane:
     @pytest.mark.asyncio
     async def test_register_and_unregister_device(self, adapter):
         app = _create_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            resp = await cli.put("/v1/mobile/devices/install-1", json={
-                "token": "device-token",
-                "host_profile_id": "mobile-host-1",
-                "app_version": "0.2.0",
-                "capabilities": {"notifications": True, "overlay": True},
-            })
-            assert resp.status == 200
-            data = await resp.json()
-            assert data["installation_id"] == "install-1"
-            assert "token" not in data
+        with patch("gateway.platforms.api_server.mobile_extension_enabled", return_value=True):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.put("/v1/mobile/devices/install-1", json={
+                    "token": "device-token",
+                    "host_profile_id": "mobile-host-1",
+                    "app_version": "0.2.0",
+                    "capabilities": {"notifications": True, "overlay": True},
+                })
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["installation_id"] == "install-1"
+                assert "token" not in data
 
-            deleted = await cli.delete("/v1/mobile/devices/install-1")
-            assert deleted.status == 200
-            assert (await deleted.json())["deleted"] is True
+                deleted = await cli.delete("/v1/mobile/devices/install-1")
+                assert deleted.status == 200
+                assert (await deleted.json())["deleted"] is True
 
     @pytest.mark.asyncio
     async def test_active_sessions_returns_privacy_safe_rows(self, adapter):

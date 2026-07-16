@@ -648,6 +648,13 @@ group_sessions_per_user: true
 # unchanged: every request still authenticates with the global API server
 # key (``extra.key`` / API_SERVER_KEY).
 
+# Optional Hermes Mobile control plane and Firebase push delivery. When this
+# is false or omitted, mobile routes, pairing, and push delivery stay dormant.
+# After enabling, run `hermes mobile pair` on the host.
+mobile_notifications:
+  enabled: false
+  project_id: ""
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Gateway Streaming
 # ─────────────────────────────────────────────────────────────────────────────

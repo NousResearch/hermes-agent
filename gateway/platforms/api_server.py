@@ -72,6 +72,7 @@ from gateway.platforms.base import (
 )
 from agent.redact import redact_sensitive_text
 from gateway.readiness import collect_runtime_readiness
+from gateway.mobile_notifications import mobile_extension_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -988,6 +989,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # mirror TUI/Desktop-visible work without taking over their transport.
         self._session_activity_store: Optional[Any] = None
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._mobile_pairing_attempts: Dict[str, List[float]] = {}
         # Concurrency cap shared across all agent-serving endpoints
         # (/v1/chat/completions, /v1/responses, /v1/runs). Read from
         # config.yaml gateway.api_server.max_concurrent_runs; 0 disables
@@ -1261,6 +1263,14 @@ class APIServerAdapter(BasePlatformAdapter):
             token = auth_header[7:].strip()
             if hmac.compare_digest(token, self._api_key):
                 return None  # Auth OK
+            if mobile_extension_enabled():
+                try:
+                    from gateway.mobile_notifications import MobilePairingStore
+
+                    if MobilePairingStore().authenticate(token):
+                        return None
+                except Exception:
+                    logger.warning("Unable to validate mobile device token", exc_info=True)
 
         logger.warning(
             "API server rejected invalid API key: %s",
@@ -1794,6 +1804,8 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
+        mobile_enabled = mobile_extension_enabled()
+
         return web.json_response({
             "object": "hermes.api_server.capabilities",
             "platform": "hermes-agent",
@@ -1813,15 +1825,22 @@ class APIServerAdapter(BasePlatformAdapter):
                     "explicit split-runtime mode is enabled."
                 ),
             },
-            "extensions": {
+            "extensions": ({
                 "hermes.mobile": {
-                    "version": "1.1",
+                    "version": "1.2",
                     "features": {
                         "session_activity_history": True,
                         "session_activity_stream": True,
+                        "push_status_v2": True,
+                        "push_self_test": True,
+                        "pairing": True,
+                        "scoped_device_tokens": True,
+                        "paired_device_admin": True,
+                        "jobs_admin": True,
+                        "job_run_history": True,
                     },
                 },
-            },
+            } if mobile_enabled else {}),
             "features": {
                 "chat_completions": True,
                 "chat_completions_streaming": True,
@@ -1842,7 +1861,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_subagent_updates": True,
                 "tool_progress_events": True,
                 "approval_events": True,
-                "mobile_notifications": True,
+                "mobile_notifications": mobile_enabled,
                 "active_session_registry": True,
                 "active_session_cleanup": True,
                 "session_resources": True,
@@ -1852,7 +1871,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_activity_history": True,
                 "session_activity_stream": True,
                 "admin_config_rw": False,
-                "jobs_admin": False,
+                "jobs_admin": True,
+                "job_run_history": True,
                 "memory_write_api": False,
                 "skills_api": True,
                 "audio_api": False,
@@ -1874,7 +1894,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
                 "active_sessions": {"method": "GET", "path": "/v1/active-sessions"},
                 "active_session_cleanup": {"method": "DELETE", "path": "/v1/active-sessions/{lease_id}"},
-                "mobile_device": {"method": "PUT", "path": "/v1/mobile/devices/{installation_id}"},
+                **({
+                    "mobile_device": {"method": "PUT", "path": "/v1/mobile/devices/{installation_id}"},
+                    "mobile_pairing_exchange": {"method": "POST", "path": "/v1/mobile/pairing/exchange"},
+                    "mobile_paired_devices": {"method": "GET", "path": "/v1/mobile/pairing/devices"},
+                    "mobile_paired_device_delete": {"method": "DELETE", "path": "/v1/mobile/pairing/devices/{device_id}"},
+                    "mobile_notification_test": {"method": "POST", "path": "/v1/mobile/devices/{installation_id}/test"},
+                } if mobile_enabled else {}),
                 "skills": {"method": "GET", "path": "/v1/skills"},
                 "toolsets": {"method": "GET", "path": "/v1/toolsets"},
                 "sessions": {"method": "GET", "path": "/api/sessions"},
@@ -1888,6 +1914,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_activity_events": {"method": "GET", "path": "/v1/sessions/{session_id}/activity/events"},
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
+                "jobs": {"method": "GET", "path": "/api/jobs"},
+                "job_runs": {"method": "GET", "path": "/api/jobs/{job_id}/runs"},
             },
         })
 
@@ -3927,6 +3955,34 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception as e:
             return web.json_response({"error": _redact_api_error_text(e)}, status=500)
 
+    async def _handle_list_job_runs(self, request: "web.Request") -> "web.Response":
+        """GET /api/jobs/{job_id}/runs — latest metadata-only run sessions."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        job_id, id_err = self._check_job_id(request)
+        if id_err:
+            return id_err
+        db = self._ensure_session_db()
+        if db is None:
+            return web.json_response({"error": "Session database unavailable"}, status=503)
+        try:
+            limit = self._parse_nonnegative_int(request.query.get("limit"), default=20, maximum=20)
+            runs = db.list_cron_job_runs(job_id, limit=limit)
+            data = [{
+                "session_id": item.get("id"),
+                "title": item.get("title") or "",
+                "started_at": item.get("started_at"),
+                "ended_at": item.get("ended_at"),
+                "last_active": item.get("last_active"),
+                "status": item.get("end_reason") or ("running" if item.get("ended_at") is None else "completed"),
+                "message_count": int(item.get("message_count") or 0),
+                "tool_call_count": int(item.get("tool_call_count") or 0),
+            } for item in runs]
+            return web.json_response({"object": "list", "job_id": job_id, "data": data})
+        except Exception as exc:
+            return web.json_response({"error": _redact_api_error_text(exc)}, status=500)
+
     async def _handle_create_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs — create a new cron job."""
         auth_err = self._check_auth(request)
@@ -4790,6 +4846,8 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response({"lease_id": lease_id, "cleared": True})
 
     async def _handle_mobile_device_upsert(self, request: "web.Request") -> "web.Response":
+        if not mobile_extension_enabled():
+            raise web.HTTPNotFound()
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -4814,6 +4872,8 @@ class APIServerAdapter(BasePlatformAdapter):
         })
 
     async def _handle_mobile_device_delete(self, request: "web.Request") -> "web.Response":
+        if not mobile_extension_enabled():
+            raise web.HTTPNotFound()
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -4821,6 +4881,107 @@ class APIServerAdapter(BasePlatformAdapter):
 
         deleted = MobileDeviceStore().delete(request.match_info["installation_id"])
         return web.json_response({"deleted": deleted})
+
+    async def _handle_mobile_pairing_exchange(self, request: "web.Request") -> "web.Response":
+        if not mobile_extension_enabled():
+            raise web.HTTPNotFound()
+        now = time.monotonic()
+        source = str(request.remote or "unknown")
+        attempts = [stamp for stamp in self._mobile_pairing_attempts.get(source, []) if now - stamp < 60]
+        if len(attempts) >= 10:
+            return web.json_response(
+                _openai_error("Too many pairing attempts", code="pairing_rate_limited"),
+                status=429,
+                headers={"Retry-After": "60"},
+            )
+        attempts.append(now)
+        if source not in self._mobile_pairing_attempts and len(self._mobile_pairing_attempts) >= 1024:
+            self._mobile_pairing_attempts.pop(next(iter(self._mobile_pairing_attempts)))
+        self._mobile_pairing_attempts[source] = attempts
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        from gateway.mobile_notifications import MobilePairingStore
+
+        installation_id = str(body.get("installation_id") or "").strip()
+        grant = str(body.get("grant") or body.get("code") or "").strip()
+        if not installation_id or not grant:
+            return web.json_response(
+                _openai_error("grant and installation_id are required", code="invalid_pairing_request"),
+                status=400,
+            )
+        if len(installation_id) > 128 or re.search(r"[\x00-\x1f\x7f]", installation_id):
+            return web.json_response(
+                _openai_error("Invalid installation_id", code="invalid_pairing_request"),
+                status=400,
+            )
+        if len(grant) > 256:
+            return web.json_response(
+                _openai_error("Invalid pairing grant", code="invalid_pairing_grant"),
+                status=401,
+            )
+        device = MobilePairingStore().exchange(
+            grant,
+            installation_id=installation_id,
+            device_name=str(body.get("device_name") or ""),
+        )
+        if device is None:
+            return web.json_response(
+                _openai_error("Pairing grant is invalid, expired, or already used", code="invalid_pairing_grant"),
+                status=401,
+            )
+        return web.json_response({
+            "object": "hermes.mobile_pairing",
+            **device.public_dict(),
+            "token": device.token,
+        })
+
+    async def _handle_mobile_paired_devices(self, request: "web.Request") -> "web.Response":
+        if not mobile_extension_enabled():
+            raise web.HTTPNotFound()
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from gateway.mobile_notifications import MobilePairingStore
+
+        return web.json_response({
+            "object": "list",
+            "data": [item.public_dict() for item in MobilePairingStore().list_devices()],
+        })
+
+    async def _handle_mobile_paired_device_delete(self, request: "web.Request") -> "web.Response":
+        if not mobile_extension_enabled():
+            raise web.HTTPNotFound()
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from gateway.mobile_notifications import MobileDeviceStore, MobilePairingStore
+
+        store = MobilePairingStore()
+        device_id = request.match_info["device_id"]
+        installation_id = next(
+            (item.installation_id for item in store.list_devices() if item.device_id == device_id),
+            None,
+        )
+        deleted = store.revoke(device_id)
+        if installation_id:
+            MobileDeviceStore().delete(installation_id)
+        return web.json_response({"deleted": deleted, "device_id": device_id})
+
+    async def _handle_mobile_notification_test(self, request: "web.Request") -> "web.Response":
+        if not mobile_extension_enabled():
+            raise web.HTTPNotFound()
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        installation_id = request.match_info["installation_id"]
+        from gateway.mobile_notifications import FCMNotifier
+
+        sent = FCMNotifier().send(
+            {"event": "notification.test", "state": "test", "title": "Hermes notification test"},
+            installation_id=installation_id,
+        )
+        return web.json_response({"sent": sent > 0, "installation_id": installation_id})
 
     def _make_run_event_callback(
         self,
@@ -6222,8 +6383,13 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/sessions/{session_id}/activity", self._handle_session_activity)
             self._app.router.add_get("/v1/sessions/{session_id}/activity/events", self._handle_session_activity_events)
             self._app.router.add_delete("/v1/active-sessions/{lease_id}", self._handle_delete_active_session)
-            self._app.router.add_put("/v1/mobile/devices/{installation_id}", self._handle_mobile_device_upsert)
-            self._app.router.add_delete("/v1/mobile/devices/{installation_id}", self._handle_mobile_device_delete)
+            if mobile_extension_enabled():
+                self._app.router.add_put("/v1/mobile/devices/{installation_id}", self._handle_mobile_device_upsert)
+                self._app.router.add_delete("/v1/mobile/devices/{installation_id}", self._handle_mobile_device_delete)
+                self._app.router.add_post("/v1/mobile/devices/{installation_id}/test", self._handle_mobile_notification_test)
+                self._app.router.add_post("/v1/mobile/pairing/exchange", self._handle_mobile_pairing_exchange)
+                self._app.router.add_get("/v1/mobile/pairing/devices", self._handle_mobile_paired_devices)
+                self._app.router.add_delete("/v1/mobile/pairing/devices/{device_id}", self._handle_mobile_paired_device_delete)
             self._app.router.add_get("/v1/skills", self._handle_skills)
             self._app.router.add_get("/v1/toolsets", self._handle_toolsets)
             # Session/client control surface (thin wrappers over SessionDB + _run_agent)
@@ -6249,6 +6415,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/jobs/{job_id}/pause", self._handle_pause_job)
             self._app.router.add_post("/api/jobs/{job_id}/resume", self._handle_resume_job)
             self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)
+            self._app.router.add_get("/api/jobs/{job_id}/runs", self._handle_list_job_runs)
 
             # Chronos managed-cron fire webhook (NAS → agent). Authenticated by a
             # NAS-minted JWT (NOT API_SERVER_KEY), so it has its own auth path.
@@ -6275,9 +6442,10 @@ class APIServerAdapter(BasePlatformAdapter):
             if hasattr(sweep_task, "add_done_callback"):
                 sweep_task.add_done_callback(self._background_tasks.discard)
 
-            mobile_watch_task = asyncio.create_task(self._watch_mobile_active_sessions())
-            self._background_tasks.add(mobile_watch_task)
-            mobile_watch_task.add_done_callback(self._background_tasks.discard)
+            if mobile_extension_enabled():
+                mobile_watch_task = asyncio.create_task(self._watch_mobile_active_sessions())
+                self._background_tasks.add(mobile_watch_task)
+                mobile_watch_task.add_done_callback(self._background_tasks.discard)
 
             # Loud warning when a network-accessible API server runs against an
             # unsandboxed local terminal backend. The API server can drive the

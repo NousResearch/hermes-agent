@@ -921,6 +921,46 @@ def inspect_skill(identifier: str) -> Optional[dict]:
     return out
 
 
+def _resolve_session_capabilities() -> "tuple[set | None, set | None]":
+    """Resolve the effective tool names and toolsets for a fresh CLI session.
+
+    Mirrors the runtime path behind the system-prompt builder: the profile's
+    configured toolsets are expanded to concrete tool schemas exactly like
+    agent init does (``get_tool_definitions``), then toolset availability is
+    re-derived from those tool names via ``get_toolset_for_tool`` — the same
+    derivation ``agent/system_prompt.py`` feeds into ``_skill_should_show``.
+
+    Returns ``(None, None)`` when resolution fails so callers skip
+    conditional filtering entirely instead of mis-filtering against
+    empty sets.
+    """
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import _get_platform_tools
+        from model_tools import get_tool_definitions, get_toolset_for_tool
+
+        cfg = load_config()
+        if not isinstance(cfg, dict):
+            cfg = {}
+        enabled_toolsets = sorted(_get_platform_tools(cfg, "cli"))
+        agent_cfg = cfg.get("agent") or {}
+        disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
+        tool_defs = get_tool_definitions(
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            quiet_mode=True,
+        )
+        available_tools = {t["function"]["name"] for t in tool_defs}
+        available_toolsets = {
+            ts
+            for ts in (get_toolset_for_tool(name) for name in available_tools)
+            if ts
+        }
+        return available_tools, available_toolsets
+    except Exception:
+        return None, None
+
+
 def do_list(source_filter: str = "all",
             enabled_only: bool = False,
             console: Optional[Console] = None) -> None:
@@ -953,19 +993,16 @@ def do_list(source_filter: str = "all",
     # When --enabled-only is set, also apply tool/toolset conditional activation
     # rules (the same _skill_should_show() check that the system-prompt builder
     # uses) so the list really matches which skills will load for the profile.
-    available_toolsets: set | None = None
+    # Both the effective tool names AND toolsets are resolved through the same
+    # runtime path a CLI session uses; passing only toolsets would make
+    # _skill_should_show() treat the tool set as empty and misclassify every
+    # requires_tools / fallback_for_tools skill.
+    available_tools: "set | None" = None
+    available_toolsets: "set | None" = None
     if enabled_only:
         from agent.prompt_builder import _skill_should_show
 
-        try:
-            from hermes_cli.config import load_config
-        except Exception:
-            load_config = None  # type: ignore[assignment]
-        if load_config is not None:
-            cfg = load_config()
-            ts_list = cfg.get("toolsets") if isinstance(cfg, dict) else None
-            if isinstance(ts_list, list):
-                available_toolsets = set(ts_list)
+        available_tools, available_toolsets = _resolve_session_capabilities()
 
     title = "Installed Skills"
     if enabled_only:
@@ -1011,9 +1048,11 @@ def do_list(source_filter: str = "all",
 
         # When --enabled-only, also filter by tool/toolset conditions so the
         # list matches what the system-prompt builder will actually load.
-        if enabled_only and available_toolsets is not None:
+        # (_skill_should_show() is a no-op when capability resolution failed
+        # and both sets are None — never mis-filter on missing info.)
+        if enabled_only:
             conditions = skill.get("conditions") or {}
-            if not _skill_should_show(conditions, None, available_toolsets):
+            if not _skill_should_show(conditions, available_tools, available_toolsets):
                 continue
 
         if source_type == "hub":

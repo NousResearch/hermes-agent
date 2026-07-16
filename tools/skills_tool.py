@@ -560,19 +560,14 @@ def _parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
 
 
 def _extract_conditions(frontmatter: Dict[str, Any]) -> Dict[str, list]:
-    """Extract conditional activation fields from parsed frontmatter."""
-    metadata = frontmatter.get("metadata")
-    if not isinstance(metadata, dict):
-        metadata = {}
-    hermes = metadata.get("hermes") or {}
-    if not isinstance(hermes, dict):
-        hermes = {}
-    return {
-        "fallback_for_toolsets": hermes.get("fallback_for_toolsets", []),
-        "requires_toolsets": hermes.get("requires_toolsets", []),
-        "fallback_for_tools": hermes.get("fallback_for_tools", []),
-        "requires_tools": hermes.get("requires_tools", []),
-    }
+    """Extract conditional activation fields from parsed frontmatter.
+
+    Delegates to ``agent.skill_utils.extract_skill_conditions`` — the same
+    helper the system-prompt builder uses — so listing and prompt always
+    parse conditions identically.
+    """
+    from agent.skill_utils import extract_skill_conditions
+    return extract_skill_conditions(frontmatter)
 
 
 def _get_category_from_path(skill_path: Path) -> Optional[str]:

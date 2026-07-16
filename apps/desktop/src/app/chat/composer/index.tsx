@@ -354,23 +354,21 @@ export function ChatBar({
     const pastedText = sanitizeComposerInput(event.clipboardData.getData('text').trim())
 
     // WSLg may surface a Windows screenshot as path-shaped text while hiding the
-    // bitmap from Chromium. Ask Electron for the real host clipboard image first;
-    // if the host has no bitmap, preserve the original text exactly as before.
+    // bitmap from Chromium. Probe the WSL host clipboard for the real image —
+    // wslHostOnly, so outside WSL the probe answers "no image" instead of letting
+    // an unrelated native clipboard image replace the pasted path text. If no
+    // host bitmap exists, preserve the original text exactly as before.
     if (shouldTryHostClipboardImage(pastedText) && onPasteClipboardImage) {
       event.preventDefault()
       triggerHaptic('selection')
 
       const editor = event.currentTarget
       const insertFallbackText = () => {
-        if (!pastedText) {
-          return
-        }
-
         insertPlainTextAtCaret(editor, pastedText)
         scheduleFlushEditorToDraft(editor)
       }
 
-      void Promise.resolve(onPasteClipboardImage({ silent: true }))
+      void Promise.resolve(onPasteClipboardImage({ silent: true, wslHostOnly: true }))
         .then(attached => {
           if (!attached) {
             insertFallbackText()
@@ -383,6 +381,16 @@ export function ChatBar({
 
     if (!pastedText) {
       event.preventDefault()
+
+      // Under WSL2/WSLg the Windows host clipboard doesn't bridge *images* to
+      // the Linux clipboard the DOM paste event reads, so a host screenshot
+      // arrives as an empty paste (no blobs, no text). Fall back to the main
+      // process, which pulls the image straight off the Windows clipboard.
+      // Silent so a genuinely-empty paste doesn't pop a "no image" warning.
+      if (onPasteClipboardImage) {
+        triggerHaptic('selection')
+        void onPasteClipboardImage({ silent: true })
+      }
 
       return
     }

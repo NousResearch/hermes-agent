@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  blobDedupeKey,
-  detectTrigger,
-  extractClipboardImageBlobs,
-  shouldTryHostClipboardImage
-} from './text-utils'
+import { blobDedupeKey, detectTrigger, extractClipboardImageBlobs, shouldTryHostClipboardImage } from './text-utils'
 
 describe('detectTrigger', () => {
   it('detects a bare slash trigger with an empty query', () => {
@@ -122,6 +117,11 @@ describe('shouldTryHostClipboardImage', () => {
     expect(shouldTryHostClipboardImage('spiegami questa immagine')).toBe(false)
     expect(shouldTryHostClipboardImage('notes.txt')).toBe(false)
     expect(shouldTryHostClipboardImage('prima riga\n/tmp/capture.png')).toBe(false)
+  })
+
+  it('leaves an empty paste to the dedicated empty-paste fallback (general probe)', () => {
+    expect(shouldTryHostClipboardImage('')).toBe(false)
+    expect(shouldTryHostClipboardImage('  \n ')).toBe(false)
   })
 })
 

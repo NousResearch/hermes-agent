@@ -144,7 +144,7 @@ import {
 } from './windows-hermes-path'
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
-import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
+import { resolveClipboardImagePng } from './wsl-clipboard-image'
 import { resolvePickerDefaultPath } from './wsl-path-bridge'
 
 const USER_DATA_OVERRIDE = process.env.HERMES_DESKTOP_USER_DATA_DIR
@@ -8134,25 +8134,17 @@ ipcMain.handle('hermes:saveImageBuffer', async (_event, payload) => {
   return writeComposerImage(buffer, payload?.ext || '.png')
 })
 
-ipcMain.handle('hermes:saveClipboardImage', async () => {
-  const image = clipboard.readImage()
+// `wslHostOnly` narrows the read to the WSL host clipboard probe (the
+// composer's image-path paste); explicit image pastes omit it and keep the
+// general native-clipboard-first behavior. See resolveClipboardImagePng.
+ipcMain.handle('hermes:saveClipboardImage', async (_event, options) => {
+  const png = resolveClipboardImagePng({
+    wslHostOnly: Boolean(options && options.wslHostOnly),
+    isWsl: IS_WSL,
+    readNativeImage: () => clipboard.readImage()
+  })
 
-  if (image && !image.isEmpty()) {
-    return writeComposerImage(image.toPNG(), '.png')
-  }
-
-  // WSL2/WSLg doesn't bridge clipboard *images* from the Windows host to the
-  // Linux clipboard Electron reads, so a host screenshot looks empty above.
-  // Pull it straight off the Windows clipboard via PowerShell as a fallback.
-  if (IS_WSL) {
-    const png = readWslWindowsClipboardImage()
-
-    if (png) {
-      return writeComposerImage(png, '.png')
-    }
-  }
-
-  return ''
+  return png ? writeComposerImage(png, '.png') : ''
 })
 
 ipcMain.handle('hermes:normalizePreviewTarget', (_event, target, baseDir) =>

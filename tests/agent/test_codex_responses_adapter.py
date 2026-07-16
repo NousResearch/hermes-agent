@@ -495,12 +495,20 @@ def test_normalize_codex_response_salvage_strips_closing_tag():
 def test_normalize_codex_response_salvage_is_xai_scoped():
     """Non-xAI issuers keep the reasoning-only → incomplete classification;
     the Codex backend replays encrypted reasoning, so its continuation
-    genuinely progresses and must not be short-circuited."""
+    genuinely progresses and must not be short-circuited.
+
+    Since #64434, an unrecognized issuer with ``response.status="completed"``
+    trusts the provider and returns ``stop`` — so this test pins the Codex
+    backend explicitly, where reasoning-only still means "still thinking"
+    and must not be salvaged via the xAI ``<response>`` path.
+    """
     response = _xai_reasoning_only_response(
         "Thinking.\n<response>The answer.</response>"
     )
 
-    assistant_message, finish_reason = _normalize_codex_response(response)
+    assistant_message, finish_reason = _normalize_codex_response(
+        response, issuer_kind="codex_backend"
+    )
 
     assert finish_reason == "incomplete"
     assert assistant_message.content == ""

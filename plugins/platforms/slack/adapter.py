@@ -41,6 +41,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    MessageSendContext,
     MessageEvent,
     MessageType,
     ProcessingOutcome,
@@ -53,6 +54,7 @@ from gateway.platforms.base import (
     safe_url_for_log,
     cache_document_from_bytes,
     cache_video_from_bytes,
+    apply_pre_message_send,
 )
 
 try:  # sibling module; support both package and flat plugin-dir import
@@ -1423,11 +1425,29 @@ class SlackAdapter(BasePlatformAdapter):
 
             # Convert standard markdown → Slack mrkdwn
             formatted = self.format_message(content)
+            block_content = content
+
+            thread_ts = self._resolve_thread_ts(reply_to, metadata)
+            hook_ctx = apply_pre_message_send(
+                MessageSendContext(
+                    platform="slack",
+                    chat_id=chat_id,
+                    content=formatted,
+                    thread_id=thread_ts,
+                    is_dm=bool(chat_id and chat_id.startswith("D")),
+                    metadata=dict(metadata or {}),
+                )
+            )
+            if hook_ctx.cancel or not str(hook_ctx.content or "").strip():
+                if thread_ts:
+                    await self.stop_typing(chat_id, metadata=metadata)
+                return SendResult(success=True)
+            if hook_ctx.content != formatted:
+                block_content = hook_ctx.content
+            formatted = hook_ctx.content
 
             # Split long messages, preserving code block boundaries
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
-
-            thread_ts = self._resolve_thread_ts(reply_to, metadata)
             last_result = None
 
             # reply_broadcast: also post thread replies to the main channel.
@@ -1439,7 +1459,7 @@ class SlackAdapter(BasePlatformAdapter):
             # that had to be split is pathological for Block Kit's 50-block /
             # 3000-char limits, so those fall back to plain text. The ``text``
             # field is always kept as the notification/accessibility fallback.
-            blocks = self._maybe_blocks(content) if len(chunks) == 1 else None
+            blocks = self._maybe_blocks(block_content) if len(chunks) == 1 else None
 
             for i, chunk in enumerate(chunks):
                 kwargs = {
@@ -1540,6 +1560,24 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         try:
             formatted = self.format_message(content)
+            block_content = content
+            if finalize:
+                hook_ctx = apply_pre_message_send(
+                    MessageSendContext(
+                        platform="slack",
+                        chat_id=chat_id,
+                        content=formatted,
+                        thread_id=self._resolve_thread_ts(None, metadata),
+                        is_dm=bool(chat_id and chat_id.startswith("D")),
+                        metadata=dict(metadata or {}),
+                    )
+                )
+                if hook_ctx.cancel or not str(hook_ctx.content or "").strip():
+                    await self.stop_typing(chat_id, metadata=metadata)
+                    return SendResult(success=True, message_id=message_id)
+                if hook_ctx.content != formatted:
+                    block_content = hook_ctx.content
+                formatted = hook_ctx.content
             update_kwargs: Dict[str, Any] = {
                 "channel": chat_id,
                 "ts": message_id,
@@ -1550,7 +1588,7 @@ class SlackAdapter(BasePlatformAdapter):
             # progressive flush would be wasteful and jittery. ``text`` is kept
             # as the fallback either way.
             if finalize:
-                blocks = self._maybe_blocks(content)
+                blocks = self._maybe_blocks(block_content)
                 if blocks:
                     update_kwargs["blocks"] = blocks
             await self._get_client(

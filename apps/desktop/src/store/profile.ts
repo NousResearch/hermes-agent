@@ -115,7 +115,19 @@ export async function refreshActiveProfile(): Promise<void> {
       timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
     })
 
-    setActiveProfile(res.current || 'default')
+    const current = normalizeProfileKey(res.current)
+    setActiveProfile(current)
+
+    try {
+      const stored = await window.hermesDesktop.profile.get()
+
+      if (!stored.profile) {
+        await window.hermesDesktop.profile.set(current)
+      }
+    } catch {
+      // Profile persistence is best-effort; the visible active profile is still
+      // updated from the backend response above.
+    }
   } catch {
     // Backend may not be ready; keep the last known value.
   }

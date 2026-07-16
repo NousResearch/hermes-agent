@@ -102,6 +102,7 @@ import {
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
+import { setPrimaryDesktopProfile } from './profile-set-routing'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -7699,17 +7700,14 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
 })
 
 ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
-ipcMain.handle('hermes:profile:set', async (_event, name) => {
-  const next = writeActiveDesktopProfile(name)
-
-  // Switching profiles is a backend re-home: relaunch the dashboard under the
-  // new HERMES_HOME. Pool backends keep their own homes, so only the primary
-  // is torn down.
-  await teardownPrimaryBackendAndWait()
-  mainWindow?.reload()
-
-  return { profile: next }
-})
+ipcMain.handle('hermes:profile:set', async (_event, name) =>
+  setPrimaryDesktopProfile(name, {
+    primaryProfileKey,
+    writeActiveDesktopProfile,
+    teardownPrimaryBackendAndWait,
+    reloadMainWindow: () => mainWindow?.reload()
+  })
+)
 
 ipcMain.on('hermes:previewShortcutActive', (_event, active) => {
   previewShortcutActive = Boolean(active)

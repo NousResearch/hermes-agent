@@ -73,6 +73,16 @@ describe('desktop slash command curation', () => {
     expect(resolveDesktopCommand('/browser')?.args).toBe(true)
   })
 
+  it('routes the managed gateway tunnel commands through desktop actions', () => {
+    expect(resolveDesktopCommand('/activate-gateway')?.surface).toEqual({ kind: 'action', action: 'activate-gateway' })
+    expect(resolveDesktopCommand('/deactivate-gateway')?.surface).toEqual({
+      kind: 'action',
+      action: 'deactivate-gateway'
+    })
+    expect(isDesktopSlashSuggestion('/activate-gateway')).toBe(true)
+    expect(isDesktopSlashSuggestion('/deactivate-gateway')).toBe(true)
+  })
+
   it('routes /journey (and aliases) to the memory graph overlay action', () => {
     expect(resolveDesktopCommand('/journey')?.surface).toEqual({ kind: 'action', action: 'journey' })
     expect(resolveDesktopCommand('/memory-graph')?.surface).toEqual({ kind: 'action', action: 'journey' })

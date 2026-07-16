@@ -43,6 +43,10 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   probeConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:probe', remoteUrl),
   oauthLoginConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:oauth-login', remoteUrl),
   oauthLogoutConnectionConfig: remoteUrl => ipcRenderer.invoke('hermes:connection-config:oauth-logout', remoteUrl),
+  gatewayTunnel: {
+    activate: () => ipcRenderer.invoke('hermes:gateway-tunnel:activate'),
+    deactivate: () => ipcRenderer.invoke('hermes:gateway-tunnel:deactivate')
+  },
   // Hermes Cloud: one portal login powers discovery + silent per-agent sign-in
   // (cloud-auto-discovery Phase 3).
   cloud: {

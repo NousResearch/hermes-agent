@@ -10,6 +10,7 @@ import { cloneAttachments, type QueueEditState } from '../composer-utils'
 import { onComposerSubmitRequest } from '../focus'
 import { composerPlainText } from '../rich-editor'
 import type { ChatBarProps } from '../types'
+import { injectCanvasSkill } from '@/app/canvases/canvas-skill'
 
 interface UseComposerSubmitArgs {
   activeQueueSessionKey: string | null
@@ -82,7 +83,8 @@ export function useComposerSubmit({
       stashAt(activeQueueSessionKeyRef.current, text, submittedAttachments)
     }
 
-    void Promise.resolve(attachments ? onSubmit(text, { attachments }) : onSubmit(text))
+    const submittedText = injectCanvasSkill(text)
+    void Promise.resolve(attachments ? onSubmit(submittedText, { attachments }) : onSubmit(submittedText))
       .then(accepted => void (accepted === false ? restore() : clearSessionDraft(submittedScope)))
       .catch(restore)
   }

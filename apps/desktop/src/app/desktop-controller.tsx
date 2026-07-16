@@ -78,7 +78,7 @@ import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store
 import { isSecondaryWindow } from '../store/windows'
 
 import { ChatView } from './chat'
-import { requestComposerFocus, requestComposerInsert } from './chat/composer/focus'
+import { requestComposerFocus, requestComposerInsert, requestComposerSubmit } from './chat/composer/focus'
 import { useComposerActions } from './chat/hooks/use-composer-actions'
 import {
   ChatPreviewRail,
@@ -129,6 +129,7 @@ import { UpdatesOverlay } from './updates-overlay'
 
 const AgentsView = lazy(async () => ({ default: (await import('./agents')).AgentsView }))
 const ArtifactsView = lazy(async () => ({ default: (await import('./artifacts')).ArtifactsView }))
+const CanvasesView = lazy(async () => ({ default: (await import('./canvases')).CanvasesView }))
 const CommandCenterView = lazy(async () => ({ default: (await import('./command-center')).CommandCenterView }))
 const CronView = lazy(async () => ({ default: (await import('./cron')).CronView }))
 const StarmapView = lazy(async () => ({ default: (await import('./starmap')).StarmapView }))
@@ -212,6 +213,10 @@ export function DesktopController() {
   const routeTokenRef = useRef(routeToken)
   routeTokenRef.current = routeToken
   const getRouteToken = useCallback(() => routeTokenRef.current, [])
+  const submitCanvasRefresh = useCallback((prompt: string) => {
+    navigate(selectedStoredSessionId ? sessionRoute(selectedStoredSessionId) : NEW_CHAT_ROUTE)
+    window.setTimeout(() => requestComposerSubmit(prompt, { target: 'main' }), 100)
+  }, [navigate, selectedStoredSessionId])
 
   const {
     agentsOpen,
@@ -1337,6 +1342,7 @@ export function DesktopController() {
             }
             path="artifacts"
           />
+          <Route element={<Suspense fallback={null}><CanvasesView onRequestRefresh={submitCanvasRefresh} setStatusbarItemGroup={setStatusbarItemGroup} /></Suspense>} path="canvases" />
           <Route element={null} path="cron" />
           <Route element={null} path="profiles" />
           <Route element={null} path="settings" />

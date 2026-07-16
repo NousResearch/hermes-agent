@@ -400,6 +400,36 @@
     "source": "GameSpot",
     "age_minutes": 140
    }
+  ],
+  "medicine": [
+   {
+    "title": "Updated STGs emphasise earlier ART initiation in TB co-infection",
+    "url": "https://example.com/sample/med-1",
+    "summary": "New guidance shortens the window for starting antiretrovirals in co-infected patients.",
+    "source": "STAT",
+    "age_minutes": 35
+   },
+   {
+    "title": "Large trial shows benefit of community health-worker hypertension programs",
+    "url": "https://example.com/sample/med-2",
+    "summary": "Task-shifting improved blood-pressure control in primary care settings.",
+    "source": "Medscape",
+    "age_minutes": 70
+   },
+   {
+    "title": "WHO issues new guidance on antimicrobial stewardship",
+    "url": "https://example.com/sample/med-3",
+    "summary": "The framework targets rising resistance in low- and middle-income countries.",
+    "source": "WHO News",
+    "age_minutes": 120
+   },
+   {
+    "title": "Point-of-care ultrasound expands access in rural emergency care",
+    "url": "https://example.com/sample/med-4",
+    "summary": "A pragmatic trial reports faster diagnosis with portable devices.",
+    "source": "ScienceDaily Health",
+    "age_minutes": 160
+   }
   ]
  },
  "weather": {

@@ -937,6 +937,40 @@ a { color: inherit; }
 .score-final { color: var(--muted); }
 .score-pre { color: var(--ink-2); }
 
+/* ---------- SA MedBot ---------- */
+.med-log { display: flex; flex-direction: column; gap: 10px; max-height: 420px; overflow-y: auto; padding: 4px 2px; }
+.med-intro { border-left: 2px solid var(--accent); padding: 6px 10px; background: var(--accent-dim); border-radius: 0 4px 4px 0; }
+.med-msg { display: flex; flex-direction: column; gap: 3px; }
+.med-role { font-family: ui-monospace, Menlo, monospace; font-size: 9px; letter-spacing: 0.14em; color: var(--muted); }
+.med-user .med-role { color: var(--accent); }
+.med-text { white-space: pre-wrap; line-height: 1.5; }
+.med-user .med-text { color: var(--ink-2); }
+.med-form { display: flex; gap: 8px; margin-top: 10px; align-items: flex-end; }
+.med-input { flex: 1; resize: vertical; min-height: 42px; font: inherit; }
+.med-disclaimer { margin-top: 6px; letter-spacing: 0.04em; }
+
+/* ---------- PubMed + trials ---------- */
+.pubmed-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.pubmed-query { flex: 1; font-style: italic; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pubmed-list, .trials-list { display: flex; flex-direction: column; max-height: 340px; overflow-y: auto; }
+.pubmed-item, .trial-item {
+  display: block; width: 100%; text-align: left; background: none; border: none;
+  border-bottom: 1px solid var(--hairline); color: inherit; font: inherit;
+  padding: 9px 4px; cursor: pointer;
+}
+.pubmed-item:last-child, .trial-item:last-child { border-bottom: none; }
+.pubmed-item:hover, .trial-item:hover { background: var(--surface-2); }
+.pubmed-title, .trial-title { font-weight: 550; line-height: 1.35; }
+.pubmed-meta { margin-top: 3px; }
+.trial-meta { margin-top: 4px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.trial-status {
+  font-family: ui-monospace, Menlo, monospace; font-size: 9px; letter-spacing: 0.08em;
+  border: 1px solid var(--hairline-2); border-radius: 2px; padding: 1px 6px;
+}
+.trial-recruiting { color: var(--status-good); border-color: color-mix(in srgb, var(--status-good) 45%, transparent); }
+.trial-done { color: var(--muted); }
+.trial-other { color: var(--status-warning); border-color: color-mix(in srgb, var(--status-warning) 40%, transparent); }
+
 /* ---------- podcasts ---------- */
 .pod-head { display: flex; align-items: center; gap: 8px; }
 .pod-add { margin-left: auto; }

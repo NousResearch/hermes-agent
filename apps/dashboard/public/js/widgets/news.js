@@ -6,6 +6,7 @@ import { saveForLater, markRead, isRead, isSaved } from "../reading.js";
 const LABELS = {
   top: "Top", world: "World", tech: "Tech", business: "Business",
   science: "Science", sports: "Sports", entertainment: "Culture", gaming: "Gaming",
+  medicine: "Medicine",
 };
 
 let topicsCache = Object.keys(LABELS);

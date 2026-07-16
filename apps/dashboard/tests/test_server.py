@@ -596,6 +596,49 @@ class MarketsWatchlistTests(unittest.TestCase):
         self.assertIn("wins", keys)
         self.assertNotIn("randomstat", keys)  # unknown stat filtered out
 
+    def test_pubmed_sample_and_normalizer(self):
+        d = self.api.pubmed({"q": ["tuberculosis south africa"]})
+        self.assertTrue(d["articles"])
+        self.assertIn("journal", d["articles"][0])
+        # normalizer maps NCBI esearch/esummary JSON
+        import unittest.mock as mock
+        esearch = json.dumps({"esearchresult": {"idlist": ["111", "222"]}}).encode()
+        esummary = json.dumps({"result": {"uids": ["111"], "111": {
+            "title": "A study", "source": "SAMJ", "pubdate": "2026 Jul",
+            "authors": [{"name": "A B"}, {"name": "C D"}, {"name": "E F"}, {"name": "G H"}]}}}).encode()
+        with mock.patch.object(server, "fetch_url", side_effect=[esearch, esummary]):
+            out = server.live_pubmed("x")
+        self.assertEqual(out["articles"][0]["pmid"], "111")
+        self.assertIn("et al.", out["articles"][0]["authors"])
+        self.assertTrue(out["articles"][0]["url"].endswith("/111/"))
+
+    def test_trials_sample_and_normalizer(self):
+        d = self.api.trials({"q": ["HIV"]})
+        self.assertTrue(d["trials"])
+        self.assertIn("status", d["trials"][0])
+        import unittest.mock as mock
+        raw = json.dumps({"studies": [{"protocolSection": {
+            "identificationModule": {"nctId": "NCT01", "briefTitle": "Trial X"},
+            "statusModule": {"overallStatus": "RECRUITING", "lastUpdatePostDateStruct": {"date": "2026-07-01"}},
+            "conditionsModule": {"conditions": ["TB", "HIV"]}}}]}).encode()
+        with mock.patch.object(server, "fetch_url", return_value=raw):
+            out = server.live_trials("x")
+        self.assertEqual(out["trials"][0]["nct"], "NCT01")
+        self.assertEqual(out["trials"][0]["status"], "RECRUITING")
+        self.assertTrue(out["trials"][0]["url"].endswith("NCT01"))
+
+    def test_medchat_local_fallback(self):
+        events = list(self.api.assistant.med_chat_stream({"messages": [{"role": "user", "content": "hi"}]}))
+        kinds = [e[0] for e in events]
+        self.assertIn("done", kinds)
+        done = next(p for k, p in events if k == "done")
+        self.assertEqual(done["mode"], "local")
+        self.assertIn("South African", done["content"][0]["text"])
+
+    def test_medicine_is_a_default_topic(self):
+        self.assertIn("medicine", self.api.feeds.topics())
+        self.assertTrue(self.api.news({"topic": ["medicine"], "limit": ["5"]})["items"])
+
     def test_podcast_sample_and_normalizer(self):
         d = self.api.podcast({"url": ["https://example.com/feed.xml"]})
         self.assertTrue(d["episodes"])

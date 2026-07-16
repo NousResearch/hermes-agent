@@ -323,6 +323,41 @@ _LOW_CONFIDENCE = re.compile(
 )
 
 
+# South-African medical decision-support assistant. Grounded in SA clinical
+# frameworks; explicitly a support tool for a qualified clinician, not a
+# diagnosis or a substitute for clinical judgement.
+MED_SYSTEM_PROMPT = """\
+You are "SA MedBot", a clinical decision-support assistant for a qualified South
+African medical doctor and clinical researcher. Answer strictly within the South
+African medical context and regulatory framework.
+
+Anchor every answer in South African sources and realities:
+- SA Standard Treatment Guidelines (STGs) and the Essential Medicines List (EML),
+  by level of care (PHC, adult/paediatric hospital).
+- The South African Medicines Formulary (SAMF) for drugs, dosing and availability.
+- SAHPRA for medicine/device regulation; HPCSA ethical and scope-of-practice
+  guidance; the National Health Act and relevant regulations (e.g. notifiable
+  medical conditions).
+- SA disease burden and epidemiology: HIV and TB (incl. DR-TB), the growing NCD
+  burden, maternal health, trauma, and antimicrobial resistance.
+- The realities of SA public vs private care, medical schemes and PMBs, and
+  resource-limited settings.
+
+Rules:
+- When guidance is primarily international (e.g. a US/UK guideline) and may differ
+  from SA practice, say so explicitly and point to the SA equivalent.
+- Prefer generic drug names with SA availability/EML status; flag if something is
+  not routinely available in the SA public sector.
+- Cite the specific SA guideline or source you are drawing on where you can, and
+  say when you are uncertain or when local guidance should be verified against the
+  current STGs/EML or a specialist.
+- Be concise and clinically precise; you are talking to a doctor, not a patient.
+- Always frame output as decision support: it informs, it does not replace the
+  clinician's judgement, examination of the patient, or current official guidance.
+Open a first reply by noting you are grounded in SA guidelines and are a support
+tool, then answer. Do not repeat the disclaimer on every subsequent message."""
+
+
 def needs_escalation(text: str) -> bool:
     """True when a model reply self-reports low confidence (an escalation cue)."""
     return bool(text and _LOW_CONFIDENCE.search(text))
@@ -755,6 +790,41 @@ class Assistant:
         except Exception:
             return None
         return None
+
+    # -- SA medical assistant (streaming, no tools — a consult) --------------
+    MED_LOCAL_REPLY = (
+        "SA MedBot needs the live AI engine. Install the anthropic SDK and set "
+        "ANTHROPIC_API_KEY (or run `ant auth login`), then restart the server. "
+        "It is a decision-support tool grounded in South African guidelines "
+        "(STGs/EML, SAMF, HPCSA, SAHPRA) — not a substitute for clinical judgement."
+    )
+
+    def med_chat_stream(self, payload: dict):
+        """SSE consult with the SA-medical persona. Same event shape as chat_stream."""
+        messages = payload.get("messages")
+        if not isinstance(messages, list) or not messages:
+            raise ValueError("messages must be a non-empty list")
+        if self.mode != "claude":
+            yield "delta", {"text": self.MED_LOCAL_REPLY}
+            yield "done", {"mode": "local", "stop_reason": "end_turn",
+                           "content": [{"type": "text", "text": self.MED_LOCAL_REPLY}]}
+            return
+        # Route medical reasoning to the deep tier when available (falls back to
+        # core under the deep budget cap), and consult without dashboard tools.
+        decision = self.router.route("chat", "clinical medicine diagnosis treatment")
+        self._log_route(decision)
+        system = [{"type": "text", "text": MED_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
+        with self._get_client().messages.stream(
+            model=decision["model"], max_tokens=4096, thinking={"type": "adaptive"},
+            system=system, messages=list(messages),
+        ) as stream:
+            for text in stream.text_stream:
+                yield "delta", {"text": text}
+            response = stream.get_final_message()
+        text = " ".join(b.text for b in response.content if b.type == "text")
+        yield "done", {"mode": "claude", "tier": decision["tier"], "model": decision["model"],
+                       "stop_reason": response.stop_reason,
+                       "content": [{"type": "text", "text": text}]}
 
     # -- summarize ------------------------------------------------------------
     def summarize(self, payload: dict) -> dict:

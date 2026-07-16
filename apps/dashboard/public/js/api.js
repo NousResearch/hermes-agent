@@ -129,6 +129,10 @@ export const api = {
   chat: (messages, context) => postJSON("/api/assistant/chat", { messages, context }),
   chatStream: (messages, context, onDelta) =>
     streamJSON("/api/assistant/chat-stream", { messages, context }, onDelta),
+  medChatStream: (messages, onDelta) =>
+    streamJSON("/api/assistant/medchat-stream", { messages }, onDelta),
+  pubmed: (q) => getJSON("/api/pubmed", { q }),
+  trials: (q) => getJSON("/api/trials", { q }),
   runTool: (name, input) => postJSON("/api/assistant/tool", { name, input }),
   cryptoCoin: (id) => getJSON("/api/crypto/coin", { id }),
   cryptoChart: (id, days) => getJSON("/api/crypto/chart", { id, days }),

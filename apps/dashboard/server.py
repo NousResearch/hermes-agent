@@ -85,6 +85,13 @@ NEWS_SOURCES: dict[str, list[dict[str, str]]] = {
         {"name": "Variety", "url": "https://variety.com/feed/"},
         {"name": "BBC Entertainment", "url": "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml"},
     ],
+    "medicine": [
+        {"name": "ScienceDaily Health", "url": "https://www.sciencedaily.com/rss/health_medicine.xml"},
+        {"name": "MedlinePlus", "url": "https://medlineplus.gov/feeds/news_en.xml"},
+        {"name": "STAT", "url": "https://www.statnews.com/feed/"},
+        {"name": "Medscape", "url": "https://www.medscape.com/cx/rssfeeds/2700.xml"},
+        {"name": "WHO News", "url": "https://www.who.int/rss-feeds/news-english.xml"},
+    ],
     "gaming": [
         {"name": "IGN", "url": "https://feeds.ign.com/ign/games-all"},
         {"name": "Polygon", "url": "https://www.polygon.com/rss/index.xml"},
@@ -1212,6 +1219,90 @@ def sample_steam_deals() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Medicine — PubMed (NCBI E-utilities) + ClinicalTrials.gov (both no-key)
+# ---------------------------------------------------------------------------
+PUBMED_TTL = 30 * 60
+TRIALS_TTL = 30 * 60
+
+
+def live_pubmed(query: str) -> dict:
+    esearch = ("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+               f"?db=pubmed&retmode=json&retmax=15&sort=date&term={urllib.parse.quote(query)}")
+    ids = json.loads(fetch_url(esearch)).get("esearchresult", {}).get("idlist", [])
+    if not ids:
+        return {"source": "live", "query": query, "articles": []}
+    esummary = ("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
+                f"?db=pubmed&retmode=json&id={','.join(ids)}")
+    result = json.loads(fetch_url(esummary)).get("result", {})
+    articles = []
+    for uid in result.get("uids", []):
+        doc = result.get(uid, {})
+        authors = [a.get("name", "") for a in doc.get("authors", [])][:3]
+        articles.append({
+            "pmid": uid,
+            "title": strip_html(doc.get("title", ""), 220),
+            "journal": doc.get("source", ""),
+            "date": doc.get("pubdate", ""),
+            "authors": ", ".join(authors) + (" et al." if len(doc.get("authors", [])) > 3 else ""),
+            "url": f"https://pubmed.ncbi.nlm.nih.gov/{uid}/",
+        })
+    return {"source": "live", "query": query, "articles": articles}
+
+
+def sample_pubmed(query: str) -> dict:
+    demo = [
+        ("Outcomes of early ART initiation in TB-HIV co-infection: a multicentre cohort",
+         "Lancet HIV", "2026 Jul", "Naidoo K, Abdool Karim S"),
+        ("Point-of-care ultrasound in rural emergency care: a pragmatic trial",
+         "S Afr Med J", "2026 Jun", "van der Merwe J, Dlamini T"),
+        ("Novel GLP-1 agonists and cardiovascular outcomes: an updated meta-analysis",
+         "N Engl J Med", "2026 Jun", "Smith R, Patel A"),
+    ]
+    return {"source": "sample", "query": query, "articles": [
+        {"pmid": f"400000{i}", "title": t, "journal": j, "date": d, "authors": a + " et al.",
+         "url": "https://pubmed.ncbi.nlm.nih.gov/"}
+        for i, (t, j, d, a) in enumerate(demo)]}
+
+
+def live_trials(query: str) -> dict:
+    url = ("https://clinicaltrials.gov/api/v2/studies"
+           f"?query.term={urllib.parse.quote(query)}"
+           "&sort=LastUpdatePostDate:desc&pageSize=15&format=json")
+    raw = json.loads(fetch_url(url))
+    trials = []
+    for study in raw.get("studies", []):
+        proto = study.get("protocolSection", {})
+        ident = proto.get("identificationModule", {})
+        status = proto.get("statusModule", {})
+        conds = proto.get("conditionsModule", {}).get("conditions", [])
+        nct = ident.get("nctId", "")
+        trials.append({
+            "nct": nct,
+            "title": strip_html(ident.get("briefTitle", ""), 200),
+            "status": status.get("overallStatus", ""),
+            "conditions": ", ".join(conds[:3]),
+            "updated": status.get("lastUpdatePostDateStruct", {}).get("date", ""),
+            "url": f"https://clinicaltrials.gov/study/{nct}" if nct else "https://clinicaltrials.gov/",
+        })
+    return {"source": "live", "query": query, "trials": trials}
+
+
+def sample_trials(query: str) -> dict:
+    demo = [
+        ("Short-course regimen for drug-resistant TB in high-burden settings", "RECRUITING",
+         "Tuberculosis, Drug-Resistant", "2026-07-10"),
+        ("Community health worker-led hypertension control in primary care", "ACTIVE_NOT_RECRUITING",
+         "Hypertension", "2026-07-02"),
+        ("Long-acting injectable PrEP implementation study", "RECRUITING",
+         "HIV Prevention", "2026-06-28"),
+    ]
+    return {"source": "sample", "query": query, "trials": [
+        {"nct": f"NCT0{9000000 + i}", "title": t, "status": s, "conditions": c, "updated": u,
+         "url": "https://clinicaltrials.gov/"}
+        for i, (t, s, c, u) in enumerate(demo)]}
+
+
+# ---------------------------------------------------------------------------
 # Podcasts — parse an RSS feed's audio enclosures into playable episodes
 # ---------------------------------------------------------------------------
 PODCAST_TTL = 30 * 60
@@ -1962,6 +2053,16 @@ class Api:
     def gaming_deals(self, params: dict) -> dict:
         return self._cached("gaming:deals", GAMING_TTL, live_steam_deals, sample_steam_deals)
 
+    def pubmed(self, params: dict) -> dict:
+        query = " ".join(params.get("q", [""])[0].split())[:200] or "clinical medicine"
+        return self._cached(f"pubmed:{query.lower()}", PUBMED_TTL,
+                            lambda: live_pubmed(query), lambda: sample_pubmed(query))
+
+    def trials(self, params: dict) -> dict:
+        query = " ".join(params.get("q", [""])[0].split())[:200] or "South Africa"
+        return self._cached(f"trials:{query.lower()}", TRIALS_TTL,
+                            lambda: live_trials(query), lambda: sample_trials(query))
+
     def podcast(self, params: dict) -> dict:
         url = params.get("url", [""])[0].strip()
         parsed = urllib.parse.urlparse(url)
@@ -2347,9 +2448,15 @@ class Api:
         return {"restored": restored,
                 "rev": self.state_store.rev() if self.state_store else 0}
 
+    def assistant_medchat_stream(self, body: dict, handler) -> None:
+        """SSE consult with the SA-medical persona."""
+        self._sse(self.assistant.med_chat_stream(body), handler)
+
     def assistant_chat_stream(self, body: dict, handler) -> None:
         """SSE: delta events with live text, then one done event (chat shape)."""
-        generator = self.assistant.chat_stream(body)
+        self._sse(self.assistant.chat_stream(body), handler)
+
+    def _sse(self, generator, handler) -> None:
         try:  # pull the first event before committing to a 200 SSE response
             first = next(generator)
         except ValueError as exc:
@@ -2439,6 +2546,8 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/quakes": "quakes",
         "/api/fx": "fx",
         "/api/podcast": "podcast",
+        "/api/pubmed": "pubmed",
+        "/api/trials": "trials",
         "/api/social": "social",
         "/api/gaming/free": "gaming_free",
         "/api/gaming/deals": "gaming_deals",
@@ -2486,6 +2595,7 @@ class HubHandler(BaseHTTPRequestHandler):
     # POST endpoints that write their own (streaming) response.
     STREAM_ROUTES = {
         "/api/assistant/chat-stream": "assistant_chat_stream",
+        "/api/assistant/medchat-stream": "assistant_medchat_stream",
     }
 
     # /api/health stays open so the lock screen can probe reachability.

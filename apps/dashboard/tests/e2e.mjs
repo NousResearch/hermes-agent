@@ -123,6 +123,7 @@ const WIDGET_PAGES = {
   Feeds: ["news", "reading", "socials", "gaming", "podcasts"],
   Sports: ["scores"],
   Intel: ["worldclock", "quakes", "fx"],
+  Health: ["medbot", "pubmed", "trials"],
 };
 const pageOf = (type) => Object.keys(WIDGET_PAGES).find((p) => WIDGET_PAGES[p].includes(type)) || "Main";
 const gotoPage = async (name) => {
@@ -583,6 +584,25 @@ await page.waitForSelector(".detail-pop .stand-row", { timeout: 8000 });
 check("standings table renders", (await page.locator(".detail-pop .stand-row").count()) >= 3);
 await page.keyboard.press("Escape");
 await page.waitForSelector(".detail-pop", { state: "detached" });
+
+// ---- health & medicine (PubMed, trials, SA MedBot) -------------------------------
+await gotoWidget("pubmed");
+check("pubmed lists recent articles", (await page.locator(".widget-pubmed .pubmed-item").count()) >= 2);
+await gotoWidget("trials");
+check("clinical trials list renders", (await page.locator(".widget-trials .trial-item").count()) >= 2);
+check("trial shows a status chip", (await page.locator(".widget-trials .trial-status").count()) >= 1);
+await gotoWidget("medbot");
+check("medbot shows the SA decision-support intro", /South African/i.test(await page.locator(".widget-medbot").innerText()));
+await page.locator(".widget-medbot .med-input").fill("First-line HIV-TB co-infection management?");
+await page.locator(".widget-medbot .med-form .btn-primary").click();
+await page.waitForFunction(() =>
+  document.querySelectorAll(".widget-medbot .med-msg").length >= 2, null, { timeout: 10000 });
+check("medbot answers a clinical question", (await page.locator(".widget-medbot .med-msg").count()) >= 2);
+// medicine is a news topic
+await gotoWidget("news");
+await page.locator(".widget-news .tab", { hasText: "Medicine" }).click();
+await page.waitForSelector(".news-item");
+check("medicine news topic renders", (await page.locator(".news-item").count()) >= 2);
 
 // ---- intel widgets (world clock, seismic, currency) ------------------------------
 await gotoWidget("worldclock");

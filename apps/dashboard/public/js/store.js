@@ -22,6 +22,9 @@ function defaultPages() {
     { id: uid(), name: "Intel", layout: [
       w("worldclock", "m"), w("quakes", "m"), w("fx", "m"),
     ] },
+    { id: uid(), name: "Health", layout: [
+      w("medbot", "l"), w("pubmed", "m"), w("trials", "m"),
+    ] },
   ];
 }
 
@@ -88,6 +91,9 @@ function defaultState() {
     stocks: { symbols: ["^spx", "^ndq", "^dji", "aapl.us", "msft.us", "eurusd"] },
     podcasts: { feeds: [{ name: "The Changelog", url: "https://changelog.com/podcast/feed" }], active: "https://changelog.com/podcast/feed" },
     search: { engine: "google" },
+    medbot: { history: [] },
+    pubmed: { query: "South Africa clinical guidelines" },
+    trials: { query: "South Africa" },
   };
 }
 

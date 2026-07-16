@@ -1284,8 +1284,27 @@ class APIServerAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _profile_scope(profile: Optional[str]):
-        """Enter the multiplex profile runtime scope, or a no-op when unset."""
+        """Enter the multiplex profile runtime scope, or a no-op when unset.
+
+        When no ``/p/<profile>/`` prefix was given AND multiplexing is active,
+        enter the DEFAULT profile's scope instead of a no-op: api_server is a
+        port-binding platform that lives on the default profile, and with
+        multiplex fail-closed ``get_secret`` active, an unscoped agent run
+        raises ``UnscopedSecretError`` on its first credential read (#61276).
+        Single-profile gateways keep the no-op — ``get_secret`` falls through
+        to ``os.environ`` there, unchanged.
+        """
         if not profile:
+            try:
+                from agent.secret_scope import is_multiplex_active
+
+                if is_multiplex_active():
+                    from gateway.run import _profile_runtime_scope
+                    from hermes_constants import get_hermes_home
+
+                    return _profile_runtime_scope(get_hermes_home())
+            except Exception:
+                pass
             return nullcontext()
         from gateway.run import _profile_runtime_scope
         from hermes_cli.profiles import get_profile_dir

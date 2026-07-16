@@ -522,8 +522,8 @@ class MCPOAuthManager:
             _configure_callback_port,
             _is_interactive,
             _maybe_preregister_client,
+            _make_callback_waiter,
             _make_redirect_handler,
-            _wait_for_callback,
         )
 
         if not _OAUTH_AVAILABLE:
@@ -547,6 +547,7 @@ class MCPOAuthManager:
 
         resolved_port = cfg.get("_resolved_port", 0)
         redirect_handler = _make_redirect_handler(resolved_port)
+        callback_handler = _make_callback_waiter(resolved_port)
 
         return _HERMES_PROVIDER_CLS(
             server_name=server_name,
@@ -555,7 +556,7 @@ class MCPOAuthManager:
             client_metadata=client_metadata,
             storage=storage,
             redirect_handler=redirect_handler,
-            callback_handler=_wait_for_callback,
+            callback_handler=callback_handler,
             timeout=float(cfg.get("timeout", 300)),
         )
 

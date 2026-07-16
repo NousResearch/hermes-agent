@@ -1223,11 +1223,12 @@ class SlackAdapter(BasePlatformAdapter):
 
             # Register Block Kit action handlers for clarify buttons
             # (interactive multiple-choice prompts; see tools/clarify_gateway.py).
-            for _action_id in (
-                "hermes_clarify_choice",
-                "hermes_clarify_other",
-            ):
-                self._app.action(_action_id)(self._handle_clarify_action)
+            # Choice buttons use indexed action IDs so each ID is unique within
+            # its actions block, as required by Slack's Block Kit schema.
+            self._app.action(
+                _re.compile(r"^hermes_clarify_choice_\d+$")
+            )(self._handle_clarify_action)
+            self._app.action("hermes_clarify_other")(self._handle_clarify_action)
 
             # Register plugin-provided Block Kit action handlers.
             #
@@ -3982,7 +3983,7 @@ class SlackAdapter(BasePlatformAdapter):
         """Render a clarify prompt as Block Kit interactive buttons.
 
         Multi-choice mode (``choices`` non-empty): one button per option
-        (shared ``hermes_clarify_choice`` action_id, ``value`` packs
+        (unique ``hermes_clarify_choice_<idx>`` action_id, ``value`` packs
         ``clarify_id|idx``) plus a final "✏️ Other…" button
         (``hermes_clarify_other``).  A choice click resolves the clarify
         primitive directly; the "Other" button flips the entry into
@@ -4033,7 +4034,7 @@ class SlackAdapter(BasePlatformAdapter):
                 elements.append({
                     "type": "button",
                     "text": {"type": "plain_text", "text": label[:75], "emoji": True},
-                    "action_id": "hermes_clarify_choice",
+                    "action_id": f"hermes_clarify_choice_{idx}",
                     "value": f"{clarify_id}|{idx}",
                 })
             elements.append({

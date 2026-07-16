@@ -144,6 +144,29 @@ def _coerce_request_bool(value: Any, default: bool = False) -> bool:
     return default
 
 
+def _parse_request_reasoning_effort(
+    body: Dict[str, Any],
+) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Parse an optional request-scoped reasoning effort.
+
+    The returned config is passed only to the agent created for this request;
+    it never mutates the gateway runner or the user's persisted configuration.
+    """
+    if "reasoning_effort" not in body:
+        return None, None
+
+    raw_effort = body.get("reasoning_effort")
+    if not isinstance(raw_effort, str) or not raw_effort.strip():
+        return None, "'reasoning_effort' must be a non-empty string"
+
+    from hermes_constants import parse_reasoning_effort
+
+    reasoning_config = parse_reasoning_effort(raw_effort)
+    if reasoning_config is None:
+        return None, f"Unsupported reasoning_effort: {raw_effort}"
+    return reasoning_config, None
+
+
 def _normalize_chat_content(
     content: Any, *, _max_depth: int = 10, _depth: int = 0,
 ) -> str:
@@ -1397,6 +1420,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        request_reasoning_config: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1430,6 +1454,8 @@ class APIServerAdapter(BasePlatformAdapter):
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         reasoning_config = GatewayRunner._load_reasoning_config()
+        if request_reasoning_config is not None:
+            reasoning_config = dict(request_reasoning_config)
         model = _resolve_gateway_model()
 
         # When the primary provider's auth fails (expired token / 429 quota
@@ -3376,6 +3402,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
+        request_reasoning_config, reasoning_err = _parse_request_reasoning_effort(body)
+        if reasoning_err:
+            return web.json_response(_openai_error(reasoning_err), status=400)
+
         raw_input = body.get("input")
         if raw_input is None:
             return web.json_response(_openai_error("Missing 'input' field"), status=400)
@@ -3523,6 +3553,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                request_reasoning_config=request_reasoning_config,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -3557,13 +3588,22 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                request_reasoning_config=request_reasoning_config,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
             fp = _make_request_fingerprint(
                 body,
-                keys=["input", "instructions", "previous_response_id", "conversation", "model", "tools"],
+                keys=[
+                    "input",
+                    "instructions",
+                    "previous_response_id",
+                    "conversation",
+                    "model",
+                    "tools",
+                    "reasoning_effort",
+                ],
             )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)
@@ -4206,6 +4246,7 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        request_reasoning_config: Optional[Dict[str, Any]] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -4242,6 +4283,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_complete_callback=tool_complete_callback,
                     gateway_session_key=gateway_session_key,
                     route=route,
+                    request_reasoning_config=request_reasoning_config,
                 )
                 if agent_ref is not None:
                     agent_ref[0] = agent
@@ -4359,6 +4401,10 @@ class APIServerAdapter(BasePlatformAdapter):
             body = await request.json()
         except Exception:
             return web.json_response(_openai_error("Invalid JSON"), status=400)
+
+        request_reasoning_config, reasoning_err = _parse_request_reasoning_effort(body)
+        if reasoning_err:
+            return web.json_response(_openai_error(reasoning_err), status=400)
 
         raw_input = body.get("input")
         if not raw_input:
@@ -4487,6 +4533,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_progress_callback=event_cb,
                     gateway_session_key=gateway_session_key,
                     route=route,
+                    request_reasoning_config=request_reasoning_config,
                 )
                 self._active_run_agents[run_id] = agent
 

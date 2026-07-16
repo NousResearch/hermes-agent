@@ -30,6 +30,7 @@ from gateway.platforms.api_server import (
     ResponseStore,
     _IdempotencyCache,
     _derive_chat_session_id,
+    _parse_request_reasoning_effort,
     _redact_api_error_text,
     check_api_server_requirements,
     cors_middleware,
@@ -49,6 +50,39 @@ class TestCheckRequirements:
     @patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", False)
     def test_returns_false_without_aiohttp(self):
         assert check_api_server_requirements() is False
+
+
+class TestRequestReasoningEffort:
+    def test_absent_uses_gateway_default(self):
+        config, error = _parse_request_reasoning_effort({})
+
+        assert config is None
+        assert error is None
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("medium", {"enabled": True, "effort": "medium"}),
+            ("ULTRA", {"enabled": True, "effort": "ultra"}),
+            ("none", {"enabled": False}),
+        ],
+    )
+    def test_parses_supported_efforts(self, value, expected):
+        config, error = _parse_request_reasoning_effort(
+            {"reasoning_effort": value}
+        )
+
+        assert config == expected
+        assert error is None
+
+    @pytest.mark.parametrize("value", ["turbo", "", False, 2, None])
+    def test_rejects_invalid_efforts(self, value):
+        config, error = _parse_request_reasoning_effort(
+            {"reasoning_effort": value}
+        )
+
+        assert config is None
+        assert error is not None
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +400,50 @@ class TestAdapterInit:
         assert isinstance(agent, FakeAgent)
         assert captured["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
 
+    def test_create_agent_reasoning_override_is_request_scoped(self, monkeypatch):
+        captured = []
+        gateway_reasoning = {"enabled": True, "effort": "low"}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.append(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "openai-codex",
+                "base_url": "https://example.test/v1",
+                "api_mode": "codex_responses",
+            },
+        )
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "gpt-5.6")
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_reasoning_config",
+            staticmethod(lambda: gateway_reasoning),
+        )
+        monkeypatch.setattr(
+            "gateway.run.GatewayRunner._load_fallback_model",
+            staticmethod(lambda: None),
+        )
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        request_config = {"enabled": True, "effort": "high"}
+        adapter._create_agent(
+            session_id="request-high",
+            request_reasoning_config=request_config,
+        )
+        adapter._create_agent(session_id="gateway-default")
+
+        assert captured[0]["reasoning_config"] == request_config
+        assert captured[0]["reasoning_config"] is not request_config
+        assert captured[1]["reasoning_config"] is gateway_reasoning
+        assert gateway_reasoning == {"enabled": True, "effort": "low"}
+
     def test_create_agent_refreshes_max_iterations_from_runtime_config(self, monkeypatch):
         captured = {}
 
@@ -631,6 +709,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
     app.router.add_delete("/v1/responses/{response_id}", adapter._handle_delete_response)
+    app.router.add_post("/v1/runs", adapter._handle_runs)
     return app
 
 
@@ -1853,6 +1932,46 @@ class TestResponsesEndpoint:
             assert data["output"][0]["content"][0]["text"] == "Paris is the capital of France."
 
     @pytest.mark.asyncio
+    async def test_forwards_request_scoped_reasoning_effort(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "Done", "messages": [], "api_calls": 1},
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                )
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Hello",
+                        "reasoning_effort": "high",
+                    },
+                )
+
+            assert resp.status == 200
+            assert mock_run.call_args.kwargs["request_reasoning_config"] == {
+                "enabled": True,
+                "effort": "high",
+            }
+
+    @pytest.mark.asyncio
+    async def test_rejects_invalid_request_reasoning_effort(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/responses",
+                json={
+                    "model": "hermes-agent",
+                    "input": "Hello",
+                    "reasoning_effort": "turbo",
+                },
+            )
+            assert resp.status == 400
+            data = await resp.json()
+            assert "reasoning_effort" in data["error"]["message"]
+
+    @pytest.mark.asyncio
     async def test_successful_response_with_array_input(self, adapter):
         """Array input with role/content objects."""
         mock_result = {"final_response": "Done", "messages": [], "api_calls": 1}
@@ -2279,6 +2398,63 @@ class TestResponsesEndpoint:
             assert resp.status == 400
 
 
+class TestRunsEndpoint:
+    @pytest.mark.asyncio
+    async def test_forwards_request_scoped_reasoning_effort(self, adapter):
+        agent_created = asyncio.Event()
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "Done"}
+        mock_agent.session_prompt_tokens = 1
+        mock_agent.session_completion_tokens = 2
+        mock_agent.session_total_tokens = 3
+
+        def _fake_create_agent(*args, **kwargs):
+            agent_created.set()
+            return mock_agent
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(
+                adapter,
+                "_create_agent",
+                side_effect=_fake_create_agent,
+            ) as create_agent:
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Do the work",
+                        "reasoning_effort": "ultra",
+                    },
+                )
+
+                assert resp.status == 202
+                data = await resp.json()
+                await asyncio.wait_for(agent_created.wait(), timeout=1)
+                assert create_agent.call_args.kwargs[
+                    "request_reasoning_config"
+                ] == {"enabled": True, "effort": "ultra"}
+
+                task = adapter._active_run_tasks.get(data["run_id"])
+                if task is not None:
+                    await asyncio.wait_for(task, timeout=1)
+
+    @pytest.mark.asyncio
+    async def test_rejects_invalid_request_reasoning_effort(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/runs",
+                json={
+                    "model": "hermes-agent",
+                    "input": "Do the work",
+                    "reasoning_effort": "turbo",
+                },
+            )
+
+        assert resp.status == 400
+
+
 class TestResponsesStreaming:
     @pytest.mark.asyncio
     async def test_stream_true_returns_responses_sse(self, adapter):
@@ -2310,6 +2486,36 @@ class TestResponsesStreaming:
                 assert '"logprobs": []' in body
                 assert "Hello" in body
                 assert " world" in body
+
+    @pytest.mark.asyncio
+    async def test_stream_forwards_request_scoped_reasoning_effort(self, adapter):
+        captured = {}
+
+        async def _mock_run_agent(**kwargs):
+            captured.update(kwargs)
+            return (
+                {"final_response": "Hello", "messages": [], "api_calls": 1},
+                {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Hi",
+                        "stream": True,
+                        "reasoning_effort": "medium",
+                    },
+                )
+                await resp.text()
+
+        assert captured["request_reasoning_config"] == {
+            "enabled": True,
+            "effort": "medium",
+        }
 
     @pytest.mark.asyncio
     async def test_stream_string_false_returns_json_response(self, adapter):

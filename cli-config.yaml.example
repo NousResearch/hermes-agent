@@ -541,7 +541,6 @@ prompt_caching:
 #                           # extra_body:
 #                           #   chat_template_kwargs:
 #                           #     enable_thinking: false
-
 # =============================================================================
 # Persistent Memory
 # =============================================================================
@@ -841,6 +840,22 @@ platform_toolsets:
   yuanbao: [hermes-yuanbao]
   teams: [hermes-teams]
   google_chat: [hermes-google_chat]
+
+# =============================================================================
+# Platform Request Overrides (per-platform LLM request options)
+# =============================================================================
+# Layer request options by platform. These sit above provider defaults and below
+# explicit per-call overrides. Use this for latency-sensitive surfaces or
+# provider-specific request fields that should not apply globally.
+#
+# platform_request_overrides:
+#   api_server:
+#     reasoning_effort: "minimal"
+#     extra_body:
+#       chat_template_kwargs:
+#         enable_thinking: false
+#   telegram:
+#     service_tier: "priority"
 
 # =============================================================================
 # Gateway Platform Settings

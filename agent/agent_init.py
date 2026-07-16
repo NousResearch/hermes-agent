@@ -47,6 +47,13 @@ from agent.tool_guardrails import (
     ToolCallGuardrailController,
     ToolGuardrailDecision,
 )
+from agent.request_options import (
+    first_service_tier,
+    merge_request_overrides,
+    reasoning_config_from_request_options,
+    scoped_request_options_for_platform,
+    strip_internal_request_options,
+)
 from hermes_cli.config import cfg_get
 from hermes_cli.timeouts import get_provider_request_timeout
 from hermes_constants import get_hermes_home
@@ -1354,7 +1361,6 @@ def init_agent(
         _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}
-
     # LM Studio can either be explicitly preloaded through LM Studio's
     # management API (the historical Hermes behavior) or left to LM Studio's
     # just-in-time / Auto-Evict chat-completions path.  Keep the default
@@ -1375,6 +1381,23 @@ def init_agent(
     except Exception:
         agent.lmstudio_load_mode = "explicit"
 
+    _platform_request_overrides = scoped_request_options_for_platform(
+        _agent_cfg, agent.platform
+    )
+    _explicit_request_overrides = dict(request_overrides or {})
+    _scoped_request_overrides = merge_request_overrides(
+        _platform_request_overrides,
+        _explicit_request_overrides,
+    )
+    agent.reasoning_config = reasoning_config_from_request_options(
+        _scoped_request_overrides,
+        fallback=agent.reasoning_config,
+    )
+    agent.service_tier = (
+        first_service_tier((_platform_request_overrides, _explicit_request_overrides))
+        or agent.service_tier
+    )
+    agent.request_overrides = strip_internal_request_options(_scoped_request_overrides)
     try:
         agent._tool_guardrails = ToolCallGuardrailController(
             ToolCallGuardrailConfig.from_mapping(

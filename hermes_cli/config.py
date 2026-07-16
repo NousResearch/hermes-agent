@@ -1793,6 +1793,11 @@ DEFAULT_CONFIG = {
             # NOTE: no reasoning_effort here by design — see moa_reference above.
         },
     },
+
+    # Per-platform request option overrides. Values are layered above provider
+    # defaults and below explicit caller request_overrides. Use for latency or
+    # provider-specific request knobs that should differ by surface.
+    "platform_request_overrides": {},
     
     "display": {
         "compact": False,
@@ -5425,8 +5430,8 @@ _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
-    "auxiliary", "moa", "custom_providers", "context", "memory", "gateway",
-    "sessions", "streaming", "updates", "mcp_servers",
+    "auxiliary", "moa", "custom_providers", "platform_request_overrides",
+    "context", "memory", "gateway", "sessions", "streaming", "updates", "mcp_servers",
 }
 
 # Valid fields inside a custom_providers list entry

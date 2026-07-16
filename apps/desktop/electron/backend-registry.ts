@@ -128,16 +128,22 @@ export function reapablePids(entries: BackendRegistryEntry[], selfPid: number): 
 }
 
 /**
- * True when a process command line looks like a long-lived Hermes backend
- * (`hermes serve` / `hermes dashboard`, incl. the `python -m hermes_cli.main`
- * forms). Used to re-verify a recorded PID before killing it, so a recycled
- * PID now belonging to an unrelated process is never reaped. Mirrors the
- * command shapes in Python's `_find_stale_dashboard_pids`.
+ * True when a process command line is an actual long-lived Hermes backend
+ * invocation (`hermes serve` / `hermes dashboard`, incl. the `python -m
+ * hermes_cli.main` and `hermes_cli/main.py` forms). Used to re-verify a
+ * recorded PID before killing it, so a recycled PID now belonging to an
+ * unrelated process is never reaped.
+ *
+ * Matches only the full `<launcher> <subcommand>` shape — the launcher token
+ * immediately followed by `serve`/`dashboard` — mirroring the explicit pattern
+ * list in Python's `_find_stale_dashboard_pids` (hermes_cli/main.py). A loose
+ * "hermes" anywhere + "serve"/"dashboard" anywhere was too broad: it reaped a
+ * chat session like `hermes chat dashboard` or `hermes chat --query serve` that
+ * merely mentions the words. The trailing boundary also stops `serve` matching
+ * as a prefix of `serverless`.
  */
 export function backendCommandMatches(command: unknown): boolean {
   const s = String(command ?? '').toLowerCase()
 
-  if (!s.includes('hermes')) {return false}
-
-  return /(^|[\s/\\._])(serve|dashboard)(\s|$)/.test(s)
+  return /(?:^|[\s/\\])(?:hermes|hermes_cli\.main|hermes_cli\/main\.py)\s+(?:serve|dashboard)(?:\s|$)/.test(s)
 }

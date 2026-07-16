@@ -133,6 +133,8 @@ test('backendCommandMatches rejects unrelated processes (PID reuse guard)', () =
   assert.ok(!backendCommandMatches('/Applications/Safari.app/Contents/MacOS/Safari'))
   assert.ok(!backendCommandMatches('python -m hermes_cli.main serverless_thing')) // "serve" only as a prefix
   assert.ok(!backendCommandMatches('hermes chat')) // hermes, but not a backend
+  assert.ok(!backendCommandMatches('hermes chat dashboard')) // chat session mentioning "dashboard", not a backend
+  assert.ok(!backendCommandMatches('hermes chat --query serve')) // chat query mentioning "serve", not a backend
   assert.ok(!backendCommandMatches('vim dashboard.py')) // dashboard, but not hermes
   assert.ok(!backendCommandMatches(''))
   assert.ok(!backendCommandMatches(null))

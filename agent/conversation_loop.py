@@ -28,10 +28,15 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.context_health_compact import (
+    build_compact_exhaustion_hold,
+    build_safe_compact_hold_result,
+)
 from agent.conversation_compression import conversation_history_after_compression
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
+from agent.context_health_intake import PreTurnIntakeHold
 from agent.turn_context import build_turn_context
 from agent.turn_retry_state import TurnRetryState
 from agent.memory_manager import build_memory_context_block
@@ -587,23 +592,35 @@ def run_conversation(
     # ``build_turn_context``.  It mutates ``agent`` exactly as the inline code
     # did and returns the locals the loop below reads back.  See
     # ``agent/turn_context.py``.
-    _ctx = build_turn_context(
-        agent,
-        user_message,
-        system_message,
-        conversation_history,
-        task_id,
-        stream_callback,
-        persist_user_message,
-        persist_user_timestamp,
-        restore_or_build_system_prompt=_restore_or_build_system_prompt,
-        install_safe_stdio=_install_safe_stdio,
-        sanitize_surrogates=_sanitize_surrogates,
-        summarize_user_message_for_log=_summarize_user_message_for_log,
-        set_session_context=set_session_context,
-        set_current_write_origin=set_current_write_origin,
-        ra=_ra,
-    )
+    try:
+        _ctx = build_turn_context(
+            agent,
+            user_message,
+            system_message,
+            conversation_history,
+            task_id,
+            stream_callback,
+            persist_user_message,
+            persist_user_timestamp,
+            restore_or_build_system_prompt=_restore_or_build_system_prompt,
+            install_safe_stdio=_install_safe_stdio,
+            sanitize_surrogates=_sanitize_surrogates,
+            summarize_user_message_for_log=_summarize_user_message_for_log,
+            set_session_context=set_session_context,
+            set_current_write_origin=set_current_write_origin,
+            ra=_ra,
+        )
+    except PreTurnIntakeHold as hold:
+        final_response = getattr(hold, "user_response", str(hold))
+        reason = getattr(hold, "reason", "") or "pre_turn_intake_hold"
+        return {
+            "final_response": final_response,
+            "messages": [{"role": "assistant", "content": final_response}],
+            "api_calls": 0,
+            "completed": False,
+            "failed": True,
+            "error": f"context_health_hold: {reason}",
+        }
     user_message = _ctx.user_message
     original_user_message = _ctx.original_user_message
     messages = _ctx.messages
@@ -868,6 +885,43 @@ def run_conversation(
             effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
+
+        # Phase 3 Context Health WCP hook: constrain provider-visible
+        # api_messages only. The persisted/internal messages list remains
+        # untouched, and disabled mode is exact pass-through.
+        from agent.working_context_packet import enforce_working_context_packet
+
+        _wcp_decision = enforce_working_context_packet(
+            agent=agent,
+            policy=getattr(agent, "_context_health_policy", None),
+            api_messages=api_messages,
+            messages=messages,
+            original_user_message=original_user_message,
+            current_turn_user_idx=current_turn_user_idx,
+            effective_task_id=effective_task_id,
+            turn_id=turn_id,
+            session_id=agent.session_id or "",
+            context_health_intake=getattr(_ctx, "context_health_intake", None),
+        )
+        if _wcp_decision.action == "hold":
+            final_response = _wcp_decision.hold_response or "Context Health HOLD: Working Context Packet provider payload could not be built safely."
+            failed = True
+            _turn_exit_reason = "context_health_wcp_hold"
+            try:
+                agent.iteration_budget.refund()
+            except Exception:
+                pass
+            agent._api_call_count = 0
+            return {
+                "final_response": final_response,
+                "messages": [{"role": "assistant", "content": final_response}],
+                "api_calls": 0,
+                "completed": False,
+                "failed": True,
+                "error": f"context_health_wcp_hold: {_wcp_decision.reason}",
+            }
+        if _wcp_decision.action == "replace_api_messages" and _wcp_decision.api_messages is not None:
+            api_messages = _wcp_decision.api_messages
 
         if moa_config:
             try:
@@ -3446,23 +3500,27 @@ def run_conversation(
                 if is_payload_too_large:
                     compression_attempts += 1
                     if compression_attempts > max_compression_attempts:
-                        # Terminal — surface the buffered retry trace.
+                        # Terminal — surface the buffered retry trace, then
+                        # route compression_exhausted to context_health_compact
+                        # safe HOLD with a sanitized continuity_packet. Phase 7
+                        # excludes raw transcript content, unrelated A/B task
+                        # material, and secret/token/password/private body text
+                        # from this packet; actual rehydrate remains Phase 8
+                        # and is not executed here.
                         agent._flush_status_buffer()
-                        agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached for payload-too-large error.", force=True)
-                        agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                         logger.error(f"{agent.log_prefix}413 compression failed after {max_compression_attempts} attempts.")
                         agent._persist_session(messages, conversation_history)
-                        _final_response = f"Request payload too large: max compression attempts ({max_compression_attempts}) reached."
-                        return {
-                            "final_response": _final_response,
-                            "messages": messages,
-                            "completed": False,
-                            "api_calls": api_call_count,
-                            "error": _final_response,
-                            "partial": True,
-                            "failed": True,
-                            "compression_exhausted": True,
-                        }
+                        hold_result = build_compact_exhaustion_hold(
+                            reason="payload_too_large_max_compression_attempts",
+                            session_id=getattr(agent, "session_id", "") or "",
+                            task_id=effective_task_id,
+                            message_count=len(messages),
+                            approx_tokens=approx_tokens,
+                        )
+                        return build_safe_compact_hold_result(
+                            hold_result,
+                            api_calls=api_call_count,
+                        )
                     agent._buffer_status(f"⚠️  Request payload too large (413) — compression attempt {compression_attempts}/{max_compression_attempts}...")
 
                     original_len = len(messages)
@@ -3501,24 +3559,27 @@ def run_conversation(
                             )
                             continue
 
-                        # Terminal — surface buffered context so the user
-                        # sees what compression attempts were made.
+                        # Terminal — compact failure fallback: switch
+                        # compression_exhausted to context_health_compact safe
+                        # HOLD with sanitized continuity_packet metadata only.
+                        # Do not expose raw transcript text, unrelated A/B task
+                        # material, or secret/token/password/private body
+                        # content; do not execute Phase 8 rehydrate here.
                         agent._flush_status_buffer()
                         agent._vprint(f"{agent.log_prefix}❌ Payload too large and cannot compress further.", force=True)
-                        agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                         logger.error(f"{agent.log_prefix}413 payload too large. Cannot compress further.")
                         agent._persist_session(messages, conversation_history)
-                        _final_response = "Request payload too large (413). Cannot compress further."
-                        return {
-                            "final_response": _final_response,
-                            "messages": messages,
-                            "completed": False,
-                            "api_calls": api_call_count,
-                            "error": _final_response,
-                            "partial": True,
-                            "failed": True,
-                            "compression_exhausted": True,
-                        }
+                        hold_result = build_compact_exhaustion_hold(
+                            reason="payload_too_large_cannot_compress_further",
+                            session_id=getattr(agent, "session_id", "") or "",
+                            task_id=effective_task_id,
+                            message_count=len(messages),
+                            approx_tokens=approx_tokens,
+                        )
+                        return build_safe_compact_hold_result(
+                            hold_result,
+                            api_calls=api_call_count,
+                        )
 
                 # Check for context-length errors BEFORE generic 4xx handler.
                 # The classifier detects context overflow from: explicit error
@@ -3576,22 +3637,24 @@ def run_conversation(
                         # loop forever if the error keeps recurring.
                         compression_attempts += 1
                         if compression_attempts > max_compression_attempts:
+                            # Context-overflow compression_exhausted path: safe HOLD
+                            # with sanitized continuity_packet; no raw transcript,
+                            # unrelated A/B task material, or secret/token/password/private body.
+                            # Actual rehydrate remains Phase 8 and is not executed here.
                             agent._flush_status_buffer()
-                            agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
-                            agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                             logger.error(f"{agent.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
                             agent._persist_session(messages, conversation_history)
-                            _final_response = f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached."
-                            return {
-                                "final_response": _final_response,
-                                "messages": messages,
-                                "completed": False,
-                                "api_calls": api_call_count,
-                                "error": _final_response,
-                                "partial": True,
-                                "failed": True,
-                                "compression_exhausted": True,
-                            }
+                            hold_result = build_compact_exhaustion_hold(
+                                reason="context_overflow_output_cap_max_compression_attempts",
+                                session_id=getattr(agent, "session_id", "") or "",
+                                task_id=effective_task_id,
+                                message_count=len(messages),
+                                approx_tokens=approx_tokens,
+                            )
+                            return build_safe_compact_hold_result(
+                                hold_result,
+                                api_calls=api_call_count,
+                            )
                         _retry.restart_with_compressed_messages = True
                         break
 
@@ -3688,22 +3751,24 @@ def run_conversation(
 
                     compression_attempts += 1
                     if compression_attempts > max_compression_attempts:
+                        # Context-overflow compression_exhausted path: safe HOLD with
+                        # sanitized continuity_packet; no raw transcript,
+                        # unrelated A/B task material, or secret/token/password/private body.
+                        # Actual rehydrate remains Phase 8 and is not executed here.
                         agent._flush_status_buffer()
-                        agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
-                        agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
                         logger.error(f"{agent.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
                         agent._persist_session(messages, conversation_history)
-                        _final_response = f"Context length exceeded: max compression attempts ({max_compression_attempts}) reached."
-                        return {
-                            "final_response": _final_response,
-                            "messages": messages,
-                            "completed": False,
-                            "api_calls": api_call_count,
-                            "error": _final_response,
-                            "partial": True,
-                            "failed": True,
-                            "compression_exhausted": True,
-                        }
+                        hold_result = build_compact_exhaustion_hold(
+                            reason="context_overflow_max_compression_attempts",
+                            session_id=getattr(agent, "session_id", "") or "",
+                            task_id=effective_task_id,
+                            message_count=len(messages),
+                            approx_tokens=approx_tokens,
+                        )
+                        return build_safe_compact_hold_result(
+                            hold_result,
+                            api_calls=api_call_count,
+                        )
                     agent._buffer_status(f"🗜️ Context too large (~{approx_tokens:,} tokens) — compressing ({compression_attempts}/{max_compression_attempts})...")
 
                     original_len = len(messages)
@@ -3732,23 +3797,26 @@ def run_conversation(
                         _retry.restart_with_compressed_messages = True
                         break
                     else:
-                        # Can't compress further and already at minimum tier
+                        # Can't compress further and already at minimum tier.
+                        # Context-overflow compression_exhausted path: safe HOLD with
+                        # sanitized continuity_packet; no raw transcript,
+                        # unrelated A/B task material, or secret/token/password/private body.
+                        # Actual rehydrate remains Phase 8 and is not executed here.
                         agent._flush_status_buffer()
                         agent._vprint(f"{agent.log_prefix}❌ Context length exceeded and cannot compress further.", force=True)
-                        agent._vprint(f"{agent.log_prefix}   💡 The conversation has accumulated too much content. Try /new to start fresh, or /compress to manually trigger compression.", force=True)
                         logger.error(f"{agent.log_prefix}Context length exceeded: {new_tokens:,} tokens. Cannot compress further.")
                         agent._persist_session(messages, conversation_history)
-                        _final_response = f"Context length exceeded ({new_tokens:,} tokens). Cannot compress further."
-                        return {
-                            "final_response": _final_response,
-                            "messages": messages,
-                            "completed": False,
-                            "api_calls": api_call_count,
-                            "error": _final_response,
-                            "partial": True,
-                            "failed": True,
-                            "compression_exhausted": True,
-                        }
+                        hold_result = build_compact_exhaustion_hold(
+                            reason="context_overflow_cannot_compress_further",
+                            session_id=getattr(agent, "session_id", "") or "",
+                            task_id=effective_task_id,
+                            message_count=len(messages),
+                            approx_tokens=new_tokens,
+                        )
+                        return build_safe_compact_hold_result(
+                            hold_result,
+                            api_calls=api_call_count,
+                        )
 
                 # Check for non-retryable client errors.  The classifier
                 # already accounts for 413, 429, 529 (transient), context

@@ -351,6 +351,7 @@ def build_memory_context_block(raw_context: str) -> str:
 
 
 class MemoryManager:
+    supports_retrieval_scope = True
     """Orchestrates the built-in provider plus at most one external provider.
 
     The builtin provider is always first. Only one non-builtin (external)
@@ -492,28 +493,55 @@ class MemoryManager:
         """
         return extract_user_instruction_from_skill_message(text)
 
-    def prefetch_all(self, query: str, *, session_id: str = "") -> str:
+    def prefetch_all(
+        self,
+        query: str,
+        *,
+        session_id: str = "",
+        current_task_id: str = "",
+        allowed_task_ids: Optional[list[str]] = None,
+        excluded_task_ids: Optional[list[str]] = None,
+        allowed_session_ids: Optional[list[str]] = None,
+        excluded_session_ids: Optional[list[str]] = None,
+        retrieval_scope: Optional[dict] = None,
+    ) -> str:
         """Collect prefetch context from all providers.
 
-        Returns merged context text labeled by provider. Empty providers
-        are skipped. Failures in one provider don't block others.
+        When Phase 6 retrieval scope is enabled, scope-capable providers receive
+        the task/session allow/exclude metadata. Providers that do not declare
+        scope support are skipped rather than queried unscoped.
         """
         clean_query = self._strip_skill_scaffolding(query)
         if not clean_query:
             return ""
+        scope_enabled = bool(isinstance(retrieval_scope, dict) and retrieval_scope.get("enabled"))
         parts = []
         for provider in self._providers:
             try:
-                result = provider.prefetch(clean_query, session_id=session_id)
+                if scope_enabled and not getattr(provider, "supports_retrieval_scope", False):
+                    continue
+                if scope_enabled:
+                    result = provider.prefetch(
+                        clean_query,
+                        session_id=session_id,
+                        current_task_id=current_task_id,
+                        allowed_task_ids=list(allowed_task_ids or []),
+                        excluded_task_ids=list(excluded_task_ids or []),
+                        allowed_session_ids=list(allowed_session_ids or []),
+                        excluded_session_ids=list(excluded_session_ids or []),
+                        retrieval_scope=retrieval_scope,
+                    )
+                else:
+                    result = provider.prefetch(clean_query, session_id=session_id)
                 if result and result.strip():
                     parts.append(result)
             except Exception as e:
                 logger.debug(
                     "Memory provider '%s' prefetch failed (non-fatal): %s",
                     provider.name, e,
+                    exc_info=True,
                 )
         return "\n\n".join(parts)
-
     def queue_prefetch_all(self, query: str, *, session_id: str = "") -> None:
         """Queue background prefetch on all providers for the next turn.
 

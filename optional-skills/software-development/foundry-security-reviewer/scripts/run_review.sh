@@ -65,6 +65,34 @@ append_log() {
 
 append_coverage_flags() {
   local flagged
+  local coverage_rows
+  local parseable_rows
+
+  if [ "$COVERAGE_STATUS" -ne 0 ]; then
+    printf '\n### Modules below 80%%\n- [ ] Coverage threshold result unavailable because `forge coverage --report summary` failed.\n'
+    return
+  fi
+
+  read -r coverage_rows parseable_rows <<EOF
+$(awk -F'|' '
+  /\.sol[[:space:]]*\|/ {
+    rows++
+    for (i = 3; i <= NF; i++) {
+      if ($i ~ /%/) {
+        valid++
+        break
+      }
+    }
+  }
+  END { printf "%d %d", rows + 0, valid + 0 }
+' "$COVERAGE_LOG")
+EOF
+
+  if [ "$coverage_rows" -eq 0 ] || [ "$coverage_rows" -ne "$parseable_rows" ]; then
+    printf '\n### Modules below 80%%\n- [ ] Coverage threshold result unavailable because the successful command did not produce a parseable Solidity coverage summary.\n'
+    return
+  fi
+
   flagged="$(awk -F'|' '
     /\.sol[[:space:]]*\|/ {
       low = 0

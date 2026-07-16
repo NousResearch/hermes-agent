@@ -1,51 +1,98 @@
 ---
 name: foundry-security-reviewer
-description: Run Foundry test/coverage/snapshot and surface security issues in Solidity projects
+description: "Audit Foundry projects with tests and security tools."
 version: 1.0.0
+author: Ahmet Osrak (Osraka), Hermes Agent
+license: MIT
+platforms: [linux, macos]
 metadata:
   hermes:
     tags: [blockchain, security, solidity, foundry, smart-contracts]
     category: software-development
 ---
 
-# Foundry Security Reviewer
+# Foundry Security Reviewer Skill
 
-Run a repeatable security-review baseline for a Foundry Solidity project. Use the bundled script to collect build, test, coverage, gas, and optional static-analysis evidence into one Markdown report.
+Run a repeatable security-review baseline for a Solidity project that uses
+Foundry. The bundled script records build, test, coverage, gas, and optional
+static-analysis evidence; it does not claim that automated output alone is a
+complete smart-contract audit.
 
 ## When to Use
 
-- Review a Solidity project that uses Foundry.
-- Perform a Foundry security review or smart-contract audit triage.
-- Prepare a security-focused PR review comment for a smart-contract change.
+- The user asks to review a Solidity project that uses Foundry.
+- The user requests smart-contract security triage or audit evidence.
+- The user wants a security-focused PR review checklist.
 
 ## Prerequisites
 
-- Require the `forge` CLI on `PATH`.
-- Require a Foundry project root containing `foundry.toml`.
-- Optionally install `slither` for detector findings and `aderyn` for Solidity static analysis.
-- Run from the target project root, or pass the root as the first argument.
+- The `forge` CLI on `PATH`.
+- A project root containing `foundry.toml`.
+- Optional `slither` and `aderyn` installations for static analysis.
+- The `terminal` and `read_file` tools.
+- Linux or macOS, because the bundled helper uses Bash and POSIX temporary-file
+  primitives.
+
+## How to Run
+
+Invoke the bundled reviewer through the `terminal` tool from the target project
+root, or pass the project root as its first argument:
+
+```text
+bash ${HERMES_SKILL_DIR}/scripts/run_review.sh .
+```
+
+Read the generated `review_output.md` with `read_file` before writing the
+review comment.
+
+## Quick Reference
+
+| Check | Command | Evidence |
+| --- | --- | --- |
+| Build | `forge build` | Compiler status and diagnostics |
+| Tests | `forge test -vv` | Failing cases and traces |
+| Coverage | `forge coverage --report summary` | Modules below 80% |
+| Gas | `forge snapshot` | Baseline for later comparisons |
+| Optional | `slither .`, `aderyn .` | Static-analysis leads |
 
 ## Procedure
 
 1. Confirm the project root contains `foundry.toml`.
-2. Run the bundled reviewer:
+2. Run `scripts/run_review.sh <project-root>` through `terminal`.
+3. Read `review_output.md`; compiler errors mean the project is not ready for
+   a complete review.
+4. List failing cases from `forge test -vv` and identify the contract or
+   invariant each case exercises.
+5. Review the coverage summary and investigate every module below 80%.
+6. Keep the `forge snapshot` result as a gas baseline. Compare later changes
+   only under a consistent toolchain, compiler, RPC, and test configuration.
+7. When installed, inspect Slither HIGH/MEDIUM and Aderyn critical findings.
+   Confirm exploitability in source before escalating a finding.
+8. Compare the code with
+   [common vulnerabilities](references/common-vulnerabilities.md).
+9. Paste the checklist into the PR review and replace placeholders with the
+   affected file, function, severity, impact, and test evidence.
 
-   ```bash
-   bash ${HERMES_SKILL_DIR}/scripts/run_review.sh .
-   ```
+## Pitfalls
 
-3. Inspect `review_output.md` in the target project root.
-4. Report compiler errors from `forge build`; do not treat an uncompiled project as audited.
-5. List failing cases from `forge test -vv` and identify the contract or invariant they exercise.
-6. Review the `forge coverage --report summary` table and investigate every module below 80% coverage.
-7. Keep the `forge snapshot` result as the gas baseline; compare later changes against it.
-8. When installed, review Slither HIGH/MEDIUM findings and Aderyn critical findings. Confirm exploitability in code before escalating a finding.
-9. Compare code against [common vulnerabilities](references/common-vulnerabilities.md) and add concrete remediation recommendations.
-10. Paste the report's checklist into the PR review, replacing placeholders with file, function, severity, impact, and test evidence.
+- `forge coverage` can be slow in large projects; narrow it with
+  `--match-contract <ContractName>` when triaging a focused change.
+- If coverage fails or produces no parseable Solidity coverage rows, the
+  script reports the threshold result as unavailable rather than claiming that
+  no module is below 80%.
+- Slither can report false positives. Check suppressed lines and reachable
+  paths before dismissing or escalating a detector.
+- Gas snapshots vary between environments. Compare them only under consistent
+  toolchain, compiler, RPC, and test settings.
 
-## Output Format
+## Verification
 
-Return `review_output.md` as a PR-review-ready Markdown checklist with these sections:
+Verify that `review_output.md` exists, every required command is marked with
+its actual exit status, and coverage is marked unavailable when its command or
+summary cannot be parsed. Automated findings still require source-level
+validation and a regression test before they are treated as vulnerabilities.
+
+Use this report shape:
 
 ```markdown
 # Foundry Security Review
@@ -66,11 +113,5 @@ Return `review_output.md` as a PR-review-ready Markdown checklist with these sec
 - [ ] HIGH — `src/Example.sol:42` — impact and exploit path
 
 ## Recommendations
-- [ ] Add a regression test for the confirmed finding.
+- [ ] Add a Forge regression or fuzz test for every confirmed vulnerability.
 ```
-
-## Pitfalls
-
-- `forge coverage` can be slow in large projects; narrow it with `--match-contract <ContractName>` when triaging a focused change.
-- Slither can report false positives; note lines suppressed with `# slither-disable` and verify each remaining detector result manually.
-- Gas snapshots can vary between environments; compare them only under a consistent toolchain, compiler, RPC, and test configuration.

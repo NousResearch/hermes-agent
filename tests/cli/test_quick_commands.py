@@ -500,6 +500,153 @@ class TestGatewayQuickCommands:
         assert "unknown command" in result.lower()
 
     @pytest.mark.asyncio
+    async def test_multiplex_secondary_only_alias_reaches_builtin(self, tmp_path):
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+        from gateway.session import SessionSource
+
+        runner = self._make_runner({})
+        runner.config = GatewayConfig(
+            multiplex_profiles=True,
+            quick_commands={},
+        )
+        runner._handle_status_command = AsyncMock(return_value="secondary status")
+        runner._handle_message_with_agent = AsyncMock(return_value="agent fallback")
+        event = self._make_event("secondary-status")
+        event.source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            chat_type="dm",
+            user_id="secondary-user",
+            profile="secondary",
+        )
+        secondary_home = tmp_path / "profiles" / "secondary"
+        secondary_cfg = GatewayConfig(
+            multiplex_profiles=True,
+            quick_commands={
+                "secondary-status": {"type": "alias", "target": "/status"}
+            },
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(
+                    enabled=True,
+                    token="***",
+                    extra={
+                        "allow_admin_from": ["secondary-admin"],
+                        "user_allowed_commands": ["status"],
+                    },
+                )
+            },
+        )
+        runner._resolve_profile_home_for_source = MagicMock(
+            return_value=secondary_home
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=secondary_cfg):
+            result = await runner._handle_message(event)
+
+        assert result == "secondary status"
+        runner._handle_status_command.assert_awaited_once_with(event)
+        runner._handle_message_with_agent.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_multiplex_primary_alias_cannot_override_secondary_argv(
+        self, tmp_path
+    ):
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+        from gateway.session import SessionSource
+
+        runner = self._make_runner({})
+        runner.config = GatewayConfig(
+            multiplex_profiles=True,
+            quick_commands={"remember": {"type": "alias", "target": "/stop"}},
+        )
+        event = self._make_event("remember")
+        event.source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            chat_type="dm",
+            user_id="secondary-user",
+            profile="secondary",
+        )
+        secondary_home = tmp_path / "profiles" / "secondary"
+        secondary_cfg = GatewayConfig(
+            multiplex_profiles=True,
+            quick_commands={
+                "remember": {"type": "argv", "command": ["/opt/secondary-save"]}
+            },
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(
+                    enabled=True,
+                    token="***",
+                    extra={
+                        "allow_admin_from": ["secondary-admin"],
+                        "user_allowed_commands": ["remember"],
+                    },
+                )
+            },
+        )
+        runner._resolve_profile_home_for_source = MagicMock(
+            return_value=secondary_home
+        )
+        proc = MagicMock(returncode=0)
+
+        with (
+            patch("gateway.config.load_gateway_config", return_value=secondary_cfg),
+            patch(
+                "asyncio.create_subprocess_exec", AsyncMock(return_value=proc)
+            ) as create,
+            patch(
+                "hermes_cli.quick_commands.communicate_bounded_async",
+                AsyncMock(return_value=(b"saved in secondary\n", b"")),
+            ),
+        ):
+            result = await runner._handle_message(event)
+
+        assert result == "saved in secondary"
+        assert create.await_args.args == ("/opt/secondary-save",)
+
+    @pytest.mark.asyncio
+    async def test_multiplex_builtin_access_uses_secondary_policy(self, tmp_path):
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+        from gateway.session import SessionSource
+
+        runner = self._make_runner({})
+        runner.config = GatewayConfig(
+            multiplex_profiles=True,
+            quick_commands={},
+        )
+        event = self._make_event("stop")
+        event.source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="123",
+            chat_type="dm",
+            user_id="secondary-user",
+            profile="secondary",
+        )
+        secondary_home = tmp_path / "profiles" / "secondary"
+        secondary_cfg = GatewayConfig(
+            multiplex_profiles=True,
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(
+                    enabled=True,
+                    token="***",
+                    extra={
+                        "allow_admin_from": ["secondary-admin"],
+                        "user_allowed_commands": [],
+                    },
+                )
+            },
+        )
+        runner._resolve_profile_home_for_source = MagicMock(
+            return_value=secondary_home
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=secondary_cfg):
+            result = await runner._handle_message(event)
+
+        assert result is not None
+        assert "/stop is admin-only here" in result
+
+    @pytest.mark.asyncio
     @pytest.mark.live_system_guard_bypass
     async def test_gateway_argv_reader_hang_reaps_forked_descendant(
         self, monkeypatch, tmp_path

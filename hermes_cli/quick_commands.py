@@ -144,6 +144,8 @@ def run_bounded_argv(
         _terminate_sync_process(proc)
         raise OSError("quick-command output read failed") from reader_errors[0]
 
+    _cleanup_completed_sync_process_tree(proc)
+
     return subprocess.CompletedProcess(
         argv,
         proc.returncode,
@@ -191,6 +193,7 @@ async def communicate_bounded_async(
         if remaining <= 0:
             raise asyncio.TimeoutError
         await asyncio.wait_for(proc.wait(), timeout=remaining)
+        await _cleanup_completed_async_process_tree(proc)
     except BaseException:
         for reader in readers:
             reader.cancel()
@@ -233,6 +236,28 @@ def _terminate_windows_tree(pid: int) -> None:
         )  # windows-footgun: ok -- Windows-only process-tree primitive
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         pass
+
+
+def _cleanup_completed_sync_process_tree(proc: subprocess.Popen[bytes]) -> None:
+    """Reap descendants left behind by an otherwise completed argv leader."""
+    if sys.platform == "win32":
+        # The process handle retained by Popen prevents PID reuse while the
+        # Windows tree primitive walks children of the completed leader.
+        _terminate_windows_tree(proc.pid)
+    elif _posix_group_exists(proc.pid):
+        # ``proc.wait()`` already reaped the leader, so a surviving dedicated
+        # group can only contain descendants created by this argv command.
+        _terminate_sync_process(proc)
+
+
+async def _cleanup_completed_async_process_tree(
+    proc: asyncio.subprocess.Process,
+) -> None:
+    """Async counterpart of :func:`_cleanup_completed_sync_process_tree`."""
+    if sys.platform == "win32":
+        await asyncio.to_thread(_terminate_windows_tree, proc.pid)
+    elif _posix_group_exists(proc.pid):
+        await _terminate_async_process(proc)
 
 
 def _terminate_sync_process(proc: subprocess.Popen[bytes]) -> None:

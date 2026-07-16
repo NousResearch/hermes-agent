@@ -9147,6 +9147,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # Record rate limit so subsequent messages are silently ignored
                     self.pairing_store._record_rate_limit(platform_name, source.user_id)
             return None
+
+        # Resolve slash capabilities and policy from the inbound source's
+        # profile once per command.  In multiplex mode ``self.config`` belongs
+        # to the primary gateway process; consulting it here would let primary
+        # aliases or access rules override a secondary profile before the
+        # routed quick-command sink gets a chance to load its own config.
+        _source_gateway_config = self.config
+        _source_profile_home = None
+        _multiplex_profiles = (
+            bool(self.config.get("multiplex_profiles", False))
+            if isinstance(self.config, dict)
+            else bool(getattr(self.config, "multiplex_profiles", False))
+        )
+        if _multiplex_profiles and event.get_command():
+            _source_profile_home = self._resolve_profile_home_for_source(source)
+            from gateway.config import load_gateway_config
+
+            with _profile_runtime_scope(_source_profile_home):
+                _source_gateway_config = load_gateway_config()
         
         # Intercept messages that are responses to a pending /update prompt.
         # The update process (detached) wrote .update_prompt.json; the watcher
@@ -9401,7 +9420,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # session state. /help and /whoami fall under the always-allowed
             # floor inside _check_slash_access.
             if _evt_cmd and _cmd_def_inner is not None:
-                _denied = self._check_slash_access(source, _cmd_def_inner.name)
+                _denied = self._check_slash_access(
+                    source,
+                    _cmd_def_inner.name,
+                    gateway_config=_source_gateway_config,
+                )
                 if _denied is not None:
                     return _denied
 
@@ -9788,10 +9811,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Preserve built-in precedence; aliases only need early handling when
         # the typed command is not already known.
         if command and _cmd_def is None:
-            if isinstance(self.config, dict):
-                quick_commands = self.config.get("quick_commands", {}) or {}
+            if isinstance(_source_gateway_config, dict):
+                quick_commands = _source_gateway_config.get("quick_commands", {}) or {}
             else:
-                quick_commands = getattr(self.config, "quick_commands", {}) or {}
+                quick_commands = (
+                    getattr(_source_gateway_config, "quick_commands", {}) or {}
+                )
             if isinstance(quick_commands, dict) and command in quick_commands:
                 qcmd = quick_commands[command]
                 if isinstance(qcmd, dict) and qcmd.get("type") == "alias":
@@ -9812,7 +9837,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # ``user_allowed_commands`` (plus the always-allowed floor: /help,
         # /whoami). Plain chat is unaffected — only slash commands gate.
         if command and canonical and is_gateway_known_command(canonical):
-            _denied = self._check_slash_access(source, canonical)
+            _denied = self._check_slash_access(
+                source, canonical, gateway_config=_source_gateway_config
+            )
             if _denied is not None:
                 return _denied
 
@@ -10160,19 +10187,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
-            quick_config = self.config
-            quick_profile_home = None
-            multiplex_profiles = (
-                bool(self.config.get("multiplex_profiles", False))
-                if isinstance(self.config, dict)
-                else bool(getattr(self.config, "multiplex_profiles", False))
-            )
-            if multiplex_profiles:
-                quick_profile_home = self._resolve_profile_home_for_source(source)
-                from gateway.config import load_gateway_config
-
-                with _profile_runtime_scope(quick_profile_home):
-                    quick_config = load_gateway_config()
+            quick_config = _source_gateway_config
+            quick_profile_home = _source_profile_home
 
             if isinstance(quick_config, dict):
                 quick_commands = quick_config.get("quick_commands", {}) or {}
@@ -10256,6 +10272,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             canary_paths,
                             claim_live_canary,
                             mark_live_canary_pre_send_failure,
+                            recover_sealed_live_canary,
                             strict_single_owner_id,
                             verify_running_runtime_sha,
                         )
@@ -10298,7 +10315,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             return f"Quick command '/{command}' configuration error: {exc}."
                         if duplicate:
                             # Producer-level idempotency: an identical Telegram
-                            # update never spawns or emits a second response.
+                            # update never spawns or emits a second response. A
+                            # post-delivery transaction that already sealed its
+                            # exact receipt may still finish its local append.
+                            if canary_claim is not None:
+                                try:
+                                    receipt, receipt_sha256 = (
+                                        recover_sealed_live_canary(
+                                            canary_claim,
+                                            receipt_path=canary_receipt_path,
+                                            state_path=canary_state_path,
+                                        )
+                                    )
+                                    logger.info(
+                                        "Recovered Telegram gateway canary "
+                                        "receipt result=%s sha256=%s",
+                                        receipt.get("result"),
+                                        receipt_sha256,
+                                    )
+                                except Exception:
+                                    logger.exception(
+                                        "Telegram gateway canary sealed-receipt "
+                                        "recovery failed"
+                                    )
                             return None
                         _, canary_duplicate_probe = claim_live_canary(
                             runtime_sha=runtime_sha,
@@ -10428,21 +10467,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
 
                         def _write_canary_receipt() -> None:
-                            from hermes_cli.telegram_canary import finalize_live_canary
-
-                            receipt, receipt_sha256 = finalize_live_canary(
-                                canary_claim,
-                                result=getattr(
-                                    active,
-                                    "_hermes_last_delivery_result",
-                                    None,
-                                ),
-                                payload=output,
-                                authentication=canary_authentication,
-                                duplicate_probe_suppressed=canary_duplicate_probe,
-                                receipt_path=canary_receipt_path,
-                                state_path=canary_state_path,
+                            from hermes_cli.telegram_canary import (
+                                finalize_live_canary,
+                                recover_sealed_live_canary,
                             )
+
+                            try:
+                                receipt, receipt_sha256 = finalize_live_canary(
+                                    canary_claim,
+                                    result=getattr(
+                                        active,
+                                        "_hermes_last_delivery_result",
+                                        None,
+                                    ),
+                                    payload=output,
+                                    authentication=canary_authentication,
+                                    duplicate_probe_suppressed=canary_duplicate_probe,
+                                    receipt_path=canary_receipt_path,
+                                    state_path=canary_state_path,
+                                )
+                            except Exception:
+                                # If finalization failed after sealing the exact
+                                # post-delivery record, finish the append/readback
+                                # immediately. The adapter intentionally isolates
+                                # callback failures, so recovery must happen here.
+                                receipt, receipt_sha256 = recover_sealed_live_canary(
+                                    canary_claim,
+                                    receipt_path=canary_receipt_path,
+                                    state_path=canary_state_path,
+                                )
                             logger.info(
                                 "Telegram gateway canary receipt result=%s sha256=%s",
                                 receipt.get("result"),

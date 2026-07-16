@@ -501,7 +501,27 @@ def claim_live_canary(
     )
     with _exclusive_file_lock(state_path):
         state = _load_state(state_path)
-        if key in state["runs"]:
+        existing = state["runs"].get(key)
+        if existing is not None:
+            if not isinstance(existing, dict):
+                raise ValueError("canary state contains an invalid retained claim")
+            if existing.get("status") in {"finalizing", "receipt_written"}:
+                claim_data = existing.get("claim")
+                try:
+                    retained_claim = LiveCanaryClaim(**claim_data)
+                except (TypeError, ValueError):
+                    raise ValueError(
+                        "canary state contains an invalid retained claim"
+                    ) from None
+                if (
+                    retained_claim.idempotency_key_sha256 != key
+                    or retained_claim.runtime_sha != runtime_sha
+                    or retained_claim.destination_alias != destination_alias
+                    or retained_claim.source_message_id_hash != message_hash
+                    or retained_claim.source_update_id_hash != update_hash
+                ):
+                    raise ValueError("canary state retained claim does not match replay")
+                return retained_claim, True
             return None, True
 
         timestamp = created_at or _utc_now()
@@ -692,6 +712,55 @@ def finalize_live_canary(
         entry["updated_at"] = persisted_receipt["completed_at"]
         _write_state(state_path, state)
     return persisted_receipt, receipt_sha256
+
+
+def recover_sealed_live_canary(
+    claim: LiveCanaryClaim,
+    *,
+    receipt_path: Path,
+    state_path: Path,
+) -> tuple[dict[str, Any], str]:
+    """Complete an already-sealed receipt without repeating delivery.
+
+    A process may fail after the post-delivery receipt was sealed into producer
+    state but before the append or final state readback. A replay of the exact
+    Telegram update remains delivery-suppressed, but can use this function to
+    finish the durable receipt transaction from the sealed record.
+    """
+    with _exclusive_file_lock(state_path):
+        state = _load_state(state_path)
+        entry = state["runs"].get(claim.idempotency_key_sha256)
+        if (
+            not isinstance(entry, dict)
+            or entry.get("claim") != asdict(claim)
+            or entry.get("status") not in {"finalizing", "receipt_written"}
+        ):
+            raise ValueError("recovery requires the exact sealed canary claim")
+        expected_receipt = entry.get("receipt")
+        if not isinstance(expected_receipt, dict):
+            raise ValueError("sealed canary state is missing its receipt")
+        expected_record_sha = _sha256_text(
+            json.dumps(expected_receipt, sort_keys=True, separators=(",", ":"))
+        )
+        if entry.get("receipt_record_sha256") != expected_record_sha:
+            raise ValueError("sealed canary state has a receipt hash mismatch")
+
+        persisted_receipt, receipt_sha256 = _append_or_find_receipt(
+            receipt_path,
+            expected_receipt,
+            dedupe=True,
+            require_existing=entry.get("status") == "receipt_written",
+        )
+        record_sha = _sha256_text(
+            json.dumps(persisted_receipt, sort_keys=True, separators=(",", ":"))
+        )
+        if record_sha != expected_record_sha:
+            raise ValueError("sealed canary state does not match its receipt")
+        entry["status"] = "receipt_written"
+        entry["result"] = persisted_receipt["result"]
+        entry["updated_at"] = persisted_receipt["completed_at"]
+        _write_state(state_path, state)
+        return persisted_receipt, receipt_sha256
 
 
 def _parse_csv_env(name: str) -> set[str]:

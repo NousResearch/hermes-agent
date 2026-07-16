@@ -857,6 +857,7 @@ def test_finalize_is_idempotent_and_recovers_after_append_before_state(tmp_path,
             receipt_path=receipt_path,
             state_path=state_path,
         )
+
     assert len(receipt_path.read_text(encoding="utf-8").splitlines()) == 1
 
     monkeypatch.setattr(telegram_canary, "_write_state", original_write_state)
@@ -940,3 +941,65 @@ def test_finalize_rejects_changed_receipt_after_append_before_state(tmp_path, mo
             receipt_path=receipt_path,
             state_path=state_path,
         )
+
+
+def test_duplicate_recovers_sealed_receipt_after_append_failure(tmp_path, monkeypatch):
+    state_path = tmp_path / "private" / "state.json"
+    receipt_path = tmp_path / "private" / "receipt.jsonl"
+    runtime_sha = "3" * 40
+    claim, duplicate = claim_live_canary(
+        runtime_sha=runtime_sha,
+        destination_alias="owner",
+        message_id="message",
+        update_id="update",
+        state_path=state_path,
+        created_at="2026-07-15T12:00:00Z",
+    )
+    assert claim is not None and duplicate is False
+    payload = build_live_payload(runtime_sha)
+    original_append = telegram_canary._append_or_find_receipt
+
+    def fail_append(*_args, **_kwargs):
+        raise OSError("synthetic append failure")
+
+    monkeypatch.setattr(telegram_canary, "_append_or_find_receipt", fail_append)
+    with pytest.raises(OSError, match="synthetic append failure"):
+        finalize_live_canary(
+            claim,
+            result=_passing_canary_result(payload),
+            payload=payload,
+            authentication={"source_authorized": True},
+            duplicate_probe_suppressed=True,
+            receipt_path=receipt_path,
+            state_path=state_path,
+        )
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["runs"][claim.idempotency_key_sha256]["status"] == "finalizing"
+    assert not receipt_path.exists()
+
+    recovered_claim, duplicate = claim_live_canary(
+        runtime_sha=runtime_sha,
+        destination_alias="owner",
+        message_id="message",
+        update_id="update",
+        state_path=state_path,
+    )
+    assert recovered_claim == claim
+    assert duplicate is True
+
+    monkeypatch.setattr(
+        telegram_canary,
+        "_append_or_find_receipt",
+        original_append,
+    )
+    receipt, _ = telegram_canary.recover_sealed_live_canary(
+        recovered_claim,
+        receipt_path=receipt_path,
+        state_path=state_path,
+    )
+
+    assert receipt["result"] == "pass"
+    assert len(receipt_path.read_text(encoding="utf-8").splitlines()) == 1
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["runs"][claim.idempotency_key_sha256]["status"] == "receipt_written"

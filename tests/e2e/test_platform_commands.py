@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import hermes_cli.telegram_canary as telegram_canary
 from gateway.config import Platform
 from gateway.platforms.base import SendResult
 from gateway.session import build_session_key
@@ -263,7 +264,29 @@ class TestSlashCommands:
         event.platform_update_id = 424242
         session_key = build_session_key(event.source)
         receipt_path = tmp_path / "hermes" / "receipts" / "telegram-canary.jsonl"
+        state_path = (
+            tmp_path / "hermes" / "receipts" / "telegram-canary-state.json"
+        )
         register_callback = adapter.register_post_delivery_callback
+        original_write_state = telegram_canary._write_state
+        crashed_after_append = False
+
+        def crash_after_receipt_append(path, state):
+            nonlocal crashed_after_append
+            if not crashed_after_append and any(
+                isinstance(entry, dict)
+                and entry.get("status") == "receipt_written"
+                for entry in state.get("runs", {}).values()
+            ):
+                crashed_after_append = True
+                raise OSError("synthetic callback crash after receipt append")
+            original_write_state(path, state)
+
+        monkeypatch.setattr(
+            telegram_canary,
+            "_write_state",
+            crash_after_receipt_append,
+        )
 
         with (
             patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)) as spawn,
@@ -280,6 +303,10 @@ class TestSlashCommands:
                 "register_post_delivery_callback",
                 wraps=register_callback,
             ) as register,
+            patch(
+                "hermes_cli.telegram_canary.recover_sealed_live_canary",
+                wraps=telegram_canary.recover_sealed_live_canary,
+            ) as recover,
         ):
             await adapter.handle_message(event)
             for _ in range(60):
@@ -295,6 +322,9 @@ class TestSlashCommands:
             assert receipt["checks"]["idempotency"]["duplicate_probe_suppressed"] is True
             assert receipt["checks"]["retry"]["safe_retry_verified"] is True
             assert receipt["checks"]["length"]["all_chunks_acknowledged"] is True
+            assert crashed_after_append is True
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            assert next(iter(state["runs"].values()))["status"] == "receipt_written"
             assert adapter.send.await_count == 1
             metadata = adapter.send.await_args.kwargs["metadata"]
             assert metadata["hermes_synthetic_pre_send_connect_failure"] is True
@@ -318,6 +348,8 @@ class TestSlashCommands:
                 if session_key not in adapter._active_sessions:
                     break
                 await asyncio.sleep(0.05)
+
+            assert recover.call_count == 2
 
         assert spawn.await_count == 1
         assert adapter.send.await_count == 1

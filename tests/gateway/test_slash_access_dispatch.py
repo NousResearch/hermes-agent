@@ -488,6 +488,47 @@ async def test_running_agent_fastpath_status_always_works():
     assert "⛔" not in (result or "")
 
 
+@pytest.mark.asyncio
+async def test_multiplex_running_agent_gate_uses_routed_profile_config(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(platform_extra={})
+    runner.config.multiplex_profiles = True
+    src = _make_source(
+        platform=Platform.DISCORD,
+        user_id="secondary-user",
+    )
+    src.profile = "secondary"
+    secondary_home = tmp_path / "profiles" / "secondary"
+    secondary_config = GatewayConfig(
+        multiplex_profiles=True,
+        platforms={
+            Platform.DISCORD: PlatformConfig(
+                enabled=True,
+                token="***",
+                extra={
+                    "allow_admin_from": ["secondary-admin"],
+                    "user_allowed_commands": [],
+                },
+            )
+        },
+    )
+    runner._resolve_profile_home_for_source = MagicMock(return_value=secondary_home)
+    session_key = build_session_key(src, profile="secondary")
+    runner._running_agents[session_key] = MagicMock()
+    runner._running_agents_ts[session_key] = 0
+    runner._handle_restart_command = AsyncMock(return_value="restart-handled")
+    monkeypatch.setattr(
+        "gateway.config.load_gateway_config", lambda: secondary_config
+    )
+
+    result = await runner._handle_message(_make_event("/restart", src))
+
+    assert result is not None
+    assert "/restart is admin-only here" in result
+    runner._handle_restart_command.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # Alias resolution — /h aliases to /help; the gate must canonicalize before
 # checking access. /hist (history alias) is a real one to exercise.

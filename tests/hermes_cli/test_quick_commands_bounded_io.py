@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 import subprocess
 import sys
+import time
+from pathlib import Path
 
 import pytest
 
@@ -20,6 +23,51 @@ from hermes_constants import reset_hermes_home_override, set_hermes_home_overrid
 
 def _minimal_test_env() -> dict[str, str]:
     return {"PATH": os.environ.get("PATH", "")}
+
+
+def _successful_forking_command(tmp_path) -> tuple[list[str], Path, Path]:
+    pid_path = tmp_path / "successful-descendant.pid"
+    heartbeat_path = tmp_path / "successful-descendant.heartbeat"
+    descendant = (
+        "import pathlib,sys,time\n"
+        "path=pathlib.Path(sys.argv[1])\n"
+        "while True:\n"
+        " path.write_text(str(time.time_ns()))\n"
+        " time.sleep(0.01)\n"
+    )
+    leader = (
+        "import pathlib,subprocess,sys,time\n"
+        "heartbeat=pathlib.Path(sys.argv[2])\n"
+        "child=subprocess.Popen(\n"
+        " [sys.executable,'-c',sys.argv[3],str(heartbeat)],\n"
+        " stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,\n"
+        " stderr=subprocess.DEVNULL,close_fds=True)\n"
+        "deadline=time.monotonic()+2\n"
+        "while not heartbeat.exists() and time.monotonic()<deadline: time.sleep(0.01)\n"
+        "pathlib.Path(sys.argv[1]).write_text(str(child.pid))\n"
+        "print('leader complete')\n"
+    )
+    return (
+        [
+            sys.executable,
+            "-c",
+            leader,
+            str(pid_path),
+            str(heartbeat_path),
+            descendant,
+        ],
+        pid_path,
+        heartbeat_path,
+    )
+
+
+def _kill_test_descendant(pid_path) -> None:
+    if not pid_path.exists():
+        return
+    try:
+        os.kill(int(pid_path.read_text()), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, ValueError):
+        pass
 
 
 def test_minimal_environment_preserves_context_resolved_hermes_home(tmp_path):
@@ -161,6 +209,22 @@ def test_sync_streaming_allows_exact_combined_cap():
     assert len(result.stdout) + len(result.stderr) == QUICK_COMMAND_OUTPUT_MAX_BYTES
 
 
+@pytest.mark.live_system_guard_bypass
+@pytest.mark.skipif(sys.platform == "win32", reason="real fork regression is POSIX-only")
+def test_sync_successful_leader_reaps_closed_stdio_descendant(tmp_path):
+    command, pid_path, heartbeat_path = _successful_forking_command(tmp_path)
+    try:
+        result = run_bounded_argv(command, env=_minimal_test_env(), timeout=5)
+
+        assert result.returncode == 0
+        assert result.stdout.strip() == b"leader complete"
+        before = heartbeat_path.read_text()
+        time.sleep(0.1)
+        assert heartbeat_path.read_text() == before
+    finally:
+        _kill_test_descendant(pid_path)
+
+
 @pytest.mark.asyncio
 @pytest.mark.live_system_guard_bypass
 async def test_async_streaming_combined_cap_terminates_and_reaps():
@@ -200,3 +264,49 @@ async def test_async_streaming_timeout_terminates_and_reaps():
         await communicate_bounded_async(proc, timeout=0.1)
 
     assert proc.returncode is not None
+
+
+@pytest.mark.asyncio
+async def test_async_success_without_descendants_is_unchanged():
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        "print('ordinary success')",
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=_minimal_test_env(),
+        start_new_session=True,
+    )
+
+    stdout, stderr = await communicate_bounded_async(proc, timeout=5)
+
+    assert proc.returncode == 0
+    assert stdout.strip() == b"ordinary success"
+    assert stderr == b""
+
+
+@pytest.mark.asyncio
+@pytest.mark.live_system_guard_bypass
+@pytest.mark.skipif(sys.platform == "win32", reason="real fork regression is POSIX-only")
+async def test_async_successful_leader_reaps_closed_stdio_descendant(tmp_path):
+    command, pid_path, heartbeat_path = _successful_forking_command(tmp_path)
+    proc = await asyncio.create_subprocess_exec(
+        *command,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=_minimal_test_env(),
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = await communicate_bounded_async(proc, timeout=5)
+
+        assert proc.returncode == 0
+        assert stdout.strip() == b"leader complete"
+        assert stderr == b""
+        before = heartbeat_path.read_text()
+        await asyncio.sleep(0.1)
+        assert heartbeat_path.read_text() == before
+    finally:
+        _kill_test_descendant(pid_path)

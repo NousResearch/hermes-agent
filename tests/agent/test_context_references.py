@@ -192,6 +192,26 @@ def test_expand_git_diff_staged_and_log(sample_repo: Path):
     assert "VALUE = 2" in result.message
 
 
+def test_expand_git_status(sample_repo: Path):
+    from agent.context_references import preprocess_context_references
+
+    result = preprocess_context_references(
+        "Check @status before committing",
+        cwd=sample_repo,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert "git status" in result.message
+
+
+def test_parse_status_reference_kind():
+    from agent.context_references import parse_context_references
+
+    refs = parse_context_references("review @status now")
+    assert [ref.kind for ref in refs] == ["status"]
+
+
 def test_missing_file_becomes_warning(sample_repo: Path):
     from agent.context_references import preprocess_context_references
 

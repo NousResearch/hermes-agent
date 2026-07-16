@@ -15,6 +15,12 @@ from urllib.parse import urlparse
 from hermes_constants import get_hermes_home
 from typing import TYPE_CHECKING, Dict, List, Optional
 
+# Forces UTF-8 decoding for text-mode subprocess output on Windows (no-op
+# elsewhere). Applied to every text=True git call below so locale codepages
+# (cp1252) can't raise UnicodeDecodeError on UTF-8 output. Lightweight module
+# (shutil/sys only) — safe to import eagerly on the startup path.
+from hermes_cli._subprocess_compat import windows_subprocess_kwargs
+
 # rich and prompt_toolkit are imported lazily (inside the functions that use
 # them) rather than at module level.  Importing this module is on the TUI
 # gateway's critical startup path purely to reach the lightweight update-check
@@ -156,7 +162,6 @@ def _is_official_ssh_remote(url: str | None) -> bool:
 
 
 def _git_stdout(args: list[str], *, cwd: Path, timeout: int = 5) -> Optional[str]:
-    from hermes_cli._subprocess_compat import windows_subprocess_kwargs
     try:
         result = subprocess.run(
             ["git", *args],
@@ -183,6 +188,7 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
         result = subprocess.run(
             ["git", "ls-remote", _UPSTREAM_REPO_URL, "refs/heads/main"],
             capture_output=True, text=True, timeout=10,
+            **windows_subprocess_kwargs(),
         )
     except Exception:
         return None
@@ -243,6 +249,7 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
             ["git", "rev-list", "--count", "HEAD..origin/main"],
             capture_output=True, text=True, timeout=5,
             cwd=str(repo_dir),
+            **windows_subprocess_kwargs(),
         )
         if result.returncode == 0:
             return int(result.stdout.strip())
@@ -392,6 +399,7 @@ def _git_short_hash(repo_dir: Path, rev: str) -> Optional[str]:
             text=True,
             timeout=5,
             cwd=str(repo_dir),
+            **windows_subprocess_kwargs(),
         )
     except Exception:
         return None
@@ -448,6 +456,7 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
             text=True,
             timeout=5,
             cwd=str(repo_dir),
+            **windows_subprocess_kwargs(),
         )
         if result.returncode == 0:
             ahead = int((result.stdout or "0").strip() or "0")
@@ -484,6 +493,7 @@ def get_latest_release_tag(repo_dir: Optional[Path] = None) -> Optional[tuple]:
             text=True,
             timeout=3,
             cwd=str(repo_dir),
+            **windows_subprocess_kwargs(),
         )
     except Exception:
         _latest_release_cache = ()

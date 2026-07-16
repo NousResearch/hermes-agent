@@ -8411,6 +8411,18 @@ def _copilot_acp_status() -> Dict[str, Any]:
     }
 
 
+def _cursor_acp_status() -> Dict[str, Any]:
+    """Status for cursor-acp — credentials are owned by the Cursor CLI."""
+    return {
+        "logged_in": False,
+        "source": "cursor_cli",
+        "source_label": "Managed by the Cursor CLI (agent login / CURSOR_API_KEY)",
+        "token_preview": None,
+        "expires_at": None,
+        "has_refresh_token": False,
+    }
+
+
 # Explicit, hand-tuned OAuth/account provider cards. These carry the bits that
 # can't be derived from the unified provider catalog: the OAuth ``flow`` shape,
 # the per-provider ``status_fn``, the ``cli_command`` fallback, and curated
@@ -8480,6 +8492,14 @@ _OAUTH_PROVIDER_CATALOG: tuple[Dict[str, Any], ...] = (
         "cli_command": "copilot /login",
         "docs_url": "https://docs.github.com/en/copilot",
         "status_fn": _copilot_acp_status,
+    },
+    {
+        "id": "cursor-acp",
+        "name": "Cursor Agent (ACP)",
+        "flow": "external",
+        "cli_command": "agent login",
+        "docs_url": "https://cursor.com/docs/cli/acp",
+        "status_fn": _cursor_acp_status,
     },
     # ── Anthropic / Claude entries sit at the bottom: the API-key path
     # first, then the subscription OAuth path (which only works with extra

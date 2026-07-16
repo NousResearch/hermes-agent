@@ -13,9 +13,10 @@ This module ties together the foundation layers:
 - ``hermes_cli.providers``        -- canonical provider identity + overlays
 - ``hermes_cli.model_normalize``  -- per-provider name formatting
 
-Provider switching uses the ``--provider`` flag exclusively.
-No colon-based ``provider:model`` syntax — colons are reserved for
-OpenRouter variant suffixes (``:free``, ``:extended``, ``:fast``).
+Provider switching uses the ``--provider`` flag, or a bare provider slug
+(``/model cursor-acp``). Colon-based ``provider:model`` is not used here —
+colons are reserved for OpenRouter variant suffixes (``:free``, ``:extended``,
+``:fast``).
 """
 
 from __future__ import annotations
@@ -854,6 +855,32 @@ def switch_model(
     target_provider = current_provider
     resolved_moa_preset = False
 
+    # Bare provider slug: `/model cursor-acp` (or `/model cursor`) means
+    # "switch to that provider with its default model", NOT "use a model
+    # named cursor-acp on the current custom endpoint". Without this,
+    # Telegram/gateway soft-accepts unknown model names on custom endpoints
+    # and leaves the provider unchanged.
+    if (
+        not explicit_provider
+        and new_model
+        and "/" not in new_model
+        and ":" not in new_model
+        and not new_model.startswith("-")
+    ):
+        bare_pdef = resolve_provider_full(
+            new_model,
+            user_providers,
+            custom_providers,
+        )
+        if bare_pdef is not None and bare_pdef.id not in {"custom", "auto"}:
+            from hermes_cli.providers import normalize_provider as _norm_prov
+
+            # Only hijack when the typed token IS the provider id/alias,
+            # not when resolve_provider_full coincidentally matched something else.
+            if _norm_prov(new_model) == bare_pdef.id:
+                explicit_provider = new_model
+                new_model = ""
+
     # =================================================================
     # PATH A: Explicit --provider given
     # =================================================================
@@ -940,11 +967,23 @@ def switch_model(
                     ),
                 )
 
-        # If no model specified, try auto-detect from endpoint
+        # If no model specified, try curated catalog then auto-detect from endpoint
         if not new_model:
-            if pdef.base_url:
+            try:
+                from hermes_cli.models import provider_model_ids
+
+                catalog = provider_model_ids(target_provider)
+                if catalog:
+                    new_model = str(catalog[0]).strip()
+            except Exception:
+                pass
+
+        if not new_model:
+            base = str(pdef.base_url or "").strip()
+            # ACP marker URLs are not HTTP model catalogs
+            if base and not base.lower().startswith("acp://") and not base.lower().startswith("acp+tcp://"):
                 from hermes_cli.runtime_provider import _auto_detect_local_model
-                detected = _auto_detect_local_model(pdef.base_url)
+                detected = _auto_detect_local_model(base)
                 if detected:
                     new_model = detected
                 else:
@@ -965,8 +1004,8 @@ def switch_model(
                     provider_label=pdef.name,
                     is_global=is_global,
                     error_message=(
-                        f"Provider '{pdef.name}' has no base URL configured. "
-                        f"Specify a model: /model <model-name> --provider {explicit_provider}"
+                        f"Provider '{pdef.name}' needs an explicit model. "
+                        f"Try: /model <model-name> --provider {explicit_provider}"
                     ),
                 )
 

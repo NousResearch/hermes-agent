@@ -30,6 +30,10 @@ Hermes reads environment variables from the process environment and, for user-ma
 | `COPILOT_CLI_PATH` | Alias for `HERMES_COPILOT_ACP_COMMAND` |
 | `HERMES_COPILOT_ACP_ARGS` | Override Copilot ACP arguments (default: `--acp --stdio`) |
 | `COPILOT_ACP_BASE_URL` | Override Copilot ACP base URL |
+| `HERMES_CURSOR_ACP_COMMAND` | Override Cursor Agent ACP CLI binary path (default: `agent`) |
+| `HERMES_CURSOR_ACP_ARGS` | Override Cursor Agent ACP arguments (default: `acp`) |
+| `CURSOR_ACP_BASE_URL` | Override Cursor ACP base URL (default: `acp://cursor`) |
+| `CURSOR_API_KEY` | Optional Cursor CLI API key (alternative to `agent login`) |
 | `COPILOT_API_BASE_URL` | Override the Copilot API base URL (`copilot` provider) |
 | `GLM_API_KEY` | z.ai / ZhipuAI GLM API key ([z.ai](https://z.ai)) |
 | `ZAI_API_KEY` | Alias for `GLM_API_KEY` |

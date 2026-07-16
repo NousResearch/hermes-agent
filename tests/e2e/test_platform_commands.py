@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import hermes_cli.telegram_canary as telegram_canary
-from gateway.config import Platform
+from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import SendResult
 from gateway.session import build_session_key
 from hermes_cli.telegram_canary import build_live_payload
@@ -356,6 +356,109 @@ class TestSlashCommands:
         persisted = receipt_path.read_text(encoding="utf-8")
         assert "private-trigger-message" not in persisted
         assert "private-live-message-1" not in persisted
+
+    @pytest.mark.asyncio
+    async def test_multiplex_canary_uses_only_routed_profile_state(
+        self, adapter, runner, platform, monkeypatch, tmp_path
+    ):
+        if platform != Platform.TELEGRAM:
+            pytest.skip("The synthetic delivery receipt is Telegram-specific")
+
+        runtime_sha = "f" * 40
+        primary_home = tmp_path / "primary"
+        secondary_home = tmp_path / "profiles" / "secondary"
+        monkeypatch.setenv("HERMES_HOME", str(primary_home))
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "e2e-user-1")
+        for key in (
+            "GATEWAY_ALLOWED_USERS",
+            "TELEGRAM_ALLOW_ALL_USERS",
+            "GATEWAY_ALLOW_ALL_USERS",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        qcmd = {
+            "type": "argv",
+            "command": ["canary-payload"],
+            "argument_mode": "none",
+            "destination_alias": "owner",
+            "delivery_receipt": "telegram_canary",
+            "runtime_sha": runtime_sha,
+        }
+        runner.config.multiplex_profiles = True
+        runner.config.quick_commands = {}
+        secondary_config = GatewayConfig(
+            multiplex_profiles=True,
+            platforms=runner.config.platforms,
+            quick_commands={"gateway-canary": qcmd},
+        )
+        runner._resolve_profile_home_for_source = MagicMock(
+            return_value=secondary_home
+        )
+        runner._profile_adapters = {
+            "secondary": {Platform.TELEGRAM: adapter}
+        }
+        adapter.gateway_runner = runner
+        runner.pairing_store.list_approved.return_value = []
+        runner.pairing_stores = {"secondary": runner.pairing_store}
+        monkeypatch.setattr(
+            "gateway.config.load_gateway_config",
+            lambda: secondary_config,
+        )
+
+        payload = build_live_payload(runtime_sha)
+        chunks = prepare_legacy_text_chunks(payload)
+        adapter.send = AsyncMock(
+            return_value=SendResult(
+                success=True,
+                message_id="profile-message",
+                raw_response={
+                    "message_ids": [f"profile-message-{i}" for i in range(len(chunks))],
+                    "attempt_counts": [2, *([1] * (len(chunks) - 1))],
+                    "synthetic_pre_send_failures": 1,
+                    "chunk_count": len(chunks),
+                    "chunk_sha256": [
+                        "sha256:" + hashlib.sha256(chunk.encode("utf-8")).hexdigest()
+                        for chunk in chunks
+                    ],
+                    "chunk_utf16_units": [
+                        len(chunk.encode("utf-16-le")) // 2 for chunk in chunks
+                    ],
+                    "thread_fallback": False,
+                },
+            )
+        )
+        proc = MagicMock(returncode=0)
+        event = make_event(platform, "/gateway-canary")
+        event.source.profile = "secondary"
+        event.message_id = "profile-trigger"
+        event.platform_update_id = 515151
+        session_key = build_session_key(event.source, profile="secondary")
+        receipt_path = secondary_home / "receipts" / "telegram-canary.jsonl"
+        state_path = secondary_home / "receipts" / "telegram-canary-state.json"
+
+        with (
+            patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)),
+            patch(
+                "hermes_cli.quick_commands.communicate_bounded_async",
+                AsyncMock(return_value=(payload.encode(), b"")),
+            ),
+            patch(
+                "hermes_cli.telegram_canary.verify_running_runtime_sha",
+                return_value=True,
+            ),
+        ):
+            await adapter.handle_message(event)
+            for _ in range(60):
+                if receipt_path.exists() and session_key not in adapter._active_sessions:
+                    break
+                await asyncio.sleep(0.05)
+
+        assert receipt_path.exists()
+        assert state_path.exists()
+        assert not (primary_home / "receipts" / "telegram-canary.jsonl").exists()
+        assert not (
+            primary_home / "receipts" / "telegram-canary-state.json"
+        ).exists()
 
     @pytest.mark.asyncio
     async def test_live_telegram_canary_rejects_allowed_group_member_before_spawn(

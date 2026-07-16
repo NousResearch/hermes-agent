@@ -14,8 +14,10 @@ from unittest.mock import AsyncMock
 import pytest
 
 import hermes_cli.telegram_canary as telegram_canary
-from gateway.config import PlatformConfig
+from gateway.authz_mixin import GatewayAuthorizationMixin
+from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import SendResult
+from gateway.session import SessionSource
 from hermes_cli.telegram_canary import (
     CANARY_SCHEMA,
     append_private_receipt,
@@ -112,6 +114,43 @@ def test_strict_owner_rejects_wildcard_and_multiple_users(strict_allowlist, monk
     assert strict_single_owner_id() is None
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "*")
     assert strict_single_owner_id() is None
+
+
+def test_auth_checks_reject_another_paired_telegram_user(strict_allowlist):
+    class _PairingStore:
+        @staticmethod
+        def is_approved(platform: str, user_id: str) -> bool:
+            return platform == "telegram" and user_id == "paired-user"
+
+        @staticmethod
+        def list_approved(platform: str):
+            assert platform == "telegram"
+            return [
+                {
+                    "platform": "telegram",
+                    "user_id": "paired-user",
+                    "user_name": "paired",
+                }
+            ]
+
+    checker = GatewayAuthorizationMixin()
+    checker.adapters = {}
+    checker.pairing_stores = {"secondary": _PairingStore()}
+    checker.pairing_store = None
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="owner-dm",
+        chat_type="dm",
+        user_id="owner-1",
+        profile="secondary",
+    )
+
+    checks = telegram_canary._auth_checks(checker, source)
+
+    assert checks["strict_single_owner_allowlist"] is True
+    assert checks["owner_allowed"] is True
+    assert checks["unknown_denied"] is True
+    assert checks["no_other_paired_users"] is False
 
 
 def test_private_receipt_is_append_only(tmp_path):

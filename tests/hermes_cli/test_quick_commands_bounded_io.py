@@ -421,6 +421,58 @@ async def test_async_streaming_timeout_terminates_and_reaps():
 
 
 @pytest.mark.asyncio
+@pytest.mark.live_system_guard_bypass
+@pytest.mark.skipif(sys.platform == "win32", reason="real process-group regression is POSIX-only")
+async def test_async_tracker_start_failure_terminates_running_group(
+    monkeypatch, tmp_path
+):
+    heartbeat_path = tmp_path / "tracker-start-failure.heartbeat"
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        (
+            "import pathlib,sys,time\n"
+            "path=pathlib.Path(sys.argv[1])\n"
+            "while True:\n"
+            " path.write_text(str(time.time_ns()))\n"
+            " time.sleep(0.01)\n"
+        ),
+        str(heartbeat_path),
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=_minimal_test_env(),
+        start_new_session=True,
+    )
+
+    for _ in range(100):
+        if heartbeat_path.exists():
+            break
+        await asyncio.sleep(0.01)
+    assert heartbeat_path.exists()
+
+    def fail_tracker_start(_tracker):
+        raise RuntimeError("synthetic tracker start failure")
+
+    monkeypatch.setattr(
+        "hermes_cli.quick_commands._DescendantTracker.start",
+        fail_tracker_start,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="synthetic tracker start failure"):
+            await communicate_bounded_async(proc, timeout=5)
+
+        assert proc.returncode is not None
+        before = heartbeat_path.read_text()
+        await asyncio.sleep(0.1)
+        assert heartbeat_path.read_text() == before
+    finally:
+        if proc.returncode is None:
+            os.killpg(proc.pid, signal.SIGKILL)
+            await proc.wait()
+
+
+@pytest.mark.asyncio
 async def test_async_success_without_descendants_is_unchanged():
     proc = await asyncio.create_subprocess_exec(
         sys.executable,

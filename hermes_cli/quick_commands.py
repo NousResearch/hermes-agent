@@ -187,6 +187,12 @@ async def communicate_bounded_async(
     try:
         descendant_tracker.start()
         return await _communicate_bounded_async(proc, timeout=timeout)
+    except BaseException:
+        # The process is already running when this helper takes ownership.
+        # Tracker startup itself is therefore part of the containment
+        # boundary: if it fails, reap the leader/group before propagating.
+        await _terminate_async_process(proc)
+        raise
     finally:
         await _stop_descendant_tracker_async(descendant_tracker)
 
@@ -266,12 +272,16 @@ class _DescendantTracker:
         if self._leader is None:
             return
         self._observe_once()
-        self._thread = threading.Thread(
+        thread = threading.Thread(
             target=self._observe_until_stopped,
             name="quick-command-descendants",
             daemon=True,
         )
-        self._thread.start()
+        # Publish only a successfully-started thread.  If Thread.start()
+        # raises, cleanup must not call join() on an unstarted object and mask
+        # the original failure or skip leader/group termination.
+        thread.start()
+        self._thread = thread
 
     def stop_and_terminate(self) -> None:
         self._stop.set()

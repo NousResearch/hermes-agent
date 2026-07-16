@@ -10302,7 +10302,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         runtime_sha = str(qcmd.get("runtime_sha", ""))
                         if not verify_running_runtime_sha(runtime_sha):
                             return "Telegram canary refused: running source does not match its clean runtime SHA."
-                        canary_authentication = telegram_canary_auth_checks()
+                        canary_authentication = telegram_canary_auth_checks(
+                            self, source
+                        )
                         canary_authentication["source_authorized"] = bool(
                             self._is_user_authorized(source)
                             and source_user_id == owner_id
@@ -10310,7 +10312,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                         if not all(canary_authentication.values()):
                             return "Telegram canary refused: strict owner authorization is not active."
-                        canary_receipt_path, canary_state_path = canary_paths()
+                        # The multiplex dispatcher has already resolved the
+                        # routed profile.  Pass its home explicitly so durable
+                        # canary state cannot fall back to the primary process
+                        # profile after the temporary config scope exits.
+                        canary_receipt_path, canary_state_path = canary_paths(
+                            quick_profile_home
+                        )
                         try:
                             canary_claim, duplicate = claim_live_canary(
                                 runtime_sha=runtime_sha,
@@ -10480,14 +10488,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 recover_sealed_live_canary,
                             )
 
+                            delivery_result = None
+                            if getattr(
+                                active,
+                                "_hermes_last_delivery_result_generation",
+                                None,
+                            ) == generation:
+                                delivery_result = getattr(
+                                    active,
+                                    "_hermes_last_delivery_result",
+                                    None,
+                                )
+
                             try:
                                 receipt, receipt_sha256 = finalize_live_canary(
                                     canary_claim,
-                                    result=getattr(
-                                        active,
-                                        "_hermes_last_delivery_result",
-                                        None,
-                                    ),
+                                    result=delivery_result,
                                     payload=output,
                                     authentication=canary_authentication,
                                     duplicate_probe_suppressed=canary_duplicate_probe,

@@ -4939,6 +4939,11 @@ class BasePlatformAdapter(ABC):
             # transport canary). Bind it to the session guard instead of
             # adding another observer registry or transport.
             setattr(interrupt_event, "_hermes_last_delivery_result", result)
+            setattr(
+                interrupt_event,
+                "_hermes_last_delivery_result_generation",
+                getattr(interrupt_event, "_hermes_run_generation", None),
+            )
             delivery_attempted = True
             if getattr(result, "success", False):
                 delivery_succeeded = True
@@ -4948,6 +4953,18 @@ class BasePlatformAdapter(ABC):
         # Fall back to a new Event only if the entry was removed externally.
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
+        # A queued follow-up reuses the same Event.  Delivery evidence is
+        # generation-local, so erase the prior turn's result before invoking
+        # the next handler.  A suppressed/no-send turn must observe no result,
+        # never stale success from the previous delivery.
+        for attr in (
+            "_hermes_last_delivery_result",
+            "_hermes_last_delivery_result_generation",
+        ):
+            try:
+                delattr(interrupt_event, attr)
+            except AttributeError:
+                pass
 
         # A queued follow-up reuses this interrupt Event and may bind a newer
         # generation to it before this task reaches ``finally``. Claim this

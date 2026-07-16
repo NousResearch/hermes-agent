@@ -816,3 +816,73 @@ async def test_pending_drain_keeps_each_generation_callback_owned():
 
     assert fired == [(1, "first"), (2, "second")]
     assert session_key not in adapter._post_delivery_callbacks
+
+
+@pytest.mark.asyncio
+async def test_suppressed_generation_cannot_reuse_previous_delivery_result():
+    """A no-send queued turn must not make its callback observe stale success."""
+    import asyncio
+    from gateway.platforms.base import BasePlatformAdapter, SendResult
+
+    source = _make_source()
+    session_key = build_session_key(source)
+    observed = []
+
+    class _ConcreteAdapter(BasePlatformAdapter):
+        platform = Platform.TELEGRAM
+
+        async def connect(self, *, is_reconnect: bool = False): pass
+        async def disconnect(self): pass
+        async def send(self, chat_id, content, **kwargs):
+            return SendResult(success=True, message_id=content)
+        async def get_chat_info(self, chat_id): return {}
+
+    adapter = _ConcreteAdapter(
+        PlatformConfig(enabled=True, token="***", typing_indicator=False),
+        Platform.TELEGRAM,
+    )
+    guard = asyncio.Event()
+    setattr(
+        guard,
+        "_hermes_last_delivery_result",
+        SendResult(success=True, message_id="stale-success"),
+    )
+    setattr(guard, "_hermes_run_generation", 1)
+    adapter._active_sessions[session_key] = guard
+    call_count = 0
+
+    async def fake_handler(_event):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            adapter.register_post_delivery_callback(
+                session_key,
+                lambda: observed.append(
+                    getattr(guard, "_hermes_last_delivery_result", None)
+                ),
+                generation=1,
+            )
+            guard.set()
+            adapter._pending_messages[session_key] = MessageEvent(
+                text="queued",
+                source=source,
+                message_id="m2",
+            )
+            return "suppressed-before-send"
+        return None
+
+    adapter.set_message_handler(fake_handler)
+    await adapter._process_message_background(
+        MessageEvent(text="first", source=source, message_id="m1"),
+        session_key,
+    )
+
+    for _ in range(4):
+        tasks = list(adapter._background_tasks)
+        if not tasks:
+            break
+        await asyncio.gather(*tasks)
+        await asyncio.sleep(0)
+
+    assert observed == [None]
+    assert call_count == 2

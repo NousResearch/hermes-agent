@@ -785,14 +785,13 @@ def strict_single_owner_id() -> str | None:
     return next(iter(allowed_ids))
 
 
-def _auth_checks() -> dict[str, bool]:
-    """Exercise the production gateway DM authorization method fail-closed."""
+def _auth_checks(
+    checker: GatewayAuthorizationMixin,
+    inbound_source: SessionSource,
+) -> dict[str, bool]:
+    """Exercise production authorization, including pairing grants, fail-closed."""
     owner_id = strict_single_owner_id()
-
-    checker = GatewayAuthorizationMixin()
-    checker.adapters = {}
-    checker.pairing_stores = {}
-    checker.pairing_store = None
+    profile = inbound_source.profile
 
     def source(user_id: str) -> SessionSource:
         return SessionSource(
@@ -801,17 +800,51 @@ def _auth_checks() -> dict[str, bool]:
             chat_type="dm",
             user_id=user_id,
             user_name=None,
+            profile=profile,
         )
 
-    owner_allowed = bool(owner_id) and checker._is_user_authorized(source(owner_id))
-    unknown_denied = not checker._is_user_authorized(
-        source("synthetic-canary-unknown-user")
+    unknown_id = "synthetic-canary-unknown-user"
+    if owner_id == unknown_id:
+        unknown_id += "-other"
+    owner_source = source(owner_id or "")
+    owner_allowed = bool(owner_id) and GatewayAuthorizationMixin._is_user_authorized(
+        checker, owner_source
     )
+    unknown_denied = not GatewayAuthorizationMixin._is_user_authorized(
+        checker, source(unknown_id)
+    )
+
+    no_other_paired_users = True
+    pairing_store = GatewayAuthorizationMixin._pairing_store_for(
+        checker, owner_source
+    )
+    if pairing_store is not None:
+        try:
+            approved = pairing_store.list_approved("telegram")
+        except Exception:
+            no_other_paired_users = False
+        else:
+            if not isinstance(approved, list):
+                no_other_paired_users = False
+            else:
+                for entry in approved:
+                    if not isinstance(entry, dict):
+                        no_other_paired_users = False
+                        break
+                    paired_id = entry.get("user_id")
+                    if not isinstance(paired_id, str) or not paired_id.strip():
+                        no_other_paired_users = False
+                        break
+                    if owner_id is None or paired_id.strip() != owner_id:
+                        no_other_paired_users = False
+                        break
+
     return {
         "gateway_path_exercised": True,
         "strict_single_owner_allowlist": owner_id is not None,
         "owner_allowed": owner_allowed,
         "unknown_denied": unknown_denied,
+        "no_other_paired_users": no_other_paired_users,
     }
 
 

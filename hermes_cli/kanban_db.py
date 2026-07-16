@@ -4778,11 +4778,12 @@ def block_task(
     un-typed block) drives routing instead of every block landing in one
     undifferentiated ``blocked`` bucket:
 
-    * ``dependency`` — the task is only waiting on another task. It does NOT
-      sit in ``blocked`` (where a cron would keep "unblocking" it); it goes to
-      ``todo`` so the existing parent-gating / ``recompute_ready`` machinery
-      promotes it automatically once its parents finish. No human, no cron, no
-      retry storm. This is Dale's "Type 2 — dependency blocked".
+    * ``dependency`` — when at least one unresolved parent edge exists, the
+      task goes to ``todo`` so parent-gating / ``recompute_ready`` promotes it
+      once its parents finish. Without an unresolved parent edge it routes to
+      ``triage`` instead, where the missing edge or incorrect kind can be fixed
+      without entering an immediate promote/re-block loop. This is Dale's
+      "Type 2 — dependency blocked".
 
     * ``needs_input`` / ``capability`` / ``None`` — "truly blocked" (Dale's
       "Type 1"). Lands in ``blocked`` for a human. BUT: each time such a task

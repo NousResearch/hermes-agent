@@ -834,6 +834,29 @@ def test_block_goal_mode_allows_dependency_kind(monkeypatch, tmp_path):
         conn.close()
 
 
+def test_block_goal_mode_dependency_without_parent_routes_to_triage(
+    monkeypatch, tmp_path
+):
+    """A malformed goal-mode dependency exits safely to human triage."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    out = kt._handle_block(
+        {"reason": "missing prerequisite edge", "kind": "dependency"}
+    )
+    d = json.loads(out)
+
+    assert d.get("ok") is True
+    assert d.get("status") == "triage"
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "triage"
+    finally:
+        conn.close()
+
+
 def test_block_goal_mode_allows_needs_input_kind(monkeypatch, tmp_path):
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb

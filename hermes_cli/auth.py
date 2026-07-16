@@ -197,6 +197,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("OPENAI_API_KEY",),
         base_url_env_var="OPENAI_BASE_URL",
     ),
+    "openrouter": ProviderConfig(
+        id="openrouter",
+        name="OpenRouter",
+        auth_type="api_key",
+        inference_base_url=OPENROUTER_BASE_URL,
+        api_key_env_vars=("OPENROUTER_API_KEY",),
+        base_url_env_var="OPENROUTER_BASE_URL",
+    ),
     "xai-oauth": ProviderConfig(
         id="xai-oauth",
         name="xAI Grok OAuth (SuperGrok / Premium+)",
@@ -456,10 +464,10 @@ try:
             continue
         # Skip providers that need custom token resolution or are special-cased
         # in resolve_provider() (copilot/kimi/zai have bespoke token refresh;
-        # openrouter/custom are aggregator/user-supplied and handled outside
-        # the registry — adding them here breaks runtime_provider resolution
-        # that relies on `openrouter not in PROVIDER_REGISTRY`).
-        if _pp.name in {"copilot", "kimi-coding", "kimi-coding-cn", "zai", "openrouter", "custom"}:
+        # custom is aggregator/user-supplied and handled outside the registry).
+        # openrouter is now in PROVIDER_REGISTRY directly (added for
+        # is_provider_explicitly_configured env-var check — see issue #65793).
+        if _pp.name in {"copilot", "kimi-coding", "kimi-coding-cn", "zai", "custom"}:
             continue
         _api_key_vars = tuple(v for v in _pp.env_vars if not v.endswith("_BASE_URL") and not v.endswith("_URL"))
         _base_url_var = next((v for v in _pp.env_vars if v.endswith("_BASE_URL") or v.endswith("_URL")), None)

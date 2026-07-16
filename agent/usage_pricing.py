@@ -1074,6 +1074,15 @@ def normalize_usage(
         cache_read_tokens = _to_int(getattr(details, "cached_tokens", 0) if details else 0)
         if not cache_read_tokens:
             cache_read_tokens = _to_int(getattr(response_usage, "cache_read_input_tokens", 0))
+        if not cache_read_tokens:
+            # DeepSeek's native API (api.deepseek.com) reports context-cache
+            # hits as top-level prompt_cache_hit_tokens (+ the complementary
+            # prompt_cache_miss_tokens; prompt_tokens = hit + miss), not the
+            # OpenAI nested shape. Without this, direct DeepSeek sessions
+            # always showed 0 cache-hit tokens (#61871).
+            cache_read_tokens = _to_int(
+                getattr(response_usage, "prompt_cache_hit_tokens", 0)
+            )
         cache_write_tokens = _to_int(
             getattr(details, "cache_write_tokens", 0) if details else 0
         )

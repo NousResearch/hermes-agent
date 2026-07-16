@@ -1978,3 +1978,16 @@ class TestLateEnvRepointScopesStore:
         with jobs.use_cron_store(tmp_path / "override-home"):
             store = jobs._current_cron_store()
             assert store.jobs_file == (tmp_path / "override-home").resolve() / "cron" / "jobs.json"
+
+    def test_patched_compatibility_constants_beat_env(self, tmp_path, monkeypatch):
+        """Deliberately re-pointed module constants are the documented
+        process-wide escape hatch — they win over a repointed HERMES_HOME."""
+        import cron.jobs as jobs
+
+        patched_dir = tmp_path / "patched-cron"
+        monkeypatch.setattr(jobs, "CRON_DIR", patched_dir)
+        monkeypatch.setattr(jobs, "JOBS_FILE", patched_dir / "jobs.json")
+        monkeypatch.setattr(jobs, "OUTPUT_DIR", patched_dir / "output")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "env-home"))
+        store = jobs._current_cron_store()
+        assert store.jobs_file == patched_dir / "jobs.json"

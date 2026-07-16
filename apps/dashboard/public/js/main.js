@@ -29,13 +29,14 @@ import glance from "./widgets/glance.js";
 import worldclock from "./widgets/worldclock.js";
 import quakes from "./widgets/quakes.js";
 import fx from "./widgets/fx.js";
+import podcasts from "./widgets/podcasts.js";
 import worldstate from "./widgets/worldstate.js";
 import reading from "./widgets/reading.js";
 import focus from "./widgets/focus.js";
 import system from "./widgets/system.js";
 
 const WIDGETS = Object.fromEntries(
-  [clock, glance, worldstate, agent, weather, launcher, news, reading, tasks, notes, calendar, markets, scores, socials, gaming, stocks, worldclock, quakes, fx, focus, system]
+  [clock, glance, worldstate, agent, weather, launcher, news, reading, tasks, notes, calendar, markets, scores, socials, gaming, stocks, worldclock, quakes, fx, podcasts, focus, system]
     .map((w) => [w.type, w]),
 );
 

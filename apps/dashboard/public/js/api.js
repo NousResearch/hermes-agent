@@ -137,6 +137,7 @@ export const api = {
   scores: (league) => getJSON("/api/scores", { league }),
   standings: (league) => getJSON("/api/standings", { league }),
   quakes: () => getJSON("/api/quakes"),
+  podcast: (url) => getJSON("/api/podcast", { url }),
   fx: (base, symbols) => getJSON("/api/fx", symbols ? { base, symbols } : { base }),
   social: (network, sub) => getJSON("/api/social", sub ? { network, sub } : { network }),
   gamingFree: () => getJSON("/api/gaming/free"),

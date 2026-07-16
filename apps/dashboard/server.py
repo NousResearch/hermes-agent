@@ -1212,6 +1212,55 @@ def sample_steam_deals() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Podcasts — parse an RSS feed's audio enclosures into playable episodes
+# ---------------------------------------------------------------------------
+PODCAST_TTL = 30 * 60
+
+
+def live_podcast(url: str) -> dict:
+    root = ET.fromstring(fetch_url(url))
+    channel = next((el for el in root.iter() if _localname(el.tag) == "channel"), root)
+    show = _first_child_text(channel, "title") or "Podcast"
+    episodes = []
+    for node in root.iter():
+        if _localname(node.tag) != "item":
+            continue
+        audio = ""
+        duration = ""
+        for child in node:
+            ln = _localname(child.tag)
+            if ln == "enclosure" and (child.get("type", "").startswith("audio")
+                                      or child.get("url", "").endswith((".mp3", ".m4a", ".ogg"))):
+                audio = child.get("url", "")
+            elif ln == "duration" and child.text:
+                duration = child.text.strip()
+        if not audio:
+            continue
+        episodes.append({
+            "title": strip_html(_first_child_text(node, "title"), 140),
+            "audio": audio,
+            "published": (parse_date(_first_child_text(node, "pubdate", "date")) or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat(),
+            "duration": duration[:12],
+        })
+        if len(episodes) >= 30:
+            break
+    if not episodes:
+        raise RuntimeError("no audio episodes found")
+    return {"source": "live", "show": show, "episodes": episodes}
+
+
+def sample_podcast(url: str) -> dict:
+    now = datetime.now(timezone.utc)
+    demo = [("The state of open-source AI in 2026", "48:12", 1),
+            ("Why SQLite is eating the database world", "39:40", 3),
+            ("Designing for calm: interfaces that respect attention", "55:03", 6)]
+    return {"source": "sample", "show": "Sample Cast",
+            "episodes": [{"title": t, "audio": "", "duration": d,
+                          "published": (now - timedelta(days=days)).isoformat()}
+                         for t, d, days in demo]}
+
+
+# ---------------------------------------------------------------------------
 # Intel / utility feeds — earthquakes (USGS) and FX rates (Frankfurter/ECB)
 # ---------------------------------------------------------------------------
 QUAKES_TTL = 10 * 60
@@ -1913,6 +1962,14 @@ class Api:
     def gaming_deals(self, params: dict) -> dict:
         return self._cached("gaming:deals", GAMING_TTL, live_steam_deals, sample_steam_deals)
 
+    def podcast(self, params: dict) -> dict:
+        url = params.get("url", [""])[0].strip()
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise ApiError(400, "podcast url must be http(s)")
+        return self._cached(f"podcast:{url}", PODCAST_TTL,
+                            lambda: live_podcast(url), lambda: sample_podcast(url))
+
     def quakes(self, params: dict) -> dict:
         return self._cached("quakes", QUAKES_TTL, live_quakes, sample_quakes)
 
@@ -2381,6 +2438,7 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/standings": "standings",
         "/api/quakes": "quakes",
         "/api/fx": "fx",
+        "/api/podcast": "podcast",
         "/api/social": "social",
         "/api/gaming/free": "gaming_free",
         "/api/gaming/deals": "gaming_deals",

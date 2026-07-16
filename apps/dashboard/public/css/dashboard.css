@@ -937,6 +937,22 @@ a { color: inherit; }
 .score-final { color: var(--muted); }
 .score-pre { color: var(--ink-2); }
 
+/* ---------- podcasts ---------- */
+.pod-head { display: flex; align-items: center; gap: 8px; }
+.pod-add { margin-left: auto; }
+.pod-player { width: 100%; height: 34px; margin: 8px 0; }
+.pod-list { display: flex; flex-direction: column; max-height: 300px; overflow-y: auto; }
+.pod-ep {
+  display: flex; gap: 10px; align-items: center; width: 100%; text-align: left;
+  background: none; border: none; border-bottom: 1px solid var(--hairline);
+  color: inherit; font: inherit; padding: 8px 4px; cursor: pointer;
+}
+.pod-ep:last-child { border-bottom: none; }
+.pod-ep:hover { background: var(--surface-2); }
+.pod-play { flex: 0 0 auto; color: var(--accent); font-size: 11px; }
+.pod-ep-main { min-width: 0; flex: 1; }
+.pod-ep-title { line-height: 1.35; }
+
 /* ---------- world clock ---------- */
 .wc-list { display: flex; flex-direction: column; }
 .wc-row { display: flex; align-items: center; gap: 10px; padding: 8px 2px; border-bottom: 1px solid var(--hairline); }

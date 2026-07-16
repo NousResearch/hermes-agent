@@ -596,6 +596,24 @@ class MarketsWatchlistTests(unittest.TestCase):
         self.assertIn("wins", keys)
         self.assertNotIn("randomstat", keys)  # unknown stat filtered out
 
+    def test_podcast_sample_and_normalizer(self):
+        d = self.api.podcast({"url": ["https://example.com/feed.xml"]})
+        self.assertTrue(d["episodes"])
+        rss = (b'<?xml version="1.0"?><rss><channel><title>My Show</title>'
+               b'<item><title>Ep 1</title><enclosure url="https://cdn/ep1.mp3" type="audio/mpeg"/>'
+               b'<itunes:duration xmlns:itunes="x">42:00</itunes:duration></item>'
+               b'<item><title>No audio</title></item></channel></rss>')
+        import unittest.mock as mock
+        with mock.patch.object(server, "fetch_url", return_value=rss):
+            out = server.live_podcast("https://example.com/feed.xml")
+        self.assertEqual(out["show"], "My Show")
+        self.assertEqual(len(out["episodes"]), 1)     # audio-less item skipped
+        self.assertEqual(out["episodes"][0]["audio"], "https://cdn/ep1.mp3")
+
+    def test_podcast_bad_url_rejected(self):
+        with self.assertRaises(server.ApiError):
+            self.api.podcast({"url": ["not-a-url"]})
+
     def test_quakes_sample_shape(self):
         d = self.api.quakes({})
         self.assertTrue(d["quakes"])

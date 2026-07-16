@@ -16,6 +16,7 @@ function defaultPages() {
     { id: uid(), name: "Markets", layout: [w("markets", "l"), w("stocks", "l")] },
     { id: uid(), name: "Feeds", layout: [
       w("news", "l"), w("reading", "m"), w("socials", "m"), w("gaming", "m"),
+      w("podcasts", "m"),
     ] },
     { id: uid(), name: "Sports", layout: [w("scores", "l")] },
     { id: uid(), name: "Intel", layout: [
@@ -85,6 +86,7 @@ function defaultState() {
     sports: { league: "nba" },
     socials: { network: "hn", sub: "popular" },
     stocks: { symbols: ["^spx", "^ndq", "^dji", "aapl.us", "msft.us", "eurusd"] },
+    podcasts: { feeds: [{ name: "The Changelog", url: "https://changelog.com/podcast/feed" }], active: "https://changelog.com/podcast/feed" },
     search: { engine: "google" },
   };
 }

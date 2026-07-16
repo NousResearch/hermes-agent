@@ -120,7 +120,7 @@ check("dark theme default", await page.evaluate(() => document.documentElement.d
 const WIDGET_PAGES = {
   Main: ["glance", "clock", "worldstate", "agent", "weather", "launcher", "tasks", "calendar", "notes", "focus", "system"],
   Markets: ["markets", "stocks"],
-  Feeds: ["news", "reading", "socials", "gaming"],
+  Feeds: ["news", "reading", "socials", "gaming", "podcasts"],
   Sports: ["scores"],
   Intel: ["worldclock", "quakes", "fx"],
 };

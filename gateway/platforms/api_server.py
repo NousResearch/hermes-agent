@@ -91,6 +91,7 @@ from gateway.platforms.base import (
 )
 from agent.redact import redact_sensitive_text
 from gateway.readiness import collect_runtime_readiness
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -843,6 +844,320 @@ class _IdempotencyCache:
 _idem_cache = _IdempotencyCache()
 
 
+class _RunIdempotencyConflict(Exception):
+    pass
+
+
+class _RunIdempotencyCapacity(Exception):
+    pass
+
+
+class _RunIdempotencyRegistry:
+    """Crash-safe POST /v1/runs key, run-id, and lifecycle journal."""
+
+    def __init__(
+        self,
+        max_items: int = 10_000,
+        ttl_seconds: int = 24 * 60 * 60,
+        store_path: Optional[Path] = None,
+    ):
+        from collections import OrderedDict
+
+        self._store = OrderedDict()
+        self._ttl = ttl_seconds
+        self._max = max_items
+        self._store_path = store_path
+        self._lock_path = (
+            store_path.with_suffix(f"{store_path.suffix}.lock") if store_path else None
+        )
+        self._owner_pid = os.getpid()
+        self._owner_identity = self._read_process_identity(self._owner_pid)
+        with self._exclusive_lock():
+            self._load()
+
+    @contextmanager
+    def _exclusive_lock(self):
+        if self._lock_path is None:
+            yield
+            return
+        self._lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._lock_path.open("a+b") as lock_file:
+            if os.name == "nt":
+                import msvcrt
+
+                lock_file.seek(0)
+                if lock_file.read(1) == b"":
+                    lock_file.write(b"0")
+                    lock_file.flush()
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+                try:
+                    yield
+                finally:
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+    def _load(self) -> None:
+        if self._store_path is None or not self._store_path.exists():
+            return
+        payload = json.loads(self._store_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or payload.get("version") != 1:
+            raise RuntimeError("Invalid run idempotency registry")
+        entries = payload.get("entries")
+        if not isinstance(entries, list):
+            raise RuntimeError("Invalid run idempotency registry entries")
+        self._store.clear()
+        for row in entries:
+            if not isinstance(row, dict):
+                raise RuntimeError("Invalid run idempotency registry entry")
+            key = row.get("key")
+            fingerprint = row.get("fp")
+            run_id = row.get("run_id")
+            timestamp = row.get("ts")
+            if not (
+                isinstance(key, str)
+                and isinstance(fingerprint, str)
+                and isinstance(run_id, str)
+                and isinstance(timestamp, (int, float))
+            ):
+                raise RuntimeError("Invalid run idempotency registry entry")
+            self._store[key] = {
+                "fp": fingerprint,
+                "run_id": run_id,
+                "ts": float(timestamp),
+                "owner_pid": row.get("owner_pid"),
+                "owner_identity": row.get("owner_identity"),
+                "profile": row.get("profile"),
+                "admitted": row.get("admitted", True),
+                "status": row.get("status"),
+            }
+        if self._purge():
+            self._persist()
+
+    def _persist(self) -> None:
+        if self._store_path is None:
+            return
+        self._store_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self._store_path.with_name(
+            f".{self._store_path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+        )
+        payload = {
+            "version": 1,
+            "entries": [
+                {"key": key, **item}
+                for key, item in self._store.items()
+            ],
+        }
+        try:
+            with temporary.open("w", encoding="utf-8") as handle:
+                json.dump(payload, handle, separators=(",", ":"), sort_keys=True)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, self._store_path)
+            if hasattr(os, "O_DIRECTORY"):
+                directory_fd = os.open(
+                    self._store_path.parent,
+                    os.O_RDONLY | os.O_DIRECTORY,
+                )
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _purge(self) -> bool:
+        now = time.time()
+        expired = [key for key, item in self._store.items() if now - item["ts"] > self._ttl]
+        for key in expired:
+            self._store.pop(key, None)
+        return bool(expired)
+
+    @staticmethod
+    def _read_process_identity(owner_pid: int) -> Optional[str]:
+        try:
+            boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(
+                encoding="utf-8"
+            ).strip()
+            stat_tail = Path(f"/proc/{owner_pid}/stat").read_text(
+                encoding="utf-8"
+            ).rsplit(")", 1)[1].split()
+            process_start = stat_tail[19]
+            return f"{boot_id}:{process_start}"
+        except (OSError, IndexError):
+            return None
+
+    def _owner_is_alive(self, owner_pid: Any, owner_identity: Any = None) -> bool:
+        if not isinstance(owner_pid, int) or owner_pid <= 0:
+            return False
+        try:
+            os.kill(owner_pid, 0)
+        except PermissionError:
+            pass
+        except ProcessLookupError:
+            return False
+        if owner_identity is None:
+            return True
+        return self._read_process_identity(owner_pid) == owner_identity
+
+    def claim(
+        self,
+        key: str,
+        fingerprint: str,
+        profile: Optional[str] = None,
+    ) -> tuple[str, bool]:
+        storage_key = key if profile is None else f"{profile}\x00{key}"
+        with self._exclusive_lock():
+            self._load()
+            purged = self._purge()
+            item = self._store.get(storage_key)
+            if item is not None:
+                if item["fp"] != fingerprint:
+                    raise _RunIdempotencyConflict(key)
+                self._store.move_to_end(storage_key)
+                status = item.get("status")
+                terminal = isinstance(status, dict) and status.get("status") in {
+                    "completed", "failed", "cancelled"
+                }
+                admitted = item.get("admitted") is True
+                owner_alive = self._owner_is_alive(
+                    item.get("owner_pid"), item.get("owner_identity")
+                )
+                if terminal or owner_alive:
+                    if purged:
+                        self._persist()
+                    return item["run_id"], True
+                now = time.time()
+                if admitted:
+                    item["ts"] = now
+                    item["status"] = {
+                        "object": "hermes.run",
+                        "run_id": item["run_id"],
+                        "status": "failed",
+                        "error": {
+                            "code": "RUN_RECOVERY_UNAVAILABLE",
+                            "message": "Run owner exited before a terminal status was persisted",
+                        },
+                        "updated_at": now,
+                    }
+                    self._persist()
+                    return item["run_id"], True
+                item["owner_pid"] = self._owner_pid
+                item["owner_identity"] = self._owner_identity
+                item["admitted"] = False
+                item["ts"] = now
+                item["status"] = {
+                    "object": "hermes.run",
+                    "run_id": item["run_id"],
+                    "status": "started",
+                    "updated_at": now,
+                }
+                self._persist()
+                return item["run_id"], False
+
+            if len(self._store) >= self._max:
+                if purged:
+                    self._persist()
+                raise _RunIdempotencyCapacity(key)
+
+            run_id = f"run_{uuid.uuid4().hex}"
+            now = time.time()
+            self._store[storage_key] = {
+                "fp": fingerprint,
+                "run_id": run_id,
+                "ts": now,
+                "owner_pid": self._owner_pid,
+                "owner_identity": self._owner_identity,
+                "profile": profile,
+                "admitted": False,
+                "status": {
+                    "object": "hermes.run",
+                    "run_id": run_id,
+                    "status": "started",
+                    "created_at": now,
+                    "updated_at": now,
+                },
+            }
+            try:
+                self._persist()
+            except Exception:
+                self._store.pop(storage_key, None)
+                raise
+            return run_id, False
+
+    def release(self, key: str, run_id: str, profile: Optional[str] = None) -> None:
+        storage_key = key if profile is None else f"{profile}\x00{key}"
+        with self._exclusive_lock():
+            self._load()
+            item = self._store.get(storage_key)
+            if item is not None and item["run_id"] == run_id:
+                self._store.pop(storage_key, None)
+                try:
+                    self._persist()
+                except Exception:
+                    self._store[storage_key] = item
+                    raise
+
+    def update_status(self, run_id: str, status: Dict[str, Any]) -> None:
+        with self._exclusive_lock():
+            self._load()
+            for item in self._store.values():
+                if item["run_id"] == run_id:
+                    item["status"] = dict(status)
+                    if status.get("status") == "queued":
+                        item["admitted"] = True
+                    item["ts"] = time.time()
+                    self._persist()
+                    return
+
+    def get_status(
+        self,
+        run_id: str,
+        profile: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        with self._exclusive_lock():
+            self._load()
+            for item in self._store.values():
+                if (
+                    item["run_id"] == run_id
+                    and item.get("profile") == profile
+                    and isinstance(item.get("status"), dict)
+                ):
+                    terminal = item["status"].get("status") in {
+                        "completed", "failed", "cancelled"
+                    }
+                    if (
+                        item.get("admitted") is True
+                        and not terminal
+                        and not self._owner_is_alive(
+                            item.get("owner_pid"), item.get("owner_identity")
+                        )
+                    ):
+                        now = time.time()
+                        item["ts"] = now
+                        item["status"] = {
+                            "object": "hermes.run",
+                            "run_id": item["run_id"],
+                            "status": "failed",
+                            "error": {
+                                "code": "RUN_RECOVERY_UNAVAILABLE",
+                                "message": "Run owner exited before a terminal status was persisted",
+                            },
+                            "updated_at": now,
+                        }
+                        self._persist()
+                    return dict(item["status"])
+        return None
+
+
 def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
     from hashlib import sha256
     subset = {k: body.get(k) for k in keys}
@@ -980,6 +1295,10 @@ class APIServerAdapter(BasePlatformAdapter):
         self._stopping_run_ids: set[str] = set()
         # Pollable run status for dashboards and external control-plane UIs.
         self._run_statuses: Dict[str, Dict[str, Any]] = {}
+        self._run_profiles: Dict[str, Optional[str]] = {}
+        self._run_idempotency = _RunIdempotencyRegistry(
+            store_path=get_hermes_home() / "state" / "api_run_idempotency.json"
+        )
         # Active approval session key for each run_id.  The approval core
         # resolves requests by session key, while API clients address the
         # in-flight run by run_id.
@@ -1895,6 +2214,13 @@ class APIServerAdapter(BasePlatformAdapter):
             "pid": os.getpid(),
         })
 
+    def _current_advertised_model_name(self) -> str:
+        return (
+            self._resolve_model_name("")
+            if _api_request_profile.get()
+            else self._model_name
+        )
+
     async def _handle_models(self, request: "web.Request") -> "web.Response":
         """GET /v1/models — list hermes-agent and any configured model_routes aliases.
 
@@ -1909,11 +2235,7 @@ class APIServerAdapter(BasePlatformAdapter):
         now = int(time.time())
         # Middleware already entered the profile runtime scope when a /p/
         # prefix was present, so get_active_profile_name() resolves correctly.
-        model_name = (
-            self._resolve_model_name("")
-            if _api_request_profile.get()
-            else self._model_name
-        )
+        model_name = self._current_advertised_model_name()
         models = [
             {
                 "id": model_name,
@@ -1954,10 +2276,14 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
+        request_profile = _api_request_profile.get()
+        endpoint_prefix = f"/p/{request_profile}" if request_profile else ""
+        endpoint_path = lambda path: f"{endpoint_prefix}{path}"
+
         return web.json_response({
             "object": "hermes.api_server.capabilities",
             "platform": "hermes-agent",
-            "model": self._model_name,
+            "model": self._current_advertised_model_name(),
             "auth": {
                 "type": "bearer",
                 "required": bool(self._api_key),
@@ -1978,6 +2304,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 "responses_api": True,
                 "responses_streaming": True,
                 "run_submission": True,
+                "run_idempotency": True,
+                "run_idempotency_header": "Idempotency-Key",
+                "run_idempotency_persistent": True,
+                "run_idempotency_ttl_seconds": 24 * 60 * 60,
                 "run_status": True,
                 "run_events_sse": True,
                 "run_stop": True,
@@ -1999,27 +2329,27 @@ class APIServerAdapter(BasePlatformAdapter):
                 "cors": bool(self._cors_origins),
             },
             "endpoints": {
-                "health": {"method": "GET", "path": "/health"},
-                "health_detailed": {"method": "GET", "path": "/health/detailed"},
-                "models": {"method": "GET", "path": "/v1/models"},
-                "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
-                "responses": {"method": "POST", "path": "/v1/responses"},
-                "runs": {"method": "POST", "path": "/v1/runs"},
-                "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
-                "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
-                "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
-                "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
-                "skills": {"method": "GET", "path": "/v1/skills"},
-                "toolsets": {"method": "GET", "path": "/v1/toolsets"},
-                "sessions": {"method": "GET", "path": "/api/sessions"},
-                "session_create": {"method": "POST", "path": "/api/sessions"},
-                "session": {"method": "GET", "path": "/api/sessions/{session_id}"},
-                "session_update": {"method": "PATCH", "path": "/api/sessions/{session_id}"},
-                "session_delete": {"method": "DELETE", "path": "/api/sessions/{session_id}"},
-                "session_messages": {"method": "GET", "path": "/api/sessions/{session_id}/messages"},
-                "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
-                "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
-                "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
+                "health": {"method": "GET", "path": endpoint_path("/health")},
+                "health_detailed": {"method": "GET", "path": endpoint_path("/health/detailed")},
+                "models": {"method": "GET", "path": endpoint_path("/v1/models")},
+                "chat_completions": {"method": "POST", "path": endpoint_path("/v1/chat/completions")},
+                "responses": {"method": "POST", "path": endpoint_path("/v1/responses")},
+                "runs": {"method": "POST", "path": endpoint_path("/v1/runs")},
+                "run_status": {"method": "GET", "path": endpoint_path("/v1/runs/{run_id}")},
+                "run_events": {"method": "GET", "path": endpoint_path("/v1/runs/{run_id}/events")},
+                "run_approval": {"method": "POST", "path": endpoint_path("/v1/runs/{run_id}/approval")},
+                "run_stop": {"method": "POST", "path": endpoint_path("/v1/runs/{run_id}/stop")},
+                "skills": {"method": "GET", "path": endpoint_path("/v1/skills")},
+                "toolsets": {"method": "GET", "path": endpoint_path("/v1/toolsets")},
+                "sessions": {"method": "GET", "path": endpoint_path("/api/sessions")},
+                "session_create": {"method": "POST", "path": endpoint_path("/api/sessions")},
+                "session": {"method": "GET", "path": endpoint_path("/api/sessions/{session_id}")},
+                "session_update": {"method": "PATCH", "path": endpoint_path("/api/sessions/{session_id}")},
+                "session_delete": {"method": "DELETE", "path": endpoint_path("/api/sessions/{session_id}")},
+                "session_messages": {"method": "GET", "path": endpoint_path("/api/sessions/{session_id}/messages")},
+                "session_fork": {"method": "POST", "path": endpoint_path("/api/sessions/{session_id}/fork")},
+                "session_chat": {"method": "POST", "path": endpoint_path("/api/sessions/{session_id}/chat")},
+                "session_chat_stream": {"method": "POST", "path": endpoint_path("/api/sessions/{session_id}/chat/stream")},
             },
         })
 
@@ -4620,6 +4950,7 @@ class APIServerAdapter(BasePlatformAdapter):
         current.setdefault("created_at", fields.pop("created_at", now))
         current.update(fields)
         self._run_statuses[run_id] = current
+        self._run_idempotency.update_status(run_id, current)
         return current
 
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
@@ -4675,12 +5006,6 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
-
-        # Enforce concurrency limit (shared across all agent-serving
-        # endpoints; configurable via gateway.api_server.max_concurrent_runs).
-        limited = self._concurrency_limited_response()
-        if limited is not None:
-            return limited
 
         try:
             body = await request.json()
@@ -4742,7 +5067,79 @@ class APIServerAdapter(BasePlatformAdapter):
                         )
                     conversation_history.append({"role": msg["role"], "content": str(content)})
 
-        run_id = f"run_{uuid.uuid4().hex}"
+        idempotency_key = request.headers.get("Idempotency-Key", "").strip()
+        if idempotency_key and (
+            len(idempotency_key) > 256 or re.search(r'[\r\n\x00]', idempotency_key)
+        ):
+            return web.json_response(
+                _openai_error("Invalid Idempotency-Key", code="invalid_idempotency_key"),
+                status=400,
+            )
+        request_profile = _api_request_profile.get()
+        replayed = False
+        if idempotency_key:
+            fingerprint = hashlib.sha256(json.dumps(
+                {
+                    "body": body,
+                    "session_key": gateway_session_key,
+                    "profile": request_profile,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")).hexdigest()
+            try:
+                run_id, replayed = self._run_idempotency.claim(
+                    idempotency_key,
+                    fingerprint,
+                    profile=request_profile,
+                )
+            except _RunIdempotencyConflict:
+                return web.json_response(
+                    _openai_error(
+                        "Idempotency-Key was already used for a different request",
+                        code="idempotency_key_conflict",
+                    ),
+                    status=409,
+                )
+            except _RunIdempotencyCapacity:
+                return web.json_response(
+                    _openai_error(
+                        "Run idempotency registry is temporarily full",
+                        code="idempotency_registry_full",
+                    ),
+                    status=503,
+                    headers={"Retry-After": "60"},
+                )
+            if replayed:
+                response_headers = (
+                    {"X-Hermes-Session-Key": gateway_session_key} if gateway_session_key else {}
+                )
+                existing = self._run_statuses.get(run_id) or self._run_idempotency.get_status(
+                    run_id,
+                    profile=request_profile,
+                )
+                replay_status = existing.get("status", "started") if existing else "started"
+                return web.json_response(
+                    {"run_id": run_id, "status": replay_status},
+                    status=202,
+                    headers=response_headers,
+                )
+        else:
+            run_id = f"run_{uuid.uuid4().hex}"
+
+        # Capacity applies only to a new run. A replay must always recover the
+        # original run id, including while that original run occupies the slot.
+        limited = self._concurrency_limited_response()
+        if limited is not None:
+            if idempotency_key:
+                self._run_idempotency.release(
+                    idempotency_key,
+                    run_id,
+                    profile=request_profile,
+                )
+            return limited
+
+        self._run_profiles[run_id] = request_profile
         session_id = body.get("session_id") or stored_session_id or run_id
         # Approval queues gate host-side tool execution and must be isolated
         # per API run.  Client-provided session IDs and memory session keys are
@@ -4793,8 +5190,6 @@ class APIServerAdapter(BasePlatformAdapter):
         route = self._resolve_route(body.get("model"))
         # Background task outlives the HTTP response (and thus the middleware
         # profile scope). Capture now and re-enter inside the task/executor.
-        request_profile = _api_request_profile.get()
-
         async def _run_and_close():
             try:
                 self._set_run_status(run_id, "running")
@@ -5016,6 +5411,12 @@ class APIServerAdapter(BasePlatformAdapter):
             headers=response_headers,
         )
 
+    def _request_owns_active_run(self, run_id: str) -> bool:
+        return (
+            run_id in self._run_profiles
+            and self._run_profiles[run_id] == _api_request_profile.get()
+        )
+
     async def _handle_get_run(self, request: "web.Request") -> "web.Response":
         """GET /v1/runs/{run_id} — return pollable run status for external UIs."""
         auth_err = self._check_auth(request)
@@ -5023,7 +5424,14 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
 
         run_id = request.match_info["run_id"]
-        status = self._run_statuses.get(run_id)
+        request_profile = _api_request_profile.get()
+        status = (
+            self._run_statuses.get(run_id)
+            if self._run_profiles.get(run_id) == request_profile
+            else None
+        )
+        if status is None:
+            status = self._run_idempotency.get_status(run_id, profile=request_profile)
         if status is None:
             return web.json_response(
                 _openai_error(f"Run not found: {run_id}", code="run_not_found"),
@@ -5038,6 +5446,11 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
 
         run_id = request.match_info["run_id"]
+        if not self._request_owns_active_run(run_id):
+            return web.json_response(
+                _openai_error(f"Run not found: {run_id}", code="run_not_found"),
+                status=404,
+            )
 
         # Allow subscribing slightly before the run is registered (race condition window)
         for _ in range(20):
@@ -5090,6 +5503,11 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
 
         run_id = request.match_info["run_id"]
+        if not self._request_owns_active_run(run_id):
+            return web.json_response(
+                _openai_error(f"Run not found: {run_id}", code="run_not_found"),
+                status=404,
+            )
         status = self._run_statuses.get(run_id)
         if status is None:
             return web.json_response(
@@ -5178,6 +5596,11 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
 
         run_id = request.match_info["run_id"]
+        if not self._request_owns_active_run(run_id):
+            return web.json_response(
+                _openai_error(f"Run not found: {run_id}", code="run_not_found"),
+                status=404,
+            )
         agent = self._active_run_agents.get(run_id)
         task = self._active_run_tasks.get(run_id)
 
@@ -5242,6 +5665,7 @@ class APIServerAdapter(BasePlatformAdapter):
         ]
         for run_id in stale_statuses:
             self._run_statuses.pop(run_id, None)
+            self._run_profiles.pop(run_id, None)
 
     # ------------------------------------------------------------------
     # BasePlatformAdapter interface

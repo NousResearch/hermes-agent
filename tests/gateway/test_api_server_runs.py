@@ -20,6 +20,8 @@ from aiohttp.test_utils import TestClient, TestServer
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
+    _RunIdempotencyRegistry,
+    _api_request_profile,
     _approval_event_choices,
     cors_middleware,
     security_headers_middleware,
@@ -67,6 +69,23 @@ def _create_runs_app(adapter: APIServerAdapter) -> web.Application:
     app["api_server_adapter"] = adapter
     app.router.add_post("/v1/runs", adapter._handle_runs)
     app.router.add_get("/v1/runs/{run_id}", adapter._handle_get_run)
+    app.router.add_get("/v1/runs/{run_id}/events", adapter._handle_run_events)
+    app.router.add_post("/v1/runs/{run_id}/approval", adapter._handle_run_approval)
+    app.router.add_post("/v1/runs/{run_id}/stop", adapter._handle_stop_run)
+    return app
+
+
+def _create_profiled_runs_app(adapter: APIServerAdapter) -> web.Application:
+    @web.middleware
+    async def test_profile_middleware(request, handler):
+        token = _api_request_profile.set(request.headers.get("X-Test-Profile"))
+        try:
+            return await handler(request)
+        finally:
+            _api_request_profile.reset(token)
+
+    app = web.Application(middlewares=[test_profile_middleware])
+    app["api_server_adapter"] = adapter
     app.router.add_get("/v1/runs/{run_id}/events", adapter._handle_run_events)
     app.router.add_post("/v1/runs/{run_id}/approval", adapter._handle_run_approval)
     app.router.add_post("/v1/runs/{run_id}/stop", adapter._handle_stop_run)
@@ -121,6 +140,24 @@ def auth_adapter():
 
 class TestStartRun:
     @pytest.mark.asyncio
+    async def test_capacity_rejection_releases_unadmitted_idempotency_claim(self, adapter):
+        app = _create_runs_app(adapter)
+        with patch.object(
+            adapter,
+            "_concurrency_limited_response",
+            return_value=web.json_response({"error": "capacity"}, status=429),
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                response = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello"},
+                    headers={"Idempotency-Key": "capacity-key"},
+                )
+
+        assert response.status == 429
+        assert len(adapter._run_idempotency._store) == 0
+
+    @pytest.mark.asyncio
     async def test_start_returns_202(self, adapter):
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -144,6 +181,227 @@ class TestStartRun:
                 assert status["run_id"] == data["run_id"]
                 assert status["status"] in {"queued", "running", "completed"}
                 assert status["object"] == "hermes.run"
+
+    def test_idempotency_registry_survives_reconstruction(self, tmp_path):
+        store = tmp_path / "runs-idempotency.json"
+        first = _RunIdempotencyRegistry(store_path=store)
+        run_id, replayed = first.claim("key-restart", "fingerprint")
+        assert replayed is False
+        first.update_status(run_id, {"run_id": run_id, "status": "queued"})
+
+        reconstructed = _RunIdempotencyRegistry(store_path=store)
+        assert reconstructed.claim("key-restart", "fingerprint") == (run_id, True)
+
+    def test_idempotency_registry_serializes_multiple_instances(self, tmp_path):
+        store = tmp_path / "runs-idempotency.json"
+        first = _RunIdempotencyRegistry(store_path=store)
+        second = _RunIdempotencyRegistry(store_path=store)
+
+        first_run, first_replayed = first.claim("first-key", "first-fingerprint")
+        second_run, second_replayed = second.claim("second-key", "second-fingerprint")
+
+        assert first_replayed is False
+        assert second_replayed is False
+        first.update_status(first_run, {"run_id": first_run, "status": "queued"})
+        second.update_status(second_run, {"run_id": second_run, "status": "queued"})
+        reconstructed = _RunIdempotencyRegistry(store_path=store)
+        assert reconstructed.claim("first-key", "first-fingerprint") == (first_run, True)
+        assert reconstructed.claim("second-key", "second-fingerprint") == (second_run, True)
+
+    def test_idempotency_registry_isolates_multiplex_profiles(self, tmp_path):
+        registry = _RunIdempotencyRegistry(store_path=tmp_path / "runs-idempotency.json")
+
+        run_a, replay_a = registry.claim("shared-key", "fingerprint-a", profile="profile-a")
+        run_b, replay_b = registry.claim("shared-key", "fingerprint-b", profile="profile-b")
+        registry.update_status(run_a, {"run_id": run_a, "status": "completed", "output": "private-a"})
+
+        assert replay_a is False
+        assert replay_b is False
+        assert run_a != run_b
+        assert registry.get_status(run_a, profile="profile-a")["output"] == "private-a"
+        assert registry.get_status(run_a, profile="profile-b") is None
+
+    def test_idempotency_registry_retries_unadmitted_claim_with_same_run_id(self, tmp_path):
+        registry = _RunIdempotencyRegistry(store_path=tmp_path / "runs-idempotency.json")
+        run_id, replayed = registry.claim("unadmitted-key", "fingerprint")
+
+        assert replayed is False
+        assert registry.claim("unadmitted-key", "fingerprint") == (run_id, True)
+        registry.update_status(run_id, {"run_id": run_id, "status": "queued"})
+        assert registry.claim("unadmitted-key", "fingerprint") == (run_id, True)
+
+    def test_idempotency_registry_recovers_dead_owner_with_same_run_id(self, tmp_path, monkeypatch):
+        store = tmp_path / "runs-idempotency.json"
+        first = _RunIdempotencyRegistry(store_path=store)
+        run_id, replayed = first.claim("dead-owner-key", "fingerprint")
+        assert replayed is False
+
+        reconstructed = _RunIdempotencyRegistry(store_path=store)
+        monkeypatch.setattr(reconstructed, "_owner_is_alive", lambda *_args: False)
+        assert reconstructed.claim("dead-owner-key", "fingerprint") == (run_id, False)
+
+    def test_idempotency_registry_rejects_reused_pid_identity(self, tmp_path, monkeypatch):
+        registry = _RunIdempotencyRegistry(store_path=tmp_path / "runs-idempotency.json")
+        owner_identity = registry._owner_identity
+        assert owner_identity
+        monkeypatch.setattr(
+            registry,
+            "_read_process_identity",
+            lambda _pid: f"{owner_identity}-reused",
+        )
+
+        assert registry._owner_is_alive(registry._owner_pid, owner_identity) is False
+
+    def test_idempotency_registry_terminalizes_admitted_run_with_dead_owner(
+        self, tmp_path, monkeypatch
+    ):
+        store = tmp_path / "runs-idempotency.json"
+        first = _RunIdempotencyRegistry(store_path=store)
+        run_id, _ = first.claim("admitted-dead-owner", "fingerprint")
+        first.update_status(run_id, {"run_id": run_id, "status": "queued"})
+
+        reconstructed = _RunIdempotencyRegistry(store_path=store)
+        monkeypatch.setattr(reconstructed, "_owner_is_alive", lambda *_args: False)
+
+        assert reconstructed.claim("admitted-dead-owner", "fingerprint") == (run_id, True)
+        status = reconstructed.get_status(run_id)
+        assert status["status"] == "failed"
+        assert status["error"]["code"] == "RUN_RECOVERY_UNAVAILABLE"
+
+    def test_idempotency_registry_rolls_back_failed_persistence(self, tmp_path):
+        blocked_parent = tmp_path / "blocked"
+        blocked_parent.write_text("not-a-directory", encoding="utf-8")
+        store = blocked_parent / "runs-idempotency.json"
+
+        with pytest.raises(OSError):
+            _RunIdempotencyRegistry(store_path=store)
+
+        blocked_parent.unlink()
+        blocked_parent.mkdir()
+        registry = _RunIdempotencyRegistry(store_path=store)
+        _, replayed = registry.claim("key-write-failure", "fingerprint")
+        assert replayed is False
+
+    def test_idempotency_registry_rolls_back_failed_release(self, tmp_path, monkeypatch):
+        registry = _RunIdempotencyRegistry(store_path=tmp_path / "runs-idempotency.json")
+        run_id, _ = registry.claim("key-release-failure", "fingerprint")
+        registry.update_status(run_id, {"run_id": run_id, "status": "queued"})
+        original_persist = registry._persist
+
+        def fail_persist():
+            raise OSError("disk unavailable")
+
+        monkeypatch.setattr(registry, "_persist", fail_persist)
+        with pytest.raises(OSError):
+            registry.release("key-release-failure", run_id)
+        monkeypatch.setattr(registry, "_persist", original_persist)
+
+        assert registry.claim("key-release-failure", "fingerprint") == (run_id, True)
+
+    @pytest.mark.asyncio
+    async def test_start_replays_after_adapter_reconstruction(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        first_adapter = _make_adapter()
+        first_app = _create_runs_app(first_adapter)
+        async with TestClient(TestServer(first_app)) as first_client:
+            with patch.object(first_adapter, "_create_agent") as first_create:
+                agent = MagicMock()
+                agent.run_conversation.return_value = {"final_response": "done"}
+                agent.session_prompt_tokens = 0
+                agent.session_completion_tokens = 0
+                agent.session_total_tokens = 0
+                first_create.return_value = agent
+                first_response = await first_client.post(
+                    "/v1/runs",
+                    json={"input": "hello"},
+                    headers={"Idempotency-Key": "restart-key"},
+                )
+                first_body = await first_response.json()
+                assert first_response.status == 202
+                await asyncio.gather(*first_adapter._active_run_tasks.values())
+
+        second_adapter = _make_adapter()
+        second_app = _create_runs_app(second_adapter)
+        async with TestClient(TestServer(second_app)) as second_client:
+            with patch.object(second_adapter, "_create_agent") as second_create:
+                replay = await second_client.post(
+                    "/v1/runs",
+                    json={"input": "hello"},
+                    headers={"Idempotency-Key": "restart-key"},
+                )
+                assert replay.status == 202
+                replay_body = await replay.json()
+                assert replay_body["run_id"] == first_body["run_id"]
+                assert replay_body["status"] == "completed"
+                status_response = await second_client.get(f"/v1/runs/{first_body['run_id']}")
+                assert status_response.status == 200
+                status_body = await status_response.json()
+                assert status_body["status"] == "completed"
+                assert status_body["output"] == "done"
+                second_create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_start_replays_same_idempotency_key_without_second_run(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+                headers = {"Idempotency-Key": "turn-42"}
+
+                first = await cli.post("/v1/runs", json={"input": "hello"}, headers=headers)
+                replay = await cli.post("/v1/runs", json={"input": "hello"}, headers=headers)
+                first_data = await first.json()
+                replay_data = await replay.json()
+
+                assert first.status == replay.status == 202
+                assert replay_data["run_id"] == first_data["run_id"]
+                assert replay_data["status"] in {"started", "completed"}
+                await asyncio.sleep(0.01)
+                assert mock_create.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_start_rejects_reused_idempotency_key_for_changed_request(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+                headers = {"Idempotency-Key": "turn-conflict"}
+
+                first = await cli.post("/v1/runs", json={"input": "one"}, headers=headers)
+                conflict = await cli.post("/v1/runs", json={"input": "two"}, headers=headers)
+
+                assert first.status == 202
+                assert conflict.status == 409
+                data = await conflict.json()
+                assert data["error"]["code"] == "idempotency_key_conflict"
+
+    @pytest.mark.asyncio
+    async def test_concurrent_start_with_same_key_creates_one_run(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent, _ready, _interrupted = _make_slow_agent()
+                mock_create.return_value = mock_agent
+                headers = {"Idempotency-Key": "turn-concurrent"}
+
+                left, right = await asyncio.gather(
+                    cli.post("/v1/runs", json={"input": "hello"}, headers=headers),
+                    cli.post("/v1/runs", json={"input": "hello"}, headers=headers),
+                )
+                left_data, right_data = await asyncio.gather(left.json(), right.json())
+                assert left_data["run_id"] == right_data["run_id"]
+                assert len(adapter._active_run_tasks) == 1
+                await cli.post(f"/v1/runs/{left_data['run_id']}/stop")
 
     @pytest.mark.asyncio
     async def test_start_invalid_json_returns_400(self, adapter):
@@ -296,6 +554,38 @@ class TestRunStatus:
 # ---------------------------------------------------------------------------
 
 
+class TestRunProfileIsolation:
+    @pytest.mark.asyncio
+    async def test_control_routes_hide_runs_owned_by_another_profile(self, adapter):
+        events_run = "run-profile-a-events"
+        approval_run = "run-profile-a-approval"
+        stop_run = "run-profile-a-stop"
+        for run_id in (events_run, approval_run, stop_run):
+            adapter._run_profiles[run_id] = "profile-a"
+            adapter._run_statuses[run_id] = {"run_id": run_id, "status": "running"}
+
+        events_queue = asyncio.Queue()
+        events_queue.put_nowait(None)
+        adapter._run_streams[events_run] = events_queue
+        adapter._run_approval_sessions[approval_run] = "approval-profile-a"
+        adapter._active_run_agents[stop_run] = MagicMock()
+
+        app = _create_profiled_runs_app(adapter)
+        headers = {"X-Test-Profile": "profile-b"}
+        async with TestClient(TestServer(app)) as cli:
+            events = await cli.get(f"/v1/runs/{events_run}/events", headers=headers)
+            approval = await cli.post(
+                f"/v1/runs/{approval_run}/approval",
+                headers=headers,
+                json={"choice": "deny"},
+            )
+            stop = await cli.post(f"/v1/runs/{stop_run}/stop", headers=headers)
+
+        assert events.status == 404
+        assert approval.status == 404
+        assert stop.status == 404
+
+
 class TestRunEvents:
     @pytest.mark.asyncio
     async def test_events_stream_returns_completed(self, adapter):
@@ -359,6 +649,7 @@ class TestRunEvents:
         """Quoted false must not fan out approval resolution across the queue."""
         app = _create_runs_app(adapter)
         run_id = "run_bool_parse"
+        adapter._run_profiles[run_id] = None
         adapter._run_statuses[run_id] = {"run_id": run_id, "status": "running"}
         adapter._run_approval_sessions[run_id] = "session-123"
 

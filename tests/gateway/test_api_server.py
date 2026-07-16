@@ -29,6 +29,7 @@ from gateway.platforms.api_server import (
     APIServerAdapter,
     ResponseStore,
     _IdempotencyCache,
+    _api_request_profile,
     _derive_chat_session_id,
     _redact_api_error_text,
     check_api_server_requirements,
@@ -968,6 +969,27 @@ class TestModelsEndpoint:
 
 class TestCapabilitiesEndpoint:
     @pytest.mark.asyncio
+    async def test_capabilities_advertises_current_multiplex_profile_model(self, adapter):
+        @web.middleware
+        async def profile_middleware(request, handler):
+            token = _api_request_profile.set("magic-team-sidekick")
+            try:
+                return await handler(request)
+            finally:
+                _api_request_profile.reset(token)
+
+        app = _create_app(adapter)
+        app.middlewares.insert(0, profile_middleware)
+        with patch.object(adapter, "_resolve_model_name", return_value="gpt-5.6-terra"):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/capabilities")
+                data = await resp.json()
+
+        assert resp.status == 200
+        assert data["model"] == "gpt-5.6-terra"
+        assert data["endpoints"]["runs"]["path"] == "/p/magic-team-sidekick/v1/runs"
+
+    @pytest.mark.asyncio
     async def test_capabilities_advertises_plugin_safe_contract(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -985,6 +1007,10 @@ class TestCapabilitiesEndpoint:
             assert "API-server host" in data["runtime"]["description"]
             assert data["features"]["chat_completions"] is True
             assert data["features"]["run_status"] is True
+            assert data["features"]["run_idempotency"] is True
+            assert data["features"]["run_idempotency_header"] == "Idempotency-Key"
+            assert data["features"]["run_idempotency_persistent"] is True
+            assert data["features"]["run_idempotency_ttl_seconds"] == 86400
             assert data["features"]["run_events_sse"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"

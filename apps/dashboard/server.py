@@ -916,6 +916,62 @@ def live_scores(league: str) -> dict:
     return {"source": "live", "league": league, "games": games}
 
 
+STANDINGS_TTL = 30 * 60
+# Preferred stat columns per sport family (first few present are shown).
+_STAND_STATS = ["wins", "losses", "ties", "winPercent", "points",
+                "pointDifferential", "gamesBehind"]
+_STAND_LABEL = {"wins": "W", "losses": "L", "ties": "T", "winPercent": "PCT",
+                "points": "PTS", "pointDifferential": "DIFF", "gamesBehind": "GB"}
+
+
+def live_standings(league: str) -> dict:
+    sport, lg = SPORT_LEAGUES[league]
+    url = f"https://site.api.espn.com/apis/v2/sports/{sport}/{lg}/standings"
+    raw = json.loads(fetch_url(url))
+    children = raw.get("children") or ([raw] if raw.get("standings") else [])
+    cols: list[str] = []
+    groups = []
+    for child in children:
+        entries = ((child.get("standings") or {}).get("entries")) or []
+        teams = []
+        for e in entries:
+            team = e.get("team") or {}
+            stats = {}
+            for s in e.get("stats", []):
+                name = s.get("name")
+                if name in _STAND_STATS:
+                    stats[name] = s.get("displayValue")
+                    if name not in cols:
+                        cols.append(name)
+            teams.append({"abbr": team.get("abbreviation") or "?",
+                          "name": team.get("displayName") or team.get("shortDisplayName") or "",
+                          "stats": stats})
+        if teams:
+            groups.append({"name": child.get("name") or child.get("abbreviation") or "", "teams": teams})
+    if not groups:
+        raise RuntimeError("no standings")
+    ordered = [c for c in _STAND_STATS if c in cols][:4]
+    return {"source": "live", "league": league,
+            "columns": [{"key": c, "label": _STAND_LABEL.get(c, c.upper())} for c in ordered],
+            "groups": groups}
+
+
+def sample_standings(league: str) -> dict:
+    if league in ("epl", "mls"):
+        cols = [("points", "PTS"), ("wins", "W"), ("losses", "L")]
+        rows = [("ARS", "Arsenal", ["48", "15", "3"]), ("MCI", "Man City", ["45", "14", "4"]),
+                ("LIV", "Liverpool", ["43", "13", "4"]), ("CHE", "Chelsea", ["38", "11", "6"])]
+    else:
+        cols = [("wins", "W"), ("losses", "L"), ("winPercent", "PCT")]
+        rows = [("BOS", "Celtics", ["48", "12", ".800"]), ("DEN", "Nuggets", ["42", "18", ".700"]),
+                ("MIL", "Bucks", ["40", "20", ".667"]), ("LAL", "Lakers", ["33", "27", ".550"])]
+    teams = [{"abbr": a, "name": n, "stats": dict(zip([c[0] for c in cols], vals))}
+             for a, n, vals in rows]
+    return {"source": "sample", "league": league,
+            "columns": [{"key": k, "label": lb} for k, lb in cols],
+            "groups": [{"name": "Standings", "teams": teams}]}
+
+
 def sample_scores(league: str) -> dict:
     now = datetime.now(timezone.utc)
     demo = {
@@ -1765,6 +1821,14 @@ class Api:
     def gaming_deals(self, params: dict) -> dict:
         return self._cached("gaming:deals", GAMING_TTL, live_steam_deals, sample_steam_deals)
 
+    def standings(self, params: dict) -> dict:
+        league = params.get("league", ["nba"])[0].lower()
+        if league not in SPORT_LEAGUES:
+            raise ApiError(400, f"unknown league {league!r}")
+        return self._cached(f"standings:{league}", STANDINGS_TTL,
+                            lambda: live_standings(league),
+                            lambda: sample_standings(league))
+
     def social(self, params: dict) -> dict:
         network = params.get("network", ["hn"])[0].lower()
         if network == "hn":
@@ -2211,6 +2275,7 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/crypto/global": "crypto_global",
         "/api/crypto/trending": "crypto_trending",
         "/api/scores": "scores",
+        "/api/standings": "standings",
         "/api/social": "social",
         "/api/gaming/free": "gaming_free",
         "/api/gaming/deals": "gaming_deals",

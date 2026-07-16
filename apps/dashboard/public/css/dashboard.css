@@ -937,6 +937,19 @@ a { color: inherit; }
 .score-final { color: var(--muted); }
 .score-pre { color: var(--ink-2); }
 
+/* ---------- standings table (scores detail) ---------- */
+.stand-league { letter-spacing: 0.14em; margin-bottom: 8px; }
+.stand-group { margin-bottom: 14px; }
+.stand-row {
+  display: grid; grid-template-columns: 28px 1fr repeat(4, 46px);
+  align-items: center; gap: 6px; padding: 6px 4px;
+  border-bottom: 1px solid var(--hairline);
+}
+.stand-head { color: var(--muted); font-family: ui-monospace, Menlo, monospace; font-size: 10px; letter-spacing: 0.08em; }
+.stand-rank { color: var(--muted); font-variant-numeric: tabular-nums; text-align: center; }
+.stand-team { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stand-stat { text-align: right; font-variant-numeric: tabular-nums; }
+
 /* ---------- detail / expand window ---------- */
 .detail-backdrop {
   position: fixed;

@@ -8,6 +8,31 @@ const LEAGUES = [
   ["epl", "EPL"], ["mls", "MLS"],
 ];
 
+// Detail window: full standings table for the active league (via §0.2 ⤢).
+async function renderStandings(body, ctx) {
+  const league = ctx.store.state.sports?.league || "nba";
+  clear(body).append(h("div.widget-loading", {}, "LOADING STANDINGS…"));
+  let data;
+  try {
+    data = await ctx.api.standings(league);
+  } catch (err) {
+    clear(body).append(h("div.widget-error", {}, `Standings unavailable: ${err.message}`));
+    return;
+  }
+  const sections = [h("div.muted.small.stand-league", {}, `${league.toUpperCase()} STANDINGS`)];
+  for (const group of data.groups) {
+    const head = h("div.stand-row.stand-head", {},
+      h("span.stand-rank", {}, "#"), h("span.stand-team", {}, group.name || "Team"),
+      ...data.columns.map((c) => h("span.stand-stat", {}, c.label)));
+    const rows = group.teams.map((t, i) => h("div.stand-row", {},
+      h("span.stand-rank", {}, String(i + 1)),
+      h("span.stand-team", {}, h("b", {}, t.abbr), " ", h("span.muted", {}, t.name)),
+      ...data.columns.map((c) => h("span.stand-stat", {}, t.stats[c.key] ?? "—"))));
+    sections.push(h("div.stand-group", {}, head, ...rows));
+  }
+  clear(body).append(...sections);
+}
+
 const stateChip = (game) => {
   if (game.state === "in") return h("span.score-chip.score-live", {}, "● LIVE");
   if (game.state === "post") return h("span.score-chip.score-final", {}, "FINAL");
@@ -28,6 +53,7 @@ export default {
   title: "Scores",
   icon: "🏆",
   defaultSize: "m",
+  detail: renderStandings,
 
   render(body, ctx) {
     const { store } = ctx;

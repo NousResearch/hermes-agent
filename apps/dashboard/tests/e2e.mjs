@@ -563,6 +563,12 @@ await page.waitForFunction(() =>
   null, { timeout: 5000 });
 await page.waitForSelector(".widget-scores .score-game");
 check("scores league switch works", (await page.locator(".widget-scores .score-game").count()) >= 1);
+// standings detail window
+await page.locator(".widget-scores .widget-expand").click();
+await page.waitForSelector(".detail-pop .stand-row", { timeout: 8000 });
+check("standings table renders", (await page.locator(".detail-pop .stand-row").count()) >= 3);
+await page.keyboard.press("Escape");
+await page.waitForSelector(".detail-pop", { state: "detached" });
 
 // ---- crypto global bar + trending -----------------------------------------------
 await gotoWidget("markets");

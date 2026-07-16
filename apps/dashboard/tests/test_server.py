@@ -539,6 +539,30 @@ class MarketsWatchlistTests(unittest.TestCase):
         with self.assertRaises(server.ApiError):
             self.api.scores({"league": ["quidditch"]})
 
+    def test_standings_sample_shape(self):
+        for lg in ("nba", "epl"):
+            d = self.api.standings({"league": [lg]})
+            self.assertTrue(d["columns"])
+            self.assertTrue(d["groups"][0]["teams"])
+            t = d["groups"][0]["teams"][0]
+            self.assertIn("abbr", t)
+            self.assertIn(d["columns"][0]["key"], t["stats"])
+
+    def test_standings_normalizer_from_fixture(self):
+        raw = {"children": [{"name": "East", "standings": {"entries": [
+            {"team": {"abbreviation": "BOS", "displayName": "Celtics"},
+             "stats": [{"name": "wins", "displayValue": "48"},
+                       {"name": "losses", "displayValue": "12"},
+                       {"name": "randomstat", "displayValue": "x"}]},
+        ]}}]}
+        import unittest.mock as mock
+        with mock.patch.object(server, "fetch_url", return_value=json.dumps(raw).encode()):
+            out = server.live_standings("nba")
+        self.assertEqual(out["groups"][0]["teams"][0]["abbr"], "BOS")
+        keys = [c["key"] for c in out["columns"]]
+        self.assertIn("wins", keys)
+        self.assertNotIn("randomstat", keys)  # unknown stat filtered out
+
     def test_social_sample_shapes(self):
         for net in ("hn", "lobsters", "reddit"):
             d = self.api.social({"network": [net]})

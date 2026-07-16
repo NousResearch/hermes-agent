@@ -11,13 +11,21 @@ import {
 } from './link-title-window'
 
 function makeFakeBrowserWindow() {
-  const calls = { audioMuted: [] }
+  const calls = { audioMuted: [], destroyed: 0, webRtcPolicies: [] }
 
   const FakeBrowserWindow = function (options) {
     this.options = options
+
+    this.destroy = () => {
+      calls.destroyed += 1
+    }
+
     this.webContents = {
       setAudioMuted(value) {
         calls.audioMuted.push(value)
+      },
+      setWebRTCIPHandlingPolicy(value) {
+        calls.webRtcPolicies.push(value)
       }
     }
   }
@@ -46,6 +54,7 @@ test('createLinkTitleWindow mutes audio so historical links never autoplay sound
 
   assert.ok(window instanceof FakeBrowserWindow)
   assert.deepEqual(calls.audioMuted, [true])
+  assert.deepEqual(calls.webRtcPolicies, ['disable_non_proxied_udp'])
 })
 
 test('createLinkTitleWindow still returns the window if muting throws', () => {
@@ -54,13 +63,39 @@ test('createLinkTitleWindow still returns the window if muting throws', () => {
     this.webContents = {
       setAudioMuted() {
         throw new Error('webContents unavailable')
-      }
+      },
+      setWebRTCIPHandlingPolicy() {}
     }
   }
 
   const window = createLinkTitleWindow(ThrowingBrowserWindow, { id: 'link-titles' })
 
   assert.ok(window instanceof ThrowingBrowserWindow)
+})
+
+test('createLinkTitleWindow fails closed when non-proxied WebRTC cannot be disabled', () => {
+  let destroyed = false
+
+  const ThrowingBrowserWindow = function (options) {
+    this.options = options
+
+    this.destroy = () => {
+      destroyed = true
+    }
+
+    this.webContents = {
+      setAudioMuted() {},
+      setWebRTCIPHandlingPolicy() {
+        throw new Error('WebRTC policy unavailable')
+      }
+    }
+  }
+
+  assert.throws(
+    () => createLinkTitleWindow(ThrowingBrowserWindow, { id: 'link-titles' }),
+    /WebRTC policy unavailable/
+  )
+  assert.equal(destroyed, true)
 })
 
 test('guardLinkTitleSession cancels downloads triggered by the title-fetch window', () => {

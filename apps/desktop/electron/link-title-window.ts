@@ -31,6 +31,18 @@ export function createLinkTitleWindow(BrowserWindow, partitionSession) {
   const window = new BrowserWindow(linkTitleWindowOptions(partitionSession))
 
   try {
+    window.webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp')
+  } catch (error) {
+    try {
+      window.destroy()
+    } catch {
+      // The security boundary failed before navigation; teardown is best-effort.
+    }
+
+    throw error
+  }
+
+  try {
     window.webContents.setAudioMuted(true)
   } catch {
     // webContents may be unavailable in degraded/headless environments; muting

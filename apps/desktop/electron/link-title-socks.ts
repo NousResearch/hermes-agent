@@ -16,20 +16,33 @@ export function createLinkTitleSocksGatewayController(options: {
   clearPins(): void
   start(): Promise<LinkTitleSocksGateway>
 }): LinkTitleSocksGatewayController {
+  let closed = false
+  let closePromise: Promise<void> | null = null
   let pending: Promise<LinkTitleSocksGateway> | null = null
 
   return {
-    async close() {
-      const current = pending
-      pending = null
+    close() {
+      if (!closePromise) {
+        closed = true
+        const current = pending
+        pending = null
 
-      try {
-        await (await current?.catch(() => null))?.close()
-      } finally {
-        options.clearPins()
+        closePromise = (async () => {
+          try {
+            await (await current?.catch(() => null))?.close()
+          } finally {
+            options.clearPins()
+          }
+        })()
       }
+
+      return closePromise
     },
     get() {
+      if (closed) {
+        return Promise.reject(new Error('Link title SOCKS gateway controller is closed'))
+      }
+
       if (!pending) {
         const attempt = options.start()
 

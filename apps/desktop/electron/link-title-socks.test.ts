@@ -307,3 +307,32 @@ test('gateway controller never returns a direct fallback and permits a later pin
   assert.equal(start.mock.calls.length, 2)
   await controller.close()
 })
+
+test('gateway controller close is terminal during an in-progress gateway shutdown', async () => {
+  let finishClose: (() => void) | undefined
+
+  const close = vi.fn(
+    () =>
+      new Promise<void>(resolve => {
+        finishClose = resolve
+      })
+  )
+
+  const start = vi.fn(async () => ({ close, proxyUrl: 'socks5://127.0.0.1:48123' }))
+  const clearPins = vi.fn()
+  const controller = createLinkTitleSocksGatewayController({ clearPins, start })
+
+  await controller.get()
+  const closing = controller.close()
+
+  await assert.rejects(controller.get(), /closed/i)
+  assert.equal(start.mock.calls.length, 1)
+
+  finishClose?.()
+  await closing
+  await controller.close()
+
+  assert.equal(close.mock.calls.length, 1)
+  assert.equal(clearPins.mock.calls.length, 1)
+  await assert.rejects(controller.get(), /closed/i)
+})

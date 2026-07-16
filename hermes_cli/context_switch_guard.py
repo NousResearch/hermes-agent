@@ -119,7 +119,7 @@ def merge_preflight_compression_warning(
     _append_warning(result, "".join(parts))
 
 
-def enrich_model_switch_warnings_for_gateway(
+async def enrich_model_switch_warnings_for_gateway(
     result: ModelSwitchResult,
     runner: Any,
     *,
@@ -128,7 +128,18 @@ def enrich_model_switch_warnings_for_gateway(
     custom_providers: list | None = None,
     load_gateway_config: Callable[[], dict] | None = None,
 ) -> None:
-    """Gateway helper: cached agent + session DB messages."""
+    """Gateway helper: cached agent + session DB messages.
+
+    Async because the gateway's ``runner._session_db`` is an
+    ``AsyncSessionDB`` facade: every method access returns an
+    async-offloaded wrapper (``asyncio.to_thread``). Calling it without
+    ``await`` silently drops the read and hands a stray coroutine to
+    :func:`merge_preflight_compression_warning` (#63712), while unwrapping
+    to the sync ``_db`` handle would run a blocking SQLite read on the
+    gateway event loop — the sync escape is permitted only off-loop (see
+    ``tests/gateway/test_async_session_db.py``). Awaiting the facade keeps
+    the read off-loop and the result real.
+    """
     lock = getattr(runner, "_agent_cache_lock", None)
     cache = getattr(runner, "_agent_cache", None)
     agent = None
@@ -152,19 +163,11 @@ def enrich_model_switch_warnings_for_gateway(
 
     messages = None
     db = getattr(runner, "_session_db", None)
-    # The gateway's _session_db is an AsyncSessionDB (every attr access
-    # returns an async-offloaded wrapper); calling it here without await
-    # would silently drop the read and hand a stray coroutine to
-    # merge_preflight_compression_warning below (#63712). Unwrap to the
-    # sync handle before calling — same idiom used elsewhere for
-    # synchronous session_db reads (e.g. gateway/run.py's Telegram topic
-    # helpers).
-    db = getattr(db, "_db", db)
     store = getattr(runner, "session_store", None)
     if db is not None and store is not None:
         try:
             entry = store.get_or_create_session(source)
-            messages = db.get_messages_as_conversation(entry.session_id)
+            messages = await db.get_messages_as_conversation(entry.session_id)
         except Exception:
             pass
 

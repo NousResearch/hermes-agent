@@ -105,20 +105,33 @@ class TestSanitizeApiMessages:
     def test_empty_list_is_safe(self):
         assert AIAgent._sanitize_api_messages([]) == []
 
-    def test_mid_conversation_system_demoted_to_user(self):
-        """System messages after position 0 must be demoted to user role
-        for provider compatibility (#48338). The first system message
-        (the main system prompt) must stay as-is."""
+    def test_only_internal_system_markers_are_demoted(self):
+        """Only tagged Hermes markers are demoted for strict providers."""
+        marker_key = "_hermes_internal_system_marker"
+        marker = {
+            "role": "system",
+            "content": "[System: model changed]",
+            marker_key: True,
+        }
         msgs = [
             {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "system", "content": "[System: configured prefill.]"},
             {"role": "user", "content": "hi"},
             {"role": "assistant", "content": "hello"},
-            {"role": "system", "content": "[System: model changed]"},
+            {"role": "user", "content": "[System: quoted user text]"},
+            marker,
         ]
+
         out = AIAgent._sanitize_api_messages(msgs)
-        assert out[0]["role"] == "system"  # position 0 unchanged
-        assert out[3]["role"] == "user"    # mid-conversation demoted
-        assert out[3]["content"] == "[System: model changed]"
+
+        assert out[0]["role"] == "system"
+        assert out[1]["role"] == "system"
+        assert out[4] == {"role": "user", "content": "[System: quoted user text]"}
+        assert out[5]["role"] == "user"
+        assert out[5]["content"] == "[System: model changed]"
+        assert all(marker_key not in msg for msg in out)
+        assert marker["role"] == "system"
+        assert marker[marker_key] is True
 
     def test_first_system_message_preserved(self):
         """A single system message at position 0 is NOT demoted."""

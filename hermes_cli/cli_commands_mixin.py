@@ -27,6 +27,7 @@ from rich import box as rich_box
 from rich.markup import escape as _escape
 from rich.panel import Panel
 
+from agent.message_sanitization import HERMES_INTERNAL_SYSTEM_MARKER_KEY
 from hermes_constants import display_hermes_home, is_termux as _is_termux_environment
 from agent.turn_context import extract_api_content_sidecar
 from hermes_cli.browser_connect import (
@@ -978,6 +979,9 @@ class CLICommandsMixin:
                     # prompt cache) instead of a full cold prefill.
                     api_content=extract_api_content_sidecar(msg),
                     timestamp=msg.get("timestamp"),
+                    internal_system_marker=bool(
+                        msg.get(HERMES_INTERNAL_SYSTEM_MARKER_KEY)
+                    ),
                 )
             except Exception:
                 pass  # Best-effort copy

@@ -19,6 +19,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Any
+from agent.message_sanitization import HERMES_INTERNAL_SYSTEM_MARKER_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -2994,6 +2995,9 @@ class SessionStore:
             codex_message_items=message.get("codex_message_items") if message.get("role") == "assistant" else None,
             platform_message_id=(message.get("platform_message_id") or message.get("message_id")),
             observed=bool(message.get("observed")),
+            internal_system_marker=bool(
+                message.get(HERMES_INTERNAL_SYSTEM_MARKER_KEY)
+            ),
             timestamp=message.get("timestamp"),
             # api_content sidecar: the exact bytes sent to the API for
             # this message (prompt-cache-stable replay). Must survive

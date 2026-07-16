@@ -13,6 +13,7 @@ import json
 import logging
 from datetime import datetime
 from typing import Optional
+from agent.message_sanitization import HERMES_INTERNAL_SYSTEM_MARKER_KEY
 
 from hermes_cli.config import get_hermes_home
 
@@ -198,6 +199,9 @@ def _append_to_sqlite(session_id: str, message: dict) -> None:
             session_id=session_id,
             role=message.get("role", "assistant"),
             content=message.get("content"),
+            internal_system_marker=bool(
+                message.get(HERMES_INTERNAL_SYSTEM_MARKER_KEY)
+            ),
         )
     except Exception as e:
         logger.debug("Mirror SQLite write failed: %s", e)

@@ -1,10 +1,9 @@
 """Tests for _append_model_switch_marker role semantics (issue #48338).
 
-The model switch marker uses role="system" for correct transcript semantics.
-The pre-call sanitizer (sanitize_api_messages) demotes mid-conversation system
-messages to role="user" for provider compatibility, so strict providers
-(vLLM, Qwen) never see a mid-conversation system message on the wire — but
-the stored transcript and Desktop rendering show the correct role.
+The model switch marker is tagged and uses role="system" for correct transcript
+semantics. The pre-call sanitizer demotes only tagged Hermes system markers to
+role="user" for strict-provider compatibility; persisted transcript and Desktop
+rendering keep the system role.
 """
 
 from __future__ import annotations
@@ -29,6 +28,7 @@ class TestAppendModelSwitchMarkerRole:
             f"Expected role='system' but got role='{entry['role']}'. "
             "The sanitizer demotes to 'user' at API call time (#48338)."
         )
+        assert entry["_hermes_internal_system_marker"] is True
 
     def test_marker_content_preserved(self) -> None:
         """The marker content must still describe the model switch."""
@@ -103,5 +103,5 @@ class TestAppendModelSwitchMarkerRole:
             session_id="sess-1",
             role="system",
             content=marker["content"],
-            display_kind="model_switch",
+            internal_system_marker=True,
         )

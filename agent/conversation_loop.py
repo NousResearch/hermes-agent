@@ -49,6 +49,7 @@ from agent.turn_context import (
 )
 from agent.turn_retry_state import TurnRetryState
 from agent.message_sanitization import (
+    make_internal_system_marker,
     close_interrupted_tool_sequence,
     _repair_tool_call_arguments,
     _sanitize_messages_non_ascii,
@@ -2425,10 +2426,9 @@ def run_conversation(
                                 _continue_content = _get_continuation_prompt(
                                     _is_partial_stream_stub, _dropped_tools
                                 )
-                                continue_msg = {
-                                    "role": "system",
-                                    "content": _continue_content,
-                                }
+                                continue_msg = make_internal_system_marker(
+                                    _continue_content
+                                )
                                 messages.append(continue_msg)
                                 agent._session_messages = messages
                                 _retry.restart_with_length_continuation = True
@@ -5999,13 +5999,10 @@ def run_conversation(
                     messages.append(interim_msg)
                     agent._emit_interim_assistant_message(interim_msg)
 
-                    continue_msg = {
-                        "role": "system",
-                        "content": (
-                            "[System: Continue now. Execute the required tool calls and only "
-                            "send your final answer after completing the task.]"
-                        ),
-                    }
+                    continue_msg = make_internal_system_marker(
+                        "[System: Continue now. Execute the required tool calls and only "
+                        "send your final answer after completing the task.]"
+                    )
                     messages.append(continue_msg)
                     agent._session_messages = messages
                     # An acknowledgment is explicitly non-final. Do not let its
@@ -6075,11 +6072,10 @@ def run_conversation(
                         agent._flush_messages_to_session_db(messages, conversation_history)
                     except Exception:
                         logger.debug("verify-on-stop interim flush failed", exc_info=True)
-                    messages.append({
-                        "role": "system",
-                        "content": _verify_nudge,
-                        "_verification_stop_synthetic": True,
-                    })
+                    messages.append(make_internal_system_marker(
+                        _verify_nudge,
+                        _verification_stop_synthetic=True,
+                    ))
                     agent._session_messages = messages
                     # Run the verification-stop loop silently — the nudge is an
                     # internal turn that should not add noise to the user's
@@ -6146,11 +6142,10 @@ def run_conversation(
                         agent._flush_messages_to_session_db(messages, conversation_history)
                     except Exception:
                         logger.debug("pre_verify interim flush failed", exc_info=True)
-                    messages.append({
-                        "role": "system",
-                        "content": _verify_nudge2,
-                        "_pre_verify_synthetic": True,
-                    })
+                    messages.append(make_internal_system_marker(
+                        _verify_nudge2,
+                        _pre_verify_synthetic=True,
+                    ))
                     agent._session_messages = messages
                     logger.debug("pre_verify nudge issued (attempt %d)",
                                  agent._pre_verify_nudges)

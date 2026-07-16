@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Optional, Union
 
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
+from agent.message_sanitization import HERMES_INTERNAL_SYSTEM_MARKER_KEY
 from agent.i18n import t
 from agent.turn_context import extract_api_content_sidecar
 from gateway.config import HomeChannel, Platform, PlatformConfig
@@ -4183,6 +4184,9 @@ class GatewaySlashCommandsMixin:
                     # prompt cache) instead of a full cold prefill.
                     api_content=extract_api_content_sidecar(msg),
                     timestamp=msg.get("timestamp"),
+                    internal_system_marker=bool(
+                        msg.get(HERMES_INTERNAL_SYSTEM_MARKER_KEY)
+                    ),
                 )
             except Exception:
                 pass  # Best-effort copy

@@ -12,6 +12,8 @@ durable transcript. This test file verifies:
   - The JSON log drops only the nudge, keeping the assistant candidate.
 """
 
+from datetime import datetime
+
 import json
 import sys
 from unittest.mock import MagicMock
@@ -47,19 +49,21 @@ def test_verification_flags_registered_as_ephemeral(tmp_path, monkeypatch):
 
 
 def _make_agent(ra, session_id, tmp_path):
-    agent = ra.AIAgent(
-        session_id=session_id,
-        api_key="test-key",
-        base_url="http://127.0.0.1:8000/v1",
-        provider="openai-compat",
-        model="test-model",
-        quiet_mode=True,
-        skip_context_files=True,
-        skip_memory=True,
-    )
+    """Build only the attributes exercised by persistence methods."""
+    agent = ra.AIAgent.__new__(ra.AIAgent)
+    agent.session_id = session_id
+    agent.model = "test-model"
+    agent.base_url = "http://127.0.0.1:8000/v1"
+    agent.platform = "test"
+    agent.session_start = datetime.now()
+    agent._cached_system_prompt = None
+    agent.tools = []
     agent._session_db = MagicMock()
     agent._session_db_created = True
     agent._session_json_enabled = True
+    agent._last_flushed_db_idx = 0
+    agent._flushed_db_message_ids = set()
+    agent._flushed_db_message_session_id = None
     agent.logs_dir = tmp_path / "logs"
     agent.logs_dir.mkdir(parents=True, exist_ok=True)
     return agent

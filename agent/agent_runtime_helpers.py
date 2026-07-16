@@ -38,6 +38,7 @@ from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_res
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import STATUS_EXHAUSTED
 from agent.error_classifier import FailoverReason
+from agent.message_sanitization import HERMES_INTERNAL_SYSTEM_MARKER_KEY
 from agent.turn_context import drop_stale_api_content
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 
@@ -2735,22 +2736,30 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
         filtered.append(msg)
     messages = filtered
 
-    # --- Demote mid-conversation system messages to user role (#48338) ---
-    # System messages that appear after position 0 (model-switch markers,
-    # personality pivots, verification nudges, continuation prompts) are
-    # persisted with role="system" for correct Desktop rendering, but strict
-    # OpenAI-compatible providers (vLLM, Qwen) reject system messages that are
-    # not at the beginning of the messages array. Demote them to role="user"
-    # on the per-call copy so the stored transcript keeps the correct role
-    # while the wire payload stays provider-compatible.
+    # --- Demote tagged Hermes system markers for strict providers (#48338) ---
+    # Hermes pivot/nudge records remain role="system" in memory and persistence
+    # so transcript consumers render them correctly. Strict OpenAI-compatible
+    # providers (vLLM, Qwen) reject those records mid-conversation, so demote
+    # only explicitly tagged Hermes markers on this per-call copy. Ordinary
+    # system-role prefills are provider input and must retain their configured
+    # role. Strip the private tag from every outbound message either way.
     _demoted = 0
     for _idx, _msg in enumerate(messages):
-        if _idx > 0 and isinstance(_msg, dict) and _msg.get("role") == "system":
-            messages[_idx] = {**_msg, "role": "user"}
+        if not isinstance(_msg, dict) or HERMES_INTERNAL_SYSTEM_MARKER_KEY not in _msg:
+            continue
+        _is_internal_marker = _msg.get(HERMES_INTERNAL_SYSTEM_MARKER_KEY) is True
+        _wire_msg = {
+            _key: _value
+            for _key, _value in _msg.items()
+            if _key != HERMES_INTERNAL_SYSTEM_MARKER_KEY
+        }
+        if _idx > 0 and _is_internal_marker and _msg.get("role") == "system":
+            _wire_msg["role"] = "user"
             _demoted += 1
+        messages[_idx] = _wire_msg
     if _demoted:
         _ra().logger.debug(
-            "Pre-call sanitizer: demoted %d mid-conversation system message(s) to user role",
+            "Pre-call sanitizer: demoted %d tagged Hermes system marker(s) to user role",
             _demoted,
         )
 

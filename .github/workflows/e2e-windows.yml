@@ -91,6 +91,7 @@ jobs:
 
   e2e:
     name: Install this commit as latest main
+    if: false # NOTE: this job isn't used yet.
     # needs: build-installer
     runs-on: windows-latest
     timeout-minutes: 60

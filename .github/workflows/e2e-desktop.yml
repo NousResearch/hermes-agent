@@ -68,7 +68,7 @@ jobs:
       # cache to avoid cold starts on unrelated PRs.
       - name: Restore visual baseline screenshots
         id: restore-baselines
-        uses: actions/cache@0400d5f6a4f407c1b1b78f4ddd5bffb6548ef6f6 # v4.2.4
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: apps/desktop/e2e/__screenshots__
           key: visual-baselines-${{ github.ref_name }}
@@ -153,7 +153,7 @@ jobs:
       # ── Save updated baselines to cache (main only) ───────────────────
       - name: Save updated baselines to cache
         if: github.ref_name == 'main' && always()
-        uses: actions/cache/save@0400d5f6a4f407c1b1b78f4ddd5bffb6548ef6f6 # v4.2.4
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: apps/desktop/e2e/__screenshots__
           key: visual-baselines-main

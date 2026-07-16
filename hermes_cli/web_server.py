@@ -5400,6 +5400,36 @@ async def update_memory_provider_config(name: str, body: MemoryProviderConfigUpd
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+class DesktopPinnedSessionsUpdate(BaseModel):
+    pinned_session_ids: List[str]
+
+
+@app.get("/api/desktop/pinned-sessions")
+async def get_desktop_pinned_sessions():
+    """Return the machine-owned recovery copy of Desktop sidebar pins."""
+    from hermes_constants import get_default_hermes_root
+    from hermes_cli.desktop_ui_state import read_pinned_sessions
+
+    exists, pinned_session_ids = read_pinned_sessions(get_default_hermes_root())
+    return {"exists": exists, "pinned_session_ids": pinned_session_ids}
+
+
+@app.put("/api/desktop/pinned-sessions")
+async def put_desktop_pinned_sessions(body: DesktopPinnedSessionsUpdate):
+    """Persist ordered Desktop sidebar pins outside disposable renderer state."""
+    from hermes_constants import get_default_hermes_root
+    from hermes_cli.desktop_ui_state import write_pinned_sessions
+
+    try:
+        pinned_session_ids = write_pinned_sessions(get_default_hermes_root(), body.pinned_session_ids)
+        return {"ok": True, "pinned_session_ids": pinned_session_ids}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("PUT /api/desktop/pinned-sessions failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @app.get("/api/config")
 async def get_config(profile: Optional[str] = None):
     with _profile_scope(profile):

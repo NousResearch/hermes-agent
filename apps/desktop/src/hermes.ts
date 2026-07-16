@@ -477,6 +477,25 @@ export function getLogs(params: {
   })
 }
 
+export interface DesktopPinnedSessionsState {
+  exists: boolean
+  pinned_session_ids: string[]
+}
+
+export function getDesktopPinnedSessions(): Promise<DesktopPinnedSessionsState> {
+  return window.hermesDesktop.api<DesktopPinnedSessionsState>({
+    path: '/api/desktop/pinned-sessions'
+  })
+}
+
+export function saveDesktopPinnedSessions(pinnedSessionIds: string[]): Promise<{ ok: boolean; pinned_session_ids: string[] }> {
+  return window.hermesDesktop.api<{ ok: boolean; pinned_session_ids: string[] }>({
+    path: '/api/desktop/pinned-sessions',
+    method: 'PUT',
+    body: { pinned_session_ids: pinnedSessionIds }
+  })
+}
+
 export function getHermesConfig(): Promise<HermesConfig> {
   return window.hermesDesktop.api<HermesConfig>({
     ...profileScoped(),

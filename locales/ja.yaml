@@ -290,6 +290,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     model_provider:        "**Model:** `{model}` ({provider})"
     context:               "**Context:** {used} / {total} ({pct}%)"
     context_used:          "**Context:** ~{used} tokens"
+    soul_source:           "有効な SOUL.md: {source}"
     tokens:                "**トークン:** {tokens}"
     agent_running:         "**エージェント実行中:** {state}"
     state_yes:             "はい ⚡"

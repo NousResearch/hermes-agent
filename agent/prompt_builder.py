@@ -149,7 +149,10 @@ def _find_local_soul_md(cwd: Optional[str | Path]) -> Optional[Path]:
         return None
 
     stop_at = _find_git_root(current)
-    for directory in [current, *current.parents]:
+    # Outside a git repository, do not cross the cwd trust boundary. Walking
+    # arbitrary parents could adopt a SOUL.md planted in /tmp, /home, or /.
+    search_dirs = [current, *current.parents] if stop_at else [current]
+    for directory in search_dirs:
         for parts in _SOUL_MD_CANDIDATES:
             candidate = directory.joinpath(*parts)
             if candidate.is_file():
@@ -1900,7 +1903,8 @@ def load_soul_md(
 
     _active_soul_source.set(None)
 
-    soul_path = _find_local_soul_md(cwd) if allow_local and cwd is not None else None
+    local_cwd = cwd if cwd is not None else resolve_agent_cwd()
+    soul_path = _find_local_soul_md(local_cwd) if allow_local else None
     if soul_path is None:
         soul_path = get_hermes_home() / "SOUL.md"
     if not soul_path.exists():

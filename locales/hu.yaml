@@ -290,6 +290,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     model_provider:        "**Model:** `{model}` ({provider})"
     context:               "**Context:** {used} / {total} ({pct}%)"
     context_used:          "**Context:** ~{used} tokens"
+    soul_source:           "Aktív SOUL.md: {source}"
     tokens:                "**Tokenek:** {tokens}"
     agent_running:         "**Ügynök fut:** {state}"
     state_yes:             "Igen ⚡"

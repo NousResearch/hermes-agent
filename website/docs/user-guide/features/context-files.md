@@ -84,13 +84,13 @@ This is a Next.js 14 web application with a Python FastAPI backend.
 **Location:**
 
 - `$HERMES_HOME/SOUL.md` fallback
-- trusted cwd-local candidates, in this order, when project context discovery is enabled: `.hermes/soul.md`, `.hermes/SOUL.md`, `soul.md`, `SOUL.md`, then parent directories up to the git root
+- trusted cwd-local candidates, in this order, when project context discovery is enabled: `.hermes/soul.md`, `.hermes/SOUL.md`, `soul.md`, `SOUL.md`; parent directories are searched only inside a git repository, up to its root
 
 Important details:
 
 - Hermes seeds a default `SOUL.md` automatically if one does not exist yet
 - Hermes skips cwd-local `SOUL.md` when context files are disabled, even if global soul identity remains enabled
-- `/status` shows the active SOUL.md source path when a soul file is loaded
+- `/status` shows a safe logical label for the active SOUL.md source without exposing an absolute host path
 - If the file is empty, nothing from `SOUL.md` is added to the prompt
 - If the file has content, the content is injected verbatim after scanning and truncation
 

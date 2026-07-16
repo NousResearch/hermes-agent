@@ -37,7 +37,7 @@ Lookup order:
 2. `.hermes/SOUL.md`
 3. `soul.md`
 4. `SOUL.md`
-5. parent directories, using the same order and stopping at the git root
+5. parent directories when inside a git repository, using the same order and stopping at the git root
 6. `$HERMES_HOME/SOUL.md`
 7. built-in default identity
 
@@ -48,7 +48,7 @@ Lookup order:
 - Existing user `SOUL.md` files are never overwritten
 - A cwd-local soul overrides the global profile soul only when project context discovery is enabled for the session
 - If context files are skipped but SOUL identity is still enabled, Hermes uses only `$HERMES_HOME/SOUL.md`
-- `/status` shows the active SOUL.md source path when a soul file is loaded, so users can see which identity is in effect
+- `/status` shows a safe logical label for the active SOUL.md source, so users can see which identity is in effect without exposing an absolute host path
 - If no local soul exists, Hermes falls back to `$HERMES_HOME/SOUL.md`
 - If the selected `SOUL.md` exists but is empty, or cannot be loaded, Hermes falls back to a built-in default identity
 - If `SOUL.md` has content, that content is injected verbatim after security scanning and truncation

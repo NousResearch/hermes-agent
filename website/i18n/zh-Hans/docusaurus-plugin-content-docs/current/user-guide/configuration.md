@@ -1652,7 +1652,7 @@ Hermes 使用两种不同的上下文范围：
 
 | 文件 | 用途 | 范围 |
 |------|---------|-------|
-| `SOUL.md` | **主要 agent 身份** —— 定义 agent 是谁（系统提示词第 #1 槽位） | `~/.hermes/SOUL.md` 或 `$HERMES_HOME/SOUL.md` |
+| `SOUL.md` | **主要 agent 身份** —— 定义 agent 是谁（系统提示词第 #1 槽位） | 可信的 CWD 本地候选文件，然后回退到 `~/.hermes/SOUL.md` 或 `$HERMES_HOME/SOUL.md` |
 | `.hermes.md` / `HERMES.md` | 项目特定指令（最高优先级） | 向上走到 git 根目录 |
 | `AGENTS.md` | 项目特定指令、编码规范 | 递归目录遍历 |
 | `CLAUDE.md` | Claude Code 上下文文件（也会检测） | 仅工作目录 |

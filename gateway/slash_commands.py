@@ -39,6 +39,7 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
 )
+from hermes_constants import get_hermes_home
 from hermes_cli.config import atomic_config_write, cfg_get, clear_model_endpoint_credentials
 from utils import (
     atomic_json_write,
@@ -47,6 +48,27 @@ from utils import (
 )
 
 logger = logging.getLogger("gateway.run")
+
+_SOUL_SOURCE_NAMES = {"soul.md", "SOUL.md"}
+
+
+def _safe_soul_source_label(value: Any) -> str:
+    """Return a useful SOUL source label without exposing an absolute path."""
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    try:
+        source = Path(value).resolve()
+        global_source = (get_hermes_home() / "SOUL.md").resolve()
+    except (OSError, RuntimeError, ValueError):
+        return ""
+
+    if source == global_source:
+        return "$HERMES_HOME/SOUL.md"
+    if source.name not in _SOUL_SOURCE_NAMES:
+        return ""
+    if source.parent.name == ".hermes":
+        return f".hermes/{source.name}"
+    return source.name
 
 # Upper bound on the off-loop agent-resource cleanup during a /new or /reset
 # (see _handle_reset_command). A stuck teardown must not block the event loop;
@@ -578,7 +600,9 @@ class GatewaySlashCommandsMixin:
             model_name = _clean_str(getattr(status_agent, "model", ""))
             provider_name = _clean_str(getattr(status_agent, "provider", ""))
             base_url = _clean_str(getattr(status_agent, "base_url", ""))
-            soul_source = _clean_str(getattr(status_agent, "_active_soul_source", ""))
+            soul_source = _safe_soul_source_label(
+                getattr(status_agent, "_active_soul_source", "")
+            )
             ctx = getattr(status_agent, "context_compressor", None)
             if ctx is not None:
                 context_used = _int_value(getattr(ctx, "last_prompt_tokens", 0))
@@ -642,7 +666,7 @@ class GatewaySlashCommandsMixin:
         if context_line:
             lines.append(context_line)
         if soul_source:
-            lines.append(f"Active SOUL.md: {soul_source}")
+            lines.append(t("gateway.status.soul_source", source=soul_source))
         lines.extend([
             t("gateway.status.tokens", tokens=f"{db_total_tokens:,}"),
             t("gateway.status.agent_running", state=t("gateway.status.state_yes") if is_running else t("gateway.status.state_no")),

@@ -12,6 +12,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
+from gateway.slash_commands import _safe_soul_source_label
 from hermes_state import AsyncSessionDB
 from gateway.session import (
     SessionContext,
@@ -380,6 +381,35 @@ async def test_matrix_status_reports_current_matrix_room_scope():
     assert "session_key: sha256:" in result
     assert PROJECT_A_NAME not in result
     assert PROJECT_A_ROOM_ID not in result
+
+
+def test_safe_soul_source_label_redacts_global_and_rejects_formatting(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    assert _safe_soul_source_label(str(tmp_path / "SOUL.md")) == "$HERMES_HOME/SOUL.md"
+    assert _safe_soul_source_label("/tmp/SOUL.md\n**leaked**") == ""
+
+
+@pytest.mark.asyncio
+async def test_status_redacts_local_soul_absolute_path():
+    source = _make_matrix_source(PROJECT_B_ROOM_ID, PROJECT_B_NAME, PROJECT_B_TOPIC)
+    runner = _make_runner(source, [_entry(source, "session-b", "Project B Plan")])
+    session_key = build_session_key(source)
+    private_root = "/Users/private-name/workspaces/secret-project"
+    runner._running_agents[session_key] = SimpleNamespace(
+        model="",
+        provider="",
+        base_url="",
+        context_compressor=None,
+        _active_soul_source=f"{private_root}/.hermes/soul.md",
+    )
+
+    result = await runner._handle_status_command(_event("/status", source))
+
+    assert "Active SOUL.md: .hermes/soul.md" in result
+    assert private_root not in result
 
 
 @pytest.mark.asyncio

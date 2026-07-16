@@ -757,6 +757,24 @@ class TestBuildContextFilesPrompt:
         assert "Outside repo soul." not in result
         assert "Global soul." not in result
 
+    def test_load_soul_md_does_not_walk_parents_outside_git_repo(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / "SOUL.md").write_text("Global soul.", encoding="utf-8")
+        (tmp_path / "SOUL.md").write_text("Untrusted parent soul.", encoding="utf-8")
+        child = tmp_path / "non-repo" / "child"
+        child.mkdir(parents=True)
+
+        result = load_soul_md(cwd=str(child))
+
+        assert result is not None
+        assert "Global soul." in result
+        assert "Untrusted parent soul." not in result
+        assert get_active_soul_source() == str(hermes_home / "SOUL.md")
+
     def test_load_soul_md_falls_back_to_hermes_home(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_home"))
         hermes_home = tmp_path / "hermes_home"

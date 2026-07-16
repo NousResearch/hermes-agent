@@ -302,6 +302,7 @@ gateway:
     model_provider:        "**Model:** `{model}` ({provider})"
     context:               "**Context:** {used} / {total} ({pct}%)"
     context_used:          "**Context:** ~{used} tokens"
+    soul_source:           "Active SOUL.md: {source}"
     tokens:                "**Cumulative API tokens (re-sent each call):** {tokens}"
     agent_running:         "**Agent Running:** {state}"
     state_yes:             "Yes ⚡"

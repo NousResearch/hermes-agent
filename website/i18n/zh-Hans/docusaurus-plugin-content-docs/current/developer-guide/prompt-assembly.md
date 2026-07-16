@@ -28,7 +28,7 @@ Hermes 刻意将以下内容分离：
 
 已缓存的系统 prompt 大致按以下顺序组装：
 
-1. agent 身份 — 优先使用 `HERMES_HOME` 中的 `SOUL.md`，否则回退到 `prompt_builder.py` 中的 `DEFAULT_AGENT_IDENTITY`
+1. agent 身份 — 优先使用可信的 CWD 本地 `SOUL.md`，然后使用 `HERMES_HOME` 中的全局回退，否则使用 `prompt_builder.py` 中的 `DEFAULT_AGENT_IDENTITY`
 2. 工具感知行为指导
 3. Honcho 静态块（激活时）
 4. 可选系统消息
@@ -39,7 +39,7 @@ Hermes 刻意将以下内容分离：
 9. 时间戳 / 可选会话 ID
 10. 平台提示
 
-当设置了 `skip_context_files`（例如子 agent 委托）时，不会加载 SOUL.md，而是使用硬编码的 `DEFAULT_AGENT_IDENTITY`。
+当设置了 `skip_context_files`（例如子 agent 委托）时，绝不会加载 CWD 本地 SOUL 文件。如果同时启用了 `load_soul_identity`，只能加载全局 `$HERMES_HOME/SOUL.md` 回退；否则使用硬编码的 `DEFAULT_AGENT_IDENTITY`。
 
 ### 具体示例：组装后的系统 prompt
 
@@ -118,12 +118,15 @@ renderable inside a terminal.
 
 ## SOUL.md 在 prompt 中的位置
 
-`SOUL.md` 位于 `~/.hermes/SOUL.md`，作为 agent 的身份标识——系统 prompt 的第一个部分。`prompt_builder.py` 中的加载逻辑如下：
+`SOUL.md` 作为 agent 的身份标识——系统 prompt 的第一个部分。`$HERMES_HOME/SOUL.md` 是全局回退；启用可信项目上下文时，会优先选择工作目录中的本地 soul。`prompt_builder.py` 中的加载逻辑如下：
 
 ```python
 # From agent/prompt_builder.py (simplified)
-def load_soul_md() -> Optional[str]:
-    soul_path = get_hermes_home() / "SOUL.md"
+def load_soul_md(cwd=None, allow_local=True) -> Optional[str]:
+    local_cwd = cwd if cwd is not None else resolve_agent_cwd()
+    soul_path = _find_local_soul_md(local_cwd) if allow_local else None
+    if soul_path is None:
+        soul_path = get_hermes_home() / "SOUL.md"
     if not soul_path.exists():
         return None
     content = soul_path.read_text(encoding="utf-8").strip()
@@ -131,6 +134,8 @@ def load_soul_md() -> Optional[str]:
     content = _truncate_content(content, "SOUL.md")       # Cap defaults to 20k chars, configurable
     return content
 ```
+
+本地候选文件依次为 `.hermes/soul.md`、`.hermes/SOUL.md`、`soul.md`、`SOUL.md`。位于 git 仓库内时，从 CWD 向上搜索并在 git 根目录停止；不在 git 仓库内时只检查 CWD，避免 `/tmp`、用户主目录或文件系统根目录中的无关父级文件成为主要身份。`skip_context_files=True` 的隔离运行会传入 `allow_local=False`，因此只能加载可信的全局回退。
 
 当 `load_soul_md()` 返回内容时，它会替换硬编码的 `DEFAULT_AGENT_IDENTITY`。随后调用 `build_context_files_prompt()` 时传入 `skip_soul=True`，以防止 SOUL.md 出现两次（一次作为身份，一次作为上下文文件）。
 
@@ -167,9 +172,9 @@ def build_context_files_prompt(cwd=None, skip_soul=False):
     if project_context:
         sections.append(project_context)
 
-    # SOUL.md from HERMES_HOME (independent of project context)
+    # Cwd-local SOUL.md, then the HERMES_HOME fallback
     if not skip_soul:
-        soul_content = load_soul_md()
+        soul_content = load_soul_md(cwd=cwd_path)
         if soul_content:
             sections.append(soul_content)
 
@@ -222,7 +227,7 @@ def build_context_files_prompt(cwd=None, skip_soul=False):
 3. `CLAUDE.md`（仅 CWD）
 4. `.cursorrules` / `.cursor/rules/*.mdc`（仅 CWD）
 
-`SOUL.md` 通过 `load_soul_md()` 单独加载用于身份槽位。加载成功后，`build_context_files_prompt(skip_soul=True)` 会防止其出现两次。
+`SOUL.md` 通过 `load_soul_md()` 单独加载用于身份槽位。可信的 CWD 本地发现遵循上述 git 根目录边界；跳过项目上下文的隔离模式仅使用 `$HERMES_HOME/SOUL.md`。加载成功后，`build_context_files_prompt(skip_soul=True)` 会防止其出现两次。
 
 长文件在注入前会被截断。
 
@@ -236,7 +241,8 @@ def build_context_files_prompt(cwd=None, skip_soul=False):
 
 ### 优先使用这些入口
 
-- `~/.hermes/SOUL.md` — 用自定义 agent 角色和固定行为替换内置默认身份块。
+- `$HERMES_HOME/SOUL.md` — 设置 Hermes 实例的全局回退身份。
+- `.hermes/soul.md`（或其他受支持的本地候选文件）— 在可信项目上下文边界内设置目录级身份。
 - `~/.hermes/MEMORY.md` 和 `~/.hermes/USER.md` — 提供应在新会话中快照的持久跨会话事实和用户配置文件数据。
 - 项目上下文文件，如 `.hermes.md`、`HERMES.md`、`AGENTS.md`、`CLAUDE.md` 或 `.cursorrules` — 注入仓库特定的工作规则。
 - Skills — 打包可复用的工作流和参考资料，无需编辑核心 prompt 代码。

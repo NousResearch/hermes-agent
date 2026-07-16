@@ -30,6 +30,7 @@ import logging
 import os
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -327,19 +328,33 @@ def _do_upload(
 
 
 def load_session_messages(
-    session_id: str, db_path=None
+    session_id: str, db_path=None, *, home: Path | None = None
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    """Load a session's conversation + metadata from the SQLite store.
+    """Load a session's conversation + metadata from the resolved state store.
 
     Returns ``(messages, meta)``. ``meta`` is ``{}`` when the session row is
     missing (messages may still be present for a live, untitled session).
+
+    ``db_path`` remains for legacy migration/test callers that deliberately
+    target a SQLite file. Production callers resolve the selected profile home.
     """
     from hermes_state import SessionDB
-    db = SessionDB(db_path=db_path) if db_path else SessionDB()
-    resolved = db.resolve_session_id(session_id) or session_id
-    meta = db.get_session(resolved) or {}
-    messages = db.get_messages_as_conversation(resolved)
-    return messages, meta
+
+    if db_path is not None:
+        db = SessionDB(db_path=db_path)
+    else:
+        if home is None:
+            from hermes_constants import get_hermes_home
+
+            home = get_hermes_home()
+        db = SessionDB.for_home(Path(home))
+    try:
+        resolved = db.resolve_session_id(session_id) or session_id
+        meta = db.get_session(resolved) or {}
+        messages = db.get_messages_as_conversation(resolved)
+        return messages, meta
+    finally:
+        db.close()
 
 
 def upload_session_trace(
@@ -351,6 +366,7 @@ def upload_session_trace(
     private: bool = True,
     dataset_name: str = DEFAULT_DATASET_NAME,
     db_path=None,
+    home: Path | None = None,
     token: Optional[str] = None,
 ) -> str:
     """Top-level entry point used by the CLI/gateway/subcommand.
@@ -367,7 +383,7 @@ def upload_session_trace(
         return _NO_TOKEN_MESSAGE
 
     try:
-        messages, meta = load_session_messages(session_id, db_path=db_path)
+        messages, meta = load_session_messages(session_id, db_path=db_path, home=home)
     except Exception as e:
         logger.warning("Failed to load session %s for trace upload: %s", session_id, e)
         return f"Could not load session {session_id}: {e}"

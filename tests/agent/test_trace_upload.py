@@ -13,6 +13,7 @@ import pytest
 from agent import trace_upload
 from agent.trace_upload import (
     build_trace_jsonl,
+    load_session_messages,
     upload_session_trace,
     _resolve_hf_token,
     _do_upload,
@@ -132,6 +133,40 @@ def test_converter_handles_dict_tool_arguments():
     line = json.loads(jsonl.strip())
     tu = [b for b in line["message"]["content"] if b.get("type") == "tool_use"][0]
     assert tu["input"] == {"already": "dict"}
+
+
+# ---------------------------------------------------------------------------
+# Profile-aware store resolution
+# ---------------------------------------------------------------------------
+
+def test_load_session_messages_resolves_explicit_home(monkeypatch, tmp_path):
+    """Production trace export must honor the supplied profile home."""
+    opened = []
+
+    class FakeStore:
+        def resolve_session_id(self, session_id):
+            return session_id
+
+        def get_session(self, session_id):
+            return {"id": session_id}
+
+        def get_messages_as_conversation(self, session_id):
+            return [{"role": "user", "content": session_id}]
+
+        def close(self):
+            opened.append(("closed", None))
+
+    def open_for_home(home):
+        opened.append(("open", home))
+        return FakeStore()
+
+    monkeypatch.setattr("hermes_state.SessionDB.for_home", open_for_home)
+
+    messages, meta = load_session_messages("trace-session", home=tmp_path)
+
+    assert messages == [{"role": "user", "content": "trace-session"}]
+    assert meta == {"id": "trace-session"}
+    assert opened == [("open", tmp_path), ("closed", None)]
 
 
 # ---------------------------------------------------------------------------

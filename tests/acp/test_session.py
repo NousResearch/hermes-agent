@@ -403,6 +403,20 @@ class TestListAndCleanup:
 class TestPersistence:
     """Verify that sessions are persisted to SessionDB and can be restored."""
 
+    def test_get_db_resolves_selected_home_and_fails_closed(self, manager, monkeypatch, tmp_path):
+        """ACP must never substitute a sibling SQLite file for another backend."""
+        calls = []
+        monkeypatch.setattr(acp_session, "get_hermes_home", lambda: tmp_path)
+
+        def unavailable(home):
+            calls.append(home)
+            raise RuntimeError("configured backend is not activated")
+
+        monkeypatch.setattr(SessionDB, "for_home", unavailable)
+
+        assert manager._get_db() is None
+        assert calls == [tmp_path]
+
     def test_create_session_includes_registered_mcp_toolsets(self, tmp_path, monkeypatch):
         captured = {}
 

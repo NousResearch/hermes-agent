@@ -17,6 +17,8 @@ from tools.session_search_tool import (
     SESSION_SEARCH_SCHEMA,
     _HIDDEN_SESSION_SOURCES,
     _format_timestamp,
+    _locate_session_db,
+    _resolve_profile_db,
     session_search,
 )
 
@@ -520,6 +522,24 @@ class TestCrossProfileRead:
         assert result["mode"] == "read"
         assert result["session_meta"]["title"] == "Other Profile Chat"
 
+    def test_profile_open_uses_resolver_without_state_db(self, monkeypatch, tmp_path):
+        """A profile can target a non-SQLite backend without a local state.db."""
+        other_home = tmp_path / "other_home"
+        other_home.mkdir()
+        self._patch_profiles(monkeypatch, other_home)
+        opened = []
+        sentinel = object()
+
+        def open_for_home(home, *, read_only=False):
+            opened.append((home, read_only))
+            return sentinel
+
+        monkeypatch.setattr(SessionDB, "for_home", open_for_home)
+
+        assert _resolve_profile_db("other") is sentinel
+        assert opened == [(other_home, True)]
+        assert not (other_home / "state.db").exists()
+
     def test_bare_id_locates_across_profiles(self, db, tmp_path, monkeypatch):
         # The real-world failure: model dropped the owning profile and passed a
         # bare id. The tool must scan profiles and find it anyway.
@@ -541,6 +561,54 @@ class TestCrossProfileRead:
         assert result["success"] is True
         assert result["mode"] == "read"
         assert result["profile"] == "asdf"
+
+    def test_cross_profile_probe_skips_failed_store_and_keeps_scanning(self, monkeypatch, tmp_path):
+        """A failed target profile open degrades locally instead of ending search."""
+        from collections import namedtuple
+        from hermes_cli import profiles as profiles_mod
+
+        Info = namedtuple("Info", "name path")
+        default_home = tmp_path / "default"
+        unavailable_home = tmp_path / "unavailable"
+        target_home = tmp_path / "target"
+        for home in (default_home, unavailable_home, target_home):
+            home.mkdir()
+        monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda _name: default_home)
+        monkeypatch.setattr(
+            profiles_mod,
+            "list_profiles",
+            lambda: [Info("unavailable", unavailable_home), Info("target", target_home)],
+        )
+        opened = []
+
+        class FakeStore:
+            def __init__(self, home):
+                self.home = home
+
+            def get_session(self, session_id):
+                return {"id": session_id} if self.home == target_home else None
+
+            def close(self):
+                pass
+
+        def open_for_home(home, *, read_only=False):
+            opened.append((home, read_only))
+            if home == unavailable_home:
+                raise RuntimeError("backend unavailable")
+            return FakeStore(home)
+
+        monkeypatch.setattr(SessionDB, "for_home", open_for_home)
+
+        store, profile = _locate_session_db("found-in-target")
+
+        assert store is not None
+        assert profile == "target"
+        assert opened == [
+            (default_home, True),
+            (unavailable_home, True),
+            (target_home, True),
+        ]
+        assert all(not (home / "state.db").exists() for home in (default_home, unavailable_home, target_home))
 
     def test_unknown_profile_errors(self, db, monkeypatch, tmp_path):
         self._patch_profiles(monkeypatch, tmp_path, exists=False)

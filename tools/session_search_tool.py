@@ -142,7 +142,7 @@ def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[s
 
 
 def _resolve_profile_db(profile: str):
-    """Open another profile's ``state.db`` read-only, or None for the current one.
+    """Open another profile's configured state store read-only, or None for the current one.
 
     The desktop's ``@session:<profile>/<id>`` links always carry the source
     profile, so a linked session from profile B can be read while the agent
@@ -161,11 +161,11 @@ def _resolve_profile_db(profile: str):
     if not profiles_mod.profile_exists(canon):
         raise ValueError(f"profile '{canon}' does not exist")
 
-    return SessionDB(db_path=profiles_mod.get_profile_dir(canon) / "state.db", read_only=True)
+    return SessionDB.for_home(profiles_mod.get_profile_dir(canon), read_only=True)
 
 
 def _locate_session_db(session_id: str):
-    """Scan every profile's ``state.db`` (read-only) for a session id.
+    """Scan every profile's configured state store (read-only) for a session id.
 
     Returns ``(db, profile_name)`` for the first profile that owns the id, or
     ``(None, None)``. Session ids are globally unique (timestamp + random hex),
@@ -189,14 +189,15 @@ def _locate_session_db(session_id: str):
 
     seen: set = set()
     for name, home in targets:
-        db_path = Path(home) / "state.db"
-        key = str(db_path)
-        if key in seen or not db_path.exists():
+        profile_home = Path(home)
+        key = str(profile_home.resolve())
+        if key in seen:
             continue
         seen.add(key)
         try:
-            pdb = SessionDB(db_path=db_path, read_only=True)
+            pdb = SessionDB.for_home(profile_home, read_only=True)
         except Exception:
+            logging.debug("state store unavailable for profile %s during session locate", name, exc_info=True)
             continue
         try:
             if pdb.get_session(session_id):

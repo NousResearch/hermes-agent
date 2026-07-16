@@ -1020,8 +1020,11 @@ def _db_unavailable_error(rid, *, code: int):
 # (a ContextVar override) for the duration of the call so config/skills/model and
 # message persistence all resolve to the right profile. Omitted/own profile → the
 # launch profile (unchanged for single-profile and per-profile-remote setups).
-def _profile_home(profile: str | None) -> Path | None:
-    """Resolve a named profile's home on THIS host, or None for the launch profile."""
+_INVALID_PROFILE_HOME = object()
+
+
+def _profile_home(profile: str | None) -> Path | None | object:
+    """Resolve a named profile home, preserving invalid names as a sentinel."""
     name = (profile or "").strip()
     if not name:
         return None
@@ -1030,11 +1033,16 @@ def _profile_home(profile: str | None) -> Path | None:
 
         home = Path(profiles_mod.get_profile_dir(name))
     except Exception:
-        return None
+        return _INVALID_PROFILE_HOME
     # Already the launch profile? No override needed.
     if home.resolve() == Path(_hermes_home).resolve():
         return None
-    return home if (home / "state.db").exists() or home.exists() else None
+    return home if home.exists() else _INVALID_PROFILE_HOME
+
+
+def _invalid_profile_error(rid, profile: str | None) -> dict:
+    name = str(profile or "").strip() or "requested"
+    return _err(rid, 4025, f"profile unavailable: {name}")
 
 
 def _profile_scoped(handler):
@@ -1049,6 +1057,8 @@ def _profile_scoped(handler):
 
     def wrapper(rid, params):
         home = _profile_home(params.get("profile") if isinstance(params, dict) else None)
+        if home is _INVALID_PROFILE_HOME:
+            return _invalid_profile_error(rid, params.get("profile"))
         if home is None:
             return handler(rid, params)
         token = set_hermes_home_override(home)
@@ -1551,9 +1561,11 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 try:
                     from hermes_state import SessionDB
 
-                    session_db = SessionDB(db_path=Path(profile_home) / "state.db")
-                except Exception:
-                    session_db = None
+                    session_db = SessionDB.for_home(Path(profile_home))
+                except Exception as exc:
+                    raise RuntimeError(
+                        "selected profile session database unavailable"
+                    ) from exc
             try:
                 # Lazy-resumed (watch) sessions carry the stored conversation
                 # id — pass it through so the upgrade continues that session
@@ -1580,7 +1592,12 @@ def _start_agent_build(sid: str, session: dict) -> None:
                         kw["reasoning_config_override"] = reasoning
                     if (tier := current.get("create_service_tier_override")) is not None:
                         kw["service_tier_override"] = tier
-                agent = _make_agent(sid, key, **kw)
+                agent = _make_agent(
+                    sid,
+                    key,
+                    profile_home=profile_home,
+                    **kw,
+                )
             finally:
                 _clear_session_context(tokens)
 
@@ -1706,12 +1723,15 @@ def _normalize_completion_path(path_part: str) -> str:
 
 def _completion_cwd(params: dict | None = None) -> str:
     params = params or {}
+    profile_home = _profile_home(params.get("profile"))
+    if profile_home is _INVALID_PROFILE_HOME:
+        return os.getcwd()
     raw = (
         params.get("cwd")
         or _sessions.get(params.get("session_id") or "", {}).get("cwd")
         # A session bound to another profile resolves its workspace from THAT
         # profile's config before falling back to the launch profile's env var.
-        or _profile_configured_cwd(_profile_home(params.get("profile")))
+        or _profile_configured_cwd(profile_home)
         # The launch profile's dashboard /chat attaches to the dashboard's
         # in-memory gateway, which does NOT inherit the PTY child's bridged
         # TERMINAL_CWD. Read the launch profile's config.yaml directly so a
@@ -1902,7 +1922,7 @@ def _ensure_session_db_row(session: dict) -> None:
         from hermes_state import SessionDB
 
         try:
-            db = SessionDB(db_path=Path(profile_home) / "state.db")
+            db = SessionDB.for_home(Path(profile_home))
         except Exception:
             logger.debug("failed to open profile db for session row", exc_info=True)
             return
@@ -2028,7 +2048,7 @@ def _session_db(session: dict):
         from hermes_state import SessionDB
 
         try:
-            db, close_db = SessionDB(db_path=Path(profile_home) / "state.db"), True
+            db, close_db = SessionDB.for_home(Path(profile_home)), True
         except Exception:
             logger.debug("failed to open profile db for session", exc_info=True)
     else:
@@ -4815,6 +4835,7 @@ def _make_agent(
     reasoning_config_override: dict | None = None,
     service_tier_override: str | None = None,
     platform_override: str | None = None,
+    profile_home: str | Path | None = None,
 ):
     # AC-4 test seam: dead unless explicitly armed by the isolated certify
     # harness. Both inline and compute-host paths construct through _make_agent,
@@ -4941,6 +4962,9 @@ def _make_agent(
                 raise RuntimeError("Auth fallback resolved without a model")
             model = resolution.selected_model
     _pr = _load_provider_routing()
+    if profile_home is not None and session_db is None:
+        raise RuntimeError("selected profile session database unavailable")
+
     return AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 90),
@@ -5566,6 +5590,8 @@ def _(rid, params: dict) -> dict:
     # and each turn re-bind HERMES_HOME. None/own profile → launch (unchanged).
     profile = (params.get("profile") or "").strip() or None
     profile_home = _profile_home(profile)
+    if profile_home is _INVALID_PROFILE_HOME:
+        return _invalid_profile_error(rid, profile)
 
     # The desktop composer owns its model/effort/fast as plain UI state and ships
     # it on every session.create. Honor each as a PER-SESSION override (built into
@@ -5931,13 +5957,19 @@ def _(rid, params: dict) -> dict:
     # local profile's state.db. None/own profile → the launch profile (unchanged).
     profile = (params.get("profile") or "").strip() or None
     profile_home = _profile_home(profile)
+    if profile_home is _INVALID_PROFILE_HOME:
+        return _invalid_profile_error(rid, profile)
 
     # In a profile scope, the agent OWNS a long-lived db handle bound to that
     # profile (do NOT auto-close it here). Otherwise reuse the shared launch db.
     if profile_home is not None:
         from hermes_state import SessionDB
 
-        db = SessionDB(db_path=profile_home / "state.db")
+        try:
+            db = SessionDB.for_home(profile_home)
+        except Exception:
+            logger.debug("failed to open selected profile db for session resume", exc_info=True)
+            return _db_unavailable_error(rid, code=5000)
     else:
         db = _get_db()
     if db is None:
@@ -6208,6 +6240,7 @@ def _(rid, params: dict) -> dict:
                 target,
                 session_id=target,
                 session_db=db,
+                profile_home=profile_home,
                 platform_override=source,
                 **stored_runtime_overrides,
             )

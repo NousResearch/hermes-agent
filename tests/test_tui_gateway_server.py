@@ -1632,7 +1632,7 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
 
     monkeypatch.setenv("TERMINAL_CWD", str(launch_cwd))
     monkeypatch.setattr(server, "_profile_home", lambda _profile: profile_home)
-    monkeypatch.setattr("hermes_state.SessionDB", lambda db_path=None: profile_db)
+    monkeypatch.setattr("hermes_state.SessionDB.for_home", lambda home: profile_db)
     monkeypatch.setattr(server, "_get_db", lambda: launch_db)
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(server, "_set_session_context", lambda target: [])
@@ -1696,7 +1696,7 @@ def test_session_cwd_set_profile_session_updates_profile_db(monkeypatch, tmp_pat
 
     import tools.terminal_tool as terminal_tool
 
-    monkeypatch.setattr("hermes_state.SessionDB", lambda db_path=None: profile_db)
+    monkeypatch.setattr("hermes_state.SessionDB.for_home", lambda home: profile_db)
     monkeypatch.setattr(server, "_get_db", lambda: LaunchDB())
     monkeypatch.setattr(terminal_tool, "cleanup_vm", lambda _key: None)
     monkeypatch.setattr(server, "_register_session_cwd", lambda _session: None)

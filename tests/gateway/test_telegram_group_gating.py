@@ -13,6 +13,7 @@ def _make_adapter(
     free_response_chats=None,
     mention_patterns=None,
     exclusive_bot_mentions=None,
+    bot_reply_requires_mention=None,
     ignored_threads=None,
     allowed_topics=None,
     allow_from=None,
@@ -34,6 +35,8 @@ def _make_adapter(
         extra["mention_patterns"] = mention_patterns
     if exclusive_bot_mentions is not None:
         extra["exclusive_bot_mentions"] = exclusive_bot_mentions
+    if bot_reply_requires_mention is not None:
+        extra["bot_reply_requires_mention"] = bot_reply_requires_mention
     if ignored_threads is not None:
         extra["ignored_threads"] = ignored_threads
     if allowed_topics is not None:
@@ -93,6 +96,7 @@ def _group_message(
     from_user_name="Alice Example",
     thread_id=None,
     reply_to_bot=False,
+    from_user_is_bot=False,
     entities=None,
     caption=None,
     caption_entities=None,
@@ -109,7 +113,12 @@ def _group_message(
         message_thread_id=thread_id,
         is_topic_message=thread_id is not None,
         chat=SimpleNamespace(id=chat_id, type="group", title="Test Group", is_forum=thread_id is not None),
-        from_user=SimpleNamespace(id=from_user_id, full_name=from_user_name, first_name=from_user_name.split()[0]),
+        from_user=SimpleNamespace(
+            id=from_user_id,
+            full_name=from_user_name,
+            first_name=from_user_name.split()[0],
+            is_bot=from_user_is_bot,
+        ),
         reply_to_message=reply_to_message,
         date=None,
     )
@@ -470,6 +479,57 @@ def test_group_messages_can_require_direct_trigger_via_config():
     assert adapter_no_mention._should_process_message(_group_message("/status"), is_command=True) is True
 
 
+def test_bot_authored_reply_fallback_remains_enabled_by_default(monkeypatch):
+    monkeypatch.delenv("TELEGRAM_BOT_REPLY_REQUIRES_MENTION", raising=False)
+    adapter = _make_adapter(require_mention=True)
+
+    assert adapter._should_process_message(
+        _group_message(
+            "bot reply",
+            reply_to_bot=True,
+            from_user_is_bot=True,
+        )
+    ) is True
+
+
+def test_bot_authored_reply_requires_explicit_self_mention_when_enabled():
+    adapter = _make_adapter(require_mention=True, bot_reply_requires_mention=True)
+
+    assert adapter._should_process_message(
+        _group_message("human reply", reply_to_bot=True)
+    ) is True
+    assert adapter._should_process_message(
+        _group_message(
+            "bot reply",
+            reply_to_bot=True,
+            from_user_is_bot=True,
+        )
+    ) is False
+
+    text = "@hermes_bot please continue"
+    assert adapter._should_process_message(
+        _group_message(
+            text,
+            reply_to_bot=True,
+            from_user_is_bot=True,
+            entities=[_mention_entity(text)],
+        )
+    ) is True
+
+
+def test_env_enables_bot_authored_reply_mention_gate(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_REPLY_REQUIRES_MENTION", "true")
+    adapter = _make_adapter(require_mention=True)
+
+    assert adapter._should_process_message(
+        _group_message(
+            "bot reply",
+            reply_to_bot=True,
+            from_user_is_bot=True,
+        )
+    ) is False
+
+
 def test_explicit_multi_bot_mentions_route_only_to_named_bots():
     text = "@research_bot @ops_bot hi"
     entities = _mention_entities(text, ["@research_bot", "@ops_bot"])
@@ -752,6 +812,45 @@ def test_missing_from_user_does_not_crash():
     assert adapter._should_process_message(anon) is True
 
 
+def test_plugin_yaml_bridge_sets_bot_reply_mention_policy(monkeypatch):
+    from plugins.platforms.telegram.adapter import _apply_yaml_config
+
+    monkeypatch.delenv("TELEGRAM_BOT_REPLY_REQUIRES_MENTION", raising=False)
+
+    extras = _apply_yaml_config(
+        {},
+        {"bot_reply_requires_mention": True},
+    )
+
+    assert __import__("os").environ["TELEGRAM_BOT_REPLY_REQUIRES_MENTION"] == "true"
+    assert extras is not None
+    assert extras["bot_reply_requires_mention"] is True
+
+
+def test_bot_reply_mention_env_overrides_plugin_yaml(monkeypatch):
+    from plugins.platforms.telegram.adapter import _apply_yaml_config
+
+    monkeypatch.setenv("TELEGRAM_BOT_REPLY_REQUIRES_MENTION", "false")
+    extras = _apply_yaml_config(
+        {},
+        {"bot_reply_requires_mention": True},
+    )
+
+    assert __import__("os").environ["TELEGRAM_BOT_REPLY_REQUIRES_MENTION"] == "false"
+    assert extras is not None
+    adapter = _make_adapter(
+        require_mention=True,
+        bot_reply_requires_mention=extras["bot_reply_requires_mention"],
+    )
+    assert adapter._should_process_message(
+        _group_message(
+            "bot reply",
+            reply_to_bot=True,
+            from_user_is_bot=True,
+        )
+    ) is True
+
+
 def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
@@ -760,6 +859,7 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
         "  require_mention: true\n"
         "  guest_mode: true\n"
         "  exclusive_bot_mentions: true\n"
+        "  bot_reply_requires_mention: true\n"
         "  observe_unmentioned_group_messages: true\n"
         "  mention_patterns:\n"
         "    - \"^\\\\s*chompy\\\\b\"\n"
@@ -784,6 +884,7 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
         "TELEGRAM_REQUIRE_MENTION",
         "TELEGRAM_MENTION_PATTERNS",
         "TELEGRAM_EXCLUSIVE_BOT_MENTIONS",
+        "TELEGRAM_BOT_REPLY_REQUIRES_MENTION",
         "TELEGRAM_GUEST_MODE",
         "TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES",
         "TELEGRAM_FREE_RESPONSE_CHATS",
@@ -808,6 +909,7 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     assert tg_cfg.extra.get("require_mention") is True
     assert tg_cfg.extra.get("guest_mode") is True
     assert tg_cfg.extra.get("exclusive_bot_mentions") is True
+    assert tg_cfg.extra.get("bot_reply_requires_mention") is True
     assert tg_cfg.extra.get("observe_unmentioned_group_messages") is True
     assert tg_cfg.extra.get("mention_patterns") == [r"^\s*chompy\b"]
     assert tg_cfg.extra.get("allowed_chats") == ["-100"]

@@ -9884,11 +9884,21 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         return None
 
 
-def _windows_peek_pipe(fd: int) -> Optional[int]:
+class _WindowsPipeChannelError:
+    """Sentinel for a PeekNamedPipe error that does not establish EOF."""
+
+
+_WINDOWS_PIPE_CHANNEL_ERROR = _WindowsPipeChannelError()
+_WINDOWS_BROKEN_PIPE_ERRORS = {109, 233}
+
+
+def _windows_peek_pipe(fd: int) -> int | None | _WindowsPipeChannelError:
     """Bytes available on an anonymous pipe without blocking.
 
     Returns ``None`` once the pipe is broken (all writers closed and the
-    buffer drained) — the Windows equivalent of observing EOF.
+    buffer drained) — the Windows equivalent of observing EOF. Returns
+    ``_WINDOWS_PIPE_CHANNEL_ERROR`` for every other failure, which is not
+    evidence of EOF and must fail closed without parsing buffered bytes.
     """
     import ctypes
     import msvcrt
@@ -9897,13 +9907,17 @@ def _windows_peek_pipe(fd: int) -> Optional[int]:
     try:
         handle = msvcrt.get_osfhandle(fd)
     except OSError:
-        return None
+        return _WINDOWS_PIPE_CHANNEL_ERROR
     available = wintypes.DWORD(0)
-    ok = ctypes.windll.kernel32.PeekNamedPipe(
+    kernel32 = getattr(ctypes, "windll").kernel32
+    ok = kernel32.PeekNamedPipe(
         wintypes.HANDLE(handle), None, 0, None, ctypes.byref(available), None
     )
     if not ok:
-        return None
+        error = kernel32.GetLastError()
+        if error in _WINDOWS_BROKEN_PIPE_ERRORS:
+            return None
+        return _WINDOWS_PIPE_CHANNEL_ERROR
     return int(available.value)
 
 
@@ -9953,6 +9967,9 @@ def _read_verifier_result_pipe(
                 break
             if _IS_WINDOWS:
                 available = _windows_peek_pipe(read_fd)
+                if isinstance(available, _WindowsPipeChannelError):
+                    _log.warning("kanban verifier result pipe peek failed without EOF")
+                    return None
                 if available is None:
                     eof_observed = True
                     break

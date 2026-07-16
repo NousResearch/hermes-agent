@@ -1816,3 +1816,245 @@ def test_windows_supervisor_bounded_read_after_exit_fails_closed_without_eof(
     assert row["state"] == "reconciled"
     assert row["reason_code"] == "result_no_eof"
     assert "verifier result channel failed: result_no_eof" in summary
+
+
+def _fake_windows_pipe_peek_env(monkeypatch, kernel32, *, last_error):
+    """Route ``_windows_peek_pipe``'s ctypes/msvcrt/kernel32 surface to fakes
+    so the Windows peek path runs on a POSIX host."""
+    import ctypes
+
+    fake_msvcrt = types.ModuleType("msvcrt")
+    fake_msvcrt.get_osfhandle = lambda fd: 1234
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+    monkeypatch.setattr(
+        ctypes, "windll", types.SimpleNamespace(kernel32=kernel32), raising=False
+    )
+    monkeypatch.setattr(kernel32, "GetLastError", lambda: last_error, raising=False)
+
+
+class _PeekOnceThenFailKernel32:
+    """Simulated kernel32: the first PeekNamedPipe reports the buffered frame,
+    every later call fails so GetLastError decides EOF vs channel fault."""
+
+    def __init__(self, frame_len: int):
+        self._frame_len = frame_len
+        self._fed = False
+
+    def PeekNamedPipe(self, handle, buf, buf_size, bytes_read, available_ref, msg_left):
+        if not self._fed:
+            self._fed = True
+            available_ref._obj.value = self._frame_len
+            return 1
+        return 0
+
+
+def test_windows_buffered_frame_with_nonbroken_peek_failure_fails_closed(
+    kanban_home, monkeypatch,
+):
+    """A fully buffered, otherwise-valid frame must NOT be applied when the
+    pipe peek fails with an error that does not prove the pipe broken
+    (ERROR_ACCESS_DENIED): EOF was never observed, so the supervisor must
+    fail closed instead of treating the channel fault as end-of-file."""
+    monkeypatch.setattr(kb, "_IS_WINDOWS", True)
+    monkeypatch.setattr(kb, "VERIFIER_RESULT_DEADLINE_SECONDS", 5)
+    with kb.connect() as conn:
+        claim, binding, authorization_id = _claim_with_authorization(conn)
+
+    frame = _frame(binding)
+    read_fd, writer_fd = os.pipe()
+    os.write(writer_fd, frame)  # valid frame fully buffered before any peek
+    _fake_windows_pipe_peek_env(
+        monkeypatch,
+        _PeekOnceThenFailKernel32(len(frame)),
+        last_error=5,  # ERROR_ACCESS_DENIED: a channel fault, not a broken pipe
+    )
+
+    class FakeProc:
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    try:
+        kb._start_verifier_supervisor_waiter(
+            read_fd=read_fd,
+            proc=FakeProc(),
+            db_path=kb.kanban_db_path(),
+            authorization_id=authorization_id,
+            binding=binding,
+        )
+        task = _wait_for_status(claim.id, "blocked", timeout=10)
+        with kb.connect() as conn:
+            row = conn.execute(
+                "SELECT state, reason_code FROM verifier_result_authorizations WHERE id = ?",
+                (authorization_id,),
+            ).fetchone()
+            summary = kb.latest_summary(conn, claim.id) or ""
+    finally:
+        os.close(writer_fd)
+
+    assert task.block_kind == "needs_input"
+    assert row["state"] == "reconciled"
+    assert row["reason_code"] == "result_no_eof"
+    assert "verifier result channel failed: result_no_eof" in summary
+
+
+def test_windows_buffered_frame_with_broken_pipe_peek_failure_applies(
+    kanban_home, monkeypatch,
+):
+    """ERROR_BROKEN_PIPE after draining the buffer is the Windows equivalent
+    of observing EOF: the buffered frame is complete and must apply."""
+    monkeypatch.setattr(kb, "_IS_WINDOWS", True)
+    monkeypatch.setattr(kb, "VERIFIER_RESULT_DEADLINE_SECONDS", 5)
+    with kb.connect() as conn:
+        claim, binding, authorization_id = _claim_with_authorization(conn)
+
+    frame = _frame(binding)
+    read_fd, writer_fd = os.pipe()
+    os.write(writer_fd, frame)
+    _fake_windows_pipe_peek_env(
+        monkeypatch,
+        _PeekOnceThenFailKernel32(len(frame)),
+        last_error=109,  # ERROR_BROKEN_PIPE: all writer handles closed
+    )
+
+    class FakeProc:
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    try:
+        kb._start_verifier_supervisor_waiter(
+            read_fd=read_fd,
+            proc=FakeProc(),
+            db_path=kb.kanban_db_path(),
+            authorization_id=authorization_id,
+            binding=binding,
+        )
+        task = _wait_for_status(claim.id, "done", timeout=10)
+        with kb.connect() as conn:
+            row = conn.execute(
+                "SELECT state FROM verifier_result_authorizations WHERE id = ?",
+                (authorization_id,),
+            ).fetchone()
+    finally:
+        os.close(writer_fd)
+
+    assert task.status == "done"
+    assert row["state"] == "applied"
+
+
+def _verifier_emitter_env(monkeypatch, write_fd: int) -> None:
+    contract = {
+        "contract_id": "protected-merge:v1",
+        "contract_hash": hashlib.sha256(b"contract").hexdigest(),
+        "task_id": "t_verify",
+        "run_id": 7,
+        "claim_lock": "lock-1",
+        "pr_url": PR_URL,
+        "approved_head": HEAD_SHA,
+        "approved_base": BASE_BRANCH,
+        "nonce": "nonce-write-all",
+    }
+    monkeypatch.setenv("HERMES_KANBAN_VERIFY_ONLY", "1")
+    monkeypatch.setenv("HERMES_KANBAN_VERIFY_CONTRACT", json.dumps(contract))
+    monkeypatch.setenv("HERMES_KANBAN_VERIFY_CONTRACT_HASH", contract["contract_hash"])
+    monkeypatch.setenv("HERMES_KANBAN_VERIFY_RESULT_FD", str(write_fd))
+    monkeypatch.delenv("HERMES_KANBAN_VERIFY_RESULT_HANDLE", raising=False)
+
+
+def test_verifier_result_tool_write_all_loops_partial_writes_and_closes_once(
+    monkeypatch,
+):
+    """The emitter must loop over partial ``os.write`` progress until the
+    whole frame is on the pipe, and close the result fd exactly once."""
+    import tools.kanban_verifier_result_tool as vrt
+
+    read_fd, write_fd = os.pipe()
+    _verifier_emitter_env(monkeypatch, write_fd)
+    monkeypatch.setattr(vrt, "_EMITTED", False)
+
+    real_write = os.write
+    real_close = os.close
+    write_sizes = []
+    closes = {"count": 0}
+
+    def partial_write(fd, data):
+        if fd != write_fd:
+            return real_write(fd, data)
+        # Deliberately report partial progress: 7 bytes per call.
+        return real_write(fd, bytes(data)[:7])
+
+    def counting_write(fd, data):
+        written = partial_write(fd, data)
+        if fd == write_fd:
+            write_sizes.append(written)
+        return written
+
+    def counting_close(fd):
+        if fd == write_fd:
+            closes["count"] += 1
+        return real_close(fd)
+
+    monkeypatch.setattr(os, "write", counting_write)
+    monkeypatch.setattr(os, "close", counting_close)
+
+    result = json.loads(vrt._handle_verifier_result("approved", summary="verified"))
+
+    assert result == {"ok": True, "emitted": True, "verdict": "approved"}
+    assert closes["count"] == 1
+    assert len(write_sizes) > 1
+    assert all(n > 0 for n in write_sizes)
+    assert vrt._EMITTED is True
+
+    chunks = []
+    while True:
+        chunk = os.read(read_fd, 4096)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    os.close(read_fd)
+    frame = json.loads(b"".join(chunks))
+    assert frame["action"] == "complete"
+    assert frame["task_id"] == "t_verify"
+    assert frame["nonce"] == "nonce-write-all"
+    assert frame["summary"] == "verified"
+
+
+def test_verifier_result_tool_rejects_zero_progress_write(monkeypatch):
+    """A write that reports no progress must abort the emit with an error
+    instead of spinning or silently truncating; the fd still closes exactly
+    once and the result is not marked emitted."""
+    import tools.kanban_verifier_result_tool as vrt
+
+    read_fd, write_fd = os.pipe()
+    _verifier_emitter_env(monkeypatch, write_fd)
+    monkeypatch.setattr(vrt, "_EMITTED", False)
+
+    real_write = os.write
+    real_close = os.close
+    closes = {"count": 0}
+
+    def stalled_write(fd, data):
+        if fd != write_fd:
+            return real_write(fd, data)
+        return 0
+
+    def counting_close(fd):
+        if fd == write_fd:
+            closes["count"] += 1
+        return real_close(fd)
+
+    monkeypatch.setattr(os, "write", stalled_write)
+    monkeypatch.setattr(os, "close", counting_close)
+
+    result = vrt._handle_verifier_result("approved", summary="verified")
+
+    assert "kanban_verifier_result:" in result
+    assert "progress" in result
+    assert closes["count"] == 1
+    assert vrt._EMITTED is False
+    os.close(read_fd)

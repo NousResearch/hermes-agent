@@ -157,7 +157,12 @@ def _handle_verifier_result(
                 return tool_error("verifier result already emitted")
             fd = _result_fd()
             try:
-                os.write(fd, raw)
+                pending = memoryview(raw)
+                while pending:
+                    written = os.write(fd, pending)
+                    if written <= 0:
+                        raise OSError("verifier result write made no progress")
+                    pending = pending[written:]
             finally:
                 try:
                     os.close(fd)

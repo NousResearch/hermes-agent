@@ -1593,6 +1593,76 @@ class TestShutdown:
         _servers.clear()
         shutdown_mcp_servers()  # Should not raise
 
+    def test_shutdown_clears_forwarding_on_fast_path_before_stopping(self):
+        """An empty server set still clears the forwarding capability first."""
+        import tools.mcp_tool as mcp
+
+        def assert_forwarding_cleared():
+            assert mcp._session_context_forwarding_servers == set()
+
+        with patch.object(mcp, "_servers", {}), \
+             patch.object(mcp, "_session_context_forwarding_servers", {"crm_api"}), \
+             patch.object(mcp, "_stop_mcp_loop", side_effect=assert_forwarding_cleared) as stop_loop:
+            mcp.shutdown_mcp_servers()
+
+            assert mcp._session_context_forwarding_servers == set()
+            stop_loop.assert_called_once_with()
+
+    def test_shutdown_clears_forwarding_with_dead_loop_before_stopping(self):
+        """Forwarding is cleared even when no async shutdown can be scheduled."""
+        import tools.mcp_tool as mcp
+
+        server = _make_mock_server("crm-api", session=MagicMock())
+
+        def assert_forwarding_cleared():
+            assert mcp._session_context_forwarding_servers == set()
+
+        with patch.object(mcp, "_servers", {"crm-api": server}), \
+             patch.object(mcp, "_session_context_forwarding_servers", {"crm_api"}), \
+             patch.object(mcp, "_mcp_loop", None), \
+             patch.object(mcp, "_stop_mcp_loop", side_effect=assert_forwarding_cleared) as stop_loop:
+            mcp.shutdown_mcp_servers()
+
+            assert mcp._session_context_forwarding_servers == set()
+            stop_loop.assert_called_once_with()
+
+    def test_shutdown_clears_forwarding_on_normal_path_before_stopping(self):
+        """Normal async shutdown also clears forwarding before loop teardown."""
+        import tools.mcp_tool as mcp
+
+        server = MagicMock()
+        server.name = "crm-api"
+        server.shutdown = AsyncMock()
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        class ImmediateFuture:
+            def __init__(self, coro):
+                self.coro = coro
+
+            def result(self, timeout):
+                assert timeout == 15
+                return asyncio.run(self.coro)
+
+        def schedule(coro, scheduled_loop, **_kwargs):
+            assert scheduled_loop is loop
+            return ImmediateFuture(coro)
+
+        def assert_forwarding_cleared():
+            assert mcp._session_context_forwarding_servers == set()
+
+        with patch.object(mcp, "_servers", {"crm-api": server}), \
+             patch.object(mcp, "_session_context_forwarding_servers", {"crm_api"}), \
+             patch.object(mcp, "_mcp_loop", loop), \
+             patch("agent.async_utils.safe_schedule_threadsafe", side_effect=schedule), \
+             patch.object(mcp, "_stop_mcp_loop", side_effect=assert_forwarding_cleared) as stop_loop:
+            mcp.shutdown_mcp_servers()
+
+            assert mcp._servers == {}
+            assert mcp._session_context_forwarding_servers == set()
+            server.shutdown.assert_awaited_once_with()
+            stop_loop.assert_called_once_with()
+
     def test_shutdown_clears_servers(self):
         """shutdown_mcp_servers calls shutdown() on each server and clears dict."""
         import tools.mcp_tool as mcp_mod
@@ -4303,6 +4373,215 @@ class TestRegisterMcpServers:
             assert result == []
         finally:
             _servers.pop("srv", None)
+
+    @pytest.mark.parametrize(
+        "ordered_names",
+        [
+            ("crm-api", "crm_api"),
+            ("crm_api", "crm-api"),
+        ],
+    )
+    def test_skips_fresh_sanitized_name_collision_group(
+        self,
+        ordered_names,
+        caplog,
+    ):
+        """Every member of a fresh collision group is rejected deterministically."""
+        import tools.mcp_tool as mcp
+
+        configs = {
+            "crm-api": {
+                "command": "echo",
+                "supports_parallel_tool_calls": True,
+                "forward_session_context": True,
+            },
+            "crm_api": {
+                "command": "echo",
+                "supports_parallel_tool_calls": False,
+                "forward_session_context": False,
+            },
+        }
+        ordered_configs = {name: configs[name] for name in ordered_names}
+
+        with patch.object(mcp, "_servers", {}), \
+             patch.object(mcp, "_server_connecting", set()), \
+             patch.object(mcp, "_server_connect_errors", {}), \
+             patch.object(mcp, "_parallel_safe_servers", set()), \
+             patch.object(mcp, "_session_context_forwarding_servers", set()), \
+             patch.object(mcp, "_MCP_AVAILABLE", True), \
+             patch.object(mcp, "_filter_suspicious_mcp_servers", side_effect=lambda value: value), \
+             patch.object(mcp, "_ensure_mcp_loop") as ensure_loop, \
+             patch.object(mcp, "_existing_tool_names", return_value=[]):
+            caplog.set_level("WARNING", logger="tools.mcp_tool")
+            assert mcp.register_mcp_servers(ordered_configs) == []
+
+            assert mcp._server_connecting == set()
+            assert mcp._parallel_safe_servers == set()
+            assert mcp._session_context_forwarding_servers == set()
+            ensure_loop.assert_not_called()
+
+        assert "names sanitize to the same component 'crm_api'" in caplog.text
+        assert "'crm-api', 'crm_api'" in caplog.text
+
+    @pytest.mark.parametrize("existing_location", ["servers", "connecting"])
+    def test_skips_incremental_sanitized_name_collision(
+        self,
+        existing_location,
+        caplog,
+    ):
+        """A new raw name cannot reuse an active or connecting name component."""
+        import tools.mcp_tool as mcp
+
+        existing_servers = {}
+        connecting_servers = set()
+        if existing_location == "servers":
+            existing_servers["crm-api"] = _make_mock_server(
+                "crm-api",
+                session=MagicMock(),
+            )
+        else:
+            connecting_servers.add("crm-api")
+
+        with patch.object(mcp, "_servers", existing_servers), \
+             patch.object(mcp, "_server_connecting", connecting_servers), \
+             patch.object(mcp, "_server_connect_errors", {}), \
+             patch.object(mcp, "_parallel_safe_servers", set()), \
+             patch.object(mcp, "_session_context_forwarding_servers", set()), \
+             patch.object(mcp, "_MCP_AVAILABLE", True), \
+             patch.object(mcp, "_filter_suspicious_mcp_servers", side_effect=lambda value: value), \
+             patch.object(mcp, "_ensure_mcp_loop") as ensure_loop, \
+             patch.object(mcp, "_existing_tool_names", return_value=[]):
+            caplog.set_level("WARNING", logger="tools.mcp_tool")
+            result = mcp.register_mcp_servers({
+                "crm_api": {
+                    "command": "echo",
+                    "supports_parallel_tool_calls": True,
+                    "forward_session_context": True,
+                },
+            })
+
+            assert result == []
+            assert mcp._server_connecting == connecting_servers
+            assert mcp._parallel_safe_servers == set()
+            assert mcp._session_context_forwarding_servers == set()
+            ensure_loop.assert_not_called()
+
+        assert "conflicts with existing server(s) 'crm-api'" in caplog.text
+
+    def test_disabled_collision_does_not_enable_capabilities(self, caplog):
+        """Disabled entries neither collide nor mutate capability opt-ins."""
+        import tools.mcp_tool as mcp
+
+        live_server = _make_mock_server("crm-api", session=MagicMock())
+        with patch.object(mcp, "_servers", {"crm-api": live_server}), \
+             patch.object(mcp, "_server_connecting", set()), \
+             patch.object(mcp, "_server_connect_errors", {}), \
+             patch.object(mcp, "_parallel_safe_servers", set()), \
+             patch.object(mcp, "_session_context_forwarding_servers", set()), \
+             patch.object(mcp, "_MCP_AVAILABLE", True), \
+             patch.object(mcp, "_filter_suspicious_mcp_servers", side_effect=lambda value: value), \
+             patch.object(mcp, "_existing_tool_names", return_value=[]), \
+             patch.object(mcp, "_signal_reconnect") as signal_reconnect:
+            caplog.set_level("WARNING", logger="tools.mcp_tool")
+            result = mcp.register_mcp_servers({
+                "crm-api": {
+                    "command": "echo",
+                    "supports_parallel_tool_calls": False,
+                    "forward_session_context": False,
+                },
+                "crm_api": {
+                    "command": "echo",
+                    "enabled": False,
+                    "supports_parallel_tool_calls": True,
+                    "forward_session_context": True,
+                },
+            })
+
+            assert result == []
+            assert mcp._server_connecting == set()
+            assert mcp._parallel_safe_servers == set()
+            assert mcp._session_context_forwarding_servers == set()
+            signal_reconnect.assert_not_called()
+
+        assert "names sanitize to the same component" not in caplog.text
+
+    def test_incremental_collision_preserves_existing_capability_update(self, caplog):
+        """A live raw entry remains accepted when the same call adds a collider."""
+        import tools.mcp_tool as mcp
+
+        live_server = _make_mock_server("crm-api", session=MagicMock())
+        with patch.object(mcp, "_servers", {"crm-api": live_server}), \
+             patch.object(mcp, "_server_connecting", set()), \
+             patch.object(mcp, "_server_connect_errors", {}), \
+             patch.object(mcp, "_parallel_safe_servers", set()), \
+             patch.object(mcp, "_session_context_forwarding_servers", set()), \
+             patch.object(mcp, "_MCP_AVAILABLE", True), \
+             patch.object(mcp, "_filter_suspicious_mcp_servers", side_effect=lambda value: value), \
+             patch.object(mcp, "_ensure_mcp_loop") as ensure_loop, \
+             patch.object(mcp, "_existing_tool_names", return_value=[]):
+            caplog.set_level("WARNING", logger="tools.mcp_tool")
+            result = mcp.register_mcp_servers({
+                "crm-api": {
+                    "command": "echo",
+                    "supports_parallel_tool_calls": True,
+                    "forward_session_context": True,
+                },
+                "crm_api": {
+                    "command": "echo",
+                    "supports_parallel_tool_calls": False,
+                    "forward_session_context": False,
+                },
+            })
+
+            assert result == []
+            assert mcp._server_connecting == set()
+            assert mcp._parallel_safe_servers == {"crm_api"}
+            assert mcp._session_context_forwarding_servers == {"crm_api"}
+            ensure_loop.assert_not_called()
+
+        collision_warnings = [
+            record.getMessage()
+            for record in caplog.records
+            if "sanitized component" in record.getMessage()
+        ]
+        assert len(collision_warnings) == 1
+        assert collision_warnings[0].startswith("Skipping MCP server 'crm_api'")
+
+    def test_capability_flags_are_removed_on_toggle(self):
+        """Both capability sets track true-to-false updates for accepted servers."""
+        import tools.mcp_tool as mcp
+
+        live_server = _make_mock_server("toggle_srv", session=MagicMock())
+        with patch.object(mcp, "_servers", {"toggle_srv": live_server}), \
+             patch.object(mcp, "_server_connecting", set()), \
+             patch.object(mcp, "_server_connect_errors", {}), \
+             patch.object(mcp, "_parallel_safe_servers", set()), \
+             patch.object(mcp, "_session_context_forwarding_servers", set()), \
+             patch.object(mcp, "_MCP_AVAILABLE", True), \
+             patch.object(mcp, "_filter_suspicious_mcp_servers", side_effect=lambda value: value), \
+             patch.object(mcp, "_existing_tool_names", return_value=[]):
+            enabled = {
+                "toggle_srv": {
+                    "command": "echo",
+                    "supports_parallel_tool_calls": True,
+                    "forward_session_context": True,
+                },
+            }
+            disabled = {
+                "toggle_srv": {
+                    "command": "echo",
+                    "supports_parallel_tool_calls": False,
+                    "forward_session_context": False,
+                },
+            }
+
+            assert mcp.register_mcp_servers(enabled) == []
+            assert mcp._parallel_safe_servers == {"toggle_srv"}
+            assert mcp._session_context_forwarding_servers == {"toggle_srv"}
+
+            assert mcp.register_mcp_servers(disabled) == []
+            assert mcp._parallel_safe_servers == set()
+            assert mcp._session_context_forwarding_servers == set()
 
     def test_connects_new_servers(self):
         from tools.mcp_tool import register_mcp_servers, _servers, _ensure_mcp_loop

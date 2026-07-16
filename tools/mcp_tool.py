@@ -5143,6 +5143,79 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
 # Public API
 # ---------------------------------------------------------------------------
 
+
+def _filter_mcp_registration_servers(
+    servers: Dict[str, dict],
+    existing_names: set[str],
+) -> Dict[str, dict]:
+    """Return enabled MCP configs whose sanitized names are unambiguous.
+
+    MCP server names become part of tool names after sanitization.  Two raw
+    names that sanitize to the same component would therefore share routing
+    and capability state.  Reject those entries before any registration
+    state is mutated.
+    """
+    enabled_servers: Dict[str, dict] = {}
+    for name, config in servers.items():
+        if not isinstance(config, dict):
+            logger.warning(
+                "Skipping MCP server '%s': configuration must be a mapping",
+                name,
+            )
+            continue
+        if not _parse_boolish(config.get("enabled", True), default=True):
+            continue
+        enabled_servers[name] = config
+
+    incoming_by_component: Dict[str, List[str]] = {}
+    for name in enabled_servers:
+        # Exact existing raw names are updates, not fresh registrations.  A
+        # new collider must not prevent an existing server's capability
+        # values from being updated by the same call.
+        if name in existing_names:
+            continue
+        component = sanitize_mcp_name_component(name)
+        incoming_by_component.setdefault(component, []).append(name)
+
+    rejected: set[str] = set()
+    for component, names in incoming_by_component.items():
+        if len(names) < 2:
+            continue
+        rejected.update(names)
+        logger.warning(
+            "Skipping MCP servers %s: names sanitize to the same component '%s'",
+            ", ".join(repr(name) for name in sorted(names)),
+            component,
+        )
+
+    existing_by_component: Dict[str, set[str]] = {}
+    for name in existing_names:
+        component = sanitize_mcp_name_component(name)
+        existing_by_component.setdefault(component, set()).add(name)
+
+    for name in enabled_servers:
+        if name in rejected:
+            continue
+        component = sanitize_mcp_name_component(name)
+        conflicting_names = existing_by_component.get(component, set()) - {name}
+        if not conflicting_names:
+            continue
+        rejected.add(name)
+        logger.warning(
+            "Skipping MCP server '%s': sanitized component '%s' conflicts "
+            "with existing server(s) %s",
+            name,
+            component,
+            ", ".join(repr(existing) for existing in sorted(conflicting_names)),
+        )
+
+    return {
+        name: config
+        for name, config in enabled_servers.items()
+        if name not in rejected
+    }
+
+
 def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
     """Connect to explicit MCP servers and register their tools.
 
@@ -5164,13 +5237,18 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         logger.debug("No explicit MCP servers provided")
         return []
 
-    # Only attempt servers that aren't already connected and are enabled
-    # (enabled: false skips the server entirely without removing its config)
+    # Preflight the complete accepted set before mutating connection or
+    # capability state.  Disabled entries are ignored without disconnecting
+    # existing sessions.
     with _lock:
+        accepted_servers = _filter_mcp_registration_servers(
+            servers,
+            set(_servers) | set(_server_connecting),
+        )
         new_servers = {
             k: v
-            for k, v in servers.items()
-            if k not in _servers and _parse_boolish(v.get("enabled", True), default=True)
+            for k, v in accepted_servers.items()
+            if k not in _servers and k not in _server_connecting
         }
         # Cached entries with no live session are parked or mid-reconnect.
         # Their tools are deregistered, so nothing else can reach
@@ -5179,14 +5257,14 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         # (#50170). Wake them now so their tools come back promptly.
         stale_cached = [
             _servers[k]
-            for k in servers
+            for k in accepted_servers
             if k in _servers and getattr(_servers[k], "session", None) is None
         ]
         _server_connecting.update(new_servers)
         for srv_name in new_servers:
             _server_connect_errors.pop(srv_name, None)
-        # Track which servers opt-in to parallel tool calls (idempotent).
-        for srv_name, srv_cfg in servers.items():
+        # Track per-server capability opt-ins (idempotent).
+        for srv_name, srv_cfg in accepted_servers.items():
             safe_srv_name = sanitize_mcp_name_component(srv_name)
             if _parse_boolish(srv_cfg.get("supports_parallel_tool_calls", False), default=False):
                 _parallel_safe_servers.add(safe_srv_name)
@@ -5719,7 +5797,6 @@ def shutdown_mcp_servers():
                 )
         with _lock:
             _servers.clear()
-            _session_context_forwarding_servers.clear()
 
     with _lock:
         loop = _mcp_loop
@@ -5736,6 +5813,10 @@ def shutdown_mcp_servers():
             except BaseException as exc:
                 logger.debug("Error during MCP shutdown: %s", exc)
 
+    # Forwarding is a fail-closed capability: clear it even when the loop is
+    # already dead or the async shutdown could not be scheduled/completed.
+    with _lock:
+        _session_context_forwarding_servers.clear()
     _stop_mcp_loop()
 
 

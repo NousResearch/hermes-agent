@@ -114,6 +114,41 @@ class TestDelegationFallbackChain(unittest.TestCase):
         )
         self.assertEqual(got, self.HEAD)
 
+    def test_fallback_providers_flow_through_real_config_loader(self):
+        """Regression through the REAL config loader — no ``_load_config``
+        patch: the key written to ``$HERMES_HOME/config.yaml`` must survive
+        the profile-aware DEFAULT_CONFIG deep-merge (where the shipped
+        default is ``None``) and reach the child's ``fallback_model``."""
+        import yaml
+        from hermes_constants import get_hermes_home
+
+        home = get_hermes_home()
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {"delegation": {"fallback_providers": list(self.WORKER)}}
+            ),
+            encoding="utf-8",
+        )
+
+        parent = _make_mock_parent(depth=0)
+        parent._fallback_chain = list(self.HEAD)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="g",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        self.assertEqual(MockAgent.call_args.kwargs.get("fallback_model"), self.WORKER)
+
 
 class TestDelegateRequirements(unittest.TestCase):
     def test_always_available(self):

@@ -169,7 +169,7 @@ fallback_providers:
 |---------|-------------------|
 | CLI sessions | ✔ |
 | Messaging gateway (Telegram, Discord, etc.) | ✔ |
-| Subagent delegation | ✔ (subagents inherit the parent fallback chain) |
+| Subagent delegation | ✔ (subagents inherit the parent fallback chain, or use `delegation.fallback_providers` when set) |
 | Cron jobs | ✔ (cron agents inherit configured fallback providers) |
 | Auxiliary tasks on `provider: auto` | ✔ (try per-task fallback, then the main fallback chain before built-in aux discovery) |
 
@@ -387,6 +387,29 @@ delegation:
   # api_key: "local-key"
 ```
 
+### Delegation Fallback Chain
+
+When subagents run on a different provider than the head agent, inheriting the head agent's fallback chain can silently route a failed worker onto models intended only for the parent. `delegation.fallback_providers` gives delegated children their own chain, with the same entry format as the top-level list:
+
+```yaml
+delegation:
+  provider: "openrouter"
+  model: "google/gemini-3-flash-preview"
+  fallback_providers:
+    - provider: "openrouter"
+      model: "deepseek/deepseek-chat"
+```
+
+Semantics:
+
+| `delegation.fallback_providers` | Behavior |
+|---|---|
+| unset / `null` (default) | subagents inherit the parent agent's fallback chain |
+| list of entries | subagents use this chain instead of the parent's |
+| `[]` (explicit empty list) | fallback disabled for subagents entirely |
+
+Entries with a missing `provider` or `model` are ignored; if no valid entries remain, the parent chain is inherited and a warning is logged.
+
 See [Subagent Delegation](/user-guide/features/delegation) for full configuration details.
 
 ---
@@ -424,5 +447,5 @@ See [Scheduled Tasks (Cron)](/user-guide/features/cron) for full configuration d
 | Approval classification | Layered (see above) | `auxiliary.approval` |
 | Title generation | Layered (see above) | `auxiliary.title_generation` |
 | Triage specifier | Layered (see above) | `auxiliary.triage_specifier` |
-| Delegation | Provider override only (no automatic fallback) | `delegation.provider` / `delegation.model` |
+| Delegation | Own chain via `delegation.fallback_providers`; inherits the parent chain when unset | `delegation.fallback_providers`, `delegation.provider` / `delegation.model` |
 | Cron jobs | Per-job provider override only (no automatic fallback) | Per-job `provider` / `model` |

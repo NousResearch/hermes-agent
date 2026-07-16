@@ -2170,3 +2170,63 @@ def test_consume_codex_stream_leaves_unindexed_reasoning_untouched():
     )
 
     assert "".join(reasoning_streamed) == "Need to inspect files."
+
+
+
+
+def test_run_conversation_codex_no_nudge_for_replayable_interim(monkeypatch):
+    """An interim that carries visible content replays fine - the nudge
+    must not fire and pollute the conversation."""
+    agent = _build_agent(monkeypatch)
+    requests = []
+    responses = [
+        _codex_incomplete_message_response("Partial visible content."),
+        _codex_message_response("Done."),
+    ]
+
+    def _fake_api_call(api_kwargs):
+        requests.append(api_kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation("analyze repo")
+
+    assert result["completed"] is True
+    replay_input = requests[1]["input"]
+    assert not any(
+        isinstance(item, dict)
+        and item.get("role") == "user"
+        and "only internal reasoning" in str(item.get("content"))
+        for item in replay_input
+    )
+
+def test_build_api_kwargs_codex_text_verbosity(monkeypatch):
+    """agent.text_verbosity config flows through to text.verbosity in the
+    normalized Codex Responses request payload (GPT-5+ only)."""
+    agent = _build_agent(monkeypatch)
+    agent.text_verbosity = "low"
+
+    kwargs = agent._build_api_kwargs(
+        [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "Ping"},
+        ]
+    )
+
+    assert kwargs["text"] == {"verbosity": "low"}
+
+
+def test_build_api_kwargs_codex_text_verbosity_empty_no_injection(monkeypatch):
+    """Empty text_verbosity must not inject a text dict."""
+    agent = _build_agent(monkeypatch)
+    agent.text_verbosity = ""
+
+    kwargs = agent._build_api_kwargs(
+        [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "Ping"},
+        ]
+    )
+
+    assert "text" not in kwargs

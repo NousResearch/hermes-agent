@@ -30,6 +30,7 @@ from tests.gateway.test_canonical_writer_production_cutover import (
     Snapshots,
     _approval,
     _freeze,
+    _isolated_canary_goal_prerequisite,
     _mechanical_package,
     _runtime_attestation,
     _snapshot,
@@ -218,6 +219,9 @@ def test_owner_key_stays_local_while_freeze_publication_is_staged(
         owner_subject_sha256="a" * 64,
         private_key=loaded,
         owner_runtime_attestation=_runtime_attestation(),
+        isolated_canary_goal_prerequisite=(
+            _isolated_canary_goal_prerequisite()
+        ),
         truth_mode="start_new_truth_epoch",
         now_unix=now,
     )
@@ -249,6 +253,9 @@ def test_approved_sequence_runs_freeze_tail_then_cutover_plan_without_new_semant
         owner_subject_sha256="a" * 64,
         private_key=private,
         owner_runtime_attestation=_runtime_attestation(),
+        isolated_canary_goal_prerequisite=(
+            _isolated_canary_goal_prerequisite()
+        ),
         truth_mode="start_new_truth_epoch",
         now_unix=now,
     )
@@ -297,6 +304,9 @@ def test_stager_rejects_tampered_publication_without_creating_files(
         owner_subject_sha256="a" * 64,
         private_key=Ed25519PrivateKey.generate(),
         owner_runtime_attestation=_runtime_attestation(),
+        isolated_canary_goal_prerequisite=(
+            _isolated_canary_goal_prerequisite()
+        ),
         truth_mode="start_new_truth_epoch",
         now_unix=now,
     )
@@ -326,6 +336,9 @@ def test_stager_rolls_back_only_new_files_after_partial_publication_failure(
         owner_subject_sha256="a" * 64,
         private_key=Ed25519PrivateKey.generate(),
         owner_runtime_attestation=_runtime_attestation(),
+        isolated_canary_goal_prerequisite=(
+            _isolated_canary_goal_prerequisite()
+        ),
         truth_mode="start_new_truth_epoch",
         now_unix=now,
     )
@@ -720,6 +733,11 @@ def test_sealed_cli_is_the_only_full_cutover_workflow_entrypoint(
     }
     host_plan_path = (tmp_path / "host-authority-plan.json").resolve()
     host_plan_path.write_bytes(_canonical(host_plan))
+    canary_prerequisite = _isolated_canary_goal_prerequisite()
+    canary_prerequisite_path = (
+        tmp_path / "isolated-canary-goal-prerequisite.json"
+    ).resolve()
+    canary_prerequisite_path.write_bytes(_canonical(canary_prerequisite))
     output = (tmp_path / "workflow-receipt.json").resolve()
     calls: list[dict] = []
 
@@ -758,6 +776,8 @@ def test_sealed_cli_is_the_only_full_cutover_workflow_entrypoint(
         REVISION,
         "--host-authority-plan",
         str(host_plan_path),
+        "--isolated-canary-goal-prerequisite",
+        str(canary_prerequisite_path),
         "--owner-private-key",
         str(key_path),
         "--truth-mode",
@@ -770,6 +790,7 @@ def test_sealed_cli_is_the_only_full_cutover_workflow_entrypoint(
     assert calls[0]["release_revision"] == REVISION
     assert calls[0]["owner_subject_sha256"] == "a" * 64
     assert calls[0]["host_authority_plan"] == host_plan
+    assert calls[0]["isolated_canary_goal_prerequisite"] == canary_prerequisite
     assert callable(calls[0]["transport_factory"])
     assert output.exists()
     assert b"PRIVATE KEY" not in output.read_bytes()

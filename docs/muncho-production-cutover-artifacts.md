@@ -24,7 +24,8 @@ and its own digest. The source set also binds the reviewed privileged Discord
 connector unit template, gateway `BindsTo`/Relay drop-in, and connector config
 template. The rendered live host bytes are separately bound by the signed
 `host_transition` manifest because their release SHA, numeric service IDs, and
-public Discord allowlist are production inputs rather than build-time facts.
+exact Discord guild/root-channel ACL allowlist are production inputs rather
+than build-time facts.
 Its `plan_bindings` object is already in the coordinator's exact
 `{path, sha256}` shape for `observe`, `database_apply`,
 `database_rollback`, `database_postflight`, `host_activation`, and
@@ -130,7 +131,8 @@ root-owned mode `0400` files below
 - the Canonical Writer unit;
 - the exact-SHA-rendered privileged Discord connector unit;
 - the reviewed gateway `BindsTo`/Relay/`UnsetEnvironment` drop-in; and
-- the numeric-ID-rendered public-only connector JSON config;
+- the numeric-ID-rendered production `guild_acl` connector JSON config (the
+  separate synthetic canary config remains `public_only`);
 - the Phase-B, route-back, macOS edge, browser, and isolated-worker units and
   configs; and
 - nine credential-scoped operational-edge units and configs plus the exact
@@ -142,9 +144,9 @@ SHA-256, owner, group, mode, and exact pre-state. The gateway target service
 identity also binds the drop-in path and digest. The generated executable
 independently requires the connector unit to be an exact rendering of the
 packaged reviewed template, requires the drop-in bytes to equal the packaged
-source, validates the connector JSON's exact shape and public guild/channel/
-user ID lists, and rejects Discord credential names in the staged gateway unit
-or config.
+source, validates the connector JSON's exact shape, mode, guild/root-channel/
+user/role ID lists, and rejects Discord credential names in the staged gateway
+unit or config.
 
 ### Two-stage host authority
 
@@ -274,6 +276,33 @@ facts. Before production execution, collect and owner-review:
    rail package manifest;
 9. successful clean-room and production-shaped canary evidence; and
 10. a fresh out-of-band signature over the final cutover plan.
+
+The cutover authority v3 embeds the isolated-canary prerequisite v2 rather
+than accepting a terminal digest by itself. The owner signature therefore
+binds the complete reviewed fixture, signed goal-continuation gateway
+envelope, signed cleanup observer envelope, and canonical native
+`production-diff.json`. The verifier rechecks the cleanup receipt's native
+`production_diff_observation` binding and requires the same diff digest in the
+terminal, cleanup receipt, run, release, fixture, capability plan, full-canary
+plan, and owner approval. Legacy prerequisite shapes and missing evidence have
+no compatibility bypass.
+
+Promotion also requires byte-exact equality for the semantic configuration,
+ordered toolsets, and capability-role/service topology. Only the reviewed
+canary-versus-production Discord channel ID is mechanically normalized; guild,
+roles, service units, model route, `goals.max_turns=0`, Kanban-off policy,
+privileged-writer boundary, and DM/direct-Discord prohibitions must remain
+exact.
+
+The two no-mutation statements are intentionally separate. The owner-bound
+native canary diff proves zero production mutation before production cutover
+intent. After host files, cron continuity, and prerequisite services are
+staged, those production lifecycle mutations are explicitly acknowledged; the
+pre-database receipt v2 claims only
+`canonical_database_mutation_observed=false`, backed by the stopped writer,
+unchanged frozen legacy snapshot, and still-legacy schema. Database apply
+cannot run until that receipt and `capability_prerequisites_validated` are in
+the append-only journal.
 
 No production service, database, secret, or Cloud resource is changed by the
 packager or its tests.

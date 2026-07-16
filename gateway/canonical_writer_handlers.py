@@ -34,6 +34,7 @@ from gateway.discord_edge_protocol import (
 from gateway.discord_edge_writer_authority import (
     CanonicalWriterDiscordAuthority,
     DiscordEdgeWriterAuthorityError,
+    derive_private_denial_receipt_sha256,
     derive_routeback_edge_idempotency_key,
 )
 from gateway.operational_edge_catalog import (
@@ -48,6 +49,7 @@ from gateway.operational_edge_protocol import (
     operational_command_sha256,
 )
 from gateway.support_ops_team_registry import (
+    SKYVISION_APPROVED_OPERATIONAL_CHANNEL_IDS,
     SKYVISION_GUILD_ID,
     SKYVISION_SYNTHETIC_CANARY_PUBLIC_CHANNEL_ID,
 )
@@ -129,6 +131,11 @@ _FORBIDDEN_DM_VALUES = {
     "private_channel",
     "private_thread",
 }
+_PRIVATE_DENIAL_BLOCKER_REASON = "discord_dm_target_forbidden"
+_PRIVATE_DENIAL_RECEIPT_KEYS = frozenset({
+    "private_denial_receipt_sha256",
+    "dispatch_attempted",
+})
 
 
 class CanonicalWriterError(Exception):
@@ -308,12 +315,16 @@ def _require_discord_guild_routeback_target(
             "invalid_request",
             f"{path} has an invalid Discord guild target shape",
         )
+    def _trusted_root(channel: str) -> bool:
+        return channel in SKYVISION_APPROVED_OPERATIONAL_CHANNEL_IDS
+
     if target_type == "guild_channel":
-        valid = not parent_channel_id
+        valid = not parent_channel_id and _trusted_root(channel_id)
     elif target_type == "guild_thread":
         valid = (
             _DISCORD_SNOWFLAKE_RE.fullmatch(parent_channel_id) is not None
             and parent_channel_id != channel_id
+            and _trusted_root(parent_channel_id)
         )
     elif target_type == "public_guild_channel":
         valid = (
@@ -556,7 +567,7 @@ REQUEST_SCHEMAS: Mapping[str, Mapping[str, frozenset[str]]] = {
         "required": frozenset({"case_id", "target_ref", "message_summary", "source_refs", "idempotency_key", "execution_binding", "discord_edge_request", "discord_edge_receipt"}),
     },
     OP_ROUTEBACK_FINALIZE_BLOCKED: {
-        "allowed": frozenset({"case_id", "target_ref", "message_summary", "source_refs", "blocker_reason", "idempotency_key", "execution_binding", "preclaim", "discord_edge_request", "discord_edge_receipt"}),
+        "allowed": frozenset({"case_id", "target_ref", "message_summary", "source_refs", "blocker_reason", "idempotency_key", "execution_binding", "preclaim", "discord_edge_request", "discord_edge_receipt", "private_denial_receipt_sha256", "dispatch_attempted"}),
         "required": frozenset({"case_id", "target_ref", "message_summary", "source_refs", "idempotency_key"}),
     },
     OP_LEASE_SHADOW_RECORD: {
@@ -1152,7 +1163,47 @@ class CanonicalWriterHandlers:
                     "preclaim blocked finalization forbids dispatch evidence",
                 )
             authorization_id = ""
-            receipt: Mapping[str, Any] = {}
+            private_denial_fields = {
+                "private_denial_receipt_sha256",
+                "dispatch_attempted",
+            } & set(p)
+            if blocker == _PRIVATE_DENIAL_BLOCKER_REASON:
+                if private_denial_fields != _PRIVATE_DENIAL_RECEIPT_KEYS:
+                    raise CanonicalWriterError(
+                        "invalid_receipt",
+                        "private DM denial requires exact trusted receipt evidence",
+                    )
+                if p["dispatch_attempted"] is not False:
+                    raise CanonicalWriterError(
+                        "invalid_receipt",
+                        "private DM denial must prove dispatch_attempted=false",
+                    )
+                private_denial_sha256 = p[
+                    "private_denial_receipt_sha256"
+                ]
+                if (
+                    not isinstance(private_denial_sha256, str)
+                    or _SHA256_RE.fullmatch(private_denial_sha256) is None
+                    or private_denial_sha256
+                    != derive_private_denial_receipt_sha256(
+                        probe_id=idempotency_key,
+                    )
+                ):
+                    raise CanonicalWriterError(
+                        "invalid_receipt",
+                        "private DM denial receipt digest is invalid",
+                    )
+                receipt = {
+                    "private_denial_receipt_sha256": private_denial_sha256,
+                    "dispatch_attempted": False,
+                }
+            else:
+                if private_denial_fields:
+                    raise CanonicalWriterError(
+                        "invalid_receipt",
+                        "private denial receipt is valid only for the exact DM blocker",
+                    )
+                receipt = {}
         else:
             target_ref = _require_discord_guild_routeback_target(
                 target_ref,
@@ -1664,7 +1715,16 @@ class InMemoryCanonicalWriterBackend:
         if existing:
             if existing.get("content_sha256") != content_sha256:
                 raise CanonicalWriterError("idempotency_conflict", "event identity has different content")
-            return {"event_id": event_id, "inserted": False, "deduped": True}
+            return {
+                "event_id": event_id,
+                "event_type": event_type,
+                "case_id": case_id,
+                "idempotency_key": identity,
+                "canonical_content_sha256": content_sha256,
+                "readback_verified": True,
+                "inserted": False,
+                "deduped": True,
+            }
         event = {
             "event_id": event_id,
             "event_type": event_type,
@@ -1677,7 +1737,16 @@ class InMemoryCanonicalWriterBackend:
         }
         self.store.events.append(event)
         self.store.event_by_id[event_id] = event
-        return {"event_id": event_id, "inserted": True, "deduped": False}
+        return {
+            "event_id": event_id,
+            "event_type": event_type,
+            "case_id": case_id,
+            "idempotency_key": identity,
+            "canonical_content_sha256": content_sha256,
+            "readback_verified": True,
+            "inserted": True,
+            "deduped": False,
+        }
 
     def event_append(self, request: EventAppendRequest, runtime: RuntimeContext) -> Mapping[str, Any]:
         if request.event_type in (
@@ -1840,10 +1909,10 @@ class InMemoryCanonicalWriterBackend:
                     )
                 terminal = {
                     "outcome": "blocked",
-                    "receipt": {},
+                    "receipt": copy.deepcopy(lifecycle.get("receipt") or {}),
                     "blocker_reason": lifecycle["blocker_reason"],
                 }
-                return {
+                result = {
                     "success": True,
                     "preclaim": True,
                     "preclaim_block_id": lifecycle_id,
@@ -1853,6 +1922,13 @@ class InMemoryCanonicalWriterBackend:
                     "terminal_payload": terminal,
                     **copy.deepcopy(terminal),
                 }
+                if (
+                    lifecycle.get("blocker_reason")
+                    == _PRIVATE_DENIAL_BLOCKER_REASON
+                    and terminal["receipt"] == {}
+                ):
+                    result["legacy_receipt_read_only"] = True
+                return result
             authorization_id = "routeauth:" + _digest({
                 "case_id": request.case_id,
                 "idempotency_key": request.idempotency_key,
@@ -1958,19 +2034,28 @@ class InMemoryCanonicalWriterBackend:
                         "idempotency_conflict",
                         "route-back lifecycle identity conflicts",
                     )
-                return {
+                receipt = copy.deepcopy(lifecycle.get("receipt") or {})
+                terminal_payload = {
+                    "outcome": "blocked",
+                    "receipt": receipt,
+                    "blocker_reason": lifecycle["blocker_reason"],
+                }
+                result = {
                     "success": True,
                     "preclaim": True,
                     "preclaim_block_id": lifecycle_id,
                     "terminal_event_type": "route_back.blocked",
-                    "terminal_payload": {
-                        "outcome": "blocked",
-                        "receipt": {},
-                        "blocker_reason": lifecycle["blocker_reason"],
-                    },
+                    "terminal_payload": terminal_payload,
                     "inserted": False,
                     "deduped": True,
                 }
+                if (
+                    lifecycle.get("blocker_reason")
+                    == _PRIVATE_DENIAL_BLOCKER_REASON
+                    and receipt == {}
+                ):
+                    result["legacy_receipt_read_only"] = True
+                return result
             authorization_id = "routeauth:" + _digest({
                 "case_id": request.case_id,
                 "idempotency_key": request.idempotency_key,
@@ -2040,11 +2125,41 @@ class InMemoryCanonicalWriterBackend:
         with self.store.lock:
             if request.preclaim:
                 self._require_initiating_epoch_active_locked(runtime)
-                if request.authorization_id or request.outcome != "blocked" or request.receipt:
+                private_denial = (
+                    request.blocker_reason == _PRIVATE_DENIAL_BLOCKER_REASON
+                )
+                try:
+                    expected_private_denial_sha256 = (
+                        derive_private_denial_receipt_sha256(
+                            probe_id=request.idempotency_key,
+                        )
+                    )
+                except (TypeError, ValueError):
+                    expected_private_denial_sha256 = ""
+                invalid_private_receipt = (
+                    set(request.receipt) != _PRIVATE_DENIAL_RECEIPT_KEYS
+                    or not isinstance(
+                        request.receipt.get("private_denial_receipt_sha256"),
+                        str,
+                    )
+                    or _SHA256_RE.fullmatch(
+                        request.receipt.get("private_denial_receipt_sha256", "")
+                    ) is None
+                    or request.receipt.get("private_denial_receipt_sha256")
+                    != expected_private_denial_sha256
+                    or request.receipt.get("dispatch_attempted") is not False
+                )
+                if (
+                    request.authorization_id
+                    or request.outcome != "blocked"
+                    or (private_denial and invalid_private_receipt)
+                    or (not private_denial and bool(request.receipt))
+                ):
                     raise CanonicalWriterError(
                         "invalid_request",
                         "preclaim blocked request contains authorization evidence",
                     )
+                terminal_receipt = _json_copy(request.receipt)
                 authorization_id = "routeauth:" + _digest({
                     "case_id": request.case_id,
                     "idempotency_key": request.idempotency_key,
@@ -2067,24 +2182,36 @@ class InMemoryCanonicalWriterBackend:
                         "source_refs": _json_copy(request.source_refs),
                         "blocker_reason": request.blocker_reason,
                     }
+                    stored_receipt = _json_copy(
+                        lifecycle.get("receipt") or {}
+                    )
+                    legacy_private_denial = (
+                        private_denial and stored_receipt == {}
+                    )
                     if any(
                         lifecycle.get(key) != value
                         for key, value in expected.items()
+                    ) or (
+                        not legacy_private_denial
+                        and stored_receipt != terminal_receipt
                     ):
                         raise CanonicalWriterError(
                             "idempotency_conflict",
                             "route-back lifecycle identity conflicts",
                         )
-                    return {
+                    result = {
                         "success": True,
                         "preclaim": True,
                         "preclaim_block_id": preclaim_id,
                         "outcome": "blocked",
-                        "receipt": {},
-                        "partial_receipt": {},
+                        "receipt": stored_receipt,
+                        "partial_receipt": stored_receipt,
                         "blocker_reason": lifecycle["blocker_reason"],
                         "deduped": True,
                     }
+                    if legacy_private_denial:
+                        result["legacy_receipt_read_only"] = True
+                    return result
                 if existing:
                     expected = {
                         "case_id": request.case_id,
@@ -2131,7 +2258,18 @@ class InMemoryCanonicalWriterBackend:
                         "message_summary": request.message_summary,
                         "source_refs": _json_copy(request.source_refs),
                         "blocker_reason": request.blocker_reason,
-                        "partial_receipt": {},
+                        "receipt": terminal_receipt,
+                        "partial_receipt": terminal_receipt,
+                        "dispatch_attempted": False,
+                        "route_back": {
+                            "preclaim": True,
+                            "target_ref": _json_copy(request.target_ref),
+                            "delivery_state": "not_attempted",
+                            "blocker_reason": request.blocker_reason,
+                            "receipt": terminal_receipt,
+                            "partial_receipt": terminal_receipt,
+                            "dispatch_attempted": False,
+                        },
                     },
                     runtime=runtime,
                     identity=preclaim_id,
@@ -2147,6 +2285,7 @@ class InMemoryCanonicalWriterBackend:
                     "capability_epoch_sha256": (
                         runtime.capability_epoch_sha256
                     ),
+                    "receipt": terminal_receipt,
                     "blocker_reason": request.blocker_reason,
                 }
                 return {
@@ -2154,8 +2293,8 @@ class InMemoryCanonicalWriterBackend:
                     "preclaim": True,
                     "preclaim_block_id": preclaim_id,
                     "outcome": "blocked",
-                    "receipt": {},
-                    "partial_receipt": {},
+                    "receipt": terminal_receipt,
+                    "partial_receipt": terminal_receipt,
                     "blocker_reason": request.blocker_reason,
                     **result,
                 }
@@ -2180,18 +2319,14 @@ class InMemoryCanonicalWriterBackend:
                 "receipt": _json_copy(request.receipt),
                 "blocker_reason": request.blocker_reason,
             }
-            if authorization.get("terminal"):
-                if authorization["terminal"] != terminal:
-                    raise CanonicalWriterError("terminal_conflict", "route-back already finalized differently")
-                return {
-                    "success": True,
-                    "authorization_id": request.authorization_id,
-                    **terminal,
-                    "deduped": True,
-                }
             if request.outcome == "sent":
                 receipt = request.receipt
-                for key in ("message_id", "channel_id", "content_sha256"):
+                for key in (
+                    "message_id",
+                    "channel_id",
+                    "content_sha256",
+                    "public_receipt_sha256",
+                ):
                     if not str(receipt.get(key) or ""):
                         raise CanonicalWriterError("invalid_receipt", f"receipt.{key} is required")
                 if (
@@ -2203,6 +2338,13 @@ class InMemoryCanonicalWriterBackend:
                         "invalid_receipt",
                         "verified Discord adapter receipt is required",
                     )
+                if _SHA256_RE.fullmatch(
+                    str(receipt["public_receipt_sha256"])
+                ) is None:
+                    raise CanonicalWriterError(
+                        "invalid_receipt",
+                        "receipt.public_receipt_sha256 must be lowercase SHA-256",
+                    )
                 if str(receipt["content_sha256"]) != authorization["content_sha256"]:
                     raise CanonicalWriterError("invalid_receipt", "receipt content hash does not match authorization")
                 target_id = str(
@@ -2212,6 +2354,38 @@ class InMemoryCanonicalWriterBackend:
                 )
                 if str(receipt["channel_id"]) != target_id:
                     raise CanonicalWriterError("invalid_receipt", "receipt channel does not match authorization")
+            existing_terminal = authorization.get("terminal") or {}
+            if existing_terminal:
+                if existing_terminal == terminal:
+                    return {
+                        "success": True,
+                        "authorization_id": request.authorization_id,
+                        **copy.deepcopy(existing_terminal),
+                        "deduped": True,
+                    }
+                stored_receipt = existing_terminal.get("receipt") or {}
+                current_without_digest = dict(terminal["receipt"])
+                current_without_digest.pop("public_receipt_sha256", None)
+                legacy_sent = (
+                    request.outcome == "sent"
+                    and existing_terminal.get("outcome") == "sent"
+                    and existing_terminal.get("blocker_reason") == ""
+                    and isinstance(stored_receipt, Mapping)
+                    and "public_receipt_sha256" not in stored_receipt
+                    and dict(stored_receipt) == current_without_digest
+                )
+                if not legacy_sent:
+                    raise CanonicalWriterError(
+                        "terminal_conflict",
+                        "route-back already finalized differently",
+                    )
+                return {
+                    "success": True,
+                    "authorization_id": request.authorization_id,
+                    **copy.deepcopy(existing_terminal),
+                    "legacy_receipt_read_only": True,
+                    "deduped": True,
+                }
             authorization["terminal"] = terminal
             authorization["state"] = request.outcome
             event_type = "route_back.sent" if request.outcome == "sent" else "route_back.blocked"

@@ -7,6 +7,7 @@ import re
 import pytest
 
 from gateway.discord_edge_writer_authority import (
+    derive_private_denial_receipt_sha256,
     derive_routeback_edge_idempotency_key,
 )
 from tools import canonical_brain_tool as cbt
@@ -333,6 +334,97 @@ def test_route_back_blocks_dm_targets_before_helper(monkeypatch, target_ref):
     assert called["helper"] is False
 
 
+def test_route_back_execute_binds_exact_private_denial_before_dispatch(
+    monkeypatch,
+):
+    writer_calls = []
+    edge_calls = []
+
+    def writer(operation, payload, *, idempotency_key=None):
+        writer_calls.append((operation, payload, idempotency_key))
+        return {
+            "success": True,
+            "outcome": "blocked",
+            "preclaim": True,
+            "receipt": {
+                "private_denial_receipt_sha256": payload[
+                    "private_denial_receipt_sha256"
+                ],
+                "dispatch_attempted": False,
+            },
+        }
+
+    monkeypatch.setattr(cbt, "_writer_proxy_result", writer)
+    monkeypatch.setattr(
+        cbt,
+        "_discord_edge_preconnect",
+        lambda: edge_calls.append("preconnect"),
+    )
+    idempotency_key = "discord:private"
+
+    data = json.loads(cbt.route_back_execute_tool(
+        case_id="case:private-denial",
+        target_ref={
+            "id": "private-user",
+            "recipient_id": "1282940574533423125",
+            "target_kind": "dm",
+        },
+        message="must remain public-only",
+        message_summary="reject private route-back",
+        source_refs={"platform": "discord", "message_id": "source-private"},
+        idempotency_key=idempotency_key,
+    ))
+
+    expected_digest = derive_private_denial_receipt_sha256(
+        probe_id=idempotency_key,
+    )
+
+    assert data["status"] == "ROUTE_BACK_EXECUTE_BLOCKED"
+    assert edge_calls == []
+    assert len(writer_calls) == 1
+    operation, payload, writer_key = writer_calls[0]
+    assert operation == "routeback.finalize_blocked"
+    assert writer_key == idempotency_key
+    assert payload["private_denial_receipt_sha256"] == expected_digest
+    assert payload["dispatch_attempted"] is False
+    assert payload["target_ref"]["target_kind"] == (
+        "forbidden_or_unresolved_target"
+    )
+    assert "recipient_id" not in json.dumps(payload, sort_keys=True)
+
+
+def test_route_back_blocked_rejects_substituted_lowercase_private_digest(
+    monkeypatch,
+):
+    writer_calls = []
+    monkeypatch.setattr(
+        cbt,
+        "_writer_proxy_result",
+        lambda *args, **kwargs: writer_calls.append((args, kwargs)),
+    )
+
+    result = cbt._route_back_record_blocked(
+        case_id="case:private-denial-tampered",
+        target_ref={
+            "id": "blocked-target:private",
+            "target_kind": "forbidden_or_unresolved_target",
+        },
+        message_summary="reject substituted private denial digest",
+        source_refs={"platform": "discord", "message_id": "source-private"},
+        blocker_reason="discord_dm_target_forbidden",
+        idempotency_key="discord:private:tampered",
+        private_denial_receipt_sha256="e" * 64,
+        dispatch_attempted=False,
+    )
+
+    assert result == {
+        "success": False,
+        "status": "ROUTE_BACK_BLOCKED_RECORD_FAILED",
+        "error": "private_denial_receipt_invalid",
+    }
+    assert writer_calls == []
+
+
 def test_route_back_sent_blocks_dm_receipt_before_helper(monkeypatch):
     called = {"helper": False}
 
@@ -491,12 +583,11 @@ def test_known_private_support_channels_are_approved_guild_targets(channel_id):
     assert target["target_type"] == "guild_channel"
 
 
-def test_exact_future_guild_channel_is_live_edge_authorized_not_registry_denied():
-    target = cbt._resolve_route_back_public_target(
-        {"channel_id": "1599999999999999999"}
-    )
-    assert target["target_kind"] == "exact_guild_acl_channel"
-    assert target["guild_id"] == cbt.SKYVISION_GUILD_ID
+def test_unknown_numeric_guild_channel_requires_owner_approved_allowlist():
+    with pytest.raises(ValueError, match="owner-approved allowlist authority"):
+        cbt._resolve_route_back_public_target(
+            {"channel_id": "1599999999999999999"}
+        )
 
 
 def test_exact_synthetic_canary_target_preserves_public_edge_type():
@@ -604,6 +695,69 @@ def test_guild_thread_requires_exact_parent_and_preserves_binding():
     assert target["parent_channel_id"] == "1504852408227069993"
 
 
+def test_guild_thread_rejects_unknown_numeric_parent():
+    with pytest.raises(ValueError, match="owner-approved allowlist authority"):
+        cbt._resolve_route_back_public_target(
+            {
+                "thread_id": "1599999999999999998",
+                "parent_channel_id": "1599999999999999999",
+            }
+        )
+
+
+def test_trusted_canonical_projection_cannot_grant_new_root_authority(monkeypatch):
+    from gateway.support_ops_team_registry import (
+        ApprovedGuildLane,
+        ApprovedGuildLaneResolution,
+    )
+
+    lane = ApprovedGuildLane(
+        key="canonical:1527000000000000001",
+        channel_id="1527000000000000001",
+        channel_name="trusted projected lane",
+    )
+    monkeypatch.setattr(
+        cbt,
+        "resolve_approved_guild_lane",
+        lambda value: (
+            ApprovedGuildLaneResolution("resolved", lane=lane)
+            if value == lane.channel_id
+            else ApprovedGuildLaneResolution("unknown")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="owner-approved allowlist authority"):
+        cbt._resolve_route_back_public_target({"channel_id": lane.channel_id})
+
+
+def test_trusted_canonical_alias_can_name_existing_approved_root(monkeypatch):
+    from gateway.support_ops_team_registry import (
+        ApprovedGuildLane,
+        ApprovedGuildLaneResolution,
+    )
+
+    lane = ApprovedGuildLane(
+        key="canonical:backend-alias",
+        channel_id="1504852408227069993",
+        channel_name="api team",
+        aliases=("api team",),
+    )
+    monkeypatch.setattr(
+        cbt,
+        "resolve_approved_guild_lane",
+        lambda value: (
+            ApprovedGuildLaneResolution("resolved", lane=lane)
+            if value == "api team"
+            else ApprovedGuildLaneResolution("unknown")
+        ),
+    )
+
+    target = cbt._resolve_route_back_public_target({"lane": "api team"})
+
+    assert target["channel_id"] == lane.channel_id
+    assert target["target_lane_key"] == lane.key
+
+
 def test_canonical_lane_alias_preserves_exact_thread_target(monkeypatch):
     from gateway.support_ops_team_registry import (
         ApprovedGuildLane,
@@ -616,7 +770,7 @@ def test_canonical_lane_alias_preserves_exact_thread_target(monkeypatch):
         channel_name="july incidents",
         aliases=("july incidents",),
         target_type="guild_thread",
-        parent_channel_id="1527000000000000001",
+        parent_channel_id="1504852408227069993",
     )
     monkeypatch.setattr(
         cbt,
@@ -634,7 +788,7 @@ def test_canonical_lane_alias_preserves_exact_thread_target(monkeypatch):
         "target_type": "guild_thread",
         "guild_id": cbt.SKYVISION_GUILD_ID,
         "channel_id": "1527000000000000002",
-        "parent_channel_id": "1527000000000000001",
+        "parent_channel_id": "1504852408227069993",
         "channel_type": "guild_thread",
         "target_kind": "canonical_guild_lane_thread",
         "target_member_key": None,
@@ -655,7 +809,7 @@ def test_canonical_lane_alias_rejects_conflicting_thread_override(monkeypatch):
         channel_id="1527000000000000002",
         channel_name="july incidents",
         target_type="guild_thread",
-        parent_channel_id="1527000000000000001",
+        parent_channel_id="1504852408227069993",
     )
     monkeypatch.setattr(
         cbt,
@@ -3271,6 +3425,15 @@ def test_generic_model_append_excludes_writer_owned_events_before_database(
     assert data["write_may_have_occurred"] is False
     assert data["canonical_dispatch_certainty"] == "proven_pre_dispatch"
     assert called["helper"] is False
+
+
+def test_model_schema_separates_alias_learning_from_root_permission_grant():
+    description = cbt.CANONICAL_EVENT_APPEND_SCHEMA["description"]
+
+    assert "alias learning never grants permission" in description
+    assert "existing owner-approved root" in description
+    assert "thread below one" in description
+    assert "new root needs a separate owner/passkey-approved capability" in description
 
 
 def test_writer_proxy_timeout_after_send_is_explicitly_uncertain(monkeypatch):

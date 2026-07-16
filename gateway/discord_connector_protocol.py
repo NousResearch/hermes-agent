@@ -40,6 +40,7 @@ class DiscordConnectorKind(StrEnum):
     HELLO = "hello"
     EVENT_NEXT = "event.next"
     EVENT_ACK = "event.ack"
+    EVENT_ACK_READBACK = "event.ack.readback"
     TARGET_GET = "public.target.get"
     HISTORY_FETCH = "public.history.fetch"
     MESSAGE_SEND = "public.message.send"
@@ -615,18 +616,30 @@ def _parse_payload(kind: DiscordConnectorKind, value: Any) -> dict[str, Any]:
                 raw["wait_ms"], minimum=0, maximum=MAX_WAIT_MS, code="invalid_event_next"
             )
         }
-    if kind is DiscordConnectorKind.EVENT_ACK:
+    if kind in {
+        DiscordConnectorKind.EVENT_ACK,
+        DiscordConnectorKind.EVENT_ACK_READBACK,
+    }:
         raw = _exact(
             value,
             required=frozenset({"delivery_id", "event_id", "event_sha256"}),
-            code="invalid_event_ack",
+            code=(
+                "invalid_event_ack"
+                if kind is DiscordConnectorKind.EVENT_ACK
+                else "invalid_event_ack_readback"
+            ),
+        )
+        code = (
+            "invalid_event_ack"
+            if kind is DiscordConnectorKind.EVENT_ACK
+            else "invalid_event_ack_readback"
         )
         digest = raw["event_sha256"]
         if not isinstance(digest, str) or _SHA256_RE.fullmatch(digest) is None:
-            raise DiscordConnectorProtocolError("invalid_event_ack")
+            raise DiscordConnectorProtocolError(code)
         return {
-            "delivery_id": _uuid(raw["delivery_id"], "invalid_event_ack"),
-            "event_id": _snowflake(raw["event_id"], "invalid_event_ack"),
+            "delivery_id": _uuid(raw["delivery_id"], code),
+            "event_id": _snowflake(raw["event_id"], code),
             "event_sha256": digest,
         }
     if kind is DiscordConnectorKind.TARGET_GET:

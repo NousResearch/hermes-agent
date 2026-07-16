@@ -152,7 +152,7 @@ def test_structured_canonical_thread_alias_round_trip(tmp_path, monkeypatch):
             "guild_id": registry.SKYVISION_GUILD_ID,
             "target_type": "guild_thread",
             "channel_id": "1527000000000000002",
-            "parent_channel_id": "1527000000000000001",
+            "parent_channel_id": registry.SKYVISION_BACKEND_CHANNEL_ID,
         }
     }
     document["receipt"]["alias_count"] = 2
@@ -171,7 +171,7 @@ def test_structured_canonical_thread_alias_round_trip(tmp_path, monkeypatch):
     assert resolution.lane is not None
     assert resolution.lane.target_type == "guild_thread"
     assert resolution.lane.channel_id == "1527000000000000002"
-    assert resolution.lane.parent_channel_id == "1527000000000000001"
+    assert resolution.lane.parent_channel_id == registry.SKYVISION_BACKEND_CHANNEL_ID
     assert load_channel_alias_projection(
         projection,
         normalize_alias=registry.normalize_team_member_alias,
@@ -188,6 +188,36 @@ def test_safe_reader_rejects_channel_alias_from_wrong_guild(tmp_path):
     document["channel_aliases"] = {
         "incidents": {
             "guild_id": "1282725267068157973",
+            "target_type": "guild_channel",
+            "channel_id": "1527000000000000001",
+        }
+    }
+    document["receipt"]["alias_count"] = 2
+    document["receipt"]["alias_event_count"] = 2
+    document["receipt"]["source_event_count"] = 2
+    document["receipt"]["projection_sha256"] = projection_payload_sha256(
+        document["aliases"], document["channel_aliases"]
+    )
+    projection.write_text(json.dumps(document), encoding="utf-8")
+    projection.chmod(0o640)
+
+    with pytest.raises(AliasProjectionError, match="channel_entry_invalid"):
+        load_channel_alias_projection(
+            projection,
+            normalize_alias=registry.normalize_team_member_alias,
+            valid_member_keys=registry.TEAM_MEMBERS_BY_KEY,
+            static_alias_member_keys=registry.STATIC_ALIAS_MEMBER_KEYS,
+            expected_channel_guild_id=registry.SKYVISION_GUILD_ID,
+            static_channel_alias_ids=registry.STATIC_ALIAS_CHANNEL_IDS,
+        )
+
+
+def test_safe_reader_rejects_alias_that_would_expand_root_scope(tmp_path):
+    projection = tmp_path / "team-member-aliases.json"
+    document = _projection_document()
+    document["channel_aliases"] = {
+        "unapproved root": {
+            "guild_id": registry.SKYVISION_GUILD_ID,
             "target_type": "guild_channel",
             "channel_id": "1527000000000000001",
         }

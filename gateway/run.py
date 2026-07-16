@@ -136,6 +136,407 @@ _PRODUCTION_CONFIG_MUTATING_COMMANDS = frozenset(
 _PRODUCTION_CONFIG_TOGGLE_SUBCOMMANDS = frozenset({"approval", "mode"})
 _PRODUCTION_CONFIG_CHANGE_BLOCKED = PINNED_EFFECTIVE_CONFIG_WRITE_BLOCKED
 
+_CAPABILITY_GOAL_DISABLED = (
+    "Standing-goal commands are disabled in this bounded capability canary."
+)
+_CAPABILITY_GOAL_LINEAGE_ATTRIBUTE = "_hermes_capability_goal_lineage"
+_CAPABILITY_GOAL_LINEAGE_SEAL = object()
+_CAPABILITY_GOAL_LINEAGE_META_PREFIX = "capability_goal_lineage:"
+_CAPABILITY_GOAL_RECOVERY_META_PREFIX = "capability_goal_lineage_recovery:"
+_CAPABILITY_GOAL_PREEMPTION_META_PREFIX = "capability_goal_preemption:"
+_CAPABILITY_GOAL_FINALIZATION_META_PREFIX = "capability_goal_finalization:"
+_CAPABILITY_GOAL_LINEAGE_RECORD_SCHEMA = "muncho-capability-goal-lineage-record.v1"
+_CAPABILITY_GOAL_RECOVERY_SCHEMA = "muncho-capability-goal-lineage-recovery.v1"
+_CAPABILITY_GOAL_PREEMPTION_SCHEMA = "muncho-capability-goal-preemption.v1"
+_CAPABILITY_GOAL_FINALIZATION_INTENT_SCHEMA = (
+    "muncho-capability-goal-finalization-intent.v1"
+)
+_CAPABILITY_GOAL_FINALIZATION_SCHEMA = "muncho-capability-goal-finalization.v1"
+_CAPABILITY_GOAL_STATE_PROJECTION_SCHEMA = (
+    "muncho-capability-goal-stable-state.v1"
+)
+_CAPABILITY_GOAL_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_CAPABILITY_GOAL_GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_CAPABILITY_GOAL_GENERATION_RE = re.compile(r"^[0-9a-f]{32}$")
+_CAPABILITY_GOAL_INVOCATION_RE = re.compile(r"^[0-9a-f]{32}$")
+_CAPABILITY_GOAL_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+    r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
+_CAPABILITY_GOAL_SNOWFLAKE_RE = re.compile(r"^[1-9][0-9]{0,24}$")
+_CAPABILITY_GOAL_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$")
+_CAPABILITY_GOAL_LINEAGE_RECORD_FIELDS = frozenset(
+    {
+        "schema",
+        "session_id",
+        "session_key_sha256",
+        "goal_generation_id",
+        "goal_created_at_unix_ms",
+        "goal_max_turns",
+        "guild_id",
+        "root_channel_id",
+        "channel_id",
+        "target_type",
+        "owner_user_id",
+        "first_event_id",
+        "first_delivery_id",
+        "first_delivery_receipt_sha256",
+        "first_event_sha256",
+        "first_event_created_at_unix_ms",
+        "lineage_sha256",
+        "run_id",
+        "fixture_sha256",
+        "release_sha",
+        "capability_plan_sha256",
+        "full_canary_plan_sha256",
+        "fixture_publication_receipt_sha256",
+        "recorded_at_unix_ms",
+        "record_sha256",
+    }
+)
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _CapabilityGoalLineage:
+    """Opaque in-process authority for one connector-authenticated goal lane."""
+
+    source_object_id: int
+    guild_id: str
+    root_channel_id: str
+    channel_id: str
+    target_type: str
+    owner_user_id: str
+    first_event_id: str
+    first_delivery_id: str
+    first_delivery_receipt_sha256: str
+    first_event_sha256: str
+    first_event_created_at_unix_ms: int
+    lineage_sha256: str
+    seal: object = dataclasses.field(repr=False, compare=False)
+
+
+def _capability_goal_lineage_payload(
+    *,
+    guild_id: str,
+    root_channel_id: str,
+    channel_id: str,
+    target_type: str,
+    owner_user_id: str,
+    first_event_id: str,
+    first_delivery_id: str,
+    first_delivery_receipt_sha256: str,
+    first_event_sha256: str,
+    first_event_created_at_unix_ms: int,
+) -> dict[str, Any]:
+    return {
+        "schema": "muncho-capability-goal-lineage.v1",
+        "guild_id": guild_id,
+        "root_channel_id": root_channel_id,
+        "channel_id": channel_id,
+        "target_type": target_type,
+        "owner_user_id": owner_user_id,
+        "first_event_id": first_event_id,
+        "first_delivery_id": first_delivery_id,
+        "first_delivery_receipt_sha256": first_delivery_receipt_sha256,
+        "first_event_sha256": first_event_sha256,
+        "first_event_created_at_unix_ms": first_event_created_at_unix_ms,
+    }
+
+
+def _capability_goal_sha256(value: Mapping[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            dict(value),
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _capability_goal_lineage_meta_key(session_id: str) -> str:
+    return f"{_CAPABILITY_GOAL_LINEAGE_META_PREFIX}{session_id}"
+
+
+def _capability_goal_recovery_meta_key(session_id: str) -> str:
+    return f"{_CAPABILITY_GOAL_RECOVERY_META_PREFIX}{session_id}"
+
+
+def _capability_goal_preemption_meta_key(session_id: str) -> str:
+    return f"{_CAPABILITY_GOAL_PREEMPTION_META_PREFIX}{session_id}"
+
+
+def _capability_goal_finalization_meta_key(
+    session_id: str,
+    originating_turn_id: str,
+    phase: str,
+) -> str:
+    if phase not in {"before", "after"}:
+        raise ValueError("capability goal finalization phase is invalid")
+    turn_sha256 = hashlib.sha256(originating_turn_id.encode("utf-8")).hexdigest()
+    return (
+        f"{_CAPABILITY_GOAL_FINALIZATION_META_PREFIX}{session_id}:"
+        f"{turn_sha256}:{phase}"
+    )
+
+
+def _capability_goal_text_sha256(value: Any) -> str:
+    return hashlib.sha256(str(value or "").encode("utf-8")).hexdigest()
+
+
+def _capability_goal_stable_state_projection(
+    session_id: str,
+    state: Any,
+) -> dict[str, Any]:
+    """Project durable goal state without prose or transient turn authority."""
+
+    if state is None:
+        raise ValueError("capability goal state is unavailable")
+
+    def _unix_ms(value: Any) -> int:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("capability goal state timestamp is invalid")
+        return max(0, int(float(value) * 1_000))
+
+    contract = getattr(state, "contract", None)
+    contract_mapping = (
+        contract.to_dict() if callable(getattr(contract, "to_dict", None)) else {}
+    )
+    subgoals = list(getattr(state, "subgoals", None) or [])
+    return {
+        "schema": _CAPABILITY_GOAL_STATE_PROJECTION_SCHEMA,
+        "session_id": session_id,
+        "generation_id": str(getattr(state, "generation_id", "") or ""),
+        "status": str(getattr(state, "status", "") or ""),
+        "turns_used": int(getattr(state, "turns_used", 0)),
+        "max_turns": int(getattr(state, "max_turns", 0)),
+        "created_at_unix_ms": _unix_ms(getattr(state, "created_at", 0.0)),
+        "last_turn_at_unix_ms": _unix_ms(
+            getattr(state, "last_turn_at", 0.0)
+        ),
+        "last_verdict": str(getattr(state, "last_verdict", "") or ""),
+        "goal_sha256": _capability_goal_text_sha256(
+            getattr(state, "goal", "")
+        ),
+        "last_reason_sha256": _capability_goal_text_sha256(
+            getattr(state, "last_reason", "")
+        ),
+        "paused_reason_sha256": _capability_goal_text_sha256(
+            getattr(state, "paused_reason", "")
+        ),
+        "contract_sha256": _capability_goal_sha256(
+            {"contract": contract_mapping}
+        ),
+        "subgoals_sha256": _capability_goal_sha256({"subgoals": subgoals}),
+        "waiting_on_pid": int(getattr(state, "waiting_on_pid", 0) or 0),
+        "waiting_on_session_sha256": _capability_goal_text_sha256(
+            getattr(state, "waiting_on_session", "")
+        ),
+        "waiting_until_unix_ms": _unix_ms(
+            getattr(state, "waiting_until", 0.0)
+        ),
+        "waiting_reason_sha256": _capability_goal_text_sha256(
+            getattr(state, "waiting_reason", "")
+        ),
+        "waiting_since_unix_ms": _unix_ms(
+            getattr(state, "waiting_since", 0.0)
+        ),
+    }
+
+
+def _validate_capability_goal_lineage_record(
+    value: Any,
+    *,
+    runtime_binding: Mapping[str, Any],
+    now_unix_ms: int,
+) -> dict[str, Any]:
+    """Validate a durable lineage candidate without trusting its authorship.
+
+    The record intentionally carries no message, task, goal, reason, or plan
+    prose.  It remains an untrusted restart hint until the caller separately
+    proves the exact connector journal ACK, SessionDB route, and GoalManager
+    generation before minting a new process-local seal.
+    """
+
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != _CAPABILITY_GOAL_LINEAGE_RECORD_FIELDS
+        or type(now_unix_ms) is not int
+        or now_unix_ms <= 0
+    ):
+        raise ValueError("capability goal lineage record shape is invalid")
+    raw = dict(value)
+    unsigned = {key: item for key, item in raw.items() if key != "record_sha256"}
+    required_runtime = {
+        "run_id",
+        "fixture_sha256",
+        "release_sha",
+        "capability_plan_sha256",
+        "full_canary_plan_sha256",
+        "fixture_publication_receipt_sha256",
+        "valid_from_unix_ms",
+        "valid_until_unix_ms",
+        "guild_id",
+        "root_channel_id",
+        "owner_user_id",
+    }
+    if not isinstance(runtime_binding, Mapping) or set(runtime_binding) != required_runtime:
+        raise ValueError("capability goal runtime binding is invalid")
+    for field in (
+        "session_key_sha256",
+        "first_delivery_receipt_sha256",
+        "first_event_sha256",
+        "lineage_sha256",
+        "fixture_sha256",
+        "capability_plan_sha256",
+        "full_canary_plan_sha256",
+        "fixture_publication_receipt_sha256",
+        "record_sha256",
+    ):
+        if not isinstance(raw[field], str) or _CAPABILITY_GOAL_SHA256_RE.fullmatch(
+            raw[field]
+        ) is None:
+            raise ValueError("capability goal lineage digest is invalid")
+    if (
+        raw["schema"] != _CAPABILITY_GOAL_LINEAGE_RECORD_SCHEMA
+        or raw["record_sha256"] != _capability_goal_sha256(unsigned)
+        or not isinstance(raw["session_id"], str)
+        or _CAPABILITY_GOAL_SAFE_ID_RE.fullmatch(raw["session_id"]) is None
+        or not isinstance(raw["run_id"], str)
+        or _CAPABILITY_GOAL_SAFE_ID_RE.fullmatch(raw["run_id"]) is None
+        or not isinstance(raw["goal_generation_id"], str)
+        or _CAPABILITY_GOAL_GENERATION_RE.fullmatch(raw["goal_generation_id"])
+        is None
+        or not isinstance(raw["first_delivery_id"], str)
+        or _CAPABILITY_GOAL_UUID_RE.fullmatch(raw["first_delivery_id"]) is None
+        or not isinstance(raw["first_event_id"], str)
+        or _CAPABILITY_GOAL_SNOWFLAKE_RE.fullmatch(raw["first_event_id"]) is None
+        or not isinstance(raw["release_sha"], str)
+        or _CAPABILITY_GOAL_GIT_SHA_RE.fullmatch(raw["release_sha"]) is None
+        or raw["target_type"]
+        not in {"public_guild_channel", "public_guild_thread"}
+        or any(
+            not isinstance(raw[field], str)
+            or _CAPABILITY_GOAL_SNOWFLAKE_RE.fullmatch(raw[field]) is None
+            for field in (
+                "guild_id",
+                "root_channel_id",
+                "channel_id",
+                "owner_user_id",
+            )
+        )
+        or type(raw["goal_created_at_unix_ms"]) is not int
+        or type(raw["goal_max_turns"]) is not int
+        or raw["goal_max_turns"] < 0
+        or type(raw["first_event_created_at_unix_ms"]) is not int
+        or type(raw["recorded_at_unix_ms"]) is not int
+    ):
+        raise ValueError("capability goal lineage record value is invalid")
+    for field in (
+        "run_id",
+        "fixture_sha256",
+        "release_sha",
+        "capability_plan_sha256",
+        "full_canary_plan_sha256",
+        "fixture_publication_receipt_sha256",
+        "guild_id",
+        "root_channel_id",
+        "owner_user_id",
+    ):
+        if raw[field] != runtime_binding[field]:
+            raise ValueError("capability goal lineage runtime binding drifted")
+    valid_from = runtime_binding["valid_from_unix_ms"]
+    valid_until = runtime_binding["valid_until_unix_ms"]
+    if (
+        type(valid_from) is not int
+        or type(valid_until) is not int
+        or not 0 < valid_from < valid_until
+        or not valid_from
+        <= raw["first_event_created_at_unix_ms"]
+        <= raw["recorded_at_unix_ms"]
+        <= valid_until
+        or not valid_from
+        <= raw["goal_created_at_unix_ms"]
+        <= raw["recorded_at_unix_ms"]
+        or not valid_from <= now_unix_ms <= valid_until
+        or (
+            raw["target_type"] == "public_guild_channel"
+            and raw["channel_id"] != raw["root_channel_id"]
+        )
+        or (
+            raw["target_type"] == "public_guild_thread"
+            and raw["channel_id"] == raw["root_channel_id"]
+        )
+    ):
+        raise ValueError("capability goal lineage freshness or route is invalid")
+    lineage_payload = _capability_goal_lineage_payload(
+        guild_id=raw["guild_id"],
+        root_channel_id=raw["root_channel_id"],
+        channel_id=raw["channel_id"],
+        target_type=raw["target_type"],
+        owner_user_id=raw["owner_user_id"],
+        first_event_id=raw["first_event_id"],
+        first_delivery_id=raw["first_delivery_id"],
+        first_delivery_receipt_sha256=raw["first_delivery_receipt_sha256"],
+        first_event_sha256=raw["first_event_sha256"],
+        first_event_created_at_unix_ms=raw["first_event_created_at_unix_ms"],
+    )
+    if raw["lineage_sha256"] != _capability_goal_sha256(lineage_payload):
+        raise ValueError("capability goal lineage identity is invalid")
+    return raw
+
+
+def _capability_goal_lineage_for_source(
+    source: Any,
+) -> _CapabilityGoalLineage | None:
+    lineage = getattr(source, _CAPABILITY_GOAL_LINEAGE_ATTRIBUTE, None)
+    if (
+        type(lineage) is not _CapabilityGoalLineage
+        or lineage.seal is not _CAPABILITY_GOAL_LINEAGE_SEAL
+        or lineage.source_object_id != id(source)
+    ):
+        return None
+    payload = _capability_goal_lineage_payload(
+        guild_id=lineage.guild_id,
+        root_channel_id=lineage.root_channel_id,
+        channel_id=lineage.channel_id,
+        target_type=lineage.target_type,
+        owner_user_id=lineage.owner_user_id,
+        first_event_id=lineage.first_event_id,
+        first_delivery_id=lineage.first_delivery_id,
+        first_delivery_receipt_sha256=lineage.first_delivery_receipt_sha256,
+        first_event_sha256=lineage.first_event_sha256,
+        first_event_created_at_unix_ms=lineage.first_event_created_at_unix_ms,
+    )
+    digest = hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    is_thread = lineage.target_type == "public_guild_thread"
+    if (
+        digest != lineage.lineage_sha256
+        or getattr(source, "platform", None) is not Platform.DISCORD
+        or str(getattr(source, "scope_id", "") or "") != lineage.guild_id
+        or str(getattr(source, "chat_id", "") or "") != lineage.channel_id
+        or str(getattr(source, "user_id", "") or "") != lineage.owner_user_id
+        or getattr(source, "is_bot", None) is not False
+        or getattr(source, "delivered_via_upstream_relay", None) is not True
+        or str(getattr(source, "parent_chat_id", "") or "")
+        != (lineage.root_channel_id if is_thread else "")
+        or getattr(source, "chat_type", None)
+        != ("thread" if is_thread else "channel")
+        or str(getattr(source, "thread_id", "") or "")
+        != (lineage.channel_id if is_thread else "")
+    ):
+        return None
+    return lineage
+
 
 def _production_slash_requests_config_mutation(
     canonical: str,
@@ -2862,12 +3263,19 @@ def _isolated_gateway_runtime_active() -> bool:
 def _configure_gateway_provider_discovery(
     isolated_runtime: Any,
     production_model_sovereignty: Any = False,
+    capability_canary: Any = False,
 ) -> bool:
     """Apply the one-way provider-registry pin for a sealed gateway."""
 
     if type(production_model_sovereignty) is not bool:
         raise TypeError("production model-sovereignty state must be boolean")
-    if isolated_runtime is not True and production_model_sovereignty is not True:
+    if type(capability_canary) is not bool:
+        raise TypeError("capability-canary state must be boolean")
+    if (
+        isolated_runtime is not True
+        and production_model_sovereignty is not True
+        and capability_canary is not True
+    ):
         return False
     from providers import configure_isolated_provider_discovery
 
@@ -3150,16 +3558,20 @@ class GatewayRunner(
     _startup_restore_in_progress: bool = False
     _isolated_runtime: bool = False
     _require_production_model_sovereignty: bool = False
+    _require_capability_canary: bool = False
 
     def __init__(
         self,
         config: Optional[GatewayConfig] = None,
         *,
         require_production_model_sovereignty: bool = False,
+        require_capability_canary: bool = False,
     ):
         global _gateway_runner_ref
         if type(require_production_model_sovereignty) is not bool:
             raise TypeError("require_production_model_sovereignty must be boolean")
+        if type(require_capability_canary) is not bool:
+            raise TypeError("require_capability_canary must be boolean")
         from gateway.canonical_writer_boundary import (
             harden_gateway_process_for_writer_boundary,
         )
@@ -3170,11 +3582,13 @@ class GatewayRunner(
         self._require_production_model_sovereignty = (
             require_production_model_sovereignty
         )
+        self._require_capability_canary = require_capability_canary
         # One-way clean-room pin. This must precede every provider lookup; the
         # registry raises if broad discovery already happened.
         _configure_gateway_provider_discovery(
             self._isolated_runtime,
             self._require_production_model_sovereignty,
+            self._require_capability_canary,
         )
         # Mark the process as a profile multiplexer when configured. This flips
         # agent.secret_scope.get_secret() to fail-closed on any unscoped
@@ -4196,11 +4610,12 @@ class GatewayRunner(
 
         model = _resolve_gateway_model(user_config)
         production_route_pinned = self._require_production_model_sovereignty
-        if resolved_session_key and not production_route_pinned:
+        sealed_route_pinned = production_route_pinned or self._require_capability_canary
+        if resolved_session_key and not sealed_route_pinned:
             self._rehydrate_session_model_override(resolved_session_key)
         override = (
             self._session_model_overrides.get(resolved_session_key)
-            if resolved_session_key and not production_route_pinned
+            if resolved_session_key and not sealed_route_pinned
             else None
         )
         if override:
@@ -4257,7 +4672,7 @@ class GatewayRunner(
             model = runtime_model
 
         cfg = getattr(self, "config", None)
-        if cfg and source is not None and not production_route_pinned:
+        if cfg and source is not None and not sealed_route_pinned:
             chat_id = str(source.chat_id) if source.chat_id else ""
             thread_id = (
                 str(source.thread_id) if getattr(source, "thread_id", None) else None
@@ -4292,6 +4707,13 @@ class GatewayRunner(
             model, runtime_kwargs = self._apply_session_model_override(
                 resolved_session_key, model, runtime_kwargs
             )
+
+        if self._require_capability_canary:
+            from gateway.canonical_capability_canary_runtime import (
+                validate_capability_model_runtime_route,
+            )
+
+            validate_capability_model_runtime_route(model, runtime_kwargs)
 
         # When the config has no model.default but a provider was resolved
         # (e.g. user ran `hermes auth add openai-codex` without `hermes model`),
@@ -4927,8 +5349,8 @@ class GatewayRunner(
         """Remove queued synthetic /goal continuations for one session.
 
         User-issued /goal pause/clear can race with a continuation already
-        queued by the judge.  Remove only synthetic goal continuations while
-        preserving normal /queue and user follow-up events.
+        queued by the structured outcome consumer. Remove only synthetic goal
+        continuations while preserving normal /queue and user follow-up events.
         """
         removed = 0
         pending_slot = (
@@ -5408,7 +5830,10 @@ class GatewayRunner(
                 resolved_session_key = None
 
         overrides = getattr(self, "_session_reasoning_overrides", {}) or {}
-        if self._require_production_model_sovereignty:
+        if (
+            self._require_production_model_sovereignty
+            or self._require_capability_canary
+        ):
             return self._load_reasoning_config()
         if resolved_session_key and resolved_session_key in overrides:
             return overrides[resolved_session_key]
@@ -5885,6 +6310,23 @@ class GatewayRunner(
                 session_key,
             )
             return True  # handled (silently dropped); do not fall through
+
+        if getattr(self, "_require_capability_canary", False):
+            self._bind_capability_goal_lineage(event)
+            if (
+                getattr(event, "internal", False)
+                and self._capability_goal_lineage_for_event(event) is None
+            ):
+                logger.warning(
+                    "capability goal rejected unsealed busy internal event: platform=%s chat=%s",
+                    getattr(
+                        getattr(event.source, "platform", None),
+                        "value",
+                        "unknown",
+                    ),
+                    getattr(event.source, "chat_id", None) or "unknown",
+                )
+                return True
 
         # --- Draining case (gateway restarting/stopping) ---
         if self._draining:
@@ -7086,6 +7528,25 @@ class GatewayRunner(
         returns.
         """
         try:
+            if getattr(self, "_require_capability_canary", False):
+                lineage = await self._recover_capability_goal_lineage_for_startup(
+                    adapter=adapter,
+                    event=event,
+                    session_key=session_key,
+                )
+                if lineage is None:
+                    return
+                try:
+                    if not self._is_user_authorized(event.source):
+                        raise RuntimeError(
+                            "restored capability goal owner is not authorized"
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "capability goal startup authorization blocked: %s",
+                        exc,
+                    )
+                    return
             await adapter.handle_message(event)
             session_tasks = getattr(adapter, "_session_tasks", {})
             task = (
@@ -7243,7 +7704,11 @@ class GatewayRunner(
                 continue
 
             source = entry.origin
-            adapter = self._adapter_for_source(source)
+            adapter = (
+                self.adapters.get(Platform.RELAY)
+                if getattr(self, "_require_capability_canary", False)
+                else self._adapter_for_source(source)
+            )
             if adapter is None:
                 logger.debug(
                     "Skipping auto-resume for %s: adapter not ready for %s",
@@ -7259,7 +7724,10 @@ class GatewayRunner(
             # receive a full agent response on gateway restart just
             # because it has a resume-pending marker (issue #23778).
             try:
-                if not self._is_user_authorized(source):
+                if (
+                    not getattr(self, "_require_capability_canary", False)
+                    and not self._is_user_authorized(source)
+                ):
                     logger.warning(
                         "Skipping auto-resume for %s: session owner is no "
                         "longer authorized under the current allowlist",
@@ -7413,6 +7881,28 @@ class GatewayRunner(
             ),
             "skip_context_files": isolated,
         }
+
+    def _attest_capability_agent_policy(self, agent: Any) -> None:
+        """Fail before a canary model call if loaded agent policy drifted."""
+
+        if not self._require_capability_canary:
+            return
+        from gateway.canonical_capability_canary_runtime import (
+            validate_capability_agent_policy,
+        )
+
+        validate_capability_agent_policy(agent)
+
+    def _run_conversation_with_capability_attestation(
+        self,
+        agent: Any,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        """Make final policy attestation inseparable from the model call."""
+
+        self._attest_capability_agent_policy(agent)
+        return agent.run_conversation(*args, **kwargs)
 
     def _recover_gateway_process_checkpoint(self) -> int:
         """Recover prior background processes only in continuity runtimes."""
@@ -7763,6 +8253,8 @@ class GatewayRunner(
                     provider_registry,
                 )
             elif getattr(self, "_require_capability_canary", False):
+                import providers as provider_registry
+
                 from gateway.canonical_capability_canary_runtime import (
                     CAPABILITY_OBSERVER_PLUGIN,
                     load_capability_plan,
@@ -7777,6 +8269,7 @@ class GatewayRunner(
                 validate_capability_extension_surface(
                     get_plugin_manager(),
                     self.hooks,
+                    provider_registry,
                     plan=load_capability_plan(),
                 )
             elif self._isolated_runtime:
@@ -9678,7 +10171,10 @@ class GatewayRunner(
             if not check_api_server_requirements():
                 logger.warning("API Server: aiohttp not installed")
                 return None
-            return APIServerAdapter(config)
+            return APIServerAdapter(
+                config,
+                require_capability_canary=self._require_capability_canary,
+            )
 
         elif platform == Platform.WEBHOOK:
             from gateway.platforms.webhook import (
@@ -9898,6 +10394,26 @@ class GatewayRunner(
                     break
                 if _action == "allow":
                     break
+
+        # Capability-canary standing goals are available only on the one
+        # connector-authenticated owner/public lane.  Bind after observational
+        # hooks so an event rewritten into a new caller-shaped object cannot
+        # inherit connector authority accidentally.  Exact kickoff,
+        # continuation, and startup-recovery constructors carry their own
+        # process-local event seal; sharing a sealed SessionSource is never
+        # sufficient for a generic synthetic/background event.
+        if getattr(self, "_require_capability_canary", False):
+            self._bind_capability_goal_lineage(event)
+            if (
+                is_internal
+                and self._capability_goal_lineage_for_event(event) is None
+            ):
+                logger.warning(
+                    "capability goal rejected unsealed internal event: platform=%s chat=%s",
+                    getattr(getattr(source, "platform", None), "value", "unknown"),
+                    getattr(source, "chat_id", None) or "unknown",
+                )
+                return None
 
         if is_internal:
             pass
@@ -10226,9 +10742,16 @@ class GatewayRunner(
                     return _PRODUCTION_CONFIG_CHANGE_BLOCKED
                 if (
                     getattr(self, "_require_capability_canary", False)
-                    and _cmd_def_inner.name in {"goal", "subgoal"}
+                    and (
+                        _cmd_def_inner.name == "subgoal"
+                        or (
+                            _cmd_def_inner.name == "goal"
+                            and self._capability_goal_lineage_for_event(event)
+                            is None
+                        )
+                    )
                 ):
-                    return "Standing-goal commands are disabled in this bounded capability canary."
+                    return _CAPABILITY_GOAL_DISABLED
 
             # Telegram sends /start for bot launches/deep-links. Treat it as a
             # platform ping, not a user command: no help dump, no agent
@@ -10423,7 +10946,7 @@ class GatewayRunner(
                 return "Agent is running — wait or /stop first, then run /moa."
 
             # /subgoal is safe mid-run — it only modifies the goal's
-            # subgoals list, which the judge reads at the next turn
+            # subgoals list, which the primary model reads at the next turn
             # boundary. No race with the running turn.
             if _cmd_def_inner and _cmd_def_inner.name == "subgoal":
                 return await self._handle_subgoal_command(event)
@@ -10978,9 +11501,15 @@ class GatewayRunner(
 
         if (
             getattr(self, "_require_capability_canary", False)
-            and canonical in {"goal", "subgoal"}
+            and (
+                canonical == "subgoal"
+                or (
+                    canonical == "goal"
+                    and self._capability_goal_lineage_for_event(event) is None
+                )
+            )
         ):
-            return "Standing-goal commands are disabled in this bounded capability canary."
+            return _CAPABILITY_GOAL_DISABLED
 
         if canonical == "goal":
             return await self._handle_goal_command(event)
@@ -12285,7 +12814,16 @@ class GatewayRunner(
         #    by 30-50% on code/JSON-heavy sessions, but that just
         #    means hygiene fires a bit early — safe and harmless.
         # -----------------------------------------------------------------
-        if history and len(history) >= 4:
+        # A sealed capability canary must not make an auxiliary model call
+        # before the attested agent turn.  Gateway hygiene builds a separate
+        # AIAgent for summary generation, so skip the whole pre-turn hygiene
+        # path in that bounded runtime; the canary agent's sealed in-loop
+        # context policy remains the only model authority for the turn.
+        if (
+            history
+            and len(history) >= 4
+            and not getattr(self, "_require_capability_canary", False)
+        ):
             from agent.model_metadata import (
                 estimate_messages_tokens_rough,
                 get_model_context_length_async,
@@ -14052,6 +14590,1262 @@ class GatewayRunner(
     # ────────────────────────────────────────────────────────────────
     # /goal — persistent cross-turn goals (Ralph-style loop)
     # ────────────────────────────────────────────────────────────────
+    @staticmethod
+    def _seal_capability_goal_event(
+        event: "MessageEvent",
+        lineage: _CapabilityGoalLineage,
+    ) -> _CapabilityGoalLineage:
+        """Attach one already-proven lineage to one exact in-process event.
+
+        The source seal alone is deliberately insufficient: background and
+        other generic synthetic events may legitimately reuse a session's
+        ``SessionSource`` object.  Only the audited constructors for connector
+        ingress, goal kickoff, goal continuation, and startup recovery call
+        this helper.
+        """
+
+        source = getattr(event, "source", None)
+        if (
+            type(lineage) is not _CapabilityGoalLineage
+            or _capability_goal_lineage_for_source(source) is not lineage
+        ):
+            raise RuntimeError("capability goal event lineage is unavailable")
+        existing = getattr(event, _CAPABILITY_GOAL_LINEAGE_ATTRIBUTE, None)
+        if existing is not None and existing is not lineage:
+            raise RuntimeError("capability goal event lineage conflicts")
+        setattr(event, _CAPABILITY_GOAL_LINEAGE_ATTRIBUTE, lineage)
+        if GatewayRunner._capability_goal_lineage_for_event(event) is not lineage:
+            raise RuntimeError("capability goal event seal is invalid")
+        return lineage
+
+    def _bind_capability_goal_lineage(
+        self, event: "MessageEvent"
+    ) -> _CapabilityGoalLineage | None:
+        """Bind one exact connector ingress to the bounded canary goal lane.
+
+        Metadata and ``delivered_via_upstream_relay`` are deliberately
+        insufficient.  The connector transport must prove the exact local
+        delivery first.  Synthetic kickoff/continuation events inherit the
+        opaque source lineage minted from that authenticated first event.
+        """
+
+        if not getattr(self, "_require_capability_canary", False):
+            return None
+        source = getattr(event, "source", None)
+        existing = self._capability_goal_lineage_for_event(event)
+        if existing is not None:
+            return existing
+
+        try:
+            from gateway.canonical_capability_canary_runtime import (
+                PRODUCTION_CANARY_PUBLIC_CHANNEL_ID,
+                PRODUCTION_CANARY_PUBLIC_GUILD_ID,
+                PRODUCTION_OWNER_USER_ID,
+            )
+            from gateway.relay.discord_connector_transport import (
+                authenticated_discord_connector_ingress,
+            )
+
+            proof = authenticated_discord_connector_ingress(event)
+        except Exception:
+            logger.debug(
+                "capability goal ingress proof unavailable", exc_info=True
+            )
+            return None
+        if proof is None:
+            return None
+
+        target_type = proof.target_type.value
+        is_root = target_type == "public_guild_channel"
+        is_public_thread = target_type == "public_guild_thread"
+        route_is_exact = bool(
+            proof.guild_id == PRODUCTION_CANARY_PUBLIC_GUILD_ID
+            and proof.author_id == PRODUCTION_OWNER_USER_ID
+            and proof.author_is_bot is False
+            and (
+                (
+                    is_root
+                    and proof.channel_id == PRODUCTION_CANARY_PUBLIC_CHANNEL_ID
+                    and proof.parent_channel_id is None
+                )
+                or (
+                    is_public_thread
+                    and proof.channel_id != PRODUCTION_CANARY_PUBLIC_CHANNEL_ID
+                    and proof.parent_channel_id
+                    == PRODUCTION_CANARY_PUBLIC_CHANNEL_ID
+                )
+            )
+        )
+        if not route_is_exact:
+            return None
+
+        payload = _capability_goal_lineage_payload(
+            guild_id=proof.guild_id,
+            root_channel_id=PRODUCTION_CANARY_PUBLIC_CHANNEL_ID,
+            channel_id=proof.channel_id,
+            target_type=target_type,
+            owner_user_id=proof.author_id,
+            first_event_id=proof.event_id,
+            first_delivery_id=proof.delivery_id,
+            first_delivery_receipt_sha256=proof.delivery_receipt_sha256,
+            first_event_sha256=proof.event_sha256,
+            first_event_created_at_unix_ms=proof.event_created_at_unix_ms,
+        )
+        lineage = _CapabilityGoalLineage(
+            source_object_id=id(source),
+            **{key: value for key, value in payload.items() if key != "schema"},
+            lineage_sha256=hashlib.sha256(
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest(),
+            seal=_CAPABILITY_GOAL_LINEAGE_SEAL,
+        )
+        setattr(source, _CAPABILITY_GOAL_LINEAGE_ATTRIBUTE, lineage)
+        try:
+            return self._seal_capability_goal_event(event, lineage)
+        except Exception:
+            if (
+                getattr(source, _CAPABILITY_GOAL_LINEAGE_ATTRIBUTE, None)
+                is lineage
+            ):
+                delattr(source, _CAPABILITY_GOAL_LINEAGE_ATTRIBUTE)
+            raise
+
+    @staticmethod
+    def _load_capability_goal_runtime_binding() -> dict[str, Any]:
+        """Load the immutable reviewed run binding for durable goal authority."""
+
+        from gateway.canonical_capability_canary_runtime import (
+            PRODUCTION_CANARY_PUBLIC_CHANNEL_ID,
+            PRODUCTION_CANARY_PUBLIC_GUILD_ID,
+            PRODUCTION_OWNER_USER_ID,
+            load_bound_reviewed_fixture_publication,
+            load_capability_plan,
+            load_full_canary_plan,
+        )
+
+        plan = load_capability_plan()
+        full_plan = load_full_canary_plan()
+        publication = load_bound_reviewed_fixture_publication(plan, full_plan)
+        fixture = publication.get("fixture")
+        if not isinstance(fixture, Mapping):
+            raise RuntimeError("capability goal fixture binding is unavailable")
+        binding = {
+            "run_id": fixture.get("run_id"),
+            "fixture_sha256": publication.get("fixture_sha256"),
+            "release_sha": fixture.get("release_sha"),
+            "capability_plan_sha256": plan.sha256,
+            "full_canary_plan_sha256": full_plan.sha256,
+            "fixture_publication_receipt_sha256": publication.get(
+                "publication_receipt_sha256"
+            ),
+            "valid_from_unix_ms": fixture.get("valid_from_unix_ms"),
+            "valid_until_unix_ms": fixture.get("valid_until_unix_ms"),
+            "guild_id": PRODUCTION_CANARY_PUBLIC_GUILD_ID,
+            "root_channel_id": PRODUCTION_CANARY_PUBLIC_CHANNEL_ID,
+            "owner_user_id": PRODUCTION_OWNER_USER_ID,
+        }
+        # Reuse the record validator's exact runtime shape and primitive checks
+        # before this mapping can participate in an authority decision.
+        if (
+            set(binding)
+            != {
+                "run_id",
+                "fixture_sha256",
+                "release_sha",
+                "capability_plan_sha256",
+                "full_canary_plan_sha256",
+                "fixture_publication_receipt_sha256",
+                "valid_from_unix_ms",
+                "valid_until_unix_ms",
+                "guild_id",
+                "root_channel_id",
+                "owner_user_id",
+            }
+            or not isinstance(binding["run_id"], str)
+            or _CAPABILITY_GOAL_SAFE_ID_RE.fullmatch(binding["run_id"]) is None
+            or not isinstance(binding["release_sha"], str)
+            or _CAPABILITY_GOAL_GIT_SHA_RE.fullmatch(binding["release_sha"])
+            is None
+            or any(
+                not isinstance(binding[field], str)
+                or _CAPABILITY_GOAL_SHA256_RE.fullmatch(binding[field]) is None
+                for field in (
+                    "fixture_sha256",
+                    "capability_plan_sha256",
+                    "full_canary_plan_sha256",
+                    "fixture_publication_receipt_sha256",
+                )
+            )
+            or any(
+                not isinstance(binding[field], str)
+                or _CAPABILITY_GOAL_SNOWFLAKE_RE.fullmatch(binding[field]) is None
+                for field in ("guild_id", "root_channel_id", "owner_user_id")
+            )
+            or type(binding["valid_from_unix_ms"]) is not int
+            or type(binding["valid_until_unix_ms"]) is not int
+            or not 0
+            < binding["valid_from_unix_ms"]
+            < binding["valid_until_unix_ms"]
+        ):
+            raise RuntimeError("capability goal runtime binding is invalid")
+        return binding
+
+    def _capability_goal_state_db(self) -> Any:
+        db = getattr(getattr(self, "session_store", None), "_db", None)
+        if (
+            db is None
+            or not callable(getattr(db, "get_meta", None))
+            or not callable(getattr(db, "set_meta", None))
+            or not callable(getattr(db, "get_session", None))
+        ):
+            raise RuntimeError("capability goal state database is unavailable")
+        return db
+
+    async def _write_capability_goal_meta(self, key: str, value: str) -> None:
+        db = self._capability_goal_state_db()
+        await asyncio.to_thread(db.set_meta, key, value)
+        observed = await asyncio.to_thread(db.get_meta, key)
+        if observed != value:
+            raise RuntimeError("capability goal durable meta readback drifted")
+
+    async def _write_capability_goal_append_only_meta(
+        self,
+        key: str,
+        value: str,
+    ) -> bool:
+        """Create one exact state_meta row or accept only an exact replay."""
+
+        db = self._capability_goal_state_db()
+        execute_write = getattr(db, "_execute_write", None)
+        if not callable(execute_write):
+            raise RuntimeError("capability goal append-only database is unavailable")
+
+        def _write_once(conn: Any) -> bool:
+            row = conn.execute(
+                "SELECT value FROM state_meta WHERE key = ?",
+                (key,),
+            ).fetchone()
+            if row is not None:
+                if row[0] != value:
+                    raise RuntimeError(
+                        "capability goal append-only receipt conflicts"
+                    )
+                return True
+            conn.execute(
+                "INSERT INTO state_meta(key,value) VALUES (?,?)",
+                (key, value),
+            )
+            return False
+
+        replayed = bool(await asyncio.to_thread(execute_write, _write_once))
+        observed = await asyncio.to_thread(db.get_meta, key)
+        if observed != value:
+            raise RuntimeError("capability goal append-only readback drifted")
+        return replayed
+
+    async def _clear_capability_goal_current_terminal_lineage(
+        self,
+        session_id: str,
+    ) -> bool:
+        """Retire the current lineage only if its exact generation is terminal.
+
+        A terminal command yields while resolving its durable session.  A
+        concurrent authenticated resume may rotate the goal generation and
+        publish a new lineage during that yield.  Snapshot the current lineage
+        identity, then delegate to the transactional generation-aware clear so
+        the stale command cannot erase the newer authority.
+        """
+
+        if _CAPABILITY_GOAL_SAFE_ID_RE.fullmatch(str(session_id or "")) is None:
+            raise RuntimeError("capability goal terminal clear session is invalid")
+        db = self._capability_goal_state_db()
+        raw = await asyncio.to_thread(
+            db.get_meta,
+            _capability_goal_lineage_meta_key(session_id),
+        )
+        if raw is None or raw == "":
+            return False
+        if not isinstance(raw, str):
+            raise RuntimeError("capability goal terminal lineage is invalid")
+        try:
+            parsed = json.loads(raw)
+            goal_generation_id = parsed["goal_generation_id"]
+            lineage_record_sha256 = parsed["record_sha256"]
+        except Exception as exc:
+            raise RuntimeError(
+                "capability goal terminal lineage is invalid"
+            ) from exc
+        return await self._clear_capability_goal_lineage_record_if_terminal(
+            session_id=session_id,
+            goal_generation_id=goal_generation_id,
+            lineage_record_sha256=lineage_record_sha256,
+        )
+
+    async def _clear_capability_goal_lineage_record_if_terminal(
+        self,
+        *,
+        session_id: str,
+        goal_generation_id: str,
+        lineage_record_sha256: str,
+    ) -> bool:
+        """Retire only the exact lineage whose durable generation is terminal.
+
+        Finalization yields to the event loop while publishing its append-only
+        receipt.  An authenticated owner command may resume the goal during
+        that yield and publish a newer lineage.  The terminal turn must never
+        erase that newer restart authority, so the lineage row and goal row are
+        compared and cleared inside one SessionDB write transaction.
+        """
+
+        if (
+            _CAPABILITY_GOAL_SAFE_ID_RE.fullmatch(str(session_id or "")) is None
+            or _CAPABILITY_GOAL_GENERATION_RE.fullmatch(
+                str(goal_generation_id or "")
+            )
+            is None
+            or _CAPABILITY_GOAL_SHA256_RE.fullmatch(
+                str(lineage_record_sha256 or "")
+            )
+            is None
+        ):
+            raise RuntimeError("capability goal terminal clear binding is invalid")
+
+        from hermes_cli.goals import GoalState
+
+        runtime_binding = await asyncio.to_thread(
+            self._load_capability_goal_runtime_binding
+        )
+        now_unix_ms = int(time.time() * 1_000)
+        db = self._capability_goal_state_db()
+        execute_write = getattr(db, "_execute_write", None)
+        if not callable(execute_write):
+            raise RuntimeError("capability goal terminal clear database is unavailable")
+
+        lineage_key = _capability_goal_lineage_meta_key(session_id)
+        goal_key = f"goal:{session_id}"
+
+        def _clear_exact(conn: Any) -> bool:
+            lineage_row = conn.execute(
+                "SELECT value FROM state_meta WHERE key = ?",
+                (lineage_key,),
+            ).fetchone()
+            goal_row = conn.execute(
+                "SELECT value FROM state_meta WHERE key = ?",
+                (goal_key,),
+            ).fetchone()
+            if lineage_row is None or goal_row is None:
+                return False
+            raw_lineage = lineage_row[0]
+            raw_goal = goal_row[0]
+            if not isinstance(raw_lineage, str) or not raw_lineage:
+                return False
+            try:
+                parsed_lineage = json.loads(raw_lineage)
+                record = _validate_capability_goal_lineage_record(
+                    parsed_lineage,
+                    runtime_binding=runtime_binding,
+                    now_unix_ms=now_unix_ms,
+                )
+                state = GoalState.from_json(raw_goal)
+            except Exception as exc:
+                raise RuntimeError(
+                    "capability goal terminal clear state is invalid"
+                ) from exc
+            if (
+                raw_lineage
+                != json.dumps(
+                    record,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+                or record["session_id"] != session_id
+                or record["goal_generation_id"] != goal_generation_id
+                or record["record_sha256"] != lineage_record_sha256
+                or state.generation_id != goal_generation_id
+                or state.status not in {"done", "paused", "cleared"}
+            ):
+                return False
+            conn.execute(
+                "UPDATE state_meta SET value = ? WHERE key = ?",
+                ("", lineage_key),
+            )
+            return True
+
+        return bool(await asyncio.to_thread(execute_write, _clear_exact))
+
+    @staticmethod
+    def _capability_goal_gateway_process_binding() -> dict[str, Any]:
+        invocation_id = str(os.environ.get("INVOCATION_ID") or "")
+        gateway_pid = os.getpid()
+        service_unit = "hermes-cloud-gateway.service"
+        if (
+            _CAPABILITY_GOAL_INVOCATION_RE.fullmatch(invocation_id) is None
+            or gateway_pid <= 1
+        ):
+            raise RuntimeError("capability goal gateway process identity is invalid")
+        identity = {
+            "service_unit": service_unit,
+            "invocation_id": invocation_id,
+            "main_pid": gateway_pid,
+        }
+        return {
+            "gateway_service_unit": service_unit,
+            "gateway_invocation_id": invocation_id,
+            "gateway_main_pid": gateway_pid,
+            "gateway_process_identity_sha256": _capability_goal_sha256(identity),
+        }
+
+    async def _persist_capability_goal_lineage_record(
+        self,
+        *,
+        session_entry: Any,
+        lineage: _CapabilityGoalLineage,
+    ) -> dict[str, Any]:
+        """Persist one prose-free restart hint for an active exact goal lane."""
+
+        if not getattr(self, "_require_capability_canary", False):
+            raise RuntimeError("capability goal durable lineage is not enabled")
+        # The active event source may be newer than SessionEntry.origin. Route
+        # identity is checked through the lineage itself; session_key binds the
+        # durable routing row independently below and during recovery.
+        if type(lineage) is not _CapabilityGoalLineage:
+            raise RuntimeError("capability goal lineage is unavailable")
+        session_id = str(getattr(session_entry, "session_id", "") or "")
+        session_key = str(getattr(session_entry, "session_key", "") or "")
+        if (
+            _CAPABILITY_GOAL_SAFE_ID_RE.fullmatch(session_id) is None
+            or not session_key
+        ):
+            raise RuntimeError("capability goal session binding is invalid")
+
+        from hermes_cli.goals import GoalManager
+
+        state = GoalManager(
+            session_id=session_id,
+            default_max_turns=self._goal_max_turns_from_config(),
+        ).state
+        if state is None or state.status != "active":
+            await self._clear_capability_goal_current_terminal_lineage(session_id)
+            return {}
+        runtime_binding = await asyncio.to_thread(
+            self._load_capability_goal_runtime_binding
+        )
+        recorded_at = int(time.time() * 1_000)
+        db = self._capability_goal_state_db()
+        existing_raw = await asyncio.to_thread(
+            db.get_meta,
+            _capability_goal_lineage_meta_key(session_id),
+        )
+        if isinstance(existing_raw, str) and existing_raw:
+            try:
+                existing_value = json.loads(existing_raw)
+                existing = _validate_capability_goal_lineage_record(
+                    existing_value,
+                    runtime_binding=runtime_binding,
+                    now_unix_ms=recorded_at,
+                )
+                if (
+                    existing_raw
+                    == json.dumps(
+                        existing,
+                        ensure_ascii=False,
+                        allow_nan=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    )
+                    and existing["session_id"] == session_id
+                    and existing["session_key_sha256"]
+                    == hashlib.sha256(session_key.encode("utf-8")).hexdigest()
+                    and existing["goal_generation_id"] == state.generation_id
+                    and existing["goal_created_at_unix_ms"]
+                    == int(state.created_at * 1_000)
+                    and existing["goal_max_turns"] == state.max_turns
+                ):
+                    return existing
+            except Exception:
+                # An invalid or cross-generation hint has no authority and is
+                # replaced only from this newly transport-authenticated event.
+                pass
+        unsigned = {
+            "schema": _CAPABILITY_GOAL_LINEAGE_RECORD_SCHEMA,
+            "session_id": session_id,
+            "session_key_sha256": hashlib.sha256(
+                session_key.encode("utf-8")
+            ).hexdigest(),
+            "goal_generation_id": state.generation_id,
+            "goal_created_at_unix_ms": int(state.created_at * 1_000),
+            "goal_max_turns": state.max_turns,
+            "guild_id": lineage.guild_id,
+            "root_channel_id": lineage.root_channel_id,
+            "channel_id": lineage.channel_id,
+            "target_type": lineage.target_type,
+            "owner_user_id": lineage.owner_user_id,
+            "first_event_id": lineage.first_event_id,
+            "first_delivery_id": lineage.first_delivery_id,
+            "first_delivery_receipt_sha256": (
+                lineage.first_delivery_receipt_sha256
+            ),
+            "first_event_sha256": lineage.first_event_sha256,
+            "first_event_created_at_unix_ms": (
+                lineage.first_event_created_at_unix_ms
+            ),
+            "lineage_sha256": lineage.lineage_sha256,
+            "run_id": runtime_binding["run_id"],
+            "fixture_sha256": runtime_binding["fixture_sha256"],
+            "release_sha": runtime_binding["release_sha"],
+            "capability_plan_sha256": runtime_binding[
+                "capability_plan_sha256"
+            ],
+            "full_canary_plan_sha256": runtime_binding[
+                "full_canary_plan_sha256"
+            ],
+            "fixture_publication_receipt_sha256": runtime_binding[
+                "fixture_publication_receipt_sha256"
+            ],
+            "recorded_at_unix_ms": recorded_at,
+        }
+        record = {**unsigned, "record_sha256": _capability_goal_sha256(unsigned)}
+        validated = _validate_capability_goal_lineage_record(
+            record,
+            runtime_binding=runtime_binding,
+            now_unix_ms=recorded_at,
+        )
+        raw = json.dumps(
+            validated,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        await self._write_capability_goal_meta(
+            _capability_goal_lineage_meta_key(session_id),
+            raw,
+        )
+        return validated
+
+    async def _persist_capability_goal_preemption_receipt(
+        self,
+        *,
+        source: Any,
+        capability_goal_lineage: _CapabilityGoalLineage,
+        queued_event: "MessageEvent",
+        queue_path: str,
+        session_id: str,
+        session_key: str,
+        goal_generation_id: str,
+        originating_turn_id: str,
+        automatic_duplicate_count: int,
+    ) -> dict[str, Any]:
+        """Record exact connector-authenticated user preemption without prose."""
+
+        if not getattr(self, "_require_capability_canary", False):
+            raise RuntimeError("capability goal preemption is not enabled")
+        if (
+            _capability_goal_lineage_for_source(source)
+            is not capability_goal_lineage
+            or queue_path not in {"adapter.pending", "runner.fifo_overflow"}
+            or type(automatic_duplicate_count) is not int
+            or automatic_duplicate_count != 0
+            or not session_id
+            or not session_key
+            or not originating_turn_id
+            or len(originating_turn_id.encode("utf-8")) > 256
+        ):
+            raise RuntimeError("capability goal preemption input is invalid")
+
+        from gateway.canonical_capability_canary_runtime import (
+            PRODUCTION_CANARY_PUBLIC_CHANNEL_ID,
+            PRODUCTION_CANARY_PUBLIC_GUILD_ID,
+            PRODUCTION_OWNER_USER_ID,
+        )
+        from gateway.relay.discord_connector_transport import (
+            authenticated_discord_connector_ingress,
+        )
+        from hermes_cli.goals import GoalManager
+
+        queued_proof = authenticated_discord_connector_ingress(queued_event)
+        queued_lineage = self._capability_goal_lineage_for_event(queued_event)
+        if queued_proof is None or queued_lineage is None:
+            raise RuntimeError("queued capability goal event is not connector-authenticated")
+        target_type = queued_proof.target_type.value
+        is_thread = target_type == "public_guild_thread"
+        if (
+            target_type not in {"public_guild_channel", "public_guild_thread"}
+            or queued_proof.guild_id != PRODUCTION_CANARY_PUBLIC_GUILD_ID
+            or queued_proof.author_id != PRODUCTION_OWNER_USER_ID
+            or queued_proof.author_is_bot is not False
+            or (
+                is_thread
+                and (
+                    queued_proof.channel_id == PRODUCTION_CANARY_PUBLIC_CHANNEL_ID
+                    or queued_proof.parent_channel_id
+                    != PRODUCTION_CANARY_PUBLIC_CHANNEL_ID
+                )
+            )
+            or (
+                not is_thread
+                and (
+                    queued_proof.channel_id != PRODUCTION_CANARY_PUBLIC_CHANNEL_ID
+                    or queued_proof.parent_channel_id is not None
+                )
+            )
+            or queued_lineage.first_event_id != queued_proof.event_id
+            or queued_lineage.first_delivery_id != queued_proof.delivery_id
+            or queued_lineage.first_delivery_receipt_sha256
+            != queued_proof.delivery_receipt_sha256
+            or queued_lineage.first_event_sha256 != queued_proof.event_sha256
+            or (
+                await self.async_session_store._generate_session_key(
+                    queued_event.source
+                )
+            )
+            != session_key
+        ):
+            raise RuntimeError("queued capability goal route binding drifted")
+        bound_session_id = await asyncio.to_thread(
+            self.session_store.peek_session_id,
+            session_key,
+        )
+        if bound_session_id != session_id:
+            raise RuntimeError("queued capability goal session binding drifted")
+
+        db = self._capability_goal_state_db()
+        raw_record = await asyncio.to_thread(
+            db.get_meta,
+            _capability_goal_lineage_meta_key(session_id),
+        )
+        if not isinstance(raw_record, str) or not raw_record:
+            raise RuntimeError("capability goal lineage record is unavailable")
+        parsed_record = json.loads(raw_record)
+        if raw_record != json.dumps(
+            parsed_record,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ):
+            raise RuntimeError("capability goal lineage record is not canonical")
+        runtime_binding = await asyncio.to_thread(
+            self._load_capability_goal_runtime_binding
+        )
+        observed_at = int(time.time() * 1_000)
+        record = _validate_capability_goal_lineage_record(
+            parsed_record,
+            runtime_binding=runtime_binding,
+            now_unix_ms=observed_at,
+        )
+        state = GoalManager(
+            session_id=session_id,
+            default_max_turns=record["goal_max_turns"],
+        ).state
+        if (
+            record["session_id"] != session_id
+            or record["session_key_sha256"]
+            != hashlib.sha256(session_key.encode("utf-8")).hexdigest()
+            or record["goal_generation_id"] != goal_generation_id
+            or state is None
+            or state.status != "active"
+            or state.generation_id != goal_generation_id
+        ):
+            raise RuntimeError("capability goal preemption generation drifted")
+
+        process_binding = self._capability_goal_gateway_process_binding()
+        replay_binding = {
+            "schema": "muncho-capability-goal-preemption-replay-binding.v1",
+            "session_id": session_id,
+            "session_key_sha256": record["session_key_sha256"],
+            "goal_generation_id": goal_generation_id,
+            "goal_lineage_record_sha256": record["record_sha256"],
+            "queued_event_id": queued_proof.event_id,
+            "queued_event_sha256": queued_proof.event_sha256,
+            "queued_delivery_id": queued_proof.delivery_id,
+            "queued_delivery_receipt_sha256": (
+                queued_proof.delivery_receipt_sha256
+            ),
+        }
+        unsigned = {
+            "schema": _CAPABILITY_GOAL_PREEMPTION_SCHEMA,
+            "session_id": session_id,
+            "session_key_sha256": record["session_key_sha256"],
+            "goal_generation_id": goal_generation_id,
+            "originating_turn_id": originating_turn_id,
+            "goal_lineage_record_sha256": record["record_sha256"],
+            "goal_lineage_sha256": record["lineage_sha256"],
+            "goal_first_event_id": record["first_event_id"],
+            "goal_first_event_sha256": record["first_event_sha256"],
+            "goal_first_delivery_id": record["first_delivery_id"],
+            "goal_first_delivery_receipt_sha256": record[
+                "first_delivery_receipt_sha256"
+            ],
+            "current_turn_lineage_sha256": (
+                capability_goal_lineage.lineage_sha256
+            ),
+            "queued_event_id": queued_proof.event_id,
+            "queued_event_sha256": queued_proof.event_sha256,
+            "queued_event_created_at_unix_ms": (
+                queued_proof.event_created_at_unix_ms
+            ),
+            "queued_delivery_id": queued_proof.delivery_id,
+            "queued_delivery_receipt_sha256": (
+                queued_proof.delivery_receipt_sha256
+            ),
+            "queued_lineage_sha256": queued_lineage.lineage_sha256,
+            "queued_target_type": target_type,
+            "queued_guild_id": queued_proof.guild_id,
+            "queued_root_channel_id": PRODUCTION_CANARY_PUBLIC_CHANNEL_ID,
+            "queued_channel_id": queued_proof.channel_id,
+            "queued_parent_channel_id": queued_proof.parent_channel_id or "",
+            "queued_owner_user_id": queued_proof.author_id,
+            "automatic_continuation_was_pending": True,
+            "automatic_continuation_duplicate_count": automatic_duplicate_count,
+            "queue_path": queue_path,
+            "replay_binding_sha256": _capability_goal_sha256(replay_binding),
+            "run_id": record["run_id"],
+            "fixture_sha256": record["fixture_sha256"],
+            "release_sha": record["release_sha"],
+            "capability_plan_sha256": record["capability_plan_sha256"],
+            "full_canary_plan_sha256": record["full_canary_plan_sha256"],
+            "fixture_publication_receipt_sha256": record[
+                "fixture_publication_receipt_sha256"
+            ],
+            **process_binding,
+            "preempted_at_unix_ms": observed_at,
+        }
+        receipt = {
+            **unsigned,
+            "preemption_sha256": _capability_goal_sha256(unsigned),
+        }
+        await self._write_capability_goal_append_only_meta(
+            _capability_goal_preemption_meta_key(session_id),
+            json.dumps(
+                receipt,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+        )
+        return receipt
+
+    async def _begin_capability_goal_finalization_receipt(
+        self,
+        *,
+        source: Any,
+        capability_goal_lineage: _CapabilityGoalLineage,
+        manager: Any,
+        session_id: str,
+        session_key: str,
+        goal_generation_id: str,
+        originating_turn_id: str,
+    ) -> dict[str, Any]:
+        """Append the exact stable state immediately before goal evaluation."""
+
+        state = getattr(manager, "state", None)
+        if (
+            _capability_goal_lineage_for_source(source)
+            is not capability_goal_lineage
+            or state is None
+            or state.status != "active"
+            or state.generation_id != goal_generation_id
+            or state.active_model_turn_id != originating_turn_id
+            or not session_id
+            or not session_key
+        ):
+            raise RuntimeError("capability goal finalization authority drifted")
+        bound_session_id = await asyncio.to_thread(
+            self.session_store.peek_session_id,
+            session_key,
+        )
+        if bound_session_id != session_id:
+            raise RuntimeError("capability goal finalization session drifted")
+
+        db = self._capability_goal_state_db()
+        raw_record = await asyncio.to_thread(
+            db.get_meta,
+            _capability_goal_lineage_meta_key(session_id),
+        )
+        if not isinstance(raw_record, str) or not raw_record:
+            raise RuntimeError("capability goal lineage record is unavailable")
+        parsed_record = json.loads(raw_record)
+        runtime_binding = await asyncio.to_thread(
+            self._load_capability_goal_runtime_binding
+        )
+        observed_at = int(time.time() * 1_000)
+        record = _validate_capability_goal_lineage_record(
+            parsed_record,
+            runtime_binding=runtime_binding,
+            now_unix_ms=observed_at,
+        )
+        if (
+            raw_record
+            != json.dumps(
+                record,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            or record["session_id"] != session_id
+            or record["session_key_sha256"]
+            != hashlib.sha256(session_key.encode("utf-8")).hexdigest()
+            or record["goal_generation_id"] != goal_generation_id
+        ):
+            raise RuntimeError("capability goal finalization record drifted")
+
+        pending_exact = bool(
+            state.pending_model_turn_id == originating_turn_id
+            and state.pending_model_generation_id == goal_generation_id
+        )
+        raw_outcome = state.pending_model_outcome if pending_exact else None
+        model_outcome = (
+            raw_outcome
+            if raw_outcome in {"continue", "complete", "blocked"}
+            else ("missing" if raw_outcome is None else "invalid")
+        )
+        reason = state.pending_model_reason if pending_exact else ""
+        before_projection = _capability_goal_stable_state_projection(
+            session_id,
+            state,
+        )
+        unsigned = {
+            "schema": _CAPABILITY_GOAL_FINALIZATION_INTENT_SCHEMA,
+            "session_id": session_id,
+            "session_key_sha256": record["session_key_sha256"],
+            "goal_generation_id": goal_generation_id,
+            "originating_turn_id": originating_turn_id,
+            "originating_turn_id_sha256": _capability_goal_text_sha256(
+                originating_turn_id
+            ),
+            "goal_lineage_record_sha256": record["record_sha256"],
+            "current_turn_lineage_sha256": (
+                capability_goal_lineage.lineage_sha256
+            ),
+            "pending_outcome_exact": pending_exact,
+            "model_outcome": model_outcome,
+            "model_reason_sha256": _capability_goal_text_sha256(reason),
+            "state_before": before_projection,
+            "state_before_sha256": _capability_goal_sha256(before_projection),
+            "run_id": record["run_id"],
+            "fixture_sha256": record["fixture_sha256"],
+            "release_sha": record["release_sha"],
+            "capability_plan_sha256": record["capability_plan_sha256"],
+            "full_canary_plan_sha256": record["full_canary_plan_sha256"],
+            "fixture_publication_receipt_sha256": record[
+                "fixture_publication_receipt_sha256"
+            ],
+            **self._capability_goal_gateway_process_binding(),
+            "observed_before_unix_ms": observed_at,
+        }
+        intent = {
+            **unsigned,
+            "intent_sha256": _capability_goal_sha256(unsigned),
+        }
+        await self._write_capability_goal_append_only_meta(
+            _capability_goal_finalization_meta_key(
+                session_id,
+                originating_turn_id,
+                "before",
+            ),
+            json.dumps(
+                intent,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+        )
+        return intent
+
+    async def _complete_capability_goal_finalization_receipt(
+        self,
+        *,
+        manager: Any,
+        decision: Mapping[str, Any],
+        intent: Mapping[str, Any],
+        session_id: str,
+        goal_generation_id: str,
+        originating_turn_id: str,
+    ) -> dict[str, Any]:
+        """Append the exact stable state immediately after goal evaluation."""
+
+        state = getattr(manager, "state", None)
+        verdict = decision.get("verdict")
+        if (
+            state is None
+            or state.generation_id != goal_generation_id
+            or verdict
+            not in {"done", "blocked", "continue", "waiting", "inactive", "stale"}
+            or type(decision.get("should_continue")) is not bool
+            or intent.get("schema") != _CAPABILITY_GOAL_FINALIZATION_INTENT_SCHEMA
+            or intent.get("session_id") != session_id
+            or intent.get("goal_generation_id") != goal_generation_id
+            or intent.get("originating_turn_id") != originating_turn_id
+            or not isinstance(intent.get("intent_sha256"), str)
+            or _CAPABILITY_GOAL_SHA256_RE.fullmatch(intent["intent_sha256"])
+            is None
+        ):
+            raise RuntimeError("capability goal finalization result drifted")
+        after_projection = _capability_goal_stable_state_projection(
+            session_id,
+            state,
+        )
+        observed_at = int(time.time() * 1_000)
+        unsigned = {
+            "schema": _CAPABILITY_GOAL_FINALIZATION_SCHEMA,
+            "session_id": session_id,
+            "session_key_sha256": intent["session_key_sha256"],
+            "goal_generation_id": goal_generation_id,
+            "originating_turn_id": originating_turn_id,
+            "originating_turn_id_sha256": intent[
+                "originating_turn_id_sha256"
+            ],
+            "intent_sha256": intent["intent_sha256"],
+            "goal_lineage_record_sha256": intent[
+                "goal_lineage_record_sha256"
+            ],
+            "current_turn_lineage_sha256": intent[
+                "current_turn_lineage_sha256"
+            ],
+            "model_outcome": intent["model_outcome"],
+            "model_reason_sha256": intent["model_reason_sha256"],
+            "decision_verdict": verdict,
+            "decision_reason_sha256": _capability_goal_text_sha256(
+                decision.get("reason")
+            ),
+            "decision_status": str(decision.get("status") or ""),
+            "should_continue": decision["should_continue"],
+            "continuation_prompt_present": bool(
+                decision.get("continuation_prompt")
+            ),
+            "state_before": intent["state_before"],
+            "state_before_sha256": intent["state_before_sha256"],
+            "state_after": after_projection,
+            "state_after_sha256": _capability_goal_sha256(after_projection),
+            "run_id": intent["run_id"],
+            "fixture_sha256": intent["fixture_sha256"],
+            "release_sha": intent["release_sha"],
+            "capability_plan_sha256": intent["capability_plan_sha256"],
+            "full_canary_plan_sha256": intent["full_canary_plan_sha256"],
+            "fixture_publication_receipt_sha256": intent[
+                "fixture_publication_receipt_sha256"
+            ],
+            "gateway_service_unit": intent["gateway_service_unit"],
+            "gateway_invocation_id": intent["gateway_invocation_id"],
+            "gateway_main_pid": intent["gateway_main_pid"],
+            "gateway_process_identity_sha256": intent[
+                "gateway_process_identity_sha256"
+            ],
+            "observed_before_unix_ms": intent["observed_before_unix_ms"],
+            "observed_after_unix_ms": observed_at,
+        }
+        receipt = {
+            **unsigned,
+            "finalization_sha256": _capability_goal_sha256(unsigned),
+        }
+        await self._write_capability_goal_append_only_meta(
+            _capability_goal_finalization_meta_key(
+                session_id,
+                originating_turn_id,
+                "after",
+            ),
+            json.dumps(
+                receipt,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+        )
+        return receipt
+
+    async def _recover_capability_goal_lineage_for_startup(
+        self,
+        *,
+        adapter: Any,
+        event: "MessageEvent",
+        session_key: str,
+    ) -> _CapabilityGoalLineage | None:
+        """Revalidate durable authority and mint a new process-local seal."""
+
+        if not getattr(self, "_require_capability_canary", False):
+            return None
+        resealed_source = None
+        resealed_lineage = None
+        try:
+            from gateway.relay.adapter import RelayAdapter
+            from gateway.relay.discord_connector_transport import (
+                DiscordConnectorRelayTransport,
+            )
+            from hermes_cli.goals import GoalManager
+
+            if not isinstance(adapter, RelayAdapter):
+                raise RuntimeError("capability goal relay adapter is unavailable")
+            transport = getattr(adapter, "_transport", None)
+            if not isinstance(transport, DiscordConnectorRelayTransport):
+                raise RuntimeError("capability goal connector transport is unavailable")
+
+            session_id = await asyncio.to_thread(
+                self.session_store.peek_session_id,
+                session_key,
+            )
+            entry = await asyncio.to_thread(
+                self.session_store.lookup_by_session_id,
+                str(session_id or ""),
+            )
+            if (
+                entry is None
+                or entry.session_key != session_key
+                or entry.session_id != session_id
+                or entry.origin is not event.source
+                or (
+                    await self.async_session_store._generate_session_key(
+                        event.source
+                    )
+                )
+                != session_key
+            ):
+                raise RuntimeError("capability goal routing entry drifted")
+
+            db = self._capability_goal_state_db()
+            raw_record = await asyncio.to_thread(
+                db.get_meta,
+                _capability_goal_lineage_meta_key(session_id),
+            )
+            if not isinstance(raw_record, str) or not raw_record:
+                raise RuntimeError("capability goal lineage record is unavailable")
+            parsed_record = json.loads(raw_record)
+            if raw_record != json.dumps(
+                parsed_record,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ):
+                raise RuntimeError("capability goal lineage record is not canonical")
+            runtime_binding = await asyncio.to_thread(
+                self._load_capability_goal_runtime_binding
+            )
+            now_unix_ms = int(time.time() * 1_000)
+            record = _validate_capability_goal_lineage_record(
+                parsed_record,
+                runtime_binding=runtime_binding,
+                now_unix_ms=now_unix_ms,
+            )
+            source = event.source
+            is_thread = record["target_type"] == "public_guild_thread"
+            if (
+                record["session_id"] != session_id
+                or record["session_key_sha256"]
+                != hashlib.sha256(session_key.encode("utf-8")).hexdigest()
+                or source.platform is not Platform.DISCORD
+                or str(source.scope_id or "") != record["guild_id"]
+                or str(source.chat_id or "") != record["channel_id"]
+                or str(source.user_id or "") != record["owner_user_id"]
+                or source.is_bot is not False
+                or source.chat_type != ("thread" if is_thread else "channel")
+                or str(source.thread_id or "")
+                != (record["channel_id"] if is_thread else "")
+                or str(source.parent_chat_id or "")
+                != (record["root_channel_id"] if is_thread else "")
+                or source.delivered_via_upstream_relay is not False
+            ):
+                raise RuntimeError("capability goal restored source drifted")
+
+            session_row = await asyncio.to_thread(db.get_session, session_id)
+            if (
+                not isinstance(session_row, Mapping)
+                or session_row.get("id") != session_id
+                or session_row.get("source") != Platform.DISCORD.value
+                or str(session_row.get("user_id") or "") != record["owner_user_id"]
+                or session_row.get("session_key") != session_key
+                or str(session_row.get("chat_id") or "") != record["channel_id"]
+                or session_row.get("chat_type")
+                != ("thread" if is_thread else "channel")
+                or str(session_row.get("thread_id") or "")
+                != (record["channel_id"] if is_thread else "")
+                or session_row.get("ended_at") is not None
+            ):
+                raise RuntimeError("capability goal SessionDB binding drifted")
+
+            state = GoalManager(
+                session_id=session_id,
+                default_max_turns=record["goal_max_turns"],
+            ).state
+            if (
+                state is None
+                or state.status != "active"
+                or state.generation_id != record["goal_generation_id"]
+                or int(state.created_at * 1_000)
+                != record["goal_created_at_unix_ms"]
+                or state.max_turns != record["goal_max_turns"]
+            ):
+                raise RuntimeError("capability goal generation drifted")
+
+            ack_readback = await transport.prove_event_acknowledged(
+                delivery_id=record["first_delivery_id"],
+                event_id=record["first_event_id"],
+                event_sha256=record["first_event_sha256"],
+            )
+            if (
+                set(ack_readback)
+                != {
+                    "schema",
+                    "delivery_id",
+                    "event_id",
+                    "event_sha256",
+                    "journal_state",
+                    "connector_receipt_sha256",
+                    "readback_verified",
+                }
+                or ack_readback.get("schema")
+                != "discord-connector-event-ack-readback.v1"
+                or ack_readback.get("delivery_id")
+                != record["first_delivery_id"]
+                or ack_readback.get("event_id") != record["first_event_id"]
+                or ack_readback.get("event_sha256")
+                != record["first_event_sha256"]
+                or ack_readback.get("journal_state") != "acked"
+                or ack_readback.get("readback_verified") is not True
+                or not isinstance(
+                    ack_readback.get("connector_receipt_sha256"), str
+                )
+                or _CAPABILITY_GOAL_SHA256_RE.fullmatch(
+                    ack_readback["connector_receipt_sha256"]
+                )
+                is None
+            ):
+                raise RuntimeError("capability goal connector ACK proof drifted")
+
+            process_binding = self._capability_goal_gateway_process_binding()
+            recovery_unsigned = {
+                "schema": _CAPABILITY_GOAL_RECOVERY_SCHEMA,
+                "session_id": session_id,
+                "session_key_sha256": record["session_key_sha256"],
+                "goal_generation_id": record["goal_generation_id"],
+                "lineage_record_sha256": record["record_sha256"],
+                "lineage_sha256": record["lineage_sha256"],
+                "connector_event_id": record["first_event_id"],
+                "connector_event_sha256": record["first_event_sha256"],
+                "connector_delivery_id": record["first_delivery_id"],
+                "connector_ack_readback_receipt_sha256": ack_readback[
+                    "connector_receipt_sha256"
+                ],
+                "connector_journal_state": "acked",
+                "run_id": record["run_id"],
+                "fixture_sha256": record["fixture_sha256"],
+                "release_sha": record["release_sha"],
+                "capability_plan_sha256": record["capability_plan_sha256"],
+                "full_canary_plan_sha256": record[
+                    "full_canary_plan_sha256"
+                ],
+                "fixture_publication_receipt_sha256": record[
+                    "fixture_publication_receipt_sha256"
+                ],
+                **process_binding,
+                "restored_at_unix_ms": now_unix_ms,
+            }
+            recovery = {
+                **recovery_unsigned,
+                "recovery_sha256": _capability_goal_sha256(recovery_unsigned),
+            }
+            recovery_raw = json.dumps(
+                recovery,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+
+            lineage = _CapabilityGoalLineage(
+                source_object_id=id(source),
+                guild_id=record["guild_id"],
+                root_channel_id=record["root_channel_id"],
+                channel_id=record["channel_id"],
+                target_type=record["target_type"],
+                owner_user_id=record["owner_user_id"],
+                first_event_id=record["first_event_id"],
+                first_delivery_id=record["first_delivery_id"],
+                first_delivery_receipt_sha256=record[
+                    "first_delivery_receipt_sha256"
+                ],
+                first_event_sha256=record["first_event_sha256"],
+                first_event_created_at_unix_ms=record[
+                    "first_event_created_at_unix_ms"
+                ],
+                lineage_sha256=record["lineage_sha256"],
+                seal=_CAPABILITY_GOAL_LINEAGE_SEAL,
+            )
+            resealed_source = source
+            resealed_lineage = lineage
+            source.delivered_via_upstream_relay = True
+            setattr(source, _CAPABILITY_GOAL_LINEAGE_ATTRIBUTE, lineage)
+            self._seal_capability_goal_event(event, lineage)
+            await self._write_capability_goal_append_only_meta(
+                _capability_goal_recovery_meta_key(session_id),
+                recovery_raw,
+            )
+            return lineage
+        except Exception as exc:
+            if resealed_source is not None:
+                if (
+                    getattr(
+                        resealed_source,
+                        _CAPABILITY_GOAL_LINEAGE_ATTRIBUTE,
+                        None,
+                    )
+                    is resealed_lineage
+                ):
+                    delattr(resealed_source, _CAPABILITY_GOAL_LINEAGE_ATTRIBUTE)
+                if (
+                    getattr(event, _CAPABILITY_GOAL_LINEAGE_ATTRIBUTE, None)
+                    is resealed_lineage
+                ):
+                    delattr(event, _CAPABILITY_GOAL_LINEAGE_ATTRIBUTE)
+                resealed_source.delivered_via_upstream_relay = False
+            logger.warning(
+                "capability goal startup lineage recovery blocked: %s",
+                exc,
+                exc_info=True,
+            )
+            return None
+
+    @staticmethod
+    def _capability_goal_lineage_for_event(
+        event: Any,
+    ) -> _CapabilityGoalLineage | None:
+        source = getattr(event, "source", None)
+        lineage = _capability_goal_lineage_for_source(source)
+        if (
+            lineage is None
+            or getattr(event, _CAPABILITY_GOAL_LINEAGE_ATTRIBUTE, None)
+            is not lineage
+        ):
+            return None
+        return lineage
+
+    @staticmethod
+    def _is_sealed_capability_goal_continuation(event: Any) -> bool:
+        lineage = GatewayRunner._capability_goal_lineage_for_event(event)
+        return bool(
+            lineage is not None
+            and getattr(event, "internal", None) is True
+            and getattr(event, "metadata", None)
+            == {
+                "hermes_internal_event": "goal_continuation",
+                "hermes_capability_goal_lineage_sha256": (
+                    lineage.lineage_sha256
+                ),
+            }
+        )
+
     def _goal_max_turns_from_config(self) -> int:
         """Resolve the configured /goal turn budget for gateway sessions.
 
@@ -14099,8 +15893,127 @@ class GatewayRunner(
         max_turns = self._goal_max_turns_from_config()
         return GoalManager(session_id=sid, default_max_turns=max_turns), session_entry
 
+    async def _handle_goal_command(self, event: "MessageEvent") -> str:
+        """Run the shared command, then durably bind exact canary authority."""
+
+        capability_canary = getattr(self, "_require_capability_canary", False)
+        if not capability_canary:
+            return await super()._handle_goal_command(event)
+        lineage = self._capability_goal_lineage_for_event(event)
+        if lineage is None:
+            return _CAPABILITY_GOAL_DISABLED
+
+        adapter = self.adapters.get(event.source.platform)
+        quick_key = self._session_key_for_source(event.source)
+        prior_kickoff_objects: set[int] = set()
+        pending_slot = getattr(adapter, "_pending_messages", None)
+        if isinstance(pending_slot, dict) and quick_key in pending_slot:
+            prior_kickoff_objects.add(id(pending_slot[quick_key]))
+        overflow_slot = getattr(self, "_queued_events", None)
+        if isinstance(overflow_slot, dict):
+            prior_kickoff_objects.update(
+                id(item) for item in (overflow_slot.get(quick_key) or [])
+            )
+
+        result = await super()._handle_goal_command(event)
+        mgr, session_entry = await self._get_goal_manager_for_event(event)
+        if mgr is None or session_entry is None:
+            return "Standing goal was not changed because its durable session is unavailable."
+        if not mgr.is_active():
+            try:
+                await self._clear_capability_goal_current_terminal_lineage(
+                    session_entry.session_id
+                )
+            except Exception:
+                logger.warning(
+                    "capability goal lineage clear failed",
+                    exc_info=True,
+                )
+            return result
+        try:
+            await self._persist_capability_goal_lineage_record(
+                session_entry=session_entry,
+                lineage=lineage,
+            )
+            kickoff_candidates: dict[int, MessageEvent] = {}
+            pending_slot = getattr(adapter, "_pending_messages", None)
+            if isinstance(pending_slot, dict):
+                pending_event = pending_slot.get(quick_key)
+                if pending_event is not None:
+                    kickoff_candidates[id(pending_event)] = pending_event
+            overflow_slot = getattr(self, "_queued_events", None)
+            if isinstance(overflow_slot, dict):
+                kickoff_candidates.update(
+                    {
+                        id(item): item
+                        for item in (overflow_slot.get(quick_key) or [])
+                    }
+                )
+            kickoff_candidates = {
+                object_id: item
+                for object_id, item in kickoff_candidates.items()
+                if object_id not in prior_kickoff_objects
+                and getattr(item, "source", None) is event.source
+                and getattr(item, "message_id", None) == event.message_id
+                and getattr(item, "internal", None) is False
+            }
+            if len(kickoff_candidates) > 1:
+                raise RuntimeError("capability goal kickoff authority is ambiguous")
+            for kickoff_event in kickoff_candidates.values():
+                self._seal_capability_goal_event(kickoff_event, lineage)
+        except Exception:
+            logger.error(
+                "capability goal durable lineage persistence failed",
+                exc_info=True,
+            )
+            mgr.clear()
+            try:
+                if adapter and quick_key:
+                    self._clear_goal_pending_continuations(quick_key, adapter)
+                    pending_slot = getattr(adapter, "_pending_messages", None)
+                    pending_event = (
+                        pending_slot.get(quick_key)
+                        if isinstance(pending_slot, dict)
+                        else None
+                    )
+                    if (
+                        pending_event is not None
+                        and id(pending_event) not in prior_kickoff_objects
+                        and pending_event.source is event.source
+                        and pending_event.message_id == event.message_id
+                        and not pending_event.internal
+                    ):
+                        pending_slot.pop(quick_key, None)
+                    overflow_slot = getattr(self, "_queued_events", None)
+                    if isinstance(overflow_slot, dict):
+                        kept = [
+                            item
+                            for item in (overflow_slot.get(quick_key) or [])
+                            if not (
+                                id(item) not in prior_kickoff_objects
+                                and item.source is event.source
+                                and item.message_id == event.message_id
+                                and not item.internal
+                            )
+                        ]
+                        if kept:
+                            overflow_slot[quick_key] = kept
+                        else:
+                            overflow_slot.pop(quick_key, None)
+            except Exception:
+                logger.warning(
+                    "capability goal failed kickoff cleanup failed",
+                    exc_info=True,
+                )
+            return (
+                "Standing goal was not started because its authenticated restart "
+                "lineage could not be durably verified. No automatic goal turn "
+                "will run."
+            )
+        return result
+
     async def _send_goal_status_notice(self, source: Any, message: str) -> None:
-        """Send a /goal judge status line back to the originating chat/thread."""
+        """Send a structured /goal outcome status to the originating lane."""
         adapter = self._adapter_for_source(source)
         if not adapter:
             logger.debug(
@@ -14183,9 +16096,12 @@ class GatewayRunner(
         goal_session_id: str,
         originating_turn_id: str,
         goal_generation_id: str,
+        capability_goal_lineage: _CapabilityGoalLineage | None = None,
     ) -> None:
-        """Run the goal judge after a gateway turn and, if still active,
-        enqueue a continuation prompt for the same session.
+        """Consume the model-authored structured goal outcome after a turn.
+
+        If the exact durable outcome keeps the goal active, enqueue its next
+        continuation prompt for the same session.
 
         Called from ``_handle_message_with_agent`` at turn boundary, AFTER
         the response has been delivered. Safe when no goal is set.
@@ -14194,6 +16110,17 @@ class GatewayRunner(
         user message that arrives simultaneously is handled by the same
         queue and takes priority naturally.
         """
+        capability_canary = getattr(
+            self, "_require_capability_canary", False
+        )
+        if capability_canary:
+            exact_lineage = _capability_goal_lineage_for_source(source)
+            if (
+                exact_lineage is None
+                or capability_goal_lineage is not exact_lineage
+            ):
+                return
+
         try:
             from hermes_cli.goals import GoalManager
         except Exception as exc:
@@ -14219,6 +16146,19 @@ class GatewayRunner(
         except Exception:
             _bg_procs = None
 
+        finalization_intent = None
+        if capability_canary:
+            finalization_intent = (
+                await self._begin_capability_goal_finalization_receipt(
+                    source=source,
+                    capability_goal_lineage=capability_goal_lineage,
+                    manager=mgr,
+                    session_id=sid,
+                    session_key=self._session_key_for_source(source),
+                    goal_generation_id=goal_generation_id,
+                    originating_turn_id=originating_turn_id,
+                )
+            )
         decision = mgr.evaluate_after_turn(
             final_response or "",
             originating_turn_id=originating_turn_id,
@@ -14226,12 +16166,37 @@ class GatewayRunner(
             user_initiated=True,
             background_processes=_bg_procs,
         )
+        if capability_canary:
+            await self._complete_capability_goal_finalization_receipt(
+                manager=mgr,
+                decision=decision,
+                intent=finalization_intent,
+                session_id=sid,
+                goal_generation_id=goal_generation_id,
+                originating_turn_id=originating_turn_id,
+            )
         msg = decision.get("message") or ""
 
+        if capability_canary and not mgr.is_active():
+            try:
+                await self._clear_capability_goal_lineage_record_if_terminal(
+                    session_id=sid,
+                    goal_generation_id=goal_generation_id,
+                    lineage_record_sha256=finalization_intent[
+                        "goal_lineage_record_sha256"
+                    ],
+                )
+            except Exception:
+                logger.warning(
+                    "capability goal terminal lineage clear failed",
+                    exc_info=True,
+                )
+
         # Defer the status line until after the adapter has delivered the
-        # agent's visible final response. The judge runs after the response is
-        # produced but before BasePlatformAdapter sends it, so sending here
-        # would show "✓ Goal achieved" before the answer itself. Registering
+        # agent's visible final response. The structured outcome is consumed
+        # after the response is produced but before BasePlatformAdapter sends
+        # it, so sending here would show "✓ Goal achieved" before the answer
+        # itself. Registering
         # an awaited post-delivery callback preserves delivery reliability
         # without reversing the user-visible ordering.
         if msg and source is not None:
@@ -14253,29 +16218,61 @@ class GatewayRunner(
             adapter = self._adapter_for_source(source)
             _quick_key = self._session_key_for_source(source)
             if adapter and _quick_key:
-                pending_events = []
+                pending_events: list[tuple[str, Any]] = []
                 pending_slot = getattr(adapter, "_pending_messages", None)
                 if isinstance(pending_slot, dict):
                     pending_event = pending_slot.get(_quick_key)
                     if pending_event is not None:
-                        pending_events.append(pending_event)
+                        pending_events.append(("adapter.pending", pending_event))
                 queued_events = getattr(self, "_queued_events", None)
                 if isinstance(queued_events, dict):
-                    pending_events.extend(queued_events.get(_quick_key) or [])
+                    pending_events.extend(
+                        ("runner.fifo_overflow", item)
+                        for item in (queued_events.get(_quick_key) or [])
+                    )
 
-                if any(
-                    not self._is_goal_continuation_event(queued_event)
-                    for queued_event in pending_events
-                ):
+                def _is_automatic(queued_event: Any) -> bool:
+                    if capability_canary:
+                        return self._is_sealed_capability_goal_continuation(
+                            queued_event
+                        )
+                    return self._is_goal_continuation_event(queued_event)
+
+                real_pending = [
+                    (path, item)
+                    for path, item in pending_events
+                    if not _is_automatic(item)
+                ]
+                if real_pending:
+                    if capability_canary:
+                        automatic_duplicates = sum(
+                            1
+                            for _path, item in pending_events
+                            if _is_automatic(item)
+                        )
+                        try:
+                            await self._persist_capability_goal_preemption_receipt(
+                                source=source,
+                                capability_goal_lineage=capability_goal_lineage,
+                                queued_event=real_pending[0][1],
+                                queue_path=real_pending[0][0],
+                                session_id=sid,
+                                session_key=_quick_key,
+                                goal_generation_id=goal_generation_id,
+                                originating_turn_id=originating_turn_id,
+                                automatic_duplicate_count=automatic_duplicates,
+                            )
+                        except Exception:
+                            logger.warning(
+                                "capability goal user-preemption receipt failed",
+                                exc_info=True,
+                            )
                     logger.debug(
                         "goal continuation: real queued input preempts automatic continuation for %s",
                         _quick_key,
                     )
                     return
-                if any(
-                    self._is_goal_continuation_event(queued_event)
-                    for queued_event in pending_events
-                ):
+                if any(_is_automatic(item) for _path, item in pending_events):
                     logger.debug(
                         "goal continuation: duplicate automatic continuation suppressed for %s",
                         _quick_key,
@@ -14289,11 +16286,56 @@ class GatewayRunner(
                     message_id=None,
                     channel_prompt=None,
                     internal=True,
-                    metadata={"hermes_internal_event": "goal_continuation"},
+                    metadata=(
+                        {
+                            "hermes_internal_event": "goal_continuation",
+                            "hermes_capability_goal_lineage_sha256": (
+                                capability_goal_lineage.lineage_sha256
+                            ),
+                        }
+                        if capability_canary
+                        else {"hermes_internal_event": "goal_continuation"}
+                    ),
                 )
+                if capability_canary:
+                    self._seal_capability_goal_event(
+                        cont_event,
+                        capability_goal_lineage,
+                    )
                 self._enqueue_fifo(_quick_key, cont_event, adapter)
+                pending_receipt = getattr(adapter, "_pending_messages", None)
+                overflow_receipt = getattr(self, "_queued_events", None)
+                queued_exactly = bool(
+                    isinstance(pending_receipt, dict)
+                    and pending_receipt.get(_quick_key) is cont_event
+                ) or bool(
+                    isinstance(overflow_receipt, dict)
+                    and any(
+                        queued_event is cont_event
+                        for queued_event in (overflow_receipt.get(_quick_key) or [])
+                    )
+                )
+                if not queued_exactly:
+                    raise RuntimeError(
+                        "goal continuation queue returned without an exact enqueue receipt"
+                    )
         except Exception as exc:
-            logger.debug("goal continuation: enqueue failed: %s", exc)
+            logger.warning(
+                "goal continuation: enqueue failed: %s", exc, exc_info=True
+            )
+            try:
+                await self._defer_goal_status_notice_after_delivery(
+                    source,
+                    "⚠️ Automatic continuation was not queued because the gateway "
+                    "queue failed. The standing goal remains active and its durable "
+                    "progress is preserved. Send a new message to continue.",
+                )
+            except Exception as notice_exc:
+                logger.error(
+                    "goal continuation: enqueue-failure notice failed: %s",
+                    notice_exc,
+                    exc_info=True,
+                )
 
     async def _finalize_gateway_goal_turn(
         self,
@@ -14310,8 +16352,11 @@ class GatewayRunner(
         turn's durable model-authored outcome while ensuring real queued input
         preempts only the automatic continuation, not the outcome itself.
         """
+        capability_goal_lineage = None
         if getattr(self, "_require_capability_canary", False):
-            return
+            capability_goal_lineage = _capability_goal_lineage_for_source(source)
+            if capability_goal_lineage is None:
+                return
         try:
             payload = response if isinstance(response, dict) else {}
             turn_id = str(
@@ -14349,6 +16394,7 @@ class GatewayRunner(
                     goal_session_id=goal_session_id,
                     originating_turn_id=turn_id,
                     goal_generation_id=generation_id,
+                    capability_goal_lineage=capability_goal_lineage,
                 )
                 return
 
@@ -15295,14 +17341,19 @@ class GatewayRunner(
                     thread_id=source.thread_id,
                     session_db=getattr(self._session_db, "_db", self._session_db),
                     # Reload from disk — do not reuse the startup snapshot (#60955).
-                    fallback_model=self._refresh_fallback_model(),
+                    fallback_model=(
+                        None
+                        if self._require_capability_canary
+                        else self._refresh_fallback_model()
+                    ),
                     **self._agent_startup_isolation_kwargs(
                         source,
                         production_access=production_access,
                     ),
                 )
                 try:
-                    return agent.run_conversation(
+                    return self._run_conversation_with_capability_attestation(
+                        agent,
                         user_message=enriched_prompt,
                         task_id=task_id,
                     )
@@ -20817,7 +22868,11 @@ class GatewayRunner(
             # configured after this agent was cached (or after gateway start)
             # must reach the next turn (#60955).  Per-session turn
             # serialization (_running_agents) keeps this safe post-lock.
-            if reused_cached_agent and agent is not None:
+            if (
+                reused_cached_agent
+                and agent is not None
+                and not self._require_capability_canary
+            ):
                 self._apply_fallback_chain_to_agent(
                     agent,
                     self._refresh_fallback_model(),
@@ -20876,12 +22931,17 @@ class GatewayRunner(
                     gateway_session_key=session_key,
                     session_db=getattr(self._session_db, "_db", self._session_db),
                     # Reload from disk — do not reuse the startup snapshot (#60955).
-                    fallback_model=self._refresh_fallback_model(),
+                    fallback_model=(
+                        None
+                        if self._require_capability_canary
+                        else self._refresh_fallback_model()
+                    ),
                     **self._agent_startup_isolation_kwargs(
                         source,
                         production_access=production_access,
                     ),
                 )
+                self._attest_capability_agent_policy(agent)
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
                         # Record the session_id the snapshot was taken for
@@ -20899,6 +22959,8 @@ class GatewayRunner(
                 logger.debug(
                     "Created new agent for session %s (sig=%s)", session_key, _sig
                 )
+
+            self._attest_capability_agent_policy(agent)
 
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
@@ -21852,7 +23914,12 @@ class GatewayRunner(
                     _conversation_kwargs["user_message_provenance"] = (
                         _persist_user_provenance_override
                     )
-                result = agent.run_conversation(
+                # All cache-stable and per-turn mutations are now complete.
+                # Re-attest at the last possible boundary so a session
+                # reasoning override, fast-mode request override, or refreshed
+                # config cannot drift the sealed canary after construction.
+                result = self._run_conversation_with_capability_attestation(
+                    agent,
                     _api_run_message, **_conversation_kwargs
                 )
             finally:
@@ -23045,9 +25112,25 @@ class GatewayRunner(
                 next_channel_prompt = None
                 next_session_key = session_key
                 if pending_event is not None:
+                    if (
+                        getattr(self, "_require_capability_canary", False)
+                        and getattr(pending_event, "internal", False)
+                        and self._capability_goal_lineage_for_event(pending_event)
+                        is None
+                    ):
+                        logger.warning(
+                            "capability goal discarded unsealed queued internal event for session %s",
+                            session_key or "?",
+                        )
+                        return result
                     next_source = getattr(pending_event, "source", None) or source
                     if self._is_goal_continuation_event(pending_event) and (
-                        getattr(self, "_require_capability_canary", False)
+                        (
+                            getattr(self, "_require_capability_canary", False)
+                            and not self._is_sealed_capability_goal_continuation(
+                                pending_event
+                            )
+                        )
                         or not self._goal_still_active_for_session(session_id)
                     ):
                         logger.info(
@@ -24282,8 +26365,8 @@ async def start_gateway(
         require_production_model_sovereignty=(
             require_production_model_sovereignty
         ),
+        require_capability_canary=require_capability_canary,
     )
-    runner._require_capability_canary = require_capability_canary
     isolated_runtime = bool(getattr(runner, "_isolated_runtime", isolated_runtime))
 
     # Track whether an unexpected signal initiated the shutdown. When an
@@ -24548,7 +26631,7 @@ async def start_gateway(
     # Start the gateway
     success = await runner.start()
     if not success:
-        if require_production_model_sovereignty:
+        if require_production_model_sovereignty or require_capability_canary:
             await runner.stop()
             _planned_stop_watcher_stop.set()
             _planned_stop_watcher_thread.join(timeout=2)
@@ -24559,6 +26642,8 @@ async def start_gateway(
     capability_surface_ready = True
     if require_capability_canary:
         try:
+            import providers as provider_registry
+
             from gateway.canonical_capability_canary_runtime import (
                 load_capability_plan,
                 validate_capability_extension_surface,
@@ -24569,6 +26654,7 @@ async def start_gateway(
             validate_capability_extension_surface(
                 get_plugin_manager(),
                 runner.hooks,
+                provider_registry,
                 plan=capability_plan,
             )
         except Exception:

@@ -83,6 +83,10 @@ from gateway.canonical_full_canary_runtime import (
     load_start_receipt,
 )
 from gateway.canonical_writer_activation import ActivationExecutor, ActivationPlan
+from gateway.canonical_projection_export import (
+    ProjectionExportError,
+    validate_projection_export,
+)
 from gateway.canonical_writer_boundary import (
     harden_current_process_against_dumping,
 )
@@ -1984,14 +1988,14 @@ def _read_projection_events(plan: FullCanaryPlan) -> list[Mapping[str, Any]]:
         expected_mode=0o640,
     )
     value = _strict_json(raw, "projection_export_invalid")
-    events = value.get("events")
-    if not isinstance(events, list) or any(
-        not isinstance(item, Mapping) for item in events
-    ):
-        _fail("projection_export_invalid")
-    if len(events) != len({str(item.get("event_id")) for item in events}):
-        _fail("projection_export_duplicate_event")
-    return [copy.deepcopy(dict(item)) for item in events]
+    try:
+        events, _provenance = validate_projection_export(
+            value,
+            maximum_events=1_000_000,
+        )
+    except ProjectionExportError as exc:
+        raise LiveCanaryError("projection_export_invalid") from exc
+    return events
 
 
 def _run_projection_export(plan: FullCanaryPlan) -> list[Mapping[str, Any]]:
@@ -2003,7 +2007,14 @@ def _run_projection_export(plan: FullCanaryPlan) -> list[Mapping[str, Any]]:
     # approved writer-only ActivationPlan.  Calling it avoids adding a second
     # privileged exporter seam or a new model-visible operation.
     receipt = executor._run_projection_export()  # noqa: SLF001
-    if not isinstance(receipt, Mapping) or type(receipt.get("event_count")) is not int:
+    if (
+        not isinstance(receipt, Mapping)
+        or type(receipt.get("event_count")) is not int
+        or type(receipt.get("provenance_count")) is not int
+        or receipt.get("provenance_count") != receipt.get("event_count")
+        or _SHA256_RE.fullmatch(str(receipt.get("provenance_sha256") or ""))
+        is None
+    ):
         _fail("projection_export_receipt_invalid")
     events = _read_projection_events(plan)
     if receipt["event_count"] != len(events):
@@ -2294,6 +2305,7 @@ def _normalize_routeback_event(
                 "message_id",
                 "channel_id",
                 "content_sha256",
+                "public_receipt_sha256",
             )
         },
     }

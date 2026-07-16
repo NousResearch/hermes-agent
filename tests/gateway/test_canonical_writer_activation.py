@@ -717,7 +717,42 @@ def test_projection_validation_binds_canonical_count_hash_and_identity(
     monkeypatch,
 ):
     target = tmp_path / "canonical-events.json"
-    raw = b'{"events":[{"event_id":"a"}]}\n'
+    event_id = "11111111-1111-4111-8111-111111111111"
+    content_sha256 = "a" * 64
+    event = {
+        "event_id": event_id,
+        "occurred_at": "2026-07-15T10:00:00+00:00",
+        "source": {
+            "observed_session": {
+                "request_id": "activation-projection",
+                "platform": "writer_service",
+            }
+        },
+        "decision": {"decided_by": "model_event_append"},
+        "payload": {"canonical_content_sha256": content_sha256},
+    }
+    provenance = {
+        "event_id": event_id,
+        "canonical_content_sha256": content_sha256,
+        "origin": "model_event_append",
+        "trusted_runtime": {
+            "request_id": "activation-projection",
+            "platform": "writer_service",
+        },
+        "appended_at": "2026-07-15T10:00:00+00:00",
+    }
+    raw = (
+        json.dumps(
+            {
+                "events": [event],
+                "provenance": [provenance],
+                "schema": "canonical-writer-projection-export.v2",
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode()
     target.write_bytes(raw)
     target.chmod(0o640)
     identities = activation.NumericIdentities(
@@ -737,6 +772,8 @@ def test_projection_validation_binds_canonical_count_hash_and_identity(
     value = activation._validate_projection(target, identities)
 
     assert value["event_count"] == 1
+    assert value["provenance_count"] == 1
+    assert len(value["provenance_sha256"]) == 64
     assert value["size"] == len(raw)
     assert value["owner_uid"] == os.getuid()
     assert value["group_gid"] == os.getgid()

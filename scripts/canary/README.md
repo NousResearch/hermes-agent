@@ -478,56 +478,78 @@ the evidence needed for safe reconciliation.
 ## Production-shaped capability plan publication
 
 The capability overlay is a separate stopped-only gate after the clean-room
-canary. Its owner launcher accepts one local owner-only mode-`0600` canonical
-JSON input file. That file contains only the fixed input schema, numeric Linux
-UIDs/GIDs, two public canary bot user IDs, public Discord allowlists, exact
-artifact SHA-256 values, and its own `inputs_sha256`. It contains no task text,
-route choice, token, token digest, credential, or target filesystem path.
+canary. Its owner launcher creates a chain of local owner-only mode-`0600`
+canonical files and self-digested receipts. The packaged collectors, not the
+caller, provide the fixed Linux identities and exact artifact SHA-256 values.
+The only caller-authored plan values are two public canary bot user IDs. No
+artifact contains task text, route choice, token, token digest, credential, or
+caller-selected target filesystem path.
 
 The connector and Canonical route-back bot user IDs must be distinct from each
 other and from the fixed production Muncho bot user ID. These are public
 Discord snowflakes only. The two canary credentials remain separate leases and
 never enter the plan or its receipt.
 
-Create the input with the supported owner action; do not hand-assemble it or
-guess the plan digest. The action validates the completed terminal full-canary
-receipt, reads only the fixed root-owned staged plan through the sealed IAP
-transport, validates its canonical bytes and self-digest, and uses the sealed
-release planner to compute the capability-plan SHA. It then creates one local
-mode-`0600` file without replacement and emits the exact plan SHA in its
-self-digested receipt:
+Do not hand-assemble identity or artifact inputs. First collect the pre-plan
+Bitrix foundation inputs from the packaged read-only collector. The collector
+binds the complete terminal full-canary receipt, fixed reviewed service IDs,
+the observed host identity, exact staged plan/release, and packaged asset
+manifest. The owner launcher creates the canonical local file once at mode
+`0600` and emits a self-digested authoring receipt:
+
+```bash
+capability_canary_owner_launcher.py \
+  <exact-40-character-release-sha> author-bitrix-foundation-inputs \
+  --full-canary-receipt-file /absolute/owner-only/full-canary-terminal.json \
+  --output-file /absolute/owner-only/bitrix-foundation-inputs.json
+```
+
+Save canonical stdout as the mode-`0600` foundation-authoring receipt. Then
+bootstrap the stopped Bitrix precursor using only that exact chain:
+
+```bash
+capability_canary_owner_launcher.py \
+  <exact-40-character-release-sha> bootstrap-bitrix-foundation \
+  --full-canary-receipt-file /absolute/owner-only/full-canary-terminal.json \
+  --foundation-file /absolute/owner-only/bitrix-foundation-inputs.json \
+  --foundation-authoring-receipt-file \
+    /absolute/owner-only/bitrix-foundation-authoring.json
+```
+
+Save its canonical stdout as the mode-`0600` Bitrix bootstrap receipt. Only
+then author the capability plan inputs:
 
 ```bash
 capability_canary_owner_launcher.py \
   <exact-40-character-release-sha> author-plan-inputs \
   --full-canary-receipt-file /absolute/owner-only/full-canary-terminal.json \
+  --foundation-authoring-receipt-file \
+    /absolute/owner-only/bitrix-foundation-authoring.json \
+  --bitrix-foundation-receipt-file \
+    /absolute/owner-only/bitrix-foundation-bootstrap.json \
   --output-file /absolute/owner-only/capability-plan-inputs.json \
   --connector-bot-user-id <public-connector-bot-id> \
-  --routeback-bot-user-id <public-routeback-bot-id> \
-  --mac-ops-uid <uid> --mac-ops-gid <gid> \
-  --connector-uid <uid> --connector-gid <gid> \
-  --bitrix-operational-edge-uid <uid> \
-  --bitrix-operational-edge-gid <gid> \
-  --bitrix-operational-edge-client-gid <gid> \
-  --browser-uid <uid> --browser-gid <gid> \
-  --worker-uid <uid> --worker-gid <gid> --worker-client-gid <gid> \
-  --browser-node-sha256 <sha256> --browser-wrapper-sha256 <sha256> \
-  --browser-native-sha256 <sha256> --browser-executable-sha256 <sha256> \
-  --agent-browser-config-sha256 <sha256> \
-  --worker-bwrap-sha256 <sha256> --worker-shell-sha256 <sha256> \
-  --runtime-dependency-manifest-sha256 <sha256> \
-  --bitrix-operational-edge-asset-manifest-sha256 <sha256> \
-  --bitrix-operational-edge-rendered-unit-sha256 <sha256> \
-  --bitrix-operational-edge-rendered-config-sha256 <sha256> \
-  --bitrix-operational-edge-rendered-trust-sha256 <sha256> \
-  --bitrix-operational-edge-identity-bootstrap-receipt-sha256 <sha256> \
-  --bitrix-operational-edge-receipt-public-key-id <sha256> \
-  --bitrix-operational-edge-key-bootstrap-receipt-sha256 <sha256>
+  --routeback-bot-user-id <public-routeback-bot-id>
 ```
 
-All arguments above are public IDs, numeric service identities, or artifact
-digests. No credential is accepted on argv. Save the emitted authoring receipt
-as an owner-only file and pass its `capability_plan_sha256` to `publish-plan`.
+The only caller-authored plan inputs are the two public canary bot snowflakes.
+The packaged collector mechanically derives all reviewed UIDs/GIDs and
+recollects every executable, wrapper, runtime-manifest, and Bitrix artifact
+digest. It embeds the complete terminal/foundation/bootstrap chain and the
+observed host identities. Save the emitted plan-authoring receipt as an
+owner-only file; no plan or full-plan digest is copied back onto argv.
+
+That fixed inventory includes the producer principals `2109/2212`,
+`2110/2213`, `2111/2214`, and `2112/2215`, plus the empty persistent
+receipt-writer group at GID `2216`. The collector rejects partial principals,
+name/numeric collisions, drift, unrelated primary-GID users, or persistent
+supplementary authority. The sole retryable partial state is an exact empty
+pinned group whose user name and UID remain absent; this closes the unavoidable
+crash window between `groupadd` and `useradd`. After plan publication,
+bootstrap creates or resumes only those exact create-only slots with explicit
+numeric IDs and publishes a root-owned mode-`0400` before/after receipt. All
+cross-service access is supplied at service time by systemd
+`SupplementaryGroups=`; bootstrap never runs `usermod`.
 
 Run the sealed publication through the local owner launcher:
 
@@ -538,30 +560,45 @@ cpython-3.11.15-macos-aarch64-none/bin/python3.11 \
   /absolute/clean/hermes-agent/scripts/canary/\
 capability_canary_owner_launcher.py \
   <exact-40-character-release-sha> publish-plan \
+  --full-canary-receipt-file /absolute/owner-only/full-canary-terminal.json \
   --plan-file /absolute/owner-only/capability-plan-inputs.json \
-  --plan-sha256 <exact-reviewed-capability-plan-sha256> \
-  --full-canary-plan-sha256 <exact-full-canary-plan-sha256>
+  --plan-authoring-receipt-file \
+    /absolute/owner-only/capability-plan-authoring.json
 ```
 
-The explicit plan digest is the owner approval. The remote runtime rebuilds the
-plan mechanically from the sealed full-canary plan and supplied IDs/hashes,
-requires the reviewed digest to match, revalidates the dedicated host, release,
-runtime dependencies, browser, worker executables, and stopped services, then
-atomically publishes only the fixed root-owned mode-`0400` path
+The remote runtime validates the complete terminal and authoring context,
+rebuilds the plan mechanically, re-observes every bound host identity, and
+requires the computed digest to match the authoring receipt. It then atomically
+publishes only the fixed root-owned mode-`0400` path
 `/etc/muncho/capability-canary/runtime-plan.json`. Its self-digested receipt is
 append-only below `/var/lib/muncho-capability-canary-control/plan-publications/`.
 A retry succeeds only when both existing plan and receipt are byte-identical;
 an absent half, changed authority, changed plan, or tampered receipt blocks.
 
-After `bootstrap-producer-foundation`, save its canonical stdout receipt as a
-mode-`0600` owner file and create the exact live-fixture authority with the
-pinned owner sshsig key:
+Bootstrap the producer foundation with the same terminal receipt and the exact
+published plan bindings, then save its canonical stdout receipt as a
+mode-`0600` owner file:
+
+```bash
+capability_canary_owner_launcher.py \
+  <exact-40-character-release-sha> bootstrap-producer-foundation \
+  --full-canary-receipt-file /absolute/owner-only/full-canary-terminal.json \
+  --plan-publication-receipt-file \
+    /absolute/owner-only/capability-plan-publication.json \
+  --plan-sha256 <exact-published-capability-plan-sha256> \
+  --full-canary-plan-sha256 <terminal-full-canary-plan-sha256>
+```
+
+Create the exact live-fixture authority with that receipt and the pinned owner
+sshsig key:
 
 ```bash
 capability_canary_owner_launcher.py \
   <exact-40-character-release-sha> author-live-fixture \
   --full-canary-receipt-file /absolute/owner-only/full-canary-terminal.json \
   --producer-receipt-file /absolute/owner-only/producer-bootstrap.json \
+  --plan-publication-receipt-file \
+    /absolute/owner-only/capability-plan-publication.json \
   --output-file /absolute/owner-only/live-fixture-authority.json \
   --run-id <fixed-public-run-id> --valid-for-seconds 900
 ```

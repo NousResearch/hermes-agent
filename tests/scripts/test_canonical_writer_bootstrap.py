@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import socket
 import stat
@@ -30,6 +31,7 @@ from gateway.canonical_writer_postgres_backend import (
 )
 from gateway.canonical_writer_protocol import CanonicalWriterOperation
 from gateway.canonical_writer_boundary import DEFAULT_SOCKET_PATH
+from gateway.canonical_projection_export import PROJECTION_EXPORT_SCHEMA
 from gateway.discord_edge_protocol import ed25519_public_key_id
 from gateway.discord_edge_writer_authority import CanonicalWriterDiscordAuthority
 from scripts.canonical_brain_event_projector import read_events
@@ -51,6 +53,48 @@ from gateway.canonical_writer_service import (
 EVENT_ID_1 = "11111111-1111-4111-8111-111111111111"
 EVENT_ID_2 = "22222222-2222-4222-8222-222222222222"
 EVENT_ID_3 = "33333333-3333-4333-8333-333333333333"
+
+
+def _projection_event(event_id, *, case_id="case:projection"):
+    content_sha256 = hashlib.sha256(event_id.encode()).hexdigest()
+    return {
+        "event_id": event_id,
+        "case_id": case_id,
+        "occurred_at": "2026-07-15T10:00:00+00:00",
+        "source": {
+            "observed_session": {
+                "request_id": f"projection:{event_id}",
+                "platform": "writer_service",
+            }
+        },
+        "decision": {"decided_by": "model_event_append"},
+        "payload": {"canonical_content_sha256": content_sha256},
+    }
+
+
+def _projection_provenance(event):
+    return {
+        "event_id": event["event_id"],
+        "canonical_content_sha256": event["payload"][
+            "canonical_content_sha256"
+        ],
+        "origin": event["decision"]["decided_by"],
+        "trusted_runtime": event["source"]["observed_session"],
+        "appended_at": event["occurred_at"],
+    }
+
+
+def _projection_page(events, *, has_more, next_after_event_id=None):
+    return {
+        "events": events,
+        "provenance": [_projection_provenance(event) for event in events],
+        "has_more": has_more,
+        "next_after_event_id": next_after_event_id or (
+            events[-1]["event_id"] if events else ""
+        ),
+        "case_id": "",
+        "bounded": True,
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -931,16 +975,16 @@ def test_multi_page_export_uses_one_attested_serializable_database_snapshot(
     monkeypatch,
 ):
     pages = [
-        {
-            "events": [{"event_id": EVENT_ID_1}],
-            "has_more": True,
-            "next_after_event_id": EVENT_ID_1,
-        },
-        {
-            "events": [{"event_id": EVENT_ID_2}],
-            "has_more": False,
-            "next_after_event_id": EVENT_ID_2,
-        },
+        _projection_page(
+            [_projection_event(EVENT_ID_1)],
+            has_more=True,
+            next_after_event_id=EVENT_ID_1,
+        ),
+        _projection_page(
+            [_projection_event(EVENT_ID_2)],
+            has_more=False,
+            next_after_event_id=EVENT_ID_2,
+        ),
     ]
     backend, sessions, attested_sessions = _snapshot_backend(
         tmp_path,
@@ -973,12 +1017,11 @@ def test_database_snapshot_rolls_back_when_projection_validation_fails(
     tmp_path,
     monkeypatch,
 ):
-    pages = [
-        {
-            "events": [{"event_id": EVENT_ID_1}, "invalid-row"],
-            "has_more": False,
-        }
-    ]
+    valid = _projection_event(EVENT_ID_1)
+    pages = [{
+        **_projection_page([valid], has_more=False),
+        "events": [valid, "invalid-row"],
+    }]
     backend, sessions, attested_sessions = _snapshot_backend(
         tmp_path,
         monkeypatch,
@@ -1010,20 +1053,22 @@ def test_database_snapshot_rolls_back_when_projection_validation_fails(
 
 
 def test_privileged_projection_export_paginates_and_feeds_pure_projector(tmp_path):
+    first = [
+        _projection_event(EVENT_ID_1, case_id="case:1"),
+        _projection_event(EVENT_ID_2, case_id="case:2"),
+    ]
+    second = [_projection_event(EVENT_ID_3, case_id="case:3")]
     pages = [
-        {
-            "events": [
-                {"event_id": EVENT_ID_1, "case_id": "case:1"},
-                {"event_id": EVENT_ID_2, "case_id": "case:2"},
-            ],
-            "has_more": True,
-            "next_after_event_id": EVENT_ID_2,
-        },
-        {
-            "events": [{"event_id": EVENT_ID_3, "case_id": "case:3"}],
-            "has_more": False,
-            "next_after_event_id": EVENT_ID_3,
-        },
+        _projection_page(
+            first,
+            has_more=True,
+            next_after_event_id=EVENT_ID_2,
+        ),
+        _projection_page(
+            second,
+            has_more=False,
+            next_after_event_id=EVENT_ID_3,
+        ),
     ]
     calls = []
 
@@ -1045,12 +1090,16 @@ def test_privileged_projection_export_paginates_and_feeds_pure_projector(tmp_pat
 
     count = export_projection_events(bootstrap, target, limit=3)
     projected_rows = read_events(target, limit=10)
+    exported = json.loads(target.read_text(encoding="utf-8"))
 
     assert count == 3
-    assert projected_rows == [
-        {"event_id": EVENT_ID_1, "case_id": "case:1"},
-        {"event_id": EVENT_ID_2, "case_id": "case:2"},
-        {"event_id": EVENT_ID_3, "case_id": "case:3"},
+    assert projected_rows == [*first, *second]
+    assert set(exported) == {"events", "provenance", "schema"}
+    assert exported["schema"] == PROJECTION_EXPORT_SCHEMA
+    assert [row["event_id"] for row in exported["provenance"]] == [
+        EVENT_ID_1,
+        EVENT_ID_2,
+        EVENT_ID_3,
     ]
     assert [
         (request.case_id, request.after_event_id, request.limit)
@@ -1068,6 +1117,50 @@ def test_privileged_projection_export_paginates_and_feeds_pure_projector(tmp_pat
     assert getattr(backend, "snapshot_failures", 0) == 0
 
 
+def test_projection_export_unlinks_provenance_scratch_before_directory_fsync(
+    tmp_path,
+    monkeypatch,
+):
+    class _Backend(_ProjectionScopeMixin):
+        @staticmethod
+        def projector_read(_request, _runtime):
+            return _projection_page(
+                [_projection_event(EVENT_ID_1)],
+                has_more=False,
+            )
+
+    bootstrap = SimpleNamespace(
+        config=SimpleNamespace(
+            writer_uid=os.getuid(),
+            projector_gid=os.getgid(),
+        ),
+        backend=_Backend(),
+    )
+    target = tmp_path / "canonical-events.json"
+    order: list[str] = []
+    original_unlink = Path.unlink
+    original_fsync = os.fsync
+
+    def tracked_unlink(path, *args, **kwargs):
+        result = original_unlink(path, *args, **kwargs)
+        if ".provenance.tmp." in path.name:
+            order.append("unlink_provenance")
+        return result
+
+    def tracked_fsync(descriptor):
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            order.append("fsync_directory")
+        return original_fsync(descriptor)
+
+    monkeypatch.setattr(Path, "unlink", tracked_unlink)
+    monkeypatch.setattr(writer_bootstrap.os, "fsync", tracked_fsync)
+
+    assert export_projection_events(bootstrap, target, limit=10) == 1
+
+    assert order == ["unlink_provenance", "fsync_directory"]
+    assert list(tmp_path.glob(".canonical-events.json*.tmp.*")) == []
+
+
 def test_projection_export_failure_removes_partial_file_and_preserves_target(tmp_path):
     target = tmp_path / "canonical-events.json"
     original = '{"events":[{"event_id":"old"}]}\n'
@@ -1076,9 +1169,10 @@ def test_projection_export_failure_removes_partial_file_and_preserves_target(tmp
     class _Backend(_ProjectionScopeMixin):
         @staticmethod
         def projector_read(_request, _runtime):
+            valid = _projection_event(EVENT_ID_1)
             return {
-                "events": [{"event_id": EVENT_ID_1}, "invalid-row"],
-                "has_more": False,
+                **_projection_page([valid], has_more=False),
+                "events": [valid, "invalid-row"],
             }
 
     bootstrap = SimpleNamespace(
@@ -1108,16 +1202,16 @@ def test_projection_export_rejects_nonadvancing_cursor_and_cleans_up(tmp_path):
             nonlocal calls
             calls += 1
             if calls == 1:
-                return {
-                    "events": [{"event_id": EVENT_ID_1}],
-                    "has_more": True,
-                    "next_after_event_id": EVENT_ID_1,
-                }
-            return {
-                "events": [{"event_id": EVENT_ID_2}],
-                "has_more": True,
-                "next_after_event_id": EVENT_ID_1,
-            }
+                return _projection_page(
+                    [_projection_event(EVENT_ID_1)],
+                    has_more=True,
+                    next_after_event_id=EVENT_ID_1,
+                )
+            return _projection_page(
+                [_projection_event(EVENT_ID_2)],
+                has_more=True,
+                next_after_event_id=EVENT_ID_1,
+            )
 
     bootstrap = SimpleNamespace(
         config=SimpleNamespace(
@@ -1141,13 +1235,13 @@ def test_projection_export_rejects_page_larger_than_requested_bound(tmp_path):
         @staticmethod
         def projector_read(request, _runtime):
             assert request.limit == 1
-            return {
-                "events": [
-                    {"event_id": EVENT_ID_1},
-                    {"event_id": EVENT_ID_2},
+            return _projection_page(
+                [
+                    _projection_event(EVENT_ID_1),
+                    _projection_event(EVENT_ID_2),
                 ],
-                "has_more": False,
-            }
+                has_more=False,
+            )
 
     bootstrap = SimpleNamespace(
         config=SimpleNamespace(
@@ -1174,11 +1268,11 @@ def test_projection_export_rejects_truncation_at_global_limit(tmp_path):
         @staticmethod
         def projector_read(request, _runtime):
             assert request.limit == 1
-            return {
-                "events": [{"event_id": EVENT_ID_1}],
-                "has_more": True,
-                "next_after_event_id": EVENT_ID_1,
-            }
+            return _projection_page(
+                [_projection_event(EVENT_ID_1)],
+                has_more=True,
+                next_after_event_id=EVENT_ID_1,
+            )
 
     bootstrap = SimpleNamespace(
         config=SimpleNamespace(
@@ -1200,9 +1294,14 @@ def test_pure_projector_rejects_a_smaller_partial_read_limit(tmp_path):
     target.write_text(
         json.dumps({
             "events": [
-                {"event_id": EVENT_ID_1},
-                {"event_id": EVENT_ID_2},
-            ]
+                _projection_event(EVENT_ID_1),
+                _projection_event(EVENT_ID_2),
+            ],
+            "provenance": [
+                _projection_provenance(_projection_event(EVENT_ID_1)),
+                _projection_provenance(_projection_event(EVENT_ID_2)),
+            ],
+            "schema": PROJECTION_EXPORT_SCHEMA,
         }),
         encoding="utf-8",
     )
@@ -1220,16 +1319,16 @@ def test_projection_export_rejects_duplicate_event_ids_across_pages(tmp_path):
             nonlocal calls
             calls += 1
             if calls == 1:
-                return {
-                    "events": [{"event_id": EVENT_ID_1}],
-                    "has_more": True,
-                    "next_after_event_id": EVENT_ID_1,
-                }
-            return {
-                "events": [{"event_id": EVENT_ID_1}],
-                "has_more": False,
-                "next_after_event_id": EVENT_ID_1,
-            }
+                return _projection_page(
+                    [_projection_event(EVENT_ID_1)],
+                    has_more=True,
+                    next_after_event_id=EVENT_ID_1,
+                )
+            return _projection_page(
+                [_projection_event(EVENT_ID_1)],
+                has_more=False,
+                next_after_event_id=EVENT_ID_1,
+            )
 
     bootstrap = SimpleNamespace(
         config=SimpleNamespace(
@@ -1246,3 +1345,31 @@ def test_projection_export_rejects_duplicate_event_ids_across_pages(tmp_path):
     assert calls == 2
     assert target.exists() is False
     assert list(tmp_path.glob(".canonical-events.json.tmp.*")) == []
+
+
+def test_projection_export_rejects_substituted_provenance_and_cleans_both_temps(
+    tmp_path,
+):
+    event = _projection_event(EVENT_ID_1)
+    page = _projection_page([event], has_more=False)
+    page["provenance"][0]["trusted_runtime"] = {"platform": "substituted"}
+
+    class _Backend(_ProjectionScopeMixin):
+        @staticmethod
+        def projector_read(_request, _runtime):
+            return page
+
+    bootstrap = SimpleNamespace(
+        config=SimpleNamespace(
+            writer_uid=os.getuid(),
+            projector_gid=os.getgid(),
+        ),
+        backend=_Backend(),
+    )
+    target = tmp_path / "canonical-events.json"
+
+    with pytest.raises(RuntimeError, match="provenance join"):
+        export_projection_events(bootstrap, target, limit=10)
+
+    assert target.exists() is False
+    assert list(tmp_path.glob(".canonical-events.json*.tmp.*")) == []

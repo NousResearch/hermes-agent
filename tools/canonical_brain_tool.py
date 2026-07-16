@@ -717,6 +717,11 @@ def _validate_channel_alias_payload(payload: Dict[str, Any]) -> None:
             raise ValueError(
                 "channel.alias.learned root channel forbids parent_channel_id"
             )
+        if channel_id not in APPROVED_OPERATIONAL_GUILD_LANES_BY_CHANNEL_ID:
+            raise ValueError(
+                "channel.alias.learned root requires an existing owner-approved root; "
+                "a new root needs a separate owner capability"
+            )
     elif target_type == "guild_thread":
         if (
             not isinstance(parent_channel_id, str)
@@ -725,6 +730,11 @@ def _validate_channel_alias_payload(payload: Dict[str, Any]) -> None:
         ):
             raise ValueError(
                 "channel.alias.learned guild thread requires a distinct exact parent_channel_id"
+            )
+        if parent_channel_id not in APPROVED_OPERATIONAL_GUILD_LANES_BY_CHANNEL_ID:
+            raise ValueError(
+                "channel.alias.learned guild thread requires an existing "
+                "owner-approved parent root"
             )
     else:
         raise ValueError(
@@ -2371,6 +2381,11 @@ def _resolve_route_back_approved_guild_target(
             )
         resolved_lanes[resolution.lane.key] = resolution.lane
 
+    def exact_root_lane(value: str) -> Any | None:
+        """Resolve one numeric root only through the owner-approved registry."""
+
+        return approved_guild_lane_for_channel_id(value)
+
     for key in ("person", "target_person", "mention"):
         value = str(target_ref.get(key) or "").strip()
         if value:
@@ -2427,6 +2442,25 @@ def _resolve_route_back_approved_guild_target(
                 "route_back_execute target_ref person and lane conflict; ask requester to clarify"
             )
         lane = member_lane
+
+    # Alias learning names an already-authorized capability; it never grants
+    # one. A new root needs a separate owner/passkey-approved allowlist
+    # publication. Learned thread aliases are bounded by an approved root.
+    if lane is not None:
+        if lane.target_type == "guild_channel":
+            if approved_guild_lane_for_channel_id(lane.channel_id) is None:
+                raise ValueError(
+                    "route_back_execute Canonical alias points at a guild root "
+                    "without separate owner-approved allowlist authority"
+                )
+        elif lane.target_type == "guild_thread":
+            if approved_guild_lane_for_channel_id(
+                str(lane.parent_channel_id or "")
+            ) is None:
+                raise ValueError(
+                    "route_back_execute Canonical thread alias parent lacks "
+                    "separate owner-approved allowlist authority"
+                )
 
     channel_id = str(target_ref.get("channel_id") or "").strip()
     chat_id = str(target_ref.get("chat_id") or "").strip()
@@ -2534,6 +2568,12 @@ def _resolve_route_back_approved_guild_target(
             raise ValueError(
                 "route_back_execute target_ref thread parent conflicts with person/lane"
             )
+        approved_parent_lane = lane or exact_root_lane(parent)
+        if approved_parent_lane is None:
+            raise ValueError(
+                "route_back_execute guild thread parent lacks separate "
+                "owner-approved allowlist authority"
+            )
         if thread_id == parent:
             raise ValueError("route_back_execute thread and parent IDs must differ")
         return {
@@ -2542,17 +2582,14 @@ def _resolve_route_back_approved_guild_target(
             "channel_id": thread_id,
             "parent_channel_id": parent,
             "channel_type": "guild_thread",
-            "target_kind": (
-                "registered_guild_lane_thread" if lane else "exact_guild_acl_thread"
-            ),
+            "target_kind": "registered_guild_lane_thread",
             "target_member_key": member.key if member else None,
             "target_member_id": member.discord_user_id if member else None,
             "target_mention": member.mention if member else None,
-            "target_lane_key": lane.key if lane else None,
+            "target_lane_key": approved_parent_lane.key,
         }
 
     target_channel_id = root_or_target_id or (lane.channel_id if lane else "")
-    approved_lane = approved_guild_lane_for_channel_id(target_channel_id)
     if not target_channel_id.isdigit():
         raise ValueError(
             "route_back_execute target is not an exact numeric Discord guild channel; ask requester to clarify"
@@ -2560,6 +2597,12 @@ def _resolve_route_back_approved_guild_target(
     if lane is not None and lane.channel_id != target_channel_id:
         raise ValueError(
             "route_back_execute target_ref channel conflicts with person/lane; ask requester to clarify"
+        )
+    approved_lane = lane or exact_root_lane(target_channel_id)
+    if approved_lane is None:
+        raise ValueError(
+            "route_back_execute target lacks separate owner-approved "
+            "allowlist authority"
         )
     return {
         "target_type": "guild_channel",
@@ -2569,11 +2612,7 @@ def _resolve_route_back_approved_guild_target(
         "target_kind": (
             "member_default_approved_guild_channel"
             if member is not None
-            else (
-                "approved_guild_lane"
-                if approved_lane is not None
-                else "exact_guild_acl_channel"
-            )
+            else "approved_guild_lane"
         ),
         "target_member_key": member.key if member else None,
         "target_member_id": member.discord_user_id if member else None,
@@ -2624,8 +2663,6 @@ def _authorize_route_back_execution(
             "member_default_approved_guild_channel",
             "approved_guild_lane",
             "registered_guild_lane_thread",
-            "exact_guild_acl_channel",
-            "exact_guild_acl_thread",
         }:
             return
         channel_id = str(public_target.get("channel_id") or "").strip()
@@ -2806,8 +2843,13 @@ def _route_back_record_blocked(
     source_refs: Dict[str, Any],
     blocker_reason: str,
     idempotency_key: Optional[str],
+    private_denial_receipt_sha256: Optional[str] = None,
+    dispatch_attempted: Optional[bool] = None,
 ) -> Dict[str, Any]:
     from gateway.canonical_writer_protocol import CanonicalWriterOperation
+    from gateway.discord_edge_writer_authority import (
+        derive_private_denial_receipt_sha256,
+    )
 
     writer_payload = {
         "case_id": case_id,
@@ -2818,6 +2860,39 @@ def _route_back_record_blocked(
         "idempotency_key": idempotency_key,
         "preclaim": True,
     }
+    private_denial_receipt: Dict[str, Any] = {}
+    if (
+        private_denial_receipt_sha256 is not None
+        or dispatch_attempted is not None
+    ):
+        try:
+            expected_private_denial_sha256 = (
+                derive_private_denial_receipt_sha256(
+                    probe_id=str(idempotency_key or ""),
+                )
+            )
+        except (TypeError, ValueError):
+            expected_private_denial_sha256 = ""
+        if (
+            not isinstance(private_denial_receipt_sha256, str)
+            or _SHA256_RE.fullmatch(private_denial_receipt_sha256) is None
+            or private_denial_receipt_sha256
+            != expected_private_denial_sha256
+            or dispatch_attempted is not False
+        ):
+            return {
+                "success": False,
+                "status": "ROUTE_BACK_BLOCKED_RECORD_FAILED",
+                "error": "private_denial_receipt_invalid",
+            }
+        private_denial_receipt = {
+            "private_denial_receipt_sha256": private_denial_receipt_sha256,
+            "dispatch_attempted": False,
+        }
+        # These fields are internal process evidence.  They are not exposed by
+        # either model-facing route-back schema and are accepted by the writer
+        # only for the exact pre-dispatch DM denial blocker.
+        writer_payload.update(private_denial_receipt)
     # Claimed outcomes require writer/edge-signed evidence and go only through
     # _record_route_back_edge_terminal.  This helper cannot downgrade an
     # uncertain post-claim send using caller-authored blocker text.
@@ -2845,6 +2920,7 @@ def _route_back_record_blocked(
             message_summary=message_summary,
             source_refs=source_refs,
             mode="record_blocked",
+            receipt=private_denial_receipt,
             blocker_reason=blocker_reason,
             idempotency_key=idempotency_key,
         )
@@ -2964,6 +3040,19 @@ def route_back_execute_tool(
             raise ValueError("message is required")
         if _contains_forbidden_dm_route_ref(target_ref):
             blocker_reason = "discord_dm_target_forbidden"
+            # This exact receipt is created only inside the mechanical DM
+            # pre-dispatch boundary.  The raw private target never crosses the
+            # writer boundary; Canonical truth receives only its deterministic
+            # receipt digest and the explicit proof that dispatch did not run.
+            from gateway.discord_edge_writer_authority import (
+                derive_private_denial_receipt_sha256,
+            )
+
+            private_denial_receipt_sha256 = (
+                derive_private_denial_receipt_sha256(
+                    probe_id=idempotency_key,
+                )
+            )
             blocked = _route_back_record_blocked(
                 case_id=case_id,
                 target_ref=_sanitized_blocked_target_ref(target_ref),
@@ -2971,6 +3060,10 @@ def route_back_execute_tool(
                 source_refs=source_refs,
                 blocker_reason=blocker_reason,
                 idempotency_key=idempotency_key,
+                private_denial_receipt_sha256=(
+                    private_denial_receipt_sha256
+                ),
+                dispatch_attempted=False,
             )
             return _blocked_execution_result(blocker_reason, blocked)
         if len(message) > MAX_ROUTE_BACK_MESSAGE_CHARS:
@@ -4580,11 +4673,15 @@ CANONICAL_EVENT_APPEND_SCHEMA = {
         "person alias, append person.alias.learned with payload containing exactly alias (the "
         "clarified phrase) and member_key (an existing canonical team-member key), then retry "
         "the operation using the returned immediate_retry_target_person. After clarification "
-        "of an unknown Discord lane, append channel.alias.learned. For a guild text/news root, "
-        "payload contains exactly alias, guild_id, target_type='guild_channel', and channel_id. "
+        "of an unknown Discord lane, append channel.alias.learned only to name an existing "
+        "owner-approved root or a type-10/11 thread below one; alias learning never grants "
+        "permission. For an existing approved guild text/news root, payload contains exactly "
+        "alias, guild_id, target_type='guild_channel', and channel_id. "
         "For a type-10/11 guild thread it contains exactly alias, guild_id, "
-        "target_type='guild_thread', channel_id, and distinct parent_channel_id. Discord DMs, "
-        "group DMs, type-12 private threads, other guilds, and inferred targets are forbidden. "
+        "target_type='guild_thread', channel_id, and distinct existing-approved "
+        "parent_channel_id. A new root needs a separate owner/passkey-approved capability and "
+        "allowlist publication. Discord DMs, group DMs, type-12 private threads, other guilds, "
+        "and inferred targets are forbidden. "
         "Then retry with the exact returned immediate_retry_target_channel."
     ),
     "parameters": {

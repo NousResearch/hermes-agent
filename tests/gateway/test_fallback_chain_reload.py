@@ -11,6 +11,7 @@ full Feishu session path.
 
 from __future__ import annotations
 
+import ast
 import time
 from types import SimpleNamespace
 
@@ -199,23 +200,60 @@ def test_apply_fallback_chain_keeps_unavailable_memo_when_unchanged():
     assert agent._unavailable_fallback_keys == memo
 
 
-def test_background_and_main_agent_paths_call_refresh():
-    """Both AIAgent construction sites must pass a refreshed chain, not the
-    startup snapshot, and the cached-agent reuse path must apply the refreshed
-    chain. Source-level invariant for call sites that resist unit testing.
+def test_background_and_main_agent_paths_refresh_only_outside_sealed_canary():
+    """Both messaging agent constructors refresh fallbacks for normal runs.
+
+    The isolated capability canary is deliberately sealed to one model and
+    therefore supplies no fallback.  Assert the relationship structurally so
+    formatting changes cannot turn this back into a literal snapshot test.
     """
     from pathlib import Path
 
-    source = (
+    source_path = (
         Path(__file__).resolve().parent.parent.parent / "gateway" / "run.py"
-    ).read_text(encoding="utf-8")
-    assert "fallback_model=self._refresh_fallback_model()" in source
-    assert source.count("fallback_model=self._refresh_fallback_model()") >= 2
+    )
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    fallback_values = [
+        keyword.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "AIAgent"
+        for keyword in node.keywords
+        if keyword.arg == "fallback_model"
+    ]
+    guarded_refreshes = [
+        value
+        for value in fallback_values
+        if isinstance(value, ast.IfExp)
+        and isinstance(value.test, ast.Attribute)
+        and isinstance(value.test.value, ast.Name)
+        and value.test.value.id == "self"
+        and value.test.attr == "_require_capability_canary"
+        and isinstance(value.body, ast.Constant)
+        and value.body.value is None
+        and isinstance(value.orelse, ast.Call)
+        and isinstance(value.orelse.func, ast.Attribute)
+        and isinstance(value.orelse.func.value, ast.Name)
+        and value.orelse.func.value.id == "self"
+        and value.orelse.func.attr == "_refresh_fallback_model"
+    ]
+    assert len(guarded_refreshes) == 2
     # The cached-agent reuse path (the load-bearing fix for a long-lived
     # session in a running gateway) must apply the refreshed chain.
-    assert "self._apply_fallback_chain_to_agent(" in source
-    # The stale startup-snapshot form must not remain at create sites.
-    assert "fallback_model=self._fallback_model," not in source
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_apply_fallback_chain_to_agent"
+        for node in ast.walk(tree)
+    )
+    assert not any(
+        isinstance(value, ast.Attribute)
+        and isinstance(value.value, ast.Name)
+        and value.value.id == "self"
+        and value.attr == "_fallback_model"
+        for value in fallback_values
+    )
 
 
 def test_load_fallback_model_static_unchanged_contract(tmp_path, monkeypatch):

@@ -22,6 +22,7 @@ from gateway.discord_connector_protocol import (
     DiscordConnectorHistoryAuthority,
     DiscordConnectorHistoryMessage,
     DiscordConnectorHistoryPage,
+    DiscordConnectorKind,
     DiscordConnectorTarget,
     DiscordConnectorTargetType,
 )
@@ -118,6 +119,48 @@ class _Backend:
         return DiscordConnectorAcceptedMessage("500", True)
 
 
+@pytest.mark.asyncio
+async def test_ack_proof_uses_read_only_kind_and_rejects_delivering_state() -> None:
+    transport = object.__new__(DiscordConnectorRelayTransport)
+    observed = []
+
+    async def _request(kind, payload):
+        observed.append((kind, dict(payload)))
+        return {
+            "status": "ok",
+            "replayed": False,
+            "result": {
+                "delivery_id": payload["delivery_id"],
+                "event_id": payload["event_id"],
+                "event_sha256": payload["event_sha256"],
+                "state": "delivering",
+                "acked": False,
+            },
+            "receipt_sha256": "a" * 64,
+        }
+
+    transport._request = _request
+    with pytest.raises(
+        DiscordConnectorTransportError,
+        match="connector_event_ack_readback_invalid",
+    ):
+        await transport.prove_event_acknowledged(
+            delivery_id="11111111-1111-4111-8111-111111111111",
+            event_id="300",
+            event_sha256="b" * 64,
+        )
+    assert observed == [
+        (
+            DiscordConnectorKind.EVENT_ACK_READBACK,
+            {
+                "delivery_id": "11111111-1111-4111-8111-111111111111",
+                "event_id": "300",
+                "event_sha256": "b" * 64,
+            },
+        )
+    ]
+
+
 def _event(target: DiscordConnectorTarget) -> DiscordConnectorEvent:
     return DiscordConnectorEvent.from_mapping(
         {
@@ -194,11 +237,13 @@ async def test_existing_relay_adapter_transport_has_exact_receipts_and_event_ack
             os.getpid(), os.getuid(), os.getgid()
         ),
     )
+    # Bind and listen synchronously before the client is allowed to connect.
+    # Waiting only for the filesystem node is racy: bind() creates it before
+    # listen() makes the Unix socket accept connections.
+    server.start()
+    server.readiness_identity()
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    deadline = time.monotonic() + 2
-    while not socket_path.exists() and time.monotonic() < deadline:
-        await asyncio.sleep(0.01)
 
     client_pid = _PidProvider()
     authorizer = ExactServerMainPidAuthorizer(

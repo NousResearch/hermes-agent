@@ -313,6 +313,7 @@ muncho-ops = "ops.muncho.runtime.operational_edge_cli:main"
 
 [tool.setuptools]
 py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_bootstrap", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "utils", "mcp_serve"]
+cmdclass = {build_py = "scripts.canary.selective_build_py.SelectiveBuildPy"}
 
 [tool.setuptools.data-files]
 # i18n catalogs. locales/ is a bare data directory (no __init__.py), so it is
@@ -356,6 +357,9 @@ plugins = [
 ]
 
 [tool.setuptools.packages.find]
+# Operational top-level scripts such as the Canonical alias projector are
+# wheel-backed.  The custom build command excludes only the seven exact
+# source-compatibility privileged entrypoint names.
 include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*", "scripts", "scripts.canary", "scripts.canary.*", "ops", "ops.muncho", "ops.muncho.*"]
 
 [tool.pytest.ini_options]

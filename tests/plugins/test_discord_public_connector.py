@@ -118,12 +118,27 @@ def _guild_acl_policy() -> DiscordPublicConnectorPolicy:
 def _guild(*, members=()):
     default_role = object()
     member_map = {int(member.id): member for member in members}
-    return SimpleNamespace(
+    bot_member = SimpleNamespace(id=900)
+
+    async def _fetch_member(user_id):
+        member = (
+            bot_member
+            if int(user_id) == bot_member.id
+            else member_map.get(int(user_id))
+        )
+        if member is None:
+            raise LookupError("member not found")
+        return member
+
+    guild = SimpleNamespace(
         id=100,
         default_role=default_role,
-        me=object(),
+        me=bot_member,
         get_member=lambda user_id: member_map.get(int(user_id)),
+        fetch_member=_fetch_member,
     )
+    bot_member.guild = guild
+    return guild
 
 
 def test_only_public_allowed_guild_channels_and_threads_are_proven() -> None:
@@ -484,6 +499,218 @@ def test_fresh_thread_history_acl_uses_rest_fetched_parent_not_gateway_cache() -
     assert view.permissions_for(guild.default_role).view_channel is True
 
 
+def test_public_target_proof_uses_fresh_rest_acl_not_allowed_gateway_cache() -> None:
+    guild = _guild()
+    cached_allowed = _Channel(200, guild=guild, everyone_view=False)
+    rest_revoked = _Channel(
+        200,
+        guild=guild,
+        everyone_view=False,
+        bot_view=False,
+    )
+
+    async def _fetch_channel(channel_id):
+        assert channel_id == 200
+        return rest_revoked
+
+    connector = object.__new__(DiscordPublicConnectorClient)
+    connector.policy = _guild_acl_policy()
+    connector._client = SimpleNamespace(
+        user=SimpleNamespace(id=900),
+        get_channel=lambda _channel_id: cached_allowed,
+        fetch_channel=_fetch_channel,
+    )
+    connector._submit = lambda coroutine, **_kwargs: asyncio.run(coroutine)
+
+    with pytest.raises(DiscordPublicConnectorError, match="bot_cannot_view_target"):
+        connector.prove_public_target("200")
+
+
+def test_public_target_proof_uses_rest_bot_member_not_cached_guild_me() -> None:
+    guild = _guild()
+    fresh_member = SimpleNamespace(id=900, guild=guild)
+    channel = _Channel(
+        200,
+        guild=guild,
+        everyone_view=False,
+        bot_send=True,
+        requester_send=False,
+    )
+
+    async def _fetch_member(user_id):
+        assert user_id == 900
+        return fresh_member
+
+    async def _fetch_channel(channel_id):
+        assert channel_id == 200
+        return channel
+
+    guild.fetch_member = _fetch_member
+    connector = object.__new__(DiscordPublicConnectorClient)
+    connector.policy = _guild_acl_policy()
+    connector._client = SimpleNamespace(
+        user=SimpleNamespace(id=900),
+        fetch_channel=_fetch_channel,
+    )
+    connector._submit = lambda coroutine, **_kwargs: asyncio.run(coroutine)
+
+    # Cached guild.me is allowed, but the independently REST-fetched member's
+    # current roles are not.  Readiness must fail closed on the latter.
+    assert channel.permissions_for(guild.me).send_messages is True
+    with pytest.raises(DiscordPublicConnectorError, match="bot_cannot_send_target"):
+        connector.prove_public_target("200")
+
+
+def test_send_rechecks_fresh_rest_acl_after_dispatch(monkeypatch) -> None:
+    class _Object:
+        def __init__(self, *, id):
+            self.id = id
+
+    monkeypatch.setattr(
+        public_connector_module,
+        "discord",
+        SimpleNamespace(
+            AllowedMentions=SimpleNamespace(none=lambda: object()),
+            Object=_Object,
+        ),
+    )
+    guild = _guild()
+    fresh_allowed = SimpleNamespace(id=900, guild=guild)
+    fresh_revoked = SimpleNamespace(id=900, guild=guild)
+    initially_allowed = _Channel(
+        200,
+        guild=guild,
+        everyone_view=False,
+        requester_send=True,
+    )
+    revoked = _Channel(
+        200,
+        guild=guild,
+        everyone_view=False,
+        bot_send=True,
+        requester_send=False,
+    )
+
+    async def _send(content, **kwargs):
+        assert content == "bounded payload"
+        assert set(kwargs) == {"allowed_mentions"}
+        return SimpleNamespace(id=301)
+
+    initially_allowed.send = _send
+    fetched = [initially_allowed, revoked]
+    fetched_members = [fresh_allowed, fresh_revoked]
+
+    async def _fetch_channel(channel_id):
+        assert channel_id == 200
+        return fetched.pop(0)
+
+    async def _fetch_member(user_id):
+        assert user_id == 900
+        return fetched_members.pop(0)
+
+    guild.fetch_member = _fetch_member
+
+    connector = object.__new__(DiscordPublicConnectorClient)
+    connector.policy = _guild_acl_policy()
+    connector._client = SimpleNamespace(
+        user=SimpleNamespace(id=900),
+        fetch_channel=_fetch_channel,
+    )
+    connector._submit = lambda coroutine, **_kwargs: asyncio.run(coroutine)
+    target = connector.policy.prove_target(
+        initially_allowed,
+        bot_user=connector._client.user,
+    )
+
+    with pytest.raises(DiscordPublicConnectorError, match="bot_cannot_send_target"):
+        connector.send_public_message(
+            target,
+            "bounded payload",
+            reply_to_message_id=None,
+            deadline_unix_ms=10**15,
+        )
+    assert fetched == []
+    assert fetched_members == []
+    # The cached member still permits send after dispatch; only the fresh
+    # member-role proof detects the revocation.
+    assert revoked.permissions_for(guild.me).send_messages is True
+
+
+@pytest.mark.parametrize(
+    ("observed_reply_id", "verified"),
+    [("300", True), (None, False), ("299", False)],
+)
+def test_send_readback_verifies_exact_reply_reference(
+    monkeypatch,
+    observed_reply_id,
+    verified,
+) -> None:
+    class _Object:
+        def __init__(self, *, id):
+            self.id = id
+
+    monkeypatch.setattr(
+        public_connector_module,
+        "discord",
+        SimpleNamespace(
+            AllowedMentions=SimpleNamespace(none=lambda: object()),
+            Object=_Object,
+        ),
+    )
+    guild = _guild()
+    before = _Channel(200, guild=guild, everyone_view=False)
+    after = _Channel(200, guild=guild, everyone_view=False)
+    bot_user = SimpleNamespace(id=900)
+
+    async def _send(content, **kwargs):
+        assert content == "reply payload"
+        assert kwargs["reference"].id == 300
+        assert kwargs["mention_author"] is False
+        return SimpleNamespace(id=301)
+
+    async def _fetch_message(message_id):
+        assert message_id == 301
+        reference = (
+            SimpleNamespace(message_id=int(observed_reply_id))
+            if observed_reply_id is not None
+            else None
+        )
+        return SimpleNamespace(
+            id=301,
+            channel=SimpleNamespace(id=200),
+            author=bot_user,
+            content="reply payload",
+            reference=reference,
+        )
+
+    before.send = _send
+    after.fetch_message = _fetch_message
+    fetched = [before, after]
+
+    async def _fetch_channel(channel_id):
+        assert channel_id == 200
+        return fetched.pop(0)
+
+    connector = object.__new__(DiscordPublicConnectorClient)
+    connector.policy = _guild_acl_policy()
+    connector._client = SimpleNamespace(
+        user=bot_user,
+        fetch_channel=_fetch_channel,
+    )
+    connector._submit = lambda coroutine, **_kwargs: asyncio.run(coroutine)
+    target = connector.policy.prove_target(before, bot_user=bot_user)
+
+    accepted = connector.send_public_message(
+        target,
+        "reply payload",
+        reply_to_message_id="300",
+        deadline_unix_ms=10**15,
+    )
+    assert accepted.message_id == "301"
+    assert accepted.readback_verified is verified
+    assert fetched == []
+
+
 def test_structured_mention_and_connector_thread_followup_policy() -> None:
     policy = DiscordPublicConnectorPolicy.build(
         allowed_guild_ids=["100"],
@@ -659,17 +886,23 @@ def test_guild_acl_mode_accepts_private_channel_and_public_thread_with_live_perm
     target = policy.prove_target(private_channel, bot_user=object())
     assert target.target_type is DiscordConnectorTargetType.GUILD_CHANNEL
 
-    # Registry/baseline IDs are not exhaustive authorization in guild_acl
-    # mode; Discord's live guild ACL is the authority.
+    # Discord ACL proves who may use an approved lane; it cannot silently add
+    # a new lane to the connector's capability scope.
     future_channel = _Channel(299, guild=guild, everyone_view=False)
-    assert policy.prove_target(
-        future_channel, bot_user=object()
-    ).channel_id == "299"
+    with pytest.raises(DiscordPublicConnectorError, match="target_not_allowed"):
+        policy.prove_target(future_channel, bot_user=object())
 
     thread = _Channel(201, guild=guild, type_value=11, parent=private_channel)
     thread_target = policy.prove_target(thread, bot_user=object())
     assert thread_target.target_type is DiscordConnectorTargetType.GUILD_THREAD
     assert thread_target.parent_channel_id == "200"
+
+    unapproved_parent = _Channel(299, guild=guild, everyone_view=False)
+    with pytest.raises(DiscordPublicConnectorError, match="target_not_allowed"):
+        policy.prove_target(
+            _Channel(298, guild=guild, type_value=11, parent=unapproved_parent),
+            bot_user=object(),
+        )
 
 
 def test_guild_acl_mode_rejects_wrong_scope_dm_private_thread_and_missing_bot_permission() -> None:
@@ -701,7 +934,17 @@ def test_guild_acl_mode_rejects_wrong_scope_dm_private_thread_and_missing_bot_pe
 
 
 def test_guild_acl_author_and_low_noise_mention_policy_follow_channel_acl() -> None:
-    policy = _guild_acl_policy()
+    policy = DiscordPublicConnectorPolicy.build(
+        allowed_guild_ids=["100"],
+        allowed_channel_ids=["200", "299"],
+        allowed_user_ids=[],
+        allowed_role_ids=[],
+        free_response_channel_ids=["200"],
+        public_only=False,
+        author_policy="guild_acl",
+        require_mention=True,
+        thread_require_mention=False,
+    )
     guild = _guild()
     bot = SimpleNamespace(id=900)
     channel = _Channel(200, guild=guild, everyone_view=False)

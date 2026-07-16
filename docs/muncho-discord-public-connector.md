@@ -1,4 +1,4 @@
-# Muncho public Discord connector boundary
+# Muncho privileged Discord connector boundary
 
 This boundary fronts the existing Hermes `RelayAdapter`; it does not add a
 model tool, a prompt rule, a keyword classifier, or a semantic dispatcher.
@@ -9,11 +9,18 @@ deadlines, idempotency, and receipts.
 ## Runtime shape
 
 - `muncho-discord-connector.service` is the privileged token owner for ordinary
-  Discord ingress and ordinary conversational replies. It admits only explicitly allowlisted users in explicitly
-  allowlisted public guild text/news channels and public/news threads whose
-  parent is allowlisted. Discord DMs, group DMs, private threads, non-public
-  targets, and targets the bot cannot use are rejected before gateway/model
-  delivery or Discord dispatch.
+  Discord ingress and ordinary conversational replies. Production
+  `guild_acl` mode admits only exact allowlisted guild text/news roots and
+  Discord type-10/11 public/news threads whose exact parent is allowlisted.
+  Those owner-approved team roots may be ACL-private: the connector proves the
+  requesting member's live channel permissions and the bot's live
+  REST-fetched member/roles plus view/history/send permissions immediately
+  before and after dispatch. Cached `guild.me` is not authority for those
+  proofs. Discord DMs, group DMs, type-12 private
+  threads, unallowlisted roots/parents, and targets the bot cannot use are
+  rejected before gateway/model delivery or Discord dispatch. The isolated
+  canary instead remains `public_only` and requires live `@everyone`
+  visibility.
 - `hermes-cloud-gateway.service` has no Discord credential. It uses the existing
   connector-fronted Relay adapter over the one pinned Unix socket. Both sides
   require the peer UID and the exact current systemd `MainPID` on every frame.
@@ -23,7 +30,7 @@ deadlines, idempotency, and receipts.
   uncertain state. Hermes reports success only after an exact, digest-bound
   receipt includes the Discord message id and a successful live readback.
 - Production readiness is published only after a real Discord session, exact
-  live public/sendable proofs for every configured channel, and an accepting
+  live allowlist/type/ACL/sendable proofs for every configured channel, and an accepting
   Unix listener are all present. A Discord disconnect clears readiness and
   terminates the service; the gateway is bound to that service and cannot keep
   presenting a healthy Discord path. The production unit restarts on failure.
@@ -81,13 +88,15 @@ adapter and cannot consume ordinary connector frames.
    --bootstrap-journal`; normal startup refuses to create it.
 5. Start the connector first. Its readiness requires the exact
    unit/user/MainPID, socket owner/group/mode, existing journal, Discord-ready
-   state, and live public/sendable target proofs. Then start the gateway; its
+   state, and live allowlist/ACL/sendable target proofs. Then start the gateway; its
    own readiness requires a credential-free reciprocal `hello` exchange over
    that exact connector socket.
 6. Verify from `/proc/<gateway-mainpid>/environ`, the gateway unit, config, and
    open file descriptors that the gateway holds no Discord token/path. Verify a
-   public-channel event and receipt-backed reply, and verify DM/private-thread
-   attempts produce no gateway event and no Discord dispatch.
+   allowlisted guild-channel event and receipt-backed reply, and verify
+   DM/group-DM/type-12-private-thread attempts produce no gateway event and no
+   Discord dispatch. Separately verify that the dedicated canary target still
+   requires `@everyone` visibility.
 
 Shutdown is the reverse dependency order. Stop the gateway first, drain
 connector request handlers, stop Discord ingress, then require a fresh journal
@@ -100,6 +109,10 @@ ordinary-session credential to one approved rollback owner, retire the connector
 copy, remove Relay activation, and only then start the direct rollback adapter.
 The signed edge lease remains route-back-only throughout.
 
-The numeric string `1279454038731264061` supplied by the owner is only an input
-to the rendered allowlist after live Discord type/publicness proof; this source
-tree does not guess whether it is a guild, channel, thread, or user ID.
+Every rendered Discord ID has an explicit mechanical role (guild, approved
+root channel, user, role, bot, or canary target). A numeric caller value alone
+cannot expand that allowlist; dynamic lane aliases must arrive through the
+privileged Canonical projection/event contract, may name only an already
+approved root or a thread below one, and still pass fresh Discord type, parent,
+bot-member, and permission proof. A new root requires a separate
+owner/passkey-approved allowlist publication.

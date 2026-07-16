@@ -31,9 +31,14 @@ from gateway.support_ops_alias_projection import (
     projection_payload_sha256,
     validate_alias_projection_document,
 )
+from gateway.canonical_projection_export import (
+    ProjectionExportError,
+    validate_projection_export,
+)
 from gateway.support_ops_team_registry import (
     ALIAS_ENTRIES,
     APPROVED_LANE_ALIAS_ENTRIES,
+    APPROVED_OPERATIONAL_GUILD_LANES_BY_CHANNEL_ID,
     SKYVISION_GUILD_ID,
     STATIC_ALIAS_MEMBER_KEYS,
     STATIC_ALIAS_CHANNEL_IDS,
@@ -229,11 +234,13 @@ def _read_stable_writer_export(
         )
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise AliasProjectorError("writer_export_json_invalid") from exc
-    if not isinstance(value, Mapping) or set(value) != {"events"}:
-        raise AliasProjectorError("writer_export_envelope_invalid")
-    rows = value.get("events")
-    if not isinstance(rows, list) or len(rows) > MAX_WRITER_EXPORT_EVENTS:
-        raise AliasProjectorError("writer_export_events_invalid")
+    try:
+        rows, _provenance = validate_projection_export(
+            value,
+            maximum_events=MAX_WRITER_EXPORT_EVENTS,
+        )
+    except ProjectionExportError as exc:
+        raise AliasProjectorError("writer_export_envelope_invalid") from exc
     return rows, hashlib.sha256(raw).hexdigest(), before
 
 
@@ -363,6 +370,15 @@ def _validate_alias_event(
         or normalized in STATIC_ALIAS_MEMBER_KEYS
     ):
         raise AliasProjectorError("channel_alias_event_target_invalid")
+    if (
+        target_type == "guild_channel"
+        and channel_id not in APPROVED_OPERATIONAL_GUILD_LANES_BY_CHANNEL_ID
+    ) or (
+        target_type == "guild_thread"
+        and parent_channel_id
+        not in APPROVED_OPERATIONAL_GUILD_LANES_BY_CHANNEL_ID
+    ):
+        raise AliasProjectorError("channel_alias_event_target_not_owner_approved")
     static_channel_ids = {
         lane.channel_id
         for static_alias, lane in APPROVED_LANE_ALIAS_ENTRIES

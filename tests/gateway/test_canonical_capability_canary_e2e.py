@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from gateway import canonical_capability_canary_e2e as canary
+from gateway import canonical_capability_canary_producers as producers
 
 
 NOW = 1_800_000_000_000
@@ -24,33 +25,92 @@ def _sha(label: str) -> str:
     return hashlib.sha256(label.encode()).hexdigest()
 
 
+def _full_canary_terminal_receipt(
+    revision: str = "1" * 40,
+) -> dict[str, object]:
+    unsigned = {
+        "schema": "muncho-full-canary-session-bound-owner-receipt.v1",
+        "ok": True,
+        "state": "verified_stopped_and_credentials_retired",
+        "release_sha": revision,
+        "coordinator_input_sha256": _sha("full-coordinator-input"),
+        "full_canary_plan_sha256": "b" * 64,
+        "owner_approval_sha256": _sha("original-full-owner-approval"),
+        "phase_b_readiness_anchor_sha256": _sha("full-phase-b-anchor"),
+        "api_session_key_sha256": _sha("full-api-session-key"),
+        "fixture_sha256": _sha("full-fixture"),
+        "discord_token_install_receipt_sha256": _sha(
+            "full-discord-token-install"
+        ),
+        "coordinator_receipt_sha256": _sha("full-coordinator-receipt"),
+        "live_driver_receipt_sha256": _sha("full-live-driver-receipt"),
+        "services_stopped": True,
+        "discord_token_retired": True,
+        "temporary_admin_created": False,
+        "bootstrap_credential_created": False,
+        "completed_at_unix": NOW // 1_000 - 60,
+    }
+    return {**unsigned, "receipt_sha256": canary._digest(unsigned)}
+
+
 def _private_keys() -> dict[str, Ed25519PrivateKey]:
     return {role: Ed25519PrivateKey.generate() for role in canary.AUTHORITY_ROLES}
 
 
-def _fixture(keys: dict[str, Ed25519PrivateKey]) -> dict:
+def _fixture(
+    keys: dict[str, Ed25519PrivateKey],
+    revision: str = "1" * 40,
+) -> dict:
+    terminal = _full_canary_terminal_receipt(revision)
+    semantic_config_contract = canary.build_semantic_config_contract()
+    public_discord_target = {
+        "target_type": "public_channel",
+        "guild_id": canary.PRODUCTION_DISCORD_GUILD_ID,
+        "channel_id": canary.PRODUCTION_DISCORD_CANARY_CHANNEL_ID,
+    }
+    discord_bot_identities = {
+        "production_bot_user_id": canary.PRODUCTION_DISCORD_BOT_USER_ID,
+        "connector_bot_user_id": (
+            canary.PRODUCTION_DISCORD_CONNECTOR_BOT_USER_ID
+        ),
+        "routeback_bot_user_id": (
+            canary.PRODUCTION_DISCORD_ROUTEBACK_BOT_USER_ID
+        ),
+    }
+    role_topology = canary.build_capability_role_topology_contract(
+        public_discord_target=public_discord_target,
+        discord_bot_identities=discord_bot_identities,
+    )
     return {
         "schema": canary.FIXTURE_SCHEMA,
-        "release_sha": "1" * 40,
-        "release_root": f"/opt/muncho-canary-releases/{'1' * 40}",
+        "release_sha": revision,
+        "release_root": f"/opt/muncho-canary-releases/{revision}",
         "release_artifact_sha256": _sha("release"),
         "capability_plan_sha256": "a" * 64,
         "full_canary_plan_sha256": "b" * 64,
+        "full_canary_terminal_receipt": terminal,
+        "full_canary_terminal_receipt_sha256": terminal["receipt_sha256"],
+        "original_full_canary_owner_approval_sha256": terminal[
+            "owner_approval_sha256"
+        ],
+        "plan_publication_receipt_sha256": _sha(
+            "capability-plan-publication"
+        ),
         "installed_wheel_manifest_sha256": _sha("wheel"),
         "effective_config_sha256": _sha("config"),
         "tool_inventory_sha256": _sha("tools"),
-        "run_id": "capability-run-1",
+        "run_id": "11111111-1111-4111-8111-111111111111",
         "owner_id": "1279454038731264061",
         "host_identity_sha256": _sha("host"),
         "business_edge_service_identity_sha256": _sha("business-edge-service"),
         "bitrix_operational_edge_contract": {
-            "revision": "1" * 40,
+            "revision": revision,
             "service_unit": canary.BITRIX_OPERATIONAL_EDGE_SERVICE_UNIT,
             "service_identity_sha256": _sha("business-edge-service"),
             "asset_manifest_sha256": _sha("bitrix-asset-manifest"),
             "asset_names": list(canary.BITRIX_OPERATIONAL_EDGE_ASSET_NAMES),
             "asset_manifest_path": (
-                f"/opt/muncho-canary-releases/{'1' * 40}/ops/muncho/runtime/"
+                f"/opt/muncho-canary-releases/{revision}/ops/muncho/runtime/"
                 "operational-assets/manifest.json"
             ),
             "rendered_unit_sha256": _sha("bitrix-rendered-unit"),
@@ -134,21 +194,20 @@ def _fixture(keys: dict[str, Ed25519PrivateKey]) -> dict:
             "adaptive_max_effort": "max",
             "max_turns": 90,
         },
+        "semantic_config_contract": semantic_config_contract,
+        "semantic_config_contract_sha256": canary._digest(
+            semantic_config_contract
+        ),
         "required_toolsets": list(canary.REQUIRED_TOOLSETS),
-        "public_discord_target": {
-            "target_type": "public_channel",
-            "guild_id": canary.PRODUCTION_DISCORD_GUILD_ID,
-            "channel_id": canary.PRODUCTION_DISCORD_CANARY_CHANNEL_ID,
-        },
-        "discord_bot_identities": {
-            "production_bot_user_id": canary.PRODUCTION_DISCORD_BOT_USER_ID,
-            "connector_bot_user_id": (
-                canary.PRODUCTION_DISCORD_CONNECTOR_BOT_USER_ID
-            ),
-            "routeback_bot_user_id": (
-                canary.PRODUCTION_DISCORD_ROUTEBACK_BOT_USER_ID
-            ),
-        },
+        "required_toolsets_sha256": canary._digest(
+            {"toolsets": list(canary.REQUIRED_TOOLSETS)}
+        ),
+        "public_discord_target": public_discord_target,
+        "discord_bot_identities": discord_bot_identities,
+        "capability_role_topology_contract": role_topology,
+        "capability_role_topology_contract_sha256": canary._digest(
+            role_topology
+        ),
         "authority_keys": {
             role: {
                 "key_id": hashlib.sha256(
@@ -299,6 +358,9 @@ def _resign(
     keys: dict[str, Ed25519PrivateKey],
 ) -> None:
     role = receipt["authority_role"]
+    producer_readiness_sha256 = (
+        receipt.get("native_evidence", {}).get("producer_readiness_sha256")
+    )
     slot = next(
         (
             name
@@ -315,6 +377,11 @@ def _resign(
     replacement = _signed(
         role, receipt["payload"], fixture=fixture, keys=keys, slot=slot
     )
+    if role != "owner":
+        replacement["native_evidence"]["producer_readiness_sha256"] = (
+            producer_readiness_sha256
+        )
+        _resign_exact_envelope(replacement, keys=keys)
     receipt.clear()
     receipt.update(replacement)
 
@@ -361,6 +428,549 @@ def _terminal(
     }
 
 
+def _producer_authority_and_activation(
+    *,
+    fixture: dict,
+    fixture_sha256: str,
+    keys: dict[str, Ed25519PrivateKey],
+    owner_grant: dict,
+) -> tuple[dict, dict]:
+    owner = owner_grant["payload"]
+    command_bytes = (b"command-1", b"command-2")
+    catalog = producers.build_probe_catalog(
+        release_sha=fixture["release_sha"],
+        capability_plan_sha256=fixture["capability_plan_sha256"],
+        full_canary_plan_sha256=fixture["full_canary_plan_sha256"],
+        fixture_sha256=fixture_sha256,
+        run_id=fixture["run_id"],
+        session_id=owner["session_id"],
+        capability_epoch_sha256=owner["capability_epoch_sha256"],
+        case_ids={
+            name: f"case:{name.replace('_', '-')}"
+            for name in (
+                "workspace_continuation",
+                "capability_denials",
+                "database_reconciliation",
+                "bitrix_boundary",
+                "discord_routeback",
+                "failure_recovery",
+            )
+        },
+        workspace={
+            "first_path_probe_id": "probe:workspace:first",
+            "alternate_path_probe_id": "probe:workspace:alternate",
+            "worker_restart_checkpoint_step_id": "step:workspace:restart",
+        },
+        commands={
+            "allowed": [
+                {
+                    "command_id": f"command:{index}",
+                    "command_b64": base64.b64encode(raw).decode("ascii"),
+                    "command_sha256": hashlib.sha256(raw).hexdigest(),
+                    "max_uses": 1,
+                }
+                for index, raw in enumerate(command_bytes, start=1)
+            ],
+            "denied": [
+                {
+                    "kind": kind,
+                    "command": {
+                        "command_id": f"denied:{kind}",
+                        "command_b64": base64.b64encode(
+                            raw := f"denied:{kind}".encode()
+                        ).decode("ascii"),
+                        "command_sha256": hashlib.sha256(raw).hexdigest(),
+                        "max_uses": 1,
+                    },
+                }
+                for kind in producers.DENIAL_KINDS
+            ],
+        },
+        database={
+            "row_key": "row:one",
+            "idempotency_key": "idempotency:database",
+            "read_probe_id": "probe:database:read",
+            "write_probe_id": "probe:database:write",
+            "lost_response_probe_id": "probe:database:lost",
+        },
+        bitrix={
+            "handoff_id": "handoff-bitrix",
+            "selected_edge_id": "operational-edge:bitrix",
+            "read_operation_id": "bitrix.crm.status_list",
+            "read_arguments": dict(producers.BITRIX_CANARY_READ_ARGUMENTS),
+            "initial_read_probe_id": "probe-bitrix-status-initial",
+            "readback_probe_id": "probe-bitrix-status-readback",
+            "normalized_equality_excluded_fields": ["generated_at_utc"],
+            "mutation_operation_id": "bitrix.crm.lead_add",
+            "mutation_arguments": dict(producers.BITRIX_CANARY_MUTATION_ARGUMENTS),
+            "mutation_probe_id": "probe-bitrix-lead-add-denied",
+        },
+        discord={
+            "public_target": copy.deepcopy(fixture["public_discord_target"]),
+            "public_idempotency_key": "discord:public:one",
+            "private_target_kind": "dm",
+            "private_probe_id": "discord:private:one",
+        },
+        failure={
+            "probes": [
+                {
+                    "component": component,
+                    "failure_id": f"failure:{component}",
+                    "alternative_available": True,
+                    "alternative_id": f"alternative:{component}",
+                }
+                for component in producers.FAILURE_COMPONENTS
+            ]
+        },
+    )
+    assert sorted(
+        item["command_sha256"] for item in catalog["commands"]["allowed"]
+    ) == owner["command_sha256s"]
+    outer_unsigned = {
+        "schema": producers.API_ADMISSION_OWNER_AUTHORITY_SCHEMA,
+        "challenge_sha256": _sha("api-admission-challenge"),
+        "release_sha": fixture["release_sha"],
+        "capability_plan_sha256": fixture["capability_plan_sha256"],
+        "full_canary_plan_sha256": fixture["full_canary_plan_sha256"],
+        "fixture_sha256": fixture_sha256,
+        "run_id": fixture["run_id"],
+        "session_id": owner["session_id"],
+        "capability_epoch_sha256": owner["capability_epoch_sha256"],
+        "issued_at_unix_ms": owner["observed_at_unix_ms"],
+        "valid_until_unix_ms": (
+            owner["observed_at_unix_ms"] + owner["ttl_seconds"] * 1000
+        ),
+        "catalog": catalog,
+        "workspace_owner_receipt": copy.deepcopy(owner_grant),
+    }
+    authority = {
+        **outer_unsigned,
+        "owner_signature": _sshsig_signature(
+            keys["owner"], canary._canonical_bytes(outer_unsigned)
+        ),
+    }
+    authority_sha256 = canary._digest(authority)
+    endpoint_readiness = {
+        role: {
+            "foundation_sha256": fixture["producer_foundation_sha256"],
+            "release_sha": fixture["release_sha"],
+            "capability_plan_sha256": fixture["capability_plan_sha256"],
+            "full_canary_plan_sha256": fixture["full_canary_plan_sha256"],
+            "key_id": fixture["authority_keys"][role]["key_id"],
+            "public_key_ed25519_hex": fixture["authority_keys"][role][
+                "public_key_ed25519_hex"
+            ],
+        }
+        for role in producers.ENDPOINT_ROLES
+    }
+    activation_unsigned = {
+        "schema": producers.PRODUCER_FLEET_READINESS_SCHEMA,
+        "foundation_sha256": fixture["producer_foundation_sha256"],
+        "release_sha": fixture["release_sha"],
+        "capability_plan_sha256": fixture["capability_plan_sha256"],
+        "full_canary_plan_sha256": fixture["full_canary_plan_sha256"],
+        "fixture_sha256": fixture_sha256,
+        "run_id": fixture["run_id"],
+        "run_receipt_root": (
+            f"/var/lib/muncho-capability-canary-evidence/{fixture['run_id']}"
+        ),
+        "owner_id": fixture["owner_id"],
+        "valid_from_unix_ms": fixture["valid_from_unix_ms"],
+        "valid_until_unix_ms": fixture["valid_until_unix_ms"],
+        "receipt_slots": list(producers.RECEIPT_SLOTS),
+        "slot_filenames": dict(producers.SLOT_FILENAME),
+        "slot_roles": dict(producers.SLOT_ROLE),
+        "slot_native_binding_kinds": {
+            slot: list(producers.SLOT_NATIVE_BINDING_KINDS[slot])
+            for slot in producers.RECEIPT_SLOTS
+        },
+        "authority_keys": copy.deepcopy(fixture["authority_keys"]),
+        "endpoint_readiness": endpoint_readiness,
+        "owner_authority": {
+            "producer_kind": "pre_staged_sshsig_grant",
+            "owner_id": fixture["owner_id"],
+            "key_id": fixture["authority_keys"]["owner"]["key_id"],
+            "public_key_source_sha256": _sha("owner-public-key-source"),
+            "grant_sha256": canary._digest(owner_grant),
+            "grant_path": str(producers.DEFAULT_OWNER_GRANT_PATH),
+            "catalog_sha256": catalog["catalog_sha256"],
+            "catalog_path": str(producers.DEFAULT_PROBE_CATALOG_PATH),
+            "authority_sha256": authority_sha256,
+        },
+        "discord_bot_identities": {
+            **copy.deepcopy(fixture["discord_bot_identities"]),
+            "routeback_identity_attestation_sha256": _sha("routeback-attestation"),
+            "routeback_credential_file_metadata_sha256": _sha(
+                "routeback-credential-file"
+            ),
+        },
+        "producer_protocol": "role_local_native_evidence_v1",
+        "root_can_sign_non_observer_roles": False,
+        "token_or_token_digest_recorded": False,
+        "observed_at_unix_ms": NOW + 14,
+    }
+    activation = {
+        **activation_unsigned,
+        "readiness_sha256": canary._digest(activation_unsigned),
+    }
+    return authority, activation
+
+
+def _production_diff(fixture: dict, fixture_sha256: str) -> dict:
+    target = {
+        "project": "adventico-ai-platform",
+        "zone": "europe-west3-a",
+        "vm": "ai-platform-runtime-01",
+        "instance_id": "1094477181810932795",
+    }
+    surface_names = (
+        "code",
+        "config",
+        "identities_permissions",
+        "jobs",
+        "migration_assets",
+    )
+    surface_diffs = {
+        name: {
+            "before_sha256": _sha(f"production-{name}"),
+            "after_sha256": _sha(f"production-{name}"),
+            "changed": False,
+        }
+        for name in surface_names
+    }
+    expected_contract = {
+        "schema": "muncho-production-capability-production-no-change-contract.v1",
+        "run_id": fixture["run_id"],
+        "canary_revision": fixture["release_sha"],
+        "capability_plan_sha256": fixture["capability_plan_sha256"],
+        "full_canary_plan_sha256": fixture["full_canary_plan_sha256"],
+        "fixture_sha256": fixture_sha256,
+        "target": target,
+        "expected_changed_surfaces": [],
+        "boot_identity_change_allowed": True,
+    }
+    static_sha256 = _sha("production-static-observation")
+    unsigned = {
+        "schema": "muncho-production-capability-production-diff.v1",
+        "run_id": fixture["run_id"],
+        "canary_revision": fixture["release_sha"],
+        "capability_plan_sha256": fixture["capability_plan_sha256"],
+        "full_canary_plan_sha256": fixture["full_canary_plan_sha256"],
+        "fixture_sha256": fixture_sha256,
+        "target": target,
+        "before_envelope_sha256": _sha("production-before-envelope"),
+        "after_envelope_sha256": _sha("production-after-envelope"),
+        "before_observation_sha256": _sha("production-before-observation"),
+        "after_observation_sha256": _sha("production-after-observation"),
+        "before_observed_at_unix_ms": NOW + 1,
+        "after_observed_at_unix_ms": NOW + 89,
+        "static_before_sha256": static_sha256,
+        "static_after_sha256": static_sha256,
+        "changed_surfaces": [],
+        "surface_diffs": surface_diffs,
+        "expected_change_contract_sha256": canary._digest(expected_contract),
+        "unexpected_change_count": 0,
+        "production_mutation_observed": False,
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+        "semantic_job_content_recorded": False,
+    }
+    return {**unsigned, "diff_sha256": canary._digest(unsigned)}
+
+
+def _goal_continuation_evidence(
+    *,
+    fixture: dict,
+    fixture_sha256: str,
+    owner_approval_receipt_sha256: str,
+    production_diff_sha256: str,
+) -> dict:
+    replay_binding = {
+        "run_id": fixture["run_id"],
+        "release_sha": fixture["release_sha"],
+        "capability_plan_sha256": fixture["capability_plan_sha256"],
+        "full_canary_plan_sha256": fixture["full_canary_plan_sha256"],
+        "fixture_sha256": fixture_sha256,
+        "owner_approval_receipt_sha256": owner_approval_receipt_sha256,
+    }
+
+    def bound(schema: str, digest_field: str, **fields: object) -> dict:
+        unsigned = {
+            "schema": schema,
+            **replay_binding,
+            **fields,
+        }
+        return {**unsigned, digest_field: canary._digest(unsigned)}
+
+    session_id = f"capability_{fixture['run_id']}"
+    generation_id = "goal-generation-1"
+    ingress = bound(
+        canary.DISCORD_OWNER_INGRESS_SCHEMA,
+        "receipt_sha256",
+        challenge_id="goal-owner-challenge-1",
+        challenge_sha256=_sha("goal-owner-challenge"),
+        wait_started_at_unix_ms=NOW + 13,
+        discord_event_id="1527000000000000001",
+        discord_event_sha256=_sha("goal-owner-discord-event"),
+        target_type="public_guild_channel",
+        guild_id=fixture["public_discord_target"]["guild_id"],
+        channel_id=fixture["public_discord_target"]["channel_id"],
+        owner_user_id=fixture["owner_id"],
+        connector_bot_user_id=fixture["discord_bot_identities"][
+            "connector_bot_user_id"
+        ],
+        delivery_id_sha256=_sha("goal-owner-delivery"),
+        connector_journal_row_sha256=_sha("goal-owner-journal-row"),
+        journal_state="acked",
+        offered_at_unix_ms=NOW + 14,
+        acked_at_unix_ms=NOW + 15,
+        acked=True,
+        message_content_recorded=False,
+    )
+    outcome_specs = (
+        ("goal-turn-1", "continue", 15, 16),
+        ("goal-turn-2", "continue", 19, 22),
+        ("goal-turn-3", "complete", 23, 24),
+    )
+    goal_state_sha256s = [
+        _sha(f"goal-state-{ordinal}") for ordinal in range(len(outcome_specs) + 1)
+    ]
+    outcomes = [
+        bound(
+            canary.GOAL_MODEL_OUTCOME_SCHEMA,
+            "receipt_sha256",
+            session_id=session_id,
+            goal_generation_id=generation_id,
+            turn_id=turn_id,
+            ordinal=ordinal,
+            outcome=outcome,
+            reason_sha256=_sha(f"goal-outcome-reason-{ordinal}"),
+            todo_tool_call_id_sha256=_sha(f"goal-todo-call-{ordinal}"),
+            goal_state_before_sha256=goal_state_sha256s[ordinal - 1],
+            goal_state_after_sha256=goal_state_sha256s[ordinal],
+            turn_started_at_unix_ms=NOW + started_offset,
+            observed_at_unix_ms=NOW + observed_offset,
+            structured_outcome_source="todo.goal_outcome",
+            goal_manager="hermes_cli.goals.GoalManager",
+            goal_max_turns=0,
+        )
+        for ordinal, (turn_id, outcome, started_offset, observed_offset) in enumerate(
+            outcome_specs,
+            start=1,
+        )
+    ]
+
+    def service_identity(
+        *, pid: int, invocation_id: str, monotonic: int, n_restarts: int
+    ) -> dict:
+        unsigned = {
+            "service_unit": "hermes-cloud-gateway.service",
+            "main_pid": pid,
+            "invocation_id": invocation_id,
+            "active_enter_timestamp_monotonic": monotonic,
+            "n_restarts": n_restarts,
+        }
+        return {**unsigned, "identity_sha256": canary._digest(unsigned)}
+
+    restart = bound(
+        canary.GATEWAY_RESTART_RECEIPT_SCHEMA,
+        "receipt_sha256",
+        service_unit="hermes-cloud-gateway.service",
+        restart_count=1,
+        continuation_turn_id="goal-turn-2",
+        continuation_started_at_unix_ms=NOW + 19,
+        restart_requested_at_unix_ms=NOW + 19,
+        restart_completed_at_unix_ms=NOW + 20,
+        pre_service_identity=service_identity(
+            pid=21001,
+            invocation_id="1" * 32,
+            monotonic=1000,
+            n_restarts=0,
+        ),
+        post_service_identity=service_identity(
+            pid=21002,
+            invocation_id="2" * 32,
+            monotonic=2000,
+            n_restarts=1,
+        ),
+        controlled_restart=True,
+    )
+    ctw_recovery = bound(
+        canary.CTW_RECOVERY_RECEIPT_SCHEMA,
+        "receipt_sha256",
+        session_id=session_id,
+        goal_generation_id=generation_id,
+        case_id="goal-case-1",
+        plan_id="goal-plan-1",
+        plan_revision=3,
+        checkpoint_event_id="goal-checkpoint-1",
+        checkpoint_event_sha256=_sha("goal-checkpoint-event"),
+        recovery_readback_sha256=_sha("goal-recovery-readback"),
+        next_step_id="goal-step-3",
+        terminal_event_id="goal-terminal-1",
+        terminal_event_sha256=_sha("goal-terminal-event"),
+        terminal_state="completed",
+        recovery_boundary="gateway_restart_resume",
+        resumed_after_restart=True,
+        replayed_mutation_count=0,
+        observed_at_unix_ms=NOW + 24,
+    )
+    model_sha256 = hashlib.sha256(b"gpt-5.6-sol").hexdigest()
+    prompt_sha256 = _sha("goal-system-prompt")
+    tool_schema_sha256 = _sha("goal-tool-schema")
+    pre_identity_sha256 = restart["pre_service_identity"]["identity_sha256"]
+    post_identity_sha256 = restart["post_service_identity"]["identity_sha256"]
+    api_call_observations = [
+        {
+            "ordinal": 1,
+            "phase": "pre_restart",
+            "turn_id": "goal-turn-1",
+            "gateway_process_identity_sha256": pre_identity_sha256,
+            "pre_api_request_frame_sha256": _sha("goal-pre-api-1"),
+            "post_api_request_frame_sha256": _sha("goal-post-api-1"),
+            "system_prompt_sha256": prompt_sha256,
+            "tool_schema_sha256": tool_schema_sha256,
+            "response_model_sha256": model_sha256,
+            "started_at_unix_ms": NOW + 15,
+            "completed_at_unix_ms": NOW + 16,
+        },
+        {
+            "ordinal": 2,
+            "phase": "post_restart",
+            "turn_id": "goal-turn-2",
+            "gateway_process_identity_sha256": post_identity_sha256,
+            "pre_api_request_frame_sha256": _sha("goal-pre-api-2"),
+            "post_api_request_frame_sha256": _sha("goal-post-api-2"),
+            "system_prompt_sha256": prompt_sha256,
+            "tool_schema_sha256": tool_schema_sha256,
+            "response_model_sha256": model_sha256,
+            "started_at_unix_ms": NOW + 21,
+            "completed_at_unix_ms": NOW + 22,
+        },
+        {
+            "ordinal": 3,
+            "phase": "post_restart",
+            "turn_id": "goal-turn-3",
+            "gateway_process_identity_sha256": post_identity_sha256,
+            "pre_api_request_frame_sha256": _sha("goal-pre-api-3"),
+            "post_api_request_frame_sha256": _sha("goal-post-api-3"),
+            "system_prompt_sha256": prompt_sha256,
+            "tool_schema_sha256": tool_schema_sha256,
+            "response_model_sha256": model_sha256,
+            "started_at_unix_ms": NOW + 23,
+            "completed_at_unix_ms": NOW + 24,
+        },
+    ]
+    model_route = bound(
+        canary.MODEL_ROUTE_RECEIPT_SCHEMA,
+        "receipt_sha256",
+        provider="openai-codex",
+        api_mode="codex_responses",
+        model="gpt-5.6-sol",
+        base_url_sha256=_sha("openai-codex-base-url"),
+        fallback_configured=False,
+        fallback_used=False,
+        model_call_count=3,
+        response_model_sha256s=[model_sha256, model_sha256, model_sha256],
+        api_call_observations=api_call_observations,
+        observed_at_unix_ms=NOW + 24,
+    )
+    stability = bound(
+        canary.PROMPT_TOOL_STABILITY_RECEIPT_SCHEMA,
+        "receipt_sha256",
+        pre_restart_system_prompt_sha256=prompt_sha256,
+        post_restart_system_prompt_sha256=prompt_sha256,
+        pre_restart_tool_schema_sha256=tool_schema_sha256,
+        post_restart_tool_schema_sha256=tool_schema_sha256,
+        prompt_cache_stable=True,
+        tool_schema_stable=True,
+        process_reconstruction_exact=True,
+        observed_at_unix_ms=NOW + 24,
+    )
+    preemption = bound(
+        canary.USER_PREEMPTION_QUEUE_E2E_RECEIPT_SCHEMA,
+        "receipt_sha256",
+        queue_path="gateway.GatewayRunner._post_turn_goal_continuation",
+        owner_event_id="1527000000000000002",
+        owner_event_sha256=_sha("goal-owner-preemption-event"),
+        goal_ingress_connector_row_sha256=_sha("goal-ingress-journal"),
+        preemption_ingress_connector_row_sha256=_sha(
+            "goal-preemption-journal"
+        ),
+        automatic_continuation_was_pending=True,
+        real_user_event_preempted_automatic_continuation=True,
+        queued_user_event_identity_preserved=True,
+        connector_ack_readback_after_restart=True,
+        transport_redelivery_required=False,
+        duplicate_transport_delivery_policy=(
+            "same_delivery_id_exact_ack_replay_only"
+        ),
+        duplicate_model_turn_count=0,
+        live_observed=True,
+        observed_at_unix_ms=NOW + 24,
+    )
+    terminal_routeback = bound(
+        canary.GOAL_TERMINAL_ROUTEBACK_RECEIPT_SCHEMA,
+        "receipt_sha256",
+        session_id=session_id,
+        goal_generation_id=generation_id,
+        case_id="goal-case-1",
+        event_id="goal-terminal-routeback-1",
+        event_sha256=_sha("goal-terminal-routeback-event"),
+        canonical_content_sha256=_sha("goal-terminal-routeback-content"),
+        message_id="1527000000000000099",
+        channel_id=fixture["public_discord_target"]["channel_id"],
+        content_sha256=_sha("goal-terminal-routeback-message"),
+        public_receipt_sha256=_sha("goal-terminal-routeback-receipt"),
+        adapter_receipt=True,
+        receipt_readback_verified=True,
+        writer_origin="routeback_finalize_sent",
+        writer_appended_at="2026-07-13T12:00:00+00:00",
+        observed_at_unix_ms=NOW + 24,
+    )
+    isolation_projection = canary.normalize_goal_continuation_isolation_projection(
+        fixture=fixture
+    )
+    terminal = bound(
+        canary.GOAL_CONTINUATION_TERMINAL_SCHEMA,
+        "terminal_sha256",
+        discord_owner_ingress_receipt_sha256=ingress["receipt_sha256"],
+        session_id=session_id,
+        goal_generation_id=generation_id,
+        continue_outcome_receipt_sha256s=[
+            item["receipt_sha256"] for item in outcomes[:-1]
+        ],
+        completion_outcome_receipt_sha256=outcomes[-1]["receipt_sha256"],
+        gateway_restart_receipt_sha256=restart["receipt_sha256"],
+        ctw_recovery_receipt_sha256=ctw_recovery["receipt_sha256"],
+        model_route_receipt_sha256=model_route["receipt_sha256"],
+        prompt_tool_stability_receipt_sha256=stability["receipt_sha256"],
+        user_preemption_queue_e2e_receipt_sha256=preemption["receipt_sha256"],
+        terminal_routeback_receipt_sha256=terminal_routeback[
+            "receipt_sha256"
+        ],
+        production_diff_sha256=production_diff_sha256,
+        isolation_equivalence_projection=isolation_projection,
+        isolation_equivalence_projection_sha256=canary._digest(
+            isolation_projection
+        ),
+        completed_at_unix_ms=NOW + 24,
+    )
+    return bound(
+        canary.GOAL_CONTINUATION_EVIDENCE_SCHEMA,
+        "evidence_sha256",
+        discord_owner_ingress=ingress,
+        model_outcomes=outcomes,
+        gateway_restart=restart,
+        ctw_recovery=ctw_recovery,
+        model_route=model_route,
+        prompt_tool_stability=stability,
+        user_preemption_queue_e2e=preemption,
+        terminal_routeback=terminal_routeback,
+        terminal=terminal,
+    )
+
+
 def _evidence(
     fixture: dict,
     fixture_sha256: str,
@@ -381,7 +991,20 @@ def _evidence(
             "effective_config_sha256": fixture["effective_config_sha256"],
             "tool_inventory_sha256": fixture["tool_inventory_sha256"],
             **fixture["model_route"],
+            "semantic_config_contract": copy.deepcopy(
+                fixture["semantic_config_contract"]
+            ),
+            "semantic_config_contract_sha256": fixture[
+                "semantic_config_contract_sha256"
+            ],
             "toolsets": list(canary.REQUIRED_TOOLSETS),
+            "ordered_toolsets_sha256": fixture["required_toolsets_sha256"],
+            "capability_role_topology_contract": copy.deepcopy(
+                fixture["capability_role_topology_contract"]
+            ),
+            "capability_role_topology_contract_sha256": fixture[
+                "capability_role_topology_contract_sha256"
+            ],
             "kanban_auxiliary_planning_enabled": False,
             "kanban_auto_decompose": False,
             "kanban_dispatch_in_gateway": False,
@@ -406,7 +1029,7 @@ def _evidence(
             **_common(canary.PLAN_APPROVAL_SCHEMA, fixture, fixture_sha256, 12),
             "approval_id": "approval-workspace",
             "owner_id": fixture["owner_id"],
-            "session_id": "session-workspace",
+            "session_id": f"capability_{fixture['run_id']}",
             "capability_epoch_sha256": _sha("epoch-workspace"),
             "command_sha256s": commands,
             "ttl_seconds": 7200,
@@ -414,6 +1037,13 @@ def _evidence(
         },
     )
     owner_grant_sha256 = canary._digest(owner_grant)
+    production_diff = _production_diff(fixture, fixture_sha256)
+    goal_continuation = _goal_continuation_evidence(
+        fixture=fixture,
+        fixture_sha256=fixture_sha256,
+        owner_approval_receipt_sha256=owner_grant_sha256,
+        production_diff_sha256=production_diff["diff_sha256"],
+    )
     workspace = {
         "gateway_receipt": sign(
             "gateway_observer",
@@ -424,7 +1054,7 @@ def _evidence(
                     fixture_sha256,
                     20,
                 ),
-                "session_id": "session-workspace",
+                "session_id": f"capability_{fixture['run_id']}",
                 "capability_epoch_sha256": _sha("epoch-workspace"),
                 "transcript_sha256": _sha("workspace-transcript"),
                 "task_workspace_evidence_sha256s": sorted(
@@ -449,6 +1079,7 @@ def _evidence(
                 "consumed_command_sha256s": commands,
                 "terminal_plan_id": workspace_terminal["plan_id"],
                 "terminal_plan_revision": workspace_terminal["revision"],
+                "goal_continuation_evidence": goal_continuation,
             },
         ),
         "writer_receipt": sign(
@@ -460,7 +1091,7 @@ def _evidence(
                     fixture_sha256,
                     21,
                 ),
-                "session_id": "session-workspace",
+                "session_id": f"capability_{fixture['run_id']}",
                 "capability_epoch_sha256": _sha("epoch-workspace"),
                 "owner_grant_id": "approval-workspace",
                 "owner_grant_sha256": owner_grant_sha256,
@@ -580,6 +1211,47 @@ def _evidence(
         ),
     }
 
+    discord_terminal = _terminal("discord")
+    discord_source_refs = {"thread_id": "thread:discord-canary-source"}
+    sent_receipt = {
+        "platform": "discord",
+        "adapter_receipt": True,
+        "receipt_readback_verified": True,
+        "message_id": "1504852355588423999",
+        "channel_id": fixture["public_discord_target"]["channel_id"],
+        "content_sha256": _sha("discord-content"),
+        "public_receipt_sha256": _sha("discord-public-receipt"),
+    }
+    private_receipt = {
+        "private_denial_receipt_sha256": _sha("discord-dm-denial"),
+        "dispatch_attempted": False,
+    }
+    sent_event_binding = {
+        "schema": canary.CANONICAL_ROUTEBACK_EVENT_BINDING_SCHEMA,
+        "event_id": "event-route-back-sent",
+        "event_type": "route_back.sent",
+        "case_id": discord_terminal["case_id"],
+        "event_sha256": _sha("route-back-sent"),
+        "canonical_content_sha256": _sha("route-back-sent-content"),
+        "source_refs": discord_source_refs,
+        "returned_receipt": copy.deepcopy(sent_receipt),
+        "payload_receipt": copy.deepcopy(sent_receipt),
+        "route_back_receipt": copy.deepcopy(sent_receipt),
+    }
+    blocked_event_binding = {
+        "schema": canary.CANONICAL_ROUTEBACK_EVENT_BINDING_SCHEMA,
+        "event_id": "event-route-back-blocked",
+        "event_type": "route_back.blocked",
+        "case_id": discord_terminal["case_id"],
+        "event_sha256": _sha("route-back-blocked"),
+        "canonical_content_sha256": _sha("route-back-blocked-content"),
+        "source_refs": discord_source_refs,
+        "returned_receipt": copy.deepcopy(private_receipt),
+        "payload_receipt": copy.deepcopy(private_receipt),
+        "route_back_receipt": copy.deepcopy(private_receipt),
+        "payload_dispatch_attempted": False,
+        "route_back_dispatch_attempted": False,
+    }
     discord = {
         "edge_receipt": sign(
             "discord_edge",
@@ -609,14 +1281,11 @@ def _evidence(
             "canonical_writer",
             {
                 **_common(canary.DISCORD_WRITER_SCHEMA, fixture, fixture_sha256, 61),
-                "sent_event_id": "event-route-back-sent",
-                "sent_event_sha256": _sha("route-back-sent"),
+                "sent_event": sent_event_binding,
                 "sent_after_verified_readback": True,
-                "sent_platform_message_id": "1504852355588423999",
-                "blocked_event_id": "event-route-back-blocked",
-                "blocked_event_sha256": _sha("route-back-blocked"),
+                "blocked_event": blocked_event_binding,
                 "blocked_before_dispatch": True,
-                "terminal_ctw": _terminal("discord"),
+                "terminal_ctw": discord_terminal,
             },
         ),
     }
@@ -830,9 +1499,38 @@ def _evidence(
             ),
             "browser_session_retired": True,
             "isolated_worker_lease_cleanup_verified": True,
-            "production_diff_sha256": _sha("production-diff"),
+            "production_diff_sha256": production_diff["diff_sha256"],
         },
     )
+
+    producer_owner_authority, producer_activation = (
+        _producer_authority_and_activation(
+            fixture=fixture,
+            fixture_sha256=fixture_sha256,
+            keys=keys,
+            owner_grant=owner_grant,
+        )
+    )
+    producer_readiness_sha256 = producer_activation["readiness_sha256"]
+    non_owner_receipts = [
+        runtime,
+        workspace["gateway_receipt"],
+        workspace["writer_receipt"],
+        denials,
+        database,
+        bitrix["edge_receipt"],
+        bitrix["writer_receipt"],
+        discord["edge_receipt"],
+        discord["writer_receipt"],
+        failures["gateway_receipt"],
+        failures["writer_receipt"],
+        cleanup,
+    ]
+    for receipt in non_owner_receipts:
+        receipt["native_evidence"]["producer_readiness_sha256"] = (
+            producer_readiness_sha256
+        )
+        _resign_exact_envelope(receipt, keys=keys)
 
     observer_stop_unsigned = {
         "schema": canary.OBSERVER_STOP_RECEIPT_SCHEMA,
@@ -863,7 +1561,7 @@ def _evidence(
     }
     fleet_retirement_unsigned = {
         "schema": canary.PRODUCER_FLEET_RETIREMENT_SCHEMA,
-        "readiness_sha256": PRODUCER_READINESS_SHA256,
+        "readiness_sha256": producer_readiness_sha256,
         "foundation_sha256": fixture["producer_foundation_sha256"],
         "release_sha": fixture["release_sha"],
         "capability_plan_sha256": fixture["capability_plan_sha256"],
@@ -871,6 +1569,7 @@ def _evidence(
         "fixture_sha256": fixture_sha256,
         "run_id": fixture["run_id"],
         "path": canary.PRODUCER_ACTIVATION_PATH,
+        "retirement_intent_sha256": _sha("producer-retirement-intent"),
         "retired": True,
         "absence_verified": True,
         "retired_at_unix_ms": NOW + 92,
@@ -878,6 +1577,65 @@ def _evidence(
     fleet_retirement = {
         **fleet_retirement_unsigned,
         "receipt_sha256": canary._digest(fleet_retirement_unsigned),
+    }
+    admission_retirement_unsigned = {
+        "schema": canary.API_ADMISSION_RETIREMENT_SCHEMA,
+        "run_id": fixture["run_id"],
+        "fixture_sha256": fixture_sha256,
+        "session_id": f"capability_{fixture['run_id']}",
+        "capability_epoch_sha256": _sha("capability-epoch"),
+        "challenge_sha256": _sha("api-admission-challenge"),
+        "owner_authority_path": (
+            f"/var/lib/muncho-capability-canary-evidence/{fixture['run_id']}/"
+            "api-admission-owner-authority.json"
+        ),
+        "owner_authority_sha256": canary._digest(producer_owner_authority),
+        "install_publication_sha256": _sha("api-admission-install"),
+        "intent_sha256": _sha("api-admission-retirement-intent"),
+        "catalog_sha256": producer_owner_authority["catalog"]["catalog_sha256"],
+        "owner_grant_sha256": producer_activation["owner_authority"][
+            "grant_sha256"
+        ],
+        "catalog_absent": True,
+        "owner_grant_absent": True,
+        "retired_at_unix_ms": NOW + 93,
+    }
+    admission_retirement = {
+        **admission_retirement_unsigned,
+        "receipt_sha256": canary._digest(admission_retirement_unsigned),
+    }
+    watchdog_unsigned = {
+        "operation": "normal_lifecycle_disarm",
+        "watchdog_id": "f" * 32,
+        "watchdog_authority_sha256": _sha("watchdog-authority"),
+        "disarm_intent_path": (
+            "/var/lib/muncho-capability-canary-control/watchdog-disarm-intent.json"
+        ),
+        "disarm_intent_sha256": _sha("watchdog-disarm-intent"),
+        "timer_name": "muncho-capability-expiry-f.timer",
+        "timer_disabled": True,
+        "timer_wants_absent": True,
+        "service_absent": True,
+        "timer_absent": True,
+        "completed_at_unix": (NOW + 94) // 1000,
+        "ok": True,
+        "schema": canary.CAPABILITY_EXPIRY_WATCHDOG_DISARM_COMPLETION_SCHEMA,
+        "receipt_path": (
+            "/var/lib/muncho-capability-canary-control/"
+            "watchdog-disarm-completion.json"
+        ),
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+    }
+    watchdog_completion = {
+        **watchdog_unsigned,
+        "receipt_sha256": canary._digest(watchdog_unsigned),
+    }
+    watchdog_retirement = {
+        "watchdog_count": 1,
+        "retired": [watchdog_completion],
+        "all_timers_disabled": True,
+        "all_unit_files_absent": True,
     }
     finalization_unsigned = {
         "schema": canary.CLEANUP_FINALIZATION_SCHEMA,
@@ -890,7 +1648,10 @@ def _evidence(
         "observer_stop_receipt": observer_stop,
         "service_stop_proof": final_stop_proof,
         "producer_fleet_retirement": fleet_retirement,
+        "admission_input_retirement": admission_retirement,
+        "expiry_watchdog_retirement": watchdog_retirement,
         "producer_activation_absent": True,
+        "admission_inputs_absent": True,
         "credentials_absent": True,
         "bitrix_receipt_key_pair_absent": True,
         "full_canary_stopped_preflight_sha256": _sha(
@@ -911,7 +1672,9 @@ def _evidence(
         "release_sha": fixture["release_sha"],
         "release_artifact_sha256": fixture["release_artifact_sha256"],
         "installed_wheel_manifest_sha256": fixture["installed_wheel_manifest_sha256"],
-        "producer_readiness_sha256": PRODUCER_READINESS_SHA256,
+        "producer_readiness_sha256": producer_readiness_sha256,
+        "producer_activation": producer_activation,
+        "producer_owner_authority": producer_owner_authority,
         "run_id": fixture["run_id"],
         "started_at_unix_ms": NOW + 5,
         "api_started_at_unix_ms": NOW + 15,
@@ -940,6 +1703,42 @@ def valid_bundle():
     return keys, fixture, evidence
 
 
+def build_signed_production_prerequisite_evidence_for_test(
+    revision: str = "1" * 40,
+) -> tuple[
+    dict, str, dict, dict, dict
+]:
+    """Return signed goal/cleanup envelopes and their exact native diff."""
+
+    keys = _private_keys()
+    fixture = _fixture(keys, revision=revision)
+    fixture_sha256 = canary._digest(fixture)
+    evidence = _evidence(fixture, fixture_sha256, keys)
+    workspace_gateway_envelope = copy.deepcopy(
+        evidence["bundles"]["workspace_continuation"]["gateway_receipt"]
+    )
+    cleanup_envelope = copy.deepcopy(evidence["cleanup_receipt"])
+    production_diff = _production_diff(fixture, fixture_sha256)
+    return (
+        fixture,
+        fixture_sha256,
+        workspace_gateway_envelope,
+        cleanup_envelope,
+        production_diff,
+    )
+
+
+def build_signed_goal_continuation_workspace_gateway_for_test(
+    revision: str = "1" * 40,
+) -> tuple[dict, str, dict]:
+    """Return a complete fixture and its real signed workspace envelope."""
+
+    fixture, fixture_sha256, workspace, _cleanup, _diff = (
+        build_signed_production_prerequisite_evidence_for_test(revision)
+    )
+    return fixture, fixture_sha256, workspace
+
+
 def _verify(fixture: dict, evidence: dict) -> dict:
     return canary.verify_capability_canary(
         fixture,
@@ -960,6 +1759,30 @@ def test_valid_signed_six_bundle_evidence_verifies(valid_bundle):
         for key, value in result.items()
         if key != "verification_receipt_sha256"
     })
+
+
+def test_legacy_capability_evidence_v1_is_rejected(valid_bundle):
+    _keys, fixture, evidence = valid_bundle
+    evidence["schema"] = "muncho-production-capability-canary-evidence.v1"
+
+    with pytest.raises(canary.CapabilityCanaryEvidenceError) as raised:
+        _verify(fixture, evidence)
+
+    assert raised.value.code == "evidence_invalid"
+
+
+def test_legacy_discord_writer_v1_is_rejected_even_when_resigned(valid_bundle):
+    keys, fixture, evidence = valid_bundle
+    writer = evidence["bundles"]["discord_routeback"]["writer_receipt"]
+    writer["payload"]["schema"] = (
+        "muncho-production-capability-discord-writer.v1"
+    )
+    _resign(writer, fixture=fixture, keys=keys)
+
+    with pytest.raises(canary.CapabilityCanaryEvidenceError) as raised:
+        _verify(fixture, evidence)
+
+    assert raised.value.code == "discord_bundle_invalid"
 
 
 def test_tampered_signed_receipt_is_rejected(valid_bundle):
@@ -1179,6 +2002,18 @@ def _redigest_cleanup_finalization(evidence: dict) -> None:
         for key, value in retirement.items()
         if key != "receipt_sha256"
     })
+    admission = finalization["admission_input_retirement"]
+    admission["receipt_sha256"] = canary._digest({
+        key: value
+        for key, value in admission.items()
+        if key != "receipt_sha256"
+    })
+    for completion in finalization["expiry_watchdog_retirement"]["retired"]:
+        completion["receipt_sha256"] = canary._digest({
+            key: value
+            for key, value in completion.items()
+            if key != "receipt_sha256"
+        })
     finalization["finalization_sha256"] = canary._digest({
         key: value
         for key, value in finalization.items()
@@ -1193,6 +2028,9 @@ def _redigest_cleanup_finalization(evidence: dict) -> None:
         "observer_not_stopped",
         "observer_not_last",
         "activation_present",
+        "admission_inputs_present",
+        "admission_retirement_not_absent",
+        "watchdog_timer_not_absent",
         "retirement_not_absent",
         "retirement_wrong_activation",
         "finalization_predates_cleanup",
@@ -1212,6 +2050,14 @@ def test_cleanup_finalization_rejects_impossible_or_unbound_truths(
         stop_order[0], stop_order[-1] = stop_order[-1], stop_order[0]
     elif mutation == "activation_present":
         finalization["producer_activation_absent"] = False
+    elif mutation == "admission_inputs_present":
+        finalization["admission_inputs_absent"] = False
+    elif mutation == "admission_retirement_not_absent":
+        finalization["admission_input_retirement"]["catalog_absent"] = False
+    elif mutation == "watchdog_timer_not_absent":
+        finalization["expiry_watchdog_retirement"]["retired"][0][
+            "timer_absent"
+        ] = False
     elif mutation == "retirement_not_absent":
         finalization["producer_fleet_retirement"][
             "absence_verified"
@@ -1267,6 +2113,75 @@ def test_discord_dm_must_be_denied_before_dispatch(valid_bundle):
     _resign(edge, fixture=fixture, keys=keys)
     with pytest.raises(canary.CapabilityCanaryEvidenceError) as raised:
         _verify(fixture, evidence)
+    assert raised.value.code == "discord_bundle_invalid"
+
+
+@pytest.mark.parametrize(
+    ("event_name", "receipt_name", "field", "replacement"),
+    [
+        ("sent_event", "returned_receipt", "public_receipt_sha256", "e" * 64),
+        ("sent_event", "payload_receipt", "message_id", "1504852355588423998"),
+        ("sent_event", "route_back_receipt", "public_receipt_sha256", "e" * 64),
+        (
+            "blocked_event",
+            "returned_receipt",
+            "private_denial_receipt_sha256",
+            "e" * 64,
+        ),
+        (
+            "blocked_event",
+            "payload_receipt",
+            "private_denial_receipt_sha256",
+            "e" * 64,
+        ),
+        (
+            "blocked_event",
+            "route_back_receipt",
+            "private_denial_receipt_sha256",
+            "e" * 64,
+        ),
+        ("blocked_event", "returned_receipt", "dispatch_attempted", True),
+        ("blocked_event", "payload_receipt", "dispatch_attempted", True),
+        ("blocked_event", "route_back_receipt", "dispatch_attempted", True),
+    ],
+)
+def test_discord_writer_receipt_substitution_fails_at_every_bound_level(
+    valid_bundle,
+    event_name,
+    receipt_name,
+    field,
+    replacement,
+):
+    keys, fixture, evidence = valid_bundle
+    writer = evidence["bundles"]["discord_routeback"]["writer_receipt"]
+    writer["payload"][event_name][receipt_name][field] = replacement
+    _resign(writer, fixture=fixture, keys=keys)
+
+    with pytest.raises(canary.CapabilityCanaryEvidenceError) as raised:
+        _verify(fixture, evidence)
+
+    assert raised.value.code == "discord_bundle_invalid"
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "payload_dispatch_attempted",
+        "route_back_dispatch_attempted",
+    ],
+)
+def test_discord_writer_blocked_event_dispatch_flags_are_exact(
+    valid_bundle,
+    field,
+):
+    keys, fixture, evidence = valid_bundle
+    writer = evidence["bundles"]["discord_routeback"]["writer_receipt"]
+    writer["payload"]["blocked_event"][field] = True
+    _resign(writer, fixture=fixture, keys=keys)
+
+    with pytest.raises(canary.CapabilityCanaryEvidenceError) as raised:
+        _verify(fixture, evidence)
+
     assert raised.value.code == "discord_bundle_invalid"
 
 

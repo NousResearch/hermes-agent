@@ -15,12 +15,14 @@ from gateway.discord_edge_protocol import (
     DiscordEdgeErrorCode,
     DiscordEdgeReceiptOutcome,
     SignedDiscordEdgeEnvelope,
+    canonical_json_bytes,
     parse_request_for_reconciliation,
     sign_receipt,
     verify_request_capability_for_reconciliation,
 )
 from gateway.discord_edge_writer_authority import (
     CanonicalWriterDiscordAuthority,
+    derive_private_denial_receipt_sha256,
     derive_routeback_edge_idempotency_key,
 )
 
@@ -30,12 +32,35 @@ NOW = dt.datetime.fromtimestamp(NOW_MS / 1_000, tz=dt.timezone.utc)
 SESSION_SHA256 = "a" * 64
 EPOCH_SHA256 = "b" * 64
 GUILD_ID = "1282725267068157972"
-CHANNEL_ID = "100000000000000002"
+# Existing owner-approved production root.  Live Discord ACL proof remains a
+# separate edge responsibility; this fixture exercises the writer's static
+# permission boundary before that edge proof.
+CHANNEL_ID = "1504852408227069993"
+UNAPPROVED_CHANNEL_ID = "100000000000000002"
 MESSAGE_ID = "100000000000000003"
 BOT_ID = "100000000000000004"
 
 WRITER_PRIVATE_KEY = Ed25519PrivateKey.generate()
 EDGE_PRIVATE_KEY = Ed25519PrivateKey.generate()
+
+
+def test_private_denial_digest_is_exact_canonical_utf8_contract():
+    probe_id = "discord:private:é/☁:\"\\tail"
+
+    assert derive_private_denial_receipt_sha256(probe_id=probe_id) == (
+        hashlib.sha256(canonical_json_bytes({
+            "probe_id": probe_id,
+            "target_kind": "dm",
+            "blocker_code": "forbidden_target",
+            "dispatch_attempted": False,
+        })).hexdigest()
+    )
+
+
+@pytest.mark.parametrize("probe_id", ["", "bad\nprobe", "x" * 257])
+def test_private_denial_digest_rejects_invalid_probe_id(probe_id):
+    with pytest.raises(ValueError, match="probe_id is invalid"):
+        derive_private_denial_receipt_sha256(probe_id=probe_id)
 
 
 def _runtime(
@@ -81,6 +106,7 @@ def _claim_payload(
     *,
     key="routeback:signed:1",
     content="Exact public route-back content",
+    channel_id=CHANNEL_ID,
 ):
     content_sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
     edge_key = derive_routeback_edge_idempotency_key(
@@ -93,13 +119,13 @@ def _claim_payload(
             "target_type": "guild_channel",
             "channel_type": "guild_channel",
             "guild_id": GUILD_ID,
-            "channel_id": CHANNEL_ID,
+            "channel_id": channel_id,
         },
         "message_summary": "Send the exact authorized result",
         "source_refs": {"thread_id": "100000000000000006"},
         "idempotency_key": key,
         "execution_binding": {
-            "target_channel_id": CHANNEL_ID,
+            "target_channel_id": channel_id,
             "content_sha256": content_sha256,
         },
         "discord_edge_intent": {
@@ -107,7 +133,7 @@ def _claim_payload(
             "target": {
                 "target_type": "guild_channel",
                 "guild_id": GUILD_ID,
-                "channel_id": CHANNEL_ID,
+                "channel_id": channel_id,
             },
             "payload": {"content": content},
             "idempotency_key": edge_key,
@@ -369,7 +395,7 @@ def test_epoch_restart_recovery_cannot_cross_session_or_source_lane(runtime):
     assert len(backend.store.routeback_authorizations) == 1
 
 
-def test_recovery_uses_edge_owned_live_acl_not_a_writer_static_target_set():
+def test_recovery_requires_owner_approved_root_and_edge_signed_live_truth():
     handlers, backend = _handlers()
     payload, claim = _claim(
         handlers,
@@ -401,6 +427,44 @@ def test_recovery_uses_edge_owned_live_acl_not_a_writer_static_target_set():
     assert signed_truth["ok"] is True
     assert signed_truth["result"]["recovered"] is True
     assert len(backend.store.routeback_authorizations) == 1
+
+
+def test_arbitrary_root_is_denied_for_claim_and_recovery():
+    handlers, backend = _handlers()
+    key = "routeback:unapproved-root"
+    unapproved = _claim_payload(
+        key=key,
+        channel_id=UNAPPROVED_CHANNEL_ID,
+    )
+
+    rejected_claim = handlers.dispatch(
+        CanonicalWriterOperation.ROUTEBACK_CLAIM.value,
+        unapproved,
+        runtime=_runtime(thread_id=UNAPPROVED_CHANNEL_ID),
+    )
+
+    assert rejected_claim["error"]["code"] == "invalid_request"
+    assert backend.store.routeback_authorizations == {}
+    assert backend.store.events == []
+
+    approved_payload, approved_claim = _claim(
+        handlers,
+        _claim_payload(key=key),
+    )
+    rejected_recovery = handlers.dispatch(
+        CanonicalWriterOperation.ROUTEBACK_RECOVER.value,
+        _recovery_payload(unapproved, recovery_kind="edge_no_record"),
+        runtime=_runtime(epoch_sha256="c" * 64),
+    )
+
+    assert rejected_recovery["error"]["code"] == "invalid_request"
+    assert list(backend.store.routeback_authorizations) == [
+        approved_claim["authorization_id"]
+    ]
+    assert [event["event_type"] for event in backend.store.events] == [
+        "route_back.intent.created"
+    ]
+    assert approved_payload["target_ref"]["channel_id"] == CHANNEL_ID
 
 
 def test_claim_fails_closed_without_writer_owned_authority():
@@ -479,6 +543,15 @@ def test_verified_signed_receipt_is_the_only_source_of_sent_truth():
     )
 
     assert result["ok"] is True
+    public_receipt_sha256 = hashlib.sha256(
+        canonical_json_bytes(
+            SignedDiscordEdgeEnvelope.from_mapping(
+                edge_receipt,
+                code=DiscordEdgeErrorCode.INVALID_RECEIPT,
+                label="test receipt",
+            ).to_message()
+        )
+    ).hexdigest()
     assert result["result"]["receipt"] == {
         "platform": "discord",
         "adapter_receipt": True,
@@ -486,9 +559,50 @@ def test_verified_signed_receipt_is_the_only_source_of_sent_truth():
         "message_id": MESSAGE_ID,
         "channel_id": CHANNEL_ID,
         "content_sha256": payload["execution_binding"]["content_sha256"],
+        "public_receipt_sha256": public_receipt_sha256,
     }
     assert result["result"]["discord_edge_evidence"]["outcome"] == "verified"
     assert backend.store.events[-1]["event_type"] == "route_back.sent"
+    assert backend.store.events[-1]["body"]["receipt"] == (
+        result["result"]["receipt"]
+    )
+
+
+def test_public_receipt_digest_uses_normalized_signed_envelope_not_key_order():
+    handlers, _backend = _handlers()
+    payload, claim = _claim(
+        handlers,
+        _claim_payload(key="routeback:normalized-receipt"),
+    )
+    edge_request = claim["discord_edge_request"]
+    edge_receipt = _signed_receipt(edge_request)
+
+    def reverse_mapping_order(value):
+        if isinstance(value, dict):
+            return {
+                key: reverse_mapping_order(value[key])
+                for key in reversed(tuple(value))
+            }
+        if isinstance(value, list):
+            return [reverse_mapping_order(item) for item in value]
+        return value
+
+    authority = _authority()
+    original = authority.verify_routeback_evidence(
+        request_value=edge_request,
+        receipt_value=edge_receipt,
+        authorization_id=claim["authorization_id"],
+    )
+    reordered = authority.verify_routeback_evidence(
+        request_value=reverse_mapping_order(edge_request),
+        receipt_value=reverse_mapping_order(edge_receipt),
+        authorization_id=claim["authorization_id"],
+    )
+
+    assert reordered.public_receipt_sha256 == original.public_receipt_sha256
+    assert reordered.canonical_receipt["public_receipt_sha256"] == (
+        original.public_receipt_sha256
+    )
 
 
 @pytest.mark.parametrize(
@@ -656,6 +770,9 @@ def test_finalizer_rejects_target_content_and_idempotency_rebinding():
             runtime=_runtime(),
         )
         assert response["error"]["code"] in {
+            # An unapproved rebound target is rejected by the closed-world
+            # writer validator before cryptographic evidence reconciliation.
+            "invalid_request",
             "invalid_discord_edge_evidence",
             "scope_mismatch",
         }

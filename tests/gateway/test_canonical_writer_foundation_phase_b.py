@@ -3631,6 +3631,7 @@ def test_readiness_current_head_validation_holds_shared_lock_through_compare(
     )
     entered_compare = threading.Event()
     release_compare = threading.Event()
+    writer_started = threading.Event()
     writer_done = threading.Event()
     failures: list[BaseException] = []
     validated: list[phase_b.PhaseBReadinessReceipt] = []
@@ -3675,6 +3676,7 @@ def test_readiness_current_head_validation_holds_shared_lock_through_compare(
             failures.append(exc)
 
     def append_next() -> None:
+        writer_started.set()
         try:
             writer.publish(
                 durable,
@@ -3692,11 +3694,12 @@ def test_readiness_current_head_validation_holds_shared_lock_through_compare(
     validator_thread.start()
     assert entered_compare.wait(2)
     writer_thread.start()
-    time.sleep(0.05)
-    assert not writer_done.is_set()
+    assert writer_started.wait(2)
+    assert not writer_done.wait(0.05)
     release_compare.set()
-    validator_thread.join(2)
-    writer_thread.join(2)
+    assert writer_done.wait(10)
+    validator_thread.join(10)
+    writer_thread.join(10)
 
     assert not validator_thread.is_alive()
     assert not writer_thread.is_alive()

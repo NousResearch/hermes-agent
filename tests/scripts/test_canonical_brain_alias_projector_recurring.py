@@ -8,6 +8,7 @@ import uuid
 
 import pytest
 
+from gateway.canonical_projection_export import PROJECTION_EXPORT_SCHEMA
 from gateway.support_ops_alias_projection import load_alias_projection_document
 from gateway.support_ops_team_registry import (
     STATIC_ALIAS_MEMBER_KEYS,
@@ -29,7 +30,7 @@ def _event(number: int, alias: str) -> dict:
             "system": "hermes_agent",
             "component": "canonical_writer",
             "source_refs": {},
-            "observed_session": {},
+            "observed_session": {"request_id": f"r-{number}"},
         },
         "actor": {},
         "subject": {},
@@ -64,9 +65,25 @@ def _event(number: int, alias: str) -> dict:
 
 
 def _write_export(path, rows) -> None:
+    provenance = [
+        {
+            "event_id": row["event_id"],
+            "canonical_content_sha256": row["payload"][
+                "canonical_content_sha256"
+            ],
+            "origin": row["decision"]["decided_by"],
+            "trusted_runtime": row["source"]["observed_session"],
+            "appended_at": row["occurred_at"],
+        }
+        for row in rows
+    ]
     path.write_text(
         json.dumps(
-            {"events": rows},
+            {
+                "schema": PROJECTION_EXPORT_SCHEMA,
+                "events": rows,
+                "provenance": provenance,
+            },
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),

@@ -28,6 +28,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import signal
 import socket
 import stat
@@ -47,6 +48,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PublicKey,
 )
 
+from gateway.posix_identity import effective_gid, effective_uid
+
 
 PRODUCER_CONFIG_SCHEMA = "muncho-production-capability-producer-config.v2"
 PRODUCER_REQUEST_SCHEMA = "muncho-production-capability-producer-request.v1"
@@ -58,7 +61,7 @@ PRODUCER_ENDPOINT_ACTIVATION_SCHEMA = (
     "muncho-production-capability-producer-endpoint-activation.v1"
 )
 PRODUCER_FOUNDATION_SCHEMA = (
-    "muncho-production-capability-canary-producer-foundation.v1"
+    "muncho-production-capability-canary-producer-foundation.v2"
 )
 PRODUCER_ACTIVATION_SCHEMA = (
     "muncho-production-capability-canary-producer-activation.v1"
@@ -70,24 +73,22 @@ NATIVE_EVIDENCE_SCHEMA = "muncho-production-capability-native-evidence.v1"
 SIGNED_RECEIPT_SCHEMA = "muncho-production-capability-canary-signed-receipt.v1"
 OWNER_SSHSIG_NAMESPACE = "muncho-production-capability-canary-owner-v1"
 PRODUCER_FOUNDATION_SSHSIG_NAMESPACE = (
-    "muncho-production-capability-canary-producer-foundation-v1"
+    "muncho-production-capability-canary-producer-foundation-v2"
 )
 
-DEFAULT_FOUNDATION_PATH = Path(
-    "/etc/muncho/capability-canary/producer-foundation.json"
-)
-DEFAULT_READINESS_PATH = Path(
-    "/run/muncho-capability-canary/producer-activation.json"
-)
+DEFAULT_FOUNDATION_PATH = Path("/etc/muncho/capability-canary/producer-foundation.json")
+DEFAULT_READINESS_PATH = Path("/run/muncho-capability-canary/producer-activation.json")
 DEFAULT_RECEIPT_ROOT = Path("/var/lib/muncho-capability-canary-evidence")
 DEFAULT_RUNTIME_ROOT = Path("/run/muncho-capability-canary-producers")
 DEFAULT_CONFIG_ROOT = Path("/etc/muncho/capability-canary/producers")
 DEFAULT_KEY_ROOT = Path("/etc/muncho/capability-canary/producer-keys")
-DEFAULT_OWNER_GRANT_PATH = Path(
-    "/etc/muncho/capability-canary/owner-grant.sshsig.json"
+DEFAULT_OWNER_GRANT_PATH = Path("/etc/muncho/capability-canary/owner-grant.sshsig.json")
+DEFAULT_PROBE_CATALOG_PATH = Path("/etc/muncho/capability-canary/probe-catalog.json")
+DEFAULT_REVIEWED_FIXTURE_PATH = Path(
+    "/etc/muncho/capability-canary/reviewed-live-fixture.json"
 )
-DEFAULT_PROBE_CATALOG_PATH = Path(
-    "/etc/muncho/capability-canary/probe-catalog.json"
+DEFAULT_LIVE_FIXTURE_ROOT = Path(
+    "/var/lib/muncho-capability-canary-control/live"
 )
 DEFAULT_OWNER_PUBLIC_KEY_HEX_PIN_PATH = Path(
     "/etc/muncho/capability-canary/owner-public-key-ed25519.hex"
@@ -95,13 +96,59 @@ DEFAULT_OWNER_PUBLIC_KEY_HEX_PIN_PATH = Path(
 DEFAULT_OWNER_PUBLIC_KEY_SOURCE_SHA256_PIN_PATH = Path(
     "/etc/muncho/capability-canary/owner-public-key-source.sha256"
 )
+DEFAULT_API_ADMISSION_SOCKET = Path(
+    "/run/hermes-cloud-gateway/capability-canary-admission.sock"
+)
+API_RUN_ADMISSION_REQUEST_SCHEMA = (
+    "muncho-production-capability-api-run-admission-request.v1"
+)
+API_RUN_ADMISSION_SCHEMA = "hermes.api.run-admission.v1"
+API_RUN_ADMISSION_READY_SCHEMA = "hermes.api.run-admission-ready.v1"
+API_RUN_ADMISSION_ACK_SCHEMA = "hermes.api.run-admission-ready-ack.v1"
+API_RUN_ADMISSION_COMMIT_SCHEMA = "hermes.api.run-admission-commit.v1"
+API_RUN_ADMISSION_COMMIT_ACK_SCHEMA = "hermes.api.run-admission-commit-ack.v1"
+API_ADMISSION_OWNER_AUTHORITY_SCHEMA = (
+    "muncho-production-capability-api-admission-owner-authority.v1"
+)
+API_ADMISSION_OWNER_SSHSIG_NAMESPACE = OWNER_SSHSIG_NAMESPACE
+API_ADMISSION_OWNER_CHALLENGE_SCHEMA = (
+    "muncho-production-capability-api-admission-owner-challenge.v1"
+)
+API_ADMISSION_OWNER_CHALLENGE_WAIT_SCHEMA = (
+    "muncho-production-capability-api-admission-owner-challenge-wait.v1"
+)
+API_ADMISSION_OWNER_AUTHORITY_STAGE_REQUEST_SCHEMA = (
+    "muncho-production-capability-api-admission-owner-authority-stage-request.v1"
+)
+API_ADMISSION_OWNER_AUTHORITY_STAGE_SCHEMA = (
+    "muncho-production-capability-api-admission-owner-authority-stage.v1"
+)
+OWNER_RECEIPT_PUBLICATION_SCHEMA = (
+    "muncho-production-capability-owner-receipt-publication.v1"
+)
+API_ADMISSION_INSTALL_INTENT_SCHEMA = (
+    "muncho-production-capability-api-admission-install-intent.v1"
+)
+API_ADMISSION_INSTALL_ABORT_SCHEMA = (
+    "muncho-production-capability-api-admission-install-abort.v1"
+)
+API_ADMISSION_RETIREMENT_INTENT_SCHEMA = (
+    "muncho-production-capability-api-admission-retirement-intent.v1"
+)
+API_ADMISSION_RETIREMENT_SCHEMA = (
+    "muncho-production-capability-api-admission-retirement.v1"
+)
+PRODUCER_FLEET_RETIREMENT_INTENT_SCHEMA = (
+    "muncho-production-capability-fleet-retirement-intent.v1"
+)
+ACTIVE_API_ADMISSION_RETIREMENT_SCHEMA = (
+    "muncho-production-capability-active-api-admission-retirement.v1"
+)
 
 PRODUCTION_OWNER_ID = "1279454038731264061"
 PRODUCTION_BOT_USER_ID = "1501976597455044801"
 
-BITRIX_OPERATIONAL_EDGE_SERVICE_UNIT = (
-    "muncho-operational-edge-bitrix.service"
-)
+BITRIX_OPERATIONAL_EDGE_SERVICE_UNIT = "muncho-operational-edge-bitrix.service"
 BITRIX_OPERATIONAL_EDGE_ASSET_NAMES = (
     "bitrix_skyvision_crm.py",
     "bitrix_voucher_ops.py",
@@ -117,9 +164,7 @@ BITRIX_OPERATIONAL_EDGE_SOCKET_GROUP = "muncho-edge-bitrix-c"
 BITRIX_OPERATIONAL_EDGE_UNIT_PATH = (
     "/etc/systemd/system/muncho-operational-edge-bitrix.service"
 )
-BITRIX_OPERATIONAL_EDGE_CONFIG_PATH = (
-    "/etc/muncho/operational-edge/bitrix.json"
-)
+BITRIX_OPERATIONAL_EDGE_CONFIG_PATH = "/etc/muncho/operational-edge/bitrix.json"
 BITRIX_OPERATIONAL_EDGE_TRUST_PATH = (
     "/etc/muncho/operational-edge/trust/bitrix-receipt-public.pem"
 )
@@ -206,6 +251,7 @@ SLOT_NATIVE_BINDING_KINDS = {
         "gateway_observer_frame_chain",
         "authenticated_api_terminal_event",
         "isolated_worker_restart_receipt",
+        "goal_continuation_native_identity",
     ),
     "workspace_writer": (
         "canonical_writer_resume_bundle",
@@ -269,6 +315,7 @@ MAX_READINESS_BYTES = 512 * 1024
 MAX_SSHSIG_BYTES = 4096
 MAX_BINDINGS = 16
 MAX_CLOCK_SKEW_MS = 30_000
+MAX_API_ADMISSION_BYTES = 64 * 1024
 _HEADER = struct.Struct("!I")
 _PEER = struct.Struct("3i")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -398,8 +445,7 @@ def _verify_sshsig(
         or lines[0] != _SSHSIG_BEGIN
         or lines[-1] != _SSHSIG_END
         or any(
-            re.fullmatch(r"[A-Za-z0-9+/=]{1,70}", line) is None
-            for line in lines[1:-1]
+            re.fullmatch(r"[A-Za-z0-9+/=]{1,70}", line) is None for line in lines[1:-1]
         )
         or any(len(line) != 70 for line in lines[1:-2])
     ):
@@ -426,9 +472,7 @@ def _verify_sshsig(
         _fail(code)
     key_type, key_offset = _read_ssh_string(public_blob, 0, code=code)
     public_key, key_offset = _read_ssh_string(public_blob, key_offset, code=code)
-    signature_type, signature_offset = _read_ssh_string(
-        signature_blob, 0, code=code
-    )
+    signature_type, signature_offset = _read_ssh_string(signature_blob, 0, code=code)
     raw_signature, signature_offset = _read_ssh_string(
         signature_blob, signature_offset, code=code
     )
@@ -517,9 +561,7 @@ def _stable_read(
         _fail("artifact_identity_invalid")
     descriptor = os.open(
         path,
-        os.O_RDONLY
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0),
+        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
     )
     try:
         opened = os.fstat(descriptor)
@@ -553,9 +595,7 @@ def _stable_read(
 def _fsync_directory(path: Path) -> None:
     descriptor = os.open(
         path,
-        os.O_RDONLY
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_DIRECTORY", 0),
+        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_DIRECTORY", 0),
     )
     try:
         os.fsync(descriptor)
@@ -587,59 +627,274 @@ def _read_expected_publication(
     uid: int,
     gid: int,
     mode: int,
+    parent_uid: int,
+    parent_gid: int,
+    parent_mode: int,
 ) -> bool:
     """Return true only for an existing byte-identical immutable artifact."""
 
+    _require_directory(
+        path.parent,
+        uid=parent_uid,
+        gid=parent_gid,
+        mode=parent_mode,
+    )
     if not os.path.lexists(path):
         return False
-    observed: bytes | None = None
-    for attempt in range(500):
-        # The final name is created as a hard link to a fully-written private
-        # temporary inode.  A concurrent reader may therefore see nlink=2
-        # until the winning publisher removes that private name.  Inspect the
-        # exact final inode before the strict read so that this one mechanical
-        # transition cannot be misclassified as an unsafe artifact identity.
-        # Every other type/owner/group/mode/size/link-count drift remains an
-        # immediate hard failure.
-        try:
-            candidate = path.lstat()
-        except OSError as exc:
-            raise CapabilityProducerError("artifact_unavailable") from exc
-        if (
-            not stat.S_ISREG(candidate.st_mode)
-            or stat.S_ISLNK(candidate.st_mode)
-            or candidate.st_uid != uid
-            or candidate.st_gid != gid
-            or stat.S_IMODE(candidate.st_mode) != mode
-            or not 1 < candidate.st_size <= max(len(payload), 2)
-            or candidate.st_nlink not in {1, 2}
-        ):
-            _fail("artifact_identity_invalid")
-        if candidate.st_nlink == 2:
-            if attempt == 499:
-                _fail("artifact_identity_invalid")
+    try:
+        candidate = path.lstat()
+    except OSError as exc:
+        raise CapabilityProducerError("artifact_unavailable") from exc
+    if (
+        not stat.S_ISREG(candidate.st_mode)
+        or stat.S_ISLNK(candidate.st_mode)
+        or candidate.st_uid != uid
+        or candidate.st_gid != gid
+        or stat.S_IMODE(candidate.st_mode) != mode
+        or not 1 < candidate.st_size <= max(len(payload), 2)
+        or candidate.st_nlink not in {1, 2}
+    ):
+        _fail("artifact_identity_invalid")
+    if candidate.st_nlink == 2:
+        initial = candidate
+        for _attempt in range(500):
             time.sleep(0.001)
-            continue
-        try:
-            observed, _item = _stable_read(
+            try:
+                candidate = path.lstat()
+            except OSError as exc:
+                raise CapabilityProducerError("artifact_replaced") from exc
+            if (
+                not stat.S_ISREG(candidate.st_mode)
+                or stat.S_ISLNK(candidate.st_mode)
+                or candidate.st_nlink not in {1, 2}
+                or candidate.st_uid != uid
+                or candidate.st_gid != gid
+                or stat.S_IMODE(candidate.st_mode) != mode
+                or candidate.st_dev != initial.st_dev
+                or candidate.st_ino != initial.st_ino
+                or candidate.st_size != initial.st_size
+                or candidate.st_mtime_ns != initial.st_mtime_ns
+            ):
+                _fail("artifact_replaced")
+            if candidate.st_nlink == 1:
+                break
+        else:
+            _reconcile_legacy_link_publication(
                 path,
-                maximum=max(len(payload), 2),
+                payload,
                 uid=uid,
                 gid=gid,
                 mode=mode,
+                parent_uid=parent_uid,
+                parent_gid=parent_gid,
+                parent_mode=parent_mode,
             )
-            break
-        except CapabilityProducerError:
-            # Once nlink=1 was observed, there is no legitimate publication
-            # metadata transition left.  Preserve the exact strict-read error
-            # instead of converting replacement or identity drift into an
-            # ordinary divergent collision.
-            raise
-    if observed is None:  # pragma: no cover - loop invariant
-        _fail("artifact_identity_invalid")
+    observed, _item = _stable_read(
+        path,
+        maximum=max(len(payload), 2),
+        uid=uid,
+        gid=gid,
+        mode=mode,
+    )
     if observed != payload:
         _fail("publication_collision_diverged")
     return True
+
+
+def _reconcile_legacy_link_publication(
+    path: Path,
+    payload: bytes,
+    *,
+    uid: int,
+    gid: int,
+    mode: int,
+    parent_uid: int,
+    parent_gid: int,
+    parent_mode: int,
+) -> None:
+    """Finish the one exact hard-link publication left by the legacy writer."""
+
+    _require_directory(
+        path.parent,
+        uid=parent_uid,
+        gid=parent_gid,
+        mode=parent_mode,
+    )
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        directory_fd = os.open(path.parent, directory_flags)
+    except OSError as exc:
+        raise CapabilityProducerError("artifact_unavailable") from exc
+    try:
+        directory_before = os.fstat(directory_fd)
+        directory_reachable = path.parent.lstat()
+        if _directory_identity(directory_before) != _directory_identity(
+            directory_reachable
+        ):
+            _fail("directory_replaced")
+        try:
+            names = os.listdir(directory_fd)
+            final_before = os.stat(
+                path.name,
+                dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            raise CapabilityProducerError("artifact_unavailable") from exc
+        prefix = f".{path.name}.tmp."
+        candidates = [name for name in names if name.startswith(prefix)]
+        pattern = re.compile(
+            rf"^{re.escape(prefix)}[1-9][0-9]*\.[0-9a-f]{{32}}$"
+        )
+        if len(candidates) != 1 or pattern.fullmatch(candidates[0]) is None:
+            _fail("artifact_identity_invalid")
+        temporary_name = candidates[0]
+        try:
+            temporary_before = os.stat(
+                temporary_name,
+                dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            raise CapabilityProducerError("artifact_unavailable") from exc
+        expected_maximum = max(len(payload), 2)
+        if (
+            not stat.S_ISREG(final_before.st_mode)
+            or stat.S_ISLNK(final_before.st_mode)
+            or final_before.st_nlink != 2
+            or final_before.st_uid != uid
+            or final_before.st_gid != gid
+            or stat.S_IMODE(final_before.st_mode) != mode
+            or not 1 < final_before.st_size <= expected_maximum
+            or _identity(final_before) != _identity(temporary_before)
+        ):
+            _fail("artifact_identity_invalid")
+        descriptor = os.open(
+            path.name,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=directory_fd,
+        )
+        try:
+            opened = os.fstat(descriptor)
+            chunks: list[bytes] = []
+            remaining = expected_maximum + 1
+            while remaining:
+                chunk = os.read(descriptor, min(64 * 1024, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        try:
+            final_reachable = os.stat(
+                path.name,
+                dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+            temporary_reachable = os.stat(
+                temporary_name,
+                dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            raise CapabilityProducerError("artifact_replaced") from exc
+        observed = b"".join(chunks)
+        if (
+            observed != payload
+            or len(observed) != final_before.st_size
+            or _identity(final_before) != _identity(opened)
+            or _identity(final_before) != _identity(after)
+            or _identity(final_before) != _identity(final_reachable)
+            or _identity(final_before) != _identity(temporary_reachable)
+        ):
+            _fail("artifact_replaced")
+        try:
+            os.unlink(temporary_name, dir_fd=directory_fd)
+            os.fsync(directory_fd)
+            final_after = os.stat(
+                path.name,
+                dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+            directory_after = os.fstat(directory_fd)
+            directory_reachable_after = path.parent.lstat()
+        except OSError as exc:
+            raise CapabilityProducerError("artifact_replaced") from exc
+        if (
+            final_after.st_nlink != 1
+            or final_after.st_dev != final_before.st_dev
+            or final_after.st_ino != final_before.st_ino
+            or final_after.st_mode != final_before.st_mode
+            or final_after.st_uid != final_before.st_uid
+            or final_after.st_gid != final_before.st_gid
+            or final_after.st_size != final_before.st_size
+            or final_after.st_mtime_ns != final_before.st_mtime_ns
+            or _directory_identity(directory_before)
+            != _directory_identity(directory_after)
+            or _directory_identity(directory_before)
+            != _directory_identity(directory_reachable_after)
+        ):
+            _fail("artifact_replaced")
+    finally:
+        os.close(directory_fd)
+
+
+def _rename_no_replace_at(
+    source_name: str,
+    target_name: str,
+    *,
+    directory_fd: int,
+) -> None:
+    """Atomically publish a complete inode without replacing the final name."""
+
+    if sys.platform.startswith("linux"):
+        import ctypes
+        import errno
+
+        library = ctypes.CDLL(None, use_errno=True)
+        renameat2 = getattr(library, "renameat2", None)
+        if renameat2 is None:
+            raise RuntimeError("producer publication requires Linux renameat2")
+        renameat2.argtypes = (
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        )
+        renameat2.restype = ctypes.c_int
+        result = renameat2(
+            directory_fd,
+            os.fsencode(source_name),
+            directory_fd,
+            os.fsencode(target_name),
+            1,
+        )
+        if result == 0:
+            return
+        number = ctypes.get_errno()
+        if number == errno.EEXIST:
+            raise FileExistsError(number, os.strerror(number), target_name)
+        raise OSError(number, os.strerror(number), target_name)
+    # Non-production portability path for macOS unit tests.  Linux production
+    # never exposes the two-link intermediate state.
+    os.link(
+        source_name,
+        target_name,
+        src_dir_fd=directory_fd,
+        dst_dir_fd=directory_fd,
+        follow_symlinks=False,
+    )
+    os.unlink(source_name, dir_fd=directory_fd)
 
 
 def _publish_no_replace(
@@ -669,6 +924,9 @@ def _publish_no_replace(
         uid=uid,
         gid=gid,
         mode=mode,
+        parent_uid=directory_uid,
+        parent_gid=directory_gid,
+        parent_mode=parent_mode,
     ):
         return
     directory_flags = (
@@ -706,12 +964,10 @@ def _publish_no_replace(
         os.close(descriptor)
         descriptor = -1
         try:
-            os.link(
+            _rename_no_replace_at(
                 temporary_name,
                 path.name,
-                src_dir_fd=directory_fd,
-                dst_dir_fd=directory_fd,
-                follow_symlinks=False,
+                directory_fd=directory_fd,
             )
         except FileExistsError:
             if not _read_expected_publication(
@@ -720,6 +976,9 @@ def _publish_no_replace(
                 uid=uid,
                 gid=gid,
                 mode=mode,
+                parent_uid=directory_uid,
+                parent_gid=directory_gid,
+                parent_mode=parent_mode,
             ):
                 _fail("publication_collision_diverged")
         os.fsync(directory_fd)
@@ -727,19 +986,19 @@ def _publish_no_replace(
         if descriptor >= 0:
             os.close(descriptor)
         try:
-            os.unlink(temporary_name, dir_fd=directory_fd)
-        except FileNotFoundError:
-            pass
-        os.fsync(directory_fd)
-        directory_after = os.fstat(directory_fd)
-        try:
+            try:
+                os.unlink(temporary_name, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
+            os.fsync(directory_fd)
+            directory_after = os.fstat(directory_fd)
             reachable_after = path.parent.lstat()
         finally:
             os.close(directory_fd)
-        if (
-            _directory_identity(directory_before) != _directory_identity(directory_after)
-            or _directory_identity(directory_before)
-            != _directory_identity(reachable_after)
+        if _directory_identity(directory_before) != _directory_identity(
+            directory_after
+        ) or _directory_identity(directory_before) != _directory_identity(
+            reachable_after
         ):
             _fail("directory_replaced")
     observed, _item = _stable_read(
@@ -927,12 +1186,10 @@ class BitrixOperationalEdgeNativeCollector:
             or _canonical_bytes(verified_payload) != _canonical_bytes(payload)
             or _sha256_json(raw["signed_envelope"])
             != _digest(raw["signed_envelope_sha256"], code)
-            or payload.get("request_sha256")
-            != _digest(raw["request_sha256"], code)
+            or payload.get("request_sha256") != _digest(raw["request_sha256"], code)
             or not isinstance(peer, Mapping)
             or set(peer) != {"pid", "uid", "gid", "service_unit"}
-            or peer.get("service_unit")
-            != "muncho-operational-edge-bitrix.service"
+            or peer.get("service_unit") != "muncho-operational-edge-bitrix.service"
             or payload.get("service_pid") != peer.get("pid")
         ):
             _fail(code)
@@ -953,9 +1210,7 @@ class BitrixOperationalEdgeNativeCollector:
             decoded = json.loads(
                 raw.decode("utf-8", errors="strict"),
                 object_pairs_hook=unique_pairs,
-                parse_constant=lambda _token: (_ for _ in ()).throw(
-                    ValueError()
-                ),
+                parse_constant=lambda _token: (_ for _ in ()).throw(ValueError()),
             )
         except (TypeError, ValueError, UnicodeError, json.JSONDecodeError):
             _fail(code)
@@ -1001,14 +1256,11 @@ class BitrixOperationalEdgeNativeCollector:
             probe["selected_edge_id"] != "operational-edge:bitrix"
             or probe["read_operation_id"] != "bitrix.crm.status_list"
             or probe["read_arguments"] != BITRIX_CANARY_READ_ARGUMENTS
-            or probe["normalized_equality_excluded_fields"]
-            != ["generated_at_utc"]
+            or probe["normalized_equality_excluded_fields"] != ["generated_at_utc"]
             or probe["stable_normalized_equality"] is not True
         ):
             _fail(code)
-        initial_read_probe_id = _safe_id(
-            probe["initial_read_probe_id"], code
-        )
+        initial_read_probe_id = _safe_id(probe["initial_read_probe_id"], code)
         readback_probe_id = _safe_id(probe["readback_probe_id"], code)
         if initial_read_probe_id == readback_probe_id:
             _fail(code)
@@ -1051,14 +1303,12 @@ class BitrixOperationalEdgeNativeCollector:
         if normalized_initial != normalized_readback:
             _fail(code)
         normalized_sha256 = _sha256_json(normalized_readback)
-        source_identity = _sha256_json(
-            {
-                "service_unit": "muncho-operational-edge-bitrix.service",
-                "release_revision": self.release_revision,
-                "receipt_key_id": self.receipt_key_id,
-                "peer": read["peer"],
-            }
-        )
+        source_identity = _sha256_json({
+            "service_unit": "muncho-operational-edge-bitrix.service",
+            "release_revision": self.release_revision,
+            "receipt_key_id": self.receipt_key_id,
+            "peer": read["peer"],
+        })
         return (
             NativeEvidenceBinding(
                 kind="operational_edge_bitrix_signed_receipt",
@@ -1070,18 +1320,14 @@ class BitrixOperationalEdgeNativeCollector:
                 kind="operational_edge_bitrix_authenticated_live_readback",
                 source_identity_sha256=source_identity,
                 artifact_sha256=normalized_sha256,
-                verification_receipt_sha256=_sha256_json(
-                    {
-                        "initial_signed_envelope_sha256": read[
-                            "signed_envelope_sha256"
-                        ],
-                        "readback_signed_envelope_sha256": readback[
-                            "signed_envelope_sha256"
-                        ],
-                        "normalized_sha256": normalized_sha256,
-                        "excluded_fields": ["generated_at_utc"],
-                    }
-                ),
+                verification_receipt_sha256=_sha256_json({
+                    "initial_signed_envelope_sha256": read["signed_envelope_sha256"],
+                    "readback_signed_envelope_sha256": readback[
+                        "signed_envelope_sha256"
+                    ],
+                    "normalized_sha256": normalized_sha256,
+                    "excluded_fields": ["generated_at_utc"],
+                }),
             ),
         )
 
@@ -1166,14 +1412,12 @@ class BitrixWriterNativeCollector(BitrixOperationalEdgeNativeCollector):
             or denied.get("secret_material_recorded") is not False
         ):
             _fail(code)
-        source_identity = _sha256_json(
-            {
-                "service_unit": BITRIX_OPERATIONAL_EDGE_SERVICE_UNIT,
-                "release_revision": self.release_revision,
-                "receipt_key_id": self.receipt_key_id,
-                "peer": denial["peer"],
-            }
-        )
+        source_identity = _sha256_json({
+            "service_unit": BITRIX_OPERATIONAL_EDGE_SERVICE_UNIT,
+            "release_revision": self.release_revision,
+            "receipt_key_id": self.receipt_key_id,
+            "peer": denial["peer"],
+        })
         return (
             handoff[0],
             NativeEvidenceBinding(
@@ -1251,6 +1495,11 @@ _PRODUCER_FOUNDATION_UNSIGNED_FIELDS = (
     "release_sha",
     "capability_plan_sha256",
     "full_canary_plan_sha256",
+    "full_canary_terminal_receipt",
+    "full_canary_terminal_receipt_sha256",
+    "original_full_canary_owner_approval_sha256",
+    "service_identity_foundation_receipt_sha256",
+    "producer_identity_foundation_receipt_sha256",
     "owner_id",
     "owner_authority",
     "authority_keys",
@@ -1264,6 +1513,61 @@ _PRODUCER_FOUNDATION_UNSIGNED_FIELDS = (
     "signature_namespace",
     "signature_algorithm",
 )
+
+_FULL_CANARY_TERMINAL_FIELDS = (
+    "schema",
+    "ok",
+    "state",
+    "release_sha",
+    "coordinator_input_sha256",
+    "full_canary_plan_sha256",
+    "owner_approval_sha256",
+    "phase_b_readiness_anchor_sha256",
+    "api_session_key_sha256",
+    "fixture_sha256",
+    "discord_token_install_receipt_sha256",
+    "coordinator_receipt_sha256",
+    "live_driver_receipt_sha256",
+    "services_stopped",
+    "discord_token_retired",
+    "temporary_admin_created",
+    "bootstrap_credential_created",
+    "completed_at_unix",
+    "receipt_sha256",
+)
+
+
+def _validate_full_canary_terminal(value: Any, *, code: str) -> dict[str, Any]:
+    raw = _strict(value, _FULL_CANARY_TERMINAL_FIELDS, code)
+    unsigned = {key: item for key, item in raw.items() if key != "receipt_sha256"}
+    if (
+        raw["schema"] != "muncho-full-canary-session-bound-owner-receipt.v1"
+        or raw["ok"] is not True
+        or raw["state"] != "verified_stopped_and_credentials_retired"
+        or not isinstance(raw["release_sha"], str)
+        or _GIT_SHA_RE.fullmatch(raw["release_sha"]) is None
+        or raw["services_stopped"] is not True
+        or raw["discord_token_retired"] is not True
+        or raw["temporary_admin_created"] is not False
+        or raw["bootstrap_credential_created"] is not False
+        or type(raw["completed_at_unix"]) is not int
+        or raw["completed_at_unix"] < 0
+        or raw["receipt_sha256"] != _sha256_json(unsigned)
+    ):
+        _fail(code)
+    for name in set(_FULL_CANARY_TERMINAL_FIELDS) - {
+        "schema",
+        "ok",
+        "state",
+        "release_sha",
+        "services_stopped",
+        "discord_token_retired",
+        "temporary_admin_created",
+        "bootstrap_credential_created",
+        "completed_at_unix",
+    }:
+        _digest(raw[name], code)
+    return copy.deepcopy(raw)
 
 
 def validate_discord_edge_evidence_contract(value: Any) -> dict[str, Any]:
@@ -1295,8 +1599,7 @@ def validate_discord_edge_evidence_contract(value: Any) -> dict[str, Any]:
         or raw["edge_socket_path"] != "/run/muncho-discord-egress/edge.sock"
         or raw["receipt_public_key_path"]
         != "/etc/muncho/keys/discord-edge-receipt-public.pem"
-        or raw["connector_service_unit"]
-        != "muncho-discord-connector.service"
+        or raw["connector_service_unit"] != "muncho-discord-connector.service"
         or raw["connector_socket_path"]
         != "/run/muncho-discord-connector/connector.sock"
         or raw["public_history_operation"] != "public.history.fetch"
@@ -1428,18 +1731,13 @@ def validate_bitrix_operational_edge_contract(
         "/opt/adventico-ai-platform/hermes-home/secrets/"
         "bitrix_skyvision_crm_webhook.url"
     )
-    credential_runtime = (
-        f"/run/credentials/{BITRIX_OPERATIONAL_EDGE_SERVICE_UNIT}"
-    )
+    credential_runtime = f"/run/credentials/{BITRIX_OPERATIONAL_EDGE_SERVICE_UNIT}"
     if (
         raw["revision"] != release_sha
         or raw["service_unit"] != BITRIX_OPERATIONAL_EDGE_SERVICE_UNIT
         or raw["asset_names"] != list(BITRIX_OPERATIONAL_EDGE_ASSET_NAMES)
         or raw["asset_manifest_path"]
-        != (
-            f"{expected_release}/ops/muncho/runtime/operational-assets/"
-            "manifest.json"
-        )
+        != (f"{expected_release}/ops/muncho/runtime/operational-assets/manifest.json")
         or raw["rendered_unit_path"] != BITRIX_OPERATIONAL_EDGE_UNIT_PATH
         or raw["rendered_config_path"] != BITRIX_OPERATIONAL_EDGE_CONFIG_PATH
         or raw["rendered_trust_path"] != BITRIX_OPERATIONAL_EDGE_TRUST_PATH
@@ -1449,8 +1747,7 @@ def validate_bitrix_operational_edge_contract(
         or raw["secret_digest_recorded"] is not False
         or identity["service_user"] != BITRIX_OPERATIONAL_EDGE_SERVICE_USER
         or identity["service_group"] != BITRIX_OPERATIONAL_EDGE_SERVICE_GROUP
-        or identity["socket_client_group"]
-        != BITRIX_OPERATIONAL_EDGE_SOCKET_GROUP
+        or identity["socket_client_group"] != BITRIX_OPERATIONAL_EDGE_SOCKET_GROUP
         or any(
             type(identity[field]) is not int or identity[field] <= 0
             for field in ("service_uid", "service_gid", "socket_client_gid")
@@ -1478,10 +1775,8 @@ def validate_bitrix_operational_edge_contract(
         or receipt_key["private_owner_gid"] != 0
         or receipt_key["private_mode"] != "0400"
         or receipt_key["public_path"] != BITRIX_OPERATIONAL_EDGE_TRUST_PATH
-        or receipt_key["public_trust_sha256"]
-        != raw["rendered_trust_sha256"]
-        or receipt_key["writer_public_key_credential_name"]
-        != "writer-public-key"
+        or receipt_key["public_trust_sha256"] != raw["rendered_trust_sha256"]
+        or receipt_key["writer_public_key_credential_name"] != "writer-public-key"
         or receipt_key["writer_public_key_source_path"]
         != "/etc/muncho/keys/writer-capability-public.pem"
         or receipt_key["writer_public_key_projection_path"]
@@ -1550,12 +1845,8 @@ def seal_producer_foundation(
     )
     return validate_producer_foundation(
         {**unsigned, "owner_signature": owner_signature},
-        pinned_owner_public_key_ed25519_hex=(
-            pinned_owner_public_key_ed25519_hex
-        ),
-        pinned_owner_public_key_source_sha256=(
-            pinned_owner_public_key_source_sha256
-        ),
+        pinned_owner_public_key_ed25519_hex=(pinned_owner_public_key_ed25519_hex),
+        pinned_owner_public_key_source_sha256=(pinned_owner_public_key_source_sha256),
     )
 
 
@@ -1579,6 +1870,9 @@ def validate_producer_foundation(
     )
     public_hex = pinned_owner_public_key_ed25519_hex
     source_sha256 = _digest(pinned_owner_public_key_source_sha256, code)
+    terminal = _validate_full_canary_terminal(
+        raw["full_canary_terminal_receipt"], code=code
+    )
     if (
         raw["schema"] != PRODUCER_FOUNDATION_SCHEMA
         or not isinstance(raw["release_sha"], str)
@@ -1591,10 +1885,19 @@ def validate_producer_foundation(
         or raw["token_or_token_digest_recorded"] is not False
         or raw["signature_namespace"] != PRODUCER_FOUNDATION_SSHSIG_NAMESPACE
         or raw["signature_algorithm"] != "sshsig-ed25519-sha512"
+        or raw["full_canary_terminal_receipt_sha256"] != terminal["receipt_sha256"]
+        or raw["original_full_canary_owner_approval_sha256"]
+        != terminal["owner_approval_sha256"]
+        or raw["release_sha"] != terminal["release_sha"]
+        or raw["full_canary_plan_sha256"] != terminal["full_canary_plan_sha256"]
     ):
         _fail(code)
     _digest(raw["capability_plan_sha256"], code)
     _digest(raw["full_canary_plan_sha256"], code)
+    _digest(raw["full_canary_terminal_receipt_sha256"], code)
+    _digest(raw["original_full_canary_owner_approval_sha256"], code)
+    _digest(raw["service_identity_foundation_receipt_sha256"], code)
+    _digest(raw["producer_identity_foundation_receipt_sha256"], code)
     owner = _strict(
         raw["owner_authority"],
         (
@@ -1662,8 +1965,7 @@ def validate_producer_foundation(
             authority["algorithm"] != AUTHORITY_ALGORITHMS[role]
             or not isinstance(role_public, str)
             or re.fullmatch(r"[0-9a-f]{64}", role_public) is None
-            or authority["key_id"]
-            != _sha256_bytes(bytes.fromhex(role_public))
+            or authority["key_id"] != _sha256_bytes(bytes.fromhex(role_public))
         ):
             _fail(code)
         public_keys.append(role_public)
@@ -1680,9 +1982,7 @@ def validate_producer_foundation(
         raw["bitrix_operational_edge_contract"],
         release_sha=raw["release_sha"],
     )
-    validate_discord_edge_evidence_contract(
-        raw["discord_edge_evidence_contract"]
-    )
+    validate_discord_edge_evidence_contract(raw["discord_edge_evidence_contract"])
 
     receipt = _strict(
         raw["receipt_contract"],
@@ -1697,7 +1997,9 @@ def validate_producer_foundation(
         ),
         code,
     )
-    base_root = Path(receipt["base_root"]) if isinstance(receipt["base_root"], str) else Path()
+    base_root = (
+        Path(receipt["base_root"]) if isinstance(receipt["base_root"], str) else Path()
+    )
     if (
         not base_root.is_absolute()
         or ".." in base_root.parts
@@ -1705,7 +2007,8 @@ def validate_producer_foundation(
         or type(receipt["run_directory_gid"]) is not int
         or receipt["run_directory_uid"] < 0
         or receipt["run_directory_gid"] < 0
-        or receipt["run_directory_mode"] not in {0o730, 0o770, 0o1730, 0o1770, 0o3730, 0o3770}
+        or receipt["run_directory_mode"]
+        not in {0o730, 0o770, 0o1730, 0o1770, 0o3730, 0o3770}
         or receipt["slot_filenames"] != SLOT_FILENAME
         or receipt["slot_roles"] != SLOT_ROLE
         or receipt["slot_native_binding_kinds"]
@@ -1739,9 +2042,7 @@ def validate_producer_foundation(
             endpoint["private_key_path"],
             endpoint["public_key_path"],
         )
-        expected_slots = [
-            slot for slot in RECEIPT_SLOTS if SLOT_ROLE[slot] == role
-        ]
+        expected_slots = [slot for slot in RECEIPT_SLOTS if SLOT_ROLE[slot] == role]
         if (
             not isinstance(endpoint["service_unit"], str)
             or not endpoint["service_unit"].endswith(".service")
@@ -1769,9 +2070,8 @@ def validate_producer_foundation(
         endpoint_uids.append(endpoint["uid"])
         endpoint_gids.append(endpoint["gid"])
 
-    if (
-        len(endpoint_uids) != len(set(endpoint_uids))
-        or len(endpoint_gids) != len(set(endpoint_gids))
+    if len(endpoint_uids) != len(set(endpoint_uids)) or len(endpoint_gids) != len(
+        set(endpoint_gids)
     ):
         _fail("producer_endpoint_identities_not_separated")
 
@@ -1954,9 +2254,7 @@ class SystemctlProducerServiceStateReader:
                 timeout=self.timeout_seconds,
             )
         except (OSError, subprocess.SubprocessError) as exc:
-            raise CapabilityProducerError(
-                "producer_service_state_unavailable"
-            ) from exc
+            raise CapabilityProducerError("producer_service_state_unavailable") from exc
         rows: dict[str, str] = {}
         for line in completed.stdout.splitlines():
             name, separator, value = line.partition("=")
@@ -1989,14 +2287,17 @@ class SystemctlProducerServiceStateReader:
             elif line.startswith(b"Gid:"):
                 gid_row = line.split()
         try:
-            if uid_row is None or gid_row is None or len(uid_row) != 5 or len(gid_row) != 5:
+            if (
+                uid_row is None
+                or gid_row is None
+                or len(uid_row) != 5
+                or len(gid_row) != 5
+            ):
                 raise ValueError
             uids = tuple(int(item) for item in uid_row[1:])
             gids = tuple(int(item) for item in gid_row[1:])
         except (TypeError, ValueError) as exc:
-            raise CapabilityProducerError(
-                "producer_service_process_invalid"
-            ) from exc
+            raise CapabilityProducerError("producer_service_process_invalid") from exc
         if len(set(uids)) != 1 or len(set(gids)) != 1:
             _fail("producer_service_process_identity_ambiguous")
         return uids[0], gids[0]
@@ -2006,9 +2307,7 @@ class SystemctlProducerServiceStateReader:
         try:
             pid = int(rows["MainPID"])
         except ValueError as exc:
-            raise CapabilityProducerError(
-                "producer_service_state_invalid"
-            ) from exc
+            raise CapabilityProducerError("producer_service_state_invalid") from exc
         if pid <= 1:
             _fail("producer_service_not_running")
         uid, gid = self._process_ids(pid)
@@ -2063,9 +2362,7 @@ def production_endpoint_clients(
             parent = path.parent.lstat()
             item = path.lstat()
         except OSError as exc:
-            raise CapabilityProducerError(
-                "producer_endpoint_unavailable"
-            ) from exc
+            raise CapabilityProducerError("producer_endpoint_unavailable") from exc
         if (
             not path.is_absolute()
             or ".." in path.parts
@@ -2102,6 +2399,8 @@ def activate_production_fleet(
     installed_foundation: InstalledProducerFoundation,
     fixture: Mapping[str, Any],
     fixture_sha256: str,
+    owner_catalog_sha256: str,
+    owner_authority_sha256: str,
     endpoint_clients: Mapping[str, "ProducerEndpointClient"] | None = None,
     state_reader: ProducerServiceStateReader | None = None,
     readiness_path: Path = DEFAULT_READINESS_PATH,
@@ -2149,9 +2448,12 @@ def activate_production_fleet(
         gid=writer_gid,
         mode=0o440,
     )
-    catalog = validate_probe_catalog(
-        _strict_json(catalog_raw, "probe_catalog_invalid")
-    )
+    catalog = validate_probe_catalog(_strict_json(catalog_raw, "probe_catalog_invalid"))
+    if catalog["catalog_sha256"] != _digest(
+        owner_catalog_sha256, "api_admission_owner_publication_invalid"
+    ):
+        _fail("api_admission_owner_publication_invalid")
+    _digest(owner_authority_sha256, "api_admission_owner_publication_invalid")
     pregrant = validate_owner_pregrant(
         _strict_json(owner_grant_raw, "owner_pregrant_invalid"),
         fixture=fixture,
@@ -2177,6 +2479,8 @@ def activate_production_fleet(
             installed_foundation.pinned_owner_public_key_source_sha256
         ),
         owner_grant_sha256=pregrant["grant_sha256"],
+        owner_catalog_sha256=owner_catalog_sha256,
+        owner_authority_sha256=owner_authority_sha256,
         endpoint_clients=clients,
         now_ms=lambda: activation_now,
         routeback_attester=routeback_attester,
@@ -2257,11 +2561,18 @@ class ProducerConfig:
             or not isinstance(slots, list)
             or not slots
             or len(slots) != len(set(slots))
-            or tuple(slots) != tuple(slot for slot in RECEIPT_SLOTS if SLOT_ROLE[slot] == role)
-            or any(type(raw[name]) is not int or raw[name] < 0 for name in (
-                "service_uid", "service_gid", "root_client_uid",
-                "receipt_directory_uid", "receipt_directory_gid",
-            ))
+            or tuple(slots)
+            != tuple(slot for slot in RECEIPT_SLOTS if SLOT_ROLE[slot] == role)
+            or any(
+                type(raw[name]) is not int or raw[name] < 0
+                for name in (
+                    "service_uid",
+                    "service_gid",
+                    "root_client_uid",
+                    "receipt_directory_uid",
+                    "receipt_directory_gid",
+                )
+            )
             or raw["service_uid"] == 0
             or raw["service_gid"] == 0
             or raw["root_client_uid"] != 0
@@ -2292,10 +2603,16 @@ class ProducerConfig:
                 raw["foundation_sha256"], "producer_config_invalid"
             ),
             release_sha=raw["release_sha"],
-            capability_plan_sha256=_digest(raw["capability_plan_sha256"], "producer_config_invalid"),
-            full_canary_plan_sha256=_digest(raw["full_canary_plan_sha256"], "producer_config_invalid"),
+            capability_plan_sha256=_digest(
+                raw["capability_plan_sha256"], "producer_config_invalid"
+            ),
+            full_canary_plan_sha256=_digest(
+                raw["full_canary_plan_sha256"], "producer_config_invalid"
+            ),
             service_unit=service_unit,
-            service_identity_sha256=_digest(raw["service_identity_sha256"], "producer_config_invalid"),
+            service_identity_sha256=_digest(
+                raw["service_identity_sha256"], "producer_config_invalid"
+            ),
             service_uid=raw["service_uid"],
             service_gid=raw["service_gid"],
             root_client_uid=raw["root_client_uid"],
@@ -2311,13 +2628,15 @@ class ProducerConfig:
 
 
 def load_producer_config(path: Path) -> ProducerConfig:
-    if os.geteuid() < 0:  # pragma: no cover - defensive platform guard  # windows-footgun: ok — Linux production/canary boundary
+    if (
+        effective_uid() < 0
+    ):  # pragma: no cover - defensive platform guard
         _fail("producer_identity_invalid")
     raw, _item = _stable_read(
         path,
         maximum=MAX_CONFIG_BYTES,
         uid=0,
-        gid=os.getegid(),  # windows-footgun: ok — Linux production/canary boundary
+        gid=effective_gid(),
         mode=0o440,
     )
     return ProducerConfig.from_mapping(_strict_json(raw, "producer_config_invalid"))
@@ -2428,7 +2747,10 @@ class RoleReceiptProducer:
         now_ms: Callable[[], int] = lambda: int(time.time() * 1000),
         publisher: Callable[..., None] = _publish_no_replace,
     ) -> None:
-        if os.geteuid() != config.service_uid or os.getegid() != config.service_gid:  # windows-footgun: ok — Linux production/canary boundary
+        if (
+            effective_uid() != config.service_uid
+            or effective_gid() != config.service_gid
+        ):
             _fail("producer_process_identity_invalid")
         loaded_private, _private_file_sha256 = (
             _load_projected_private_key(config)
@@ -2447,10 +2769,15 @@ class RoleReceiptProducer:
                 "",
             )
         )
-        private_public = loaded_private.public_key().public_bytes(
-            serialization.Encoding.Raw,
-            serialization.PublicFormat.Raw,
-        ).hex()
+        private_public = (
+            loaded_private
+            .public_key()
+            .public_bytes(
+                serialization.Encoding.Raw,
+                serialization.PublicFormat.Raw,
+            )
+            .hex()
+        )
         if private_public != public_hex:
             _fail("producer_key_pair_mismatch")
         self.config = config
@@ -2481,8 +2808,8 @@ class RoleReceiptProducer:
             "service_unit": self.config.service_unit,
             "service_identity_sha256": self.config.service_identity_sha256,
             "main_pid": pid,
-            "uid": os.geteuid(),  # windows-footgun: ok — Linux production/canary boundary
-            "gid": os.getegid(),  # windows-footgun: ok — Linux production/canary boundary
+            "uid": effective_uid(),
+            "gid": effective_gid(),
             "socket_path": str(self.config.socket_path),
             "allowed_slots": list(self.config.allowed_slots),
             "key_id": self.key_id,
@@ -2507,14 +2834,15 @@ class RoleReceiptProducer:
         if (
             readiness["foundation_sha256"] != self.config.foundation_sha256
             or readiness["release_sha"] != self.config.release_sha
-            or readiness["capability_plan_sha256"]
-            != self.config.capability_plan_sha256
+            or readiness["capability_plan_sha256"] != self.config.capability_plan_sha256
             or readiness["full_canary_plan_sha256"]
             != self.config.full_canary_plan_sha256
             or not isinstance(endpoint, Mapping)
             or endpoint.get("main_pid") != os.getpid()
-            or endpoint.get("uid") != os.geteuid()  # windows-footgun: ok — Linux production/canary boundary
-            or endpoint.get("gid") != os.getegid()  # windows-footgun: ok — Linux production/canary boundary
+            or endpoint.get("uid")
+            != effective_uid()
+            or endpoint.get("gid")
+            != effective_gid()
             or endpoint.get("service_identity_sha256")
             != self.config.service_identity_sha256
             or endpoint.get("key_id") != self.key_id
@@ -2574,8 +2902,7 @@ class RoleReceiptProducer:
             or request["release_sha"] != self.config.release_sha
             or request["fixture_sha256"] != self._active_fixture_sha256
             or self._active_readiness_sha256 is None
-            or request["producer_readiness_sha256"]
-            != self._active_readiness_sha256
+            or request["producer_readiness_sha256"] != self._active_readiness_sha256
             or not isinstance(request["payload"], Mapping)
         ):
             _fail("producer_request_invalid")
@@ -2583,9 +2910,7 @@ class RoleReceiptProducer:
         # The collector is called with only the slot and proposed public payload.
         # It independently reads/queries native state; the requester cannot pass
         # a claimed verification result into the signing boundary.
-        collected = tuple(
-            self.native_collector.collect(slot=slot, payload=payload)
-        )
+        collected = tuple(self.native_collector.collect(slot=slot, payload=payload))
         if not 1 <= len(collected) <= MAX_BINDINGS or any(
             not isinstance(item, NativeEvidenceBinding) for item in collected
         ):
@@ -2734,6 +3059,396 @@ def _send_frame(connection: socket.socket, value: Mapping[str, Any]) -> None:
     connection.sendall(_HEADER.pack(len(raw)) + raw)
 
 
+def _api_admission_request(
+    *,
+    session_id: str,
+    capability_epoch_sha256: str,
+    nonce: str,
+) -> dict[str, Any]:
+    code = "api_run_admission_invalid"
+    if (
+        not isinstance(session_id, str)
+        or not session_id
+        or len(session_id.encode("utf-8", errors="strict")) > 256
+        or re.fullmatch(r"[0-9a-f]{64}", capability_epoch_sha256 or "") is None
+        or re.fullmatch(r"[0-9a-f]{32}", nonce or "") is None
+    ):
+        _fail(code)
+    unsigned = {
+        "schema": API_RUN_ADMISSION_REQUEST_SCHEMA,
+        "session_id": session_id,
+        "capability_epoch_sha256": capability_epoch_sha256,
+        "nonce": nonce,
+    }
+    return {**unsigned, "challenge_sha256": _sha256_json(unsigned)}
+
+
+def _validate_api_admission_request(
+    request: Mapping[str, Any],
+) -> dict[str, Any]:
+    code = "api_run_admission_invalid"
+    raw = _strict(
+        request,
+        (
+            "schema",
+            "session_id",
+            "capability_epoch_sha256",
+            "nonce",
+            "challenge_sha256",
+        ),
+        code,
+    )
+    unsigned_request = {
+        key: item for key, item in raw.items() if key != "challenge_sha256"
+    }
+    _api_admission_request(
+        session_id=raw["session_id"],
+        capability_epoch_sha256=raw["capability_epoch_sha256"],
+        nonce=raw["nonce"],
+    )
+    if raw["schema"] != API_RUN_ADMISSION_REQUEST_SCHEMA or raw[
+        "challenge_sha256"
+    ] != _sha256_json(unsigned_request):
+        _fail(code)
+    return raw
+
+
+def _api_admission_ready(
+    request: Mapping[str, Any], authorization: Mapping[str, Any]
+) -> dict[str, Any]:
+    raw = _validate_api_admission_request(request)
+    if not isinstance(authorization, Mapping):
+        _fail("api_run_admission_ready_invalid")
+    unsigned = {
+        "schema": API_RUN_ADMISSION_READY_SCHEMA,
+        "session_id": raw["session_id"],
+        "capability_epoch_sha256": raw["capability_epoch_sha256"],
+        "challenge_sha256": raw["challenge_sha256"],
+        "authorization_sha256": _sha256_json(authorization),
+        "ready": True,
+    }
+    return {**unsigned, "receipt_sha256": _sha256_json(unsigned)}
+
+
+def _api_admission_ready_ack(
+    request: Mapping[str, Any], ready: Mapping[str, Any]
+) -> dict[str, Any]:
+    raw = _validate_api_admission_request(request)
+    if (
+        not isinstance(ready, Mapping)
+        or ready.get("schema") != API_RUN_ADMISSION_READY_SCHEMA
+        or ready.get("session_id") != raw["session_id"]
+        or ready.get("capability_epoch_sha256") != raw["capability_epoch_sha256"]
+        or ready.get("challenge_sha256") != raw["challenge_sha256"]
+        or ready.get("ready") is not True
+        or ready.get("receipt_sha256")
+        != _sha256_json({key: item for key, item in ready.items() if key != "receipt_sha256"})
+    ):
+        _fail("api_run_admission_ready_invalid")
+    unsigned = {
+        "schema": API_RUN_ADMISSION_ACK_SCHEMA,
+        "session_id": raw["session_id"],
+        "capability_epoch_sha256": raw["capability_epoch_sha256"],
+        "challenge_sha256": raw["challenge_sha256"],
+        "ready_receipt_sha256": ready["receipt_sha256"],
+        "acknowledged": True,
+    }
+    return {**unsigned, "receipt_sha256": _sha256_json(unsigned)}
+
+
+def _api_admission_commit(
+    request: Mapping[str, Any],
+    ready: Mapping[str, Any],
+    ready_ack: Mapping[str, Any],
+    commitment: Mapping[str, Any],
+) -> dict[str, Any]:
+    expected_ack = _api_admission_ready_ack(request, ready)
+    if ready_ack != expected_ack or not isinstance(commitment, Mapping):
+        _fail("api_run_admission_commit_invalid")
+    raw = _validate_api_admission_request(request)
+    unsigned = {
+        "schema": API_RUN_ADMISSION_COMMIT_SCHEMA,
+        "session_id": raw["session_id"],
+        "capability_epoch_sha256": raw["capability_epoch_sha256"],
+        "challenge_sha256": raw["challenge_sha256"],
+        "ready_receipt_sha256": ready["receipt_sha256"],
+        "ready_ack_sha256": ready_ack["receipt_sha256"],
+        "commitment_sha256": _sha256_json(commitment),
+        "committed": True,
+    }
+    return {**unsigned, "receipt_sha256": _sha256_json(unsigned)}
+
+
+def _api_admission_commit_ack(
+    request: Mapping[str, Any], commit: Mapping[str, Any]
+) -> dict[str, Any]:
+    raw = _validate_api_admission_request(request)
+    if (
+        not isinstance(commit, Mapping)
+        or commit.get("schema") != API_RUN_ADMISSION_COMMIT_SCHEMA
+        or commit.get("session_id") != raw["session_id"]
+        or commit.get("capability_epoch_sha256") != raw["capability_epoch_sha256"]
+        or commit.get("challenge_sha256") != raw["challenge_sha256"]
+        or commit.get("committed") is not True
+        or commit.get("receipt_sha256")
+        != _sha256_json({key: item for key, item in commit.items() if key != "receipt_sha256"})
+    ):
+        _fail("api_run_admission_commit_invalid")
+    unsigned = {
+        "schema": API_RUN_ADMISSION_COMMIT_ACK_SCHEMA,
+        "session_id": raw["session_id"],
+        "capability_epoch_sha256": raw["capability_epoch_sha256"],
+        "challenge_sha256": raw["challenge_sha256"],
+        "commit_receipt_sha256": commit["receipt_sha256"],
+        "acknowledged": True,
+    }
+    return {**unsigned, "receipt_sha256": _sha256_json(unsigned)}
+
+
+def _api_admission_receipt(
+    request: Mapping[str, Any],
+    *,
+    ready: Mapping[str, Any],
+    commit: Mapping[str, Any],
+    commit_ack: Mapping[str, Any],
+    finalization: Mapping[str, Any],
+) -> dict[str, Any]:
+    expected_commit_ack = _api_admission_commit_ack(request, commit)
+    if commit_ack != expected_commit_ack or not isinstance(finalization, Mapping):
+        _fail("api_run_admission_receipt_invalid")
+    raw = _validate_api_admission_request(request)
+    unsigned = {
+        "schema": API_RUN_ADMISSION_SCHEMA,
+        "session_id": raw["session_id"],
+        "capability_epoch_sha256": raw["capability_epoch_sha256"],
+        "challenge_sha256": raw["challenge_sha256"],
+        "ready_receipt_sha256": ready["receipt_sha256"],
+        "commit_receipt_sha256": commit["receipt_sha256"],
+        "commit_ack_sha256": commit_ack["receipt_sha256"],
+        "finalization_sha256": _sha256_json(finalization),
+        "stage": "gateway_commit_acknowledged_pre_model",
+        "gateway_commit_acknowledged": True,
+        "model_release_allowed": True,
+        "model_callback_released": False,
+    }
+    return {**unsigned, "receipt_sha256": _sha256_json(unsigned)}
+
+
+def api_server_capability_admission(
+    session_id: str,
+    capability_epoch_sha256: str,
+    *,
+    socket_path: Path = DEFAULT_API_ADMISSION_SOCKET,
+    timeout_seconds: float = 180.0,
+    peer_getter: Callable[[socket.socket], PeerIdentity] = linux_peer_identity,
+) -> Mapping[str, Any]:
+    """Block one canary API run on the root-owned admission coordinator.
+
+    This callback runs only after the API server has created and bound its
+    fresh epoch.  Neither the HTTP caller nor the coordinator can replace it.
+    """
+
+    if (
+        socket_path != DEFAULT_API_ADMISSION_SOCKET
+        and (not socket_path.is_absolute() or ".." in socket_path.parts)
+    ) or not 1 <= timeout_seconds <= 300:
+        _fail("api_run_admission_invalid")
+    request = _api_admission_request(
+        session_id=session_id,
+        capability_epoch_sha256=capability_epoch_sha256,
+        nonce=secrets.token_hex(16),
+    )
+    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    connection.set_inheritable(False)
+    try:
+        connection.settimeout(timeout_seconds)
+        connection.connect(str(socket_path))
+        peer = peer_getter(connection)
+        if peer.uid != 0 or peer.gid != 0 or peer.pid <= 1:
+            _fail("api_run_admission_peer_invalid")
+        _send_frame(connection, request)
+        ready = _recv_frame(
+            connection,
+            maximum=MAX_API_ADMISSION_BYTES,
+        )
+        ready_ack = _api_admission_ready_ack(request, ready)
+        _send_frame(connection, ready_ack)
+        commit = _recv_frame(connection, maximum=MAX_API_ADMISSION_BYTES)
+        commit_ack = _api_admission_commit_ack(request, commit)
+        _send_frame(connection, commit_ack)
+        response = _recv_frame(connection, maximum=MAX_API_ADMISSION_BYTES)
+    except (OSError, socket.timeout) as exc:
+        raise CapabilityProducerError("api_run_admission_unavailable") from exc
+    finally:
+        connection.close()
+    if (
+        not isinstance(response, Mapping)
+        or response.get("schema") != API_RUN_ADMISSION_SCHEMA
+        or response.get("session_id") != request["session_id"]
+        or response.get("capability_epoch_sha256")
+        != request["capability_epoch_sha256"]
+        or response.get("challenge_sha256") != request["challenge_sha256"]
+        or response.get("ready_receipt_sha256") != ready["receipt_sha256"]
+        or response.get("commit_receipt_sha256") != commit["receipt_sha256"]
+        or response.get("commit_ack_sha256") != commit_ack["receipt_sha256"]
+        or response.get("stage")
+        != "gateway_commit_acknowledged_pre_model"
+        or response.get("gateway_commit_acknowledged") is not True
+        or response.get("model_release_allowed") is not True
+        or response.get("model_callback_released") is not False
+        or response.get("receipt_sha256")
+        != _sha256_json({
+            key: item for key, item in response.items() if key != "receipt_sha256"
+        })
+    ):
+        _fail("api_run_admission_receipt_invalid")
+    return copy.deepcopy(response)
+
+
+def serve_api_server_capability_admission_once(
+    *,
+    expected_peer: PeerIdentity,
+    expected_session_id: str,
+    authorizer: Callable[[Mapping[str, Any]], Any],
+    committer: Callable[
+        [Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]], Any
+    ],
+    finalizer: Callable[
+        [Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]], Any
+    ],
+    socket_path: Path = DEFAULT_API_ADMISSION_SOCKET,
+    timeout_seconds: float = 180.0,
+    peer_getter: Callable[[socket.socket], PeerIdentity] = linux_peer_identity,
+) -> Mapping[str, Any]:
+    """Accept one exact gateway challenge and release it after authorization.
+
+    The authorizer is a mechanical owner/root boundary.  It prepares the exact
+    catalog/grant inputs but does not claim the runtime is live.  Only after
+    the gateway acknowledges that ready receipt may the committer start role
+    services and activate the fleet.  The finalizer runs only after the
+    gateway acknowledges that exact runtime commit.  Any exception closes the
+    socket without model release.
+    """
+
+    if (
+        effective_uid() != 0
+        or not callable(authorizer)
+        or not callable(committer)
+        or not callable(finalizer)
+        or expected_peer.pid <= 1
+        or expected_peer.uid <= 0
+        or expected_peer.gid <= 0
+        or not isinstance(expected_session_id, str)
+        or not expected_session_id
+        or len(expected_session_id.encode("utf-8", errors="strict")) > 256
+        or not socket_path.is_absolute()
+        or ".." in socket_path.parts
+        or not 1 <= timeout_seconds <= 300
+    ):
+        _fail("api_run_admission_server_invalid")
+    parent = socket_path.parent
+    _require_directory(
+        parent,
+        uid=expected_peer.uid,
+        gid=expected_peer.gid,
+        mode=0o700,
+    )
+    if os.path.lexists(socket_path):
+        _fail("api_run_admission_socket_exists")
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listener.set_inheritable(False)
+    bound_identity: tuple[int, ...] | None = None
+    try:
+        listener.bind(str(socket_path))
+        os.chown(socket_path, 0, expected_peer.gid, follow_symlinks=False)
+        os.chmod(socket_path, 0o660, follow_symlinks=False)
+        item = socket_path.lstat()
+        if (
+            not stat.S_ISSOCK(item.st_mode)
+            or item.st_uid != 0
+            or item.st_gid != expected_peer.gid
+            or stat.S_IMODE(item.st_mode) != 0o660
+        ):
+            _fail("api_run_admission_socket_invalid")
+        bound_identity = _identity(item)
+        listener.listen(1)
+        listener.settimeout(timeout_seconds)
+        connection, _address = listener.accept()
+        with connection:
+            connection.settimeout(timeout_seconds)
+            if peer_getter(connection) != expected_peer:
+                _fail("api_run_admission_peer_invalid")
+            request = _recv_frame(
+                connection,
+                maximum=MAX_API_ADMISSION_BYTES,
+            )
+            request = _validate_api_admission_request(request)
+            if request["session_id"] != expected_session_id:
+                _fail("api_run_admission_session_invalid")
+            authorization = authorizer(copy.deepcopy(request))
+            if not isinstance(authorization, Mapping):
+                _fail("api_run_admission_authorization_invalid")
+            ready = _api_admission_ready(request, authorization)
+            _send_frame(connection, ready)
+            ready_ack = _recv_frame(connection, maximum=MAX_API_ADMISSION_BYTES)
+            if ready_ack != _api_admission_ready_ack(request, ready):
+                _fail("api_run_admission_ready_ack_invalid")
+            commitment = committer(
+                copy.deepcopy(request),
+                copy.deepcopy(dict(authorization)),
+                copy.deepcopy(dict(ready_ack)),
+            )
+            if not isinstance(commitment, Mapping):
+                _fail("api_run_admission_commitment_invalid")
+            commit = _api_admission_commit(
+                request, ready, ready_ack, commitment
+            )
+            _send_frame(connection, commit)
+            commit_ack = _recv_frame(connection, maximum=MAX_API_ADMISSION_BYTES)
+            if commit_ack != _api_admission_commit_ack(request, commit):
+                _fail("api_run_admission_commit_ack_invalid")
+            finalization = finalizer(
+                copy.deepcopy(request),
+                copy.deepcopy(dict(commitment)),
+                copy.deepcopy(dict(commit_ack)),
+            )
+            if not isinstance(finalization, Mapping):
+                _fail("api_run_admission_finalization_invalid")
+            receipt = _api_admission_receipt(
+                request,
+                ready=ready,
+                commit=commit,
+                commit_ack=commit_ack,
+                finalization=finalization,
+            )
+            _send_frame(connection, receipt)
+        return {
+            "request": copy.deepcopy(request),
+            "receipt": copy.deepcopy(receipt),
+            "authorization": authorization,
+            "ready": ready,
+            "ready_ack": ready_ack,
+            "commitment": commitment,
+            "commit": commit,
+            "commit_ack": commit_ack,
+            "finalization": finalization,
+        }
+    except socket.timeout as exc:
+        raise CapabilityProducerError("api_run_admission_timeout") from exc
+    finally:
+        listener.close()
+        if bound_identity is not None:
+            try:
+                current = socket_path.lstat()
+            except FileNotFoundError:
+                current = None
+            if current is not None:
+                if _identity(current) != bound_identity:
+                    _fail("api_run_admission_socket_replaced")
+                socket_path.unlink()
+                _fsync_directory(parent)
+
+
 class CapabilityProducerServer:
     """One role endpoint; only root may request readiness or publication."""
 
@@ -2875,9 +3590,8 @@ class ProducerEndpointClient:
             if response.get("schema") != PRODUCER_RESPONSE_SCHEMA:
                 _fail("producer_response_invalid")
             if response.get("ok") is False:
-                if (
-                    set(response) != {"schema", "ok", "failure_code"}
-                    or not isinstance(response["failure_code"], str)
+                if set(response) != {"schema", "ok", "failure_code"} or not isinstance(
+                    response["failure_code"], str
                 ):
                     _fail("producer_response_invalid")
                 _fail(f"producer_remote_{response['failure_code']}")
@@ -2893,7 +3607,9 @@ class ProducerEndpointClient:
 
 
 PRODUCTION_PUMP_SLOTS = tuple(
-    slot for slot in RECEIPT_SLOTS if SLOT_ROLE[slot] in ENDPOINT_ROLES
+    slot
+    for slot in RECEIPT_SLOTS
+    if SLOT_ROLE[slot] in ENDPOINT_ROLES or SLOT_ROLE[slot] == "owner"
 )
 PRODUCTION_PRE_CLEANUP_PUMP_SLOTS = tuple(
     slot for slot in PRODUCTION_PUMP_SLOTS if slot != "cleanup"
@@ -2922,12 +3638,8 @@ class ProductionReceiptPump:
         activation = validate_fleet_readiness_for_retirement(
             readiness,
             expected_foundation_sha256=producer_foundation_sha256(foundation),
-            expected_capability_plan_sha256=foundation[
-                "capability_plan_sha256"
-            ],
-            expected_full_canary_plan_sha256=foundation[
-                "full_canary_plan_sha256"
-            ],
+            expected_capability_plan_sha256=foundation["capability_plan_sha256"],
+            expected_full_canary_plan_sha256=foundation["full_canary_plan_sha256"],
         )
         if set(endpoint_clients) != set(ENDPOINT_ROLES):
             _fail("producer_pump_invalid")
@@ -2946,8 +3658,32 @@ class ProductionReceiptPump:
         self.readiness = copy.deepcopy(activation)
         self.endpoint_clients = dict(endpoint_clients)
 
+    def read_staged_owner_receipt(self) -> Mapping[str, Any]:
+        """Read the exact owner envelope staged by the admission boundary."""
+
+        path = (
+            Path(self.readiness["run_receipt_root"]) / SLOT_FILENAME["workspace_owner"]
+        )
+        raw, _item = _stable_read(
+            path,
+            maximum=MAX_RECEIPT_BYTES,
+            uid=0,
+            gid=0,
+            mode=0o400,
+        )
+        if _sha256_bytes(raw) != self.readiness["owner_authority"]["grant_sha256"]:
+            _fail("producer_pump_owner_receipt_invalid")
+        receipt = _strict_json(raw, "producer_pump_owner_receipt_invalid")
+        if _canonical_bytes(receipt) != raw:
+            _fail("producer_pump_owner_receipt_invalid")
+        return copy.deepcopy(receipt)
+
     def produce(self, *, slot: str, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         role = SLOT_ROLE.get(slot)
+        if slot == "workspace_owner":
+            if payload:
+                _fail("producer_pump_owner_payload_forbidden")
+            return self.read_staged_owner_receipt()
         if slot not in PRODUCTION_PUMP_SLOTS or role not in ENDPOINT_ROLES:
             _fail("producer_pump_slot_invalid")
         if not isinstance(payload, Mapping):
@@ -2956,8 +3692,7 @@ class ProductionReceiptPump:
         if (
             value.get("run_id") != self.readiness["run_id"]
             or value.get("release_sha") != self.readiness["release_sha"]
-            or value.get("fixture_sha256")
-            != self.readiness["fixture_sha256"]
+            or value.get("fixture_sha256") != self.readiness["fixture_sha256"]
         ):
             _fail("producer_pump_payload_invalid")
         request = {
@@ -2967,28 +3702,28 @@ class ProductionReceiptPump:
             "run_id": self.readiness["run_id"],
             "release_sha": self.readiness["release_sha"],
             "fixture_sha256": self.readiness["fixture_sha256"],
-            "producer_readiness_sha256": self.readiness[
-                "readiness_sha256"
-            ],
+            "producer_readiness_sha256": self.readiness["readiness_sha256"],
             "payload": value,
         }
-        receipt = self.endpoint_clients[role].call(
-            {"action": "produce", "request": request}
-        )
+        receipt = self.endpoint_clients[role].call({
+            "action": "produce",
+            "request": request,
+        })
         public_key = Ed25519PublicKey.from_public_bytes(
             bytes.fromhex(
-                self.foundation["authority_keys"][role][
-                    "public_key_ed25519_hex"
-                ]
+                self.foundation["authority_keys"][role]["public_key_ed25519_hex"]
             )
         )
-        if verify_role_receipt(
-            receipt,
-            role=role,
-            slot=slot,
-            public_key=public_key,
-            producer_readiness_sha256=self.readiness["readiness_sha256"],
-        ) != value:
+        if (
+            verify_role_receipt(
+                receipt,
+                role=role,
+                slot=slot,
+                public_key=public_key,
+                producer_readiness_sha256=self.readiness["readiness_sha256"],
+            )
+            != value
+        ):
             _fail("producer_pump_receipt_invalid")
         endpoint = self.foundation["endpoints"][role]
         path = Path(self.readiness["run_receipt_root"]) / SLOT_FILENAME[slot]
@@ -3014,9 +3749,7 @@ class ProductionReceiptPump:
             for slot in PRODUCTION_PRE_CLEANUP_PUMP_SLOTS
         }
 
-    def produce_cleanup(
-        self, payload: Mapping[str, Any]
-    ) -> Mapping[str, Any]:
+    def produce_cleanup(self, payload: Mapping[str, Any]) -> Mapping[str, Any]:
         return self.produce(slot="cleanup", payload=payload)
 
 
@@ -3139,7 +3872,10 @@ def _validate_routeback_identity(
         or raw["planned_routeback_bot_user_id"] != routeback_bot_user_id
         or raw["connector_bot_user_id"] != connector_bot_user_id
         or raw["production_bot_user_id"] != PRODUCTION_BOT_USER_ID
-        or any(not isinstance(item, str) or _SNOWFLAKE_RE.fullmatch(item) is None for item in ids)
+        or any(
+            not isinstance(item, str) or _SNOWFLAKE_RE.fullmatch(item) is None
+            for item in ids
+        )
         or len(set(ids)) != 3
         or raw["pairwise_distinct"] is not True
         or type(raw["observed_at_unix"]) is not int
@@ -3171,6 +3907,8 @@ def build_fleet_readiness_for_plans(
     pinned_owner_public_key_ed25519_hex: str,
     pinned_owner_public_key_source_sha256: str,
     owner_grant_sha256: str,
+    owner_catalog_sha256: str,
+    owner_authority_sha256: str,
     endpoint_clients: Mapping[str, ProducerEndpointClient],
     now_ms: Callable[[], int] = lambda: int(time.time() * 1000),
     routeback_attester: Callable[[Any, Any], Mapping[str, Any]] | None = None,
@@ -3186,7 +3924,11 @@ def build_fleet_readiness_for_plans(
         _require_routeback_credential_binding,
     )
 
-    attest = _attest_live_routeback_bot_identity if routeback_attester is None else routeback_attester
+    attest = (
+        _attest_live_routeback_bot_identity
+        if routeback_attester is None
+        else routeback_attester
+    )
     require_binding = (
         _require_routeback_credential_binding
         if routeback_binding_checker is None
@@ -3194,27 +3936,23 @@ def build_fleet_readiness_for_plans(
     )
     identity = attest(plan, full_plan)
     metadata = require_binding(plan, full_plan, identity)
-    if (
-        not isinstance(metadata, Mapping)
-        or _sha256_json(metadata)
-        != identity.get("credential_file_metadata_sha256")
+    if not isinstance(metadata, Mapping) or _sha256_json(metadata) != identity.get(
+        "credential_file_metadata_sha256"
     ):
         _fail("routeback_identity_invalid")
     return build_fleet_activation(
         foundation=foundation,
         fixture=fixture,
         fixture_sha256=fixture_sha256,
-        pinned_owner_public_key_ed25519_hex=(
-            pinned_owner_public_key_ed25519_hex
-        ),
-        pinned_owner_public_key_source_sha256=(
-            pinned_owner_public_key_source_sha256
-        ),
+        pinned_owner_public_key_ed25519_hex=(pinned_owner_public_key_ed25519_hex),
+        pinned_owner_public_key_source_sha256=(pinned_owner_public_key_source_sha256),
         owner_grant_sha256=owner_grant_sha256,
+        owner_catalog_sha256=owner_catalog_sha256,
+        owner_authority_sha256=owner_authority_sha256,
         routeback_bot_identity=identity,
         endpoint_clients=endpoint_clients,
         now_ms=now_ms,
-)
+    )
 
 
 def build_fleet_activation(
@@ -3225,6 +3963,8 @@ def build_fleet_activation(
     pinned_owner_public_key_ed25519_hex: str,
     pinned_owner_public_key_source_sha256: str,
     owner_grant_sha256: str,
+    owner_catalog_sha256: str,
+    owner_authority_sha256: str,
     routeback_bot_identity: Mapping[str, Any],
     endpoint_clients: Mapping[str, ProducerEndpointClient],
     now_ms: Callable[[], int] = lambda: int(time.time() * 1000),
@@ -3234,12 +3974,8 @@ def build_fleet_activation(
     current = now_ms()
     foundation_value = validate_producer_foundation(
         foundation,
-        pinned_owner_public_key_ed25519_hex=(
-            pinned_owner_public_key_ed25519_hex
-        ),
-        pinned_owner_public_key_source_sha256=(
-            pinned_owner_public_key_source_sha256
-        ),
+        pinned_owner_public_key_ed25519_hex=(pinned_owner_public_key_ed25519_hex),
+        pinned_owner_public_key_source_sha256=(pinned_owner_public_key_source_sha256),
     )
     foundation_sha256 = producer_foundation_sha256(foundation_value)
     if not isinstance(fixture, Mapping):
@@ -3265,8 +4001,7 @@ def build_fleet_activation(
         or set(endpoint_clients) != set(ENDPOINT_ROLES)
         or not isinstance(run_id, str)
         or _SAFE_ID_RE.fullmatch(run_id) is None
-        or fixture_value.get("producer_foundation_sha256")
-        != foundation_sha256
+        or fixture_value.get("producer_foundation_sha256") != foundation_sha256
         or release_sha != foundation_value["release_sha"]
         or fixture_value.get("owner_id") != PRODUCTION_OWNER_ID
         or authorities != foundation_value["authority_keys"]
@@ -3280,6 +4015,12 @@ def build_fleet_activation(
     ):
         _fail("producer_fleet_readiness_invalid")
     owner_grant_sha256 = _digest(owner_grant_sha256, "producer_fleet_readiness_invalid")
+    owner_catalog_sha256 = _digest(
+        owner_catalog_sha256, "producer_fleet_readiness_invalid"
+    )
+    owner_authority_sha256 = _digest(
+        owner_authority_sha256, "producer_fleet_readiness_invalid"
+    )
     connector_bot_user_id = bot_identities["connector_bot_user_id"]
     routeback_bot_user_id = bot_identities["routeback_bot_user_id"]
     routeback = _validate_routeback_identity(
@@ -3310,8 +4051,7 @@ def build_fleet_activation(
         )
         expected_endpoint = foundation_value["endpoints"][role]
         if (
-            endpoints[role]["service_unit"]
-            != expected_endpoint["service_unit"]
+            endpoints[role]["service_unit"] != expected_endpoint["service_unit"]
             or endpoints[role]["service_identity_sha256"]
             != expected_endpoint["service_identity_sha256"]
             or endpoints[role]["uid"] != expected_endpoint["uid"]
@@ -3359,6 +4099,9 @@ def build_fleet_activation(
             "public_key_source_sha256": owner["public_key_source_sha256"],
             "grant_sha256": owner_grant_sha256,
             "grant_path": str(DEFAULT_OWNER_GRANT_PATH),
+            "catalog_sha256": owner_catalog_sha256,
+            "catalog_path": str(DEFAULT_PROBE_CATALOG_PATH),
+            "authority_sha256": owner_authority_sha256,
         },
         "discord_bot_identities": {
             "production_bot_user_id": PRODUCTION_BOT_USER_ID,
@@ -3395,9 +4138,10 @@ def activate_fleet_readiness(
         _fail("producer_activation_invalid")
     receipts: dict[str, Mapping[str, Any]] = {}
     for role in ENDPOINT_ROLES:
-        value = endpoint_clients[role].call(
-            {"action": "activate", "readiness": readiness}
-        )
+        value = endpoint_clients[role].call({
+            "action": "activate",
+            "readiness": readiness,
+        })
         raw = _strict(
             value,
             (
@@ -3503,9 +4247,7 @@ def validate_fleet_readiness(
         or type(raw["valid_until_unix_ms"]) is not int
         or not raw["valid_from_unix_ms"] <= current < raw["valid_until_unix_ms"]
         or type(raw["observed_at_unix_ms"]) is not int
-        or not raw["valid_from_unix_ms"]
-        <= raw["observed_at_unix_ms"]
-        <= current
+        or not raw["valid_from_unix_ms"] <= raw["observed_at_unix_ms"] <= current
         or raw["readiness_sha256"] != _sha256_json(unsigned)
     ):
         _fail("producer_fleet_readiness_invalid")
@@ -3565,6 +4307,9 @@ def validate_fleet_readiness(
             "public_key_source_sha256",
             "grant_sha256",
             "grant_path",
+            "catalog_sha256",
+            "catalog_path",
+            "authority_sha256",
         ),
         "producer_fleet_readiness_invalid",
     )
@@ -3573,10 +4318,13 @@ def validate_fleet_readiness(
         or owner["owner_id"] != PRODUCTION_OWNER_ID
         or owner["key_id"] != authorities["owner"]["key_id"]
         or owner["grant_path"] != str(DEFAULT_OWNER_GRANT_PATH)
+        or owner["catalog_path"] != str(DEFAULT_PROBE_CATALOG_PATH)
     ):
         _fail("producer_fleet_readiness_invalid")
     _digest(owner["public_key_source_sha256"], "producer_fleet_readiness_invalid")
     _digest(owner["grant_sha256"], "producer_fleet_readiness_invalid")
+    _digest(owner["catalog_sha256"], "producer_fleet_readiness_invalid")
+    _digest(owner["authority_sha256"], "producer_fleet_readiness_invalid")
     bots = _strict(
         raw["discord_bot_identities"],
         (
@@ -3596,8 +4344,7 @@ def validate_fleet_readiness(
     if (
         bots["production_bot_user_id"] != PRODUCTION_BOT_USER_ID
         or any(
-            not isinstance(item, str)
-            or _SNOWFLAKE_RE.fullmatch(item) is None
+            not isinstance(item, str) or _SNOWFLAKE_RE.fullmatch(item) is None
             for item in bot_ids
         )
         or len(set(bot_ids)) != 3
@@ -3695,54 +4442,173 @@ def publish_fleet_readiness(
 def retire_fleet_readiness(
     *,
     expected_readiness_sha256: str,
+    run_id: str,
+    retirement_directory: Path,
     path: Path = DEFAULT_READINESS_PATH,
     uid: int = 0,
     gid: int = 0,
+    retirement_uid: int = 0,
+    retirement_gid: int = 0,
+    retirement_mode: int = 0o700,
     expected_foundation_sha256: str | None = None,
     expected_capability_plan_sha256: str | None = None,
     expected_full_canary_plan_sha256: str | None = None,
     retired_at_unix_ms: int | None = None,
 ) -> Mapping[str, Any]:
-    """Retire only the exact installed activation after stable readback."""
+    """Durably and idempotently retire one exact run activation."""
 
+    code = "producer_fleet_readiness_retirement_invalid"
     expected = _digest(
         expected_readiness_sha256,
-        "producer_fleet_readiness_retirement_invalid",
+        code,
     )
-    raw, before = _stable_read(
-        path,
-        maximum=MAX_READINESS_BYTES,
-        uid=uid,
-        gid=gid,
-        mode=0o400,
+    _safe_id(run_id, code)
+    _require_directory(
+        retirement_directory,
+        uid=retirement_uid,
+        gid=retirement_gid,
+        mode=retirement_mode,
     )
-    value = validate_fleet_readiness_for_retirement(
-        _strict_json(raw, "producer_fleet_readiness_retirement_invalid"),
-        expected_foundation_sha256=expected_foundation_sha256,
-        expected_capability_plan_sha256=expected_capability_plan_sha256,
-        expected_full_canary_plan_sha256=expected_full_canary_plan_sha256,
-    )
-    if value["readiness_sha256"] != expected:
-        _fail("producer_fleet_readiness_retirement_mismatch")
+    intent_path = retirement_directory / "producer-activation-retirement-intent.json"
+    completion_path = retirement_directory / "producer-activation-retirement.json"
     retired_at = (
-        int(time.time() * 1000)
-        if retired_at_unix_ms is None
-        else retired_at_unix_ms
+        int(time.time() * 1000) if retired_at_unix_ms is None else retired_at_unix_ms
     )
-    if type(retired_at) is not int or retired_at < value["observed_at_unix_ms"]:
-        _fail("producer_fleet_readiness_retirement_invalid")
-    try:
-        reachable = path.lstat()
-        if _identity(reachable) != _identity(before):
+    if type(retired_at) is not int or retired_at <= 0:
+        _fail(code)
+
+    if os.path.lexists(intent_path):
+        intent_raw, _intent_item = _stable_read(
+            intent_path,
+            maximum=MAX_READINESS_BYTES,
+            uid=retirement_uid,
+            gid=retirement_gid,
+            mode=0o400,
+        )
+        intent = _strict_json(intent_raw, code)
+        intent_unsigned = {
+            key: item for key, item in intent.items() if key != "intent_sha256"
+        }
+        if (
+            set(intent)
+            != {
+                "schema",
+                "run_id",
+                "readiness_sha256",
+                "activation_path",
+                "activation_file_sha256",
+                "activation",
+                "intent_sha256",
+            }
+            or intent.get("schema") != PRODUCER_FLEET_RETIREMENT_INTENT_SCHEMA
+            or intent.get("run_id") != run_id
+            or intent.get("readiness_sha256") != expected
+            or intent.get("activation_path") != str(path)
+            or intent.get("intent_sha256") != _sha256_json(intent_unsigned)
+        ):
+            _fail(code)
+        value = validate_fleet_readiness_for_retirement(
+            intent["activation"],
+            expected_foundation_sha256=expected_foundation_sha256,
+            expected_capability_plan_sha256=expected_capability_plan_sha256,
+            expected_full_canary_plan_sha256=expected_full_canary_plan_sha256,
+        )
+        activation_raw = _canonical_bytes(value)
+        if (
+            value["readiness_sha256"] != expected
+            or value["run_id"] != run_id
+            or intent["activation_file_sha256"] != _sha256_bytes(activation_raw)
+        ):
+            _fail(code)
+    else:
+        raw, before = _stable_read(
+            path,
+            maximum=MAX_READINESS_BYTES,
+            uid=uid,
+            gid=gid,
+            mode=0o400,
+        )
+        value = validate_fleet_readiness_for_retirement(
+            _strict_json(raw, code),
+            expected_foundation_sha256=expected_foundation_sha256,
+            expected_capability_plan_sha256=expected_capability_plan_sha256,
+            expected_full_canary_plan_sha256=expected_full_canary_plan_sha256,
+        )
+        if value["readiness_sha256"] != expected or value["run_id"] != run_id:
+            _fail("producer_fleet_readiness_retirement_mismatch")
+        activation_raw = _canonical_bytes(value)
+        if raw != activation_raw:
+            _fail(code)
+        intent_unsigned = {
+            "schema": PRODUCER_FLEET_RETIREMENT_INTENT_SCHEMA,
+            "run_id": run_id,
+            "readiness_sha256": expected,
+            "activation_path": str(path),
+            "activation_file_sha256": _sha256_bytes(activation_raw),
+            "activation": copy.deepcopy(value),
+        }
+        intent = {
+            **intent_unsigned,
+            "intent_sha256": _sha256_json(intent_unsigned),
+        }
+        _publish_or_identical(
+            intent_path,
+            _canonical_bytes(intent),
+            uid=retirement_uid,
+            gid=retirement_gid,
+            mode=0o400,
+            parent_uid=retirement_uid,
+            parent_gid=retirement_gid,
+            parent_mode=retirement_mode,
+        )
+        if _identity(path.lstat()) != _identity(before):
             _fail("producer_fleet_readiness_retirement_replaced")
-        path.unlink()
-        _fsync_directory(path.parent)
-    except CapabilityProducerError:
-        raise
-    except OSError as exc:
-        raise CapabilityProducerError(
-            "producer_fleet_readiness_retirement_failed"
-        ) from exc
+
+    if type(retired_at) is not int or retired_at < value["observed_at_unix_ms"]:
+        _fail(code)
+    if os.path.lexists(completion_path):
+        completed_raw, _completed_item = _stable_read(
+            completion_path,
+            maximum=MAX_READINESS_BYTES,
+            uid=retirement_uid,
+            gid=retirement_gid,
+            mode=0o400,
+        )
+        completed = _strict_json(completed_raw, code)
+        completed_unsigned = {
+            key: item for key, item in completed.items() if key != "receipt_sha256"
+        }
+        if (
+            completed.get("schema")
+            != "muncho-production-capability-fleet-retirement.v1"
+            or completed.get("readiness_sha256") != expected
+            or completed.get("run_id") != run_id
+            or completed.get("retirement_intent_sha256") != intent["intent_sha256"]
+            or completed.get("retired") is not True
+            or completed.get("absence_verified") is not True
+            or completed.get("receipt_sha256") != _sha256_json(completed_unsigned)
+            or os.path.lexists(path)
+        ):
+            _fail(code)
+        return completed
+
+    if os.path.lexists(path):
+        observed, before = _stable_read(
+            path,
+            maximum=MAX_READINESS_BYTES,
+            uid=uid,
+            gid=gid,
+            mode=0o400,
+        )
+        if observed != activation_raw or _identity(path.lstat()) != _identity(before):
+            _fail("producer_fleet_readiness_retirement_replaced")
+        try:
+            path.unlink()
+            _fsync_directory(path.parent)
+        except OSError as exc:
+            raise CapabilityProducerError(
+                "producer_fleet_readiness_retirement_failed"
+            ) from exc
     if os.path.lexists(path):
         _fail("producer_fleet_readiness_retirement_failed")
     unsigned = {
@@ -3755,17 +4621,27 @@ def retire_fleet_readiness(
         "fixture_sha256": value["fixture_sha256"],
         "run_id": value["run_id"],
         "path": str(path),
+        "retirement_intent_sha256": intent["intent_sha256"],
         "retired": True,
         "absence_verified": True,
         "retired_at_unix_ms": retired_at,
     }
-    return {**unsigned, "receipt_sha256": _sha256_json(unsigned)}
+    completion = {**unsigned, "receipt_sha256": _sha256_json(unsigned)}
+    _publish_or_identical(
+        completion_path,
+        _canonical_bytes(completion),
+        uid=retirement_uid,
+        gid=retirement_gid,
+        mode=0o400,
+        parent_uid=retirement_uid,
+        parent_gid=retirement_gid,
+        parent_mode=retirement_mode,
+    )
+    return completion
 
 
 PROBE_CATALOG_SCHEMA = "muncho-production-capability-probe-catalog.v1"
-OWNER_PREGRANT_INSTALL_SCHEMA = (
-    "muncho-production-capability-owner-pregrant-install.v1"
-)
+OWNER_PREGRANT_INSTALL_SCHEMA = "muncho-production-capability-owner-pregrant-install.v1"
 
 
 def _command_projection(value: Any, *, code: str) -> dict[str, Any]:
@@ -3884,12 +4760,10 @@ def validate_probe_catalog(value: Any) -> dict[str, Any]:
         row = _strict(item, ("kind", "command"), code)
         if row["kind"] != expected_kind:
             _fail(code)
-        denied.append(
-            {
-                "kind": expected_kind,
-                "command": _command_projection(row["command"], code=code),
-            }
-        )
+        denied.append({
+            "kind": expected_kind,
+            "command": _command_projection(row["command"], code=code),
+        })
     hashes = [item["command_sha256"] for item in allowed]
     hashes.extend(item["command"]["command_sha256"] for item in denied)
     if len(set(hashes)) != len(hashes):
@@ -3929,8 +4803,7 @@ def validate_probe_catalog(value: Any) -> dict[str, Any]:
         bitrix["selected_edge_id"] != "operational-edge:bitrix"
         or bitrix["read_operation_id"] != "bitrix.crm.status_list"
         or bitrix["read_arguments"] != BITRIX_CANARY_READ_ARGUMENTS
-        or bitrix["normalized_equality_excluded_fields"]
-        != ["generated_at_utc"]
+        or bitrix["normalized_equality_excluded_fields"] != ["generated_at_utc"]
         or bitrix["mutation_operation_id"] != "bitrix.crm.lead_add"
         or bitrix["mutation_arguments"] != BITRIX_CANARY_MUTATION_ARGUMENTS
     ):
@@ -3960,7 +4833,7 @@ def validate_probe_catalog(value: Any) -> dict[str, Any]:
         code,
     )
     if (
-        target["target_type"] not in {"public_channel", "public_thread"}
+        target["target_type"] != "public_channel"
         or any(
             not isinstance(target[name], str)
             or _SNOWFLAKE_RE.fullmatch(target[name]) is None
@@ -3990,10 +4863,7 @@ def validate_probe_catalog(value: Any) -> dict[str, Any]:
                 row["alternative_available"]
                 and not isinstance(row["alternative_id"], str)
             )
-            or (
-                not row["alternative_available"]
-                and row["alternative_id"] is not None
-            )
+            or (not row["alternative_available"] and row["alternative_id"] is not None)
         ):
             _fail(code)
         _safe_id(row["failure_id"], code)
@@ -4044,9 +4914,442 @@ def build_probe_catalog(
         "discord": copy.deepcopy(dict(discord)),
         "failure": copy.deepcopy(dict(failure)),
     }
-    return validate_probe_catalog(
-        {**unsigned, "catalog_sha256": _sha256_json(unsigned)}
+    return validate_probe_catalog({
+        **unsigned,
+        "catalog_sha256": _sha256_json(unsigned),
+    })
+
+
+def validate_api_admission_owner_challenge(
+    value: Any,
+    *,
+    fixture: Mapping[str, Any],
+    fixture_sha256: str,
+) -> dict[str, Any]:
+    """Validate the public, gateway-epoch-bound owner signing request."""
+
+    code = "api_admission_owner_challenge_invalid"
+    raw = _strict(
+        value,
+        (
+            "schema",
+            "release_sha",
+            "capability_plan_sha256",
+            "full_canary_plan_sha256",
+            "fixture_sha256",
+            "run_id",
+            "session_id",
+            "capability_epoch_sha256",
+            "fixture",
+            "fixture_valid_from_unix_ms",
+            "fixture_valid_until_unix_ms",
+            "request",
+            "catalog",
+            "requested_at_unix_ms",
+            "owner_response_deadline_unix_ms",
+            "secret_material_recorded",
+            "secret_digest_recorded",
+            "challenge_bundle_sha256",
+        ),
+        code,
     )
+    unsigned = {
+        key: copy.deepcopy(item)
+        for key, item in raw.items()
+        if key != "challenge_bundle_sha256"
+    }
+    request = _validate_api_admission_request(raw["request"])
+    catalog = validate_probe_catalog(raw["catalog"])
+    challenge_fixture = raw["fixture"]
+    requested_at = raw["requested_at_unix_ms"]
+    deadline = raw["owner_response_deadline_unix_ms"]
+    valid_from = fixture.get("valid_from_unix_ms")
+    valid_until = fixture.get("valid_until_unix_ms")
+    if (
+        raw["schema"] != API_ADMISSION_OWNER_CHALLENGE_SCHEMA
+        or not isinstance(challenge_fixture, Mapping)
+        or challenge_fixture != fixture
+        or _sha256_bytes(_canonical_bytes(challenge_fixture)) != fixture_sha256
+        or raw["release_sha"] != fixture.get("release_sha")
+        or raw["capability_plan_sha256"]
+        != fixture.get("capability_plan_sha256")
+        or raw["full_canary_plan_sha256"]
+        != fixture.get("full_canary_plan_sha256")
+        or raw["fixture_sha256"] != fixture_sha256
+        or raw["run_id"] != fixture.get("run_id")
+        or raw["session_id"] != f"capability_{fixture.get('run_id')}"
+        or raw["session_id"] != request["session_id"]
+        or raw["session_id"] != catalog["session_id"]
+        or raw["capability_epoch_sha256"]
+        != request["capability_epoch_sha256"]
+        or raw["capability_epoch_sha256"]
+        != catalog["capability_epoch_sha256"]
+        or raw["fixture_valid_from_unix_ms"] != valid_from
+        or raw["fixture_valid_until_unix_ms"] != valid_until
+        or catalog["release_sha"] != raw["release_sha"]
+        or catalog["capability_plan_sha256"]
+        != raw["capability_plan_sha256"]
+        or catalog["full_canary_plan_sha256"]
+        != raw["full_canary_plan_sha256"]
+        or catalog["fixture_sha256"] != fixture_sha256
+        or catalog["run_id"] != raw["run_id"]
+        or type(valid_from) is not int
+        or type(valid_until) is not int
+        or type(requested_at) is not int
+        or type(deadline) is not int
+        or not valid_from <= requested_at < deadline <= valid_until
+        or deadline - requested_at > 300_000
+        or raw["secret_material_recorded"] is not False
+        or raw["secret_digest_recorded"] is not False
+        or raw["challenge_bundle_sha256"] != _sha256_json(unsigned)
+    ):
+        _fail(code)
+    return {
+        **unsigned,
+        "request": request,
+        "catalog": catalog,
+        "challenge_bundle_sha256": raw["challenge_bundle_sha256"],
+    }
+
+
+def build_api_admission_owner_challenge(
+    *,
+    request: Mapping[str, Any],
+    catalog: Mapping[str, Any],
+    fixture: Mapping[str, Any],
+    fixture_sha256: str,
+    requested_at_unix_ms: int,
+    owner_response_deadline_unix_ms: int,
+) -> dict[str, Any]:
+    request_value = _validate_api_admission_request(request)
+    catalog_value = validate_probe_catalog(catalog)
+    unsigned = {
+        "schema": API_ADMISSION_OWNER_CHALLENGE_SCHEMA,
+        "release_sha": fixture.get("release_sha"),
+        "capability_plan_sha256": fixture.get("capability_plan_sha256"),
+        "full_canary_plan_sha256": fixture.get("full_canary_plan_sha256"),
+        "fixture_sha256": fixture_sha256,
+        "run_id": fixture.get("run_id"),
+        "session_id": request_value["session_id"],
+        "capability_epoch_sha256": request_value["capability_epoch_sha256"],
+        "fixture": copy.deepcopy(dict(fixture)),
+        "fixture_valid_from_unix_ms": fixture.get("valid_from_unix_ms"),
+        "fixture_valid_until_unix_ms": fixture.get("valid_until_unix_ms"),
+        "request": request_value,
+        "catalog": catalog_value,
+        "requested_at_unix_ms": requested_at_unix_ms,
+        "owner_response_deadline_unix_ms": owner_response_deadline_unix_ms,
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+    }
+    return validate_api_admission_owner_challenge(
+        {
+            **unsigned,
+            "challenge_bundle_sha256": _sha256_json(unsigned),
+        },
+        fixture=fixture,
+        fixture_sha256=fixture_sha256,
+    )
+
+
+def _api_admission_exchange_paths(
+    installed_foundation: InstalledProducerFoundation,
+    *,
+    run_id: str,
+) -> tuple[Path, Path, Path]:
+    _safe_id(run_id, "api_admission_owner_exchange_invalid")
+    receipt = installed_foundation.value.get("receipt_contract")
+    if not isinstance(receipt, Mapping):
+        _fail("api_admission_owner_exchange_invalid")
+    run_root = Path(str(receipt.get("base_root") or "")) / run_id
+    if not run_root.is_absolute() or ".." in run_root.parts:
+        _fail("api_admission_owner_exchange_invalid")
+    return (
+        run_root,
+        run_root / "api-admission-owner-challenge.json",
+        run_root / "api-admission-owner-authority-staged.json",
+    )
+
+
+def publish_api_admission_owner_challenge(
+    value: Mapping[str, Any],
+    *,
+    fixture: Mapping[str, Any],
+    fixture_sha256: str,
+    installed_foundation: InstalledProducerFoundation,
+) -> Mapping[str, Any]:
+    """Durably expose one exact public challenge to the owner-side signer."""
+
+    challenge = validate_api_admission_owner_challenge(
+        value,
+        fixture=fixture,
+        fixture_sha256=fixture_sha256,
+    )
+    receipt = installed_foundation.value["receipt_contract"]
+    run_root, challenge_path, _authority_path = _api_admission_exchange_paths(
+        installed_foundation,
+        run_id=challenge["run_id"],
+    )
+    _require_directory(
+        run_root,
+        uid=receipt["run_directory_uid"],
+        gid=receipt["run_directory_gid"],
+        mode=receipt["run_directory_mode"],
+    )
+    _publish_or_identical(
+        challenge_path,
+        _canonical_bytes(challenge),
+        uid=0,
+        gid=0,
+        mode=0o400,
+        parent_uid=receipt["run_directory_uid"],
+        parent_gid=receipt["run_directory_gid"],
+        parent_mode=receipt["run_directory_mode"],
+    )
+    return copy.deepcopy(challenge)
+
+
+def _load_reviewed_fixture_for_owner_exchange() -> tuple[dict[str, Any], str]:
+    raw, _item = _stable_read(
+        DEFAULT_REVIEWED_FIXTURE_PATH,
+        maximum=MAX_READINESS_BYTES,
+        uid=0,
+        gid=0,
+        mode=0o400,
+    )
+    fixture = _strict_json(raw, "api_admission_owner_exchange_invalid")
+    fixture_sha256 = _sha256_bytes(raw)
+    try:
+        from gateway import canonical_capability_canary_e2e as e2e
+
+        e2e._validate_fixture(fixture, fixture_sha256)
+    except Exception as exc:
+        raise CapabilityProducerError(
+            "api_admission_owner_exchange_invalid"
+        ) from exc
+    return fixture, fixture_sha256
+
+
+def validate_api_admission_owner_challenge_wait(value: Any) -> dict[str, Any]:
+    code = "api_admission_owner_challenge_wait_invalid"
+    raw = _strict(
+        value,
+        (
+            "schema",
+            "release_sha",
+            "capability_plan_sha256",
+            "full_canary_plan_sha256",
+            "fixture_sha256",
+            "run_id",
+            "timeout_seconds",
+            "secret_material_recorded",
+            "secret_digest_recorded",
+        ),
+        code,
+    )
+    if (
+        raw["schema"] != API_ADMISSION_OWNER_CHALLENGE_WAIT_SCHEMA
+        or _GIT_SHA_RE.fullmatch(str(raw["release_sha"] or "")) is None
+        or any(
+            _SHA256_RE.fullmatch(str(raw[name] or "")) is None
+            for name in (
+                "capability_plan_sha256",
+                "full_canary_plan_sha256",
+                "fixture_sha256",
+            )
+        )
+        or type(raw["timeout_seconds"]) is not int
+        or not 1 <= raw["timeout_seconds"] <= 300
+        or raw["secret_material_recorded"] is not False
+        or raw["secret_digest_recorded"] is not False
+    ):
+        _fail(code)
+    _safe_id(raw["run_id"], code)
+    return raw
+
+
+def wait_api_admission_owner_challenge(
+    value: Mapping[str, Any],
+    *,
+    now_ms: Callable[[], int] = lambda: int(time.time() * 1000),
+) -> Mapping[str, Any]:
+    """Wait read-only for the exact Cloud-published owner challenge."""
+
+    wait = validate_api_admission_owner_challenge_wait(value)
+    fixture, fixture_sha256 = _load_reviewed_fixture_for_owner_exchange()
+    installed = load_installed_producer_foundation()
+    _run_root, challenge_path, _authority_path = _api_admission_exchange_paths(
+        installed,
+        run_id=wait["run_id"],
+    )
+    deadline = time.monotonic() + wait["timeout_seconds"]
+    while not os.path.lexists(challenge_path):
+        if time.monotonic() >= deadline:
+            _fail("api_admission_owner_challenge_timeout")
+        time.sleep(0.05)
+    raw, _item = _stable_read(
+        challenge_path,
+        maximum=MAX_READINESS_BYTES,
+        uid=0,
+        gid=0,
+        mode=0o400,
+    )
+    challenge = validate_api_admission_owner_challenge(
+        _strict_json(raw, "api_admission_owner_challenge_invalid"),
+        fixture=fixture,
+        fixture_sha256=fixture_sha256,
+    )
+    if (
+        wait["release_sha"] != challenge["release_sha"]
+        or wait["capability_plan_sha256"]
+        != challenge["capability_plan_sha256"]
+        or wait["full_canary_plan_sha256"]
+        != challenge["full_canary_plan_sha256"]
+        or wait["fixture_sha256"] != challenge["fixture_sha256"]
+        or wait["run_id"] != challenge["run_id"]
+        or now_ms() > challenge["owner_response_deadline_unix_ms"]
+    ):
+        _fail("api_admission_owner_challenge_wait_invalid")
+    return challenge
+
+
+def validate_api_admission_owner_authority_stage_request(
+    value: Any,
+) -> dict[str, Any]:
+    code = "api_admission_owner_authority_stage_invalid"
+    raw = _strict(
+        value,
+        (
+            "schema",
+            "challenge_bundle_sha256",
+            "owner_authority",
+            "secret_material_recorded",
+            "secret_digest_recorded",
+        ),
+        code,
+    )
+    if (
+        raw["schema"] != API_ADMISSION_OWNER_AUTHORITY_STAGE_REQUEST_SCHEMA
+        or _SHA256_RE.fullmatch(str(raw["challenge_bundle_sha256"] or ""))
+        is None
+        or not isinstance(raw["owner_authority"], Mapping)
+        or raw["secret_material_recorded"] is not False
+        or raw["secret_digest_recorded"] is not False
+    ):
+        _fail(code)
+    return copy.deepcopy(raw)
+
+
+def stage_api_admission_owner_authority(
+    value: Mapping[str, Any],
+    *,
+    now_ms: Callable[[], int] = lambda: int(time.time() * 1000),
+) -> Mapping[str, Any]:
+    """Validate then create-only stage the Mac-signed admission authority."""
+
+    stage = validate_api_admission_owner_authority_stage_request(value)
+    fixture, fixture_sha256 = _load_reviewed_fixture_for_owner_exchange()
+    installed = load_installed_producer_foundation()
+    run_id = fixture["run_id"]
+    run_root, challenge_path, authority_path = _api_admission_exchange_paths(
+        installed,
+        run_id=run_id,
+    )
+    challenge_raw, _item = _stable_read(
+        challenge_path,
+        maximum=MAX_READINESS_BYTES,
+        uid=0,
+        gid=0,
+        mode=0o400,
+    )
+    challenge = validate_api_admission_owner_challenge(
+        _strict_json(challenge_raw, "api_admission_owner_challenge_invalid"),
+        fixture=fixture,
+        fixture_sha256=fixture_sha256,
+    )
+    observed_at = now_ms()
+    if (
+        stage["challenge_bundle_sha256"]
+        != challenge["challenge_bundle_sha256"]
+        or observed_at > challenge["owner_response_deadline_unix_ms"]
+    ):
+        _fail("api_admission_owner_authority_stage_invalid")
+    validated = validate_api_admission_owner_authority(
+        stage["owner_authority"],
+        challenge=challenge["request"],
+        fixture=fixture,
+        fixture_sha256=fixture_sha256,
+        installed_foundation=installed,
+        now_ms=observed_at,
+    )
+    receipt = installed.value["receipt_contract"]
+    _publish_or_identical(
+        authority_path,
+        _canonical_bytes(validated["authority"]),
+        uid=0,
+        gid=0,
+        mode=0o400,
+        parent_uid=receipt["run_directory_uid"],
+        parent_gid=receipt["run_directory_gid"],
+        parent_mode=receipt["run_directory_mode"],
+    )
+    unsigned = {
+        "schema": API_ADMISSION_OWNER_AUTHORITY_STAGE_SCHEMA,
+        "run_id": run_id,
+        "fixture_sha256": fixture_sha256,
+        "session_id": challenge["session_id"],
+        "capability_epoch_sha256": challenge["capability_epoch_sha256"],
+        "challenge_sha256": challenge["request"]["challenge_sha256"],
+        "challenge_bundle_sha256": challenge["challenge_bundle_sha256"],
+        "owner_authority_sha256": validated["authority_sha256"],
+        "staged_path": str(authority_path),
+        "staged_at_unix_ms": observed_at,
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+    }
+    return {**unsigned, "receipt_sha256": _sha256_json(unsigned)}
+
+
+def wait_for_staged_api_admission_owner_authority(
+    *,
+    challenge: Mapping[str, Any],
+    fixture: Mapping[str, Any],
+    fixture_sha256: str,
+    installed_foundation: InstalledProducerFoundation,
+    deadline: float,
+    now_ms: Callable[[], int] = lambda: int(time.time() * 1000),
+) -> Mapping[str, Any]:
+    """Wait for, re-read, and revalidate the exact staged owner bytes."""
+
+    challenge_value = validate_api_admission_owner_challenge(
+        challenge,
+        fixture=fixture,
+        fixture_sha256=fixture_sha256,
+    )
+    _run_root, _challenge_path, authority_path = _api_admission_exchange_paths(
+        installed_foundation,
+        run_id=challenge_value["run_id"],
+    )
+    while not os.path.lexists(authority_path):
+        if time.monotonic() >= deadline:
+            _fail("api_admission_owner_authority_timeout")
+        time.sleep(0.05)
+    raw, _item = _stable_read(
+        authority_path,
+        maximum=MAX_READINESS_BYTES,
+        uid=0,
+        gid=0,
+        mode=0o400,
+    )
+    validated = validate_api_admission_owner_authority(
+        _strict_json(raw, "api_admission_owner_authority_invalid"),
+        challenge=challenge_value["request"],
+        fixture=fixture,
+        fixture_sha256=fixture_sha256,
+        installed_foundation=installed_foundation,
+        now_ms=now_ms(),
+    )
+    return copy.deepcopy(validated)
 
 
 def publish_probe_catalog(
@@ -4107,8 +5410,7 @@ def validate_owner_pregrant(
     except e2e.CapabilityCanaryEvidenceError as exc:
         raise CapabilityProducerError("owner_pregrant_invalid") from exc
     commands = sorted(
-        item["command_sha256"]
-        for item in catalog_value["commands"]["allowed"]
+        item["command_sha256"] for item in catalog_value["commands"]["allowed"]
     )
     supplied = payload["command_sha256s"]
     if (
@@ -4170,6 +5472,2268 @@ def install_owner_pregrant(
     return {**unsigned, "receipt_sha256": _sha256_json(unsigned)}
 
 
+def validate_api_admission_owner_authority(
+    value: Any,
+    *,
+    challenge: Mapping[str, Any],
+    fixture: Mapping[str, Any],
+    fixture_sha256: str,
+    installed_foundation: InstalledProducerFoundation,
+    now_ms: int,
+) -> Mapping[str, Any]:
+    """Validate the owner-signed epoch-bound catalog and grant as one unit."""
+
+    from gateway import canonical_capability_canary_e2e as e2e
+
+    code = "api_admission_owner_authority_invalid"
+    raw = _strict(
+        value,
+        (
+            "schema",
+            "challenge_sha256",
+            "release_sha",
+            "capability_plan_sha256",
+            "full_canary_plan_sha256",
+            "fixture_sha256",
+            "run_id",
+            "session_id",
+            "capability_epoch_sha256",
+            "issued_at_unix_ms",
+            "valid_until_unix_ms",
+            "catalog",
+            "workspace_owner_receipt",
+            "owner_signature",
+        ),
+        code,
+    )
+    unsigned = {
+        key: copy.deepcopy(item)
+        for key, item in raw.items()
+        if key != "owner_signature"
+    }
+    challenge_receipt = _validate_api_admission_request(challenge)
+    catalog = validate_probe_catalog(raw["catalog"])
+    try:
+        trusted_foundation = validate_producer_foundation(
+            installed_foundation.value,
+            pinned_owner_public_key_ed25519_hex=(
+                installed_foundation.pinned_owner_public_key_ed25519_hex
+            ),
+            pinned_owner_public_key_source_sha256=(
+                installed_foundation.pinned_owner_public_key_source_sha256
+            ),
+        )
+    except (KeyError, TypeError, CapabilityProducerError) as exc:
+        raise CapabilityProducerError(code) from exc
+    try:
+        e2e._verify_owner_sshsig(
+            raw["owner_signature"],
+            message=_canonical_bytes(unsigned),
+            public_key_hex=trusted_foundation["authority_keys"]["owner"][
+                "public_key_ed25519_hex"
+            ],
+            code=code,
+        )
+    except e2e.CapabilityCanaryEvidenceError as exc:
+        raise CapabilityProducerError(code) from exc
+    validated_pregrant = validate_owner_pregrant(
+        raw["workspace_owner_receipt"],
+        fixture=fixture,
+        fixture_sha256=fixture_sha256,
+        catalog=catalog,
+    )
+    payload = validated_pregrant["payload"]
+    issued_at = raw["issued_at_unix_ms"]
+    valid_until = raw["valid_until_unix_ms"]
+    ttl_seconds = payload.get("ttl_seconds")
+    if (
+        raw["schema"] != API_ADMISSION_OWNER_AUTHORITY_SCHEMA
+        or raw["challenge_sha256"] != challenge_receipt["challenge_sha256"]
+        or raw["release_sha"] != fixture.get("release_sha")
+        or raw["release_sha"] != trusted_foundation["release_sha"]
+        or raw["capability_plan_sha256"] != trusted_foundation["capability_plan_sha256"]
+        or raw["full_canary_plan_sha256"]
+        != trusted_foundation["full_canary_plan_sha256"]
+        or raw["fixture_sha256"] != fixture_sha256
+        or raw["run_id"] != fixture.get("run_id")
+        or raw["run_id"] != catalog["run_id"]
+        or raw["session_id"] != f"capability_{fixture.get('run_id')}"
+        or raw["session_id"] != challenge["session_id"]
+        or raw["session_id"] != catalog["session_id"]
+        or raw["capability_epoch_sha256"] != challenge["capability_epoch_sha256"]
+        or raw["capability_epoch_sha256"] != catalog["capability_epoch_sha256"]
+        or catalog["capability_plan_sha256"]
+        != trusted_foundation["capability_plan_sha256"]
+        or catalog["full_canary_plan_sha256"]
+        != trusted_foundation["full_canary_plan_sha256"]
+        or type(issued_at) is not int
+        or type(valid_until) is not int
+        or type(ttl_seconds) is not int
+        or payload.get("observed_at_unix_ms") != issued_at
+        or valid_until != issued_at + ttl_seconds * 1000
+        or issued_at > now_ms + MAX_CLOCK_SKEW_MS
+        or now_ms > valid_until
+    ):
+        _fail(code)
+    return {
+        "authority": copy.deepcopy(raw),
+        "catalog": catalog,
+        "validated_pregrant": validated_pregrant,
+        "authority_sha256": _sha256_json(raw),
+    }
+
+
+def validate_api_admission_owner_authority_for_evidence(
+    value: Any,
+    *,
+    fixture: Mapping[str, Any],
+    fixture_sha256: str,
+    readiness: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Reverify the complete owner proof after the live TTL has elapsed.
+
+    Offline evidence must not trust a root-authored catalog digest by itself.
+    This validator checks the outer owner SSHSIG, its complete nested catalog,
+    the independently signed workspace-owner grant, and the activation fields
+    that committed both object digests while the run was live.
+    """
+
+    from gateway import canonical_capability_canary_e2e as e2e
+
+    code = "api_admission_owner_evidence_invalid"
+    raw = _strict(
+        value,
+        (
+            "schema",
+            "challenge_sha256",
+            "release_sha",
+            "capability_plan_sha256",
+            "full_canary_plan_sha256",
+            "fixture_sha256",
+            "run_id",
+            "session_id",
+            "capability_epoch_sha256",
+            "issued_at_unix_ms",
+            "valid_until_unix_ms",
+            "catalog",
+            "workspace_owner_receipt",
+            "owner_signature",
+        ),
+        code,
+    )
+    activation = validate_fleet_readiness_for_retirement(
+        readiness,
+        expected_foundation_sha256=fixture.get("producer_foundation_sha256"),
+        expected_capability_plan_sha256=fixture.get("capability_plan_sha256"),
+        expected_full_canary_plan_sha256=fixture.get("full_canary_plan_sha256"),
+    )
+    catalog = validate_probe_catalog(raw["catalog"])
+    try:
+        owner_key = fixture["authority_keys"]["owner"]["public_key_ed25519_hex"]
+        e2e._verify_owner_sshsig(
+            raw["owner_signature"],
+            message=_canonical_bytes({
+                key: copy.deepcopy(item)
+                for key, item in raw.items()
+                if key != "owner_signature"
+            }),
+            public_key_hex=owner_key,
+            code=code,
+        )
+        validated_pregrant = validate_owner_pregrant(
+            raw["workspace_owner_receipt"],
+            fixture=fixture,
+            fixture_sha256=fixture_sha256,
+            catalog=catalog,
+        )
+    except (KeyError, TypeError, e2e.CapabilityCanaryEvidenceError) as exc:
+        raise CapabilityProducerError(code) from exc
+    authority_sha256 = _sha256_json(raw)
+    owner = activation["owner_authority"]
+    payload = validated_pregrant["payload"]
+    issued_at = raw["issued_at_unix_ms"]
+    valid_until = raw["valid_until_unix_ms"]
+    ttl_seconds = payload.get("ttl_seconds")
+    expected_session = f"capability_{fixture.get('run_id')}"
+    if (
+        raw["schema"] != API_ADMISSION_OWNER_AUTHORITY_SCHEMA
+        or _digest(raw["challenge_sha256"], code) != raw["challenge_sha256"]
+        or raw["release_sha"] != fixture.get("release_sha")
+        or raw["release_sha"] != activation["release_sha"]
+        or raw["capability_plan_sha256"] != fixture.get("capability_plan_sha256")
+        or raw["capability_plan_sha256"] != activation["capability_plan_sha256"]
+        or raw["full_canary_plan_sha256"]
+        != fixture.get("full_canary_plan_sha256")
+        or raw["full_canary_plan_sha256"]
+        != activation["full_canary_plan_sha256"]
+        or raw["fixture_sha256"] != fixture_sha256
+        or raw["fixture_sha256"] != activation["fixture_sha256"]
+        or raw["run_id"] != fixture.get("run_id")
+        or raw["run_id"] != activation["run_id"]
+        or raw["run_id"] != catalog["run_id"]
+        or raw["session_id"] != expected_session
+        or raw["session_id"] != catalog["session_id"]
+        or raw["capability_epoch_sha256"] != catalog["capability_epoch_sha256"]
+        or catalog["release_sha"] != raw["release_sha"]
+        or catalog["capability_plan_sha256"] != raw["capability_plan_sha256"]
+        or catalog["full_canary_plan_sha256"]
+        != raw["full_canary_plan_sha256"]
+        or catalog["fixture_sha256"] != fixture_sha256
+        or type(issued_at) is not int
+        or type(valid_until) is not int
+        or type(ttl_seconds) is not int
+        or payload.get("observed_at_unix_ms") != issued_at
+        or valid_until != issued_at + ttl_seconds * 1000
+        or issued_at < fixture.get("valid_from_unix_ms", 0)
+        or owner["grant_sha256"] != validated_pregrant["grant_sha256"]
+        or owner["catalog_sha256"] != catalog["catalog_sha256"]
+        or owner["authority_sha256"] != authority_sha256
+    ):
+        _fail(code)
+    return {
+        "authority": copy.deepcopy(raw),
+        "catalog": catalog,
+        "validated_pregrant": validated_pregrant,
+        "authority_sha256": authority_sha256,
+    }
+
+
+def _publish_or_identical(
+    path: Path,
+    raw: bytes,
+    *,
+    uid: int,
+    gid: int,
+    mode: int,
+    parent_uid: int = 0,
+    parent_gid: int = 0,
+    parent_mode: int = 0o700,
+) -> bool:
+    if os.path.lexists(path):
+        observed, _item = _stable_read(
+            path,
+            maximum=max(len(raw), 2),
+            uid=uid,
+            gid=gid,
+            mode=mode,
+        )
+        if observed != raw:
+            _fail("production_run_input_existing_drifted")
+        return False
+    try:
+        _publish_no_replace(
+            path,
+            raw,
+            uid=uid,
+            gid=gid,
+            mode=mode,
+            parent_uid=parent_uid,
+            parent_gid=parent_gid,
+            parent_mode=parent_mode,
+        )
+    except CapabilityProducerError as exc:
+        if exc.code != "artifact_already_exists":
+            raise
+        observed, _item = _stable_read(
+            path,
+            maximum=max(len(raw), 2),
+            uid=uid,
+            gid=gid,
+            mode=mode,
+        )
+        if observed != raw:
+            _fail("production_run_input_existing_drifted")
+        return False
+    return True
+
+
+def validate_api_admission_owner_publication(
+    value: Any,
+    *,
+    challenge: Mapping[str, Any],
+    fixture: Mapping[str, Any],
+    fixture_sha256: str,
+    catalog: Mapping[str, Any],
+    validated_pregrant: Mapping[str, Any],
+    authority_sha256: str,
+    run_root: Path,
+    catalog_path: Path = DEFAULT_PROBE_CATALOG_PATH,
+    owner_grant_path: Path = DEFAULT_OWNER_GRANT_PATH,
+) -> Mapping[str, Any]:
+    """Validate the durable completion for the exact admitted owner bundle."""
+
+    code = "api_admission_owner_publication_invalid"
+    if not run_root.is_absolute() or ".." in run_root.parts:
+        _fail(code)
+    raw = _strict(
+        value,
+        (
+            "schema",
+            "run_id",
+            "fixture_sha256",
+            "session_id",
+            "capability_epoch_sha256",
+            "challenge_sha256",
+            "catalog_path",
+            "catalog_sha256",
+            "owner_grant_path",
+            "owner_grant_sha256",
+            "owner_receipt_path",
+            "authority_path",
+            "authority_sha256",
+            "install_intent_sha256",
+            "catalog_created",
+            "grant_created",
+            "owner_receipt_created",
+            "catalog_readback_verified",
+            "grant_readback_verified",
+            "owner_receipt_readback_verified",
+            "authority_readback_verified",
+            "published_at_unix_ms",
+            "receipt_sha256",
+        ),
+        code,
+    )
+    catalog_value = validate_probe_catalog(catalog)
+    unsigned = {key: item for key, item in raw.items() if key != "receipt_sha256"}
+    run_id = fixture.get("run_id")
+    if (
+        raw["schema"] != OWNER_RECEIPT_PUBLICATION_SCHEMA
+        or raw["run_id"] != run_id
+        or raw["fixture_sha256"] != fixture_sha256
+        or raw["session_id"] != challenge.get("session_id")
+        or raw["capability_epoch_sha256"]
+        != challenge.get("capability_epoch_sha256")
+        or raw["challenge_sha256"] != challenge.get("challenge_sha256")
+        or raw["catalog_path"] != str(catalog_path)
+        or raw["catalog_sha256"] != catalog_value["catalog_sha256"]
+        or raw["owner_grant_path"] != str(owner_grant_path)
+        or raw["owner_grant_sha256"] != validated_pregrant.get("grant_sha256")
+        or raw["owner_receipt_path"]
+        != str(run_root / SLOT_FILENAME["workspace_owner"])
+        or raw["authority_path"]
+        != str(run_root / "api-admission-owner-authority.json")
+        or raw["authority_sha256"] != _digest(authority_sha256, code)
+        or any(type(raw[field]) is not bool for field in (
+            "catalog_created",
+            "grant_created",
+            "owner_receipt_created",
+        ))
+        or any(raw[field] is not True for field in (
+            "catalog_readback_verified",
+            "grant_readback_verified",
+            "owner_receipt_readback_verified",
+            "authority_readback_verified",
+        ))
+        or type(raw["published_at_unix_ms"]) is not int
+        or raw["published_at_unix_ms"] <= 0
+        or raw["receipt_sha256"] != _sha256_json(unsigned)
+    ):
+        _fail(code)
+    _digest(raw["install_intent_sha256"], code)
+    return raw
+
+
+def provision_api_admission_owner_authority(
+    value: Mapping[str, Any],
+    *,
+    challenge: Mapping[str, Any],
+    fixture: Mapping[str, Any],
+    fixture_sha256: str,
+    installed_foundation: InstalledProducerFoundation,
+    writer_gid: int,
+    now_ms: int,
+    catalog_path: Path = DEFAULT_PROBE_CATALOG_PATH,
+    owner_grant_path: Path = DEFAULT_OWNER_GRANT_PATH,
+) -> Mapping[str, Any]:
+    """Crash-resumably install one signed catalog/grant/owner bundle."""
+
+    validated = validate_api_admission_owner_authority(
+        value,
+        challenge=challenge,
+        fixture=fixture,
+        fixture_sha256=fixture_sha256,
+        installed_foundation=installed_foundation,
+        now_ms=now_ms,
+    )
+    catalog = validated["catalog"]
+    pregrant = validated["validated_pregrant"]
+    catalog_raw = _canonical_bytes(catalog)
+    owner_raw = _canonical_bytes(pregrant["receipt"])
+    authority_raw = _canonical_bytes(validated["authority"])
+    if type(writer_gid) is not int or writer_gid <= 0:
+        _fail("api_admission_owner_publication_invalid")
+    receipt_contract = installed_foundation.value["receipt_contract"]
+    run_root = Path(receipt_contract["base_root"]) / fixture["run_id"]
+    _require_directory(
+        run_root,
+        uid=receipt_contract["run_directory_uid"],
+        gid=receipt_contract["run_directory_gid"],
+        mode=receipt_contract["run_directory_mode"],
+    )
+    owner_receipt_path = run_root / SLOT_FILENAME["workspace_owner"]
+    authority_path = run_root / "api-admission-owner-authority.json"
+    intent_path = run_root / "api-admission-install-intent.json"
+    completion_path = run_root / "api-admission-install.json"
+    abort_path = run_root / "api-admission-install-abort.json"
+    if os.path.lexists(abort_path):
+        _fail("api_admission_owner_publication_aborted")
+    _publish_or_identical(
+        authority_path,
+        authority_raw,
+        uid=0,
+        gid=0,
+        mode=0o400,
+        parent_uid=receipt_contract["run_directory_uid"],
+        parent_gid=receipt_contract["run_directory_gid"],
+        parent_mode=receipt_contract["run_directory_mode"],
+    )
+    intent_unsigned = {
+        "schema": API_ADMISSION_INSTALL_INTENT_SCHEMA,
+        "run_id": fixture["run_id"],
+        "fixture_sha256": fixture_sha256,
+        "session_id": challenge["session_id"],
+        "capability_epoch_sha256": challenge["capability_epoch_sha256"],
+        "challenge_sha256": challenge["challenge_sha256"],
+        "catalog_path": str(catalog_path),
+        "catalog_gid": writer_gid,
+        "catalog_file_sha256": _sha256_bytes(catalog_raw),
+        "catalog_sha256": catalog["catalog_sha256"],
+        "owner_grant_path": str(owner_grant_path),
+        "owner_grant_sha256": pregrant["grant_sha256"],
+        "owner_receipt_path": str(owner_receipt_path),
+        "authority_path": str(authority_path),
+        "authority_sha256": validated["authority_sha256"],
+    }
+    intent = {
+        **intent_unsigned,
+        "intent_sha256": _sha256_json(intent_unsigned),
+    }
+    _publish_or_identical(
+        intent_path,
+        _canonical_bytes(intent),
+        uid=0,
+        gid=0,
+        mode=0o400,
+        parent_uid=receipt_contract["run_directory_uid"],
+        parent_gid=receipt_contract["run_directory_gid"],
+        parent_mode=receipt_contract["run_directory_mode"],
+    )
+    if os.path.lexists(completion_path):
+        completed_raw, _item = _stable_read(
+            completion_path,
+            maximum=MAX_READINESS_BYTES,
+            uid=0,
+            gid=0,
+            mode=0o400,
+        )
+        completed = validate_api_admission_owner_publication(
+            _strict_json(completed_raw, "api_admission_owner_publication_invalid"),
+            challenge=challenge,
+            fixture=fixture,
+            fixture_sha256=fixture_sha256,
+            catalog=catalog,
+            validated_pregrant=pregrant,
+            authority_sha256=validated["authority_sha256"],
+            run_root=run_root,
+            catalog_path=catalog_path,
+            owner_grant_path=owner_grant_path,
+        )
+        expected = (
+            (catalog_path, catalog_raw, 0, writer_gid, 0o440),
+            (owner_grant_path, owner_raw, 0, 0, 0o400),
+            (owner_receipt_path, owner_raw, 0, 0, 0o400),
+            (authority_path, authority_raw, 0, 0, 0o400),
+        )
+        for path, raw, uid, gid, mode in expected:
+            observed, _item = _stable_read(
+                path, maximum=max(len(raw), 2), uid=uid, gid=gid, mode=mode
+            )
+            if observed != raw:
+                _fail("api_admission_owner_publication_invalid")
+        return completed
+    catalog_created = _publish_or_identical(
+        catalog_path,
+        catalog_raw,
+        uid=0,
+        gid=writer_gid,
+        mode=0o440,
+        parent_mode=0o700,
+    )
+    grant_created = _publish_or_identical(
+        owner_grant_path,
+        owner_raw,
+        uid=0,
+        gid=0,
+        mode=0o400,
+    )
+    owner_receipt_created = _publish_or_identical(
+        owner_receipt_path,
+        owner_raw,
+        uid=0,
+        gid=0,
+        mode=0o400,
+        parent_uid=receipt_contract["run_directory_uid"],
+        parent_gid=receipt_contract["run_directory_gid"],
+        parent_mode=receipt_contract["run_directory_mode"],
+    )
+    unsigned = {
+        "schema": OWNER_RECEIPT_PUBLICATION_SCHEMA,
+        "run_id": fixture["run_id"],
+        "fixture_sha256": fixture_sha256,
+        "session_id": challenge["session_id"],
+        "capability_epoch_sha256": challenge["capability_epoch_sha256"],
+        "challenge_sha256": challenge["challenge_sha256"],
+        "catalog_sha256": catalog["catalog_sha256"],
+        "catalog_path": str(catalog_path),
+        "owner_grant_sha256": pregrant["grant_sha256"],
+        "owner_grant_path": str(owner_grant_path),
+        "owner_receipt_path": str(owner_receipt_path),
+        "authority_path": str(authority_path),
+        "authority_sha256": validated["authority_sha256"],
+        "install_intent_sha256": intent["intent_sha256"],
+        "catalog_created": catalog_created,
+        "grant_created": grant_created,
+        "owner_receipt_created": owner_receipt_created,
+        "catalog_readback_verified": True,
+        "grant_readback_verified": True,
+        "owner_receipt_readback_verified": True,
+        "authority_readback_verified": True,
+        "published_at_unix_ms": now_ms,
+    }
+    publication = {**unsigned, "receipt_sha256": _sha256_json(unsigned)}
+    validate_api_admission_owner_publication(
+        publication,
+        challenge=challenge,
+        fixture=fixture,
+        fixture_sha256=fixture_sha256,
+        catalog=catalog,
+        validated_pregrant=pregrant,
+        authority_sha256=validated["authority_sha256"],
+        run_root=run_root,
+        catalog_path=catalog_path,
+        owner_grant_path=owner_grant_path,
+    )
+    _publish_or_identical(
+        completion_path,
+        _canonical_bytes(publication),
+        uid=0,
+        gid=0,
+        mode=0o400,
+        parent_uid=receipt_contract["run_directory_uid"],
+        parent_gid=receipt_contract["run_directory_gid"],
+        parent_mode=receipt_contract["run_directory_mode"],
+    )
+    return publication
+
+
+def retire_api_admission_inputs(
+    *,
+    catalog: Mapping[str, Any],
+    validated_pregrant: Mapping[str, Any],
+    owner_authority: Mapping[str, Any],
+    publication: Mapping[str, Any],
+    fixture: Mapping[str, Any],
+    installed_foundation: InstalledProducerFoundation,
+    writer_gid: int,
+    retired_at_unix_ms: int,
+    catalog_path: Path = DEFAULT_PROBE_CATALOG_PATH,
+    owner_grant_path: Path = DEFAULT_OWNER_GRANT_PATH,
+) -> Mapping[str, Any]:
+    """Crash-safely retire exact run-scoped catalog and owner grant bytes."""
+
+    code = "api_admission_retirement_invalid"
+    catalog_value = validate_probe_catalog(catalog)
+    if not isinstance(owner_authority, Mapping):
+        _fail(code)
+    authority_value = copy.deepcopy(dict(owner_authority))
+    authority_sha256 = _sha256_json(authority_value)
+    if set(validated_pregrant) != {
+        "receipt",
+        "payload",
+        "grant_sha256",
+        "catalog_sha256",
+    }:
+        _fail(code)
+    if (
+        catalog_value["catalog_sha256"] != validated_pregrant["catalog_sha256"]
+        or catalog_value["run_id"] != fixture.get("run_id")
+        or not isinstance(publication, Mapping)
+        or type(writer_gid) is not int
+        or writer_gid <= 0
+        or type(retired_at_unix_ms) is not int
+        or retired_at_unix_ms <= 0
+    ):
+        _fail(code)
+    receipt_contract = installed_foundation.value["receipt_contract"]
+    run_root = Path(receipt_contract["base_root"]) / fixture["run_id"]
+    _require_directory(
+        run_root,
+        uid=receipt_contract["run_directory_uid"],
+        gid=receipt_contract["run_directory_gid"],
+        mode=receipt_contract["run_directory_mode"],
+    )
+    challenge_binding = {
+        "session_id": publication.get("session_id"),
+        "capability_epoch_sha256": publication.get("capability_epoch_sha256"),
+        "challenge_sha256": publication.get("challenge_sha256"),
+    }
+    validated_publication = validate_api_admission_owner_publication(
+        publication,
+        challenge=challenge_binding,
+        fixture=fixture,
+        fixture_sha256=catalog_value["fixture_sha256"],
+        catalog=catalog_value,
+        validated_pregrant=validated_pregrant,
+        authority_sha256=authority_sha256,
+        run_root=run_root,
+        catalog_path=catalog_path,
+        owner_grant_path=owner_grant_path,
+    )
+    authority_path = run_root / "api-admission-owner-authority.json"
+    authority_raw, _authority_item = _stable_read(
+        authority_path,
+        maximum=MAX_READINESS_BYTES,
+        uid=0,
+        gid=0,
+        mode=0o400,
+    )
+    if authority_raw != _canonical_bytes(authority_value):
+        _fail(code)
+    intent_path = run_root / "api-admission-retirement-intent.json"
+    completion_path = run_root / "api-admission-retirement.json"
+    intent_unsigned = {
+        "schema": API_ADMISSION_RETIREMENT_INTENT_SCHEMA,
+        "run_id": fixture["run_id"],
+        "fixture_sha256": catalog_value["fixture_sha256"],
+        "session_id": catalog_value["session_id"],
+        "capability_epoch_sha256": catalog_value["capability_epoch_sha256"],
+        "challenge_sha256": validated_publication["challenge_sha256"],
+        "owner_authority_path": str(authority_path),
+        "owner_authority_sha256": authority_sha256,
+        "install_publication_sha256": validated_publication["receipt_sha256"],
+        "catalog_path": str(catalog_path),
+        "catalog_file_sha256": _sha256_bytes(_canonical_bytes(catalog_value)),
+        "catalog_sha256": catalog_value["catalog_sha256"],
+        "owner_grant_path": str(owner_grant_path),
+        "owner_grant_sha256": validated_pregrant["grant_sha256"],
+    }
+    intent = {
+        **intent_unsigned,
+        "intent_sha256": _sha256_json(intent_unsigned),
+    }
+    _publish_or_identical(
+        intent_path,
+        _canonical_bytes(intent),
+        uid=0,
+        gid=0,
+        mode=0o400,
+        parent_uid=receipt_contract["run_directory_uid"],
+        parent_gid=receipt_contract["run_directory_gid"],
+        parent_mode=receipt_contract["run_directory_mode"],
+    )
+    if os.path.lexists(completion_path):
+        completed_raw, _item = _stable_read(
+            completion_path,
+            maximum=MAX_READINESS_BYTES,
+            uid=0,
+            gid=0,
+            mode=0o400,
+        )
+        completed = _strict_json(completed_raw, code)
+        completed_unsigned = {
+            key: item for key, item in completed.items() if key != "receipt_sha256"
+        }
+        if (
+            completed.get("schema") != API_ADMISSION_RETIREMENT_SCHEMA
+            or completed.get("run_id") != fixture["run_id"]
+            or completed.get("fixture_sha256") != catalog_value["fixture_sha256"]
+            or completed.get("session_id") != catalog_value["session_id"]
+            or completed.get("capability_epoch_sha256")
+            != catalog_value["capability_epoch_sha256"]
+            or completed.get("challenge_sha256")
+            != validated_publication["challenge_sha256"]
+            or completed.get("owner_authority_path") != str(authority_path)
+            or completed.get("owner_authority_sha256") != authority_sha256
+            or completed.get("install_publication_sha256")
+            != validated_publication["receipt_sha256"]
+            or completed.get("intent_sha256") != intent["intent_sha256"]
+            or completed.get("catalog_sha256") != catalog_value["catalog_sha256"]
+            or completed.get("owner_grant_sha256") != validated_pregrant["grant_sha256"]
+            or completed.get("catalog_absent") is not True
+            or completed.get("owner_grant_absent") is not True
+            or type(completed.get("retired_at_unix_ms")) is not int
+            or completed.get("receipt_sha256") != _sha256_json(completed_unsigned)
+            or os.path.lexists(catalog_path)
+            or os.path.lexists(owner_grant_path)
+        ):
+            _fail(code)
+        return completed
+
+    expected_files = (
+        (
+            catalog_path,
+            _canonical_bytes(catalog_value),
+            0,
+            writer_gid,
+            0o440,
+        ),
+        (
+            owner_grant_path,
+            _canonical_bytes(validated_pregrant["receipt"]),
+            0,
+            0,
+            0o400,
+        ),
+    )
+    for path, expected_raw, uid, gid, mode in expected_files:
+        if not os.path.lexists(path):
+            continue
+        observed, item = _stable_read(
+            path,
+            maximum=max(len(expected_raw), 2),
+            uid=uid,
+            gid=gid,
+            mode=mode,
+        )
+        if observed != expected_raw:
+            _fail(code)
+        try:
+            current = path.lstat()
+            if _identity(current) != _identity(item):
+                _fail(code)
+            path.unlink()
+            _fsync_directory(path.parent)
+        except OSError as exc:
+            raise CapabilityProducerError(code) from exc
+    if os.path.lexists(catalog_path) or os.path.lexists(owner_grant_path):
+        _fail(code)
+    completion_unsigned = {
+        "schema": API_ADMISSION_RETIREMENT_SCHEMA,
+        "run_id": fixture["run_id"],
+        "fixture_sha256": catalog_value["fixture_sha256"],
+        "session_id": catalog_value["session_id"],
+        "capability_epoch_sha256": catalog_value["capability_epoch_sha256"],
+        "challenge_sha256": validated_publication["challenge_sha256"],
+        "owner_authority_path": str(authority_path),
+        "owner_authority_sha256": authority_sha256,
+        "install_publication_sha256": validated_publication["receipt_sha256"],
+        "intent_sha256": intent["intent_sha256"],
+        "catalog_sha256": catalog_value["catalog_sha256"],
+        "owner_grant_sha256": validated_pregrant["grant_sha256"],
+        "catalog_absent": True,
+        "owner_grant_absent": True,
+        "retired_at_unix_ms": retired_at_unix_ms,
+    }
+    completion = {
+        **completion_unsigned,
+        "receipt_sha256": _sha256_json(completion_unsigned),
+    }
+    _publish_or_identical(
+        completion_path,
+        _canonical_bytes(completion),
+        uid=0,
+        gid=0,
+        mode=0o400,
+        parent_uid=receipt_contract["run_directory_uid"],
+        parent_gid=receipt_contract["run_directory_gid"],
+        parent_mode=receipt_contract["run_directory_mode"],
+    )
+    return completion
+
+
+def validate_active_api_admission_retirement(value: Any) -> Mapping[str, Any]:
+    """Validate the exact aggregate produced by expiry/cleanup recovery."""
+
+    code = "active_api_admission_retirement_invalid"
+    raw = _strict(
+        value,
+        (
+            "schema",
+            "outcome",
+            "run_id",
+            "release_sha",
+            "capability_plan_sha256",
+            "full_canary_plan_sha256",
+            "fixture_sha256",
+            "readiness_sha256",
+            "catalog_absent",
+            "owner_grant_absent",
+            "producer_activation_absent",
+            "admission_retirement",
+            "fleet_retirement",
+            "observed_at_unix_ms",
+            "receipt_sha256",
+        ),
+        code,
+    )
+    unsigned = {key: item for key, item in raw.items() if key != "receipt_sha256"}
+    if (
+        raw["schema"] != ACTIVE_API_ADMISSION_RETIREMENT_SCHEMA
+        or raw["outcome"]
+        not in {
+            "retired_active_run",
+            "retired_partial_install",
+            "reconciled_published_run_without_admission",
+            "confirmed_no_active_run",
+        }
+        or any(
+            raw[field] is not True
+            for field in (
+                "catalog_absent",
+                "owner_grant_absent",
+                "producer_activation_absent",
+            )
+        )
+        or type(raw["observed_at_unix_ms"]) is not int
+        or raw["observed_at_unix_ms"] <= 0
+        or raw["receipt_sha256"] != _sha256_json(unsigned)
+    ):
+        _fail(code)
+
+    binding_fields = (
+        "run_id",
+        "release_sha",
+        "capability_plan_sha256",
+        "full_canary_plan_sha256",
+        "fixture_sha256",
+        "readiness_sha256",
+    )
+    if raw["outcome"] == "confirmed_no_active_run":
+        if (
+            any(raw[field] is not None for field in binding_fields)
+            or raw["admission_retirement"] is not None
+            or raw["fleet_retirement"] is not None
+        ):
+            _fail(code)
+        return copy.deepcopy(raw)
+
+    run_id = raw["run_id"]
+    release_sha = raw["release_sha"]
+    if (
+        not isinstance(run_id, str)
+        or not isinstance(release_sha, str)
+        or _SAFE_ID_RE.fullmatch(run_id) is None
+        or _GIT_SHA_RE.fullmatch(release_sha) is None
+    ):
+        _fail(code)
+    for field in (
+        "capability_plan_sha256",
+        "full_canary_plan_sha256",
+        "fixture_sha256",
+    ):
+        _digest(raw[field], code)
+
+    if raw["outcome"] == "reconciled_published_run_without_admission":
+        if (
+            raw["readiness_sha256"] is not None
+            or raw["admission_retirement"] is not None
+            or raw["fleet_retirement"] is not None
+        ):
+            _fail(code)
+        return copy.deepcopy(raw)
+
+    if raw["outcome"] == "retired_partial_install":
+        if raw["readiness_sha256"] is not None or raw["fleet_retirement"] is not None:
+            _fail(code)
+        abort = _strict(
+            raw["admission_retirement"],
+            (
+                "schema",
+                "state",
+                "run_id",
+                "release_sha",
+                "capability_plan_sha256",
+                "full_canary_plan_sha256",
+                "fixture_sha256",
+                "session_id",
+                "capability_epoch_sha256",
+                "challenge_sha256",
+                "owner_authority_path",
+                "owner_authority_sha256",
+                "install_intent_path",
+                "install_intent_sha256",
+                "install_completion_path",
+                "install_publication_sha256",
+                "catalog_path",
+                "catalog_file_sha256",
+                "catalog_sha256",
+                "catalog_present_at_recovery",
+                "catalog_absent",
+                "owner_grant_path",
+                "owner_grant_file_sha256",
+                "owner_grant_sha256",
+                "owner_grant_present_at_recovery",
+                "owner_grant_absent",
+                "owner_receipt_path",
+                "owner_receipt_file_sha256",
+                "owner_receipt_present_at_recovery",
+                "owner_receipt_absent",
+                "producer_activation_absent",
+                "retired_at_unix_ms",
+                "receipt_sha256",
+            ),
+            code,
+        )
+        abort_unsigned = {
+            key: item for key, item in abort.items() if key != "receipt_sha256"
+        }
+        states = {
+            "authority_only_aborted": (False, False),
+            "partial_install_retired": (True, False),
+            "completed_install_retired_before_activation": (True, True),
+        }
+        state = abort.get("state")
+        paths = (
+            abort.get("owner_authority_path"),
+            abort.get("install_intent_path"),
+            abort.get("install_completion_path"),
+            abort.get("catalog_path"),
+            abort.get("owner_grant_path"),
+            abort.get("owner_receipt_path"),
+        )
+        if (
+            abort.get("schema") != API_ADMISSION_INSTALL_ABORT_SCHEMA
+            or state not in states
+            or abort.get("run_id") != run_id
+            or abort.get("release_sha") != release_sha
+            or abort.get("capability_plan_sha256")
+            != raw["capability_plan_sha256"]
+            or abort.get("full_canary_plan_sha256")
+            != raw["full_canary_plan_sha256"]
+            or abort.get("fixture_sha256") != raw["fixture_sha256"]
+            or not all(
+                isinstance(path, str)
+                and Path(path).is_absolute()
+                and ".." not in Path(path).parts
+                for path in paths
+            )
+            or any(
+                type(abort.get(field)) is not bool
+                for field in (
+                    "catalog_present_at_recovery",
+                    "owner_grant_present_at_recovery",
+                    "owner_receipt_present_at_recovery",
+                )
+            )
+            or any(
+                abort.get(field) is not True
+                for field in (
+                    "catalog_absent",
+                    "owner_grant_absent",
+                    "owner_receipt_absent",
+                    "producer_activation_absent",
+                )
+            )
+            or type(abort.get("retired_at_unix_ms")) is not int
+            or abort["retired_at_unix_ms"] <= 0
+            or raw["observed_at_unix_ms"] < abort["retired_at_unix_ms"]
+            or abort.get("receipt_sha256") != _sha256_json(abort_unsigned)
+        ):
+            _fail(code)
+        intent_required, completion_required = states[state]
+        if (
+            (abort.get("install_intent_sha256") is not None) != intent_required
+            or (abort.get("install_publication_sha256") is not None)
+            != completion_required
+        ):
+            _fail(code)
+        for field in (
+            "capability_epoch_sha256",
+            "challenge_sha256",
+            "owner_authority_sha256",
+            "catalog_file_sha256",
+            "catalog_sha256",
+            "owner_grant_file_sha256",
+            "owner_grant_sha256",
+            "owner_receipt_file_sha256",
+            "receipt_sha256",
+        ):
+            _digest(abort[field], code)
+        for field in ("install_intent_sha256", "install_publication_sha256"):
+            if abort[field] is not None:
+                _digest(abort[field], code)
+        return copy.deepcopy(raw)
+
+    _digest(raw["readiness_sha256"], code)
+
+    admission = _strict(
+        raw["admission_retirement"],
+        (
+            "schema",
+            "run_id",
+            "fixture_sha256",
+            "session_id",
+            "capability_epoch_sha256",
+            "challenge_sha256",
+            "owner_authority_path",
+            "owner_authority_sha256",
+            "install_publication_sha256",
+            "intent_sha256",
+            "catalog_sha256",
+            "owner_grant_sha256",
+            "catalog_absent",
+            "owner_grant_absent",
+            "retired_at_unix_ms",
+            "receipt_sha256",
+        ),
+        code,
+    )
+    fleet = _strict(
+        raw["fleet_retirement"],
+        (
+            "schema",
+            "readiness_sha256",
+            "foundation_sha256",
+            "release_sha",
+            "capability_plan_sha256",
+            "full_canary_plan_sha256",
+            "fixture_sha256",
+            "run_id",
+            "path",
+            "retirement_intent_sha256",
+            "retired",
+            "absence_verified",
+            "retired_at_unix_ms",
+            "receipt_sha256",
+        ),
+        code,
+    )
+    admission_unsigned = {
+        key: item for key, item in admission.items() if key != "receipt_sha256"
+    }
+    fleet_unsigned = {
+        key: item for key, item in fleet.items() if key != "receipt_sha256"
+    }
+    if (
+        admission["schema"] != API_ADMISSION_RETIREMENT_SCHEMA
+        or admission["run_id"] != run_id
+        or admission["fixture_sha256"] != raw["fixture_sha256"]
+        or admission["catalog_absent"] is not True
+        or admission["owner_grant_absent"] is not True
+        or admission["receipt_sha256"] != _sha256_json(admission_unsigned)
+        or fleet["schema"]
+        != "muncho-production-capability-fleet-retirement.v1"
+        or fleet["run_id"] != run_id
+        or fleet["release_sha"] != release_sha
+        or fleet["capability_plan_sha256"] != raw["capability_plan_sha256"]
+        or fleet["full_canary_plan_sha256"]
+        != raw["full_canary_plan_sha256"]
+        or fleet["fixture_sha256"] != raw["fixture_sha256"]
+        or fleet["readiness_sha256"] != raw["readiness_sha256"]
+        or not isinstance(fleet["path"], str)
+        or not Path(fleet["path"]).is_absolute()
+        or ".." in Path(fleet["path"]).parts
+        or fleet["retired"] is not True
+        or fleet["absence_verified"] is not True
+        or fleet["receipt_sha256"] != _sha256_json(fleet_unsigned)
+        or type(admission["retired_at_unix_ms"]) is not int
+        or type(fleet["retired_at_unix_ms"]) is not int
+        or raw["observed_at_unix_ms"]
+        < max(admission["retired_at_unix_ms"], fleet["retired_at_unix_ms"])
+    ):
+        _fail(code)
+    for field in (
+        "capability_epoch_sha256",
+        "challenge_sha256",
+        "owner_authority_sha256",
+        "install_publication_sha256",
+        "intent_sha256",
+        "catalog_sha256",
+        "owner_grant_sha256",
+        "receipt_sha256",
+    ):
+        _digest(admission[field], code)
+    for field in (
+        "foundation_sha256",
+        "retirement_intent_sha256",
+        "receipt_sha256",
+    ):
+        _digest(fleet[field], code)
+    return copy.deepcopy(raw)
+
+
+def _no_active_api_admission_retirement(*, observed_at_unix_ms: int) -> Mapping[str, Any]:
+    unsigned = {
+        "schema": ACTIVE_API_ADMISSION_RETIREMENT_SCHEMA,
+        "outcome": "confirmed_no_active_run",
+        "run_id": None,
+        "release_sha": None,
+        "capability_plan_sha256": None,
+        "full_canary_plan_sha256": None,
+        "fixture_sha256": None,
+        "readiness_sha256": None,
+        "catalog_absent": True,
+        "owner_grant_absent": True,
+        "producer_activation_absent": True,
+        "admission_retirement": None,
+        "fleet_retirement": None,
+        "observed_at_unix_ms": observed_at_unix_ms,
+    }
+    return validate_active_api_admission_retirement({
+        **unsigned,
+        "receipt_sha256": _sha256_json(unsigned),
+    })
+
+
+_MAX_DURABLE_LIVE_RUNS = 4_096
+_MAX_DURABLE_LIVE_RUN_ENTRIES = 2
+_MAX_DURABLE_LIVE_EVIDENCE_BYTES = 8 * 1024 * 1024
+_DURABLE_LIVE_RUN_NAME_RE = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$"
+)
+
+
+@dataclass(frozen=True)
+class _DurableLiveFixture:
+    value: Mapping[str, Any]
+    raw: bytes
+    sha256: str
+    path: Path
+    run_directory: Path
+    evidence_complete: bool
+
+
+def _durable_live_fixture_inventory(
+    live_fixture_root: Path,
+) -> tuple[_DurableLiveFixture, ...]:
+    """Inventory exact root-owned per-run fixtures without semantic discovery."""
+
+    code = "active_api_admission_retirement_invalid"
+    if not os.path.lexists(live_fixture_root):
+        return ()
+    _require_directory(live_fixture_root, uid=0, gid=0, mode=0o700)
+    root_before = live_fixture_root.lstat()
+    try:
+        names = sorted(os.listdir(live_fixture_root))
+    except OSError as exc:
+        raise CapabilityProducerError(code) from exc
+    if len(names) > _MAX_DURABLE_LIVE_RUNS or any(
+        _DURABLE_LIVE_RUN_NAME_RE.fullmatch(name) is None for name in names
+    ):
+        _fail(code)
+
+    from gateway import canonical_capability_canary_e2e as e2e
+
+    result: list[_DurableLiveFixture] = []
+    for name in names:
+        run_directory = live_fixture_root / name
+        _require_directory(run_directory, uid=0, gid=0, mode=0o700)
+        run_before = run_directory.lstat()
+        try:
+            entries = sorted(os.listdir(run_directory))
+        except OSError as exc:
+            raise CapabilityProducerError(code) from exc
+        if (
+            len(entries) > _MAX_DURABLE_LIVE_RUN_ENTRIES
+            or not entries
+            or set(entries) - {"fixture.json", "evidence.json"}
+            or "fixture.json" not in entries
+        ):
+            _fail(code)
+
+        fixture_path = run_directory / "fixture.json"
+        fixture_raw, _fixture_item = _stable_read(
+            fixture_path,
+            maximum=MAX_READINESS_BYTES,
+            uid=0,
+            gid=0,
+            mode=0o400,
+        )
+        fixture_sha256 = _sha256_bytes(fixture_raw)
+        try:
+            fixture = e2e._validate_fixture(
+                _strict_json(fixture_raw, code), fixture_sha256
+            )
+        except e2e.CapabilityCanaryEvidenceError as exc:
+            raise CapabilityProducerError(code) from exc
+        if (
+            fixture_raw != _canonical_bytes(fixture)
+            or fixture.get("run_id") != name
+        ):
+            _fail(code)
+
+        evidence_complete = "evidence.json" in entries
+        if evidence_complete:
+            evidence_raw, _evidence_item = _stable_read(
+                run_directory / "evidence.json",
+                maximum=_MAX_DURABLE_LIVE_EVIDENCE_BYTES,
+                uid=0,
+                gid=0,
+                mode=0o400,
+            )
+            evidence = _strict_json(evidence_raw, code)
+            if (
+                not isinstance(evidence, Mapping)
+                or evidence_raw != _canonical_bytes(evidence)
+                or evidence.get("schema") != e2e.EVIDENCE_SCHEMA
+                or evidence.get("execution_mode")
+                != "live_production_shaped_canary"
+                or evidence.get("synthetic") is not False
+                or evidence.get("run_id") != name
+                or evidence.get("fixture_sha256") != fixture_sha256
+                or evidence.get("release_sha") != fixture.get("release_sha")
+                or type(evidence.get("completed_at_unix_ms")) is not int
+                or evidence["completed_at_unix_ms"] <= 0
+            ):
+                _fail(code)
+
+        if _identity(run_before) != _identity(run_directory.lstat()):
+            _fail(code)
+        result.append(
+            _DurableLiveFixture(
+                value=copy.deepcopy(dict(fixture)),
+                raw=fixture_raw,
+                sha256=fixture_sha256,
+                path=fixture_path,
+                run_directory=run_directory,
+                evidence_complete=evidence_complete,
+            )
+        )
+    if _identity(root_before) != _identity(live_fixture_root.lstat()):
+        _fail(code)
+    return tuple(result)
+
+
+def _retire_duplicate_reviewed_fixture_source(
+    source: Path,
+    *,
+    expected: bytes,
+) -> bool:
+    """Finish only the exact source retirement interrupted after publication."""
+
+    code = "active_api_admission_retirement_invalid"
+    if not os.path.lexists(source):
+        return False
+    _require_directory(source.parent, uid=0, gid=0, mode=0o700)
+    observed, item = _stable_read(
+        source,
+        maximum=max(len(expected), 2),
+        uid=0,
+        gid=0,
+        mode=0o400,
+    )
+    if observed != expected or _identity(item) != _identity(source.lstat()):
+        _fail(code)
+    try:
+        source.unlink()
+        _fsync_directory(source.parent)
+    except OSError as exc:
+        raise CapabilityProducerError(code) from exc
+    if os.path.lexists(source):
+        _fail(code)
+    return True
+
+
+def _reconciled_published_run_without_admission(
+    fixture: Mapping[str, Any],
+    *,
+    fixture_sha256: str,
+    observed_at_unix_ms: int,
+) -> Mapping[str, Any]:
+    """Record a durable published run that never reached API admission."""
+
+    unsigned = {
+        "schema": ACTIVE_API_ADMISSION_RETIREMENT_SCHEMA,
+        "outcome": "reconciled_published_run_without_admission",
+        "run_id": fixture["run_id"],
+        "release_sha": fixture["release_sha"],
+        "capability_plan_sha256": fixture["capability_plan_sha256"],
+        "full_canary_plan_sha256": fixture["full_canary_plan_sha256"],
+        "fixture_sha256": fixture_sha256,
+        "readiness_sha256": None,
+        "catalog_absent": True,
+        "owner_grant_absent": True,
+        "producer_activation_absent": True,
+        "admission_retirement": None,
+        "fleet_retirement": None,
+        "observed_at_unix_ms": observed_at_unix_ms,
+    }
+    return validate_active_api_admission_retirement({
+        **unsigned,
+        "receipt_sha256": _sha256_json(unsigned),
+    })
+
+
+def _load_api_admission_recovery_authority(
+    *,
+    run_root: Path,
+    fixture: Mapping[str, Any],
+    fixture_sha256: str,
+    installed_foundation: InstalledProducerFoundation,
+) -> tuple[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]]:
+    """Revalidate historical owner authority against its durable challenge."""
+
+    code = "active_api_admission_retirement_invalid"
+    challenge_path = run_root / "api-admission-owner-challenge.json"
+    authority_path = run_root / "api-admission-owner-authority.json"
+    challenge_raw, _challenge_item = _stable_read(
+        challenge_path,
+        maximum=MAX_READINESS_BYTES,
+        uid=0,
+        gid=0,
+        mode=0o400,
+    )
+    challenge = validate_api_admission_owner_challenge(
+        _strict_json(challenge_raw, code),
+        fixture=fixture,
+        fixture_sha256=fixture_sha256,
+    )
+    authority_raw, _authority_item = _stable_read(
+        authority_path,
+        maximum=MAX_READINESS_BYTES,
+        uid=0,
+        gid=0,
+        mode=0o400,
+    )
+    authority = _strict_json(authority_raw, code)
+    issued_at = authority.get("issued_at_unix_ms")
+    if type(issued_at) is not int:
+        _fail(code)
+    validated = validate_api_admission_owner_authority(
+        authority,
+        challenge=challenge["request"],
+        fixture=fixture,
+        fixture_sha256=fixture_sha256,
+        installed_foundation=installed_foundation,
+        now_ms=issued_at,
+    )
+    if authority_raw != _canonical_bytes(validated["authority"]):
+        _fail(code)
+    return challenge, authority, validated
+
+
+def _validate_api_admission_install_intent_for_recovery(
+    value: Any,
+    *,
+    fixture: Mapping[str, Any],
+    fixture_sha256: str,
+    catalog: Mapping[str, Any],
+    validated_pregrant: Mapping[str, Any],
+    authority: Mapping[str, Any],
+    authority_sha256: str,
+    run_root: Path,
+    catalog_path: Path,
+    owner_grant_path: Path,
+) -> Mapping[str, Any]:
+    code = "active_api_admission_retirement_invalid"
+    raw = _strict(
+        value,
+        (
+            "schema",
+            "run_id",
+            "fixture_sha256",
+            "session_id",
+            "capability_epoch_sha256",
+            "challenge_sha256",
+            "catalog_path",
+            "catalog_gid",
+            "catalog_file_sha256",
+            "catalog_sha256",
+            "owner_grant_path",
+            "owner_grant_sha256",
+            "owner_receipt_path",
+            "authority_path",
+            "authority_sha256",
+            "intent_sha256",
+        ),
+        code,
+    )
+    unsigned = {key: item for key, item in raw.items() if key != "intent_sha256"}
+    catalog_value = validate_probe_catalog(catalog)
+    writer_gid = raw["catalog_gid"]
+    if (
+        raw["schema"] != API_ADMISSION_INSTALL_INTENT_SCHEMA
+        or raw["run_id"] != fixture.get("run_id")
+        or raw["fixture_sha256"] != fixture_sha256
+        or raw["session_id"] != catalog_value["session_id"]
+        or raw["capability_epoch_sha256"]
+        != catalog_value["capability_epoch_sha256"]
+        or raw["challenge_sha256"] != authority.get("challenge_sha256")
+        or raw["catalog_path"] != str(catalog_path)
+        or type(writer_gid) is not int
+        or writer_gid <= 0
+        or raw["catalog_file_sha256"]
+        != _sha256_bytes(_canonical_bytes(catalog_value))
+        or raw["catalog_sha256"] != catalog_value["catalog_sha256"]
+        or raw["owner_grant_path"] != str(owner_grant_path)
+        or raw["owner_grant_sha256"] != validated_pregrant.get("grant_sha256")
+        or raw["owner_receipt_path"]
+        != str(run_root / SLOT_FILENAME["workspace_owner"])
+        or raw["authority_path"]
+        != str(run_root / "api-admission-owner-authority.json")
+        or raw["authority_sha256"] != authority_sha256
+        or raw["intent_sha256"] != _sha256_json(unsigned)
+    ):
+        _fail(code)
+    return copy.deepcopy(raw)
+
+
+def _remove_exact_api_admission_publication(
+    path: Path,
+    expected: bytes,
+    *,
+    uid: int,
+    gid: int,
+    mode: int,
+    parent_uid: int,
+    parent_gid: int,
+    parent_mode: int,
+) -> bool:
+    """Remove only one stable, byte-exact, intent-bound publication."""
+
+    code = "active_api_admission_retirement_invalid"
+    _require_directory(
+        path.parent,
+        uid=parent_uid,
+        gid=parent_gid,
+        mode=parent_mode,
+    )
+    if not os.path.lexists(path):
+        return False
+    if not _read_expected_publication(
+        path,
+        expected,
+        uid=uid,
+        gid=gid,
+        mode=mode,
+        parent_uid=parent_uid,
+        parent_gid=parent_gid,
+        parent_mode=parent_mode,
+    ):
+        _fail(code)
+    observed, before = _stable_read(
+        path,
+        maximum=max(len(expected), 2),
+        uid=uid,
+        gid=gid,
+        mode=mode,
+    )
+    if observed != expected:
+        _fail(code)
+    try:
+        current = path.lstat()
+        if _identity(current) != _identity(before):
+            _fail(code)
+        path.unlink()
+        _fsync_directory(path.parent)
+    except OSError as exc:
+        raise CapabilityProducerError(code) from exc
+    if os.path.lexists(path):
+        _fail(code)
+    return True
+
+
+def _recover_partial_api_admission_install(
+    *,
+    fixture: Mapping[str, Any],
+    fixture_sha256: str,
+    installed_foundation: InstalledProducerFoundation,
+    run_root: Path,
+    catalog_path: Path,
+    owner_grant_path: Path,
+    readiness_path: Path,
+    retired_at_unix_ms: int,
+) -> Mapping[str, Any]:
+    """Retire an owner-authorized admission that never activated producers."""
+
+    code = "active_api_admission_retirement_invalid"
+    receipt_contract = installed_foundation.value["receipt_contract"]
+    owner_receipt_path = run_root / SLOT_FILENAME["workspace_owner"]
+    intent_path = run_root / "api-admission-install-intent.json"
+    completion_path = run_root / "api-admission-install.json"
+    abort_path = run_root / "api-admission-install-abort.json"
+    challenge, authority, validated = _load_api_admission_recovery_authority(
+        run_root=run_root,
+        fixture=fixture,
+        fixture_sha256=fixture_sha256,
+        installed_foundation=installed_foundation,
+    )
+    if (
+        type(retired_at_unix_ms) is not int
+        or retired_at_unix_ms < authority["issued_at_unix_ms"]
+    ):
+        _fail(code)
+    catalog = validated["catalog"]
+    pregrant = validated["validated_pregrant"]
+    catalog_raw = _canonical_bytes(catalog)
+    owner_raw = _canonical_bytes(pregrant["receipt"])
+    intent: Mapping[str, Any] | None = None
+    if os.path.lexists(intent_path):
+        intent_raw, _intent_item = _stable_read(
+            intent_path,
+            maximum=MAX_READINESS_BYTES,
+            uid=0,
+            gid=0,
+            mode=0o400,
+        )
+        intent = _validate_api_admission_install_intent_for_recovery(
+            _strict_json(intent_raw, code),
+            fixture=fixture,
+            fixture_sha256=fixture_sha256,
+            catalog=catalog,
+            validated_pregrant=pregrant,
+            authority=authority,
+            authority_sha256=validated["authority_sha256"],
+            run_root=run_root,
+            catalog_path=catalog_path,
+            owner_grant_path=owner_grant_path,
+        )
+        if intent_raw != _canonical_bytes(intent):
+            _fail(code)
+    publication: Mapping[str, Any] | None = None
+    if os.path.lexists(completion_path):
+        if intent is None:
+            _fail(code)
+        publication_raw, _publication_item = _stable_read(
+            completion_path,
+            maximum=MAX_READINESS_BYTES,
+            uid=0,
+            gid=0,
+            mode=0o400,
+        )
+        publication = validate_api_admission_owner_publication(
+            _strict_json(publication_raw, code),
+            challenge=challenge["request"],
+            fixture=fixture,
+            fixture_sha256=fixture_sha256,
+            catalog=catalog,
+            validated_pregrant=pregrant,
+            authority_sha256=validated["authority_sha256"],
+            run_root=run_root,
+            catalog_path=catalog_path,
+            owner_grant_path=owner_grant_path,
+        )
+        if (
+            publication_raw != _canonical_bytes(publication)
+            or publication["install_intent_sha256"] != intent["intent_sha256"]
+            or retired_at_unix_ms < publication["published_at_unix_ms"]
+        ):
+            _fail(code)
+    if os.path.lexists(readiness_path):
+        _fail(code)
+    fixed_paths = (catalog_path, owner_grant_path, owner_receipt_path)
+    if intent is None and any(os.path.lexists(path) for path in fixed_paths):
+        # Authority publication precedes the durable install intent.  No
+        # intent means no fixed input is authorized for deletion.
+        _fail(code)
+    state = (
+        "authority_only_aborted"
+        if intent is None
+        else (
+            "completed_install_retired_before_activation"
+            if publication is not None
+            else "partial_install_retired"
+        )
+    )
+    fixed = {
+        "schema": API_ADMISSION_INSTALL_ABORT_SCHEMA,
+        "state": state,
+        "run_id": fixture["run_id"],
+        "release_sha": fixture["release_sha"],
+        "capability_plan_sha256": fixture["capability_plan_sha256"],
+        "full_canary_plan_sha256": fixture["full_canary_plan_sha256"],
+        "fixture_sha256": fixture_sha256,
+        "session_id": catalog["session_id"],
+        "capability_epoch_sha256": catalog["capability_epoch_sha256"],
+        "challenge_sha256": authority["challenge_sha256"],
+        "owner_authority_path": str(
+            run_root / "api-admission-owner-authority.json"
+        ),
+        "owner_authority_sha256": validated["authority_sha256"],
+        "install_intent_path": str(intent_path),
+        "install_intent_sha256": (
+            intent["intent_sha256"] if intent is not None else None
+        ),
+        "install_completion_path": str(completion_path),
+        "install_publication_sha256": (
+            publication["receipt_sha256"] if publication is not None else None
+        ),
+        "catalog_path": str(catalog_path),
+        "catalog_file_sha256": _sha256_bytes(catalog_raw),
+        "catalog_sha256": catalog["catalog_sha256"],
+        "owner_grant_path": str(owner_grant_path),
+        "owner_grant_file_sha256": _sha256_bytes(owner_raw),
+        "owner_grant_sha256": pregrant["grant_sha256"],
+        "owner_receipt_path": str(owner_receipt_path),
+        "owner_receipt_file_sha256": _sha256_bytes(owner_raw),
+    }
+    if os.path.lexists(abort_path):
+        abort_raw, _abort_item = _stable_read(
+            abort_path,
+            maximum=MAX_READINESS_BYTES,
+            uid=0,
+            gid=0,
+            mode=0o400,
+        )
+        abort = _strict_json(abort_raw, code)
+        unsigned = {key: item for key, item in abort.items() if key != "receipt_sha256"}
+        variable_fields = {
+            "catalog_present_at_recovery",
+            "owner_grant_present_at_recovery",
+            "owner_receipt_present_at_recovery",
+            "catalog_absent",
+            "owner_grant_absent",
+            "owner_receipt_absent",
+            "producer_activation_absent",
+            "retired_at_unix_ms",
+            "receipt_sha256",
+        }
+        if (
+            {key: item for key, item in abort.items() if key not in variable_fields}
+            != fixed
+            or any(
+                type(abort.get(field)) is not bool
+                for field in (
+                    "catalog_present_at_recovery",
+                    "owner_grant_present_at_recovery",
+                    "owner_receipt_present_at_recovery",
+                )
+            )
+            or any(
+                abort.get(field) is not True
+                for field in (
+                    "catalog_absent",
+                    "owner_grant_absent",
+                    "owner_receipt_absent",
+                    "producer_activation_absent",
+                )
+            )
+            or type(abort.get("retired_at_unix_ms")) is not int
+            or abort["retired_at_unix_ms"] <= 0
+            or abort.get("receipt_sha256") != _sha256_json(unsigned)
+            or any(os.path.lexists(path) for path in fixed_paths)
+        ):
+            _fail(code)
+        return copy.deepcopy(abort)
+
+    writer_gid = intent["catalog_gid"] if intent is not None else 0
+    catalog_present_at_recovery = False
+    grant_present_at_recovery = False
+    owner_receipt_present_at_recovery = False
+    if intent is not None:
+        # Preflight the complete present set before the first unlink.  Each
+        # removal performs the same stable validation again, closing both
+        # cross-object partial cleanup and validation-to-unlink races.
+        for path, expected, uid, gid, mode, parent_uid, parent_gid, parent_mode in (
+            (
+                catalog_path,
+                catalog_raw,
+                0,
+                writer_gid,
+                0o440,
+                0,
+                0,
+                0o700,
+            ),
+            (
+                owner_grant_path,
+                owner_raw,
+                0,
+                0,
+                0o400,
+                0,
+                0,
+                0o700,
+            ),
+            (
+                owner_receipt_path,
+                owner_raw,
+                0,
+                0,
+                0o400,
+                receipt_contract["run_directory_uid"],
+                receipt_contract["run_directory_gid"],
+                receipt_contract["run_directory_mode"],
+            ),
+        ):
+            if os.path.lexists(path) and not _read_expected_publication(
+                path,
+                expected,
+                uid=uid,
+                gid=gid,
+                mode=mode,
+                parent_uid=parent_uid,
+                parent_gid=parent_gid,
+                parent_mode=parent_mode,
+            ):
+                _fail(code)
+        catalog_present_at_recovery = _remove_exact_api_admission_publication(
+            catalog_path,
+            catalog_raw,
+            uid=0,
+            gid=writer_gid,
+            mode=0o440,
+            parent_uid=0,
+            parent_gid=0,
+            parent_mode=0o700,
+        )
+        grant_present_at_recovery = _remove_exact_api_admission_publication(
+            owner_grant_path,
+            owner_raw,
+            uid=0,
+            gid=0,
+            mode=0o400,
+            parent_uid=0,
+            parent_gid=0,
+            parent_mode=0o700,
+        )
+        owner_receipt_present_at_recovery = _remove_exact_api_admission_publication(
+            owner_receipt_path,
+            owner_raw,
+            uid=0,
+            gid=0,
+            mode=0o400,
+            parent_uid=receipt_contract["run_directory_uid"],
+            parent_gid=receipt_contract["run_directory_gid"],
+            parent_mode=receipt_contract["run_directory_mode"],
+        )
+    if any(os.path.lexists(path) for path in fixed_paths):
+        _fail(code)
+    abort_unsigned = {
+        **fixed,
+        "catalog_present_at_recovery": catalog_present_at_recovery,
+        "catalog_absent": True,
+        "owner_grant_present_at_recovery": grant_present_at_recovery,
+        "owner_grant_absent": True,
+        "owner_receipt_present_at_recovery": owner_receipt_present_at_recovery,
+        "owner_receipt_absent": True,
+        "producer_activation_absent": True,
+        "retired_at_unix_ms": retired_at_unix_ms,
+    }
+    abort = {
+        **abort_unsigned,
+        "receipt_sha256": _sha256_json(abort_unsigned),
+    }
+    _publish_or_identical(
+        abort_path,
+        _canonical_bytes(abort),
+        uid=0,
+        gid=0,
+        mode=0o400,
+        parent_uid=receipt_contract["run_directory_uid"],
+        parent_gid=receipt_contract["run_directory_gid"],
+        parent_mode=receipt_contract["run_directory_mode"],
+    )
+    return abort
+
+
+def recover_and_retire_active_api_admission(
+    *,
+    retired_at_unix_ms: int,
+    foundation_path: Path = DEFAULT_FOUNDATION_PATH,
+    reviewed_fixture_path: Path = DEFAULT_REVIEWED_FIXTURE_PATH,
+    live_fixture_root: Path = DEFAULT_LIVE_FIXTURE_ROOT,
+    receipt_root: Path = DEFAULT_RECEIPT_ROOT,
+    readiness_path: Path = DEFAULT_READINESS_PATH,
+    catalog_path: Path = DEFAULT_PROBE_CATALOG_PATH,
+    owner_grant_path: Path = DEFAULT_OWNER_GRANT_PATH,
+    owner_public_key_hex_path: Path = DEFAULT_OWNER_PUBLIC_KEY_HEX_PIN_PATH,
+    owner_public_key_source_sha256_path: Path = (
+        DEFAULT_OWNER_PUBLIC_KEY_SOURCE_SHA256_PIN_PATH
+    ),
+) -> Mapping[str, Any]:
+    """Recover durable admission state and retire its three live inputs.
+
+    This is deliberately a mechanical recovery boundary.  It discovers no
+    intent from task text and grants no capability.  It accepts only an exact
+    root-owned per-run fixture published before the reviewed source was
+    retired, the durable install/activation artifacts bound to that fixture,
+    and the installed owner trust root.
+    """
+
+    code = "active_api_admission_retirement_invalid"
+    if type(retired_at_unix_ms) is not int or retired_at_unix_ms <= 0:
+        _fail(code)
+    active_paths = (readiness_path, catalog_path, owner_grant_path)
+    path_presence = tuple(os.path.lexists(path) for path in active_paths)
+    live_inventory = _durable_live_fixture_inventory(live_fixture_root)
+    unfinished = [item for item in live_inventory if not item.evidence_complete]
+    if not unfinished:
+        if any(path_presence):
+            _fail(code)
+        return _no_active_api_admission_retirement(
+            observed_at_unix_ms=retired_at_unix_ms
+        )
+    installed = load_installed_producer_foundation(
+        foundation_path=foundation_path,
+        owner_public_key_hex_path=owner_public_key_hex_path,
+        owner_public_key_source_sha256_path=(
+            owner_public_key_source_sha256_path
+        ),
+    )
+    foundation = installed.value
+    receipt_contract = foundation["receipt_contract"]
+    if Path(receipt_contract["base_root"]) != receipt_root:
+        _fail(code)
+    terminal: list[tuple[_DurableLiveFixture, Mapping[str, Any]]] = []
+    unresolved: list[_DurableLiveFixture] = []
+    for candidate in unfinished:
+        fixture = candidate.value
+        if (
+            foundation["release_sha"] != fixture["release_sha"]
+            or foundation["capability_plan_sha256"]
+            != fixture["capability_plan_sha256"]
+            or foundation["full_canary_plan_sha256"]
+            != fixture["full_canary_plan_sha256"]
+            or installed.sha256 != fixture["producer_foundation_sha256"]
+        ):
+            _fail(code)
+        candidate_run_root = receipt_root / fixture["run_id"]
+        candidate_aggregate_path = (
+            candidate_run_root / "active-api-admission-retirement.json"
+        )
+        if not os.path.lexists(candidate_aggregate_path):
+            unresolved.append(candidate)
+            continue
+        _require_directory(
+            candidate_run_root,
+            uid=receipt_contract["run_directory_uid"],
+            gid=receipt_contract["run_directory_gid"],
+            mode=receipt_contract["run_directory_mode"],
+        )
+        aggregate_raw, _aggregate_item = _stable_read(
+            candidate_aggregate_path,
+            maximum=MAX_READINESS_BYTES,
+            uid=0,
+            gid=0,
+            mode=0o400,
+        )
+        aggregate = validate_active_api_admission_retirement(
+            _strict_json(aggregate_raw, code)
+        )
+        if (
+            aggregate_raw != _canonical_bytes(aggregate)
+            or aggregate["outcome"] == "confirmed_no_active_run"
+            or aggregate["run_id"] != fixture["run_id"]
+            or aggregate["fixture_sha256"] != candidate.sha256
+        ):
+            _fail(code)
+        terminal.append((candidate, aggregate))
+
+    if len(unresolved) > 1:
+        _fail(code)
+    if unresolved:
+        selected = unresolved[0]
+    elif len(terminal) == 1:
+        selected = terminal[0][0]
+    else:
+        if any(path_presence):
+            _fail(code)
+        return _no_active_api_admission_retirement(
+            observed_at_unix_ms=retired_at_unix_ms
+        )
+
+    fixture = selected.value
+    fixture_raw = selected.raw
+    fixture_sha256 = selected.sha256
+    _retire_duplicate_reviewed_fixture_source(
+        reviewed_fixture_path,
+        expected=fixture_raw,
+    )
+    run_id = fixture["run_id"]
+    run_root = receipt_root / run_id
+    if not os.path.lexists(run_root):
+        if any(path_presence):
+            _fail(code)
+        return _reconciled_published_run_without_admission(
+            fixture,
+            fixture_sha256=fixture_sha256,
+            observed_at_unix_ms=retired_at_unix_ms
+        )
+    _require_directory(
+        run_root,
+        uid=receipt_contract["run_directory_uid"],
+        gid=receipt_contract["run_directory_gid"],
+        mode=receipt_contract["run_directory_mode"],
+    )
+    owner_receipt_path = run_root / SLOT_FILENAME["workspace_owner"]
+    authority_path = run_root / "api-admission-owner-authority.json"
+    install_intent_path = run_root / "api-admission-install-intent.json"
+    install_completion_path = run_root / "api-admission-install.json"
+    install_abort_path = run_root / "api-admission-install-abort.json"
+    fleet_intent_path = run_root / "producer-activation-retirement-intent.json"
+    fleet_completion_path = run_root / "producer-activation-retirement.json"
+    aggregate_path = run_root / "active-api-admission-retirement.json"
+    recoverable_paths = (
+        authority_path,
+        install_intent_path,
+        install_completion_path,
+        install_abort_path,
+        owner_receipt_path,
+        run_root / "api-admission-retirement-intent.json",
+        run_root / "api-admission-retirement.json",
+        fleet_intent_path,
+        fleet_completion_path,
+    )
+    if os.path.lexists(aggregate_path):
+        aggregate_raw, _aggregate_item = _stable_read(
+            aggregate_path,
+            maximum=MAX_READINESS_BYTES,
+            uid=0,
+            gid=0,
+            mode=0o400,
+        )
+        aggregate = validate_active_api_admission_retirement(
+            _strict_json(aggregate_raw, code)
+        )
+        if (
+            aggregate_raw != _canonical_bytes(aggregate)
+            or aggregate["outcome"]
+            not in {
+                "retired_active_run",
+                "retired_partial_install",
+                "reconciled_published_run_without_admission",
+            }
+            or aggregate["run_id"] != run_id
+            or aggregate["fixture_sha256"] != fixture_sha256
+            or any(os.path.lexists(path) for path in active_paths)
+            or (
+                aggregate["outcome"] == "retired_partial_install"
+                and os.path.lexists(owner_receipt_path)
+            )
+        ):
+            _fail(code)
+        if (
+            aggregate["outcome"]
+            == "reconciled_published_run_without_admission"
+            and any(os.path.lexists(path) for path in recoverable_paths)
+        ):
+            _fail(code)
+        if aggregate["outcome"] == "retired_partial_install":
+            _challenge, _authority, validated = (
+                _load_api_admission_recovery_authority(
+                    run_root=run_root,
+                    fixture=fixture,
+                    fixture_sha256=fixture_sha256,
+                    installed_foundation=installed,
+                )
+            )
+            abort_raw, _abort_item = _stable_read(
+                install_abort_path,
+                maximum=MAX_READINESS_BYTES,
+                uid=0,
+                gid=0,
+                mode=0o400,
+            )
+            abort = _strict_json(abort_raw, code)
+            if (
+                abort != aggregate["admission_retirement"]
+                or abort_raw != _canonical_bytes(abort)
+                or abort.get("owner_authority_sha256")
+                != validated["authority_sha256"]
+            ):
+                _fail(code)
+        return aggregate
+    if not any(path_presence) and not any(
+        os.path.lexists(path) for path in recoverable_paths
+    ):
+        aggregate = _reconciled_published_run_without_admission(
+            fixture,
+            fixture_sha256=fixture_sha256,
+            observed_at_unix_ms=retired_at_unix_ms
+        )
+        _publish_or_identical(
+            aggregate_path,
+            _canonical_bytes(aggregate),
+            uid=0,
+            gid=0,
+            mode=0o400,
+            parent_uid=receipt_contract["run_directory_uid"],
+            parent_gid=receipt_contract["run_directory_gid"],
+            parent_mode=receipt_contract["run_directory_mode"],
+        )
+        return aggregate
+
+    activation_recovery_present = any(
+        os.path.lexists(path)
+        for path in (readiness_path, fleet_intent_path, fleet_completion_path)
+    )
+    if not activation_recovery_present:
+        if not os.path.lexists(authority_path):
+            _fail(code)
+        partial = _recover_partial_api_admission_install(
+            fixture=fixture,
+            fixture_sha256=fixture_sha256,
+            installed_foundation=installed,
+            run_root=run_root,
+            catalog_path=catalog_path,
+            owner_grant_path=owner_grant_path,
+            readiness_path=readiness_path,
+            retired_at_unix_ms=retired_at_unix_ms,
+        )
+        if any(os.path.lexists(path) for path in active_paths) or os.path.lexists(
+            owner_receipt_path
+        ):
+            _fail(code)
+        partial_unsigned = {
+            "schema": ACTIVE_API_ADMISSION_RETIREMENT_SCHEMA,
+            "outcome": "retired_partial_install",
+            "run_id": run_id,
+            "release_sha": fixture["release_sha"],
+            "capability_plan_sha256": fixture["capability_plan_sha256"],
+            "full_canary_plan_sha256": fixture["full_canary_plan_sha256"],
+            "fixture_sha256": fixture_sha256,
+            "readiness_sha256": None,
+            "catalog_absent": True,
+            "owner_grant_absent": True,
+            "producer_activation_absent": True,
+            "admission_retirement": copy.deepcopy(dict(partial)),
+            "fleet_retirement": None,
+            "observed_at_unix_ms": retired_at_unix_ms,
+        }
+        aggregate = validate_active_api_admission_retirement({
+            **partial_unsigned,
+            "receipt_sha256": _sha256_json(partial_unsigned),
+        })
+        _publish_or_identical(
+            aggregate_path,
+            _canonical_bytes(aggregate),
+            uid=0,
+            gid=0,
+            mode=0o400,
+            parent_uid=receipt_contract["run_directory_uid"],
+            parent_gid=receipt_contract["run_directory_gid"],
+            parent_mode=receipt_contract["run_directory_mode"],
+        )
+        return aggregate
+
+    if os.path.lexists(readiness_path):
+        activation_raw, _activation_item = _stable_read(
+            readiness_path,
+            maximum=MAX_READINESS_BYTES,
+            uid=0,
+            gid=0,
+            mode=0o400,
+        )
+        activation = validate_fleet_readiness_for_retirement(
+            _strict_json(activation_raw, code),
+            expected_foundation_sha256=installed.sha256,
+            expected_capability_plan_sha256=fixture["capability_plan_sha256"],
+            expected_full_canary_plan_sha256=(
+                fixture["full_canary_plan_sha256"]
+            ),
+        )
+    else:
+        if not os.path.lexists(fleet_intent_path):
+            _fail(code)
+        fleet_intent_raw, _fleet_intent_item = _stable_read(
+            fleet_intent_path,
+            maximum=MAX_READINESS_BYTES,
+            uid=receipt_contract["run_directory_uid"],
+            gid=receipt_contract["run_directory_gid"],
+            mode=0o400,
+        )
+        fleet_intent = _strict(
+            _strict_json(fleet_intent_raw, code),
+            (
+                "schema",
+                "run_id",
+                "readiness_sha256",
+                "activation_path",
+                "activation_file_sha256",
+                "activation",
+                "intent_sha256",
+            ),
+            code,
+        )
+        fleet_intent_unsigned = {
+            key: item
+            for key, item in fleet_intent.items()
+            if key != "intent_sha256"
+        }
+        activation = validate_fleet_readiness_for_retirement(
+            fleet_intent["activation"],
+            expected_foundation_sha256=installed.sha256,
+            expected_capability_plan_sha256=fixture["capability_plan_sha256"],
+            expected_full_canary_plan_sha256=(
+                fixture["full_canary_plan_sha256"]
+            ),
+        )
+        if (
+            fleet_intent["schema"] != PRODUCER_FLEET_RETIREMENT_INTENT_SCHEMA
+            or fleet_intent["run_id"] != run_id
+            or fleet_intent["readiness_sha256"]
+            != activation["readiness_sha256"]
+            or fleet_intent["activation_path"] != str(readiness_path)
+            or fleet_intent["activation_file_sha256"]
+            != _sha256_bytes(_canonical_bytes(activation))
+            or fleet_intent["intent_sha256"]
+            != _sha256_json(fleet_intent_unsigned)
+        ):
+            _fail(code)
+    if (
+        activation["run_id"] != run_id
+        or activation["fixture_sha256"] != fixture_sha256
+    ):
+        _fail(code)
+
+    authority_raw, _authority_item = _stable_read(
+        authority_path,
+        maximum=MAX_READINESS_BYTES,
+        uid=0,
+        gid=0,
+        mode=0o400,
+    )
+    authority = _strict_json(authority_raw, code)
+    validated = validate_api_admission_owner_authority_for_evidence(
+        authority,
+        fixture=fixture,
+        fixture_sha256=fixture_sha256,
+        readiness=activation,
+    )
+    catalog = validated["catalog"]
+    pregrant = validated["validated_pregrant"]
+
+    install_intent_raw, _install_intent_item = _stable_read(
+        install_intent_path,
+        maximum=MAX_READINESS_BYTES,
+        uid=0,
+        gid=0,
+        mode=0o400,
+    )
+    install_intent = _strict(
+        _strict_json(install_intent_raw, code),
+        (
+            "schema",
+            "run_id",
+            "fixture_sha256",
+            "session_id",
+            "capability_epoch_sha256",
+            "challenge_sha256",
+            "catalog_path",
+            "catalog_gid",
+            "catalog_file_sha256",
+            "catalog_sha256",
+            "owner_grant_path",
+            "owner_grant_sha256",
+            "owner_receipt_path",
+            "authority_path",
+            "authority_sha256",
+            "intent_sha256",
+        ),
+        code,
+    )
+    install_intent_unsigned = {
+        key: item
+        for key, item in install_intent.items()
+        if key != "intent_sha256"
+    }
+    writer_gid = install_intent["catalog_gid"]
+    if (
+        install_intent["schema"] != API_ADMISSION_INSTALL_INTENT_SCHEMA
+        or install_intent["run_id"] != run_id
+        or install_intent["fixture_sha256"] != fixture_sha256
+        or install_intent["session_id"] != catalog["session_id"]
+        or install_intent["capability_epoch_sha256"]
+        != catalog["capability_epoch_sha256"]
+        or install_intent["challenge_sha256"]
+        != authority["challenge_sha256"]
+        or install_intent["catalog_path"] != str(catalog_path)
+        or type(writer_gid) is not int
+        or writer_gid <= 0
+        or install_intent["catalog_file_sha256"]
+        != _sha256_bytes(_canonical_bytes(catalog))
+        or install_intent["catalog_sha256"] != catalog["catalog_sha256"]
+        or install_intent["owner_grant_path"] != str(owner_grant_path)
+        or install_intent["owner_grant_sha256"] != pregrant["grant_sha256"]
+        or install_intent["owner_receipt_path"]
+        != str(run_root / SLOT_FILENAME["workspace_owner"])
+        or install_intent["authority_path"] != str(authority_path)
+        or install_intent["authority_sha256"]
+        != validated["authority_sha256"]
+        or install_intent["intent_sha256"]
+        != _sha256_json(install_intent_unsigned)
+    ):
+        _fail(code)
+    publication_raw, _publication_item = _stable_read(
+        install_completion_path,
+        maximum=MAX_READINESS_BYTES,
+        uid=0,
+        gid=0,
+        mode=0o400,
+    )
+    publication = validate_api_admission_owner_publication(
+        _strict_json(publication_raw, code),
+        challenge={
+            "session_id": catalog["session_id"],
+            "capability_epoch_sha256": catalog["capability_epoch_sha256"],
+            "challenge_sha256": authority["challenge_sha256"],
+        },
+        fixture=fixture,
+        fixture_sha256=fixture_sha256,
+        catalog=catalog,
+        validated_pregrant=pregrant,
+        authority_sha256=validated["authority_sha256"],
+        run_root=run_root,
+        catalog_path=catalog_path,
+        owner_grant_path=owner_grant_path,
+    )
+    if publication["install_intent_sha256"] != install_intent["intent_sha256"]:
+        _fail(code)
+
+    admission_retirement = retire_api_admission_inputs(
+        catalog=catalog,
+        validated_pregrant=pregrant,
+        owner_authority=authority,
+        publication=publication,
+        fixture=fixture,
+        installed_foundation=installed,
+        writer_gid=writer_gid,
+        retired_at_unix_ms=retired_at_unix_ms,
+        catalog_path=catalog_path,
+        owner_grant_path=owner_grant_path,
+    )
+    fleet_retirement = retire_fleet_readiness(
+        expected_readiness_sha256=activation["readiness_sha256"],
+        run_id=run_id,
+        retirement_directory=run_root,
+        path=readiness_path,
+        uid=0,
+        gid=0,
+        retirement_uid=receipt_contract["run_directory_uid"],
+        retirement_gid=receipt_contract["run_directory_gid"],
+        retirement_mode=receipt_contract["run_directory_mode"],
+        expected_foundation_sha256=installed.sha256,
+        expected_capability_plan_sha256=fixture["capability_plan_sha256"],
+        expected_full_canary_plan_sha256=fixture["full_canary_plan_sha256"],
+        retired_at_unix_ms=retired_at_unix_ms,
+    )
+    if any(os.path.lexists(path) for path in active_paths):
+        _fail(code)
+    unsigned = {
+        "schema": ACTIVE_API_ADMISSION_RETIREMENT_SCHEMA,
+        "outcome": "retired_active_run",
+        "run_id": run_id,
+        "release_sha": fixture["release_sha"],
+        "capability_plan_sha256": fixture["capability_plan_sha256"],
+        "full_canary_plan_sha256": fixture["full_canary_plan_sha256"],
+        "fixture_sha256": fixture_sha256,
+        "readiness_sha256": activation["readiness_sha256"],
+        "catalog_absent": True,
+        "owner_grant_absent": True,
+        "producer_activation_absent": True,
+        "admission_retirement": copy.deepcopy(dict(admission_retirement)),
+        "fleet_retirement": copy.deepcopy(dict(fleet_retirement)),
+        "observed_at_unix_ms": retired_at_unix_ms,
+    }
+    aggregate = validate_active_api_admission_retirement({
+        **unsigned,
+        "receipt_sha256": _sha256_json(unsigned),
+    })
+    _publish_or_identical(
+        aggregate_path,
+        _canonical_bytes(aggregate),
+        uid=0,
+        gid=0,
+        mode=0o400,
+        parent_uid=receipt_contract["run_directory_uid"],
+        parent_gid=receipt_contract["run_directory_gid"],
+        parent_mode=receipt_contract["run_directory_mode"],
+    )
+    return aggregate
+
+
 def bind_owner_pregrant_to_active_plan(
     *,
     validated_pregrant: Mapping[str, Any],
@@ -4178,6 +7742,7 @@ def bind_owner_pregrant_to_active_plan(
     session_id: str,
     capability_epoch_sha256: str,
     consumed_command_sha256s: Sequence[str],
+    now_ms: int,
 ) -> Mapping[str, Any]:
     """Mechanical writer-side binding after GPT has authored an active plan."""
 
@@ -4193,14 +7758,22 @@ def bind_owner_pregrant_to_active_plan(
     payload = validated_pregrant["payload"]
     plan = _strict(
         active_plan,
-        ("case_id", "plan_id", "revision", "state", "session_id", "capability_epoch_sha256"),
+        (
+            "case_id",
+            "plan_id",
+            "revision",
+            "state",
+            "session_id",
+            "capability_epoch_sha256",
+        ),
         code,
     )
     allowed = sorted(
-        item["command_sha256"]
-        for item in catalog_value["commands"]["allowed"]
+        item["command_sha256"] for item in catalog_value["commands"]["allowed"]
     )
     consumed = list(consumed_command_sha256s)
+    observed_at = payload.get("observed_at_unix_ms")
+    ttl_seconds = payload.get("ttl_seconds")
     if (
         not isinstance(payload, Mapping)
         or validated_pregrant["catalog_sha256"] != catalog_value["catalog_sha256"]
@@ -4215,6 +7788,11 @@ def bind_owner_pregrant_to_active_plan(
         or sorted(payload.get("command_sha256s") or []) != allowed
         or sorted(consumed) != allowed
         or len(set(consumed)) != len(consumed)
+        or type(observed_at) is not int
+        or type(ttl_seconds) is not int
+        or type(now_ms) is not int
+        or now_ms < observed_at - MAX_CLOCK_SKEW_MS
+        or now_ms > observed_at + ttl_seconds * 1000
     ):
         _fail(code)
     _safe_id(plan["plan_id"], code)
@@ -4232,6 +7810,8 @@ def bind_owner_pregrant_to_active_plan(
         "terminal_plan_revision": plan["revision"],
         "allowed_command_sha256s": allowed,
         "consumed_command_sha256s": sorted(consumed),
+        "consumed_at_unix_ms": now_ms,
+        "grant_valid_until_unix_ms": observed_at + ttl_seconds * 1000,
         "owner_identity_source": "pre_staged_sshsig_not_runtime_user",
     }
     return {**unsigned, "binding_sha256": _sha256_json(unsigned)}
@@ -4244,6 +7824,8 @@ def _parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     validate = subparsers.add_parser("validate-readiness")
     validate.add_argument("--path", type=Path, default=DEFAULT_READINESS_PATH)
+    subparsers.add_parser("wait-owner-challenge")
+    subparsers.add_parser("stage-owner-authority")
     serve = subparsers.add_parser("serve")
     serve.add_argument("--config", type=Path, required=True)
     serve.add_argument("--foundation", type=Path, required=True)
@@ -4258,6 +7840,13 @@ def _parser() -> argparse.ArgumentParser:
         required=True,
     )
     return parser
+
+
+def _read_canonical_stdin(*, maximum: int = 2 * 1024 * 1024) -> Mapping[str, Any]:
+    raw = sys.stdin.buffer.read(maximum + 1)
+    if not raw or len(raw) > maximum or sys.stdin.buffer.read(1):
+        _fail("api_admission_owner_exchange_input_invalid")
+    return _strict_json(raw, "api_admission_owner_exchange_input_invalid")
 
 
 def _serve_role(args: argparse.Namespace) -> None:
@@ -4282,14 +7871,12 @@ def _serve_role(args: argparse.Namespace) -> None:
     if (
         args.config != expected["config"]
         or args.foundation != expected["foundation"]
-        or args.owner_public_key_hex_file
-        != expected["owner_public_key_hex_file"]
+        or args.owner_public_key_hex_file != expected["owner_public_key_hex_file"]
         or args.owner_public_key_source_sha256_file
         != expected["owner_public_key_source_sha256_file"]
         or config.service_unit != unit
         or config.socket_path != producer_socket_path(config.role)
-        or config.private_key_path
-        != producer_private_key_projection_path(config.role)
+        or config.private_key_path != producer_private_key_projection_path(config.role)
         or config.public_key_path != producer_public_key_path(config.role)
     ):
         _fail("producer_service_projection_invalid")
@@ -4331,7 +7918,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "serve":
             _serve_role(args)
             return 0
-        readiness = load_fleet_readiness(args.path)
+        if args.command == "wait-owner-challenge":
+            result = wait_api_admission_owner_challenge(
+                _read_canonical_stdin(maximum=MAX_READINESS_BYTES)
+            )
+        elif args.command == "stage-owner-authority":
+            result = stage_api_admission_owner_authority(
+                _read_canonical_stdin()
+            )
+        else:
+            readiness = load_fleet_readiness(args.path)
+            result = {
+                "schema": PRODUCER_FLEET_READINESS_SCHEMA,
+                "ok": True,
+                "readiness_sha256": readiness["readiness_sha256"],
+            }
     except CapabilityProducerError as exc:
         print(
             json.dumps(
@@ -4345,21 +7946,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         )
         return 2
-    print(
-        json.dumps(
-            {
-                "schema": PRODUCER_FLEET_READINESS_SCHEMA,
-                "ok": True,
-                "readiness_sha256": readiness["readiness_sha256"],
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-    )
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     return 0
 
 
 __all__ = [
+    "ACTIVE_API_ADMISSION_RETIREMENT_SCHEMA",
+    "API_ADMISSION_INSTALL_ABORT_SCHEMA",
+    "API_ADMISSION_OWNER_AUTHORITY_SCHEMA",
+    "API_ADMISSION_OWNER_AUTHORITY_STAGE_REQUEST_SCHEMA",
+    "API_ADMISSION_OWNER_AUTHORITY_STAGE_SCHEMA",
+    "API_ADMISSION_OWNER_CHALLENGE_SCHEMA",
+    "API_ADMISSION_OWNER_CHALLENGE_WAIT_SCHEMA",
+    "API_ADMISSION_OWNER_SSHSIG_NAMESPACE",
     "AUTHORITY_ALGORITHMS",
     "AUTHORITY_ROLES",
     "BITRIX_CANARY_MUTATION_ARGUMENTS",
@@ -4378,10 +7977,12 @@ __all__ = [
     "BitrixOperationalEdgeNativeCollector",
     "BitrixWriterNativeCollector",
     "DEFAULT_FOUNDATION_PATH",
+    "DEFAULT_LIVE_FIXTURE_ROOT",
     "DEFAULT_OWNER_PUBLIC_KEY_HEX_PIN_PATH",
     "DEFAULT_OWNER_PUBLIC_KEY_SOURCE_SHA256_PIN_PATH",
     "DEFAULT_OWNER_GRANT_PATH",
     "DEFAULT_READINESS_PATH",
+    "DEFAULT_REVIEWED_FIXTURE_PATH",
     "ENDPOINT_ROLES",
     "InstalledProducerFoundation",
     "NATIVE_EVIDENCE_SCHEMA",
@@ -4414,6 +8015,7 @@ __all__ = [
     "build_fleet_readiness_for_plans",
     "build_fleet_readiness",
     "build_probe_catalog",
+    "build_api_admission_owner_challenge",
     "bind_owner_pregrant_to_active_plan",
     "install_owner_pregrant",
     "load_fleet_readiness",
@@ -4426,10 +8028,20 @@ __all__ = [
     "publish_producer_foundation",
     "publish_fleet_readiness",
     "publish_probe_catalog",
+    "publish_api_admission_owner_challenge",
+    "provision_api_admission_owner_authority",
     "production_endpoint_clients",
     "retire_fleet_readiness",
+    "retire_api_admission_inputs",
+    "recover_and_retire_active_api_admission",
     "seal_producer_foundation",
     "validate_owner_pregrant",
+    "validate_api_admission_owner_authority",
+    "validate_api_admission_owner_authority_for_evidence",
+    "validate_api_admission_owner_authority_stage_request",
+    "validate_api_admission_owner_challenge",
+    "validate_api_admission_owner_challenge_wait",
+    "validate_api_admission_owner_publication",
     "validate_bitrix_operational_edge_contract",
     "validate_discord_edge_evidence_contract",
     "validate_probe_catalog",
@@ -4437,7 +8049,12 @@ __all__ = [
     "validate_producer_foundation",
     "validate_fleet_readiness",
     "validate_fleet_readiness_for_retirement",
+    "validate_active_api_admission_retirement",
     "verify_role_receipt",
+    "serve_api_server_capability_admission_once",
+    "stage_api_admission_owner_authority",
+    "wait_api_admission_owner_challenge",
+    "wait_for_staged_api_admission_owner_authority",
 ]
 
 

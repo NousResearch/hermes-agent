@@ -261,7 +261,73 @@ def test_event_journal_is_first_wins_leased_and_exactly_acked(tmp_path) -> None:
         )
         is False
     )
+    assert (
+        journal.ack_event(
+            delivery_id=delivery["delivery_id"],
+            event_id=event.event_id,
+            event_sha256=event.sha256,
+            now_unix_ms=1_004,
+        )
+        is True
+    )
+    with pytest.raises(
+        DiscordConnectorServiceError,
+        match="event_ack_binding_invalid",
+    ):
+        journal.ack_event(
+            delivery_id="00000000-0000-4000-8000-000000000001",
+            event_id=event.event_id,
+            event_sha256=event.sha256,
+            now_unix_ms=1_005,
+        )
     assert journal.next_event(now_unix_ms=100_000) is None
+
+
+def test_event_ack_readback_never_consumes_pending_or_delivering_event(
+    tmp_path,
+) -> None:
+    journal = DurableDiscordConnectorJournal.bootstrap(tmp_path / "journal.sqlite3")
+    event = _event()
+    assert journal.offer_event(event) is True
+
+    with pytest.raises(
+        DiscordConnectorServiceError,
+        match="event_ack_readback_binding_invalid",
+    ):
+        journal.read_event_ack(
+            delivery_id="11111111-1111-4111-8111-111111111111",
+            event_id=event.event_id,
+            event_sha256=event.sha256,
+        )
+    assert journal.cleanup_snapshot()["event_state_counts"] == {"pending": 1}
+
+    delivery = journal.next_event(now_unix_ms=1_000)
+    assert delivery is not None
+    readback = journal.read_event_ack(
+        delivery_id=delivery["delivery_id"],
+        event_id=event.event_id,
+        event_sha256=event.sha256,
+    )
+    assert readback["state"] == "delivering"
+    assert readback["acked"] is False
+    assert journal.cleanup_snapshot()["event_state_counts"] == {"delivering": 1}
+
+    # The same delivery is still eligible for the real first ACK. A mutating
+    # recovery probe would make this call a replay instead.
+    assert (
+        journal.ack_event(
+            delivery_id=delivery["delivery_id"],
+            event_id=event.event_id,
+            event_sha256=event.sha256,
+            now_unix_ms=1_001,
+        )
+        is False
+    )
+    assert journal.read_event_ack(
+        delivery_id=delivery["delivery_id"],
+        event_id=event.event_id,
+        event_sha256=event.sha256,
+    )["acked"] is True
 
 
 def test_cleanup_blocks_retirement_until_inbound_events_are_acked(tmp_path) -> None:

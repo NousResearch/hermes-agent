@@ -2095,7 +2095,9 @@ BEGIN
             'event_id', event_uuid::text,
             'event_type', event_type_value,
             'case_id', case_id_value,
+            'idempotency_key', identity_value,
             'canonical_content_sha256', content_sha,
+            'readback_verified', true,
             'inserted', false,
             'deduped', true
         ));
@@ -2159,7 +2161,9 @@ BEGIN
         'event_id', event_uuid::text,
         'event_type', event_type_value,
         'case_id', case_id_value,
+        'idempotency_key', identity_value,
         'canonical_content_sha256', content_sha,
+        'readback_verified', true,
         'inserted', true,
         'deduped', false
     ));
@@ -2384,7 +2388,8 @@ LANGUAGE sql
 IMMUTABLE
 SET search_path = pg_catalog, canonical_brain
 AS $function$
-    SELECT pg_catalog.jsonb_typeof(value) = 'object'
+    SELECT COALESCE((
+        pg_catalog.jsonb_typeof(value) = 'object'
        AND NOT EXISTS (
             SELECT 1 FROM pg_catalog.jsonb_object_keys(value) AS key(name)
              WHERE NOT (key.name = ANY (allowed))
@@ -2393,6 +2398,7 @@ AS $function$
             SELECT 1 FROM pg_catalog.unnest(required) AS needed(name)
              WHERE NOT (value ? needed.name)
        )
+    ), false)
 $function$;
 
 CREATE OR REPLACE FUNCTION canonical_brain._runtime_valid(runtime jsonb)
@@ -2401,13 +2407,25 @@ LANGUAGE sql
 IMMUTABLE
 SET search_path = pg_catalog, canonical_brain
 AS $function$
-    SELECT canonical_brain._keys_valid(
+    SELECT COALESCE((
+        canonical_brain._keys_valid(
                runtime,
                ARRAY['request_id','platform','session_key_sha256',
                      'capability_epoch_sha256','user_id','chat_id','thread_id',
                      'message_id','owner_authenticated','service_internal'],
                ARRAY['request_id']
            )
+       AND NOT EXISTS (
+            SELECT 1
+              FROM pg_catalog.unnest(ARRAY[
+                    'request_id','platform','session_key_sha256',
+                    'capability_epoch_sha256','user_id','chat_id','thread_id',
+                    'message_id'
+              ]) AS text_field(name)
+             WHERE runtime ? text_field.name
+               AND pg_catalog.jsonb_typeof(runtime->text_field.name)
+                   IS DISTINCT FROM 'string'
+       )
        AND pg_catalog.length(COALESCE(runtime->>'request_id', '')) BETWEEN 1 AND 240
        AND (
             COALESCE(runtime->>'session_key_sha256', '') = ''
@@ -2430,6 +2448,7 @@ AS $function$
             NOT (runtime ? 'service_internal')
             OR pg_catalog.jsonb_typeof(runtime->'service_internal') = 'boolean'
        )
+    ), false)
 $function$;
 
 CREATE OR REPLACE FUNCTION canonical_brain._contains_forbidden_dm_ref(value jsonb)
@@ -2491,9 +2510,11 @@ $function$;
 
 -- Mechanical target-shape boundary for the one reviewed production guild.
 -- This function never interprets names, message text, team meaning, or intent.
--- Exact channel/thread existence and effective permissions are intentionally
--- re-proved by the token-owning Discord edge at dispatch time, so future guild
--- channels do not require a second semantic/static routing registry here.
+-- Production roots are a closed owner-approved set.  Alias-learning events
+-- may name one of these roots or a thread below one, but cannot mutate this
+-- permission set.  A new root requires a separate owner-approved capability
+-- contract/config publication. Exact existence/type/effective permissions
+-- are still re-proved by the token-owning Discord edge around send.
 CREATE OR REPLACE FUNCTION canonical_brain._discord_guild_routeback_target_valid(
     value jsonb
 )
@@ -2502,6 +2523,19 @@ LANGUAGE sql
 IMMUTABLE
 SET search_path = pg_catalog, canonical_brain
 AS $function$
+    WITH approved_roots(channel_id) AS (
+        VALUES
+          ('1504852355588423801'::text),
+          ('1510888721614901358'::text),
+          ('1504852408227069993'::text),
+          ('1504852444407140402'::text),
+          ('1504852485083496561'::text),
+          ('1504852553031221391'::text),
+          ('1504852628373373028'::text),
+          ('1505499746939174993'::text),
+          ('1507239177350283274'::text),
+          ('1507239385010016308'::text)
+    )
     SELECT COALESCE(
         pg_catalog.jsonb_typeof(value) = 'object'
         AND value->>'guild_id' = '1282725267068157972'
@@ -2512,12 +2546,23 @@ AS $function$
         AND NOT canonical_brain._contains_forbidden_dm_ref(value)
         AND CASE value->>'target_type'
                 WHEN 'guild_channel' THEN
-                    NOT (value ? 'parent_channel_id')
-                    OR COALESCE(value->>'parent_channel_id', '') = ''
+                    (
+                        NOT (value ? 'parent_channel_id')
+                        OR COALESCE(value->>'parent_channel_id', '') = ''
+                    )
+                    AND EXISTS (
+                        SELECT 1 FROM approved_roots AS root
+                         WHERE root.channel_id = value->>'channel_id'
+                    )
                 WHEN 'guild_thread' THEN
                     COALESCE(value->>'parent_channel_id', '')
                         ~ '^[1-9][0-9]{16,19}$'
-                    AND value->>'parent_channel_id' <> value->>'channel_id'
+                    AND value->>'parent_channel_id'
+                        IS DISTINCT FROM value->>'channel_id'
+                    AND EXISTS (
+                        SELECT 1 FROM approved_roots AS root
+                         WHERE root.channel_id = value->>'parent_channel_id'
+                    )
                 WHEN 'public_guild_channel' THEN
                     value->>'channel_id' = '1526858760100909066'
                     AND (
@@ -2554,8 +2599,8 @@ BEGIN
     END IF;
     -- owner_authenticated is constructed only by the writer service from the
     -- configured Discord owner IDs; it is never accepted from caller payload.
-    IF runtime_value->>'platform' = 'discord'
-       AND runtime_value->>'owner_authenticated' = 'true' THEN
+    IF runtime_value->>'platform' IS NOT DISTINCT FROM 'discord'
+       AND runtime_value->>'owner_authenticated' IS NOT DISTINCT FROM 'true' THEN
         RETURN true;
     END IF;
     SELECT EXISTS (
@@ -2563,8 +2608,8 @@ BEGIN
          WHERE event.case_id = case_id_value
     ) INTO case_exists;
     IF NOT case_exists THEN
-        RETURN allow_new
-           AND runtime_value->>'platform' = 'discord'
+        RETURN COALESCE(allow_new, false)
+           AND runtime_value->>'platform' IS NOT DISTINCT FROM 'discord'
            AND COALESCE(runtime_value->>'session_key_sha256', '') ~ '^[0-9a-f]{64}$'
            AND observed_thread <> '';
     END IF;
@@ -2624,7 +2669,8 @@ SECURITY DEFINER
 SET search_path = pg_catalog, canonical_brain
 AS $function$
 BEGIN
-    IF request <> '{}'::jsonb OR NOT canonical_brain._runtime_valid(runtime) THEN
+    IF request IS DISTINCT FROM '{}'::jsonb
+       OR NOT canonical_brain._runtime_valid(runtime) THEN
         RETURN canonical_brain._fail('invalid_request', 'ping envelope is invalid');
     END IF;
     RETURN canonical_brain._ok(pg_catalog.jsonb_build_object(
@@ -2693,9 +2739,10 @@ BEGIN
         );
     END IF;
     IF thread_value <> ''
-       AND NOT (
+       AND NOT COALESCE(
             runtime->>'platform' = 'discord'
-            AND runtime->>'owner_authenticated' = 'true'
+            AND runtime->>'owner_authenticated' = 'true',
+            false
        )
        AND thread_value <> COALESCE(
             NULLIF(runtime->>'thread_id', ''), runtime->>'chat_id', ''
@@ -3394,7 +3441,7 @@ BEGIN
             ARRAY['event_type','case_id','summary','source_refs','actors','body','safety','idempotency_key'],
             ARRAY['event_type','case_id','summary','source_refs','body','idempotency_key']
        )
-       OR request->>'event_type' <> 'task.plan.updated'
+       OR request->>'event_type' IS DISTINCT FROM 'task.plan.updated'
        OR case_value !~ '^case:[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$'
        OR pg_catalog.jsonb_typeof(plan_value) <> 'object'
        OR COALESCE(plan_value->>'plan_id', '') !~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$'
@@ -3498,7 +3545,8 @@ BEGIN
             END IF;
         ELSE
             IF revision_value <> 1
-               OR plan_value->>'supersedes_plan_id' <> previous_plan_id
+               OR plan_value->>'supersedes_plan_id'
+                  IS DISTINCT FROM previous_plan_id
                OR COALESCE(plan_value->>'supersedes_plan_revision', '')
                   <> previous_revision::text THEN
                 RETURN canonical_brain._fail(
@@ -3513,7 +3561,7 @@ BEGIN
         IF previous_plan IS NULL OR previous_plan = 'null'::jsonb
            OR previous_plan_id <> plan_id_value
            OR previous_revision <> revision_value - 1
-           OR previous_plan->>'state' <> 'active'
+           OR previous_plan->>'state' IS DISTINCT FROM 'active'
            OR plan_value->'success_criteria'
               IS DISTINCT FROM previous_plan->'success_criteria' THEN
             RETURN canonical_brain._fail(
@@ -3709,7 +3757,8 @@ BEGIN
             ARRAY['event_type','case_id','summary','source_refs','actors','body','safety','idempotency_key'],
             ARRAY['event_type','case_id','summary','source_refs','body','idempotency_key']
        )
-       OR request->>'event_type' <> 'task.verification.recorded'
+       OR request->>'event_type'
+          IS DISTINCT FROM 'task.verification.recorded'
        OR case_value !~ '^case:[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$'
        OR pg_catalog.jsonb_typeof(verification_value) <> 'object'
        OR COALESCE(verification_value->>'plan_id', '') = ''
@@ -3772,7 +3821,7 @@ BEGIN
     END IF;
     head_plan := head_result->'result'->'head'->'plan';
     IF head_plan IS NULL OR head_plan = 'null'::jsonb
-       OR verification_value->>'plan_id' <> head_plan->>'plan_id'
+       OR verification_value->>'plan_id' IS DISTINCT FROM head_plan->>'plan_id'
        OR (verification_value->>'plan_revision')::integer
           <> (head_plan->>'revision')::integer THEN
         RETURN canonical_brain._fail(
@@ -3780,7 +3829,7 @@ BEGIN
             'verification does not match the exact canonical plan head'
         );
     END IF;
-    IF head_plan->>'state' <> 'active' THEN
+    IF head_plan->>'state' IS DISTINCT FROM 'active' THEN
         RETURN canonical_brain._fail(
             'plan_not_active',
             'task verification requires the exact canonical plan head to be active'
@@ -3969,9 +4018,11 @@ BEGIN
     IF FOUND THEN
         IF lifecycle_record.case_id <> case_value
            OR lifecycle_record.target_ref IS DISTINCT FROM target_value
-           OR lifecycle_record.message_summary <> request->>'message_summary'
+           OR lifecycle_record.message_summary
+              IS DISTINCT FROM request->>'message_summary'
            OR lifecycle_record.source_refs IS DISTINCT FROM request->'source_refs'
-           OR lifecycle_record.idempotency_key <> request->>'idempotency_key' THEN
+           OR lifecycle_record.idempotency_key
+              IS DISTINCT FROM request->>'idempotency_key' THEN
             RETURN canonical_brain._fail(
                 'idempotency_conflict',
                 'route-back lifecycle identity is bound to different content'
@@ -4303,6 +4354,7 @@ DECLARE
     target_id text;
     append_result jsonb;
     event_uuid uuid;
+    legacy_receipt_read_only boolean := false;
 BEGIN
     IF NOT canonical_brain._runtime_valid(runtime)
        OR COALESCE(runtime->>'session_key_sha256', '') !~ '^[0-9a-f]{64}$'
@@ -4313,30 +4365,35 @@ BEGIN
             ARRAY['authorization_id','outcome','receipt','blocker_reason'],
             ARRAY['authorization_id','outcome','receipt','blocker_reason']
        )
-       OR request->>'outcome' <> 'sent'
+       OR request->>'outcome' IS DISTINCT FROM 'sent'
        OR pg_catalog.jsonb_typeof(receipt_value) <> 'object'
        OR NOT canonical_brain._keys_valid(
             receipt_value,
             ARRAY['platform','adapter_receipt','receipt_readback_verified',
                   'message_id','channel_id','chat_id','channel_type',
-                  'target_kind','content_sha256'],
+                  'target_kind','content_sha256','public_receipt_sha256'],
             ARRAY['platform','adapter_receipt','receipt_readback_verified',
-                  'message_id','channel_id','content_sha256']
+                  'message_id','channel_id','content_sha256',
+                  'public_receipt_sha256']
        )
        OR canonical_brain._contains_forbidden_dm_ref(receipt_value)
-       OR receipt_value->>'platform' <> 'discord'
+       OR receipt_value->>'platform' IS DISTINCT FROM 'discord'
        OR pg_catalog.jsonb_typeof(receipt_value->'adapter_receipt') <> 'boolean'
-       OR receipt_value->'adapter_receipt' <> 'true'::jsonb
+       OR receipt_value->'adapter_receipt' IS DISTINCT FROM 'true'::jsonb
        OR pg_catalog.jsonb_typeof(receipt_value->'receipt_readback_verified') <> 'boolean'
-       OR receipt_value->'receipt_readback_verified' <> 'true'::jsonb
+       OR receipt_value->'receipt_readback_verified'
+          IS DISTINCT FROM 'true'::jsonb
        OR COALESCE(receipt_value->>'message_id', '')
           !~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$'
        OR COALESCE(receipt_value->>'channel_id', '')
           !~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$'
        OR COALESCE(receipt_value->>'content_sha256', '') !~ '^[0-9a-f]{64}$'
+       OR COALESCE(receipt_value->>'public_receipt_sha256', '')
+          !~ '^[0-9a-f]{64}$'
        OR (
             receipt_value ? 'chat_id'
-            AND receipt_value->>'chat_id' <> receipt_value->>'channel_id'
+            AND receipt_value->>'chat_id'
+                IS DISTINCT FROM receipt_value->>'channel_id'
        )
        OR (
             receipt_value ? 'channel_type'
@@ -4362,9 +4419,11 @@ BEGIN
     IF NOT FOUND THEN
         RETURN canonical_brain._fail('authorization_missing', 'route-back authorization not found');
     END IF;
-    IF authorization_record.session_key_sha256 <> runtime->>'session_key_sha256'
-       OR authorization_record.runtime_platform <> runtime->>'platform'
-       OR authorization_record.source_thread_id <> COALESCE(
+    IF authorization_record.session_key_sha256
+          IS DISTINCT FROM runtime->>'session_key_sha256'
+       OR authorization_record.runtime_platform
+          IS DISTINCT FROM runtime->>'platform'
+       OR authorization_record.source_thread_id IS DISTINCT FROM COALESCE(
             NULLIF(runtime->>'thread_id', ''), runtime->>'chat_id', ''
        )
        OR NOT canonical_brain._case_scope_authorized(
@@ -4380,8 +4439,9 @@ BEGIN
         authorization_record.target_ref->>'channel_id',
         ''
     );
-    IF receipt_value->>'channel_id' <> target_id
-       OR receipt_value->>'content_sha256' <> authorization_record.content_sha256 THEN
+    IF receipt_value->>'channel_id' IS DISTINCT FROM target_id
+       OR receipt_value->>'content_sha256'
+          IS DISTINCT FROM authorization_record.content_sha256 THEN
         RETURN canonical_brain._fail(
             'invalid_receipt',
             'receipt does not match the claimed target and content digest'
@@ -4399,7 +4459,24 @@ BEGIN
      WHERE terminal.authorization_id = request->>'authorization_id';
     IF FOUND THEN
         IF terminal_record.outcome <> 'sent'
-           OR terminal_record.request_sha256 <> request_hash THEN
+           OR terminal_record.blocker_reason <> '' THEN
+            RETURN canonical_brain._fail(
+                'terminal_conflict',
+                'route-back authorization is already finalized differently'
+            );
+        END IF;
+        IF terminal_record.request_sha256 = request_hash
+           AND terminal_record.receipt = receipt_value THEN
+            legacy_receipt_read_only := false;
+        ELSIF pg_catalog.jsonb_typeof(terminal_record.receipt) = 'object'
+           AND NOT terminal_record.receipt ? 'public_receipt_sha256'
+           AND terminal_record.receipt
+               = receipt_value - 'public_receipt_sha256' THEN
+            -- A pre-v2 terminal is immutable.  Fresh signed evidence is still
+            -- mandatory above, but replay may read the exact old receipt
+            -- without rewriting Canonical truth or fabricating its new digest.
+            legacy_receipt_read_only := true;
+        ELSE
             RETURN canonical_brain._fail(
                 'terminal_conflict',
                 'route-back authorization is already finalized differently'
@@ -4409,9 +4486,10 @@ BEGIN
             'success', true,
             'authorization_id', request->>'authorization_id',
             'outcome', 'sent',
-            'receipt', receipt_value,
+            'receipt', terminal_record.receipt,
             'blocker_reason', '',
             'event_id', terminal_record.terminal_event_id::text,
+            'legacy_receipt_read_only', legacy_receipt_read_only,
             'deduped', true
         ));
     END IF;
@@ -4498,8 +4576,16 @@ DECLARE
     session_value text := COALESCE(runtime->>'session_key_sha256', '');
     epoch_value text := COALESCE(runtime->>'capability_epoch_sha256', '');
     target_value jsonb := request->'target_ref';
+    expected_private_denial_sha256 text;
+    legacy_receipt_read_only boolean := false;
 BEGIN
     IF preclaim_value THEN
+        expected_private_denial_sha256 := canonical_brain._sha256_text(
+            '{"blocker_code":"forbidden_target",'
+            || '"dispatch_attempted":false,"probe_id":'
+            || pg_catalog.to_json(request->>'idempotency_key')::text
+            || ',"target_kind":"dm"}'
+        );
         IF NOT canonical_brain._runtime_valid(runtime)
            OR session_value !~ '^[0-9a-f]{64}$'
            OR epoch_value !~ '^[0-9a-f]{64}$' THEN
@@ -4517,9 +4603,35 @@ BEGIN
                       'source_refs','idempotency_key','outcome','receipt',
                       'blocker_reason']
            )
-           OR request->'preclaim' <> 'true'::jsonb
-           OR request->>'outcome' <> 'blocked'
-           OR request->'receipt' <> '{}'::jsonb
+           OR request->'preclaim' IS DISTINCT FROM 'true'::jsonb
+           OR request->>'outcome' IS DISTINCT FROM 'blocked'
+           OR pg_catalog.jsonb_typeof(receipt_value) <> 'object'
+           OR (
+                blocker_value = 'discord_dm_target_forbidden'
+                AND (
+                    NOT canonical_brain._keys_valid(
+                        receipt_value,
+                        ARRAY['private_denial_receipt_sha256',
+                              'dispatch_attempted'],
+                        ARRAY['private_denial_receipt_sha256',
+                              'dispatch_attempted']
+                    )
+                    OR COALESCE(
+                        receipt_value->>'private_denial_receipt_sha256', ''
+                    ) !~ '^[0-9a-f]{64}$'
+                    OR receipt_value->>'private_denial_receipt_sha256'
+                       IS DISTINCT FROM expected_private_denial_sha256
+                    OR pg_catalog.jsonb_typeof(
+                        receipt_value->'dispatch_attempted'
+                    ) <> 'boolean'
+                    OR receipt_value->'dispatch_attempted'
+                       IS DISTINCT FROM 'false'::jsonb
+                )
+           )
+           OR (
+                blocker_value <> 'discord_dm_target_forbidden'
+                AND receipt_value <> '{}'::jsonb
+           )
            OR case_value !~ '^case:[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$'
            OR pg_catalog.jsonb_typeof(target_value) <> 'object'
            OR pg_catalog.jsonb_typeof(request->'source_refs') <> 'object'
@@ -4587,7 +4699,7 @@ BEGIN
                 'source_refs', request->'source_refs',
                 'outcome', 'blocked',
                 'blocker_reason', blocker_value,
-                'partial_receipt', '{}'::jsonb
+                'partial_receipt', receipt_value
             )
         );
         PERFORM pg_catalog.pg_advisory_xact_lock(
@@ -4599,7 +4711,27 @@ BEGIN
           FROM canonical_brain.writer_routeback_lifecycle_terminals AS lifecycle
          WHERE lifecycle.lifecycle_id = preclaim_id;
         IF FOUND THEN
-            IF lifecycle_record.request_sha256 <> preclaim_request_hash THEN
+            IF lifecycle_record.request_sha256 = preclaim_request_hash
+               AND lifecycle_record.receipt = receipt_value THEN
+                legacy_receipt_read_only := false;
+            ELSIF blocker_value = 'discord_dm_target_forbidden'
+               AND lifecycle_record.outcome = 'blocked'
+               AND lifecycle_record.blocker_reason
+                   = 'discord_dm_target_forbidden'
+               AND lifecycle_record.receipt = '{}'::jsonb
+               AND lifecycle_record.case_id = case_value
+               AND lifecycle_record.idempotency_key
+                   = request->>'idempotency_key'
+               AND lifecycle_record.target_ref IS NOT DISTINCT FROM target_value
+               AND lifecycle_record.message_summary
+                   = request->>'message_summary'
+               AND lifecycle_record.source_refs
+                   IS NOT DISTINCT FROM request->'source_refs' THEN
+                -- Strict compatibility for immutable pre-receipt DM denials.
+                -- Return the stored empty receipt; never synthesize or persist
+                -- the fresh digest used only to authenticate this replay.
+                legacy_receipt_read_only := true;
+            ELSE
                 RETURN canonical_brain._fail(
                     'idempotency_conflict',
                     'route-back lifecycle identity is bound to different content'
@@ -4615,6 +4747,7 @@ BEGIN
                 'blocker_reason', lifecycle_record.blocker_reason,
                 'event_id', lifecycle_record.terminal_event_id::text,
                 'inserted', false,
+                'legacy_receipt_read_only', legacy_receipt_read_only,
                 'deduped', true
             ));
         END IF;
@@ -4625,11 +4758,11 @@ BEGIN
             IF authorization_record.case_id <> case_value
                OR authorization_record.target_ref IS DISTINCT FROM target_value
                OR authorization_record.message_summary
-                  <> request->>'message_summary'
+                  IS DISTINCT FROM request->>'message_summary'
                OR authorization_record.source_refs
                   IS DISTINCT FROM request->'source_refs'
                OR authorization_record.idempotency_key
-                  <> request->>'idempotency_key' THEN
+                  IS DISTINCT FROM request->>'idempotency_key' THEN
                 RETURN canonical_brain._fail(
                     'idempotency_conflict',
                     'route-back lifecycle identity is bound to different content'
@@ -4678,13 +4811,17 @@ BEGIN
                 'preclaim_block_id', preclaim_id,
                 'target_ref', target_value,
                 'blocker_reason', blocker_value,
-                'partial_receipt', '{}'::jsonb,
+                'receipt', receipt_value,
+                'partial_receipt', receipt_value,
+                'dispatch_attempted', false,
                 'route_back', pg_catalog.jsonb_build_object(
                     'preclaim', true,
                     'target_ref', target_value,
                     'delivery_state', 'not_attempted',
                     'blocker_reason', blocker_value,
-                    'partial_receipt', '{}'::jsonb
+                    'receipt', receipt_value,
+                    'partial_receipt', receipt_value,
+                    'dispatch_attempted', false
                 )
             ),
             pg_catalog.jsonb_build_object(
@@ -4708,7 +4845,7 @@ BEGIN
         ) VALUES (
             preclaim_id, case_value, request->>'idempotency_key', target_value,
             request->>'message_summary', request->'source_refs', 'blocked',
-            '{}'::jsonb, blocker_value, preclaim_request_hash,
+            receipt_value, blocker_value, preclaim_request_hash,
             runtime->>'session_key_sha256',
             runtime->>'capability_epoch_sha256',
             pg_catalog.clock_timestamp(), event_uuid
@@ -4718,8 +4855,8 @@ BEGIN
             'preclaim', true,
             'preclaim_block_id', preclaim_id,
             'outcome', 'blocked',
-            'receipt', '{}'::jsonb,
-            'partial_receipt', '{}'::jsonb,
+            'receipt', receipt_value,
+            'partial_receipt', receipt_value,
             'blocker_reason', blocker_value,
             'event_id', append_result->'result'->>'event_id',
             'inserted', append_result->'result'->'inserted',
@@ -4735,7 +4872,7 @@ BEGIN
             ARRAY['authorization_id','outcome','receipt','blocker_reason'],
             ARRAY['authorization_id','outcome','receipt','blocker_reason']
        )
-       OR request->>'outcome' <> 'blocked'
+       OR request->>'outcome' IS DISTINCT FROM 'blocked'
        OR pg_catalog.jsonb_typeof(receipt_value) <> 'object'
        OR (
             receipt_value <> '{}'::jsonb
@@ -4743,11 +4880,13 @@ BEGIN
                 NOT canonical_brain._keys_valid(
                     receipt_value,
                     ARRAY['platform','adapter_receipt','receipt_readback_verified',
-                          'message_id','channel_id','content_sha256'],
+                          'message_id','channel_id','content_sha256',
+                          'public_receipt_sha256'],
                     ARRAY['platform','adapter_receipt','receipt_readback_verified',
-                          'message_id','channel_id','content_sha256']
+                          'message_id','channel_id','content_sha256',
+                          'public_receipt_sha256']
                 )
-                OR receipt_value->>'platform' <> 'discord'
+                OR receipt_value->>'platform' IS DISTINCT FROM 'discord'
                 OR receipt_value->'adapter_receipt' IS DISTINCT FROM 'true'::jsonb
                 OR receipt_value->'receipt_readback_verified'
                    IS DISTINCT FROM 'true'::jsonb
@@ -4758,6 +4897,8 @@ BEGIN
                 OR COALESCE(receipt_value->>'channel_id', '')
                    !~ '^[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$'
                 OR COALESCE(receipt_value->>'content_sha256', '')
+                   !~ '^[0-9a-f]{64}$'
+                OR COALESCE(receipt_value->>'public_receipt_sha256', '')
                    !~ '^[0-9a-f]{64}$'
             )
        )
@@ -4776,9 +4917,11 @@ BEGIN
     IF NOT FOUND THEN
         RETURN canonical_brain._fail('authorization_missing', 'route-back authorization not found');
     END IF;
-    IF authorization_record.session_key_sha256 <> runtime->>'session_key_sha256'
-       OR authorization_record.runtime_platform <> runtime->>'platform'
-       OR authorization_record.source_thread_id <> COALESCE(
+    IF authorization_record.session_key_sha256
+          IS DISTINCT FROM runtime->>'session_key_sha256'
+       OR authorization_record.runtime_platform
+          IS DISTINCT FROM runtime->>'platform'
+       OR authorization_record.source_thread_id IS DISTINCT FROM COALESCE(
             NULLIF(runtime->>'thread_id', ''), runtime->>'chat_id', ''
        )
        OR NOT canonical_brain._case_scope_authorized(
@@ -4796,9 +4939,9 @@ BEGIN
     );
     IF receipt_value <> '{}'::jsonb
        AND (
-            receipt_value->>'channel_id' <> target_id
+            receipt_value->>'channel_id' IS DISTINCT FROM target_id
             OR receipt_value->>'content_sha256'
-               <> authorization_record.content_sha256
+               IS DISTINCT FROM authorization_record.content_sha256
        ) THEN
         RETURN canonical_brain._fail(
             'invalid_receipt',
@@ -4944,7 +5087,7 @@ BEGIN
         RETURN canonical_brain._fail('invalid_request', 'lease shadow receipt is invalid');
     END IF;
     IF NOT canonical_brain._case_scope_authorized(case_value, runtime, false)
-       AND runtime->>'service_internal' <> 'true' THEN
+       AND runtime->>'service_internal' IS DISTINCT FROM 'true' THEN
         RETURN canonical_brain._fail(
             'scope_mismatch',
             'runtime is not authorized for the lease shadow case'
@@ -5035,8 +5178,8 @@ BEGIN
        OR COALESCE(request->>'max_uses', '') !~ '^([1-9][0-9]{0,2}|1000)$' THEN
         RETURN canonical_brain._fail('invalid_request', 'capability grant is invalid');
     END IF;
-    IF runtime->>'platform' <> 'discord'
-       OR runtime->>'owner_authenticated' <> 'true'
+    IF runtime->>'platform' IS DISTINCT FROM 'discord'
+       OR runtime->>'owner_authenticated' IS DISTINCT FROM 'true'
        OR NOT canonical_brain._case_scope_authorized(case_value, runtime, false) THEN
         RETURN canonical_brain._fail(
             'owner_required',
@@ -5106,9 +5249,9 @@ BEGIN
     END IF;
     head_plan := head_result->'result'->'head'->'plan';
     IF head_plan IS NULL OR head_plan = 'null'::jsonb
-       OR head_plan->>'plan_id' <> plan_value
-       OR head_plan->>'revision' <> plan_revision_value::text
-       OR head_plan->>'state' <> 'active' THEN
+       OR head_plan->>'plan_id' IS DISTINCT FROM plan_value
+       OR head_plan->>'revision' IS DISTINCT FROM plan_revision_value::text
+       OR head_plan->>'state' IS DISTINCT FROM 'active' THEN
         RETURN canonical_brain._fail('plan_not_active', 'exact canonical plan is not active');
     END IF;
 
@@ -5458,10 +5601,10 @@ BEGIN
     END IF;
     head_plan := head_result->'result'->'head'->'plan';
     IF head_plan IS NULL OR head_plan = 'null'::jsonb
-       OR head_plan->>'plan_id' <> grant_record.plan_id
+       OR head_plan->>'plan_id' IS DISTINCT FROM grant_record.plan_id
        OR COALESCE(head_plan->>'revision', '') !~ '^[1-9][0-9]{0,8}$'
        OR (head_plan->>'revision')::integer < grant_record.plan_revision
-       OR head_plan->>'state' <> 'active' THEN
+       OR head_plan->>'state' IS DISTINCT FROM 'active' THEN
         RETURN canonical_brain._fail('plan_not_active', 'exact canonical plan is not active');
     END IF;
 
@@ -5704,7 +5847,7 @@ BEGIN
             ARRAY['session_key_sha256','reason'],
             ARRAY['session_key_sha256','reason']
        )
-       OR request->>'session_key_sha256' <> session_value
+       OR request->>'session_key_sha256' IS DISTINCT FROM session_value
        OR pg_catalog.length(reason_value) NOT BETWEEN 1 AND 1000 THEN
         RETURN canonical_brain._fail('scope_mismatch', 'session revoke scope is invalid');
     END IF;
@@ -5865,6 +6008,7 @@ DECLARE
     cursor_at timestamptz;
     cursor_id uuid;
     page_value jsonb;
+    provenance_value jsonb;
     page_count integer;
     candidate_count integer;
     has_more_value boolean;
@@ -5886,14 +6030,15 @@ BEGIN
     IF limit_value > 500 THEN
         RETURN canonical_brain._fail('invalid_request', 'projection page exceeds 500');
     END IF;
-    IF case_value = '' AND runtime->>'service_internal' <> 'true' THEN
+    IF case_value = ''
+       AND runtime->>'service_internal' IS DISTINCT FROM 'true' THEN
         RETURN canonical_brain._fail(
             'service_internal_required',
             'global projection read requires trusted in-process service authority'
         );
     END IF;
     IF case_value <> ''
-       AND runtime->>'service_internal' <> 'true'
+       AND runtime->>'service_internal' IS DISTINCT FROM 'true'
        AND NOT canonical_brain._case_scope_authorized(case_value, runtime, false) THEN
         RETURN canonical_brain._fail(
             'scope_mismatch',
@@ -5921,14 +6066,19 @@ BEGIN
     WITH page_plus_one AS (
         SELECT event.event_id,
                event.occurred_at,
-               canonical_brain._event_envelope(event) AS event_json
+               canonical_brain._event_envelope(event) AS event_json,
+               pg_catalog.jsonb_build_object(
+                   'event_id', provenance.event_id::text,
+                   'canonical_content_sha256',
+                       provenance.canonical_content_sha256,
+                   'origin', provenance.origin,
+                   'trusted_runtime', provenance.trusted_runtime,
+                   'appended_at', provenance.appended_at
+               ) AS provenance_json
           FROM public.canonical_event_log AS event
+          JOIN canonical_brain.writer_event_provenance AS provenance
+            ON provenance.event_id = event.event_id
          WHERE (case_value = '' OR event.case_id = case_value)
-           AND EXISTS (
-                SELECT 1
-                  FROM canonical_brain.writer_event_provenance AS provenance
-                 WHERE provenance.event_id = event.event_id
-           )
            AND (
                 after_value = ''
                 OR (event.occurred_at, event.event_id) > (cursor_at, cursor_id)
@@ -5939,12 +6089,20 @@ BEGIN
         SELECT page_plus_one.*,
                pg_catalog.sum(
                    pg_catalog.octet_length(page_plus_one.event_json::text) + 1
+                   + CASE
+                       WHEN runtime->>'service_internal' = 'true' THEN
+                           pg_catalog.octet_length(
+                               page_plus_one.provenance_json::text
+                           ) + 1
+                       ELSE 0
+                     END
                ) OVER (
                    ORDER BY page_plus_one.occurred_at, page_plus_one.event_id
                ) AS cumulative_bytes
           FROM page_plus_one
     ), page AS (
-        SELECT sized.event_id, sized.occurred_at, sized.event_json
+        SELECT sized.event_id, sized.occurred_at, sized.event_json,
+               sized.provenance_json
           FROM sized
          -- The PostgreSQL client rejects any field above 1 MiB.  Keep the
          -- aggregate below that bound with room for the response envelope.
@@ -5959,10 +6117,18 @@ BEGIN
                ),
                '[]'::jsonb
            ),
+           COALESCE(
+               pg_catalog.jsonb_agg(
+                   page.provenance_json
+                   ORDER BY page.occurred_at, page.event_id
+               ),
+               '[]'::jsonb
+           ),
            (SELECT pg_catalog.count(*) FROM page_plus_one) > pg_catalog.count(*),
            pg_catalog.count(*),
            (SELECT pg_catalog.count(*) FROM page_plus_one)
-      INTO page_value, has_more_value, page_count, candidate_count
+      INTO page_value, provenance_value, has_more_value, page_count,
+           candidate_count
       FROM page;
     IF page_count = 0 AND candidate_count > 0 THEN
         RETURN canonical_brain._fail(
@@ -5981,13 +6147,24 @@ BEGIN
     ELSE
         next_value := after_value;
     END IF;
-    RETURN canonical_brain._ok(pg_catalog.jsonb_build_object(
-        'events', page_value,
-        'has_more', COALESCE(has_more_value, false),
-        'next_after_event_id', next_value,
-        'case_id', case_value,
-        'bounded', true
-    ));
+    RETURN canonical_brain._ok(
+        pg_catalog.jsonb_build_object(
+            'events', page_value,
+            'has_more', COALESCE(has_more_value, false),
+            'next_after_event_id', next_value,
+            'case_id', case_value,
+            'bounded', true
+        ) || CASE
+            -- Preserve the exact external protocol shape.  Wire callers can
+            -- never set service_internal; only the in-process one-shot writer
+            -- exporter receives the parallel provenance rows.
+            WHEN runtime->>'service_internal' = 'true' THEN
+                pg_catalog.jsonb_build_object(
+                    'provenance', provenance_value
+                )
+            ELSE '{}'::jsonb
+        END
+    );
 EXCEPTION
 WHEN serialization_failure OR deadlock_detected THEN
     RAISE;

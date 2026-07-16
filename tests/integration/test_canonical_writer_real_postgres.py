@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import datetime as dt
 import hashlib
+import json
 import os
 from pathlib import Path
 import secrets
@@ -19,6 +20,7 @@ import shutil
 import subprocess
 import threading
 import time
+from types import SimpleNamespace
 import uuid
 
 import pytest
@@ -38,6 +40,8 @@ from gateway.canonical_writer_db import (
 from gateway.canonical_writer_handlers import (
     CanonicalWriterError,
     CanonicalWriterHandlers,
+    EventAppendRequest,
+    ProjectorReadRequest,
     RouteBackAuthorizeRequest,
     RouteBackTerminalRequest,
     RuntimeContext,
@@ -51,6 +55,8 @@ from gateway.canonical_writer_postgres_backend import (
     PRODUCTION_STATEMENT_CATALOG,
     PostgresCanonicalWriterBackend,
 )
+from gateway.canonical_writer_bootstrap import export_projection_events
+from gateway.canonical_projection_export import validate_projection_export
 from gateway.canonical_writer_protocol import CanonicalWriterOperation
 from gateway.discord_edge_protocol import (
     DiscordEdgeReceiptOutcome,
@@ -60,6 +66,7 @@ from gateway.discord_edge_protocol import (
 )
 from gateway.discord_edge_writer_authority import (
     CanonicalWriterDiscordAuthority,
+    derive_private_denial_receipt_sha256,
     derive_routeback_edge_idempotency_key,
 )
 
@@ -237,7 +244,12 @@ def _psql_as(name: str, database: str, user: str, sql: str) -> None:
     )
 
 
-def _psql_fields(name: str, database: str, sql: str) -> list[str]:
+def _psql_fields_as(
+    name: str,
+    database: str,
+    user: str,
+    sql: str,
+) -> list[str]:
     completed = _run(
         [
             "docker",
@@ -254,7 +266,7 @@ def _psql_fields(name: str, database: str, sql: str) -> list[str]:
             "-v",
             "ON_ERROR_STOP=1",
             "-U",
-            "postgres",
+            user,
             "-d",
             database,
         ],
@@ -262,6 +274,41 @@ def _psql_fields(name: str, database: str, sql: str) -> list[str]:
         timeout=180,
     )
     return completed.stdout.strip().split("|")
+
+
+def _psql_fields(name: str, database: str, sql: str) -> list[str]:
+    return _psql_fields_as(name, database, "postgres", sql)
+
+
+def _jsonb_sql(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).replace("'", "''")
+    return f"'{encoded}'::jsonb"
+
+
+def _routine_error_code(
+    stack: RealWriterStack,
+    routine: str,
+    request_sql: str,
+    runtime_sql: str,
+) -> str:
+    assert routine.startswith("writer_") and routine.replace("_", "").isalnum()
+    fields = _psql_fields_as(
+        stack.name,
+        DATABASE,
+        LOGIN,
+        "WITH response AS (SELECT canonical_brain."
+        f"{routine}({request_sql},{runtime_sql}) AS value) "
+        "SELECT COALESCE(value->'error'->>'code','<unexpected-success>') "
+        "FROM response;",
+    )
+    assert len(fields) == 1
+    return fields[0]
 
 
 def _migration_invocation(
@@ -687,7 +734,7 @@ def test_migration_rerun_and_all_seventeen_public_production_routines(
 
     assert stack.migration_runs == 2
     call(CanonicalWriterOperation.PING, {})
-    call(
+    append_receipt = call(
         CanonicalWriterOperation.EVENT_APPEND_MODEL,
         {
             "event_type": "case.note",
@@ -698,6 +745,30 @@ def test_migration_rerun_and_all_seventeen_public_production_routines(
             "idempotency_key": "real-pg:event",
         },
     )
+    assert append_receipt["event_type"] == "case.note"
+    assert append_receipt["case_id"] == case_id
+    assert append_receipt["idempotency_key"] == "real-pg:event"
+    assert len(append_receipt["canonical_content_sha256"]) == 64
+    assert append_receipt["readback_verified"] is True
+    assert append_receipt["inserted"] is True
+    retry_receipt = call(
+        CanonicalWriterOperation.EVENT_APPEND_MODEL,
+        {
+            "event_type": "case.note",
+            "case_id": case_id,
+            "summary": "Real PostgreSQL model event",
+            "source_refs": {"thread_id": runtime.thread_id},
+            "payload": {},
+            "idempotency_key": "real-pg:event",
+        },
+    )
+    assert retry_receipt["event_id"] == append_receipt["event_id"]
+    assert retry_receipt["canonical_content_sha256"] == append_receipt[
+        "canonical_content_sha256"
+    ]
+    assert retry_receipt["idempotency_key"] == "real-pg:event"
+    assert retry_receipt["readback_verified"] is True
+    assert retry_receipt["deduped"] is True
     call(
         CanonicalWriterOperation.PLAN_TRANSITION,
         {
@@ -940,6 +1011,255 @@ def test_real_postgres_workspace_index_ignores_newer_terminal_case_noise(
     assert result["truncated"] is False
     assert [event["case_id"] for event in result["events"]] == [active_case]
     assert result["events"][0]["payload"]["plan"]["state"] == "active"
+
+
+def test_real_postgres_projection_exports_internal_provenance_only(
+    real_writer_stack: RealWriterStack,
+    tmp_path: Path,
+) -> None:
+    stack = real_writer_stack
+    runtime = _runtime(
+        "projection-provenance",
+        session="8" * 64,
+        epoch="9" * 64,
+        thread_id="projection-provenance-thread",
+    )
+    case_id = "case:real-pg-projection-provenance"
+    _seed_plan(
+        stack,
+        case_id=case_id,
+        plan_id="plan:real-pg-projection-provenance",
+        runtime=runtime,
+        key="projection-provenance:plan",
+    )
+    request = ProjectorReadRequest(
+        case_id=case_id,
+        after_event_id="",
+        limit=100,
+    )
+
+    external = stack.backend.projector_read(request, runtime)
+    assert set(external) == {
+        "events",
+        "has_more",
+        "next_after_event_id",
+        "case_id",
+        "bounded",
+    }
+    assert "provenance" not in external
+
+    with stack.backend.projection_export_scope() as projection:
+        internal = projection.projector_read(
+            request,
+            RuntimeContext(
+                request_id="projection-provenance-export",
+                platform="writer_service",
+                service_internal=True,
+            ),
+        )
+
+    assert set(internal) == {*set(external), "provenance"}
+    assert len(internal["events"]) == len(internal["provenance"]) == 1
+    event = internal["events"][0]
+    provenance = internal["provenance"][0]
+    assert set(provenance) == {
+        "event_id",
+        "canonical_content_sha256",
+        "origin",
+        "trusted_runtime",
+        "appended_at",
+    }
+    assert provenance["event_id"] == event["event_id"]
+    assert provenance["canonical_content_sha256"] == event["payload"][
+        "canonical_content_sha256"
+    ]
+    assert provenance["trusted_runtime"] == event["source"]["observed_session"]
+    assert provenance["origin"] == event["decision"]["decided_by"]
+    assert provenance["appended_at"] == event["occurred_at"]
+
+    target = tmp_path / "canonical-events.json"
+    count = export_projection_events(
+        SimpleNamespace(
+            config=SimpleNamespace(
+                writer_uid=os.getuid(),
+                projector_gid=os.getgid(),
+            ),
+            backend=stack.backend,
+        ),
+        target,
+    )
+    exported_events, exported_provenance = validate_projection_export(
+        json.loads(target.read_text(encoding="utf-8")),
+        maximum_events=1_000_000,
+    )
+    assert count == len(exported_events) == len(exported_provenance)
+    assert event["event_id"] in {row["event_id"] for row in exported_events}
+
+
+def test_real_postgres_security_definer_omitted_fields_fail_closed(
+    real_writer_stack: RealWriterStack,
+) -> None:
+    stack = real_writer_stack
+    seed_runtime = _runtime(
+        "null-boundary-seed",
+        session="6" * 64,
+        epoch="7" * 64,
+        thread_id="null-boundary-thread",
+    )
+    case_id = "case:real-pg-null-boundary"
+    plan_id = "plan:real-pg-null-boundary"
+    _seed_plan(
+        stack,
+        case_id=case_id,
+        plan_id=plan_id,
+        runtime=seed_runtime,
+        key="null-boundary:seed-plan",
+    )
+    request_only = _jsonb_sql({"request_id": "null-boundary-omitted"})
+
+    assert _routine_error_code(
+        stack,
+        "writer_ping",
+        "NULL::jsonb",
+        request_only,
+    ) == "invalid_request"
+    assert _routine_error_code(
+        stack,
+        "writer_ping",
+        "'null'::jsonb",
+        request_only,
+    ) == "invalid_request"
+    assert _routine_error_code(
+        stack,
+        "writer_ping",
+        "'{}'::jsonb",
+        "NULL::jsonb",
+    ) == "invalid_request"
+    assert _routine_error_code(
+        stack,
+        "writer_ping",
+        "'{}'::jsonb",
+        "'null'::jsonb",
+    ) == "invalid_request"
+
+    projection_request = {
+        "case_id": "",
+        "after_event_id": "",
+        "limit": 10,
+    }
+    assert _routine_error_code(
+        stack,
+        "writer_projection_read_events",
+        _jsonb_sql(projection_request),
+        request_only,
+    ) == "service_internal_required"
+    projection_request["case_id"] = case_id
+    assert _routine_error_code(
+        stack,
+        "writer_projection_read_events",
+        _jsonb_sql(projection_request),
+        request_only,
+    ) == "scope_mismatch"
+
+    assert _routine_error_code(
+        stack,
+        "writer_case_query",
+        _jsonb_sql({
+            "thread_id": "arbitrary-cross-thread",
+            "limit": 10,
+            "view": "summary",
+        }),
+        _jsonb_sql({
+            "request_id": "null-boundary-cross-thread",
+            "thread_id": "different-runtime-thread",
+        }),
+    ) == "scope_mismatch"
+
+    lease_request = {
+        "intent_event_id": "71111111-1111-4111-8111-111111111111",
+        "intent_kind": "discord_send",
+        "case": {"case_id": case_id},
+        "case_id": case_id,
+        "runtime_lease_enforcement": {"blocking_effective": True},
+        "enforcement_enabled": True,
+        "send_path_blocking_enabled": True,
+        "audit_runtime_id": "null-boundary",
+        "source_platform": "discord",
+        "session_key_ref": "urn:hermes:session:null-boundary",
+    }
+    assert _routine_error_code(
+        stack,
+        "writer_lease_shadow_record",
+        _jsonb_sql(lease_request),
+        request_only,
+    ) == "scope_mismatch"
+
+    new_case_id = "case:real-pg-null-new-case"
+    assert _routine_error_code(
+        stack,
+        "writer_event_append_model",
+        _jsonb_sql({
+            "event_type": "case.note",
+            "case_id": new_case_id,
+            "summary": "Missing platform must not authorize a new case",
+            "source_refs": {"thread_id": "null-new-thread"},
+            "actors": {},
+            "body": {},
+            "safety": {},
+            "idempotency_key": "null-boundary:new-case",
+        }),
+        _jsonb_sql({
+            "request_id": "null-boundary-new-case",
+            "session_key_sha256": "8" * 64,
+            "capability_epoch_sha256": "9" * 64,
+            "thread_id": "null-new-thread",
+            "chat_id": "null-new-thread",
+        }),
+    ) == "scope_mismatch"
+
+    approval_id = "approval:null-boundary"
+    assert _routine_error_code(
+        stack,
+        "writer_capability_grant",
+        _jsonb_sql({
+            "approval_id": approval_id,
+            "case_id": case_id,
+            "plan_id": plan_id,
+            "plan_revision": 1,
+            "approval_source_sha256": "a" * 64,
+            "command_hashes": ["b" * 64],
+            "expires_at": (
+                dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=1)
+            ).isoformat(),
+            "max_uses": 1,
+        }),
+        _jsonb_sql({
+            "request_id": "null-boundary-owner",
+            "platform": "discord",
+            "session_key_sha256": seed_runtime.session_key_sha256,
+            "capability_epoch_sha256": seed_runtime.capability_epoch_sha256,
+            "user_id": seed_runtime.user_id,
+            "chat_id": seed_runtime.chat_id,
+            "thread_id": seed_runtime.thread_id,
+            "message_id": seed_runtime.message_id,
+        }),
+    ) == "owner_required"
+
+    assert _psql_fields(
+        stack.name,
+        DATABASE,
+        "SELECT "
+        f"count(*) FILTER (WHERE case_id = '{new_case_id}'),"
+        f"count(*) FILTER (WHERE case_id = '{case_id}' "
+        "AND event_type = 'lease.shadow.recorded') "
+        "FROM public.canonical_event_log;",
+    ) == ["0", "0"]
+    assert _psql_fields(
+        stack.name,
+        DATABASE,
+        "SELECT count(*) FROM canonical_brain.writer_capability_grants "
+        f"WHERE approval_id = '{approval_id}';",
+    ) == ["0"]
 
 
 def test_real_postgres_capability_consume_is_atomic(
@@ -1236,6 +1556,136 @@ def test_real_postgres_routeback_claim_has_global_identity_and_exact_pending_sco
     assert "discord_edge_request" not in terminal_replay["result"]
 
 
+def test_real_postgres_writer_accepts_thread_under_approved_root(
+    real_writer_stack: RealWriterStack,
+) -> None:
+    runtime = _runtime(
+        "approved-root-thread-target",
+        session="3" * 64,
+        epoch="4" * 64,
+        thread_id="approved-root-thread-source",
+    )
+    target_ref = {
+        "guild_id": DISCORD_GUILD_ID,
+        "target_type": "guild_thread",
+        "channel_type": "guild_thread",
+        "channel_id": "1599999999999999998",
+        "parent_channel_id": GUILD_CHANNEL,
+    }
+
+    claimed = real_writer_stack.backend.routeback_authorize(
+        RouteBackAuthorizeRequest(
+            case_id="case:real-pg-approved-root-thread",
+            target_ref=target_ref,
+            message_summary="Exact thread below approved backend lane",
+            source_refs={"thread_id": runtime.thread_id},
+            content_sha256=RACE_CONTENT,
+            idempotency_key="real-pg:approved-root-thread",
+        ),
+        runtime,
+    )
+
+    assert claimed["inserted"] is True
+    assert claimed["target_ref"] == target_ref
+
+
+@pytest.mark.parametrize(
+    ("label", "alias_body", "target_ref", "accepted"),
+    (
+        (
+            "learned-root",
+            {
+                "alias": "trusted real postgres root",
+                "guild_id": DISCORD_GUILD_ID,
+                "target_type": "guild_channel",
+                "channel_id": "1527000000000000001",
+            },
+            {
+                "guild_id": DISCORD_GUILD_ID,
+                "target_type": "guild_channel",
+                "channel_type": "guild_channel",
+                "channel_id": "1527000000000000001",
+            },
+            False,
+        ),
+        (
+            "learned-thread",
+            {
+                "alias": "trusted real postgres thread",
+                "guild_id": DISCORD_GUILD_ID,
+                "target_type": "guild_thread",
+                "channel_id": "1527000000000000002",
+                "parent_channel_id": GUILD_CHANNEL,
+            },
+            {
+                "guild_id": DISCORD_GUILD_ID,
+                "target_type": "guild_thread",
+                "channel_type": "guild_thread",
+                "channel_id": "1527000000000000002",
+                "parent_channel_id": GUILD_CHANNEL,
+            },
+            True,
+        ),
+    ),
+)
+def test_real_postgres_alias_learning_never_expands_root_permission_scope(
+    real_writer_stack: RealWriterStack,
+    label: str,
+    alias_body: dict[str, object],
+    target_ref: dict[str, object],
+    accepted: bool,
+) -> None:
+    runtime = _runtime(
+        f"{label}-event",
+        session="1" * 64,
+        epoch="2" * 64,
+        thread_id=f"{label}-source",
+    )
+    event_fields = {
+        "event_type": "channel.alias.learned",
+        "case_id": f"case:real-pg-{label}-alias",
+        "summary": "Learn one exact bounded Discord lane alias",
+        "source_refs": {"thread_id": runtime.thread_id},
+        "idempotency_key": f"real-pg:{label}:alias",
+    }
+    if accepted:
+        _dispatch(
+            real_writer_stack,
+            CanonicalWriterOperation.EVENT_APPEND_MODEL,
+            {**event_fields, "payload": alias_body},
+            runtime,
+        )
+    else:
+        # Bypass the Python handler to prove the database permission boundary
+        # still rejects a provenanced but out-of-scope alias event.
+        real_writer_stack.backend.event_append(
+            EventAppendRequest(
+                **event_fields,
+                actors={},
+                body=alias_body,
+                safety={},
+            ),
+            runtime,
+        )
+
+    request = RouteBackAuthorizeRequest(
+        case_id=f"case:real-pg-{label}-routeback",
+        target_ref=target_ref,
+        message_summary="Route through bounded learned alias",
+        source_refs={"thread_id": runtime.thread_id},
+        content_sha256=RACE_CONTENT,
+        idempotency_key=f"real-pg:{label}:routeback",
+    )
+    if not accepted:
+        with pytest.raises(CanonicalWriterError) as rejected:
+            real_writer_stack.backend.routeback_authorize(request, runtime)
+        assert rejected.value.code == "invalid_request"
+        return
+    claimed = real_writer_stack.backend.routeback_authorize(request, runtime)
+    assert claimed["inserted"] is True
+    assert claimed["target_ref"] == target_ref
+
+
 def test_real_postgres_writer_accepts_only_exact_synthetic_public_canary_exception(
     real_writer_stack: RealWriterStack,
 ) -> None:
@@ -1394,6 +1844,25 @@ def test_real_postgres_writer_accepts_only_exact_synthetic_public_canary_excepti
                 "chat_id": "1504852408227069994",
             },
         ),
+        (
+            "unknown-numeric-root",
+            {
+                "guild_id": DISCORD_GUILD_ID,
+                "target_type": "guild_channel",
+                "channel_type": "guild_channel",
+                "channel_id": "1599999999999999999",
+            },
+        ),
+        (
+            "thread-under-unknown-numeric-parent",
+            {
+                "guild_id": DISCORD_GUILD_ID,
+                "target_type": "guild_thread",
+                "channel_type": "guild_thread",
+                "channel_id": "1599999999999999998",
+                "parent_channel_id": "1599999999999999999",
+            },
+        ),
     ),
 )
 def test_real_postgres_writer_rejects_non_adventico_or_unreviewed_target_shape(
@@ -1496,6 +1965,276 @@ def test_real_postgres_rejects_false_readback_nonempty_blocked_receipt(
         "SELECT count(*) FROM public.canonical_event_log "
         f"WHERE case_id = '{case_id}' AND event_type = 'route_back.blocked';",
     ) == ["0"]
+
+
+def test_real_postgres_preserves_exact_private_denial_receipt_in_projection(
+    real_writer_stack: RealWriterStack,
+) -> None:
+    stack = real_writer_stack
+    runtime = _runtime(
+        "private-denial-receipt",
+        session="4" * 64,
+        epoch="5" * 64,
+        thread_id="private-denial-source-thread",
+    )
+    case_id = "case:real-pg-private-denial"
+    idempotency_key = "discord:private:real-pg:é/☁:\"\\tail"
+    denial_sha256 = derive_private_denial_receipt_sha256(
+        probe_id=idempotency_key,
+    )
+    payload = {
+        "preclaim": True,
+        "case_id": case_id,
+        "target_ref": {
+            "id": "blocked-target:private",
+            "target_kind": "forbidden_or_unresolved_target",
+        },
+        "message_summary": "Private route-back denied before dispatch",
+        "source_refs": {"thread_id": runtime.thread_id},
+        "blocker_reason": "discord_dm_target_forbidden",
+        "idempotency_key": idempotency_key,
+        "private_denial_receipt_sha256": denial_sha256,
+        "dispatch_attempted": False,
+    }
+
+    terminal = _dispatch(
+        stack,
+        CanonicalWriterOperation.ROUTEBACK_FINALIZE_BLOCKED,
+        payload,
+        runtime,
+    )
+    projection = _dispatch(
+        stack,
+        CanonicalWriterOperation.PROJECTION_READ_EVENTS,
+        {"case_id": case_id},
+        runtime,
+    )
+
+    expected_receipt = {
+        "private_denial_receipt_sha256": denial_sha256,
+        "dispatch_attempted": False,
+    }
+    assert terminal["receipt"] == expected_receipt
+    blocked_event = next(
+        event
+        for event in projection["events"]
+        if event["event_type"] == "route_back.blocked"
+    )
+    assert blocked_event["payload"]["receipt"] == expected_receipt
+    assert blocked_event["payload"]["dispatch_attempted"] is False
+    assert blocked_event["payload"]["route_back"]["receipt"] == (
+        expected_receipt
+    )
+
+    event_count = _psql_fields(
+        stack.name,
+        DATABASE,
+        "SELECT count(*) FROM public.canonical_event_log "
+        f"WHERE case_id = '{case_id}' AND event_type = 'route_back.blocked';",
+    )
+    _psql(
+        stack.name,
+        DATABASE,
+        "UPDATE canonical_brain.writer_routeback_lifecycle_terminals "
+        "SET receipt = '{}'::jsonb, request_sha256 = repeat('a', 64) "
+        f"WHERE case_id = '{case_id}';",
+    )
+    legacy_replay = _dispatch(
+        stack,
+        CanonicalWriterOperation.ROUTEBACK_FINALIZE_BLOCKED,
+        payload,
+        runtime,
+    )
+
+    assert legacy_replay["legacy_receipt_read_only"] is True
+    assert legacy_replay["receipt"] == {}
+    assert _psql_fields(
+        stack.name,
+        DATABASE,
+        "SELECT receipt::text FROM "
+        "canonical_brain.writer_routeback_lifecycle_terminals "
+        f"WHERE case_id = '{case_id}';",
+    ) == ["{}"]
+    assert _psql_fields(
+        stack.name,
+        DATABASE,
+        "SELECT count(*) FROM public.canonical_event_log "
+        f"WHERE case_id = '{case_id}' AND event_type = 'route_back.blocked';",
+    ) == event_count
+
+    with pytest.raises(CanonicalWriterError) as rejected:
+        stack.backend.routeback_terminal(
+            RouteBackTerminalRequest(
+                authorization_id="",
+                outcome="blocked",
+                receipt={
+                    "private_denial_receipt_sha256": denial_sha256,
+                    "dispatch_attempted": True,
+                },
+                blocker_reason="discord_dm_target_forbidden",
+                preclaim=True,
+                case_id="case:real-pg-private-denial-tampered",
+                target_ref={"id": "blocked-target:private-tampered"},
+                message_summary="Tampered private denial must fail closed",
+                source_refs={"thread_id": runtime.thread_id},
+                idempotency_key="discord:private:real-pg:tampered",
+            ),
+            runtime,
+        )
+
+    assert rejected.value.code == "invalid_request"
+
+    with pytest.raises(CanonicalWriterError) as substituted:
+        stack.backend.routeback_terminal(
+            RouteBackTerminalRequest(
+                authorization_id="",
+                outcome="blocked",
+                receipt={
+                    "private_denial_receipt_sha256": "e" * 64,
+                    "dispatch_attempted": False,
+                },
+                blocker_reason="discord_dm_target_forbidden",
+                preclaim=True,
+                case_id="case:real-pg-private-denial-substituted",
+                target_ref={"id": "blocked-target:private-substituted"},
+                message_summary="Substituted private digest must fail closed",
+                source_refs={"thread_id": runtime.thread_id},
+                idempotency_key="discord:private:real-pg:substituted",
+            ),
+            runtime,
+        )
+
+    assert substituted.value.code == "invalid_request"
+    assert _psql_fields(
+        stack.name,
+        DATABASE,
+        "SELECT count(*) FROM public.canonical_event_log "
+        "WHERE case_id = 'case:real-pg-private-denial-substituted' "
+        "AND event_type = 'route_back.blocked';",
+    ) == ["0"]
+
+
+def test_real_postgres_legacy_sent_receipt_is_read_only_dedupe_only(
+    real_writer_stack: RealWriterStack,
+) -> None:
+    stack = real_writer_stack
+    runtime = _runtime(
+        "legacy-sent-receipt",
+        session="6" * 64,
+        epoch="7" * 64,
+        thread_id="legacy-sent-source-thread",
+    )
+    case_id = "case:real-pg-legacy-sent"
+    key = "real-pg:routeback:legacy-sent"
+    claim = {
+        "case_id": case_id,
+        "target_ref": {
+            "channel_id": GUILD_CHANNEL,
+            "channel_type": "guild_channel",
+            "target_type": "guild_channel",
+            "guild_id": DISCORD_GUILD_ID,
+        },
+        "message_summary": "Legacy sent receipt remains immutable",
+        "source_refs": {"thread_id": runtime.thread_id},
+        "execution_binding": {
+            "target_channel_id": GUILD_CHANNEL,
+            "content_sha256": CONTENT,
+        },
+        "idempotency_key": key,
+        "discord_edge_intent": {
+            "operation": "public.message.send",
+            "target": {
+                "target_type": "guild_channel",
+                "guild_id": DISCORD_GUILD_ID,
+                "channel_id": GUILD_CHANNEL,
+            },
+            "payload": {"content": ROUTEBACK_CONTENT},
+            "idempotency_key": derive_routeback_edge_idempotency_key(
+                case_id=case_id,
+                canonical_idempotency_key=key,
+            ),
+        },
+    }
+    claimed = _dispatch(
+        stack,
+        CanonicalWriterOperation.ROUTEBACK_CLAIM,
+        claim,
+        runtime,
+    )
+    edge_request = claimed["discord_edge_request"]
+    edge_receipt = _verified_discord_receipt(edge_request)
+    evidence = stack.handlers.discord_edge_authority.verify_routeback_evidence(
+        request_value=edge_request,
+        receipt_value=edge_receipt,
+        authorization_id=str(claimed["authorization_id"]),
+    )
+    legacy_receipt = dict(evidence.canonical_receipt)
+    legacy_receipt.pop("public_receipt_sha256")
+
+    with pytest.raises(CanonicalWriterError) as missing_digest:
+        stack.backend.routeback_terminal(
+            RouteBackTerminalRequest(
+                authorization_id=str(claimed["authorization_id"]),
+                outcome="sent",
+                receipt=legacy_receipt,
+                blocker_reason="",
+            ),
+            runtime,
+        )
+    assert missing_digest.value.code == "invalid_receipt"
+
+    terminal_payload = {
+        key_name: claim[key_name]
+        for key_name in (
+            "case_id",
+            "target_ref",
+            "message_summary",
+            "source_refs",
+            "execution_binding",
+            "idempotency_key",
+        )
+    } | {
+        "discord_edge_request": edge_request,
+        "discord_edge_receipt": edge_receipt,
+    }
+    current = _dispatch(
+        stack,
+        CanonicalWriterOperation.ROUTEBACK_FINALIZE_SENT,
+        terminal_payload,
+        runtime,
+    )
+    assert "public_receipt_sha256" in current["receipt"]
+    event_count = _psql_fields(
+        stack.name,
+        DATABASE,
+        "SELECT count(*) FROM public.canonical_event_log "
+        f"WHERE case_id = '{case_id}' AND event_type = 'route_back.sent';",
+    )
+    _psql(
+        stack.name,
+        DATABASE,
+        "UPDATE canonical_brain.writer_routeback_terminals "
+        "SET receipt = receipt - 'public_receipt_sha256', "
+        "request_sha256 = repeat('f', 64) "
+        f"WHERE authorization_id = '{claimed['authorization_id']}';",
+    )
+
+    replay = _dispatch(
+        stack,
+        CanonicalWriterOperation.ROUTEBACK_FINALIZE_SENT,
+        terminal_payload,
+        runtime,
+    )
+
+    assert replay["legacy_receipt_read_only"] is True
+    assert replay["receipt"] == legacy_receipt
+    assert "public_receipt_sha256" not in replay["receipt"]
+    assert _psql_fields(
+        stack.name,
+        DATABASE,
+        "SELECT count(*) FROM public.canonical_event_log "
+        f"WHERE case_id = '{case_id}' AND event_type = 'route_back.sent';",
+    ) == event_count
 
 
 def test_real_postgres_session_epoch_revoke_linearizes_with_append(

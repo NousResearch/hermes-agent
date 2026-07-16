@@ -125,6 +125,29 @@ def test_typed_event_interface_preserves_protocol_routine(event_type, statement)
     assert database.calls[-1][0] == statement
 
 
+def test_event_append_preserves_database_verified_receipt_without_synthesis():
+    database = _FixedDatabase()
+    database.response = {
+        "ok": True,
+        "result": {
+            "success": True,
+            "event_id": "11111111-1111-4111-8111-111111111111",
+            "event_type": "case.note.recorded",
+            "case_id": "case-1",
+            "idempotency_key": "event-1",
+            "canonical_content_sha256": "c" * 64,
+            "readback_verified": True,
+            "inserted": True,
+            "deduped": False,
+        },
+    }
+    backend = PostgresCanonicalWriterBackend(database)
+
+    receipt = backend.event_append(_event("case.note.recorded"), _runtime())
+
+    assert receipt == database.response["result"]
+
+
 @pytest.mark.parametrize(
     "outcome,statement",
     [
@@ -191,6 +214,35 @@ def test_preclaim_blocked_uses_existing_fixed_routine_without_authorization():
         "blocker_reason": "target unresolved",
     }
     assert "authorization_id" not in parameters["request"]
+
+
+def test_private_denial_preclaim_serializes_only_digest_and_false():
+    database = _FixedDatabase()
+    backend = PostgresCanonicalWriterBackend(database)
+    receipt = {
+        "private_denial_receipt_sha256": "d" * 64,
+        "dispatch_attempted": False,
+    }
+    request = RouteBackTerminalRequest(
+        authorization_id="",
+        outcome="blocked",
+        receipt=receipt,
+        blocker_reason="discord_dm_target_forbidden",
+        preclaim=True,
+        case_id="case:private-denial",
+        target_ref={"id": "blocked-target:private"},
+        message_summary="private target denied before dispatch",
+        source_refs={"thread_id": "thread-1"},
+        idempotency_key="discord:private",
+    )
+
+    backend.routeback_terminal(request, _runtime())
+
+    statement, parameters = database.calls[-1]
+    assert statement == "op_routeback_finalize_blocked"
+    assert parameters["request"]["receipt"] == receipt
+    assert "target_kind" not in parameters["request"]["receipt"]
+    assert "recipient_id" not in parameters["request"]["receipt"]
 
 
 def test_capability_grant_serializes_exact_plan_revision_and_expiry():

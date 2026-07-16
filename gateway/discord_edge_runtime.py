@@ -60,6 +60,15 @@ _MAX_JOURNAL_MARKER_BYTES = 128
 _MAX_PROOF_FUTURE_SKEW_MS = 1_000
 _RECONCILIATION_PROOF_DEADLINE_MS = 30_000
 _UNCERTAIN_RECEIPT_NAMESPACE = uuid.UUID("802db0b2-a512-4c20-b97c-e23c42cd0665")
+_EVERYONE_VISIBLE_TARGET_TYPES = frozenset({
+    DiscordPublicTargetType.PUBLIC_GUILD_CHANNEL,
+    DiscordPublicTargetType.PUBLIC_GUILD_THREAD,
+    DiscordPublicTargetType.PUBLIC_GUILD_FORUM,
+})
+_GUILD_ACL_TARGET_TYPES = frozenset({
+    DiscordPublicTargetType.GUILD_CHANNEL,
+    DiscordPublicTargetType.GUILD_THREAD,
+})
 
 
 def _effective_uid() -> int:
@@ -2322,7 +2331,16 @@ class DiscordEdgeRuntime:
         age = now_unix_ms - proof.observed_at_unix_ms
         if age > self.max_proof_age_ms or age < -_MAX_PROOF_FUTURE_SKEW_MS:
             return DiscordEdgeBlockerCode.TARGET_PROOF_STALE
-        if not proof.publicly_viewable:
+        target_type = request.intent.target.target_type
+        if target_type in _EVERYONE_VISIBLE_TARGET_TYPES:
+            if not proof.publicly_viewable:
+                return DiscordEdgeBlockerCode.TARGET_NOT_PUBLIC
+        elif target_type not in _GUILD_ACL_TARGET_TYPES:
+            # The protocol enum is closed, but keep this boundary fail-closed
+            # if a future target kind reaches an older runtime.  Guild ACL
+            # targets deliberately do not require @everyone visibility: their
+            # live authority is the exact bot VIEW/SEND proof produced after
+            # the adapter has verified guild and channel/thread type.
             return DiscordEdgeBlockerCode.TARGET_NOT_PUBLIC
         if not proof.bot_can_view:
             return DiscordEdgeBlockerCode.BOT_CANNOT_VIEW

@@ -44,6 +44,9 @@ from gateway.production_execution_readiness import (
 
 TOPOLOGY_SCHEMA = "muncho-production-capability-topology.v3"
 PREREQUISITE_SCHEMA = "muncho-production-capability-prerequisite.v3"
+ISOLATED_CANARY_GOAL_TERMINAL_SCHEMA = (
+    "muncho-production-capability-goal-continuation-terminal.v2"
+)
 PREREQUISITE_LIFECYCLE_STAGED = "staged"
 PREREQUISITE_LIFECYCLE_COMMITTED = "committed"
 PREREQUISITE_LIFECYCLE_PHASES = frozenset({
@@ -3061,6 +3064,19 @@ def packaged_prerequisite_contract() -> Mapping[str, Any]:
         "isolated_worker_receipt_fields": sorted(_ISOLATED_WORKER_RECEIPT_FIELDS),
         "browser_receipt_fields": sorted(_BROWSER_RECEIPT_FIELDS),
         "collector_entrypoint": ("gateway.production_capability_prerequisites:collect"),
+        "cutover_acceptance_schema": (
+            "muncho-production-capability-prerequisite-acceptance.v3"
+        ),
+        "isolated_canary_goal_terminal_schema": (
+            ISOLATED_CANARY_GOAL_TERMINAL_SCHEMA
+        ),
+        "isolated_canary_signed_workspace_required": True,
+        "isolation_equivalence_projection_required": True,
+        "canary_zero_production_mutation_observation_required": True,
+        "pre_db_zero_canonical_database_mutation_observation_required": True,
+        "post_staging_service_mutation_observation_required": True,
+        "exact_run_release_fixture_evidence_binding_required": True,
+        "production_owner_approval_binding_required": True,
         "dynamic_receipt": True,
         "owner_approval_binds_collector_criteria": True,
         "live_reobservation_required": True,
@@ -3246,6 +3262,7 @@ __all__ = [
     "PRODUCTION_CONFIG_PATH",
     "FIRST_WAVE_TOOLSETS",
     "GATEWAY_UNIT",
+    "ISOLATED_CANARY_GOAL_TERMINAL_SCHEMA",
     "MAC_OPS_UNIT",
     "MAX_PREREQUISITE_BYTES",
     "MAX_PREREQUISITE_AGE_SECONDS",

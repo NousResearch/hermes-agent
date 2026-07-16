@@ -298,6 +298,118 @@ class TestTokenEstimation:
         assert tokens > threshold
 
 
+@pytest.mark.parametrize(
+    ("require_capability_canary", "expected_hygiene_calls"),
+    [(False, 1), (True, 0)],
+)
+@pytest.mark.asyncio
+async def test_session_hygiene_model_path_is_disabled_only_for_capability_canary(
+    monkeypatch,
+    tmp_path,
+    require_capability_canary,
+    expected_hygiene_calls,
+):
+    """A sealed canary cannot call an unattested pre-turn summary agent."""
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    class CountingCompressAgent:
+        init_calls = 0
+        compress_calls = 0
+
+        def __init__(self, **kwargs):
+            type(self).init_calls += 1
+            self.session_id = kwargs.get("session_id", "fake-session")
+            self._print_fn = None
+            self.shutdown_memory_provider = MagicMock()
+            self.close = MagicMock()
+
+        def _compress_context(self, messages, *_args, **_kwargs):
+            type(self).compress_calls += 1
+            self.session_id = f"{self.session_id}_compressed"
+            return ([{"role": "assistant", "content": "compressed"}], None)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = CountingCompressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    gateway_run = importlib.import_module("gateway.run")
+    GatewayRunner = gateway_run.GatewayRunner
+
+    adapter = HygieneCaptureAdapter()
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")}
+    )
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._voice_mode = {}
+    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner._session_model_overrides = {}
+    runner.session_store = MagicMock()
+    runner.session_store.get_model_override.return_value = None
+    runner.session_store.get_or_create_session.return_value = SessionEntry(
+        session_key="agent:main:telegram:private:12345",
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="private",
+    )
+    runner.session_store.load_transcript.return_value = _make_history(
+        6, content_size=400
+    )
+    runner.session_store.has_any_sessions.return_value = True
+    runner.session_store.rewrite_transcript = MagicMock()
+    runner.session_store.append_to_transcript = MagicMock()
+    runner._running_agents = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._session_db = None
+    runner._require_capability_canary = require_capability_canary
+    runner._is_user_authorized = lambda _source: True
+    runner._set_session_env = lambda _context: None
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "ok",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+
+    context_length = AsyncMock(return_value=100)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"}
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length_async",
+        context_length,
+    )
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "795544298")
+
+    event = MessageEvent(
+        text="hello",
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="12345",
+            chat_type="private",
+            user_id="12345",
+        ),
+        message_id="1",
+    )
+
+    result = await runner._handle_message(event)
+
+    assert result == "ok"
+    assert context_length.await_count == expected_hygiene_calls
+    assert CountingCompressAgent.init_calls == expected_hygiene_calls
+    assert CountingCompressAgent.compress_calls == expected_hygiene_calls
+    runner._run_agent.assert_awaited_once()
+
+
 @pytest.mark.asyncio
 async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, tmp_path):
     fake_dotenv = types.ModuleType("dotenv")

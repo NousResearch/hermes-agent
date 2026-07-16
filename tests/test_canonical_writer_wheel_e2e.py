@@ -36,6 +36,7 @@ _PACKAGED_MODULES = {
     "gateway/canonical_full_canary_fixture_publisher.py",
     "gateway/canonical_full_canary_live_driver.py",
     "gateway/canonical_full_canary_runtime.py",
+    "gateway/canonical_projection_export.py",
     "gateway/canonical_writer_activation.py",
     "gateway/canonical_writer_activation_bridge.py",
     "gateway/canonical_writer_bootstrap.py",
@@ -55,16 +56,24 @@ _PACKAGED_MODULES = {
     "gateway/full_canary_discord_edge_bootstrap.py",
     "gateway/production_discord_edge_bootstrap.py",
     "gateway/production_discord_journal_bootstrap.py",
+    "gateway/production_alias_projection_cutover.py",
+    "gateway/production_alias_projection_units.py",
     "gateway/production_secret_stager.py",
     "gateway/mac_ops_edge_client.py",
     "gateway/mac_ops_edge_protocol.py",
     "gateway/mac_ops_edge_service.py",
     "plugins/muncho_canary_evidence/__init__.py",
     "plugins/muncho_canary_evidence/plugin.yaml",
+    "scripts/canonical_brain_alias_projector.py",
 }
 _FORBIDDEN_SCRIPT_MODULES = {
     "scripts/canonical_writer_bootstrap.py",
     "scripts/canonical_writer_service.py",
+    "scripts/discord_connector_service.py",
+    "scripts/discord_edge_bootstrap.py",
+    "scripts/discord_edge_service.py",
+    "scripts/canary/package_production_runtime_dependencies.py",
+    "scripts/canary/writer_activation.py",
 }
 
 
@@ -210,7 +219,10 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
         import gateway.canonical_writer_service as service_module
         import gateway.production_discord_edge_bootstrap as production_edge_module
         import gateway.production_discord_journal_bootstrap as journal_bootstrap_module
+        import gateway.production_alias_projection_cutover as alias_cutover_module
+        import gateway.production_alias_projection_units as alias_units_module
         import gateway.production_secret_stager as secret_stager_module
+        import scripts.canonical_brain_alias_projector as alias_projector_module
         from gateway.canonical_writer_db import QueryResult
         from gateway.canonical_writer_postgres_backend import (
             PRODUCTION_CATALOG_SHA256,
@@ -236,6 +248,9 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
         assert callable(fixture_publisher.apply_fixture_publication)
         assert callable(production_edge_module.main)
         assert callable(journal_bootstrap_module.ensure_clean_journal)
+        assert callable(alias_projector_module.main)
+        assert callable(alias_cutover_module.preflight)
+        assert callable(alias_units_module.render_production_alias_projection_units)
         assert callable(secret_stager_module.stage_production_secret_foundation)
 
 
@@ -457,6 +472,9 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
         assert "/site-packages/gateway/production_secret_stager.py" in (
             secret_stager_module.__file__.replace("\\\\", "/")
         )
+        assert "/site-packages/scripts/canonical_brain_alias_projector.py" in (
+            alias_projector_module.__file__.replace("\\\\", "/")
+        )
         forbidden = (
             "agent",
             "tools",
@@ -496,6 +514,23 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
         "installed Canonical Writer wheel probe failed:\n"
         f"stdout: {run.stdout}\nstderr: {run.stderr}"
     )
+    alias_help_run = subprocess.run(
+        [
+            str(interpreter),
+            "-B",
+            "-I",
+            "-m",
+            "scripts.canonical_brain_alias_projector",
+            "--help",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=30,
+    )
+    assert alias_help_run.returncode == 0, alias_help_run.stderr
+    assert "--events-json" in alias_help_run.stdout
     help_run = subprocess.run(
         [
             str(interpreter),

@@ -151,8 +151,13 @@ neither choice is inferred by deterministic migration code.
 
 Canonical route-back follows this order:
 
-1. Resolve and authorize an exact owner-approved public channel or public
-   thread.
+1. Resolve and authorize an exact owner-approved production guild channel, or
+   a Discord type-10/11 public thread under its exact approved parent. The
+   dedicated synthetic canary public channel is a separate exact exception.
+   An arbitrary numeric caller ID is never authorization. A privileged
+   `channel.alias.learned` projection may name an already approved root or a
+   thread below one, but cannot grant a new root; that requires a separate
+   owner/passkey-approved allowlist capability and config publication.
 2. Authenticate the credential-free gateway client to the exact current
    privileged Discord-edge systemd `MainPID`. This preconnect happens before
    any durable dispatch authority is created.
@@ -166,14 +171,17 @@ Canonical route-back follows this order:
    content hash. The edge idempotency key is independently derived from the
    case and caller key, so equal caller keys in different cases cannot collide.
    A successful nonterminal claim in the exact original runtime scope rechecks
-   the current public-target ACL and returns a fresh, short-lived,
+   the current target ACL and returns a fresh, short-lived,
    writer-signed Ed25519 request for the exact `public.message.send` intent.
    The edge journal is first-wins: an exact PREPARED intent may atomically bind
    to a strictly newer capability, while any accepted or dispatching record is
    fenced from rebinding or a second mutation.
 5. The token-owning REST edge independently re-reads the Discord guild,
-   channel/thread parent, `@everyone` visibility, bot identity and exact
-   permissions. It commits `dispatching` before the HTTP mutation, persists a
+   channel/thread parent, exact bot member/roles and permissions immediately
+   before and after dispatch. Production `guild_acl` targets may be
+   ACL-private team lanes; `@everyone` visibility is required only for the
+   dedicated `public_only` synthetic canary target. It commits `dispatching`
+   before the HTTP mutation, persists a
    signed `accepted_unverified` receipt with the returned Discord object ID
    immediately after acceptance, then performs exact author/content/reply
    readback. A verified result atomically upgrades that receipt; all prior
@@ -209,10 +217,10 @@ through `routeback.recover`, only for the exact same session, runtime platform,
 source thread/lane, immutable case, target, rendered-content digest, and
 case-scoped idempotency key, and only after the current runtime re-proves case
 scope. A current signed edge receipt is paired with the original writer-signed
-request and may finalize already-observed truth even if the public-target ACL
+request and may finalize already-observed truth even if the target ACL
 was disabled after dispatch. An authenticated exact edge `no record` result
 may instead obtain a fresh short-lived request, but it must recheck the current
-public-target ACL. Recovery creates no second lifecycle and does not rewrite
+target ACL. Recovery creates no second lifecycle and does not rewrite
 the append-only authorization ledger. A different session, platform, or source
 lane remains blocked.
 
@@ -220,9 +228,12 @@ This exception is route-back-specific. It never restores, copies, or advances
 a dangerous-plan approval or its usage budget. Those capabilities remain bound
 to their original session epoch and intentionally expire on gateway restart.
 
-The Canonical route-back edge rejects DMs, group DMs, private channels, private
-threads, mismatched guild/parent relationships, and guild surfaces that the
-live Discord `@everyone` role cannot view. Its API surface contains only fixed
+The Canonical route-back edge rejects DMs, group DMs, Discord type-12 private
+threads, unallowlisted roots, threads below unallowlisted parents, and
+mismatched guild/parent relationships. An allowlisted production root may be
+hidden from `@everyone`; live bot permissions and the exact Discord ACL remain
+mandatory. The isolated canary remains `public_only` and separately proves
+`@everyone` visibility. Its API surface contains only fixed
 send/edit/thread operations; no caller controls an HTTP method or URL. It uses
 safe mentions, bounded strict JSON, no environment proxy, no redirect, and a
 hard total request deadline. Non-empty two-step text-channel thread creation is
@@ -231,9 +242,10 @@ receipt; an empty thread followed by a separately receipted send, or an atomic
 forum post, is required.
 
 When the privileged writer policy is
-declared enabled, inbound DM/private interactions are ignored, native slash
+declared enabled, inbound DMs, group DMs, and type-12 private-thread
+interactions are ignored, native slash
 and component callbacks fail closed before responding, prompt/edit/media paths
-repeat the public-target proof, the send-message tool prefers the live adapter,
+repeat the target proof, the send-message tool prefers the live adapter,
 standalone Discord REST delivery is disabled, typing re-attests before every
 request, and voice egress re-attests immediately before playback and tears down
 on bot moves, channel changes, or `@everyone` role changes. Voice proof also
@@ -250,8 +262,9 @@ The model-facing raw `create_thread`, pin/unpin/delete, and role mutation
 actions are hidden and denied while the privileged writer policy is enabled.
 They do not yet carry an exact owner/passkey capability and Canonical terminal
 receipt, and deterministic code must not guess whether arbitrary thread text is
-a handoff. Existing public channels/threads remain usable through the typed
-Canonical route-back lifecycle. A future thread/handoff executor must add its
+a handoff. Existing owner-approved guild channels and public threads remain
+usable through the typed Canonical route-back lifecycle. A future
+thread/handoff executor must add its
 own writer-owned claim and terminal receipt before these raw actions can be
 enabled in production. The legacy SQLite/synthetic gateway handoff watcher and
 its silent home-channel fallback are likewise disabled under the privileged
@@ -536,8 +549,9 @@ Cloud deployment must remain blocked until all of the following are complete:
    events, or formally start a new trusted truth epoch. Until then legacy rows
    remain quarantined.
 6. **Global Discord egress boundary.** Isolate the Discord token and route every
-   outbound primitive through one public-channel/thread-only privileged egress
-   process before asserting the no-DM rule globally.
+   outbound primitive through one exact owner-approved guild-channel/type-10/11
+   public-thread-only privileged egress process before asserting the no-DM rule
+   globally.
 7. **Owner-approved Cloud mutation plan.** Provision roles, immutable release,
    users, groups, config, CA, credential, systemd units, exporter state, IAM
    removals, migration, canary, and rollback under the exact out-of-band owner

@@ -211,14 +211,23 @@ class BasicAuthProvider(DashboardAuthProvider):
         *,
         username: str,
         password_hash: str,
-        secret: bytes,
+        secret: Optional[bytes],
         ttl_seconds: int = _DEFAULT_TTL_SECONDS,
-        credentials_loader: Optional[Callable[[], Optional[tuple[str, str, bytes, int]]]] = None,
+        credentials_loader: Optional[Callable[[], Optional[tuple[str, str, Optional[bytes], int]]]] = None,
     ) -> None:
         if not username:
             raise ValueError("username must be non-empty")
         if not password_hash:
             raise ValueError("password_hash must be non-empty")
+        if secret is None:
+            logger.info(
+                "dashboard-auth-basic: no 'secret' configured; generating a "
+                "random per-process signing key. Sessions will not survive a "
+                "restart or span multiple workers. Set dashboard.basic_auth."
+                "secret (or HERMES_DASHBOARD_BASIC_AUTH_SECRET) for stable "
+                "sessions."
+            )
+            secret = secrets.token_bytes(32)
         if len(secret) < 16:
             raise ValueError("secret must be at least 16 bytes")
         self._username = username
@@ -239,7 +248,10 @@ class BasicAuthProvider(DashboardAuthProvider):
         with self._credentials_lock:
             self._username = username
             self._password_hash = password_hash
-            self._secret = secret
+            # An unset secret means "keep this process's generated secret",
+            # not "generate a new secret on every password login".
+            if secret is not None:
+                self._secret = secret
             self._ttl = max(60, int(ttl))
 
     # ---- OAuth methods: not used (pure-password provider) ------------------
@@ -266,6 +278,8 @@ class BasicAuthProvider(DashboardAuthProvider):
         with self._credentials_lock:
             configured_username = self._username
             configured_password_hash = self._password_hash
+            configured_secret = self._secret
+            configured_ttl = self._ttl
         # Constant-time-ish: always run a scrypt verify (against the real
         # hash if the username matches, else a dummy hash) so an unknown
         # username and a wrong password take comparable time. Compare the
@@ -278,12 +292,18 @@ class BasicAuthProvider(DashboardAuthProvider):
         password_ok = _verify_password(password, target_hash)
         if not (username_ok and password_ok):
             raise InvalidCredentialsError("invalid username or password")
-        return self._mint_session(configured_username)
+        return self._mint_session(
+            configured_username,
+            secret=configured_secret,
+            ttl_seconds=configured_ttl,
+        )
 
     # ---- session lifecycle -------------------------------------------------
 
     def verify_session(self, *, access_token: str) -> Optional[Session]:
-        payload = _unsign(access_token, self._secret)
+        with self._credentials_lock:
+            secret = self._secret
+        payload = _unsign(access_token, secret)
         if (
             payload is None
             or payload.get("kind") != "access"
@@ -295,14 +315,22 @@ class BasicAuthProvider(DashboardAuthProvider):
     def refresh_session(self, *, refresh_token: str) -> Session:
         if not refresh_token:
             raise RefreshExpiredError("no refresh token present in session")
-        payload = _unsign(refresh_token, self._secret)
+        with self._credentials_lock:
+            secret = self._secret
+            username = self._username
+            ttl = self._ttl
+        payload = _unsign(refresh_token, secret)
         if (
             payload is None
             or payload.get("kind") != "refresh"
             or payload.get("exp", 0) <= int(time.time())
         ):
             raise RefreshExpiredError("refresh token expired or invalid")
-        return self._mint_session(str(payload.get("sub", self._username)))
+        return self._mint_session(
+            str(payload.get("sub", username)),
+            secret=secret,
+            ttl_seconds=ttl,
+        )
 
     def revoke_session(self, *, refresh_token: str) -> None:
         # Stateless tokens — nothing to revoke server-side. The session
@@ -312,15 +340,15 @@ class BasicAuthProvider(DashboardAuthProvider):
 
     # ---- internals ---------------------------------------------------------
 
-    def _mint_session(self, user_id: str) -> Session:
+    def _mint_session(self, user_id: str, *, secret: bytes, ttl_seconds: int) -> Session:
         now = int(time.time())
-        exp = now + self._ttl
+        exp = now + ttl_seconds
         access_token = _sign(
-            {"sub": user_id, "kind": "access", "exp": exp}, self._secret
+            {"sub": user_id, "kind": "access", "exp": exp}, secret
         )
         refresh_token = _sign(
             {"sub": user_id, "kind": "refresh", "exp": now + _REFRESH_TTL_SECONDS},
-            self._secret,
+            secret,
         )
         return Session(
             user_id=user_id,
@@ -383,25 +411,19 @@ def _resolve(env_name: str, cfg_section: dict, cfg_key: str) -> str:
     return str(cfg_section.get(cfg_key, "") or "").strip()
 
 
-def _resolve_secret(cfg_section: dict) -> bytes:
+def _resolve_secret(cfg_section: dict) -> Optional[bytes]:
     """Resolve the token-signing secret.
 
     Accepts base64 or hex or raw text from config/env. When unset,
     generates a random per-process secret (sessions then don't survive a
-    restart or span multiple workers — logged at INFO).
+    restart or span multiple workers. The provider generates that random
+    per-process key once during construction and preserves it on reload.
     """
     raw = _resolve(
         "HERMES_DASHBOARD_BASIC_AUTH_SECRET", cfg_section, "secret"
     )
     if not raw:
-        logger.info(
-            "dashboard-auth-basic: no 'secret' configured; generating a "
-            "random per-process signing key. Sessions will not survive a "
-            "restart or span multiple workers. Set dashboard.basic_auth."
-            "secret (or HERMES_DASHBOARD_BASIC_AUTH_SECRET) for stable "
-            "sessions."
-        )
-        return secrets.token_bytes(32)
+        return None
     # Try base64, then hex, then fall back to the raw UTF-8 bytes.
     for decoder in (base64.b64decode, bytes.fromhex):
         try:
@@ -413,7 +435,7 @@ def _resolve_secret(cfg_section: dict) -> bytes:
     return raw.encode("utf-8")
 
 
-def _load_basic_auth_credentials() -> Optional[tuple[str, str, bytes, int]]:
+def _load_basic_auth_credentials() -> Optional[tuple[str, str, Optional[bytes], int]]:
     """Resolve the effective Basic Auth credentials from env and config."""
     global LAST_SKIP_REASON
     LAST_SKIP_REASON = ""
@@ -481,6 +503,10 @@ def _load_basic_auth_credentials() -> Optional[tuple[str, str, bytes, int]]:
         )
 
     secret = _resolve_secret(section)
+    if secret is not None and len(secret) < 16:
+        LAST_SKIP_REASON = "dashboard.basic_auth.secret must be at least 16 bytes"
+        logger.warning("dashboard-auth-basic: %s", LAST_SKIP_REASON)
+        return None
 
     try:
         ttl = int(ttl_raw) if ttl_raw else _DEFAULT_TTL_SECONDS

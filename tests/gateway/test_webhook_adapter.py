@@ -192,6 +192,18 @@ class TestValidateSignature:
         })
         assert adapter._validate_signature(req, b"{}", "secret") is False
 
+    def test_non_ascii_svix_signature_rejected(self):
+        """The Svix branch also runs its `v1,<sig>` comparison through the
+        hardened helper: a valid svix-id + fresh timestamp reaches the compare,
+        and a non-ASCII signature must reject rather than raise."""
+        adapter = _make_adapter()
+        req = _mock_request(headers={
+            "svix-id": "msg_2xabc",
+            "svix-timestamp": str(int(time.time())),  # inside the replay window
+            "svix-signature": "v1,ské-not-a-valid-base64-sig",
+        })
+        assert adapter._validate_signature(req, b'{"x":1}', "shh-secret") is False
+
     def test_non_ascii_secret_still_validates_a_matching_token(self):
         """A non-ASCII configured secret must still match its exact GitLab
         token value byte for byte (bytes comparison keeps this working)."""

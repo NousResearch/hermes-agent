@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 _STDERR_TAIL_LINES = 12  # stderr tail on generic errors: legible, yet enough for a config/auth diagnostic
+_UNSET = object()
 
 # Hermes' tools.terminal.security_mode -> Codex permissions profile id.
 # Missing config -> workspace-write (Codex's own default).
@@ -445,7 +446,8 @@ class CodexAppServerSession:
         return projection, aborted
 
     def run_turn(
-        self, user_input: Any, *, model: Optional[str] = None, turn_timeout: float = 600.0,
+        self, user_input: Any, *, model: Optional[str] = None, reasoning_effort: Optional[str] = None,
+        service_tier: Any = _UNSET, turn_timeout: float = 600.0,
         notification_poll_timeout: float = 0.25, post_tool_quiet_timeout: float = 90.0,
     ) -> TurnResult:
         """Send a user message and block until turn/completed, bridging approvals and projecting items.
@@ -470,6 +472,11 @@ class CodexAppServerSession:
                 params: dict[str, Any] = {"threadId": self._thread_id, "input": input_items}
                 if model:
                     params["model"] = model
+                if reasoning_effort is not None:
+                    params["effort"] = reasoning_effort
+                if service_tier is not _UNSET:
+                    # An explicit null clears a tier previously selected on this thread.
+                    params["serviceTier"] = service_tier
                 ts = self._request_for(result, "turn/start", params, "turn/start")
                 if ts is not None:
                     self._run_started_turn(result, ts, turn_timeout, notification_poll_timeout, post_tool_quiet_timeout)

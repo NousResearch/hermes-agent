@@ -691,11 +691,27 @@ def run_codex_app_server_turn(agent, *, user_message: str, original_user_message
         raise _checkpoint_blocked("codex_app_server owns the authoritative thread and compacts it "
                                   "without a truthful pre-compaction transcript boundary")
     _ensure_codex_session(agent, messages)
+    reasoning_config = getattr(agent, "reasoning_config", None)
+    reasoning_effort = None
+    if isinstance(reasoning_config, dict):
+        if reasoning_config.get("enabled") is False:
+            reasoning_effort = "none"
+        elif reasoning_config.get("effort"):
+            reasoning_effort = str(reasoning_config["effort"])
+    service_tier = getattr(agent, "service_tier", None)
+    if service_tier == "priority":
+        # Hermes uses the OpenAI API name; Codex app-server calls this tier fast.
+        service_tier = "fast"
+    elif service_tier in {None, "", "normal", "default"}:
+        # Send null rather than omitting the field so `/fast off` clears a tier
+        # selected by an earlier turn in the same Codex thread.
+        service_tier = None
     try:
         _start_codex_thread(agent)
         turn = agent._codex_session.run_turn(
             user_input=user_message,
-            model=_codex_wire_model(agent, getattr(agent, "_codex_session_model_provider", None)))
+            model=_codex_wire_model(agent, getattr(agent, "_codex_session_model_provider", None)),
+            reasoning_effort=reasoning_effort, service_tier=service_tier)
     except Exception as exc:
         logger.exception("codex app-server turn failed")
         _close_codex_session(agent)

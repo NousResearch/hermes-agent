@@ -141,6 +141,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Modern SQLite (pysqlite3-binary) for operators on distros that pin an old
+# libsqlite3. Hermes uses the FTS5 trigram tokenizer (SQLite >= 3.34) for
+# substring + CJK session search. RHEL 8 / Rocky 8 / Alma 8 ship 3.26.0,
+# Amazon Linux 2 ships 3.7.x, and older Debian / Ubuntu LTS releases land
+# in the same window. Installing this extra is the supported escape hatch:
+# `pip install 'hermes-agent[modern-sqlite]'`. hermes_state.py auto-detects
+# pysqlite3 at import and routes every downstream `import sqlite3` through
+# it (`HERMES_DISABLE_PYSQLITE3_SHIM=1` opts out). See issue #41030.
+modern-sqlite = ["pysqlite3-binary>=0.5.0,<0.7"]
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
 anthropic = ["anthropic==0.87.0"]  # CVE-2026-34450, CVE-2026-34452

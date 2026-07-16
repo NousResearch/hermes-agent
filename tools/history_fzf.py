@@ -152,9 +152,13 @@ def fzf_history_picker(items):
             "--header=Enter insert | Esc cancel",
             "--exact",
             "--tiebreak=begin,length",
-            "--delimiter=\\t",
+            "--delimiter=\t",
             "--with-nth=2..",
-            "--nth=2..",
+            # NOTE: --nth=2.. was removed because fzf 0.52.1 silently breaks
+            # matching (rc=1, zero results) when --with-nth and --nth are
+            # used together.  --with-nth=2.. alone hides the ID from display
+            # and fzf still won't search the hidden field in practice (the ID
+            # is a bare integer that won't collide with history text).
         ]
 
         # fzf uses stderr for its interactive TUI (/dev/tty),

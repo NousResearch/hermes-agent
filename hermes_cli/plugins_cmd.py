@@ -1095,7 +1095,12 @@ def _filter_plugin_entries(entries: list, args: Any, enabled: set, disabled: set
     return filtered
 
 
-def _should_page_plugin_list(args: Any | None, console: Any, entry_count: int) -> bool:
+def _should_page_plugin_list(
+    args: Any | None,
+    console: Any,
+    table: Any,
+    entry_count: int,
+) -> bool:
     """Return whether a long Rich plugin table should open in a pager."""
     if getattr(args, "json", False) or getattr(args, "plain", False):
         return False
@@ -1111,8 +1116,15 @@ def _should_page_plugin_list(args: Any | None, console: Any, entry_count: int) -
     if height <= 0:
         height = shutil.get_terminal_size((80, 24)).lines
 
-    # Account for the table title, borders, header, and the hints below it.
-    return entry_count + 8 > height
+    try:
+        table_height = len(console.render_lines(table, pad=False))
+    except (AttributeError, TypeError, ValueError):
+        # Lightweight test consoles and older Rich versions may not expose
+        # ``render_lines``. Keep a conservative entry-count fallback.
+        table_height = entry_count + 4
+
+    # Two blank lines plus the four standard hints surround the table.
+    return table_height + 6 > height
 
 
 def _print_plugin_table(console: Any, table: Any) -> None:
@@ -1183,7 +1195,7 @@ def cmd_list(args: Any | None = None) -> None:
             status = "[yellow]not enabled[/yellow]"
         table.add_row(name, status, str(version), description, source)
 
-    if _should_page_plugin_list(args, console, len(entries)):
+    if _should_page_plugin_list(args, console, table, len(entries)):
         with console.pager(styles=True):
             _print_plugin_table(console, table)
     else:

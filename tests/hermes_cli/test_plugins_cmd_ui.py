@@ -120,3 +120,30 @@ def test_constrained_viewport_renders_selected_provider_category(monkeypatch):
     rendered = [text for _row, text in screen.frames[-1]]
     assert any("→   Context Engine" in text for text in rendered)
     assert any("↑ more" in text for text in rendered)
+
+
+def test_composite_ui_persists_canonical_nested_plugin_key(monkeypatch):
+    screen = _FakeScreen(keys=[ord(" "), ord("q")])
+    curses = _FakeCurses(screen)
+    saved = {}
+
+    monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: set())
+    monkeypatch.setattr(
+        plugins_cmd, "_save_enabled_set", lambda value: saved.update(enabled=value)
+    )
+    monkeypatch.setattr(
+        plugins_cmd, "_save_disabled_set", lambda value: saved.update(disabled=value)
+    )
+
+    plugins_cmd._run_composite_ui(
+        curses,
+        ["web/firecrawl"],
+        ["web-firecrawl — bundled search"],
+        set(),
+        {"firecrawl"},
+        [],
+        SimpleNamespace(print=lambda *args, **kwargs: None),
+    )
+
+    assert saved["enabled"] == {"web/firecrawl"}
+    assert saved["disabled"] == set()

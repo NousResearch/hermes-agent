@@ -1,3 +1,7 @@
+import sys
+from types import SimpleNamespace
+
+from hermes_cli import curses_ui
 from hermes_cli.curses_ui import (
     _SearchState,
     _filter_indices,
@@ -58,7 +62,11 @@ def test_active_search_allows_navigation_keys_to_reach_menu_loop():
 def test_active_search_consumes_query_editing_and_confirm_keys():
     search = _SearchState(active=True, query="op")
 
-    assert _handle_active_search_key(_FakeCurses, ord("u"), search) == (True, False, True)
+    assert _handle_active_search_key(_FakeCurses, ord("u"), search) == (
+        True,
+        False,
+        True,
+    )
     assert search.query == "opu"
 
     assert _handle_active_search_key(_FakeCurses, _FakeCurses.KEY_ENTER, search) == (
@@ -66,3 +74,82 @@ def test_active_search_consumes_query_editing_and_confirm_keys():
         True,
         False,
     )
+
+
+class _DriverScreen:
+    def __init__(self, keys):
+        self.keys = list(keys)
+
+    def clear(self):
+        pass
+
+    def getmaxyx(self):
+        return 7, 80
+
+    def addnstr(self, *args):
+        pass
+
+    def refresh(self):
+        pass
+
+    def getch(self):
+        return self.keys.pop(0)
+
+    def timeout(self, milliseconds):
+        pass
+
+
+class _DriverCurses:
+    A_NORMAL = 0
+    A_BOLD = 1
+    A_DIM = 2
+    COLOR_GREEN = 2
+    COLOR_YELLOW = 3
+    COLOR_WHITE = 7
+    COLORS = 8
+    KEY_UP = 1001
+    KEY_DOWN = 1002
+    KEY_PPAGE = 1003
+    KEY_NPAGE = 1004
+    KEY_HOME = 1005
+    KEY_END = 1006
+    KEY_ENTER = 1007
+    KEY_BACKSPACE = 1008
+
+    class error(Exception):
+        pass
+
+    def __init__(self, screen):
+        self.screen = screen
+
+    def wrapper(self, draw):
+        draw(self.screen)
+
+    def has_colors(self):
+        return False
+
+    def curs_set(self, visible):
+        pass
+
+
+def test_searchable_driver_pages_through_filtered_original_indices(monkeypatch):
+    screen = _DriverScreen([
+        ord("/"),
+        ord("k"),
+        ord("e"),
+        ord("e"),
+        ord("p"),
+        _DriverCurses.KEY_NPAGE,
+        _DriverCurses.KEY_ENTER,
+    ])
+    curses_mod = _DriverCurses(screen)
+    monkeypatch.setitem(sys.modules, "curses", curses_mod)
+    monkeypatch.setattr(curses_ui.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+
+    selected = curses_ui.curses_radiolist(
+        "Filtered paging",
+        ["aa", "keep-1", "bb", "keep-2", "cc", "keep-3", "dd", "keep-4"],
+        searchable=True,
+    )
+
+    assert selected == 7

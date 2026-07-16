@@ -14,8 +14,11 @@ import tempfile
 import threading
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from tools.environments.local import (
     LocalEnvironment,
+    _is_usable_cwd,
     _resolve_safe_cwd,
 )
 
@@ -50,6 +53,44 @@ class TestResolveSafeCwd:
         sep = os.path.sep
         monkeypatch.setattr(os.path, "isdir", lambda p: p == sep)
         assert _resolve_safe_cwd("/no/such/deep/dir") == sep
+
+    def test_walks_up_past_inaccessible_dir(self, monkeypatch, tmp_path):
+        """A directory that exists but is not searchable (``os.X_OK`` fails)
+        must be treated like a missing one — ``os.path.isdir`` alone returns
+        True for it, so recovery would otherwise hand ``Popen`` a cwd it
+        can't ``chdir`` into and raise ``PermissionError`` (#65583)."""
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        blocked = str(locked)
+
+        # Simulate ``/root``-style access: the dir exists (isdir True) but the
+        # runtime user can't enter it (X_OK False).  tmp_path itself stays
+        # accessible so it becomes the recovery target.
+        monkeypatch.setattr(
+            os, "access", lambda p, mode: p != blocked
+        )
+
+        assert _resolve_safe_cwd(blocked) == str(tmp_path)
+
+
+class TestIsUsableCwd:
+    """``_is_usable_cwd`` must require BOTH existence and search access."""
+
+    def test_existing_accessible_dir_is_usable(self, tmp_path):
+        assert _is_usable_cwd(str(tmp_path)) is True
+
+    def test_empty_is_not_usable(self):
+        assert _is_usable_cwd("") is False
+
+    def test_missing_is_not_usable(self, tmp_path):
+        assert _is_usable_cwd(str(tmp_path / "nope")) is False
+
+    def test_inaccessible_dir_is_not_usable(self, monkeypatch, tmp_path):
+        blocked = str(tmp_path)
+        monkeypatch.setattr(os, "access", lambda p, mode: False)
+        # isdir is still True, but the missing X_OK makes it unusable.
+        assert os.path.isdir(blocked) is True
+        assert _is_usable_cwd(blocked) is False
 
 
 def _fake_interrupt():
@@ -128,7 +169,55 @@ class TestRunBashCwdRecovery:
         assert env.cwd == str(tmp_path)
 
         # The warning surfaces the wedge so it isn't silently masked.
-        assert any("missing on disk" in rec.message for rec in caplog.records)
+        assert any("unusable" in rec.message for rec in caplog.records)
+
+    @pytest.mark.skipif(
+        os.name == "nt", reason="POSIX directory-permission semantics only"
+    )
+    @pytest.mark.skipif(
+        hasattr(os, "geteuid") and os.geteuid() == 0,
+        reason="root bypasses directory search permissions",
+    )
+    def test_recovers_when_cwd_is_inaccessible(self, tmp_path, caplog):
+        """Reproduces #65583: the configured cwd exists but the runtime user
+        can't enter it (the ``/root`` case under a non-root systemd/cron
+        runtime).  ``os.path.isdir`` returns True, so without the ``os.X_OK``
+        guard ``Popen`` would raise ``PermissionError`` and wedge every
+        terminal/file-tool call while the job still reports success."""
+        locked = tmp_path / "locked"
+        locked.mkdir()
+
+        with patch.object(LocalEnvironment, "init_session", autospec=True, return_value=None):
+            env = LocalEnvironment(cwd=str(locked), timeout=10)
+
+        # Remove search/execute permission so the process can't chdir into it.
+        os.chmod(locked, 0o000)
+        try:
+            assert os.path.isdir(str(locked)) is True
+            assert os.access(str(locked), os.X_OK) is False
+
+            captured = {}
+            fds: list = []
+            try:
+                with patch("tools.environments.local._find_bash", return_value="/bin/bash"), \
+                     patch("subprocess.Popen", side_effect=_make_fake_popen(captured, fds)), \
+                     patch("tools.terminal_tool._interrupt_event", _fake_interrupt()), \
+                     caplog.at_level("WARNING", logger="tools.environments.local"):
+                    env.execute("echo hello")
+            finally:
+                _close_fds(fds)
+        finally:
+            # Restore so tmp_path cleanup can remove the tree.
+            os.chmod(locked, 0o755)
+
+        # Popen must have been handed an accessible directory, never the
+        # locked one that would raise PermissionError.
+        assert captured["cwd"] != str(locked)
+        assert os.path.isdir(captured["cwd"])
+        assert os.access(captured["cwd"], os.X_OK)
+
+        assert env.cwd == captured["cwd"]
+        assert any("unusable" in rec.message for rec in caplog.records)
 
     def test_no_warning_when_cwd_still_exists(self, tmp_path, caplog):
         with patch.object(LocalEnvironment, "init_session", autospec=True, return_value=None):

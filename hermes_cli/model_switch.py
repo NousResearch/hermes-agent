@@ -2166,6 +2166,7 @@ def list_authenticated_providers(
             api_key = inline_api_key or (
                 os.environ.get(key_env, "").strip() if key_env else ""
             )
+            models_url = (entry.get("models_url") or "").strip()
             api_mode = str(
                 entry.get("api_mode")
                 or entry.get("transport")
@@ -2216,6 +2217,7 @@ def list_authenticated_providers(
                     "has_explicit_models": False,
                     "discover_models": discover,
                     "extra_headers": entry_extra_headers,
+                    "models_url": models_url,
                 }
             else:
                 if api_key and not groups[group_key].get("api_key"):
@@ -2337,6 +2339,7 @@ def list_authenticated_providers(
                         api_key,
                         api_url,
                         headers=grp.get("extra_headers") or None,
+                        models_url=grp.get("models_url") or None,
                     )
                     if live_models:
                         grp["models"] = live_models

@@ -3533,14 +3533,55 @@ def probe_api_models(
     timeout: float = 5.0,
     api_mode: Optional[str] = None,
     request_headers: Optional[dict[str, str]] = None,
+    models_url: Optional[str] = None,
 ) -> dict[str, Any]:
     """Probe a ``/models`` endpoint with light URL heuristics.
 
     For ``anthropic_messages`` mode, uses ``x-api-key`` and
     ``anthropic-version`` headers (Anthropic's native auth) instead of
-    ``Authorization: Bearer``.  The response shape (``data[].id``) is
+    ``Authorization: ***  The response shape (``data[].id``) is
     identical, so the same parser works for both.
+
+    When *models_url* is given, it is used as the exact URL to fetch
+    model data from, bypassing the usual ``{base_url}/models``
+    construction.  This lets custom_providers entries specify a
+    different endpoint for model discovery than the one used for
+    inference.
     """
+    # When models_url is explicitly provided, use it directly —
+    # skip URL heuristics entirely.
+    effective_models_url = (models_url or "").strip()
+    if effective_models_url:
+        headers: dict[str, str] = {"User-Agent": _HERMES_USER_AGENT}
+        if api_key and api_mode == "anthropic_messages":
+            headers["x-api-key"] = api_key
+            headers["anthropic-version"] = "2023-06-01"
+        elif api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        if isinstance(request_headers, dict):
+            from hermes_cli.config import normalize_extra_headers
+            headers.update(normalize_extra_headers(request_headers))
+        req = urllib.request.Request(effective_models_url, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode())
+                items = data if isinstance(data, list) else data.get("data", [])
+                return {
+                    "models": [m.get("id", "") for m in items if isinstance(m, dict) and "id" in m],
+                    "probed_url": effective_models_url,
+                    "resolved_base_url": (base_url or "").strip().rstrip("/"),
+                    "suggested_base_url": None,
+                    "used_fallback": False,
+                }
+        except Exception:
+            return {
+                "models": None,
+                "probed_url": effective_models_url,
+                "resolved_base_url": (base_url or "").strip().rstrip("/"),
+                "suggested_base_url": None,
+                "used_fallback": False,
+            }
+
     normalized = (base_url or "").strip().rstrip("/")
     if not normalized:
         return {
@@ -3618,11 +3659,16 @@ def fetch_api_models(
     timeout: float = 5.0,
     api_mode: Optional[str] = None,
     headers: Optional[dict[str, str]] = None,
+    models_url: Optional[str] = None,
 ) -> Optional[list[str]]:
     """Fetch the list of available model IDs from the provider's ``/models`` endpoint.
 
     Returns a list of model ID strings, or ``None`` if the endpoint could not
     be reached (network error, timeout, auth failure, etc.).
+
+    When *models_url* is given, it is used as the exact URL to fetch
+    model data from, bypassing the usual ``{base_url}/models``
+    construction.
     """
     return probe_api_models(
         api_key,
@@ -3630,6 +3676,7 @@ def fetch_api_models(
         timeout=timeout,
         api_mode=api_mode,
         request_headers=headers,
+        models_url=models_url,
     ).get("models")
 
 

@@ -10109,8 +10109,11 @@ def _is_user_visible_process_result(text: str) -> bool:
     """True if process-notification text should also land as a chat system line.
 
     Packaged Hermes Desktop paints durable rows for ``review.summary`` but not
-    for ``status.update`` (kind=process). Hephaestus / async-delegation outcomes
-    must use the former so humans always see the result without a UI rebuild.
+    for ``status.update`` (kind=process) — that event only refreshes the process
+    status stack. Hephaestus / async-delegation outcomes therefore also emit
+    ``review.summary`` so humans always see the result without a UI rebuild.
+    Desktop must not also append a transcript row on ``status.update`` for the
+    same text (that double-paints; see #64094 review).
     """
     t = (text or "").strip()
     if not t:

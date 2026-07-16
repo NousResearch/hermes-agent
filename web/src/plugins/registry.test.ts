@@ -8,21 +8,21 @@
  * Companion to the additive PR "feat(plugins): expose Dialog/ConfirmDialog/
  * Toast/useToast/useConfirmDelete on the plugin SDK". See issue #50547.
  */
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { exposePluginSDK } from "./registry";
 
 describe("plugin SDK dialog/toast surface", () => {
   beforeEach(() => {
     // Reset window between tests so exposePluginSDK() writes fresh.
-    (globalThis as any).window = {
+    vi.stubGlobal("window", {
       __HERMES_PLUGINS__: undefined,
       __HERMES_PLUGIN_SDK__: undefined,
-    };
+    });
   });
 
   it("exposes Dialog + subcomponents on components", () => {
     exposePluginSDK();
-    const sdk = (globalThis as any).window.__HERMES_PLUGIN_SDK__;
+    const sdk = window.__HERMES_PLUGIN_SDK__!;
     expect(sdk.components.Dialog).toBeDefined();
     expect(sdk.components.DialogContent).toBeDefined();
     expect(sdk.components.DialogHeader).toBeDefined();
@@ -36,7 +36,7 @@ describe("plugin SDK dialog/toast surface", () => {
 
   it("exposes useToast and useConfirmDelete on hooks", () => {
     exposePluginSDK();
-    const sdk = (globalThis as any).window.__HERMES_PLUGIN_SDK__;
+    const sdk = window.__HERMES_PLUGIN_SDK__!;
     expect(typeof sdk.hooks.useToast).toBe("function");
     expect(typeof sdk.hooks.useConfirmDelete).toBe("function");
     // Original React hooks still present (no accidental removal).
@@ -46,7 +46,7 @@ describe("plugin SDK dialog/toast surface", () => {
 
   it("exposes sdkVersion as a string", () => {
     exposePluginSDK();
-    const sdk = (globalThis as any).window.__HERMES_PLUGIN_SDK__;
+    const sdk = window.__HERMES_PLUGIN_SDK__!;
     // sdkVersion is a string on every SDK surface — don't snapshot the exact
     // value (that's a change-detector test). Just confirm it is present and
     // is a non-empty string so consumers can gate on it.

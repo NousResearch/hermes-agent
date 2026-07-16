@@ -513,6 +513,32 @@ def board_exists(board: Optional[str] = None) -> bool:
     return (d / "board.json").exists() or (d / "kanban.db").exists()
 
 
+def _board_db_path_for_slug(slug: str) -> Path:
+    """Resolve the ``kanban.db`` path for an already-normalized board slug.
+
+    Pure path math — does NOT consult ``HERMES_KANBAN_DB``, so callers that
+    must reach a *different* board even when the dispatcher has pinned the
+    active DB (e.g. the cross-board hint scan) bypass the env override here
+    and pass the result to :func:`connect` as an explicit ``db_path``.
+    """
+    if slug == DEFAULT_BOARD:
+        return kanban_home() / "kanban.db"
+    return board_dir(slug) / "kanban.db"
+
+
+def board_db_path(board: str) -> Path:
+    """Return the path to ``kanban.db`` for ``board``, ignoring env pins.
+
+    Unlike :func:`kanban_db_path`, this never consults
+    ``HERMES_KANBAN_DB``. Use it when you deliberately need to inspect a
+    specific board's DB from a context whose env is pinned to another
+    (e.g. a dispatcher worker scanning sibling boards for the owning
+    board of a task id). ``board`` is required — there is no
+    active-board fallback.
+    """
+    return _board_db_path_for_slug(_normalize_board_slug(board) or DEFAULT_BOARD)
+
+
 def kanban_db_path(board: Optional[str] = None) -> Path:
     """Return the path to the ``kanban.db`` for ``board``.
 
@@ -533,9 +559,7 @@ def kanban_db_path(board: Optional[str] = None) -> Path:
     slug = _normalize_board_slug(board)
     if slug is None:
         slug = get_current_board()
-    if slug == DEFAULT_BOARD:
-        return kanban_home() / "kanban.db"
-    return board_dir(slug) / "kanban.db"
+    return _board_db_path_for_slug(slug)
 
 
 def workspaces_root(board: Optional[str] = None) -> Path:

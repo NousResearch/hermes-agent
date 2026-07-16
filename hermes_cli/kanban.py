@@ -1905,7 +1905,13 @@ def _locate_task_on_other_board(
             other = meta.get("slug")
             if not other or other == active:
                 continue
-            other_conn = kb.connect(board=other)
+            # Connect via an explicit db_path, NOT ``board=other``: the
+            # dispatcher pins ``HERMES_KANBAN_DB`` into worker env, and
+            # ``connect(board=other)`` would honour that pin and reopen the
+            # active board's DB instead of ``other`` — so the owning board
+            # would never be found (#65101, #65128). ``board_db_path``
+            # ignores the env override and resolves ``other``'s DB directly.
+            other_conn = kb.connect(db_path=kb.board_db_path(other))
             try:
                 if kb.get_task(other_conn, tid) is not None:
                     return (tid, other)

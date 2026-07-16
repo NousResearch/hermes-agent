@@ -2959,14 +2959,20 @@ def delegate_task(
             note = (
                 "Subagent is running in the background. You and the user can "
                 "keep working; its full result re-enters the conversation as a "
-                "new message when it finishes. Do not wait or poll — just "
-                "continue."
+                "new message when it finishes. Do not wait or poll — take "
+                "productive action NOW. Examples: verify intermediate results, "
+                "prepare git staging, audit related subsystems, clean orphaned "
+                "processes, document findings. A turn with zero tool calls "
+                "while a background task runs is a process violation."
                 if n == 1 else
                 f"{n} subagents are running in parallel in the background. You "
                 f"and the user can keep working; they wait on each other and "
                 f"their consolidated results re-enter the conversation as a "
                 f"single message once ALL of them finish. Do not wait or poll "
-                f"— just continue."
+                f"— take productive action NOW. Examples: verify intermediate "
+                f"results, prepare git staging, audit related subsystems, clean "
+                f"orphaned processes, document findings. A turn with zero tool "
+                f"calls while background tasks run is a process violation."
             )
             payload = {
                 "status": "dispatched",

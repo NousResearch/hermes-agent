@@ -30,6 +30,9 @@ export interface GalleryPet {
   curated?: boolean
   /** Hatched locally by the user (createdBy=generator) — badged + ranked first. */
   generated?: boolean
+  /** User-owned local pet (generated or imported) — removable without gallery reinstall. */
+  managedLocal?: boolean
+  createdBy?: 'generator' | 'import' | ''
 }
 
 export interface PetGallery {
@@ -109,7 +112,10 @@ export function loadPetThumb(request: GatewayRequest, slug: string, url?: string
  * ready snapshot is held; pass `{ force: true }` to bypass the cache (e.g. a
  * manual refresh). Concurrent callers share a single in-flight request.
  */
-export function loadPetGallery(request: GatewayRequest, options: { force?: boolean } = {}): Promise<void> {
+export function loadPetGallery(
+  request: GatewayRequest,
+  options: { force?: boolean; localOnly?: boolean } = {}
+): Promise<void> {
   if (!options.force && $petGallery.get() && $petGalleryStatus.get() === 'ready') {
     return Promise.resolve()
   }
@@ -158,7 +164,7 @@ export function loadPetGallery(request: GatewayRequest, options: { force?: boole
 
     // Phase 2: merge in the full petdex catalog in the background. A slow/failed
     // manifest fetch never hides the local pets shown in phase 1.
-    if (localOk) {
+    if (localOk && !options.localOnly) {
       try {
         const full = await petRpc<PetGallery>(request, 'pet.gallery')
 
@@ -201,8 +207,23 @@ export async function applyAdoptedPet(request: GatewayRequest, slug: string, dis
     enabled: true,
     active: slug,
     pets: gallery.pets.some(p => p.slug === slug)
-      ? gallery.pets.map(p => (p.slug === slug ? { ...p, installed: true, displayName } : p))
-      : [...gallery.pets, { slug, displayName, installed: true, spritesheetUrl: '' }]
+      ? gallery.pets.map(p =>
+          p.slug === slug
+            ? { ...p, installed: true, displayName, generated: true, managedLocal: true, createdBy: 'generator' }
+            : p
+        )
+      : [
+          ...gallery.pets,
+          {
+            slug,
+            displayName,
+            installed: true,
+            spritesheetUrl: '',
+            generated: true,
+            managedLocal: true,
+            createdBy: 'generator'
+          }
+        ]
   }))
   await syncInfo(request)
 }
@@ -226,7 +247,7 @@ export function rankedGalleryPets(gallery: PetGallery | null, query = ''): Galle
   // `Number(undefined)` is NaN, which poisons the sort (it would sink those pets
   // below the render cap and hide them entirely).
   const rank = (p: GalleryPet) =>
-    (p.generated ? 8 : 0) +
+    (p.managedLocal ? 8 : 0) +
     (gallery.enabled && p.slug === gallery.active ? 4 : 0) +
     (p.installed ? 2 : 0) +
     (p.curated ? 1 : 0)
@@ -407,6 +428,49 @@ export async function exportPet(request: GatewayRequest, slug: string, fallback:
   }
 }
 
+/** Import a validated pet package/raw atlas, then refresh the local gallery. */
+export async function importPet(
+  request: GatewayRequest,
+  file: File,
+  messages: { failed: string; tooLarge: string }
+): Promise<boolean> {
+  $petBusy.set('\u0000import')
+  $petGalleryError.set(null)
+
+  try {
+    if (file.size > 32 * 1024 * 1024) {
+      throw new Error(messages.tooLarge)
+    }
+
+    const bytes = new Uint8Array(await file.arrayBuffer())
+    let binary = ''
+
+    for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
+    }
+
+    const res = await petRpc<{ ok: boolean; slug: string; displayName: string }>(request, 'pet.import', {
+      filename: file.name,
+      dataBase64: btoa(binary)
+    })
+
+    if (!res?.ok || !res.slug) {
+      throw new Error(messages.failed)
+    }
+
+    thumbCache.delete(res.slug)
+    await loadPetGallery(request, { force: true, localOnly: true })
+
+    return true
+  } catch (e) {
+    $petGalleryError.set(e instanceof Error ? e.message : messages.failed)
+
+    return false
+  } finally {
+    $petBusy.set(null)
+  }
+}
+
 /**
  * Rename a pet — optimistic. The new name shows instantly (so the dialog can
  * close immediately); the RPC runs in the background and the backend also
@@ -486,7 +550,7 @@ export function removePet(request: GatewayRequest, slug: string, fallback: strin
           return [p]
         }
 
-        return p.generated || !p.spritesheetUrl ? [] : [{ ...p, installed: false }]
+        return p.managedLocal || !p.spritesheetUrl ? [] : [{ ...p, installed: false }]
       })
     }))
   })

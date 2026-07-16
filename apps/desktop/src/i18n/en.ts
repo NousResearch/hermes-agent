@@ -443,6 +443,11 @@ export const en: Translations = {
           'Adopt an animated petdex mascot that floats over the app and reacts to what Hermes is doing — running while tools execute, celebrating on success, sulking on errors.',
         restartHint:
           'Pets need a quick restart — the running app started before this feature was added. Quit and reopen Hermes, then come back here.',
+        createTitle: 'Your pets',
+        createDesc: 'Import a compatible pet package or spritesheet.',
+        importPet: 'Import',
+        importFailed: 'Could not import that pet.',
+        importTooLarge: 'Pet files must be 32 MB or smaller.',
         on: 'On',
         off: 'Off',
         scaleTitle: 'Size',
@@ -456,6 +461,7 @@ export const en: Translations = {
         noMatch: query => `No pets match "${query}".`,
         installedTag: 'installed',
         generatedTag: 'Generated',
+        importedPetTag: 'Imported',
         countCapped: (cap, total) => `Showing ${cap} of ${total} — type to narrow it down.`,
         count: n => `${n} pet${n === 1 ? '' : 's'}.`,
         uninstall: name => `Uninstall ${name}`,
@@ -1023,6 +1029,7 @@ export const en: Translations = {
       turnOn: 'Turn on',
       installed: 'Installed',
       generatedTag: 'Generated',
+      importedTag: 'Imported',
       adoptFailed: 'Could not adopt that pet.',
       toggleFailed: 'Could not toggle the pet.',
       noneAvailable: 'No pets available — pick one below to install.'

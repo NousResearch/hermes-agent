@@ -87,6 +87,30 @@ def _cmd_install(args) -> int:
     return 0
 
 
+def _cmd_import(args) -> int:
+    """Import a validated pet package or compatible raw spritesheet."""
+    from pathlib import Path
+
+    from agent.pet import store
+
+    path = Path(args.path).expanduser()
+    if not path.is_file():
+        _err(f"✗ pet file not found: {path}")
+        return 1
+    try:
+        pet = store.import_pet_package(
+            path.read_bytes(), filename=path.name, name=getattr(args, "name", "") or ""
+        )
+    except (OSError, store.PetStoreError) as exc:
+        _err(f"✗ import failed: {exc}")
+        return 1
+    _print(f"✓ imported {pet.display_name} → {pet.directory}")
+    if getattr(args, "select", False) or not _has_active_pet():
+        _set_active(pet.slug)
+        _print(f"✓ {pet.display_name} is now the active pet")
+    return 0
+
+
 def _cmd_remove(args) -> int:
     from agent.pet import store
 
@@ -473,6 +497,12 @@ def register_cli(parent: argparse.ArgumentParser) -> None:
     p_install.add_argument("--force", action="store_true", help="Re-download even if present")
     p_install.add_argument("--select", action="store_true", help="Make it the active pet")
     p_install.set_defaults(func=_cmd_install)
+
+    p_import = subs.add_parser("import", help="Import a pet ZIP or compatible PNG/WebP atlas")
+    p_import.add_argument("path", help="Path to .zip, .png, or .webp")
+    p_import.add_argument("--name", default="", help="Override the imported display name")
+    p_import.add_argument("--select", action="store_true", help="Make it the active pet")
+    p_import.set_defaults(func=_cmd_import)
 
     p_select = subs.add_parser("select", help="Set the active pet (writes display.pet.*)")
     p_select.add_argument("slug", nargs="?", default="", help="Pet slug (omit for picker)")

@@ -72,6 +72,7 @@ hermes pets doctor
 | Browse the gallery | `hermes pets list [query] [--limit N]` |
 | List installed pets | `hermes pets list --installed` |
 | Install a pet | `hermes pets install <slug> [--select] [--force]` |
+| Import a package or atlas | `hermes pets import <path> [--name NAME] [--select]` |
 | Set the active pet | `hermes pets select [slug]` (omit slug for a picker) |
 | Resize the pet everywhere | `hermes pets scale <factor>` (e.g. `0.5`, clamped 0.1–3.0) |
 | Preview/animate | `hermes pets show [slug] [--state <s>] [--cycle] [--once] [--mode <m>] [--scale <f>]` |
@@ -103,6 +104,23 @@ Inside the CLI and TUI you can manage the pet without leaving the session:
 In the TUI, `/pet list` opens an interactive picker overlay; in the desktop app
 it opens the Cmd+K pet palette.
 
+## Importing your own pet
+
+Hermes accepts an exported pet `.zip` package or a compatible raw `.png`/`.webp`
+atlas. Current atlases are 1536×1872 (8×9 cells); legacy 1728×1664 (9×8)
+atlases are also supported. Imports are profile-scoped and copied into the
+Hermes pet store, so the original file can be moved afterward.
+
+```bash
+hermes pets import ./my-pet.zip --select
+hermes pets import ./spritesheet.png --name "My Pet"
+```
+
+Desktop users can choose **Settings → Appearance → Pet → Import**. Archives are
+validated before installation: Hermes rejects unsafe paths, links, encryption,
+duplicate entries, oversized packages, malformed metadata, incompatible image
+formats or dimensions, and atlases with an empty idle frame.
+
 ## Generating a pet (`/hatch`)
 
 Beyond installing pre-made pets from the gallery, Hermes can **generate a brand-new pet** from a text description — its own AI sprite-generation pipeline.
@@ -129,8 +147,8 @@ In the desktop app you can manage the pet two ways:
 
 - **Cmd+K → "Pets…"** — browse, search, adopt, and toggle pets without leaving
   the keyboard (mirrors the theme picker).
-- **Settings → Appearance** — the same gallery plus a **size slider** that
-  resizes the floating mascot live as you drag.
+- **Settings → Appearance** — the same gallery plus pet import and a **size
+  slider** that resizes the floating mascot live as you drag.
 
 Both adopt/toggle/resize the floating mascot in place — size changes apply
 instantly; adopting a new pet lights it up within a moment.

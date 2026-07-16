@@ -330,12 +330,42 @@ def test_claim_defers_control_cleanup_until_release():
     registry.set_status("run_owned", "running", session_id="conversation-a")
     registry.register_agent("run_owned", agent)
     registry.register_task("run_owned", task)
+    registry.register_approval_session("run_owned", "approval-owned")
 
     assert registry.claim_stop_target("run_owned") is not None
     registry.remove_control("run_owned")
     assert registry.agent_for("run_owned") is agent
     assert registry.task_for("run_owned") is task
+    assert registry.approval_session_for("run_owned") == "approval-owned"
 
     registry.release_stop_target("run_owned")
     assert registry.agent_for("run_owned") is None
     assert registry.task_for("run_owned") is None
+    assert registry.approval_session_for("run_owned") is None
+
+
+def test_registry_owns_approval_session_lookup_and_cleanup():
+    registry = RunRegistry()
+
+    registry.register_approval_session("run_owned", "approval-owned")
+
+    assert registry.approval_session_for("run_owned") == "approval-owned"
+    assert registry.approval_session_for("run_missing") is None
+    assert dict(registry.approval_sessions) == {
+        "run_owned": "approval-owned"
+    }
+
+    registry.remove_control("run_owned")
+
+    assert registry.approval_session_for("run_owned") is None
+    assert "run_owned" not in registry.approval_sessions
+
+
+def test_replace_approval_sessions_preserves_legacy_map_compatibility():
+    registry = RunRegistry()
+    registry.replace_approval_sessions(
+        {"run_one": "approval-one", "run_two": "approval-two"}
+    )
+
+    assert registry.approval_session_for("run_one") == "approval-one"
+    assert registry.approval_session_for("run_two") == "approval-two"

@@ -1048,12 +1048,9 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_streams_created: Dict[str, float] = {}
         # Runs with a connected SSE consumer; their queue is actively draining.
         self._run_stream_subscribers: set[str] = set()
-        # Retained status and stop-control references share one lock-aware owner.
+        # Retained status, stop-control references, and approval-session
+        # ownership share one lock-aware lifecycle owner.
         self._run_registry = RunRegistry()
-        # Active approval session key for each run_id.  The approval core
-        # resolves requests by session key, while API clients address the
-        # in-flight run by run_id.
-        self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
         self._session_db_lock: Optional[asyncio.Lock] = None  # Single-flight for lazy init
         # Concurrency cap shared across all agent-serving endpoints
@@ -4852,6 +4849,14 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_registry.replace_tasks(values)
 
     @property
+    def _run_approval_sessions(self) -> MutableMapping[str, str]:
+        return self._run_registry.approval_sessions
+
+    @_run_approval_sessions.setter
+    def _run_approval_sessions(self, values: Dict[str, str]) -> None:
+        self._run_registry.replace_approval_sessions(values)
+
+    @property
     def _stopping_run_ids(self) -> MutableSet[str]:
         return self._run_registry.stopping_ids
 
@@ -4997,7 +5002,9 @@ class APIServerAdapter(BasePlatformAdapter):
         created_at = time.time()
         self._run_streams[run_id] = q
         self._run_streams_created[run_id] = created_at
-        self._run_approval_sessions[run_id] = approval_session_key
+        self._run_registry.register_approval_session(
+            run_id, approval_session_key
+        )
 
         event_cb = self._make_run_event_callback(run_id, loop)
 
@@ -5245,7 +5252,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 except Exception:
                     pass
                 self._run_registry.remove_control(run_id)
-                self._run_approval_sessions.pop(run_id, None)
 
         self._activate_admitted_request()
         task = asyncio.create_task(_run_and_close())
@@ -5364,7 +5370,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
-        approval_session_key = self._run_approval_sessions.get(run_id)
+        approval_session_key = self._run_registry.approval_session_for(run_id)
         if not approval_session_key:
             return web.json_response(
                 _openai_error(
@@ -5470,7 +5476,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 try:
                     from tools.approval import unregister_gateway_notify
 
-                    approval_session_key = self._run_approval_sessions.get(run_id)
+                    approval_session_key = (
+                        self._run_registry.approval_session_for(run_id)
+                    )
                     if approval_session_key:
                         unregister_gateway_notify(approval_session_key)
                 except Exception:
@@ -5481,7 +5489,6 @@ class APIServerAdapter(BasePlatformAdapter):
             self._run_streams_created.pop(run_id, None)
             if task_done:
                 self._run_registry.remove_control(run_id)
-                self._run_approval_sessions.pop(run_id, None)
 
         self._run_registry.expire_terminal_statuses(now, self._RUN_STATUS_TTL)
 

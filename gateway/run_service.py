@@ -199,6 +199,7 @@ class RunRegistry:
         self._statuses: Dict[str, Dict[str, Any]] = {}
         self._agents: Dict[str, Any] = {}
         self._tasks: Dict[str, Any] = {}
+        self._approval_sessions: Dict[str, str] = {}
         self._stopping_ids: set[str] = set()
         self._claimed_stop_ids: set[str] = set()
         self._deferred_control_removals: set[str] = set()
@@ -215,6 +216,11 @@ class RunRegistry:
         )
         self._task_view = _LockedMapping(
             self._tasks,
+            self._lock,
+            mutation_allowed=self._compat_mutation_allowed,
+        )
+        self._approval_session_view = _LockedMapping(
+            self._approval_sessions,
             self._lock,
             mutation_allowed=self._compat_mutation_allowed,
         )
@@ -244,6 +250,11 @@ class RunRegistry:
     def tasks(self) -> MutableMapping:
         """Authoritative task map, exposed only for legacy compatibility."""
         return self._task_view
+
+    @property
+    def approval_sessions(self) -> MutableMapping:
+        """Authoritative approval-session map for legacy adapter compatibility."""
+        return self._approval_session_view
 
     @property
     def stopping_ids(self) -> MutableSet:
@@ -284,6 +295,9 @@ class RunRegistry:
 
     def replace_tasks(self, values: Dict[str, Any]) -> None:
         self._replace_mapping(self._tasks, values)
+
+    def replace_approval_sessions(self, values: Dict[str, str]) -> None:
+        self._replace_mapping(self._approval_sessions, values)
 
     def replace_stopping_ids(self, values: set[str]) -> None:
         if type(values) is not set:
@@ -427,6 +441,20 @@ class RunRegistry:
         with self._lock:
             return self._tasks.get(run_id)
 
+    def register_approval_session(
+        self, run_id: str, approval_session_key: str
+    ) -> bool:
+        """Bind one run to its isolated approval namespace."""
+        with self._lock:
+            if run_id in self._stopping_ids or run_id in self._claimed_stop_ids:
+                return False
+            self._approval_sessions[run_id] = approval_session_key
+            return True
+
+    def approval_session_for(self, run_id: str) -> Optional[str]:
+        with self._lock:
+            return self._approval_sessions.get(run_id)
+
     def active_task_count(self) -> int:
         with self._lock:
             tasks = tuple(self._tasks.values())
@@ -476,5 +504,6 @@ class RunRegistry:
     def _remove_control_locked(self, run_id: str) -> None:
         self._agents.pop(run_id, None)
         self._tasks.pop(run_id, None)
+        self._approval_sessions.pop(run_id, None)
         self._stopping_ids.discard(run_id)
         self._deferred_control_removals.discard(run_id)

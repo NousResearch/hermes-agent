@@ -4,6 +4,7 @@ import type {
   HermesReadFileTextResult,
   HermesSelectPathsOptions
 } from '@/global'
+import { getStatus } from '@/hermes'
 import { $connection } from '@/store/session'
 
 export interface DesktopFsRemotePicker {
@@ -72,6 +73,25 @@ export async function readDesktopFileText(path: string): Promise<HermesReadFileT
   }
 
   return remoteFsApi<HermesReadFileTextResult>(fsPath('read-text', path))
+}
+
+export interface DesktopHermesHome {
+  hermes_home: string
+  desktop_plugins: string
+}
+
+export async function desktopHermesHome(): Promise<DesktopHermesHome> {
+  if (!isDesktopFsRemoteMode()) {
+    const { hermes_home } = await getStatus()
+
+    if (!hermes_home) {
+      throw new Error('Hermes home is unavailable')
+    }
+
+    return { hermes_home, desktop_plugins: `${hermes_home}/desktop-plugins` }
+  }
+
+  return remoteFsApi<DesktopHermesHome>('/api/fs/hermes-home')
 }
 
 // Save UTF-8 text back to a file. Local writes go through the hardened Electron

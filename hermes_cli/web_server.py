@@ -2298,6 +2298,23 @@ async def fs_default_cwd():
     return {"cwd": cwd, "branch": _fs_git_branch(cwd)}
 
 
+@app.get("/api/fs/hermes-home")
+async def fs_hermes_home():
+    """Return the active backend's Hermes home for authenticated desktop clients.
+
+    /api/status intentionally omits host paths when dashboard auth is enabled
+    because it is also the public liveness endpoint. The desktop app still
+    needs the backend HERMES_HOME in remote mode to discover trusted runtime
+    plugins under <HERMES_HOME>/desktop-plugins, so expose just that narrow
+    path pair on an authenticated /api/fs endpoint.
+    """
+    home = get_hermes_home()
+    return {
+        "hermes_home": str(home),
+        "desktop_plugins": str(home / "desktop-plugins"),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Git ops — the remote half of the desktop coding rail + review pane.
 #

@@ -27,7 +27,13 @@
  * trust seam.
  */
 
-import { getStatus } from '@/hermes'
+import {
+  desktopFsCacheKey,
+  desktopHermesHome,
+  isDesktopFsRemoteMode,
+  readDesktopDir,
+  readDesktopFileText
+} from '@/lib/desktop-fs'
 import { installPluginSdk, sdkImportMap } from '@/sdk/runtime'
 import { notifyError } from '@/store/notifications'
 
@@ -202,14 +208,33 @@ interface DiskPlugin {
 const disk = new Map<string, DiskPlugin>()
 let watching = false
 let scanning = false
+let diskSourceKey = ''
+
+function dropAllDiskPlugins(): void {
+  const desktop = window.hermesDesktop
+
+  for (const [name, record] of disk) {
+    if (record.id) {
+      unloadRuntimePlugin(record.id)
+      dropPlugin(record.id)
+    }
+
+    dropPlugin(name)
+
+    if (record.watchId) {
+      void desktop?.stopPreviewFileWatch(record.watchId)
+    }
+  }
+
+  disk.clear()
+}
 
 async function loadDiskPlugin(name: string, file: string): Promise<void> {
-  const desktop = window.hermesDesktop!
   const entry = disk.get(name)
   const prevId = entry?.id
 
   try {
-    const { text } = await desktop.readFileText(file)
+    const { text } = await readDesktopFileText(file)
     const id = await loadRuntimePlugin(text, name, { file })
 
     // A hot-edit that changes `plugin.id`: loadRuntimePlugin only disposes the
@@ -246,8 +271,16 @@ async function scanDiskPlugins(): Promise<void> {
   scanning = true
 
   try {
-    const { hermes_home } = await getStatus()
-    const { entries } = await desktop.readDir(`${hermes_home}/desktop-plugins`)
+    const { desktop_plugins } = await desktopHermesHome()
+    const sourceKey = `${desktopFsCacheKey()}:${desktop_plugins}`
+
+    if (diskSourceKey && diskSourceKey !== sourceKey) {
+      dropAllDiskPlugins()
+    }
+
+    diskSourceKey = sourceKey
+
+    const { entries } = await readDesktopDir(desktop_plugins)
     const seen = new Set<string>()
 
     for (const dir of entries.filter(e => e.isDirectory)) {
@@ -260,7 +293,7 @@ async function scanDiskPlugins(): Promise<void> {
       const file = `${dir.path}/plugin.js`
 
       try {
-        await desktop.readFileText(file)
+        await readDesktopFileText(file)
       } catch {
         continue // No plugin.js (yet) — not a plugin folder.
       }
@@ -269,11 +302,13 @@ async function scanDiskPlugins(): Promise<void> {
       disk.set(dir.name, record)
       await loadDiskPlugin(dir.name, file)
 
-      try {
-        record.watchId = (await desktop.watchPreviewFile(file)).id
-      } catch {
-        // Unwatchable — the poll still reconciles new folders; edits need a
-        // manual "Reload desktop plugins".
+      if (!isDesktopFsRemoteMode()) {
+        try {
+          record.watchId = (await desktop.watchPreviewFile(file)).id
+        } catch {
+          // Unwatchable — the poll still reconciles new folders; edits need a
+          // manual "Reload desktop plugins".
+        }
       }
     }
 

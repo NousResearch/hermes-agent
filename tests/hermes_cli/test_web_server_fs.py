@@ -174,6 +174,19 @@ def test_fs_default_cwd_falls_back_when_terminal_cwd_is_invalid(client, tmp_path
     assert response.json() == {"cwd": str(fallback), "branch": ""}
 
 
+def test_fs_hermes_home_returns_desktop_plugin_path(client, tmp_path, monkeypatch):
+    hermes_home = tmp_path / "hermes-home"
+    monkeypatch.setattr(web_server, "get_hermes_home", lambda: hermes_home)
+
+    response = client.get("/api/fs/hermes-home")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "hermes_home": str(hermes_home),
+        "desktop_plugins": str(hermes_home / "desktop-plugins"),
+    }
+
+
 def test_fs_endpoints_require_auth(tmp_path):
     client = TestClient(web_server.app)
     target = tmp_path / "secret.txt"
@@ -182,7 +195,9 @@ def test_fs_endpoints_require_auth(tmp_path):
     list_response = client.get("/api/fs/list", params={"path": str(tmp_path)})
     read_response = client.get("/api/fs/read-text", params={"path": str(target)})
     default_response = client.get("/api/fs/default-cwd")
+    hermes_home_response = client.get("/api/fs/hermes-home")
 
     assert list_response.status_code == 401
     assert read_response.status_code == 401
     assert default_response.status_code == 401
+    assert hermes_home_response.status_code == 401

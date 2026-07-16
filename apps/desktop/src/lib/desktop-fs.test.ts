@@ -1,11 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { getStatus } from '@/hermes'
 import { $connection } from '@/store/session'
+
+vi.mock('@/hermes', () => ({
+  getStatus: vi.fn(async () => ({ hermes_home: '/local/hermes' }))
+}))
 
 import {
   desktopDefaultCwd,
   desktopFileDiff,
   desktopGitRoot,
+  desktopHermesHome,
   readDesktopDir,
   readDesktopFileDataUrl,
   readDesktopFileText,
@@ -38,6 +44,10 @@ const api = vi.fn(async ({ path }: { path: string }) => {
 
   if (path === '/api/fs/default-cwd') {
     return { cwd: '/backend/project', branch: 'main' }
+  }
+
+  if (path === '/api/fs/hermes-home') {
+    return { hermes_home: '/remote/hermes', desktop_plugins: '/remote/hermes/desktop-plugins' }
   }
 
   if (path.startsWith('/api/git/file-diff?')) {
@@ -82,12 +92,17 @@ describe('desktop filesystem facade', () => {
     await expect(readDesktopFileText('/work/file.txt')).resolves.toMatchObject({ text: 'local' })
     await expect(readDesktopFileDataUrl('/work/file.txt')).resolves.toBe('data:text/plain;base64,bG9jYWw=')
     await expect(desktopGitRoot('/work')).resolves.toBe('/local')
+    await expect(desktopHermesHome()).resolves.toEqual({
+      hermes_home: '/local/hermes',
+      desktop_plugins: '/local/hermes/desktop-plugins'
+    })
     await expect(selectDesktopPaths({ directories: true })).resolves.toEqual(['/local'])
 
     expect(readDir).toHaveBeenCalledWith('/work')
     expect(readFileText).toHaveBeenCalledWith('/work/file.txt')
     expect(readFileDataUrl).toHaveBeenCalledWith('/work/file.txt')
     expect(gitRoot).toHaveBeenCalledWith('/work')
+    expect(getStatus).toHaveBeenCalled()
     expect(selectPaths).toHaveBeenCalledWith({ directories: true })
     expect(api).not.toHaveBeenCalled()
   })
@@ -100,12 +115,17 @@ describe('desktop filesystem facade', () => {
     await expect(readDesktopFileDataUrl('/home/user/project/a b.txt')).resolves.toBe('data:text/plain;base64,cmVtb3Rl')
     await expect(desktopGitRoot('/home/user/project')).resolves.toBe('/remote')
     await expect(desktopDefaultCwd()).resolves.toEqual({ cwd: '/backend/project', branch: 'main' })
+    await expect(desktopHermesHome()).resolves.toEqual({
+      hermes_home: '/remote/hermes',
+      desktop_plugins: '/remote/hermes/desktop-plugins'
+    })
 
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/list?path=%2Fhome%2Fuser%2Fproject' })
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/read-text?path=%2Fhome%2Fuser%2Fproject%2Fa%20b.txt' })
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/read-data-url?path=%2Fhome%2Fuser%2Fproject%2Fa%20b.txt' })
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/git-root?path=%2Fhome%2Fuser%2Fproject' })
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/default-cwd' })
+    expect(api).toHaveBeenCalledWith({ path: '/api/fs/hermes-home' })
     expect(readDir).not.toHaveBeenCalled()
     expect(readFileText).not.toHaveBeenCalled()
     expect(readFileDataUrl).not.toHaveBeenCalled()

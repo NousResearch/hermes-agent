@@ -86,13 +86,15 @@ Interactive login:
 parallel-cli login
 ```
 
-Headless / SSH / CI:
+Headless / SSH with a person available to authorize:
 
 ```bash
 parallel-cli login --no-browser --json
 ```
 
-API key environment variable:
+This command emits a `device_code` event, then waits while polling for authorization. When Hermes starts the login, run it as a background process, poll once to show the user the verification URL and code, then poll until it emits `auth_success`. It does not require a PTY.
+
+For unattended CI or automation, use an API key instead of starting device login:
 
 ```bash
 export PARALLEL_API_KEY="***"
@@ -330,7 +332,7 @@ parallel-cli monitor cancel <monitor_id> --json
 
 Frequency uses `<n><unit>` with `h`, `d`, or `w` (for example `1h`, `1d`, or `1w`). Confirm the query, frequency, and webhook before creating a monitor.
 
-`list` returns active monitors by default; add `--status active --status cancelled` when cancelled monitors are also needed. Event responses are newest-first and may include `next_cursor`; pass it back with `--cursor` for the next page.
+`list` returns active monitors by default; add `--status active --status cancelled` when cancelled monitors are also needed. Normal event-list responses are newest-first and may include `next_cursor`; pass it back with `--cursor` for the next page. When `--event-group-id` is set, pagination parameters are ignored.
 
 Monitor queries and snapshot task-run IDs are immutable. Create a new monitor to change them. `trigger` starts a real off-schedule run without changing the regular schedule and only emits an event when it detects a material change.
 
@@ -372,8 +374,9 @@ The CLI documents these exit codes:
 
 If you hit auth errors:
 1. check `parallel-cli auth`
-2. confirm `PARALLEL_API_KEY` or run `parallel-cli login` / `parallel-cli login --no-browser --json`
-3. verify `parallel-cli` is on `PATH`
+2. for attended login, run `parallel-cli login` or the background `parallel-cli login --no-browser --json` flow above
+3. for unattended CI or automation, set `PARALLEL_API_KEY`
+4. verify `parallel-cli` is on `PATH`
 
 ## Maintenance
 
@@ -405,7 +408,7 @@ pipx upgrade parallel-web-tools
 
 - Do not omit `--json` unless the user explicitly wants human-formatted output.
 - Do not cite sources not present in the CLI output.
-- For headless authentication, use `login --no-browser --json` and follow the returned device-authorization URL and code.
+- Device login requires a person to authorize the returned URL and code; use `PARALLEL_API_KEY` for unattended automation.
 - Prefer foreground execution for short tasks; do not overuse background processes.
 - For large result sets, save JSON to `/tmp/*.json` instead of stuffing everything into context.
 - Do not silently choose Parallel when Hermes native tools are already sufficient.

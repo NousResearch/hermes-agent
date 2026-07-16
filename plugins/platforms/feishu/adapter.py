@@ -409,6 +409,7 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    group_reply_in_thread: bool = False  # Always reply in thread for group chats
 
 
 @dataclass
@@ -1600,6 +1601,9 @@ class FeishuAdapter(BasePlatformAdapter):
             require_mention=_to_boolean(
                 extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
             ),
+            group_reply_in_thread=_to_boolean(
+                extra.get("group_reply_in_thread", os.getenv("FEISHU_GROUP_REPLY_IN_THREAD", "false"))
+            ),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1632,6 +1636,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_ping_timeout = settings.ws_ping_timeout
         self._allow_bots = settings.allow_bots
         self._require_mention = settings.require_mention
+        self._group_reply_in_thread = settings.group_reply_in_thread
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -4614,7 +4619,7 @@ class FeishuAdapter(BasePlatformAdapter):
         effective_reply_to = reply_to
         if not effective_reply_to and metadata and metadata.get("thread_id"):
             effective_reply_to = metadata.get("reply_to_message_id")
-        reply_in_thread = bool((metadata or {}).get("thread_id"))
+        reply_in_thread = bool((metadata or {}).get("thread_id")) or self._group_reply_in_thread
         if effective_reply_to:
             body = self._build_reply_message_body(
                 content=payload,

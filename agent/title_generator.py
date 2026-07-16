@@ -145,6 +145,21 @@ def auto_title_session(
     except Exception:
         return
 
+    # This runs on a bare daemon thread spawned AFTER the turn's ambient
+    # conversation context was reset, so publish it here from the session id
+    # we already hold — the title-generation LLM call then carries the same
+    # ``conversation=`` Portal tag as the turn it titles. Root-of-lineage for
+    # consistency with the agent loop (a no-op on first exchange, where
+    # titling happens, but correct if this ever runs on a continuation).
+    from agent.portal_tags import set_conversation_context
+
+    conversation_id = session_id
+    try:
+        conversation_id = session_db.get_conversation_root(session_id) or session_id
+    except Exception:
+        pass
+    set_conversation_context(conversation_id)
+
     title = generate_title(
         user_message, assistant_response, failure_callback=failure_callback, main_runtime=main_runtime
     )

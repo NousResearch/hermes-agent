@@ -41,8 +41,10 @@ jobs:
       site: ${{ steps.classify.outputs.site }}
       scan: ${{ steps.classify.outputs.scan }}
       deps: ${{ steps.classify.outputs.deps }}
+      npm_lock: ${{ steps.classify.outputs.npm_lock }}
       docker_meta: ${{ steps.classify.outputs.docker_meta }}
       mcp_catalog: ${{ steps.classify.outputs.mcp_catalog }}
+      ci_review: ${{ steps.classify.outputs.ci_review }}
       event_name: ${{ github.event_name }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -65,10 +67,11 @@ jobs:
   lint:
     name: Python lints
     needs: detect
-    if: needs.detect.outputs.python == 'true'
+    if: needs.detect.outputs.python == 'true' || needs.detect.outputs.ci_review == 'true'
     uses: ./.github/workflows/lint.yml
     with:
       event_name: ${{ needs.detect.outputs.event_name }}
+      ci_review: ${{ needs.detect.outputs.ci_review == 'true' }}
 
   js-tests:
     name: JS & TS checks
@@ -98,6 +101,12 @@ jobs:
     name: Check uv.lock
     needs: detect
     uses: ./.github/workflows/uv-lockfile-check.yml
+
+  lockfile-diff:
+    name: package-lock.json diff
+    needs: detect
+    if: needs.detect.outputs.event_name == 'pull_request' && needs.detect.outputs.npm_lock == 'true'
+    uses: ./.github/workflows/lockfile-diff.yml
 
   docker-lint:
     name: Lint Docker scripts
@@ -144,6 +153,7 @@ jobs:
       - history-check
       - contributor-check
       - uv-lockfile
+      - lockfile-diff
       - docker-lint
       - supply-chain
       - osv-scanner

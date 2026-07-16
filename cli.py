@@ -2590,6 +2590,43 @@ def _replay_output_history() -> None:
         _OUTPUT_HISTORY_REPLAYING = False
 
 
+def _win32_stdout_lacks_console() -> bool:
+    """True on Windows when stdout is not attached to a real console.
+
+    prompt_toolkit's POSIX ``create_output()`` falls back to a plain-text
+    output when stdout is not a tty, but its win32 branch unconditionally
+    builds ``Win32Output``, whose console-buffer query raises
+    ``NoConsoleScreenBufferError`` when stdout is a pipe or file — the
+    normal state for any automation wrapper capturing output (#65558).
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        return not sys.stdout.isatty()
+    except Exception:
+        return True
+
+
+def _plain_print(text: str, *, keep_ansi: bool = False) -> None:
+    """Console-less fallback for ``_cprint``: plain, encode-safe ``print``.
+
+    Mirrors what prompt_toolkit's plain-text output does on POSIX pipes:
+    ANSI styling is stripped, the text survives. Encoding failures (e.g. a
+    cp1252 pipe on Windows without ``PYTHONIOENCODING=utf-8`` meeting the
+    braille spinner or box-drawing banner) degrade via ``errors="replace"``
+    instead of raising or silently dropping the line.
+    """
+    if not keep_ansi:
+        from tools.ansi_strip import strip_ansi
+
+        text = strip_ansi(text)
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", None) or "ascii"
+        print(text.encode(encoding, errors="replace").decode(encoding, errors="replace"))
+
+
 def _cprint(text: str):
     """Print ANSI-colored text through prompt_toolkit's native renderer.
 
@@ -2608,10 +2645,21 @@ def _cprint(text: str):
     """
     _record_output_history(text)
 
+    # Windows + piped/redirected stdout: prompt_toolkit has no console to
+    # render into (``Win32Output`` raises ``NoConsoleScreenBufferError``),
+    # so short-circuit to the plain-text path that POSIX pipes already get
+    # from prompt_toolkit itself. Fixes #65558.
+    if _win32_stdout_lacks_console():
+        _plain_print(text)
+        return
+
     try:
         from prompt_toolkit.application import get_app_or_none, run_in_terminal
     except Exception:
-        _pt_print(_PT_ANSI(text))
+        try:
+            _pt_print(_PT_ANSI(text))
+        except Exception:
+            _plain_print(text)
         return
 
     app = None
@@ -2631,7 +2679,7 @@ def _cprint(text: str):
             # worker logging to a file). prompt_toolkit raises
             # NoConsoleScreenBufferError (Windows) or OSError (other).
             try:
-                print(text)
+                _plain_print(text)
             except Exception:
                 pass
         return
@@ -2641,7 +2689,10 @@ def _cprint(text: str):
     except Exception:
         loop = None
     if loop is None:
-        _pt_print(_PT_ANSI(text))
+        try:
+            _pt_print(_PT_ANSI(text))
+        except Exception:
+            _plain_print(text)
         return
 
     import asyncio as _asyncio
@@ -16372,7 +16423,11 @@ def main(
                         ):
                             print(f"Error: {result['error']}", file=sys.stderr)
                         elif response:
-                            print(response)
+                            # Encode-safe: a cp1252 pipe (Windows automation
+                            # without PYTHONIOENCODING=utf-8) must degrade the
+                            # response, not crash with UnicodeEncodeError and
+                            # exit 1 after the turn already ran (#65558).
+                            _plain_print(response, keep_ansi=True)
 
                         # Kanban goal-loop mode: a worker spawned for a
                         # goal_mode card keeps working in THIS session until an

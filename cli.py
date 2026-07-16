@@ -10288,7 +10288,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
             db = SessionDB()
             analyzer = BehavioralAnalyzer(db, behavior_cfg)
-            report = analyzer.generate(days=days, source=source)
+            # CLI is single-user; user_id=None means no user filtering.
+            report = analyzer.generate(days=days, source=source, user_id=None)
             print(analyzer.format_terminal(report))
             db.close()
         except Exception as e:

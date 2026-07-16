@@ -4472,12 +4472,19 @@ class GatewaySlashCommandsMixin:
             from hermes_state import SessionDB
             from agent.behavioral_insights import BehavioralAnalyzer
 
+            # Extract user_id from the event source to prevent cross-user
+            # data leaks on multi-user gateways.  event.source is a
+            # SessionSource with an optional user_id attribute.
+            user_id = None
+            if event.source is not None:
+                user_id = getattr(event.source, "user_id", None)
+
             loop = asyncio.get_running_loop()
 
             def _run_behavior():
                 db = SessionDB()
                 analyzer = BehavioralAnalyzer(db, behavior_cfg)
-                report = analyzer.generate(days=days, source=source)
+                report = analyzer.generate(days=days, source=source, user_id=user_id)
                 result = analyzer.format_gateway(report)
                 db.close()
                 return result

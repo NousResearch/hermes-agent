@@ -213,6 +213,7 @@ CREATE TABLE IF NOT EXISTS behavioral_scores (
     run_timestamp REAL NOT NULL,
     days_window INTEGER NOT NULL,
     source_filter TEXT,
+    user_id TEXT,
     execution_leverage INTEGER NOT NULL,
     steering INTEGER NOT NULL,
     engineering_quality INTEGER NOT NULL,
@@ -226,6 +227,16 @@ CREATE TABLE IF NOT EXISTS behavioral_scores (
 
     # Pre-computed query strings (parameterized — no user-controlled
     # value can alter query structure, same pattern as insights.py).
+    #
+    # Each query has four variants:
+    #   _ALL       — no source filter, no user_id filter
+    #   _SOURCE    — source filter, no user_id filter
+    #   _USER      — user_id filter, no source filter
+    #   _SOURCE_USER — both source and user_id filters
+    #
+    # Message queries also include ``AND (m.active = 1 OR m.compacted = 1)``
+    # to exclude rewound (active=0, compacted=0) messages, matching the
+    # pattern at hermes_state.py:4537.
     _GET_SESSIONS_ALL = (
         "SELECT id, source, model, started_at, ended_at, "
         "message_count, tool_call_count, parent_session_id, title "
@@ -236,51 +247,127 @@ CREATE TABLE IF NOT EXISTS behavioral_scores (
         "message_count, tool_call_count, parent_session_id, title "
         "FROM sessions WHERE started_at >= ? AND source = ? ORDER BY started_at ASC"
     )
+    _GET_SESSIONS_USER = (
+        "SELECT id, source, model, started_at, ended_at, "
+        "message_count, tool_call_count, parent_session_id, title "
+        "FROM sessions WHERE started_at >= ? AND user_id = ? ORDER BY started_at ASC"
+    )
+    _GET_SESSIONS_SOURCE_USER = (
+        "SELECT id, source, model, started_at, ended_at, "
+        "message_count, tool_call_count, parent_session_id, title "
+        "FROM sessions WHERE started_at >= ? AND source = ? AND user_id = ? "
+        "ORDER BY started_at ASC"
+    )
     _GET_USER_MESSAGES_ALL = (
         "SELECT m.session_id, m.content, m.timestamp "
         "FROM messages m JOIN sessions s ON s.id = m.session_id "
         "WHERE s.started_at >= ? AND m.role = 'user' "
+        "AND (m.active = 1 OR m.compacted = 1) "
         "ORDER BY m.timestamp ASC"
     )
     _GET_USER_MESSAGES_SOURCE = (
         "SELECT m.session_id, m.content, m.timestamp "
         "FROM messages m JOIN sessions s ON s.id = m.session_id "
         "WHERE s.started_at >= ? AND s.source = ? AND m.role = 'user' "
+        "AND (m.active = 1 OR m.compacted = 1) "
+        "ORDER BY m.timestamp ASC"
+    )
+    _GET_USER_MESSAGES_USER = (
+        "SELECT m.session_id, m.content, m.timestamp "
+        "FROM messages m JOIN sessions s ON s.id = m.session_id "
+        "WHERE s.started_at >= ? AND s.user_id = ? AND m.role = 'user' "
+        "AND (m.active = 1 OR m.compacted = 1) "
+        "ORDER BY m.timestamp ASC"
+    )
+    _GET_USER_MESSAGES_SOURCE_USER = (
+        "SELECT m.session_id, m.content, m.timestamp "
+        "FROM messages m JOIN sessions s ON s.id = m.session_id "
+        "WHERE s.started_at >= ? AND s.source = ? AND s.user_id = ? AND m.role = 'user' "
+        "AND (m.active = 1 OR m.compacted = 1) "
         "ORDER BY m.timestamp ASC"
     )
     _GET_ASSISTANT_MESSAGES_ALL = (
         "SELECT m.session_id, m.content, m.tool_calls, m.timestamp "
         "FROM messages m JOIN sessions s ON s.id = m.session_id "
         "WHERE s.started_at >= ? AND m.role = 'assistant' "
+        "AND (m.active = 1 OR m.compacted = 1) "
         "ORDER BY m.timestamp ASC"
     )
     _GET_ASSISTANT_MESSAGES_SOURCE = (
         "SELECT m.session_id, m.content, m.tool_calls, m.timestamp "
         "FROM messages m JOIN sessions s ON s.id = m.session_id "
         "WHERE s.started_at >= ? AND s.source = ? AND m.role = 'assistant' "
+        "AND (m.active = 1 OR m.compacted = 1) "
+        "ORDER BY m.timestamp ASC"
+    )
+    _GET_ASSISTANT_MESSAGES_USER = (
+        "SELECT m.session_id, m.content, m.tool_calls, m.timestamp "
+        "FROM messages m JOIN sessions s ON s.id = m.session_id "
+        "WHERE s.started_at >= ? AND s.user_id = ? AND m.role = 'assistant' "
+        "AND (m.active = 1 OR m.compacted = 1) "
+        "ORDER BY m.timestamp ASC"
+    )
+    _GET_ASSISTANT_MESSAGES_SOURCE_USER = (
+        "SELECT m.session_id, m.content, m.tool_calls, m.timestamp "
+        "FROM messages m JOIN sessions s ON s.id = m.session_id "
+        "WHERE s.started_at >= ? AND s.source = ? AND s.user_id = ? AND m.role = 'assistant' "
+        "AND (m.active = 1 OR m.compacted = 1) "
         "ORDER BY m.timestamp ASC"
     )
     _GET_TOOL_MESSAGES_ALL = (
         "SELECT m.session_id, m.content, m.tool_name, m.timestamp "
         "FROM messages m JOIN sessions s ON s.id = m.session_id "
         "WHERE s.started_at >= ? AND m.role = 'tool' "
+        "AND (m.active = 1 OR m.compacted = 1) "
         "ORDER BY m.timestamp ASC"
     )
     _GET_TOOL_MESSAGES_SOURCE = (
         "SELECT m.session_id, m.content, m.tool_name, m.timestamp "
         "FROM messages m JOIN sessions s ON s.id = m.session_id "
         "WHERE s.started_at >= ? AND s.source = ? AND m.role = 'tool' "
+        "AND (m.active = 1 OR m.compacted = 1) "
+        "ORDER BY m.timestamp ASC"
+    )
+    _GET_TOOL_MESSAGES_USER = (
+        "SELECT m.session_id, m.content, m.tool_name, m.timestamp "
+        "FROM messages m JOIN sessions s ON s.id = m.session_id "
+        "WHERE s.started_at >= ? AND s.user_id = ? AND m.role = 'tool' "
+        "AND (m.active = 1 OR m.compacted = 1) "
+        "ORDER BY m.timestamp ASC"
+    )
+    _GET_TOOL_MESSAGES_SOURCE_USER = (
+        "SELECT m.session_id, m.content, m.tool_name, m.timestamp "
+        "FROM messages m JOIN sessions s ON s.id = m.session_id "
+        "WHERE s.started_at >= ? AND s.source = ? AND s.user_id = ? AND m.role = 'tool' "
+        "AND (m.active = 1 OR m.compacted = 1) "
         "ORDER BY m.timestamp ASC"
     )
     _GET_ALL_TOOL_NAMES_ALL = (
         "SELECT m.tool_name, m.tool_calls "
         "FROM messages m JOIN sessions s ON s.id = m.session_id "
-        "WHERE s.started_at >= ? AND (m.role = 'tool' OR (m.role = 'assistant' AND m.tool_calls IS NOT NULL))"
+        "WHERE s.started_at >= ? AND (m.role = 'tool' OR (m.role = 'assistant' AND m.tool_calls IS NOT NULL)) "
+        "AND (m.active = 1 OR m.compacted = 1)"
     )
     _GET_ALL_TOOL_NAMES_SOURCE = (
         "SELECT m.tool_name, m.tool_calls "
         "FROM messages m JOIN sessions s ON s.id = m.session_id "
-        "WHERE s.started_at >= ? AND s.source = ? AND (m.role = 'tool' OR (m.role = 'assistant' AND m.tool_calls IS NOT NULL))"
+        "WHERE s.started_at >= ? AND s.source = ? "
+        "AND (m.role = 'tool' OR (m.role = 'assistant' AND m.tool_calls IS NOT NULL)) "
+        "AND (m.active = 1 OR m.compacted = 1)"
+    )
+    _GET_ALL_TOOL_NAMES_USER = (
+        "SELECT m.tool_name, m.tool_calls "
+        "FROM messages m JOIN sessions s ON s.id = m.session_id "
+        "WHERE s.started_at >= ? AND s.user_id = ? "
+        "AND (m.role = 'tool' OR (m.role = 'assistant' AND m.tool_calls IS NOT NULL)) "
+        "AND (m.active = 1 OR m.compacted = 1)"
+    )
+    _GET_ALL_TOOL_NAMES_SOURCE_USER = (
+        "SELECT m.tool_name, m.tool_calls "
+        "FROM messages m JOIN sessions s ON s.id = m.session_id "
+        "WHERE s.started_at >= ? AND s.source = ? AND s.user_id = ? "
+        "AND (m.role = 'tool' OR (m.role = 'assistant' AND m.tool_calls IS NOT NULL)) "
+        "AND (m.active = 1 OR m.compacted = 1)"
     )
 
     def __init__(self, db, config: Optional[Dict[str, Any]] = None):
@@ -306,15 +393,28 @@ CREATE TABLE IF NOT EXISTS behavioral_scores (
         # EXISTS is idempotent and safe on existing DBs).
         try:
             self._conn.execute(self._CREATE_TABLE_SQL)
+            # Add user_id column to existing tables that predate it.
+            # CREATE TABLE IF NOT EXISTS won't add the column to a table
+            # that already exists, so we check and ALTER if missing.
+            cols = {
+                row[1] if isinstance(row, (tuple, list)) else row["name"]
+                for row in self._conn.execute("PRAGMA table_info(behavioral_scores)").fetchall()
+            }
+            if "user_id" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE behavioral_scores ADD COLUMN user_id TEXT"
+                )
             self._conn.commit()
         except Exception as exc:
-            logger.warning("Could not create behavioral_scores table: %s", exc)
+            logger.warning("Could not create/migrate behavioral_scores table: %s", exc)
 
     # =================================================================
     # Public API
     # =================================================================
 
-    def generate(self, days: int = 30, source: Optional[str] = None) -> Dict[str, Any]:
+    def generate(
+        self, days: int = 30, source: Optional[str] = None, user_id: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Generate a complete behavioral profile.
 
         This is the main entry point.  It extracts all 18 signals,
@@ -326,6 +426,9 @@ CREATE TABLE IF NOT EXISTS behavioral_scores (
             days: Number of days to look back (default: 30).
             source: Optional filter by source platform (e.g. ``"cli"``,
                 ``"telegram"``).  ``None`` = all sources.
+            user_id: Optional filter by user ID.  On a multi-user gateway
+                this prevents cross-user data leaks.  ``None`` = all users
+                (CLI is single-user, so ``None`` is safe there).
 
         Returns:
             A dict with keys: ``days``, ``source_filter``, ``empty``,
@@ -335,7 +438,8 @@ CREATE TABLE IF NOT EXISTS behavioral_scores (
         cutoff = time.time() - (days * 86400)
 
         # ── Layer 1: Signal extraction ──
-        signals = self._extract_signals(cutoff, source)
+        signals = self._extract_signals(cutoff, source, user_id)
+        signals["days"] = days
 
         if not signals["total_sessions"] or not signals["total_user_messages"]:
             return {
@@ -356,7 +460,7 @@ CREATE TABLE IF NOT EXISTS behavioral_scores (
         deterministic_cards = self._build_deterministic_cards(signals)
 
         # ── Layer 3: Score persistence ──
-        self._persist_scores(days, source, scores, llm_cards, signals)
+        self._persist_scores(days, source, user_id, scores, llm_cards, signals)
 
         return {
             "days": days,
@@ -374,7 +478,12 @@ CREATE TABLE IF NOT EXISTS behavioral_scores (
     # Layer 1: Signal extraction (pure Python + SQL, zero token cost)
     # =================================================================
 
-    def _extract_signals(self, cutoff: float, source: Optional[str] = None) -> Dict[str, Any]:
+    def _extract_signals(
+        self,
+        cutoff: float,
+        source: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Extract all 18 behavioral signals from the database.
 
         This is the core of Layer 1.  It fetches sessions and messages,
@@ -385,15 +494,17 @@ CREATE TABLE IF NOT EXISTS behavioral_scores (
         Args:
             cutoff: Unix timestamp cutoff (only sessions after this).
             source: Optional source platform filter.
+            user_id: Optional user ID filter (prevents cross-user data
+                leaks on multi-user gateways).
 
         Returns:
             A dict containing all 18 signal categories plus aggregate
             counts (``total_sessions``, ``total_user_messages``).
         """
-        sessions = self._get_sessions(cutoff, source)
-        user_messages = self._get_user_messages(cutoff, source)
-        assistant_messages = self._get_assistant_messages(cutoff, source)
-        tool_messages = self._get_tool_messages(cutoff, source)
+        sessions = self._get_sessions(cutoff, source, user_id)
+        user_messages = self._get_user_messages(cutoff, source, user_id)
+        assistant_messages = self._get_assistant_messages(cutoff, source, user_id)
+        tool_messages = self._get_tool_messages(cutoff, source, user_id)
 
         signals: Dict[str, Any] = {
             "total_sessions": len(sessions),
@@ -452,7 +563,7 @@ CREATE TABLE IF NOT EXISTS behavioral_scores (
         signals["decision_patterns"] = self._extract_decision_patterns(user_messages)
 
         # Signal 17: Tool diversity
-        signals["tool_diversity"] = self._extract_tool_diversity(cutoff, source)
+        signals["tool_diversity"] = self._extract_tool_diversity(cutoff, source, user_id)
 
         # Signal 18: Session duration distribution
         signals["session_duration"] = self._extract_session_duration(sessions)
@@ -467,7 +578,7 @@ CREATE TABLE IF NOT EXISTS behavioral_scores (
         signals["cross_session_memory"] = self._extract_cross_session_memory(assistant_messages, sessions)
 
         # Signal 22: Cron autonomy (Hermes-exclusive)
-        signals["cron_autonomy"] = self._extract_cron_autonomy(cutoff, source)
+        signals["cron_autonomy"] = self._extract_cron_autonomy(cutoff, source, user_id)
 
         # Signal 23: Delegation patterns (Hermes-exclusive)
         signals["delegation_patterns"] = self._extract_delegation_patterns(assistant_messages, sessions)
@@ -484,40 +595,64 @@ CREATE TABLE IF NOT EXISTS behavioral_scores (
         signals["skill_roi"] = self._extract_skill_roi(sessions, assistant_messages)
 
         # Signal 27: Session abandonment (Hermes-exclusive)
-        signals["session_abandonment"] = self._extract_session_abandonment(cutoff, source)
+        signals["session_abandonment"] = self._extract_session_abandonment(cutoff, source, user_id)
 
         return signals
 
     # ── Data gathering (SQL) ──────────────────────────────────────────
 
-    def _get_sessions(self, cutoff: float, source: Optional[str] = None) -> List[Dict]:
+    def _get_sessions(
+        self, cutoff: float, source: Optional[str] = None, user_id: Optional[str] = None
+    ) -> List[Dict]:
         """Fetch sessions within the time window, ordered oldest-first."""
-        if source:
+        if source and user_id:
+            cursor = self._conn.execute(self._GET_SESSIONS_SOURCE_USER, (cutoff, source, user_id))
+        elif source:
             cursor = self._conn.execute(self._GET_SESSIONS_SOURCE, (cutoff, source))
+        elif user_id:
+            cursor = self._conn.execute(self._GET_SESSIONS_USER, (cutoff, user_id))
         else:
             cursor = self._conn.execute(self._GET_SESSIONS_ALL, (cutoff,))
         return [dict(row) for row in cursor.fetchall()]
 
-    def _get_user_messages(self, cutoff: float, source: Optional[str] = None) -> List[Dict]:
+    def _get_user_messages(
+        self, cutoff: float, source: Optional[str] = None, user_id: Optional[str] = None
+    ) -> List[Dict]:
         """Fetch all user-role messages within the time window."""
-        if source:
+        if source and user_id:
+            cursor = self._conn.execute(self._GET_USER_MESSAGES_SOURCE_USER, (cutoff, source, user_id))
+        elif source:
             cursor = self._conn.execute(self._GET_USER_MESSAGES_SOURCE, (cutoff, source))
+        elif user_id:
+            cursor = self._conn.execute(self._GET_USER_MESSAGES_USER, (cutoff, user_id))
         else:
             cursor = self._conn.execute(self._GET_USER_MESSAGES_ALL, (cutoff,))
         return [dict(row) for row in cursor.fetchall()]
 
-    def _get_assistant_messages(self, cutoff: float, source: Optional[str] = None) -> List[Dict]:
+    def _get_assistant_messages(
+        self, cutoff: float, source: Optional[str] = None, user_id: Optional[str] = None
+    ) -> List[Dict]:
         """Fetch all assistant-role messages within the time window."""
-        if source:
+        if source and user_id:
+            cursor = self._conn.execute(self._GET_ASSISTANT_MESSAGES_SOURCE_USER, (cutoff, source, user_id))
+        elif source:
             cursor = self._conn.execute(self._GET_ASSISTANT_MESSAGES_SOURCE, (cutoff, source))
+        elif user_id:
+            cursor = self._conn.execute(self._GET_ASSISTANT_MESSAGES_USER, (cutoff, user_id))
         else:
             cursor = self._conn.execute(self._GET_ASSISTANT_MESSAGES_ALL, (cutoff,))
         return [dict(row) for row in cursor.fetchall()]
 
-    def _get_tool_messages(self, cutoff: float, source: Optional[str] = None) -> List[Dict]:
+    def _get_tool_messages(
+        self, cutoff: float, source: Optional[str] = None, user_id: Optional[str] = None
+    ) -> List[Dict]:
         """Fetch all tool-role messages within the time window."""
-        if source:
+        if source and user_id:
+            cursor = self._conn.execute(self._GET_TOOL_MESSAGES_SOURCE_USER, (cutoff, source, user_id))
+        elif source:
             cursor = self._conn.execute(self._GET_TOOL_MESSAGES_SOURCE, (cutoff, source))
+        elif user_id:
+            cursor = self._conn.execute(self._GET_TOOL_MESSAGES_USER, (cutoff, user_id))
         else:
             cursor = self._conn.execute(self._GET_TOOL_MESSAGES_ALL, (cutoff,))
         return [dict(row) for row in cursor.fetchall()]
@@ -1263,15 +1398,24 @@ CREATE TABLE IF NOT EXISTS behavioral_scores (
 
     # ── Signal 17: Tool diversity ───────────────────────────────────────
 
-    def _extract_tool_diversity(self, cutoff: float, source: Optional[str] = None) -> Dict[str, Any]:
+    def _extract_tool_diversity(
+        self,
+        cutoff: float,
+        source: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Measure tool diversity: distinct tools per session + Shannon entropy.
 
         Returns a dict with keys: ``distinct_tools`` (int),
         ``tool_counts`` (dict: tool_name → count), ``entropy`` (float),
         ``avg_per_session`` (float).
         """
-        if source:
+        if source and user_id:
+            cursor = self._conn.execute(self._GET_ALL_TOOL_NAMES_SOURCE_USER, (cutoff, source, user_id))
+        elif source:
             cursor = self._conn.execute(self._GET_ALL_TOOL_NAMES_SOURCE, (cutoff, source))
+        elif user_id:
+            cursor = self._conn.execute(self._GET_ALL_TOOL_NAMES_USER, (cutoff, user_id))
         else:
             cursor = self._conn.execute(self._GET_ALL_TOOL_NAMES_ALL, (cutoff,))
 
@@ -1597,7 +1741,10 @@ CREATE TABLE IF NOT EXISTS behavioral_scores (
     # ── Signal 22: Cron autonomy ──────────────────────────────────────
 
     def _extract_cron_autonomy(
-        self, cutoff: float, source: Optional[str] = None
+        self,
+        cutoff: float,
+        source: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Extract autonomy signals from cron-sourced sessions.
 
@@ -1617,11 +1764,18 @@ CREATE TABLE IF NOT EXISTS behavioral_scores (
                 "success_rate": 0.0,
             }
 
-        cursor = self._conn.execute(
-            "SELECT id, end_reason, message_count FROM sessions "
-            "WHERE started_at >= ? AND source = 'cron'",
-            (cutoff,),
-        )
+        if user_id:
+            cursor = self._conn.execute(
+                "SELECT id, end_reason, message_count FROM sessions "
+                "WHERE started_at >= ? AND source = 'cron' AND user_id = ?",
+                (cutoff, user_id),
+            )
+        else:
+            cursor = self._conn.execute(
+                "SELECT id, end_reason, message_count FROM sessions "
+                "WHERE started_at >= ? AND source = 'cron'",
+                (cutoff,),
+            )
         rows = [dict(r) for r in cursor.fetchall()]
 
         end_reasons: Counter = Counter()
@@ -1924,7 +2078,10 @@ CREATE TABLE IF NOT EXISTS behavioral_scores (
     # ── Signal 27: Session abandonment ────────────────────────────────
 
     def _extract_session_abandonment(
-        self, cutoff: float, source: Optional[str] = None
+        self,
+        cutoff: float,
+        source: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Compute session abandonment statistics from ``end_reason``.
 
@@ -1936,16 +2093,19 @@ CREATE TABLE IF NOT EXISTS behavioral_scores (
         ``closed_by_agent`` (int), ``reset`` (int), ``other`` (int),
         ``abandonment_rate`` (float in [0, 1]).
         """
+        clauses = ["started_at >= ?"]
+        params: list = [cutoff]
         if source:
-            cursor = self._conn.execute(
-                "SELECT end_reason FROM sessions WHERE started_at >= ? AND source = ?",
-                (cutoff, source),
-            )
-        else:
-            cursor = self._conn.execute(
-                "SELECT end_reason FROM sessions WHERE started_at >= ?",
-                (cutoff,),
-            )
+            clauses.append("source = ?")
+            params.append(source)
+        if user_id:
+            clauses.append("user_id = ?")
+            params.append(user_id)
+        where_sql = " AND ".join(clauses)
+        cursor = self._conn.execute(
+            f"SELECT end_reason FROM sessions WHERE {where_sql}",
+            params,
+        )
 
         _USER_REASONS = {"user_exit", "user_close", "timeout", "cancelled"}
         _AGENT_REASONS = {"agent_close", "cron_complete", "completed", "compression"}
@@ -3025,6 +3185,7 @@ CREATE TABLE IF NOT EXISTS behavioral_scores (
         self,
         days: int,
         source: Optional[str],
+        user_id: Optional[str],
         scores: Dict[str, Any],
         llm_cards: Dict[str, str],
         signals: Dict[str, Any],
@@ -3034,6 +3195,9 @@ CREATE TABLE IF NOT EXISTS behavioral_scores (
         Args:
             days: The days window used for this run.
             source: The source filter (or ``None``).
+            user_id: The user ID filter (or ``None``).  Ensures two
+                users' scores on a multi-user gateway don't overwrite
+                each other.
             scores: The 5-axis scores dict.
             llm_cards: The LLM narrative cards dict.
             signals: The raw signals dict (stored as JSON for audit).
@@ -3049,15 +3213,16 @@ CREATE TABLE IF NOT EXISTS behavioral_scores (
 
             self._conn.execute(
                 """INSERT INTO behavioral_scores
-                   (run_timestamp, days_window, source_filter,
+                   (run_timestamp, days_window, source_filter, user_id,
                     execution_leverage, steering, engineering_quality,
                     product_thinking, planning,
                     archetype, agent_relationship, growth_edge, raw_signals)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     time.time(),
                     days,
                     source,
+                    user_id,
                     scores.get("execution_leverage", {}).get("score", 5),
                     scores.get("steering", {}).get("score", 5),
                     scores.get("engineering_quality", {}).get("score", 5),

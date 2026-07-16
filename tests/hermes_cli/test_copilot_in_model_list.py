@@ -36,8 +36,13 @@ def test_copilot_picker_uses_live_catalog_when_available():
 @pytest.fixture()
 def _no_other_copilot_creds(monkeypatch):
     """Make sure copilot-acp visibility comes ONLY from executable resolution:
-    no env tokens, no auth-store entry, no seeded credential pool."""
-    for var in ("GH_TOKEN", "GITHUB_TOKEN", "HERMES_COPILOT_ACP_COMMAND", "COPILOT_CLI_PATH"):
+    no env tokens, no configured ACP endpoint, no auth-store entry, no seeded
+    credential pool."""
+    # COPILOT_ACP_BASE_URL is not a credential, but an `acp+tcp://` value marks
+    # the provider configured with no executable at all (hermes_cli/auth.py), so
+    # a host that sets it would decide the outcome instead of the test.
+    for var in ("GH_TOKEN", "GITHUB_TOKEN", "HERMES_COPILOT_ACP_COMMAND",
+                "COPILOT_CLI_PATH", "COPILOT_ACP_BASE_URL"):
         monkeypatch.delenv(var, raising=False)
     import hermes_cli.auth as auth
     import hermes_cli.model_switch as model_switch

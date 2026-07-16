@@ -92,25 +92,15 @@ class TurnResult:
 _TURN_ABORTED_MARKERS = ("<turn_aborted>", "<turn_aborted/>")
 
 
-def _notification_belongs_to_turn(
+def _notification_scope_ids(
     note: dict,
-    *,
-    thread_id: Optional[str],
-    turn_id: Optional[str],
-) -> bool:
-    """Return whether a multiplexed notification belongs to this turn.
-
-    Codex app-server can carry parent and hosted subagent threads over one
-    JSON-RPC connection.  An explicitly foreign child or
-    stale-turn event must not mutate the active parent's transcript or mark
-    its turn complete.  Unscoped notifications remain accepted for protocol
-    compatibility.
-    """
+) -> tuple[Optional[str], Optional[str]]:
+    """Extract the thread/turn identity carried by a notification."""
     if not isinstance(note, dict):
-        return False
+        return None, None
     params = note.get("params") or {}
     if not isinstance(params, dict):
-        return True
+        return None, None
 
     nested_turn = params.get("turn") or {}
     nested_item = params.get("item") or {}
@@ -127,13 +117,6 @@ def _notification_belongs_to_turn(
             or nested_item.get("thread_id")
         )
 
-    if (
-        thread_id is not None
-        and observed_thread_id is not None
-        and str(observed_thread_id) != str(thread_id)
-    ):
-        return False
-
     observed_turn_id = params.get("turnId") or params.get("turn_id")
     if observed_turn_id is None and isinstance(nested_turn, dict):
         observed_turn_id = nested_turn.get("id") or nested_turn.get("turnId")
@@ -142,6 +125,35 @@ def _notification_belongs_to_turn(
             nested_item.get("turnId")
             or nested_item.get("turn_id")
         )
+
+    return observed_thread_id, observed_turn_id
+
+
+def _notification_belongs_to_turn(
+    note: dict,
+    *,
+    thread_id: Optional[str],
+    turn_id: Optional[str],
+) -> bool:
+    """Return whether a multiplexed notification belongs to this turn.
+
+    Codex app-server can carry parent and hosted subagent threads over one
+    JSON-RPC connection.  An explicitly foreign child or
+    stale-turn event must not mutate the active parent's transcript or mark
+    its turn complete.  Unscoped notifications remain accepted for protocol
+    compatibility.
+    """
+    if not isinstance(note, dict):
+        return False
+
+    observed_thread_id, observed_turn_id = _notification_scope_ids(note)
+
+    if (
+        thread_id is not None
+        and observed_thread_id is not None
+        and str(observed_thread_id) != str(thread_id)
+    ):
+        return False
 
     if (
         turn_id is not None
@@ -819,6 +831,38 @@ class CodexAppServerSession:
                 continue
 
             method = note.get("method", "")
+            observed_thread_id, observed_turn_id = _notification_scope_ids(note)
+            if result.turn_id is None:
+                if method == "turn/started":
+                    if (
+                        observed_thread_id is not None
+                        and str(observed_thread_id) != str(self._thread_id)
+                    ):
+                        logger.debug(
+                            "ignoring foreign compact turn/started: thread=%s",
+                            observed_thread_id,
+                        )
+                        continue
+                    if observed_turn_id is None:
+                        logger.debug(
+                            "ignoring compact turn/started without a turn id"
+                        )
+                        continue
+                    result.turn_id = str(observed_turn_id)
+                elif observed_turn_id is not None or method in {
+                    "item/completed",
+                    "turn/completed",
+                }:
+                    # thread/compact/start does not return a turn id. Until the
+                    # new turn/started arrives, any terminal/projectable event
+                    # is stale or cannot be safely attributed to this compaction.
+                    logger.debug(
+                        "ignoring codex notification before compact turn start: "
+                        "method=%s",
+                        method,
+                    )
+                    continue
+
             if not _notification_belongs_to_turn(
                 note,
                 thread_id=self._thread_id,

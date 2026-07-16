@@ -92,7 +92,7 @@ def test_resolve_codex_runtime_credentials_refreshes_expiring_token(tmp_path, mo
 
     called = {"count": 0}
 
-    def _fake_refresh(tokens, timeout_seconds):
+    def _fake_refresh(tokens, timeout_seconds, **kwargs):
         called["count"] += 1
         return {"access_token": "access-new", "refresh_token": "refresh-new"}
 
@@ -111,7 +111,7 @@ def test_resolve_codex_runtime_credentials_force_refresh(tmp_path, monkeypatch):
 
     called = {"count": 0}
 
-    def _fake_refresh(tokens, timeout_seconds):
+    def _fake_refresh(tokens, timeout_seconds, **kwargs):
         called["count"] += 1
         return {"access_token": "access-forced", "refresh_token": "refresh-new"}
 

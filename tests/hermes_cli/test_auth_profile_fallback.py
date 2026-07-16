@@ -352,6 +352,174 @@ def test_load_provider_state_classic_mode_no_fallback(tmp_path, monkeypatch):
     assert _load_provider_state(auth_store, "anthropic") is None
 
 
+def test_profile_codex_refresh_updates_global_source_without_local_shadow(
+    profile_env, monkeypatch,
+):
+    """Refreshing inherited Codex OAuth must rotate the canonical root store.
+
+    Codex refresh tokens can be single-use.  Persisting the rotated pair into
+    the active profile would leave the root token stale and create a local
+    entry that shadows future root re-authentication.
+    """
+    from hermes_cli import auth
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(
+        providers={
+            "openai-codex": {
+                "tokens": {
+                    "access_token": "root-access-old",
+                    "refresh_token": "root-refresh-old",
+                },
+                "last_refresh": "2026-01-01T00:00:00Z",
+            },
+        },
+        pool={
+            "openai-codex": [{
+                "id": "default",
+                "label": "default",
+                "auth_type": "oauth",
+                "source": "device_code",
+                "access_token": "root-access-old",
+                "refresh_token": "root-refresh-old",
+            }],
+        },
+    ))
+    _write(
+        profile_env["profile"] / "auth.json",
+        _make_auth_store(providers={}, pool={}),
+    )
+
+    monkeypatch.setattr(
+        auth,
+        "refresh_codex_oauth_pure",
+        lambda access_token, refresh_token, timeout_seconds=20.0: {
+            "access_token": "root-access-new",
+            "refresh_token": "root-refresh-new",
+            "last_refresh": "2026-01-02T00:00:00Z",
+        },
+    )
+
+    resolved = auth.resolve_codex_runtime_credentials(force_refresh=True)
+
+    assert resolved["api_key"] == "root-access-new"
+    root_store = json.loads((profile_env["global"] / "auth.json").read_text())
+    assert (
+        root_store["providers"]["openai-codex"]["tokens"]["refresh_token"]
+        == "root-refresh-new"
+    )
+    assert (
+        root_store["credential_pool"]["openai-codex"][0]["refresh_token"]
+        == "root-refresh-new"
+    )
+    profile_store = json.loads((profile_env["profile"] / "auth.json").read_text())
+    assert "openai-codex" not in profile_store.get("providers", {})
+    assert "openai-codex" not in profile_store.get("credential_pool", {})
+
+
+def test_profile_codex_cli_recovery_repairs_invalid_global_source(
+    profile_env, monkeypatch,
+):
+    """CLI recovery of malformed inherited state must not create a shadow."""
+    from hermes_cli import auth
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(
+        providers={
+            "openai-codex": {
+                "tokens": {"refresh_token": "invalid-root-refresh"},
+            },
+        },
+        pool={},
+    ))
+    _write(
+        profile_env["profile"] / "auth.json",
+        _make_auth_store(providers={}, pool={}),
+    )
+    monkeypatch.setattr(
+        auth,
+        "_import_codex_cli_tokens",
+        lambda: {
+            "access_token": "recovered-access",
+            "refresh_token": "recovered-refresh",
+        },
+    )
+
+    resolved = auth.resolve_codex_runtime_credentials(
+        refresh_if_expiring=False,
+    )
+
+    assert resolved["api_key"] == "recovered-access"
+    root_store = json.loads((profile_env["global"] / "auth.json").read_text())
+    assert (
+        root_store["providers"]["openai-codex"]["tokens"]["refresh_token"]
+        == "recovered-refresh"
+    )
+    profile_store = json.loads((profile_env["profile"] / "auth.json").read_text())
+    assert "openai-codex" not in profile_store.get("providers", {})
+
+
+def test_file_lock_reentrancy_is_scoped_to_lock_path(tmp_path, monkeypatch):
+    """Nested profile/root locks must each acquire a kernel-level lock."""
+    import threading
+
+    from hermes_cli import auth
+
+    if auth.fcntl is None:
+        pytest.skip("fcntl unavailable")
+    real_flock = auth.fcntl.flock
+    exclusive_acquires = []
+
+    def tracking_flock(fd, operation):
+        if operation & auth.fcntl.LOCK_EX:
+            exclusive_acquires.append(fd)
+        return real_flock(fd, operation)
+
+    monkeypatch.setattr(auth.fcntl, "flock", tracking_flock)
+    holder = threading.local()
+    with auth._file_lock(
+        tmp_path / "profile.lock", holder, 1.0, "profile lock timeout"
+    ):
+        with auth._file_lock(
+            tmp_path / "root.lock", holder, 1.0, "root lock timeout"
+        ):
+            pass
+
+    assert len(exclusive_acquires) == 2
+
+
+def test_profile_codex_resolver_sees_global_pool_only_credential(profile_env):
+    """Direct resolver fallback must honor the same global pool ownership."""
+    from hermes_cli import auth
+
+    _write(
+        profile_env["global"] / "auth.json",
+        _make_auth_store(
+            providers={},
+            pool={
+                "openai-codex": [{
+                    "id": "manual-1",
+                    "label": "manual",
+                    "auth_type": "oauth",
+                    "priority": 0,
+                    "source": "manual:device_code",
+                    "access_token": "root-pool-access",
+                    "refresh_token": "root-pool-refresh",
+                }]
+            },
+        ),
+    )
+    _write(
+        profile_env["profile"] / "auth.json",
+        _make_auth_store(providers={}, pool={}),
+    )
+
+    resolved = auth.resolve_codex_runtime_credentials(
+        refresh_if_expiring=False,
+    )
+
+    assert resolved["api_key"] == "root-pool-access"
+    assert resolved["source"] == "credential_pool"
+
+
 def test_load_provider_state_malformed_global_does_not_break_profile(profile_env):
     """A corrupt global auth.json must not break profile reads."""
     (profile_env["global"] / "auth.json").write_text("{not valid json")

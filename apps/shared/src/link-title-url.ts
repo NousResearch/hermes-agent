@@ -19,17 +19,22 @@ const NON_PUBLIC_IPV4_RANGES: ReadonlyArray<readonly [network: number, prefixLen
   [0xf0000000, 4]
 ]
 
-const NON_PUBLIC_IPV6_RANGES: ReadonlyArray<readonly [network: readonly number[], prefixLength: number]> = [
-  [[0, 0, 0, 0, 0, 0], 96],
-  [[0x0064, 0xff9b, 0x0001], 48],
-  [[0x0100, 0, 0, 0], 64],
-  [[0x2001, 0x0002, 0], 48],
-  [[0x2001, 0x0010], 28],
+const PUBLIC_IETF_IPV6_RANGES: ReadonlyArray<readonly [network: readonly number[], prefixLength: number]> = [
+  [[0x2001, 0x0001, 0, 0, 0, 0, 0, 1], 128],
+  [[0x2001, 0x0001, 0, 0, 0, 0, 0, 2], 128],
+  [[0x2001, 0x0001, 0, 0, 0, 0, 0, 3], 128],
+  [[0x2001, 0x0003], 32],
+  [[0x2001, 0x0004, 0x0112], 48],
+  [[0x2001, 0x0020], 28],
+  [[0x2001, 0x0030], 28]
+]
+
+const NON_PUBLIC_GLOBAL_UNICAST_IPV6_RANGES: ReadonlyArray<
+  readonly [network: readonly number[], prefixLength: number]
+> = [
   [[0x2001, 0x0db8], 32],
-  [[0x3fff, 0], 20],
-  [[0xfc00], 7],
-  [[0xfe80], 10],
-  [[0xff00], 8]
+  [[0x2002], 16],
+  [[0x3fff, 0], 20]
 ]
 
 function canonicalIpv4Value(hostname: string): null | number {
@@ -136,14 +141,24 @@ function embeddedIpv4(words: number[]): null | number {
   return ((words[6] << 16) | words[7]) >>> 0
 }
 
-function isNonPublicIpv6(words: number[]): boolean {
+function isPublicIpv6(words: number[]): boolean {
   const ipv4 = embeddedIpv4(words)
 
   if (ipv4 !== null) {
-    return isNonPublicIpv4(ipv4)
+    return !isNonPublicIpv4(ipv4)
   }
 
-  return NON_PUBLIC_IPV6_RANGES.some(([network, prefixLength]) => isInIpv6Range(words, network, prefixLength))
+  if (!isInIpv6Range(words, [0x2000], 3)) {
+    return false
+  }
+
+  if (isInIpv6Range(words, [0x2001], 23)) {
+    return PUBLIC_IETF_IPV6_RANGES.some(([network, prefixLength]) => isInIpv6Range(words, network, prefixLength))
+  }
+
+  return !NON_PUBLIC_GLOBAL_UNICAST_IPV6_RANGES.some(([network, prefixLength]) =>
+    isInIpv6Range(words, network, prefixLength)
+  )
 }
 
 function isLocalOnlyHostname(hostname: string): boolean {
@@ -177,7 +192,7 @@ export function isLinkTitleFetchableUrl(value: string): boolean {
   const ipv6 = canonicalIpv6Words(hostname)
 
   if (ipv6) {
-    return !isNonPublicIpv6(ipv6)
+    return isPublicIpv6(ipv6)
   }
 
   return !isLocalOnlyHostname(hostname)

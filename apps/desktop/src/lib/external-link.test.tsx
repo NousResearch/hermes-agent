@@ -71,6 +71,9 @@ describe('external link helpers', () => {
     expect(isTitleFetchable('http://[64:ff9b::7f00:1]')).toBe(false)
     // IANA's globally reachable AMT assignment inside 2001::/23.
     expect(isTitleFetchable('https://[2001:3::1]')).toBe(true)
+    expect(isTitleFetchable('https://[100:0:0:1::1]')).toBe(false)
+    expect(isTitleFetchable('https://[2001:5::1]')).toBe(false)
+    expect(isTitleFetchable('https://[5f00::1]')).toBe(false)
     expect(isTitleFetchable('https://8.8.8.8')).toBe(true)
     expect(isTitleFetchable('file:///tmp/demo.html')).toBe(false)
     expect(isTitleFetchable('mailto:hello@example.com')).toBe(false)

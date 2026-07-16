@@ -1,5 +1,9 @@
 """Tests for per-model reasoning_effort override in gateway _load_reasoning_config."""
 
+import ast
+import inspect
+import textwrap
+
 import pytest
 
 import gateway.run as gateway_run
@@ -174,3 +178,43 @@ class TestGatewaySessionEffectiveModel:
             session_key="agent:main:telegram:private:1", model="claude-opus-4.5"
         )
         assert result == {"enabled": True, "effort": "minimal"}
+
+    def test_runtime_footer_uses_agent_result_model(self):
+        """The footer must resolve reasoning for the turn's effective model.
+
+        The default and session models can have different reasoning overrides;
+        omitting ``model`` here would make the footer display the default
+        model's effort after a session-only ``/model`` switch.
+        """
+        tree = ast.parse(
+            textwrap.dedent(
+                inspect.getsource(gateway_run.GatewayRunner._handle_message_with_agent)
+            )
+        )
+
+        footer_resolver_calls = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            if not any(
+                isinstance(target, ast.Name)
+                and target.id == "_footer_reasoning_effort"
+                for target in node.targets
+            ):
+                continue
+            footer_resolver_calls.extend(
+                call
+                for call in ast.walk(node.value)
+                if isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and call.func.attr == "_resolve_session_reasoning_config"
+            )
+
+        assert len(footer_resolver_calls) == 1
+        model_keyword = next(
+            (kw.value for kw in footer_resolver_calls[0].keywords if kw.arg == "model"),
+            None,
+        )
+        assert ast.dump(model_keyword) == ast.dump(
+            ast.parse('agent_result.get("model")', mode="eval").body
+        )

@@ -12031,7 +12031,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     reasoning_effort_label as _reasoning_effort_label,
                 )
                 _footer_reasoning_effort = _reasoning_effort_label(
-                    self._resolve_session_reasoning_config(source=source)
+                    self._resolve_session_reasoning_config(
+                        source=source,
+                        model=agent_result.get("model"),
+                    )
                 )
                 _footer_line = _bfl(
                     user_config=_load_gateway_config(),

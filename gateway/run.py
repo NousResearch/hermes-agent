@@ -94,7 +94,14 @@ result. If a concrete external blocker remains, report it plainly.
 """.strip()
 _BACKGROUND_INCOMPLETE_RESPONSE_RE = re.compile(
     r"\b(?:incomplete|(?:verification|status)\s+(?:(?:is|still)\s+)?pending|pending\s+verification|"
-    r"needs?\s+verification|not\s+(?:yet\s+)?verified)\b",
+    r"needs?\s+verification|not\s+(?:yet\s+)?verified)\b"
+    r"|아직\s+완료로\s+보고할\s+수\s+없습니다"
+    r"|마지막\s+상태\s+확인이\s+끝나지\s+않았습니다",
+    re.IGNORECASE,
+)
+_BACKGROUND_EXTERNAL_BLOCKER_QUESTION_RE = re.compile(
+    r"\b(?:need|require|waiting\s+for)\b(?=[\s\S]{0,160}\?)"
+    r"[\s\S]{0,120}\b(?:api\s+key|credentials?|approval|access|permission)\b",
     re.IGNORECASE,
 )
 
@@ -102,6 +109,14 @@ _BACKGROUND_INCOMPLETE_RESPONSE_RE = re.compile(
 def _background_response_needs_closure(response: str) -> bool:
     """Return whether a final response explicitly asks for closure work."""
     return bool(_BACKGROUND_INCOMPLETE_RESPONSE_RE.search(str(response or "")))
+
+
+def _background_response_needs_nonfinished_status(response: str) -> bool:
+    """Return whether a response still requires verification or external input."""
+    response = str(response or "")
+    return _background_response_needs_closure(response) or bool(
+        _BACKGROUND_EXTERNAL_BLOCKER_QUESTION_RE.search(response)
+    )
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not gateway chats
@@ -13751,7 +13766,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")
                 status = (
                     "Background task needs verification"
-                    if _background_response_needs_closure(response)
+                    if _background_response_needs_nonfinished_status(response)
                     else "Background task finished"
                 )
                 header = f'{status}\nPrompt: "{preview}"\n\n'

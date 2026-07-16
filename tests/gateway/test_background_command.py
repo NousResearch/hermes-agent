@@ -295,8 +295,8 @@ class TestRunBackgroundTask:
         assert "post-closure readback" in first_message
 
     @pytest.mark.asyncio
-    async def test_incomplete_first_pass_continues_same_agent_session(self):
-        """A clear pending-verification response gets one bounded closure pass."""
+    async def test_korean_incomplete_first_pass_continues_same_agent_session(self):
+        """The reported Korean verification-pending response gets one closure pass."""
         runner = _make_runner()
         mock_adapter = AsyncMock()
         mock_adapter.send = AsyncMock()
@@ -310,7 +310,13 @@ class TestRunBackgroundTask:
             agent.shutdown_memory_provider = MagicMock()
             agent.close = MagicMock()
             agent.run_conversation.side_effect = [
-                {"final_response": "Status still pending.", "messages": []},
+                {
+                    "final_response": (
+                        "아직 완료로 보고할 수 없습니다. 마지막 상태 확인이 끝나지 "
+                        "않았습니다. 확인된 결과만 다시 보고하겠습니다."
+                    ),
+                    "messages": [],
+                },
                 {"final_response": "verification complete", "messages": []},
             ]
             MockAgent.return_value = agent
@@ -325,13 +331,17 @@ class TestRunBackgroundTask:
         assert "verification complete" in content
 
     @pytest.mark.asyncio
-    async def test_repeated_incomplete_response_is_bounded_and_needs_verification(self):
-        """A second incomplete response is delivered without a green completion wrapper."""
+    async def test_repeated_korean_incomplete_response_is_bounded_and_needs_verification(self):
+        """Repeated Korean incomplete work is never delivered as finished or green."""
         runner = _make_runner()
         mock_adapter = AsyncMock()
         mock_adapter.send = AsyncMock()
-        mock_adapter.extract_media = MagicMock(return_value=([], "INCOMPLETE: verification pending"))
-        mock_adapter.extract_images = MagicMock(return_value=([], "INCOMPLETE: verification pending"))
+        korean_incomplete = (
+            "아직 완료로 보고할 수 없습니다. 마지막 상태 확인이 끝나지 "
+            "않았습니다. 확인된 결과만 다시 보고하겠습니다."
+        )
+        mock_adapter.extract_media = MagicMock(return_value=([], korean_incomplete))
+        mock_adapter.extract_images = MagicMock(return_value=([], korean_incomplete))
         runner.adapters[Platform.TELEGRAM] = mock_adapter
 
         with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
@@ -340,8 +350,8 @@ class TestRunBackgroundTask:
             agent.shutdown_memory_provider = MagicMock()
             agent.close = MagicMock()
             agent.run_conversation.side_effect = [
-                {"final_response": "INCOMPLETE: verification pending.", "messages": []},
-                {"final_response": "INCOMPLETE: verification pending.", "messages": []},
+                {"final_response": korean_incomplete, "messages": []},
+                {"final_response": korean_incomplete, "messages": []},
             ]
             MockAgent.return_value = agent
 
@@ -350,7 +360,34 @@ class TestRunBackgroundTask:
         assert agent.run_conversation.call_count == 2
         content = mock_adapter.send.call_args.kwargs["content"]
         assert "Background task needs verification" in content
+        assert "Background task finished" not in content
         assert "✅" not in content
+
+    @pytest.mark.asyncio
+    async def test_external_blocker_question_is_not_delivered_as_finished(self):
+        """A concrete external blocker remains explicitly non-finished without retrying."""
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        response = "I need the production API key to finish the deploy. Can you provide it?"
+        mock_adapter.extract_media = MagicMock(return_value=([], response))
+        mock_adapter.extract_images = MagicMock(return_value=([], response))
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("run_agent.AIAgent") as MockAgent:
+            agent = MagicMock()
+            agent.shutdown_memory_provider = MagicMock()
+            agent.close = MagicMock()
+            agent.run_conversation.return_value = {"final_response": response, "messages": []}
+            MockAgent.return_value = agent
+
+            await runner._run_background_task("deploy", _make_event().source, "bg_test")
+
+        assert agent.run_conversation.call_count == 1
+        content = mock_adapter.send.call_args.kwargs["content"]
+        assert "Background task needs verification" in content
+        assert "Background task finished" not in content
 
     def test_background_timeout_defaults_to_three_hours(self):
         """Background work gets a real, configurable three-hour budget by default."""

@@ -90,13 +90,117 @@ def relay_header_mutations() -> list[Mutation]:
     ]
 
 
+def scheduler_ext_mutations() -> list[Mutation]:
+    """Three mutations for the pure cron scheduler extraction.
+
+    scheduler_ext exposes return-value helpers and emits diagnostics through
+    the caller-provided logger. It performs NO DB writes, so the third mutation
+    covers the reasoning fallback branch instead of a nonexistent DB output.
+    """
+    return [
+        Mutation(
+            "return-value: ignore script timeout env override",
+            lambda p: replace_once(
+                p,
+                'env_value = os.getenv("HERMES_CRON_SCRIPT_TIMEOUT", "").strip()',
+                'env_value = os.getenv("HERMES_CRON_SCRIPT_TIMEOUT_MUTATED", "").strip()',
+            ),
+        ),
+        Mutation(
+            "message-emit: alter invalid env warning",
+            lambda p: replace_once(
+                p,
+                'logger.warning("Invalid HERMES_CRON_SCRIPT_TIMEOUT=%r; using config/default", env_value)',
+                'logger.warning("Mutated HERMES_CRON_SCRIPT_TIMEOUT=%r; using config/default", env_value)',
+            ),
+        ),
+        Mutation(
+            "branch-classification: invert reasoning config fallback",
+            lambda p: replace_once(
+                p,
+                "if reasoning_config is None:",
+                "if reasoning_config is not None:",
+            ),
+        ),
+    ]
+
+
+def compaction_ext_mutations() -> list[Mutation]:
+    """Three mutations over the pure compaction announce output surface."""
+    return [
+        Mutation(
+            "return-value: disable unconditional LCM status gate",
+            lambda p: replace_once(
+                p,
+                '{"compacted", "overflow_recovery", "degraded_fallback_compressed"}',
+                '{"overflow_recovery", "degraded_fallback_compressed"}',
+            ),
+        ),
+        Mutation(
+            "message-emit: corrupt built-in recovery reference",
+            lambda p: replace_once(
+                p,
+                'ref = f"↩ previous: {old_session_id} → current: {new_session_id}"',
+                'ref = f"↩ previous: {old_session_id} → current: mutated-session"',
+            ),
+        ),
+        Mutation(
+            "branch-classification: disable stored wire-mode rendering",
+            lambda p: replace_once(
+                p,
+                "wire_mode = bool(stored and (wire_before or 0) > 0 and (wire_after or 0) > 0)",
+                "wire_mode = False",
+            ),
+        ),
+    ]
+
+
+def tool_gate_mutations() -> list[Mutation]:
+    """Mutations for the pure tool-gate extraction output classes."""
+    return [
+        Mutation(
+            "return-value: invert tool_call scope membership",
+            lambda p: replace_once(
+                p,
+                "if underlying in tool_search_scoped_names(agent):",
+                "if underlying not in tool_search_scoped_names(agent):",
+            ),
+        ),
+        Mutation(
+            "message-emit: change tool scope block guidance",
+            lambda p: replace_once(
+                p,
+                "Use tool_search to find tools you can call.",
+                "Use a different tool discovery flow.",
+            ),
+        ),
+        Mutation(
+            "branch-classification: strip code_execution inheritance exemption",
+            lambda p: replace_once(
+                p,
+                '_TOOLSET_STRIP_EXEMPT = frozenset({"code_execution"})',
+                "_TOOLSET_STRIP_EXEMPT = frozenset()",
+            ),
+        ),
+    ]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--module", required=True)
     parser.add_argument("--verify-cmd", action="store_true", required=True)
     args, verify_cmd = parser.parse_known_args(argv)
     module = args.module
-    mutations = relay_header_mutations() if module.endswith("relay_headers.py") else []
+    if module.endswith("relay_headers.py"):
+        mutations = relay_header_mutations()
+    elif module.endswith("scheduler_ext.py"):
+        mutations = scheduler_ext_mutations()
+    elif module.endswith("compaction_ext.py"):
+        mutations = compaction_ext_mutations()
+    elif module.endswith("tool_gate.py"):
+        mutations = tool_gate_mutations()
+    else:
+        mutations = []
     if not mutations:
         raise SystemExit(f"no registered mutations for {module}")
     if verify_cmd and verify_cmd[0] == "--":

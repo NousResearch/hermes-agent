@@ -24,10 +24,15 @@
   {
     "feature": "hygiene compaction announces in-chat on success",
     "tests": [
-      "tests/gateway/test_session_hygiene.py::test_hygiene_msgcount_announces_limit_not_count"
+      "tests/gateway/test_session_hygiene.py::test_hygiene_msgcount_announces_limit_not_count",
+      "tests/agent/test_compaction_announce.py::TestHygieneMessageLimitClause",
+      "tests/agent/test_compaction_announce.py::TestFormatterLCM",
+      "tests/agent/test_compaction_announce.py::TestFormatterBuiltin"
     ],
     "paths": [
-      "gateway/run.py"
+      "gateway/run.py",
+      "agent/fork_ext/compaction_ext.py",
+      "tests/golden/compaction_ext/"
     ],
     "why": "Successful hygiene compaction must be visible in the originating chat without exposing misleading raw message counts."
   },
@@ -59,6 +64,19 @@
     "why": "Recovery paths must keep Telegram pending updates; only cold bootstrap may drop stale updates."
   },
   {
+    "feature": "cron scheduler per-job reasoning and script timeout helpers",
+    "tests": [
+      "tests/cron/test_cron_script.py::TestRunJobScript::test_script_timeout",
+      "tests/cron/test_per_job_reasoning_effort.py::TestResolution",
+      "tests/cron/test_reasoning_config_per_model.py::TestCronPerModelReasoningConfig"
+    ],
+    "paths": [
+      "cron/fork_ext/scheduler_ext.py",
+      "tests/golden/scheduler_ext/"
+    ],
+    "why": "Cron jobs intentionally support per-job reasoning overrides and a bounded script-timeout resolution chain; the extracted fork helper must keep both behaviors byte-identical."
+  },
+  {
     "feature": "relay-pool session affinity and lane headers",
     "tests": [
       "tests/agent/test_pool_affinity_header.py"
@@ -68,5 +86,19 @@
       "tests/golden/relay_headers/"
     ],
     "why": "Claude API proxy pool requests must keep per-session affinity and classify interactive versus background relay lanes without stamping third-party providers."
+  },
+  {
+    "feature": "tool-search unwrap scope gate and delegate code_execution inheritance exemption",
+    "tests": [
+      "tests/run_agent/test_tool_call_guardrail_runtime.py",
+      "tests/tools/test_tool_search.py::TestRegression_ToolsetScoping::test_tool_call_rejects_out_of_scope_tool",
+      "tests/tools/test_tool_search.py::TestRegression_ToolsetScoping::test_scoped_deferrable_names_helper",
+      "tests/tools/test_delegate_toolset_scope.py::TestToolsetIntersection::test_strip_blocked_removes_delegation"
+    ],
+    "paths": [
+      "agent/fork_ext/tool_gate.py",
+      "tests/golden/tool_gate/"
+    ],
+    "why": "Tool-search bridge calls must be scoped to the session's granted deferrable tools, and inherited subagent toolsets must keep the fork's code_execution exemption while stripping blocked delegation surfaces."
   }
 ]

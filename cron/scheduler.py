@@ -49,6 +49,7 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_cli.fallback_config import get_fallback_chain
 from hermes_time import now as _hermes_now
+from cron.fork_ext import scheduler_ext
 
 logger = logging.getLogger(__name__)
 
@@ -2228,39 +2229,6 @@ _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
 _RUN_CLAIM_HEARTBEAT_SECONDS = 60.0
 
 
-def _get_script_timeout() -> int:
-    """Resolve cron pre-run script timeout from module/env/config with a safe default."""
-    if _SCRIPT_TIMEOUT != _DEFAULT_SCRIPT_TIMEOUT:
-        try:
-            timeout = int(float(_SCRIPT_TIMEOUT))
-            if timeout > 0:
-                return timeout
-        except Exception:
-            logger.warning("Invalid patched _SCRIPT_TIMEOUT=%r; using env/config/default", _SCRIPT_TIMEOUT)
-
-    env_value = os.getenv("HERMES_CRON_SCRIPT_TIMEOUT", "").strip()
-    if env_value:
-        try:
-            timeout = int(float(env_value))
-            if timeout > 0:
-                return timeout
-        except Exception:
-            logger.warning("Invalid HERMES_CRON_SCRIPT_TIMEOUT=%r; using config/default", env_value)
-
-    try:
-        cfg = load_config() or {}
-        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
-        configured = cron_cfg.get("script_timeout_seconds")
-        if configured is not None:
-            timeout = int(float(configured))
-            if timeout > 0:
-                return timeout
-    except Exception as exc:
-        logger.debug("Failed to load cron script timeout from config: %s", exc)
-
-    return _DEFAULT_SCRIPT_TIMEOUT
-
-
 def _run_job_script(script_path: str) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
@@ -2317,7 +2285,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     if not path.is_file():
         return False, f"Script path is not a file: {path}"
 
-    script_timeout = _get_script_timeout()
+    script_timeout = scheduler_ext.get_script_timeout(_SCRIPT_TIMEOUT, _DEFAULT_SCRIPT_TIMEOUT, load_config=load_config, logger=logger)
 
     # Pick an interpreter by extension.  Bash for .sh/.bash, Python for
     # everything else.  We deliberately do NOT honour the file's own
@@ -3369,16 +3337,7 @@ def run_job(
         # otherwise fall back to the shared config resolver (per-model override
         # > global). Re-read from job storage every tick so a ``cronjob
         # action=update reasoning_effort=...`` takes effect next tick.
-        from hermes_constants import parse_reasoning_effort, resolve_reasoning_config
-        reasoning_config = None
-        _job_effort = str(job.get("reasoning_effort") or "").strip()
-        if _job_effort:
-            # Invalid value parses to None and falls through to config (fail-safe).
-            reasoning_config = parse_reasoning_effort(_job_effort)
-        if reasoning_config is None:
-            reasoning_config = resolve_reasoning_config(
-                _cfg if isinstance(_cfg, dict) else {}, str(model)
-            )
+        reasoning_config = scheduler_ext.resolve_cron_reasoning_config(job, _cfg, str(model))
 
         # Prefill messages from env or config.yaml. The top-level
         # prefill_messages_file key is canonical; agent.prefill_messages_file is

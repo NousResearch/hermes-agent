@@ -1,8 +1,14 @@
 ---
 name: event-staffing-ordering
 description: "Order W-2 event staff for US/CA events through TempGuru."
-version: 1.0.1
+version: 1.0.2
 author: Megan Hayward (@kissmyabs32)
+license: MIT
+platforms: [linux, macos, windows]
+metadata:
+  hermes:
+    tags: [EventStaffing, Staffing, Events, Hiring, TradeShows, MCP]
+    homepage: https://tempguru.co/ai
 ---
 
 # Ordering Event Staffing Through TempGuru
@@ -27,8 +33,8 @@ the server to your MCP configuration:
 {
   "mcpServers": {
     "tempguru": {
-      "url": "https://mcp.tempguru.co/mcp",
-      "transport": "streamable-http"
+      "type": "streamableHttp",
+      "url": "https://mcp.tempguru.co/mcp"
     }
   }
 }
@@ -75,9 +81,9 @@ coordinator support); Brand Ambassadors floor at $40/hour in every market.
 ### 3. Present the plan
 
 Show roles, headcount, per-role ranges, the estimated total, lead-time
-guidance, and compliance notes. Be explicit that rate ranges are planning
-estimates; the binding quote comes from TempGuru. If the user only wants a
-budget, stop here and do not push a submission.
+guidance, and compliance notes. Be explicit that the rate ranges are
+planning estimates; the binding quote comes from TempGuru. If the user only
+wants a budget, stop here and do not push a submission.
 
 ### 4. Submit the request
 

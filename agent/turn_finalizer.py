@@ -42,6 +42,24 @@ def _is_pure_tool_call_tail(msg: dict) -> bool:
     return not flatten_message_text(msg.get("content")).strip()
 
 
+_VERIFICATION_CONTINUATION_FLAGS = (
+    "_verification_stop_synthetic",
+    "_pre_verify_synthetic",
+)
+
+
+def _drop_verification_continuation_scaffolding(messages) -> None:
+    """Drop one-request verification nudges from returned/live history."""
+    messages[:] = [
+        message
+        for message in messages
+        if not (
+            isinstance(message, dict)
+            and any(message.get(flag) for flag in _VERIFICATION_CONTINUATION_FLAGS)
+        )
+    ]
+
+
 def finalize_turn(
     agent,
     *,
@@ -184,6 +202,12 @@ def finalize_turn(
     # killing the turn.
     _cleanup_errors = []
 
+    # Verification nudges are protocol-valid user turns only for the immediate
+    # retry request. Candidate assistant rows have already been flushed, so the
+    # nudges can now be removed without losing any user-visible content. This
+    # also exposes the actual assistant tail for exact-content dedup below.
+    _drop_verification_continuation_scaffolding(messages)
+
     # Save trajectory if enabled.  ``user_message`` may be a multimodal
     # list of parts; the trajectory format wants a plain string.
     try:
@@ -225,23 +249,29 @@ def finalize_turn(
             close_interrupted_tool_sequence(messages, final_response)
 
         # Some recovery/fallback paths return a real final_response without
-        # adding a closing assistant message to the transcript (e.g. the
-        # partial-stream and prior-turn-content recovery ``break`` sites in
-        # ``conversation_loop``). If persisted as-is, the durable session can
-        # end at a tool/user message even though the caller — and the gateway
-        # platform — already saw a completed assistant response. The next turn
-        # then replays a user-only backlog and the model re-answers every
-        # "unanswered" message. Close the durable turn at the source, at the
-        # single chokepoint every recovery ``break`` flows through, so the
-        # invariant "delivered final_response ⇒ assistant row in transcript"
-        # holds regardless of which path produced it. (#43849 / #44100)
+        # adding a matching closing assistant message to the transcript (e.g.
+        # the partial-stream and prior-turn-content recovery ``break`` sites in
+        # ``conversation_loop``). Compare content, not only role: verification
+        # may already have published a provisional assistant candidate. Reusing
+        # the same candidate at budget exhaustion must not duplicate it, while a
+        # different terminal correction (for example ``[Verification failed]``)
+        # must be persisted once so the transcript matches what the caller sends.
         if final_response and not interrupted:
             try:
                 _tail = messages[-1] if messages else None
             except Exception:
                 _tail = None
-            _tail_role = _tail.get("role") if isinstance(_tail, dict) else None
-            if _tail_role != "assistant":
+            _tail_matches_final = (
+                isinstance(_tail, dict)
+                and _tail.get("role") == "assistant"
+                and _tail.get("content") == final_response
+            )
+            _tail_is_tool_call = (
+                isinstance(_tail, dict)
+                and _tail.get("role") == "assistant"
+                and bool(_tail.get("tool_calls"))
+            )
+            if not _tail_matches_final and not _tail_is_tool_call:
                 messages.append({"role": "assistant", "content": final_response})
             elif isinstance(_tail, dict) and _is_pure_tool_call_tail(_tail):
                 # The tail IS an assistant row, but a *pure tool-call turn*:

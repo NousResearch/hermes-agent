@@ -417,17 +417,15 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
 
     Repairs applied:
       0. Consecutive ``assistant`` messages with no intervening
-         ``tool``/``user`` turn — merged into a single assistant turn
-         (union of ``tool_calls``, concatenated ``content``). Strict
-         OpenAI-compatible providers (DeepSeek v4, Moonshot/Kimi) reject
-         a history where an ``assistant`` message carrying ``tool_calls``
-         is immediately followed by another ``assistant`` message instead
-         of its ``tool`` results — HTTP 400 "An assistant message with
-         'tool_calls' must be followed by tool messages…". The split
-         shape is produced by recovery/continuation paths that append an
-         interim assistant turn (thinking-prefill, codex
-         incomplete-continuation) or by host-fed / legacy-persisted /
-         resumed histories. Refs #29148, #49147.
+         ``tool``/``user`` turn — provisional verification candidates are
+         replaced by the later assistant row for model replay; all other pairs
+         are merged into a single assistant turn (union of ``tool_calls``,
+         concatenated ``content``). Strict OpenAI-compatible providers
+         (DeepSeek v4, Moonshot/Kimi) reject a history where an ``assistant``
+         message carrying ``tool_calls`` is immediately followed by another
+         ``assistant`` message instead of its ``tool`` results — HTTP 400.
+         Recovery/continuation paths and resumed histories can produce this
+         split shape. Refs #29148, #49147, #62676.
       1. Stray ``tool`` messages whose ``tool_call_id`` doesn't match
          any preceding assistant tool_call — dropped.
       2. Consecutive ``user`` messages — merged with newline separator
@@ -468,6 +466,12 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             or m.get("finish_reason") == "incomplete"
         )
 
+    def _is_verification_candidate(m: Dict) -> bool:
+        return m.get("finish_reason") in {
+            "verification_required",
+            "verify_hook_continue",
+        }
+
     collapsed: List[Dict] = []
     for msg in messages:
         if (
@@ -480,6 +484,15 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
             and not _is_codex_interim(collapsed[-1])
         ):
             prev = collapsed[-1]
+            # Verification candidates are durable user-visible reports, but a
+            # later assistant row supersedes them for model replay. Keeping all
+            # candidate rows in state.db preserves the transcript/event order;
+            # replacing the adjacent provisional row here prevents replay from
+            # merging stale claims into the verified final answer or correction.
+            if _is_verification_candidate(prev):
+                collapsed[-1] = msg
+                repairs += 1
+                continue
             # Union tool_calls (preserve order, both may carry them).
             prev_calls = list(prev.get("tool_calls") or [])
             new_calls = list(msg.get("tool_calls") or [])

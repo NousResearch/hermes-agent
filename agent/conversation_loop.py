@@ -5486,12 +5486,12 @@ def run_conversation(
                     # post-verification response, never the full answer.
                     #
                     # The nudge stays synthetic (internal instruction, not for
-                    # display) and uses ``role="system"`` so it does not create
-                    # a durable user→assistant pair. The resulting
-                    # assistant→assistant gap in the persisted transcript
-                    # (nudge is stripped by ``_is_ephemeral_scaffolding``) is
-                    # repaired at API-call time by ``repair_message_sequence``
-                    # (Pass 0: consecutive-assistant merge). (#55733, #62657)
+                    # display) but remains a protocol-valid user continuation
+                    # for the one request that consumes it. The finalizer drops
+                    # it from live history after the turn, while persistence
+                    # skips it at every flush. Superseded candidate rows remain
+                    # durable/displayable and replay repair discards them from
+                    # model context once a later assistant response exists.
                     messages.append(final_msg)
                     agent._emit_interim_assistant_message(
                         final_msg, force_display=True
@@ -5506,7 +5506,7 @@ def run_conversation(
                             exc_info=True,
                         )
                     messages.append({
-                        "role": "system",
+                        "role": "user",
                         "content": _verify_nudge,
                         "_verification_stop_synthetic": True,
                     })
@@ -5558,9 +5558,8 @@ def run_conversation(
                 if _verify_nudge2:
                     agent._pre_verify_nudges = _attempt + 1
                     final_msg["finish_reason"] = "verify_hook_continue"
-                    # Same persist-and-surface contract as verify-on-stop
-                    # above: the attempted answer is persisted and emitted to
-                    # the UI, while only the nudge stays synthetic. (#62657)
+                    # Same one-request continuation contract as verify-on-stop:
+                    # publish the candidate, then use an ephemeral user nudge.
                     messages.append(final_msg)
                     agent._emit_interim_assistant_message(
                         final_msg, force_display=True
@@ -5575,7 +5574,7 @@ def run_conversation(
                             exc_info=True,
                         )
                     messages.append({
-                        "role": "system",
+                        "role": "user",
                         "content": _verify_nudge2,
                         "_pre_verify_synthetic": True,
                     })

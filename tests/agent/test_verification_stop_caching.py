@@ -1,9 +1,9 @@
 """Verification-loop synthetic scaffolding must never reach durable session state.
 
-verify_on_stop / pre_verify append a synthetic assistant "done" plus a synthetic
+verify_on_stop / pre_verify append a real assistant candidate plus a synthetic
 user nudge to keep the agent going one more turn before it can claim completion.
-These messages exist only to drive the loop; persisting them poisons the resumed
-transcript and breaks prompt-prefix cache reuse on later turns (#55733).
+Candidates are durable; nudges exist only to drive one retry request. Persisting
+the nudges poisons resumed history and breaks prompt-prefix reuse (#55733).
 
 Both persistence sinks (SQLite flush + JSON snapshot) route through the single
 ``_is_ephemeral_scaffolding`` chokepoint, which is driven by
@@ -74,7 +74,11 @@ def test_db_flush_drops_verification_scaffolding(tmp_path, monkeypatch):
         # The assistant response is NOT flagged synthetic — it persists.
         {"role": "assistant", "content": "premature done"},
         # Only the nudge is synthetic — it gets dropped.
-        {"role": "system", "content": "[System: run tests]", "_verification_stop_synthetic": True},
+        {
+            "role": "user",
+            "content": "[System: run tests]",
+            "_verification_stop_synthetic": True,
+        },
         {"role": "assistant", "content": "verified and clean"},
     ]
 
@@ -100,7 +104,11 @@ def test_json_log_drops_verification_scaffolding(tmp_path, monkeypatch):
         # The assistant response is NOT flagged synthetic — it persists.
         {"role": "assistant", "content": "premature done"},
         # Only the nudge is synthetic — it gets dropped.
-        {"role": "system", "content": "[System: run tests]", "_pre_verify_synthetic": True},
+        {
+            "role": "user",
+            "content": "[System: run tests]",
+            "_pre_verify_synthetic": True,
+        },
         {"role": "assistant", "content": "verified and clean"},
     ]
 

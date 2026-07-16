@@ -148,6 +148,103 @@ def test_pending_pre_verify_response_is_preserved_on_budget_exhaustion(monkeypat
     assert result["turn_exit_reason"] == "max_iterations_reached(60/60)"
     assert agent._handle_max_iterations_called is False
 
+def test_published_pending_candidate_is_not_duplicated_by_finalizer(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = _LimitAgent()
+    candidate = {
+        "role": "assistant",
+        "content": "already published candidate",
+        "finish_reason": "verification_required",
+    }
+    messages = [
+        {"role": "user", "content": "task"},
+        candidate,
+        {
+            "role": "user",
+            "content": "verify it",
+            "_verification_stop_synthetic": True,
+        },
+    ]
+
+    result = finalize_turn(
+        agent,
+        final_response=None,
+        api_call_count=60,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="task",
+        original_user_message="task",
+        _should_review_memory=False,
+        _turn_exit_reason="unknown",
+        _pending_verification_response=candidate["content"],
+    )
+
+    assert result["final_response"] == candidate["content"]
+    assert [
+        message["content"]
+        for message in result["messages"]
+        if message["role"] == "assistant"
+    ] == [candidate["content"]]
+    assert result["messages"] == [
+        {"role": "user", "content": "task"},
+        candidate,
+    ]
+    assert agent.persisted_messages == result["messages"]
+
+
+def test_terminal_verification_failure_is_persisted_as_one_correction(monkeypatch):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = _LimitAgent(budget_remaining=58)
+    candidate = {
+        "role": "assistant",
+        "content": "published before verifier failed",
+        "finish_reason": "verification_required",
+    }
+    correction = "[Verification failed]"
+    messages = [
+        {"role": "user", "content": "task"},
+        candidate,
+        {
+            "role": "user",
+            "content": "verify it",
+            "_verification_stop_synthetic": True,
+        },
+    ]
+
+    result = finalize_turn(
+        agent,
+        final_response=correction,
+        api_call_count=2,
+        interrupted=False,
+        failed=True,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="task",
+        original_user_message="task",
+        _should_review_memory=False,
+        _turn_exit_reason="verification_failed",
+        _pending_verification_response=candidate["content"],
+    )
+
+    assert result["final_response"] == correction
+    assert result["failed"] is True
+    assert [
+        message["content"]
+        for message in result["messages"]
+        if message["role"] == "assistant"
+    ] == [candidate["content"], correction]
+    assert not any(
+        message.get("_verification_stop_synthetic")
+        for message in result["messages"]
+    )
+    assert agent.persisted_messages == result["messages"]
+
 
 def test_empty_pending_verification_response_uses_summary_fallback(monkeypatch):
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])

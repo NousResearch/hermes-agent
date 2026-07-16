@@ -1,6 +1,12 @@
 # Auto-generated files — collapse diffs and exclude from language stats
 web/package-lock.json linguist-generated=true
 
+# GitHub source archives are also a supported pip install path. The translated
+# Docusaurus tree contains paths that exceed the default Windows MAX_PATH once
+# pip expands them below its temporary directory, while no website source is
+# required by the Python package at runtime.
+website/ export-ignore
+
 # Enforce LF for scripts that run inside Linux containers.
 # Without this, Windows checkout converts to CRLF and breaks `exec` in the
 # container entrypoint with "no such file or directory".

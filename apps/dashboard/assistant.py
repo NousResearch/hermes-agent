@@ -814,6 +814,27 @@ class Assistant:
         decision = self.router.route("chat", "clinical medicine diagnosis treatment")
         self._log_route(decision)
         system = [{"type": "text", "text": MED_SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
+
+        # Retrieval grounding: search PubMed on the question and inject recent
+        # abstracts so the answer can be evidence-based and cite sources.
+        sources = []
+        ground = {"articles": [], "text": ""}
+        if getattr(self.services, "pubmed_grounding", None):
+            try:
+                ground = self.services.pubmed_grounding(self._last_user_text(messages))
+            except Exception:
+                ground = {"articles": [], "text": ""}
+        sources = ground.get("articles", [])
+        if sources:
+            refs = "\n".join(
+                f"[{a['pmid']}] {a['title']} — {a['journal']} ({a['date']})" for a in sources)
+            block = ("Recent PubMed literature relevant to the question. Use it to "
+                     "ground your answer and cite entries inline by PMID (e.g. [PMID]); "
+                     "note publication dates and that these are international unless SA-"
+                     "specific. Do NOT fabricate citations beyond this list.\n\n"
+                     f"References:\n{refs}\n\nAbstracts:\n{ground.get('text', '')}")
+            system.append({"type": "text", "text": block})
+
         with self._get_client().messages.stream(
             model=decision["model"], max_tokens=4096, thinking={"type": "adaptive"},
             system=system, messages=list(messages),
@@ -823,7 +844,7 @@ class Assistant:
             response = stream.get_final_message()
         text = " ".join(b.text for b in response.content if b.type == "text")
         yield "done", {"mode": "claude", "tier": decision["tier"], "model": decision["model"],
-                       "stop_reason": response.stop_reason,
+                       "stop_reason": response.stop_reason, "sources": sources,
                        "content": [{"type": "text", "text": text}]}
 
     # -- summarize ------------------------------------------------------------

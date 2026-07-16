@@ -945,6 +945,14 @@ a { color: inherit; }
 .med-user .med-role { color: var(--accent); }
 .med-text { white-space: pre-wrap; line-height: 1.5; }
 .med-user .med-text { color: var(--ink-2); }
+.med-sources { margin-top: 8px; display: flex; flex-direction: column; gap: 3px; border-top: 1px dashed var(--hairline-2); padding-top: 6px; }
+.med-sources-label { letter-spacing: 0.14em; }
+.med-source {
+  text-align: left; background: none; border: none; color: var(--ink-2);
+  font: inherit; font-size: 12px; padding: 2px 0; cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.med-source:hover { color: var(--accent); }
 .med-form { display: flex; gap: 8px; margin-top: 10px; align-items: flex-end; }
 .med-input { flex: 1; resize: vertical; min-height: 42px; font: inherit; }
 .med-disclaimer { margin-top: 6px; letter-spacing: 0.04em; }

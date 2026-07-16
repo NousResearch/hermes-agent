@@ -1231,11 +1231,36 @@ def live_pubmed(query: str) -> dict:
     ids = json.loads(fetch_url(esearch)).get("esearchresult", {}).get("idlist", [])
     if not ids:
         return {"source": "live", "query": query, "articles": []}
+    return {"source": "live", "query": query, "articles": live_pubmed_ids(ids)}
+
+
+def pubmed_grounding(query: str) -> dict:
+    """Recent PubMed articles + their abstracts, for grounding a consult.
+
+    Returns {articles: [...], text: "<abstracts>"} — the article list drives the
+    UI's Sources panel; the abstract text is injected into the model context.
+    """
+    esearch = ("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
+               f"?db=pubmed&retmode=json&retmax=5&sort=relevance&term={urllib.parse.quote(query)}")
+    ids = json.loads(fetch_url(esearch)).get("esearchresult", {}).get("idlist", [])
+    if not ids:
+        return {"articles": [], "text": ""}
+    summary = live_pubmed_ids(ids)
+    efetch = ("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+              f"?db=pubmed&rettype=abstract&retmode=text&id={','.join(ids)}")
+    try:
+        text = fetch_url(efetch).decode("utf-8", "replace")[:6000]
+    except Exception:
+        text = ""
+    return {"articles": summary, "text": text}
+
+
+def live_pubmed_ids(ids: list[str]) -> list[dict]:
     esummary = ("https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi"
                 f"?db=pubmed&retmode=json&id={','.join(ids)}")
     result = json.loads(fetch_url(esummary)).get("result", {})
     articles = []
-    for uid in result.get("uids", []):
+    for uid in result.get("uids", ids):
         doc = result.get(uid, {})
         authors = [a.get("name", "") for a in doc.get("authors", [])][:3]
         articles.append({
@@ -1246,7 +1271,7 @@ def live_pubmed(query: str) -> dict:
             "authors": ", ".join(authors) + (" et al." if len(doc.get("authors", [])) > 3 else ""),
             "url": f"https://pubmed.ncbi.nlm.nih.gov/{uid}/",
         })
-    return {"source": "live", "query": query, "articles": articles}
+    return articles
 
 
 def sample_pubmed(query: str) -> dict:
@@ -2057,6 +2082,23 @@ class Api:
         query = " ".join(params.get("q", [""])[0].split())[:200] or "clinical medicine"
         return self._cached(f"pubmed:{query.lower()}", PUBMED_TTL,
                             lambda: live_pubmed(query), lambda: sample_pubmed(query))
+
+    def pubmed_grounding(self, query: str) -> dict:
+        """Grounding context for the MedBot (live only; empty offline)."""
+        if self.offline:
+            return {"articles": [], "text": ""}
+        q = " ".join((query or "").split())[:200]
+        if not q:
+            return {"articles": [], "text": ""}
+        cached = CACHE.get(f"pubground:{q.lower()}")
+        if cached is not None:
+            return cached
+        try:
+            result = pubmed_grounding(q)
+        except Exception:
+            result = {"articles": [], "text": ""}
+        CACHE.set(f"pubground:{q.lower()}", result, PUBMED_TTL)
+        return result
 
     def trials(self, params: dict) -> dict:
         query = " ".join(params.get("q", [""])[0].split())[:200] or "South Africa"

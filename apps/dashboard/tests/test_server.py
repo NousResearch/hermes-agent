@@ -627,6 +627,45 @@ class MarketsWatchlistTests(unittest.TestCase):
         self.assertEqual(out["trials"][0]["status"], "RECRUITING")
         self.assertTrue(out["trials"][0]["url"].endswith("NCT01"))
 
+    def test_pubmed_grounding_normalizer(self):
+        import unittest.mock as mock
+        esearch = json.dumps({"esearchresult": {"idlist": ["111"]}}).encode()
+        esummary = json.dumps({"result": {"uids": ["111"], "111": {
+            "title": "Grounding study", "source": "SAMJ", "pubdate": "2026",
+            "authors": [{"name": "A B"}]}}}).encode()
+        efetch = b"1. SAMJ. 2026.\nGrounding study.\nAbstract: important findings ..."
+        with mock.patch.object(server, "fetch_url", side_effect=[esearch, esummary, efetch]):
+            out = server.pubmed_grounding("tb")
+        self.assertEqual(out["articles"][0]["pmid"], "111")
+        self.assertIn("important findings", out["text"])
+
+    def test_medchat_grounding_injected_and_sources_returned(self):
+        import unittest.mock as mock
+        api = server.Api(offline=True, data_dir=Path(tempfile.mkdtemp()))
+        arts = [{"pmid": "999", "title": "Key SA trial", "journal": "Lancet",
+                 "date": "2026", "authors": "X", "url": "u"}]
+
+        class _Stream:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            text_stream = ["Answer "]
+            def get_final_message(self):
+                return type("R", (), {"content": [type("B", (), {"type": "text", "text": "Answer [999]"})()],
+                                      "stop_reason": "end_turn"})()
+
+        client = mock.Mock()
+        client.messages.stream.return_value = _Stream()
+        with mock.patch.object(type(api.assistant), "mode", new_callable=mock.PropertyMock, return_value="claude"), \
+             mock.patch.object(api.assistant, "_get_client", return_value=client), \
+             mock.patch.object(api, "pubmed_grounding", return_value={"articles": arts, "text": "abstract text"}):
+            events = list(api.assistant.med_chat_stream({"messages": [{"role": "user", "content": "SA TB treatment?"}]}))
+        done = next(p for k, p in events if k == "done")
+        self.assertEqual(done["sources"], arts)          # citations surfaced to the UI
+        system = client.messages.stream.call_args.kwargs["system"]
+        joined = " ".join(b["text"] for b in system)
+        self.assertIn("999", joined)                     # grounding injected into context
+        self.assertIn("Key SA trial", joined)
+
     def test_medchat_local_fallback(self):
         events = list(self.api.assistant.med_chat_stream({"messages": [{"role": "user", "content": "hi"}]}))
         kinds = [e[0] for e in events]

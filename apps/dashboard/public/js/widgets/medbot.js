@@ -4,6 +4,7 @@
 // for a qualified clinician — not a diagnosis or a substitute for judgement.
 
 import { h, clear } from "../utils.js";
+import { openViewer } from "../viewer.js";
 
 export default {
   type: "medbot",
@@ -27,9 +28,18 @@ export default {
           + "your clinical judgement, examination, or current official guidance."));
       }
       for (const m of history()) {
-        log.append(h(`div.med-msg.med-${m.role}`, {},
+        const msg = h(`div.med-msg.med-${m.role}`, {},
           h("span.med-role", {}, m.role === "user" ? "YOU" : "MEDBOT"),
-          h("div.med-text", {}, m.content)));
+          h("div.med-text", {}, m.content));
+        if (m.sources?.length) {
+          msg.append(h("div.med-sources", {},
+            h("span.med-sources-label.muted.small", {}, "SOURCES (PubMed)"),
+            ...m.sources.map((s) => h("button.med-source", {
+              type: "button", title: `${s.journal} · ${s.date}`,
+              onclick: () => openViewer({ url: s.url, title: s.title, source: s.journal, mode: "embed" }),
+            }, `[${s.pmid}] ${s.title}`))));
+        }
+        log.append(msg);
       }
 
       const input = h("textarea.input.med-input", {
@@ -55,8 +65,9 @@ export default {
         persist([...msgs, { role: "assistant", content: "" }]);
         draw();
         let acc = "";
+        let result = null;
         try {
-          await ctx.api.medChatStream(
+          result = await ctx.api.medChatStream(
             msgs.map((m) => ({ role: m.role, content: m.content })),
             (delta) => {
               acc += delta;
@@ -69,7 +80,7 @@ export default {
           acc = acc || `Error: ${err.message}`;
         }
         busy = false;
-        persist([...msgs, { role: "assistant", content: acc }]);
+        persist([...msgs, { role: "assistant", content: acc, sources: result?.sources || [] }]);
         draw();
       }
     };

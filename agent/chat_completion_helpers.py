@@ -1247,7 +1247,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         if (fb_base_url_for_dedup and current_base_url
                 and fb_base_url_for_dedup != current_base_url):
             # Different endpoints: not a duplicate, proceed.
-            pass
+            logger.warning(
+                "Fallback accept: chain entry %s/%s has different base_url %s vs %s — proceeding",
+                fb_provider, fb_model, fb_base_url_for_dedup, current_base_url,
+            )
         else:
             # Same provider+model, and either base_urls match or at least
             # one is missing (assume same backend).
@@ -1255,12 +1258,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 "Fallback skip: chain entry %s/%s at %s matches current provider/model/endpoint",
                 fb_provider, fb_model, current_base_url,
             )
-            return agent._try_activate_fallback()
-        logger.warning(
-            "Fallback skip: chain entry %s/%s matches current provider/model",
-            fb_provider, fb_model,
-        )
-        return agent._try_activate_fallback(reason)
+            return agent._try_activate_fallback(reason)
     if (
         fb_base_url_for_dedup
         and current_base_url

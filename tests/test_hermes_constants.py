@@ -591,7 +591,7 @@ class TestResolvePerModelReasoningEffort:
         """User wrote key bare; input comes in WITH provider prefix.
 
         E.g. user config: model.default: anthropic/claude-opus-4.5,
-        but override key: claude-opus-4.5 (no prefix).
+        but the override is keyed "claude-opus-4.5" (no prefix).
         """
         from hermes_constants import resolve_per_model_reasoning_effort
         overrides = {"claude-opus-4.5": "high"}

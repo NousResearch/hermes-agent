@@ -2006,6 +2006,11 @@ AUTHOR_MAP = {
     "i@dex.moe": "dexhunter",  # PR #60339 salvage (skills snapshot manifest speedup)
     "1torhan@protonmail.com": "uzaylisak",  # PR #29988 salvage (detect_local_server_type process-lifetime cache)
     "zhchl@hermes-agent.local": "8294",  # PR #50572 salvage (honor config context_length on banner)
+    "agent@agents-Mac-mini.local": "NousResearch",  # upstream contributor commit (no GH login resolvable); parity sync 2026-07-15
+    "gigakun@agentmail.to": "gigakun3030",  # upstream contributor; parity sync 2026-07-15
+    "git@hode.co.uk": "okisdev",  # upstream contributor (Harry Yep); parity sync 2026-07-15
+    "jakub.wolniewicz@gmail.com": "frizikk",  # upstream contributor; parity sync 2026-07-15
+    "markvlcek@gmail.com": "MarkVLK",  # upstream contributor; parity sync 2026-07-15
 }
 
 

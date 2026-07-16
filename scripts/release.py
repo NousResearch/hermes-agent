@@ -45,8 +45,27 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "agungsubastian1963@gmail.com": "aguung",  # PR #64461 salvage (gateway: multiplex secret_scope for authz/Slack/webhooks)
+    "jtstothard@gmail.com": "jtstothard",  # PR #63256 salvage (gateway: multiplex secondary adapter config validation)
+    "doogie@spark.local": "SAMBAS123",  # PR #64986 salvage (gateway: multiplex primary bot token scope)
+    "emrekoca2003@gmail.com": "kocaemre",  # PR #36051 salvage (docs: audit round 3 code/doc reconciliation)
+    "205466933+wesleion@users.noreply.github.com": "wesleion",  # PR #36049 salvage (telegram: per-topic free-response allowlist)
+    "evefromwayback@gmail.com": "evefromwayback",  # PR #64611 salvage (agent: never load install-tree AGENTS.md as project context)
+    "Regina@Andreys-Mini.true.true": "Rival",  # PR #64935/#64936 salvage (state: restore-boundary alternation repair; agent: turn-overlap tripwire)
+    "embwl0x@users.noreply.github.com": "embwl0x",  # PR #65105 salvage (gateway: preserve external supervisor ownership)
+    "41409874+2751738943@users.noreply.github.com": "2751738943",  # PR #54785 salvage (tui: post-turn completion ownership routing)
+    "Burgunthy@users.noreply.github.com": "Burgunthy",  # PR #20096 salvage (gateway: profile-based routing for inbound messages)
+    "75556242+webtecnica@users.noreply.github.com": "webtecnica",  # PR #63360 salvage (nous: restore inference-api base_url)
+    "skosarevivan@yandex.ru": "Epoxidex",  # PR #29820 salvage (ollama: top-level reasoning_effort=none; #25758)
+    "jdjiayou@163.com": "JiaDe-Wu",  # PR #34742 salvage (bedrock: bearer routing + streaming fallback + image decode; #28156)
+    "changhyun.min@gmail.com": "minchang",  # PR #42231 salvage (providers: add Upstage Solar)
+    "neo@neodeMac-mini.local": "neo-claw-bot",  # PR #58465 salvage (moa: drop empty user turns from advisory view)
+    "2024104039@mails.szu.edu.cn": "pixel4039",  # PR #64420 salvage (streaming: retry zero-chunk streams)
+    "marceloparra.hm@gmail.com": "marcelohildebrand",  # PR #42346 salvage (lmstudio: JIT load mode)
     "m.guttmann@journaway.com": "mguttmann",  # PR #63738 salvage (Anthropic setup-token pool auth normalization)
     "VrtxOmega@pm.me": "VrtxOmega",  # PR #43809 salvage (desktop: WSL folder-picker path bridge)
+    "gn00742754@gmail.com": "SemonCat",  # PR #56786 salvage (Slack Agent View manifests and Assistant APIs)
+    "KCAYAAI@users.noreply.github.com": "KCAYAAI",  # PR #62248 partial salvage (resume typing after clarify reply)
     "jake.long.vu@vucar.net": "jakelongvu-bot",  # PR #36683 partial salvage (approval: honor canonical approvals.timeout in gateway waits)
     "luigi@users.noreply.github.com": "Tortugasaur",  # PR #43205 salvage (desktop: profile-aware three-way approval mode statusbar control)
     "kavi@local.hermes": "kavioavio",  # Issue #46544 / PR #47705 evolution (smart DENY exact-operation owner override)
@@ -56,7 +75,9 @@ AUTHOR_MAP = {
     "true@supersynergy.de": "Supersynergy",  # PR #59241 salvage (desktop: workspace path status-bar action)
     "me@roryford.com": "roryford",  # PR #63132 salvage (compression: fail closed for errors from a resolved lock API, preserving lineage)
     "esthon@gmail.com": "esthonjr",  # PR #61950 salvage (desktop: legacy non-git workspace grouping + Windows path identity)
+    "drexux0@gmail.com": "Drexuxux",  # PR #36042 salvage (gateway: /footer reachable mid-run via safe-toggle set)
     "iganapolsky@gmail.com": "IgorGanapolsky",  # PR #62125 salvage (compaction anti-thrash threshold verification)
+    "275853971+aeyeopsdev@users.noreply.github.com": "aeyeopsdev",  # PRs #36035/#36068 salvage (google-chat: http inbound without pubsub; clarify cards)
     "tturney1@gmail.com": "TheTom",  # PR #62696 salvage (gateway: expand @ context references under runtime/session model resolution)
     "wilsonkinyuam@gmail.com": "WilsonKinyua",  # PR #62052 (tui: persist unflushed conversations on disconnect/restart)
     "humphreysun98@gmail.com": "HumphreySun98",  # PR #61142 salvage (web: null web/backend config value guards)
@@ -80,6 +101,7 @@ AUTHOR_MAP = {
     "austin@openvm067.space": "austinlaw076",  # PR #57563 partial salvage (auth: lazy per-profile Anthropic OAuth file; gateway: whatsapp_cloud/line added to port-binding platform set)
     "sunsky.lau@gmail.com": "liuhao1024",  # PR #56993 salvage (gateway: process-level HERMES_HOME for pid/lock/status identity files; #56986)
     "roseycomanagement@roseyco.co.uk": "Roseyco-management",  # PR #63581 salvage (telegram: require getUpdates progress before polling is healthy; #63243, #63766)
+    "nima20002000@users.noreply.github.com": "nima20002000",  # PR #36022/#36025 salvage (code-exec truncation metadata; achievements hover loop)
     "gauravsaxena.jaipur@gmail.com": "gauravsaxena1997",  # PR #59868 partial salvage (agent: guard response.text against httpx.ResponseNotRead in _summarize_api_error; #59769)
     "blueirobin02@gmail.com": "irresi",  # PR #59048 salvage (gateway: scope reset banners' session info to the serving profile; #59003)
     "jashlee+microsoft@microsoft.com": "s905060",  # PR #57943 salvage (photon: auto-reinstall stale sidecar node_modules when lockfile is newer than npm's install marker; #59169)
@@ -98,6 +120,7 @@ AUTHOR_MAP = {
     "root@vmi3351581.contaboserver.net": "ostravajih",  # PR #58374 salvage (poolside: coerce integer finish_reason and tool_call id to strings)
     "hello@sahil-shubham.in": "sahil-shubham",  # PR #58448 salvage (whatsapp_cloud: honor documented WHATSAPP_CLOUD_ALLOWED_USERS / ALLOW_ALL_USERS in the DM intake gate)
     "ahmet.tunc@gmail.com": "Ahmett101",  # PR #58445 salvage (profiles: allowlist default-export roots + preserve symlinks)
+    "ignaciopastorsan@gmail.com": "IpastorSan",  # PR #63690 salvage (codex: rescue reasoning-only turns that die after 3 continuation attempts)
     "Ahmett101@users.noreply.github.com": "Ahmett101",  # PR #59455 salvage (background-review: guard summarize against list-shaped tool responses; #59437)
     "wyuebei@gmail.com": "wyuebei-cloud",  # PR #56640 salvage (hermes journey: replace GNU-only %-d strftime with dt.day for Windows)
     "yingwaizhiying@gmail.com": "msh01",  # PR #58250 salvage (telegram: wall-clock init timeout via daemon-thread deadline + abandon the shielded initialize task on timeout so the retry ladder advances instead of hanging on attempt 1/8 under s6 supervision; #58236). Also covers PR #58276 salvage (compression: preserve a real user turn after compaction; #55677).
@@ -328,6 +351,14 @@ AUTHOR_MAP = {
     "290859878+synapsesx@users.noreply.github.com": "synapsesx",
     "157689911+itsflownium@users.noreply.github.com": "itsflownium",
     "dirtyren@users.noreply.github.com": "dirtyren",
+    "a54983334@163.com": "Code-suphub",
+    "78542984+Code-suphub@users.noreply.github.com": "Code-suphub",
+    "hi@neueway.com": "brendandebeasi",
+    "dorokuma@users.noreply.github.com": "dorokuma",
+    "liuwei666888@users.noreply.github.com": "liuwei666888",
+    "527711370@qq.com": "liuwei666888",
+    "217401759+justinschille@users.noreply.github.com": "justinschille",
+    "theoldwizard123@pm.me": "unsupportedpastels",
     "johnmlussier@gmail.com": "John-Lussier",
     "chenkun_lws@126.com": "bytesnail",  # PR #60360 salvage (--yolo startup ordering; #60328)
     "iamgexin@qq.com": "nullptr0807",  # PR #60956 salvage (gateway hygiene in-place compaction; #60947)
@@ -1471,6 +1502,7 @@ AUTHOR_MAP = {
     "2114364329@qq.com": "cuyua9",
     "2557058999@qq.com": "Disaster-Terminator",
     "cine.dreamer.one@gmail.com": "LeonSGP43",
+    "willies578@gmail.com": "grimmjoww578",  # PR #52142 co-author (direct CUA window targeting)
     "zyprothh@gmail.com": "Zyproth",
     "amitgaur@gmail.com": "amitgaur",
     "albuquerque.abner@gmail.com": "mrbob-git",
@@ -1942,6 +1974,7 @@ AUTHOR_MAP = {
     "marvin@photon.codes": "underthestars-zhy",  # PR #46907 co-author (Photon Spectrum project ids)
     "omar@kostudios.io": "OmarB97",  # PR #43977 (desktop session model metadata)
     "omarbaradei21@gmail.com": "OmarB97",  # PR #43977 (desktop session model metadata)
+    "p.fabiszewski@gmail.com": "szafranski",  # PR #36020 (Telegram voice/audio duration)
     "philip.a.dsouza@gmail.com": "PhilipAD",  # direct email match
     "qs2816661685@gmail.com": "qingshan89",  # PR #46895 co-author (desktop remote artifact download)
     "yspdev@gmail.com": "AJ",  # PR #44510 co-author (desktop named-profile boot loop)
@@ -1974,6 +2007,7 @@ AUTHOR_MAP = {
     "i@dex.moe": "dexhunter",  # PR #60339 salvage (skills snapshot manifest speedup)
     "1torhan@protonmail.com": "uzaylisak",  # PR #29988 salvage (detect_local_server_type process-lifetime cache)
     "zhchl@hermes-agent.local": "8294",  # PR #50572 salvage (honor config context_length on banner)
+    "yansh2017@gmail.com": "ya-nsh",  # PR #26790 salvage (normalize local terminal relative cwd; #26783)
 }
 
 

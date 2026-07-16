@@ -4,6 +4,7 @@ import { PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import type { Translations } from '@/i18n'
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
 import { optimisticAttachmentRef } from '@/lib/chat-runtime'
+import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { setMutableRef } from '@/lib/mutable-ref'
 import {
   $composerAttachments,
@@ -48,6 +49,26 @@ interface SubmitPromptDeps {
     updater: (state: ClientSessionState) => ClientSessionState,
     storedSessionId?: string | null
   ) => ClientSessionState
+  /** Composer-scope seams: the main chat runs on the module-level globals
+   *  (defaults); a session tile injects its own so a tile submit never writes
+   *  the primary view's $busy/$messages or clears the main attachment chips. */
+  scope?: {
+    clearAttachments: () => void
+    readAttachments: () => ComposerAttachment[]
+    setAwaitingResponse: (awaiting: boolean) => void
+    setBusy: (busy: boolean) => void
+    setMessages: (updater: (current: ChatMessage[]) => ChatMessage[]) => void
+  }
+}
+
+// Stable identity — a fresh default object per render would churn the
+// useCallback below on every render.
+const MAIN_SUBMIT_SCOPE: NonNullable<SubmitPromptDeps['scope']> = {
+  clearAttachments: clearComposerAttachments,
+  readAttachments: () => $composerAttachments.get(),
+  setAwaitingResponse,
+  setBusy,
+  setMessages
 }
 
 /** The prompt submit pipeline, extracted from usePromptActions. */
@@ -62,12 +83,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
     requestGateway,
     selectedStoredSessionIdRef,
     syncAttachmentsForSubmit,
-    updateSessionState
+    updateSessionState,
+    scope = MAIN_SUBMIT_SCOPE
   } = deps
 
   return useCallback(
     async (rawText: string, options?: SubmitTextOptions) => {
-      const visibleText = rawText.trim()
+      const visibleText = sanitizeComposerInput(rawText).trim()
       const usingComposerAttachments = !options?.attachments
 
       // Drop undefined/null holes a session switch or draft restore can leave in
@@ -75,7 +97,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // this, the sibling iterations below (a.kind / a.label / a.refText, and the
       // sync step) throw "Cannot read properties of undefined (reading 'refText')"
       // and break the chat surface.
-      const attachments = (options?.attachments ?? $composerAttachments.get()).filter((a): a is ComposerAttachment =>
+      const attachments = (options?.attachments ?? scope.readAttachments()).filter((a): a is ComposerAttachment =>
         Boolean(a)
       )
 
@@ -125,8 +147,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       let startingRouteToken = getRouteToken()
 
       const sessionContextDrifted = (): boolean =>
-        selectedStoredSessionIdRef.current !== startingStoredSessionId ||
-        getRouteToken() !== startingRouteToken
+        selectedStoredSessionIdRef.current !== startingStoredSessionId || getRouteToken() !== startingRouteToken
 
       // One submit in flight per session — drop any concurrent re-fire so a
       // stalled turn can't stack the same prompt into multiple real turns.
@@ -158,8 +179,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       const releaseBusy = () => {
         releaseSubmitLock()
         setMutableRef(busyRef, false)
-        setBusy(false)
-        setAwaitingResponse(false)
+        scope.setBusy(false)
+        scope.setAwaitingResponse(false)
       }
 
       // Idempotent optimistic insert — re-running with the resolved sessionId
@@ -198,7 +219,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       const dropOptimistic = (sid: null | string) => {
         if (!sid) {
-          setMessages(current => current.filter(m => m.id !== optimisticId))
+          scope.setMessages(current => current.filter(m => m.id !== optimisticId))
 
           return
         }
@@ -224,8 +245,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       }
 
       setMutableRef(busyRef, true)
-      setBusy(true)
-      setAwaitingResponse(true)
+      scope.setBusy(true)
+      scope.setAwaitingResponse(true)
       clearNotifications()
 
       let sessionId: null | string = activeSessionId
@@ -233,7 +254,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       if (sessionId) {
         seedOptimistic(sessionId)
       } else {
-        setMessages(current => [...current, buildUserMessage()])
+        scope.setMessages(current => [...current, buildUserMessage()])
       }
 
       if (!sessionId && startingStoredSessionId) {
@@ -344,10 +365,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
             requestGateway('prompt.submit', { session_id: sessionId, text }, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
           )
         } catch (firstErr) {
-          if (
-            (isSessionNotFoundError(firstErr) || isGatewayTimeoutError(firstErr)) &&
-            startingStoredSessionId
-          ) {
+          if ((isSessionNotFoundError(firstErr) || isGatewayTimeoutError(firstErr)) && startingStoredSessionId) {
             // Re-register the session in the gateway and get a fresh live ID.
             // Timeouts recover the same way as "session not found": a starved
             // backend loop (#55578 symptom d) rejects the submit even though
@@ -382,7 +400,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         }
 
         if (usingComposerAttachments) {
-          clearComposerAttachments()
+          scope.clearAttachments()
         }
 
         // Submit landed — the turn now runs (busy stays true), but the submit
@@ -439,6 +457,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       createBackendSessionForSend,
       getRouteToken,
       requestGateway,
+      scope,
       selectedStoredSessionIdRef,
       syncAttachmentsForSubmit,
       updateSessionState

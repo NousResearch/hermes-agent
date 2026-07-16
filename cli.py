@@ -2995,29 +2995,9 @@ def _should_auto_attach_clipboard_image_on_paste(pasted_text: str) -> bool:
 
 
 def _strip_leaked_bracketed_paste_wrappers(text: str) -> str:
-    """Strip leaked bracketed-paste wrapper markers from user-visible text.
+    from hermes_cli.input_sanitize import strip_leaked_bracketed_paste_wrappers
 
-    Defensive normalization for cases where terminal/prompt_toolkit parsing
-    fails and bracketed-paste markers end up in the buffer as literal text.
-
-    We strip canonical wrappers unconditionally and also handle degraded
-    visible forms like ``[200~`` / ``[201~`` and ``00~`` / ``01~`` when they
-    look like wrapper boundaries, not arbitrary user content.
-    """
-    if not text:
-        return text
-
-    text = (
-        text.replace("\x1b[200~", "")
-        .replace("\x1b[201~", "")
-        .replace("^[[200~", "")
-        .replace("^[[201~", "")
-    )
-    text = re.sub(r"(^|[\s\n>:\]\)])\[200~", r"\1", text)
-    text = re.sub(r"\[201~(?=$|[\s\n<\[\(\):;.,!?])", "", text)
-    text = re.sub(r"(^|[\s\n>:\]\)])00~", r"\1", text)
-    text = re.sub(r"01~(?=$|[\s\n<\[\(\):;.,!?])", "", text)
-    return text
+    return strip_leaked_bracketed_paste_wrappers(text)
 
 
 def _apply_bracketed_paste_timeout_patch() -> None:
@@ -3917,9 +3897,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         )
         
         # Reasoning config (OpenRouter reasoning effort level)
-        self.reasoning_config = _parse_reasoning_config(
-            CLI_CONFIG["agent"].get("reasoning_effort", "")
-        )
+        # Per-model override > global reasoning_effort — resolved through the
+        # shared chokepoint in hermes_constants (Closes #21256).
+        from hermes_constants import resolve_reasoning_config
+        self.reasoning_config = resolve_reasoning_config(CLI_CONFIG, self.model)
         self.service_tier = _parse_service_tier_config(
             CLI_CONFIG["agent"].get("service_tier", "")
         )
@@ -9147,6 +9128,55 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
 
 
+    def _owns_process_notification(self, event: dict) -> bool:
+        """Return whether this CLI session provably owns a delegation event.
+
+        Delegations dispatched before context compression retain the original
+        session key, so resolve that key to its continuation before comparing.
+        Missing or foreign keys fail closed and remain queued for their owner.
+        """
+        event_key = str(event.get("session_key") or "")
+        current_key = str(getattr(self, "session_id", "") or "")
+        if not event_key or not current_key:
+            return False
+        if event_key == current_key:
+            return True
+        try:
+            session_db = getattr(self, "_session_db", None)
+            resolved_key = (
+                session_db.resolve_resume_session_id(event_key)
+                if session_db is not None
+                else event_key
+            ) or event_key
+        except Exception:
+            resolved_key = event_key
+        return str(resolved_key) == current_key
+
+    def _drain_process_notifications(self, consumer: str) -> None:
+        """Queue background notifications owned by this visible CLI session.
+
+        ``process_registry`` restores durable delegation completions into every
+        process using the same Hermes profile.  Always pass this CLI's stable
+        session identity when draining so another window cannot claim and mark
+        delivered a completion that belongs to this one.
+        """
+        from tools.process_registry import process_registry
+        from tools.async_delegation import (
+            claim_event_delivery,
+            complete_event_delivery,
+        )
+
+        session_key = getattr(self, "session_id", "") or ""
+        for event, synthetic_message in process_registry.drain_notifications(
+            session_key=session_key,
+            owns_event=self._owns_process_notification,
+        ):
+            claim = claim_event_delivery(event, consumer)
+            if claim is None:
+                continue
+            self._pending_input.put(synthetic_message)
+            complete_event_delivery(event, claim)
+
     def _drain_interrupt_queue_to_pending_input(self) -> None:
         """Move stray messages from ``_interrupt_queue`` into ``_pending_input``.
 
@@ -9611,8 +9641,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     self.conversation_history,
                     approx_tokens,
                     new_tokens,
+                    compression_state=getattr(
+                        self.agent, "context_compressor", None
+                    ),
                 )
-                icon = "🗜️" if summary["noop"] else "✅"
+                if summary.get("aborted") or summary.get("fallback_used"):
+                    icon = "⚠️"
+                else:
+                    icon = "🗜️" if summary["noop"] else "✅"
                 print(f"  {icon} {summary['headline']}")
                 print(f"     {summary['token_line']}")
                 if summary["note"]:
@@ -15320,18 +15356,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             # Check for background process notifications (completions
                             # and watch pattern matches) while agent is idle.
                             try:
-                                from tools.process_registry import process_registry
-                                from tools.approval import get_current_session_key
-                                _drain_sk = get_current_session_key(default="")
-                                for _evt, _synth in process_registry.drain_notifications(session_key=_drain_sk):
-                                    from tools.async_delegation import (
-                                        claim_event_delivery, complete_event_delivery,
-                                    )
-                                    _claim = claim_event_delivery(_evt, "cli-idle")
-                                    if _claim is None:
-                                        continue
-                                    self._pending_input.put(_synth)
-                                    complete_event_delivery(_evt, _claim)
+                                self._drain_process_notifications("cli-idle")
                             except Exception:
                                 pass
                         continue
@@ -15491,16 +15516,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         # Drain process notifications (completions + watch matches)
                         # that arrived while the agent was running.
                         try:
-                            from tools.process_registry import process_registry
-                            for _evt, _synth in process_registry.drain_notifications():
-                                from tools.async_delegation import (
-                                    claim_event_delivery, complete_event_delivery,
-                                )
-                                _claim = claim_event_delivery(_evt, "cli-post-turn")
-                                if _claim is None:
-                                    continue
-                                self._pending_input.put(_synth)
-                                complete_event_delivery(_evt, _claim)
+                            self._drain_process_notifications("cli-post-turn")
                         except Exception:
                             pass  # Non-fatal — don't break the main loop
 

@@ -378,6 +378,28 @@ def _format_untrusted_prompt_value(value: Any, *, max_chars: int = _MAX_PROMPT_M
     return json.dumps(text, ensure_ascii=False)
 
 
+def neutralize_untrusted_inline_text(value: Any, *, max_chars: int = _MAX_PROMPT_METADATA_CHARS) -> str:
+    """Collapse untrusted text to a single inert line, unquoted.
+
+    Sibling of :func:`_format_untrusted_prompt_value` for call sites that must
+    preserve the surrounding format (e.g. an inline ``[Name] message turn``
+    prefix) instead of a standalone ``**Label:** "value"`` line — JSON-quoting
+    would visibly change a well-behaved value's rendering there.
+
+    Embedded newlines are the injection vector both helpers guard against:
+    they let an untrusted display name masquerade as a new markdown section
+    (a fake heading, an "## Override" block) inside content the model reads
+    every turn. Collapsing them to a single space keeps a normal value
+    byte-identical while making a hostile one visually inert.
+    """
+    text = str(value).replace("\r\n", "\n").replace("\r", "\n").replace("\n", " ")
+    text = "".join(ch if ch >= " " or ch == "\t" else " " for ch in text)
+    text = " ".join(text.split())
+    if max_chars and len(text) > max_chars:
+        text = text[: max_chars - 3] + "..."
+    return text
+
+
 def build_session_context_prompt(
     context: SessionContext,
     *,
@@ -1993,6 +2015,7 @@ class SessionStore:
                     "chat_id": source.chat_id,
                     "chat_type": source.chat_type,
                     "thread_id": source.thread_id,
+                    "profile_name": source.profile,
                 }
 
         if _needs_save:
@@ -2273,6 +2296,7 @@ class SessionStore:
                 "chat_id": old_entry.origin.chat_id if old_entry.origin else None,
                 "chat_type": old_entry.origin.chat_type if old_entry.origin else None,
                 "thread_id": old_entry.origin.thread_id if old_entry.origin else None,
+                "profile_name": old_entry.origin.profile if old_entry.origin else None,
             }
 
         if self._db and db_end_session_id:
@@ -2483,7 +2507,13 @@ class SessionStore:
         if not self._db:
             return []
         try:
-            return self._db.get_messages_as_conversation(session_id)
+            # repair_alternation: this load feeds LIVE REPLAY. A durable
+            # user;user wedge (e.g. a turn that persisted no assistant row)
+            # would otherwise re-trigger the pre-request repair on every
+            # request forever — heal it once at the restore boundary.
+            return self._db.get_messages_as_conversation(
+                session_id, repair_alternation=True
+            )
         except Exception as e:
             logger.debug("Could not load messages from DB: %s", e)
             return []

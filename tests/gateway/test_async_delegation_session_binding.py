@@ -64,59 +64,109 @@ class TestInterruptForSessionByParentId:
 class TestGatewayPinningFailsClosed:
     """The gateway injection path must never resurrect an ended session."""
 
-    def _make_runner(self, pinned_row):
+    def _make_runner(self, rows, tip=None):
         from gateway.run import GatewayRunner
 
         runner = object.__new__(GatewayRunner)
         db = MagicMock()
-        db.get_session = AsyncMock(return_value=pinned_row)
+        db.get_session = AsyncMock(side_effect=lambda sid: rows.get(sid))
+        db.get_compression_tip = AsyncMock(return_value=tip)
         runner._session_db = db
+        return runner
 
-        entry = MagicMock()
-        entry.session_key = "agent:main:telegram:dm:1"
-        entry.session_id = "sess_current"
-        runner.session_store = MagicMock()
-        runner.session_store.get_or_create_session.return_value = entry
-        runner.session_store.switch_session.return_value = entry
-        return runner, entry
-
-    def _run_pinning_prefix(self, runner, pinned_session_id):
-        """Execute the pinning guard logic exactly as _handle_message does."""
-
-        async def _go():
-            event = MagicMock()
-            event.metadata = {"gateway_session_id": pinned_session_id}
-            session_entry = runner.session_store.get_or_create_session(MagicMock())
-            pinned = str((getattr(event, "metadata", None) or {}).get("gateway_session_id") or "").strip()
-            if pinned and pinned != session_entry.session_id:
-                pinned_row = None
-                try:
-                    if runner._session_db is not None:
-                        pinned_row = await runner._session_db.get_session(pinned)
-                except Exception:
-                    pinned_row = None
-                if pinned_row is None or pinned_row.get("ended_at"):
-                    return "dropped"
-                switched = runner.session_store.switch_session(session_entry.session_key, pinned)
-                if switched is not None:
-                    return "pinned"
-            return "default"
-
-        return asyncio.run(_go())
+    def _resolve(self, runner, pinned_session_id):
+        return asyncio.run(runner._resolve_pinned_delegation_session(pinned_session_id))
 
     def test_live_spawning_session_pins(self):
-        runner, _ = self._make_runner({"id": "sess_old", "ended_at": None})
-        assert self._run_pinning_prefix(runner, "sess_old") == "pinned"
+        runner = self._make_runner({"sess_old": {"id": "sess_old", "ended_at": None}})
+        assert self._resolve(runner, "sess_old") == "sess_old"
 
     def test_ended_spawning_session_drops(self):
-        runner, _ = self._make_runner({"id": "sess_old", "ended_at": "2026-07-08T00:00:00"})
-        assert self._run_pinning_prefix(runner, "sess_old") == "dropped"
-        runner.session_store.switch_session.assert_not_called()
+        runner = self._make_runner(
+            {"sess_old": {"id": "sess_old", "ended_at": "2026-07-08T00:00:00"}}
+        )
+        assert self._resolve(runner, "sess_old") is None
 
     def test_unknown_spawning_session_drops(self):
-        runner, _ = self._make_runner(None)
-        assert self._run_pinning_prefix(runner, "sess_gone") == "dropped"
-        runner.session_store.switch_session.assert_not_called()
+        runner = self._make_runner({})
+        assert self._resolve(runner, "sess_gone") is None
+
+    def test_handler_routes_through_resolver(self):
+        """The inner handler must gate pinning on the resolver, not raw ended_at."""
+        import inspect
+        from gateway.run import GatewayRunner
+
+        src = inspect.getsource(GatewayRunner._handle_message_with_agent)
+        assert "_resolve_pinned_delegation_session" in src
+
+
+class TestCompressionContinuationRerouting:
+    """#65779: a compression-ended parent is a continuation boundary, not a
+    user-ended conversation — reroute the completion to the live tip."""
+
+    _make_runner = TestGatewayPinningFailsClosed._make_runner
+    _resolve = TestGatewayPinningFailsClosed._resolve
+
+    def test_compression_parent_reroutes_to_live_tip(self):
+        runner = self._make_runner(
+            {
+                "sess_parent": {
+                    "id": "sess_parent",
+                    "ended_at": "2026-07-16T11:09:33",
+                    "end_reason": "compression",
+                },
+                "sess_tip": {"id": "sess_tip", "ended_at": None},
+            },
+            tip="sess_tip",
+        )
+        assert self._resolve(runner, "sess_parent") == "sess_tip"
+
+    def test_compression_parent_with_ended_tip_drops(self):
+        runner = self._make_runner(
+            {
+                "sess_parent": {
+                    "id": "sess_parent",
+                    "ended_at": "2026-07-16T11:09:33",
+                    "end_reason": "compression",
+                },
+                "sess_tip": {
+                    "id": "sess_tip",
+                    "ended_at": "2026-07-16T12:00:00",
+                    "end_reason": "session_reset",
+                },
+            },
+            tip="sess_tip",
+        )
+        assert self._resolve(runner, "sess_parent") is None
+
+    def test_compression_parent_without_continuation_drops(self):
+        # get_compression_tip returns the input id when no continuation exists.
+        runner = self._make_runner(
+            {
+                "sess_parent": {
+                    "id": "sess_parent",
+                    "ended_at": "2026-07-16T11:09:33",
+                    "end_reason": "compression",
+                },
+            },
+            tip="sess_parent",
+        )
+        assert self._resolve(runner, "sess_parent") is None
+
+    def test_explicit_reset_still_drops(self):
+        """Security assertion: /new stays fail-closed and never walks the chain."""
+        runner = self._make_runner(
+            {
+                "sess_old": {
+                    "id": "sess_old",
+                    "ended_at": "2026-07-16T11:09:33",
+                    "end_reason": "session_reset",
+                },
+            },
+            tip="sess_child",
+        )
+        assert self._resolve(runner, "sess_old") is None
+        runner._session_db.get_compression_tip.assert_not_called()
 
 
 class TestResetHandlerInterruptsDelegations:

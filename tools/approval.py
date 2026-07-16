@@ -431,6 +431,13 @@ HARDLINE_PATTERNS = [
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'/(?:(?:\.\.?)?/)*(?:\.\.?)?\**|/ \*'), "recursive delete of root filesystem"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(_HARDLINE_SYSTEM_DIRS), "recursive delete of system directory"),
     (_RM_FLAG_PREFIX + _hardline_rm_path(r'(?:~|\$\{?HOME\}?)(?:/?|/\*)?'), "recursive delete of home directory"),
+    (
+        _RM_FLAG_PREFIX
+        + _hardline_rm_path(
+            r'(?:~/\.hermes|\$\{?HERMES_HOME\}?)(?:/?|/\*)?'
+        ),
+        "recursive delete of active Hermes home",
+    ),
     # Filesystem format
     (r'\bmkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
     # Raw block device overwrites (dd + redirection)
@@ -962,6 +969,35 @@ def _fold_home_prefixes(command: str, paths, replacement: str) -> str:
     return command
 
 
+def _fold_exact_home_paths(command: str, paths, replacement: str) -> str:
+    """Fold exact resolved home path tokens, without folding child paths.
+
+    ``_fold_home_prefixes`` intentionally requires a path tail, which is right
+    for sensitive files below a home but leaves the bare active Hermes home
+    unchanged. A recursive delete of that bare directory is catastrophic, so
+    fold only exact shell tokens here. Child paths remain handled by the prefix
+    fold and are not promoted to the hardline root-delete rule.
+    """
+    boundary = r"""(?=$|[\s'"`;|&<>()])"""
+    seen: set[str] = set()
+    for path in sorted((p for p in paths if p), key=len, reverse=True):
+        variants = {
+            path,
+            path.replace("\\", "/"),
+            path.replace("/", "\\"),
+        }
+        for variant in variants:
+            if not variant or variant in seen:
+                continue
+            seen.add(variant)
+            command = re.sub(
+                re.escape(variant) + boundary,
+                replacement,
+                command,
+            )
+    return command
+
+
 def _rewrite_resolved_user_home(command: str) -> str:
     """Rewrite the current user's absolute home prefix to ``~/``.
 
@@ -1006,7 +1042,8 @@ def _rewrite_resolved_hermes_home(command: str) -> str:
         ]
     except Exception:
         return command
-    return _fold_home_prefixes(command, candidates, "~/.hermes")
+    command = _fold_home_prefixes(command, candidates, "~/.hermes")
+    return _fold_exact_home_paths(command, candidates, "~/.hermes")
 
 
 _PARAM_REPLACEMENT_RE = re.compile(r"\$\{[^}/\s]+/[^}/]*/(?P<replacement>[^}]*)\}")

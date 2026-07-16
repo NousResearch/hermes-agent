@@ -15,6 +15,7 @@ import pytest
 from hermes_cli.quick_commands import (
     QUICK_COMMAND_OUTPUT_MAX_BYTES,
     QuickCommandOutputError,
+    _verified_process,
     communicate_bounded_async,
     run_bounded_argv,
 )
@@ -25,9 +26,12 @@ def _minimal_test_env() -> dict[str, str]:
     return {"PATH": os.environ.get("PATH", "")}
 
 
-def _successful_forking_command(tmp_path) -> tuple[list[str], Path, Path]:
-    pid_path = tmp_path / "successful-descendant.pid"
-    heartbeat_path = tmp_path / "successful-descendant.heartbeat"
+def _successful_forking_command(
+    tmp_path, *, escape_session: bool = False
+) -> tuple[list[str], Path, Path]:
+    suffix = "escaped" if escape_session else "grouped"
+    pid_path = tmp_path / f"successful-{suffix}-descendant.pid"
+    heartbeat_path = tmp_path / f"successful-{suffix}-descendant.heartbeat"
     descendant = (
         "import pathlib,sys,time\n"
         "path=pathlib.Path(sys.argv[1])\n"
@@ -41,11 +45,50 @@ def _successful_forking_command(tmp_path) -> tuple[list[str], Path, Path]:
         "child=subprocess.Popen(\n"
         " [sys.executable,'-c',sys.argv[3],str(heartbeat)],\n"
         " stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,\n"
-        " stderr=subprocess.DEVNULL,close_fds=True)\n"
+        " stderr=subprocess.DEVNULL,close_fds=True,\n"
+        " start_new_session=(sys.argv[4]=='escaped'))\n"
         "deadline=time.monotonic()+2\n"
         "while not heartbeat.exists() and time.monotonic()<deadline: time.sleep(0.01)\n"
         "pathlib.Path(sys.argv[1]).write_text(str(child.pid))\n"
+        "time.sleep(0.3)\n"
         "print('leader complete')\n"
+    )
+    return (
+        [
+            sys.executable,
+            "-c",
+            leader,
+            str(pid_path),
+            str(heartbeat_path),
+            descendant,
+            "escaped" if escape_session else "grouped",
+        ],
+        pid_path,
+        heartbeat_path,
+    )
+
+
+def _timing_out_escaped_command(tmp_path) -> tuple[list[str], Path, Path]:
+    pid_path = tmp_path / "timeout-escaped-descendant.pid"
+    heartbeat_path = tmp_path / "timeout-escaped-descendant.heartbeat"
+    descendant = (
+        "import pathlib,sys,time\n"
+        "path=pathlib.Path(sys.argv[1])\n"
+        "while True:\n"
+        " path.write_text(str(time.time_ns()))\n"
+        " time.sleep(0.01)\n"
+    )
+    leader = (
+        "import pathlib,subprocess,sys,time\n"
+        "heartbeat=pathlib.Path(sys.argv[2])\n"
+        "child=subprocess.Popen(\n"
+        " [sys.executable,'-c',sys.argv[3],str(heartbeat)],\n"
+        " stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,\n"
+        " stderr=subprocess.DEVNULL,close_fds=True,start_new_session=True)\n"
+        "deadline=time.monotonic()+2\n"
+        "while not heartbeat.exists() and time.monotonic()<deadline: time.sleep(0.01)\n"
+        "pathlib.Path(sys.argv[1]).write_text(str(child.pid))\n"
+        "time.sleep(60)\n"
     )
     return (
         [
@@ -81,6 +124,35 @@ def test_minimal_environment_preserves_context_resolved_hermes_home(tmp_path):
         reset_hermes_home_override(token)
 
     assert child_env["HERMES_HOME"] == str(named_home)
+
+
+def test_descendant_identity_guard_rejects_reused_pid(monkeypatch):
+    terminated = False
+
+    class ReusedProcess:
+        pid = 4242
+
+        @staticmethod
+        def create_time():
+            return 200.0
+
+        @staticmethod
+        def is_running():
+            return True
+
+        @staticmethod
+        def terminate():
+            nonlocal terminated
+            terminated = True
+
+    monkeypatch.setattr(
+        "hermes_cli.quick_commands.psutil.Process", lambda pid: ReusedProcess()
+    )
+
+    process = _verified_process(4242, create_time=100.0)
+
+    assert process is None
+    assert terminated is False
 
 
 @pytest.mark.live_system_guard_bypass
@@ -225,6 +297,39 @@ def test_sync_successful_leader_reaps_closed_stdio_descendant(tmp_path):
         _kill_test_descendant(pid_path)
 
 
+@pytest.mark.live_system_guard_bypass
+@pytest.mark.skipif(sys.platform == "win32", reason="real setsid regression is POSIX-only")
+def test_sync_successful_leader_reaps_escaped_session_descendant(tmp_path):
+    command, pid_path, heartbeat_path = _successful_forking_command(
+        tmp_path, escape_session=True
+    )
+    try:
+        result = run_bounded_argv(command, env=_minimal_test_env(), timeout=5)
+
+        assert result.returncode == 0
+        assert result.stdout.strip() == b"leader complete"
+        before = heartbeat_path.read_text()
+        time.sleep(0.1)
+        assert heartbeat_path.read_text() == before
+    finally:
+        _kill_test_descendant(pid_path)
+
+
+@pytest.mark.live_system_guard_bypass
+@pytest.mark.skipif(sys.platform == "win32", reason="real setsid regression is POSIX-only")
+def test_sync_timeout_reaps_escaped_session_descendant(tmp_path):
+    command, pid_path, heartbeat_path = _timing_out_escaped_command(tmp_path)
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            run_bounded_argv(command, env=_minimal_test_env(), timeout=0.3)
+
+        before = heartbeat_path.read_text()
+        time.sleep(0.1)
+        assert heartbeat_path.read_text() == before
+    finally:
+        _kill_test_descendant(pid_path)
+
+
 @pytest.mark.asyncio
 @pytest.mark.live_system_guard_bypass
 async def test_async_streaming_combined_cap_terminates_and_reaps():
@@ -305,6 +410,58 @@ async def test_async_successful_leader_reaps_closed_stdio_descendant(tmp_path):
         assert proc.returncode == 0
         assert stdout.strip() == b"leader complete"
         assert stderr == b""
+        before = heartbeat_path.read_text()
+        await asyncio.sleep(0.1)
+        assert heartbeat_path.read_text() == before
+    finally:
+        _kill_test_descendant(pid_path)
+
+
+@pytest.mark.asyncio
+@pytest.mark.live_system_guard_bypass
+@pytest.mark.skipif(sys.platform == "win32", reason="real setsid regression is POSIX-only")
+async def test_async_successful_leader_reaps_escaped_session_descendant(tmp_path):
+    command, pid_path, heartbeat_path = _successful_forking_command(
+        tmp_path, escape_session=True
+    )
+    proc = await asyncio.create_subprocess_exec(
+        *command,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=_minimal_test_env(),
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = await communicate_bounded_async(proc, timeout=5)
+
+        assert proc.returncode == 0
+        assert stdout.strip() == b"leader complete"
+        assert stderr == b""
+        before = heartbeat_path.read_text()
+        await asyncio.sleep(0.1)
+        assert heartbeat_path.read_text() == before
+    finally:
+        _kill_test_descendant(pid_path)
+
+
+@pytest.mark.asyncio
+@pytest.mark.live_system_guard_bypass
+@pytest.mark.skipif(sys.platform == "win32", reason="real setsid regression is POSIX-only")
+async def test_async_timeout_reaps_escaped_session_descendant(tmp_path):
+    command, pid_path, heartbeat_path = _timing_out_escaped_command(tmp_path)
+    proc = await asyncio.create_subprocess_exec(
+        *command,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=_minimal_test_env(),
+        start_new_session=True,
+    )
+    try:
+        with pytest.raises(asyncio.TimeoutError):
+            await communicate_bounded_async(proc, timeout=0.3)
+
         before = heartbeat_path.read_text()
         await asyncio.sleep(0.1)
         assert heartbeat_path.read_text() == before

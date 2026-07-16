@@ -13,6 +13,8 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
+import psutil
+
 
 QUICK_COMMAND_TIMEOUT_SECONDS = 30
 QUICK_COMMAND_INPUT_MAX_BYTES = 8192
@@ -22,6 +24,7 @@ QUICK_COMMAND_DESTINATION_ALIAS_MAX_BYTES = 64
 
 _OUTPUT_READ_CHUNK_BYTES = 8192
 _PROCESS_STOP_GRACE_SECONDS = 2
+_DESCENDANT_POLL_SECONDS = 0.05
 
 _DESTINATION_ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 _TRUSTED_BASE_ENV_KEYS = (
@@ -61,6 +64,21 @@ def run_bounded_argv(
         env=dict(env),
         **_new_process_group_kwargs(),
     )
+    descendant_tracker = _DescendantTracker(proc.pid)
+    try:
+        descendant_tracker.start()
+        return _communicate_bounded_sync(proc, argv=argv, timeout=timeout)
+    finally:
+        descendant_tracker.stop_and_terminate()
+
+
+def _communicate_bounded_sync(
+    proc: subprocess.Popen[bytes],
+    *,
+    argv: list[str],
+    timeout: float,
+) -> subprocess.CompletedProcess[bytes]:
+    """Complete one already-spawned sync command with bounded output."""
     if proc.stdout is None or proc.stderr is None:  # pragma: no cover - Popen contract
         _terminate_sync_process(proc)
         raise QuickCommandOutputError("output streams are unavailable")
@@ -160,6 +178,20 @@ async def communicate_bounded_async(
     timeout: float = QUICK_COMMAND_TIMEOUT_SECONDS,
 ) -> tuple[bytes, bytes]:
     """Read an asyncio subprocess without ever buffering beyond the output cap."""
+    descendant_tracker = _DescendantTracker(proc.pid)
+    try:
+        descendant_tracker.start()
+        return await _communicate_bounded_async(proc, timeout=timeout)
+    finally:
+        await _stop_descendant_tracker_async(descendant_tracker)
+
+
+async def _communicate_bounded_async(
+    proc: asyncio.subprocess.Process,
+    *,
+    timeout: float,
+) -> tuple[bytes, bytes]:
+    """Complete one already-spawned async command with bounded output."""
     if proc.stdout is None or proc.stderr is None:
         await _terminate_async_process(proc)
         raise QuickCommandOutputError("output streams are unavailable")
@@ -202,6 +234,151 @@ async def communicate_bounded_async(
         raise
 
     return bytes(stdout), bytes(stderr)
+
+
+class _DescendantTracker:
+    """Track identity-bound descendants while a configured command is live.
+
+    Process-group cleanup remains the primary containment mechanism. Polling the
+    verified leader and already-observed descendants additionally catches normal
+    children that create a new session and escape that group. Every later lookup
+    is bound to the observed process creation time so PID reuse cannot redirect a
+    cleanup signal.
+
+    This protects the trusted configured-command boundary. It does not claim to
+    observe a deliberately unobservable double-fork that fully reparents before
+    the leader or an observed descendant can be sampled.
+    """
+
+    def __init__(self, leader_pid: int) -> None:
+        self._leader = _process_identity(leader_pid)
+        self._descendants: dict[int, float] = {}
+        self._identities_lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if self._leader is None:
+            return
+        self._observe_once()
+        self._thread = threading.Thread(
+            target=self._observe_until_stopped,
+            name="quick-command-descendants",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop_and_terminate(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join()
+        self._observe_once()
+        with self._identities_lock:
+            identities = dict(self._descendants)
+
+        terminating: list[psutil.Process] = []
+        for pid, create_time in identities.items():
+            process = _verified_process(pid, create_time)
+            if process is None:
+                continue
+            try:
+                process.terminate()
+            except (psutil.Error, OSError):
+                continue
+            terminating.append(process)
+
+        if not terminating:
+            return
+        _, alive = psutil.wait_procs(
+            terminating, timeout=_PROCESS_STOP_GRACE_SECONDS
+        )
+        killed: list[psutil.Process] = []
+        for process in alive:
+            create_time = identities.get(process.pid)
+            if create_time is None:
+                continue
+            verified = _verified_process(process.pid, create_time)
+            if verified is None:
+                continue
+            try:
+                verified.kill()
+            except (psutil.Error, OSError):
+                continue
+            killed.append(verified)
+        if killed:
+            psutil.wait_procs(killed, timeout=_PROCESS_STOP_GRACE_SECONDS)
+
+    def _observe_until_stopped(self) -> None:
+        while not self._stop.wait(_DESCENDANT_POLL_SECONDS):
+            self._observe_once()
+
+    def _observe_once(self) -> None:
+        if self._leader is None:
+            return
+        with self._identities_lock:
+            roots = [self._leader, *self._descendants.items()]
+
+        discovered: dict[int, float] = {}
+        for pid, create_time in roots:
+            process = _verified_process(pid, create_time)
+            if process is None:
+                continue
+            try:
+                children = process.children(recursive=True)
+            except (psutil.Error, OSError):
+                continue
+            for child in children:
+                identity = _identity_from_process(child)
+                if identity is None or identity[0] == self._leader[0]:
+                    continue
+                discovered[identity[0]] = identity[1]
+
+        if discovered:
+            with self._identities_lock:
+                self._descendants.update(discovered)
+
+
+def _process_identity(pid: int) -> tuple[int, float] | None:
+    """Return a PID-reuse-safe process identity when the process is inspectable."""
+    if pid == os.getpid():
+        return None
+    try:
+        return _identity_from_process(psutil.Process(pid))
+    except (psutil.Error, OSError):
+        return None
+
+
+def _identity_from_process(process: psutil.Process) -> tuple[int, float] | None:
+    try:
+        identity = process.pid, process.create_time()
+        if not process.is_running():
+            return None
+        return identity
+    except (psutil.Error, OSError):
+        return None
+
+
+def _verified_process(pid: int, create_time: float) -> psutil.Process | None:
+    """Reopen a process only when it still has the exact observed identity."""
+    if pid == os.getpid():
+        return None
+    try:
+        process = psutil.Process(pid)
+        if _identity_from_process(process) != (pid, create_time):
+            return None
+        return process
+    except (psutil.Error, OSError):
+        return None
+
+
+async def _stop_descendant_tracker_async(tracker: _DescendantTracker) -> None:
+    """Finish blocking descendant cleanup even if the caller is cancelled."""
+    cleanup = asyncio.create_task(asyncio.to_thread(tracker.stop_and_terminate))
+    try:
+        await asyncio.shield(cleanup)
+    except asyncio.CancelledError:
+        await cleanup
+        raise
 
 
 def _new_process_group_kwargs() -> dict[str, Any]:

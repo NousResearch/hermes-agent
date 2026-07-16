@@ -287,6 +287,7 @@ Each built-in ships its own palette, typography, and layout — switching produc
 | **Mono** (`mono`) | Grayscale | IBM Plex Sans + IBM Plex Mono, 13px | 0 radius, compact |
 | **Cyberpunk** (`cyberpunk`) | Neon green on black | Share Tech Mono everywhere, 14px | 0 radius, compact |
 | **Rosé** (`rose`) | Pink + ivory | Fraunces (serif) + DM Mono, 16px | 1rem radius, spacious |
+| **Aurora** (`aurora`) | Dark frosted-glass, gold + indigo glows | Inter + JetBrains Mono, 15px | 0.5rem radius, comfortable |
 
 Themes that reference Google Fonts (all except Hermes Teal) load the stylesheet on demand — the first time you switch to them a `<link>` tag is injected into `<head>`.
 

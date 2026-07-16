@@ -7532,7 +7532,46 @@ function ensureKanbanSchema(db) {
     )
   }
 
-  // Add columns to the CLI's tasks table that the kanban UI needs.
+  // Create the tasks table if it doesn't exist (fresh kanban.db from Desktop).
+  // On an existing Hermes CLI install this table already exists; on a Desktop-
+  // only install it must be created first. Mirrors the canonical CLI schema
+  // from hermes_cli/kanban_db.py with only the columns Desktop uses.
+  db.exec(`CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    body TEXT,
+    assignee TEXT,
+    status TEXT NOT NULL DEFAULT 'todo',
+    priority INTEGER DEFAULT 0,
+    created_by TEXT,
+    created_at INTEGER NOT NULL,
+    workspace_kind TEXT NOT NULL DEFAULT 'scratch',
+    board_id TEXT DEFAULT 'default',
+    archived INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    source TEXT DEFAULT 'manual',
+    session_id TEXT,
+    profile_id TEXT,
+    message_id TEXT,
+    assignee_type TEXT DEFAULT 'unassigned',
+    assignee_label TEXT,
+    sync_mode TEXT DEFAULT 'manual',
+    external_task_id TEXT,
+    external_task_kind TEXT,
+    last_synced_at INTEGER
+  )`)
+  // task_comments must also exist for Desktop comment IPC.
+  db.exec(`CREATE TABLE IF NOT EXISTS task_comments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT NOT NULL,
+    author TEXT,
+    body TEXT,
+    created_at INTEGER NOT NULL
+  )`)
+
+  // Add columns to the CLI's tasks table that the kanban UI needs, in case
+  // the table was created by the Hermes CLI (which has a narrower schema).
   // ALTER TABLE ADD COLUMN is idempotent in SQLite (throws if column exists).
   for (const stmt of [
     "ALTER TABLE tasks ADD COLUMN board_id TEXT DEFAULT 'default'",
@@ -7686,6 +7725,24 @@ ipcMain.handle('hermes:kanban:allTasks', () => {
 ipcMain.handle('hermes:kanban:createTask', (_event, taskData) => {
   const db = getKanbanDb()
   const safe = sanitizeTaskInput(taskData)
+
+  // Idempotency: when externalTaskId + externalTaskKind + sessionId are
+  // provided, check for an existing task with the same linkage. This
+  // prevents "Send plan to Kanban" from creating duplicate cards on
+  // repeated invocations.
+  if (taskData.externalTaskId && taskData.externalTaskKind) {
+    const existing = db.prepare(
+      "SELECT id FROM tasks WHERE external_task_id = ? AND external_task_kind = ? AND session_id = ?"
+    ).get(
+      taskData.externalTaskId,
+      taskData.externalTaskKind,
+      taskData.sessionId || null
+    )
+    if (existing) {
+      return rowToKanbanTask(db.prepare('SELECT * FROM tasks WHERE id = ?').get(existing.id))
+    }
+  }
+
   const id = newId()
   const now = Date.now()
   const priority = PRIORITY_STR_TO_INT[safe.priority] !== undefined ? PRIORITY_STR_TO_INT[safe.priority] : 1

@@ -18,12 +18,20 @@ forever. The fix gives ``block_task`` a typed ``kind`` and a persistent
 from __future__ import annotations
 
 import argparse
+import os
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
 
 from hermes_cli import kanban as kc
 from hermes_cli import kanban_db as kb
+
+# Repo root, so a spawned worker subprocess can import ``hermes_cli`` and run
+# the real ``hermes kanban`` CLI (``python -m hermes_cli.main``).
+_WORKTREE = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture
@@ -213,7 +221,13 @@ def test_block_without_kind_is_backward_compatible(kanban_home: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# needs_input unblock guard — only Main/default may clear a human gate
+# needs_input unblock guard — a dispatched worker may not clear a human gate,
+# but any non-worker session (Main or a non-default orchestrator) may.
+#
+# The boundary is anchored on the DB + process ancestry, NOT on env vars alone
+# (see ``_caller_is_dispatched_worker``), so a worker cannot self-approve by
+# scrubbing HERMES_KANBAN_TASK / HERMES_PROFILE. See the subprocess E2E test at
+# the bottom of this section for the actual env-scrub bypass attempt.
 # ---------------------------------------------------------------------------
 
 
@@ -227,7 +241,7 @@ def test_needs_input_unblock_refused_from_worker(
 
         monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
         monkeypatch.delenv("HERMES_PROFILE", raising=False)
-        with pytest.raises(ValueError, match="requires human"):
+        with pytest.raises(ValueError, match="dispatched worker"):
             kb.unblock_task(conn, tid)
 
         # The refusal is atomic — the task stays blocked, kind preserved.
@@ -236,19 +250,53 @@ def test_needs_input_unblock_refused_from_worker(
         assert t.block_kind == "needs_input"
 
 
-def test_needs_input_unblock_refused_from_nondefault_profile(
+def test_needs_input_unblock_succeeds_from_nondefault_orchestrator(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A non-default profile is not the human Main/default session either."""
+    """A non-default orchestrator profile is NOT a worker and may clear the gate.
+
+    Flaw #2 of PR #59906: the old guard rejected *any* non-``default`` profile,
+    which locked out legitimate non-task-scoped orchestrators. Profile is no
+    longer consulted — only whether the caller is a dispatched worker (no
+    worker env here, and no live worker pid in this process's ancestry).
+    """
     with kb.connect_closing() as conn:
         tid = _running_task(conn)
         kb.block_task(conn, tid, reason="which key?", kind="needs_input")
 
         monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-        monkeypatch.setenv("HERMES_PROFILE", "some-worker")
-        with pytest.raises(ValueError, match="non-interactive"):
-            kb.unblock_task(conn, tid)
-        assert kb.get_task(conn, tid).status == "blocked"
+        monkeypatch.setenv("HERMES_PROFILE", "orchestrator")
+        assert kb.unblock_task(conn, tid)
+        assert kb.get_task(conn, tid).status == "ready"
+
+
+def test_needs_input_unblock_refused_via_db_boundary_without_env(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The core non-env boundary: no worker env set, yet a caller whose pid is
+    registered as a live ``worker_pid`` is still refused.
+
+    This is the mechanism that survives an env scrub — the dispatcher-written
+    ``tasks.worker_pid`` row plus process-ancestry, not ``HERMES_KANBAN_TASK``.
+    """
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    monkeypatch.delenv("HERMES_PROFILE", raising=False)
+    with kb.connect_closing() as conn:
+        gate = _running_task(conn, title="human-gate")
+        kb.block_task(conn, gate, reason="which key?", kind="needs_input")
+
+        # Register THIS process as a live dispatched worker, exactly as the
+        # dispatcher's ``_set_worker_pid`` would (our real pid, running task).
+        owned = _running_task(conn, title="worker-owned")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET worker_pid = ? WHERE id = ?",
+                (os.getpid(), owned),
+            )
+
+        with pytest.raises(ValueError, match="dispatched worker"):
+            kb.unblock_task(conn, gate)
+        assert kb.get_task(conn, gate).status == "blocked"
 
 
 def test_needs_input_unblock_succeeds_from_main_default(
@@ -330,7 +378,7 @@ def test_cli_unblock_needs_input_from_worker_returns_nonzero(
 
     err = capsys.readouterr().err
     assert "kanban:" in err
-    assert "requires human" in err
+    assert "dispatched worker" in err
 
     with kb.connect_closing() as conn:
         t = kb.get_task(conn, tid)
@@ -354,3 +402,130 @@ def test_cli_unblock_needs_input_from_main_returns_zero(
 
     with kb.connect_closing() as conn:
         assert kb.get_task(conn, tid).status == "ready"
+
+
+# ---------------------------------------------------------------------------
+# End-to-end env-scrub bypass attempt — the security claim, demonstrated with
+# REAL processes: a dispatcher records a worker's OS pid, the worker scrubs its
+# HERMES_KANBAN_TASK / HERMES_PROFILE environment and shells out to the real
+# ``hermes kanban unblock`` CLI, and the guard STILL refuses because the CLI is
+# a child of the live registered worker (process ancestry the worker cannot
+# rewrite), not because of any environment variable.
+#
+# Faithful modelling of the actual demonstrated bypass: ``block_task`` NULLs
+# ``worker_pid`` on the task it blocks, so a worker only remains detectable
+# while it still owns a *running* task. The realistic live bypass is therefore
+# a worker that is mid-task (its own task still ``running``) reaching over to
+# clear a separate ``needs_input`` human gate — that is exactly the shape set
+# up below.
+# ---------------------------------------------------------------------------
+
+
+# A stand-in worker process. It waits for the dispatcher (the test) to register
+# its real pid, scrubs every worker-identifying env var, then invokes the real
+# ``hermes kanban unblock`` CLI as a child and reports that child's outcome.
+_WORKER_SRC = textwrap.dedent(
+    """
+    import os
+    import subprocess
+    import sys
+
+    db_path, gate_id, worktree = sys.argv[1], sys.argv[2], sys.argv[3]
+
+    # Block until the dispatcher has written our pid into tasks.worker_pid.
+    sys.stdin.readline()
+
+    # Scrub the env signals the fast-path relies on: this is the bypass attempt.
+    env = dict(os.environ)
+    env.pop("HERMES_KANBAN_TASK", None)
+    env.pop("HERMES_PROFILE", None)
+    # Pin the board DB the same way the dispatcher would (not a worker signal).
+    env["HERMES_KANBAN_DB"] = db_path
+    env["PYTHONPATH"] = worktree + os.pathsep + env.get("PYTHONPATH", "")
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "hermes_cli.kanban", "unblock", gate_id],
+        env=env, cwd=worktree, capture_output=True, text=True,
+    )
+    sys.stdout.write("RC=%d\\n" % proc.returncode)
+    sys.stdout.write("ERR_START\\n%s\\nERR_END\\n" % proc.stderr)
+    sys.stdout.flush()
+    """
+)
+
+
+def test_cli_unblock_needs_input_env_scrub_bypass_refused_e2e(
+    kanban_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real subprocess E2E: an env-scrubbed live worker cannot clear a gate.
+
+    Wiring mirrors production:
+
+    * The *dispatcher* (this test process) records the worker's real OS pid in
+      ``tasks.worker_pid`` for a task the worker still owns and is ``running`` —
+      the DB row is written by a different process than the worker, and cannot
+      be erased by the worker editing its own environment.
+    * The *worker* subprocess strips ``HERMES_KANBAN_TASK`` /
+      ``HERMES_PROFILE`` from its environment and runs the genuine
+      ``python -m hermes_cli.kanban unblock <gate>`` CLI (the real production
+      dispatch through :func:`kanban_command`, whose ``__main__`` propagates the
+      handler's exit code) as a child.
+    * The CLI child's process ancestry contains the worker's registered,
+      still-``running`` ``worker_pid`` (``_get_ancestor_pids`` includes the
+      caller and every parent), so ``_caller_is_dispatched_worker`` matches on
+      the DB/process boundary — no env var involved — and the unblock is
+      refused with a non-zero exit while the gate stays ``blocked``.
+    """
+    pytest.importorskip("psutil")
+
+    db_path = str(kb.kanban_db_path())
+    with kb.connect_closing() as conn:
+        # The human gate the worker will try to self-approve.
+        gate = _running_task(conn, title="human-gate")
+        kb.block_task(conn, gate, reason="which key?", kind="needs_input")
+        # A separate task the worker is still actively running.
+        owned = _running_task(conn, title="worker-owned")
+        assert kb.get_task(conn, owned).status == "running"
+
+    worker_py = tmp_path / "worker.py"
+    worker_py.write_text(_WORKER_SRC)
+
+    # Launch the worker but hold it at the stdin gate until we've recorded its
+    # pid, exactly as the dispatcher records a spawned worker before it runs.
+    proc = subprocess.Popen(
+        [sys.executable, str(worker_py), db_path, gate, str(_WORKTREE)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=dict(os.environ),
+    )
+    try:
+        with kb.connect_closing() as conn:
+            with kb.write_txn(conn):
+                conn.execute(
+                    "UPDATE tasks SET worker_pid = ? WHERE id = ?",
+                    (proc.pid, owned),
+                )
+        assert proc.stdin is not None
+        proc.stdin.write("go\n")
+        proc.stdin.flush()
+        out, err = proc.communicate(timeout=120)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()
+
+    assert "RC=" in out, f"worker did not report a result. out={out!r} err={err!r}"
+    rc_line = next(line for line in out.splitlines() if line.startswith("RC="))
+    rc = int(rc_line[len("RC="):])
+    cli_stderr = out.split("ERR_START\n", 1)[1].split("\nERR_END", 1)[0]
+
+    assert rc != 0, f"env-scrub bypass was NOT refused. stderr={cli_stderr!r}"
+    assert "dispatched worker" in cli_stderr, cli_stderr
+
+    # The gate is untouched: the human decision still stands.
+    with kb.connect_closing() as conn:
+        t = kb.get_task(conn, gate)
+        assert t.status == "blocked"
+        assert t.block_kind == "needs_input"

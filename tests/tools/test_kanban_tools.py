@@ -138,6 +138,7 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
         "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
         "kanban_comment", "kanban_create", "kanban_link",
         "kanban_unblock",
+        "kanban_workflow_create",
     }
     assert kanban == expected, f"expected {expected}, got {kanban}"
 
@@ -1148,6 +1149,55 @@ def test_create_session_id_absent_when_env_unset(monkeypatch, worker_env):
         assert new_task.session_id is None
     finally:
         conn.close()
+
+
+def test_workflow_create_builds_standard_pipeline_and_subscribes(
+    monkeypatch, worker_env
+):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    subscribed: list[str] = []
+    monkeypatch.setattr(
+        kt,
+        "_maybe_auto_subscribe",
+        lambda conn, task_id: subscribed.append(task_id) is None,
+    )
+
+    out = kt._handle_workflow_create({
+        "title": "workflow tool",
+        "body": "prove the tool creates a durable handoff",
+        "coder": "coder",
+        "qa": "qa",
+        "pm": "pm",
+        "tenant": "hermes",
+    })
+    payload = json.loads(out)
+    assert payload["ok"] is True
+    workflow = payload["workflow"]
+    assert subscribed == workflow["task_ids"]
+    assert all(workflow["subscriptions"].values())
+
+    conn = kb.connect()
+    try:
+        coder = kb.get_task(conn, workflow["coder_task_id"])
+        qa = kb.get_task(conn, workflow["qa_task_id"])
+        pm_review = kb.get_task(conn, workflow["pm_review_task_id"])
+        assert coder.status == "ready"
+        assert qa.status == "todo"
+        assert pm_review.status == "todo"
+        assert kb.parent_ids(conn, qa.id) == [coder.id]
+        assert kb.parent_ids(conn, pm_review.id) == [qa.id]
+    finally:
+        conn.close()
+
+
+def test_workflow_create_is_orchestrator_only(worker_env):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_workflow_create({"title": "worker should not fan out"})
+    assert "orchestrator-only" in json.loads(out).get("error", "")
 
 
 def test_create_rejects_no_title(worker_env):

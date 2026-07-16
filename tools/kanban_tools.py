@@ -957,6 +957,60 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(f"kanban_create: {e}")
 
 
+def _handle_workflow_create(args: dict, **kw) -> str:
+    """Create a standard multi-step Kanban workflow graph."""
+    guard = _require_orchestrator_tool("kanban_workflow_create")
+    if guard:
+        return guard
+    template = args.get("template") or "coder_qa_pm_review"
+    if template not in {"coder_qa_pm_review", "coder-qa-pm-review", "coder-qa-pm"}:
+        return tool_error(
+            "template must be coder_qa_pm_review (coder -> qa -> pm review)"
+        )
+    title = args.get("title")
+    if not title or not str(title).strip():
+        return tool_error("title is required")
+    priority = args.get("priority")
+    workspace_kind = args.get("workspace_kind") or "scratch"
+    workspace_path = args.get("workspace_path")
+    session_id = args.get("session_id") or os.environ.get("HERMES_SESSION_ID")
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            from hermes_cli import kanban_workflows as kwf
+
+            created = kwf.create_coder_qa_pm_review_workflow(
+                conn,
+                title=str(title).strip(),
+                body=args.get("body"),
+                coder_assignee=args.get("coder") or "coder-codex",
+                qa_assignee=args.get("qa") or "qa-minimax",
+                pm_assignee=args.get("pm") or "pm-deepseek",
+                tenant=args.get("tenant") or os.environ.get("HERMES_TENANT"),
+                created_by=(
+                    args.get("created_by")
+                    or os.environ.get("HERMES_PROFILE")
+                    or "workflow-orchestrator"
+                ),
+                workspace_kind=str(workspace_kind),
+                workspace_path=workspace_path,
+                project_id=args.get("project") or args.get("project_id"),
+                priority=int(priority) if priority is not None else 0,
+                idempotency_key=args.get("idempotency_key"),
+                session_id=session_id,
+                subscribe_task=lambda task_id: _maybe_auto_subscribe(conn, task_id),
+            )
+            return _ok(workflow=created.as_dict())
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_workflow_create: {e}")
+    except Exception as e:
+        logger.exception("kanban_workflow_create failed")
+        return tool_error(f"kanban_workflow_create: {e}")
+
+
 def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
     """Auto-subscribe the calling session to task completion / block events.
 
@@ -1556,6 +1610,81 @@ KANBAN_CREATE_SCHEMA = {
     },
 }
 
+KANBAN_WORKFLOW_CREATE_SCHEMA = {
+    "name": "kanban_workflow_create",
+    "description": (
+        "Create a standard Kanban workflow graph. The supported template "
+        "creates coder -> QA -> PM review tasks, automatically subscribes "
+        "the creating PM/session to all executable child tasks, and uses "
+        "parent/child dependencies so the dispatcher promotes each next "
+        "step when the previous one completes. Orchestrator-only."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "template": {
+                "type": "string",
+                "enum": ["coder_qa_pm_review"],
+                "description": (
+                    "Workflow template to create. Defaults to "
+                    "coder_qa_pm_review."
+                ),
+            },
+            "title": {
+                "type": "string",
+                "description": "Short workflow title / request (required).",
+            },
+            "body": {
+                "type": "string",
+                "description": "Full request, acceptance criteria, links, and context.",
+            },
+            "coder": {
+                "type": "string",
+                "description": "Coder profile. Defaults to coder-codex.",
+            },
+            "qa": {
+                "type": "string",
+                "description": "QA profile. Defaults to qa-minimax.",
+            },
+            "pm": {
+                "type": "string",
+                "description": "PM review profile. Defaults to pm-deepseek.",
+            },
+            "tenant": {
+                "type": "string",
+                "description": "Optional tenant/project namespace.",
+            },
+            "priority": {
+                "type": "integer",
+                "description": "Priority tiebreaker for every executable step.",
+            },
+            "workspace_kind": {
+                "type": "string",
+                "enum": ["scratch", "dir", "worktree"],
+                "description": "Workspace flavor for the workflow tasks.",
+            },
+            "workspace_path": {
+                "type": "string",
+                "description": "Absolute path for dir/worktree workflow tasks.",
+            },
+            "project": {
+                "type": "string",
+                "description": "Optional project id or slug to link all tasks to.",
+            },
+            "idempotency_key": {
+                "type": "string",
+                "description": "Dedup key for the workflow root card.",
+            },
+            "session_id": {
+                "type": "string",
+                "description": "Optional originating session id override.",
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["title"],
+    },
+}
+
 KANBAN_UNBLOCK_SCHEMA = {
     "name": "kanban_unblock",
     "description": (
@@ -1660,6 +1789,15 @@ registry.register(
     handler=_handle_create,
     check_fn=_check_kanban_mode,
     emoji="➕",
+)
+
+registry.register(
+    name="kanban_workflow_create",
+    toolset="kanban",
+    schema=KANBAN_WORKFLOW_CREATE_SCHEMA,
+    handler=_handle_workflow_create,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="🧭",
 )
 
 registry.register(

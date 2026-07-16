@@ -949,8 +949,17 @@ def _has_known_prefix_substring(text: str) -> bool:
 # (``security.redact_secrets: false`` / HERMES_REDACT_SECRETS) applies to
 # plugin patterns exactly as it does to built-ins.
 
-_PLUGIN_PREFIX_PATTERNS: list = []
+# Keyed by registration source (e.g. "plugin:my-plugin") so the plugin
+# lifecycle/ownership-ledger work (#64229) has a clean seam to drop ONE
+# plugin's patterns on unload. There is deliberately no public removal
+# API — additive-only stands; unload is a host-owned lifecycle concern.
+_PLUGIN_PREFIX_PATTERNS: dict = {}
 _registry_lock = threading.Lock()
+
+
+def _plugin_patterns() -> list:
+    """All plugin-registered patterns in registration order."""
+    return [p for patterns in _PLUGIN_PREFIX_PATTERNS.values() for p in patterns]
 
 
 def _rebuild_prefix_matcher() -> None:
@@ -961,7 +970,7 @@ def _rebuild_prefix_matcher() -> None:
     under the GIL) propagates immediately to every caller.
     """
     global _PREFIX_RE, _PREFIX_SUBSTRINGS
-    combined = _PREFIX_PATTERNS + _PLUGIN_PREFIX_PATTERNS
+    combined = _PREFIX_PATTERNS + _plugin_patterns()
     _PREFIX_RE = re.compile(
         r"(?<![A-Za-z0-9_-])(" + "|".join(combined) + r")(?![A-Za-z0-9_-])"
     )
@@ -1040,14 +1049,14 @@ def register_redaction_patterns(patterns, source: str = "plugin") -> int:
                 source, pattern,
             )
             continue
-        if pattern in _PREFIX_PATTERNS or pattern in _PLUGIN_PREFIX_PATTERNS or pattern in accepted:
+        if pattern in _PREFIX_PATTERNS or pattern in _plugin_patterns() or pattern in accepted:
             logger.debug("%s: redaction pattern %r already registered", source, pattern)
             continue
         accepted.append(pattern)
 
     if accepted:
         with _registry_lock:
-            _PLUGIN_PREFIX_PATTERNS.extend(accepted)
+            _PLUGIN_PREFIX_PATTERNS.setdefault(source, []).extend(accepted)
             _rebuild_prefix_matcher()
         logger.info(
             "%s: registered %d redaction pattern(s)", source, len(accepted)

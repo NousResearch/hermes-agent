@@ -178,6 +178,8 @@ export interface Usage {
   context_used?: number
   cost_status?: string
   cost_usd?: number
+  cron_heartbeat_age?: number
+  cron_ticker_state?: 'alive' | 'stale' | null
   dev_credits_spent_micros?: number
   input: number
   output: number

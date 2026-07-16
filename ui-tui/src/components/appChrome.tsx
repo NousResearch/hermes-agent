@@ -248,6 +248,7 @@ export interface StatusBarSegments {
   bg: boolean
   compactCtx: boolean
   compressions: boolean
+  cronTicker: boolean
   duration: boolean
   subagents: boolean
   voice: boolean
@@ -263,6 +264,7 @@ export function statusBarSegments(cols: number): StatusBarSegments {
     compressions: w >= 80,
     voice: w >= 84,
     bg: w >= 88,
+    cronTicker: w >= 90,
     subagents: w >= 92
   }
 }
@@ -515,6 +517,14 @@ export function StatusRule({
   const showVoice = segs.voice && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
   const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
   const showBg = segs.bg && bgCount > 0 && fits(SEP + stringWidth(`${bgCount} bg`))
+  const cronTickerState = usage.cron_ticker_state ?? null
+  const cronHbAge = usage.cron_heartbeat_age
+  const cronLabel = cronTickerState === 'alive'
+    ? typeof cronHbAge === 'number' ? `⏱ cron ${Math.round(cronHbAge)}s` : '⏱ cron'
+    : cronTickerState === 'stale'
+      ? typeof cronHbAge === 'number' ? `⚠ cron ${Math.round(cronHbAge)}s` : '⚠ cron'
+      : ''
+  const showCronTicker = segs.cronTicker && !!cronLabel && fits(SEP + stringWidth(cronLabel))
   const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
   const showSubagents = segs.subagents && subagentCount > 0 && fits(SEP + stringWidth(`⛓ ${subagentCount}`))
 
@@ -632,6 +642,15 @@ export function StatusRule({
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
             {bgCount} bg
+          </Text>
+        ) : null}
+        {showCronTicker ? (
+          <Text
+            color={cronTickerState === 'stale' ? t.color.warn : t.color.muted}
+            wrap="truncate-end"
+          >
+            {' │ '}
+            {cronLabel}
           </Text>
         ) : null}
         {showSubagents ? (

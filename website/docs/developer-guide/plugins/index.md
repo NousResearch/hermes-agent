@@ -75,7 +75,7 @@ This tells Hermes: "I'm a plugin called calculator, I provide tools and hooks." 
 Optional fields you could add:
 ```yaml
 author: Your Name
-manifest_version: 2    # required when using config_defaults
+manifest_version: 1
 requires_env:          # gate loading on env vars; prompted during install
   - SOME_API_KEY       # simple format — plugin disabled if missing
   - name: OTHER_KEY    # rich format — shows description/url during install
@@ -90,7 +90,7 @@ config_defaults:       # fill missing plugins.entries.<name>.config values on en
     $random_digits: 5                   # generated once, then preserved
 ```
 
-`config_defaults` requires `manifest_version: 2`. Hermes applies these values when the plugin is enabled and when an already-enabled plugin is updated. Existing values are never replaced. Defaults may be nested; `$profile_path` resolves a safe path under the active profile, and `$random_digits` generates a persistent numeric string of the requested length (1-64 digits).
+Hermes applies `config_defaults` when the plugin is enabled and when an already-enabled plugin is updated. Existing values are never replaced. Defaults may be nested; `$profile_path` resolves a safe path under the active profile, and `$random_digits` generates a persistent numeric string of the requested length (1-64 digits). Older Hermes versions safely ignore this optional field.
 
 ## Step 3: Write the tool schemas
 

@@ -69,9 +69,9 @@ class PluginOperationError(Exception):
 
 
 # Minimum manifest version this installer understands.
-# Plugins may declare ``manifest_version: 2`` in plugin.yaml;
+# Plugins may declare ``manifest_version: 1`` in plugin.yaml;
 # future breaking changes to the manifest schema bump this.
-_SUPPORTED_MANIFEST_VERSION = 2
+_SUPPORTED_MANIFEST_VERSION = 1
 
 
 def _plugins_dir() -> Path:

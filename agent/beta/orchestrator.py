@@ -13,6 +13,7 @@ from agent.beta.delegation import (
     SpecialistResult,
     create_delegation_tasks,
     execute_delegations,
+    task_operation,
 )
 from agent.beta.planner import ExecutionPlan, build_plan
 from agent.beta.risk import ApprovalGate, ApprovalReceipt, Operation, RiskLevel, classify_risk
@@ -30,8 +31,6 @@ class ExecutedAction(BaseModel):
 
 
 class BetaRun(BaseModel):
-    """Auditable result of one Beta orchestration turn."""
-
     model_config = ConfigDict(frozen=True)
 
     decision: RoutingDecision
@@ -52,18 +51,12 @@ def _qa_validator(
     delegate: Callable[..., str] | None,
     approval_gate: ApprovalGate,
 ) -> Callable[[tuple[SpecialistResult, ...], tuple[str, ...]], SpecialistResult]:
-    def validate(
-        results: tuple[SpecialistResult, ...],
-        contradictions: tuple[str, ...],
-    ) -> SpecialistResult:
-        review_context = json.dumps(
-            {
-                "request": request,
-                "specialist_results": [result.model_dump(mode="json") for result in results],
-                "contradictions": contradictions,
-            },
-            ensure_ascii=False,
-        )
+    def validate(results: tuple[SpecialistResult, ...], contradictions: tuple[str, ...]) -> SpecialistResult:
+        review_context = json.dumps({
+            "request": request,
+            "specialist_results": [result.model_dump(mode="json") for result in results],
+            "contradictions": contradictions,
+        }, ensure_ascii=False)
         review_decision = decision.model_copy(update={
             "specialists": ("qa-auditor",),
             "initial_risk": "low",
@@ -85,10 +78,7 @@ def _qa_validator(
                 errors=("QA specialist unavailable",),
             )
         return execute_delegations(
-            (tasks[0],),
-            parent_agent,
-            delegate=delegate,
-            approval_gate=approval_gate,
+            (tasks[0],), parent_agent, delegate=delegate, approval_gate=approval_gate
         )[0]
 
     return validate
@@ -161,15 +151,18 @@ def orchestrate_request(
 
     if not decision.delegation_needed:
         response = ConsolidatedResponse(
-            summary=request,
+            understanding=request,
+            agents_activated=(),
+            result="Direct conversational response required",
+            evidence=(),
             facts=(),
             hypotheses=(),
-            evidence=(),
-            recommendation=("Answer directly using the active conversation model",),
-            risks=(),
-            contradictions=(),
+            probable_cause=None,
             confidence=1.0,
+            risk=RiskLevel.LOW,
+            recommendation=("Answer directly using the active conversation model",),
             authorization_required=False,
+            next_step="Respond directly to the Chief",
         )
         return BetaRun(
             decision=decision,
@@ -180,23 +173,18 @@ def orchestrate_request(
         )
 
     tasks = create_delegation_tasks(request, decision, registry)
+    task_receipts = {
+        task.task_id: receipts[operation.fingerprint]
+        for task in tasks
+        for operation in (task_operation(task),)
+        if operation.fingerprint in receipts
+    }
     results = execute_delegations(
         tasks,
         parent_agent,
         delegate=delegate,
         approval_gate=gate,
-        approval_receipts={
-            task.task_id: receipts.get(task_operation.fingerprint)
-            for task in tasks
-            for task_operation in [Operation(
-                target=task.minimal_context,
-                action=task.objective,
-                impact="May change production or another high-impact system",
-                rollback="Use the specialist-provided rollback plan",
-                risk=RiskLevel(task.risk),
-            )]
-            if receipts.get(task_operation.fingerprint) is not None
-        },
+        approval_receipts=task_receipts,
     )
     response = consolidate_results(
         request,
@@ -210,7 +198,7 @@ def orchestrate_request(
     available = dict(receipts)
     for operation in operations:
         existing = available.get(operation.fingerprint)
-        if gate.authorized(operation, existing):
+        if existing is not None and gate.authorized(operation, existing):
             continue
         receipt = gate.request(operation)
         if receipt is not None:

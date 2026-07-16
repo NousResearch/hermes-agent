@@ -1029,6 +1029,65 @@ class TestCmdUpdateZipBranchRefusal:
         assert "Downloading latest version" not in out
 
 
+class TestGatewayUpdateDeferredRestart:
+    """``hermes update --gateway`` must exit before restarting its parent gateway."""
+
+    def test_non_gateway_mode_does_not_fork(self, monkeypatch):
+        from hermes_cli import main as hm
+
+        monkeypatch.setattr(hm.sys, "platform", "linux")
+
+        def fail_fork():  # pragma: no cover - should never be called
+            raise AssertionError("fork should not be called outside gateway mode")
+
+        monkeypatch.setattr(hm.os, "fork", fail_fork, raising=False)
+
+        assert hm._fork_deferred_gateway_restart_for_gateway_update(
+            gateway_mode=False
+        ) is False
+
+    def test_parent_returns_true_after_scheduling_child(self, monkeypatch, capsys):
+        from hermes_cli import main as hm
+
+        monkeypatch.setattr(hm.sys, "platform", "linux")
+        monkeypatch.setattr(hm.os, "fork", lambda: 12345, raising=False)
+
+        assert hm._fork_deferred_gateway_restart_for_gateway_update(
+            gateway_mode=True,
+            delay=3.0,
+        ) is True
+        assert "Gateway restart scheduled in 3s" in capsys.readouterr().out
+
+    def test_child_detaches_sleeps_and_continues_inline_path(self, monkeypatch):
+        from hermes_cli import main as hm
+
+        calls = []
+        monkeypatch.setattr(hm.sys, "platform", "linux")
+        monkeypatch.setattr(hm.os, "fork", lambda: 0, raising=False)
+        monkeypatch.setattr(hm.os, "setsid", lambda: calls.append("setsid"), raising=False)
+        monkeypatch.setattr(hm._time, "sleep", lambda seconds: calls.append(("sleep", seconds)))
+
+        assert hm._fork_deferred_gateway_restart_for_gateway_update(
+            gateway_mode=True,
+            delay=1.5,
+        ) is False
+        assert calls == ["setsid", ("sleep", 1.5)]
+
+    def test_windows_keeps_existing_inline_restart_path(self, monkeypatch):
+        from hermes_cli import main as hm
+
+        monkeypatch.setattr(hm.sys, "platform", "win32")
+
+        def fail_fork():  # pragma: no cover - should never be called
+            raise AssertionError("Windows must not use POSIX fork")
+
+        monkeypatch.setattr(hm.os, "fork", fail_fork, raising=False)
+
+        assert hm._fork_deferred_gateway_restart_for_gateway_update(
+            gateway_mode=True
+        ) is False
+
+
 def test_is_termux_env_true_for_termux_prefix():
     from hermes_cli import main as hm
 

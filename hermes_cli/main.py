@@ -9608,6 +9608,53 @@ def _discard_lockfile_churn(git_cmd, repo_root):
         pass
 
 
+def _fork_deferred_gateway_restart_for_gateway_update(
+    *, gateway_mode: bool, delay: float = 3.0
+) -> bool:
+    """Defer gateway restarts until after ``hermes update --gateway`` exits.
+
+    ``/update`` runs ``hermes update --gateway`` as a child of the running
+    gateway.  Restarting the gateway inline from that updater is self-defeating:
+    the service manager can kill the updater's cgroup before the wrapper shell
+    records the final exit status, so the update looks failed even though the
+    update itself succeeded.  Fork a tiny detached continuation instead.  The
+    parent returns success; the child sleeps for a few seconds, then falls
+    through into the existing restart logic below.
+
+    Returns ``True`` in the parent when the restart continuation was scheduled.
+    Returns ``False`` in the child, or when no deferral was possible, so callers
+    continue through the normal inline restart path.
+    """
+    if not gateway_mode:
+        return False
+    if sys.platform == "win32" or not hasattr(os, "fork"):
+        return False
+
+    try:
+        pid = os.fork()  # windows-footgun: POSIX-only path, guarded above
+    except OSError as exc:
+        logger.debug("Could not fork delayed gateway restart helper: %s", exc)
+        return False
+
+    if pid:
+        print(f"→ Gateway restart scheduled in {int(delay)}s after updater exits.")
+        return True
+
+    # Child: detach from the updater's session and wait long enough for the
+    # parent process and its shell wrapper to exit cleanly before touching the
+    # gateway service.  Keep stdout/stderr as-is so any restart diagnostics still
+    # land in update.log / .update_output.txt when available.
+    try:
+        os.setsid()
+    except OSError:
+        pass
+    try:
+        _time.sleep(max(float(delay), 0.0))
+    except Exception:
+        pass
+    return False
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version.
 
@@ -10651,6 +10698,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _exit_code_path.write_text("0")
             except OSError:
                 pass
+
+        if _fork_deferred_gateway_restart_for_gateway_update(
+            gateway_mode=gateway_mode
+        ):
+            _resume_windows_gateways_after_update(_windows_gateway_resume)
+            return
 
         # Auto-restart ALL gateways after update.
         # The code update (git pull) is shared across all profiles, so every

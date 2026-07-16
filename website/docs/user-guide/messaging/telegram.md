@@ -1065,13 +1065,15 @@ TELEGRAM_GUEST_MODE=true
 
 Default: `false`.
 
-With `guest_mode: true`, a message from a non-allowlisted group is processed **only** if it explicitly @mentions the bot. The mention is required every turn — there's no session stickiness for guest interactions, so the bot never auto-engages in a friend group thread it isn't pinged into.
+With `guest_mode: true`, a message from a non-allowlisted group is processed **only** if it explicitly @mentions the bot. The mention is required every turn, so the bot never auto-engages in a friend group thread it isn't pinged into.
 
 DMs and allowlisted groups behave exactly as before.
 
 ### Native guest replies (Bot API 10.0)
 
 Telegram's Bot API 10.0 added **Guest Bots**: a bot can receive an `@mention` from a group it has never joined via a `guest_message` update, and reply to it exactly once via `answerGuestQuery`. This is the delivery mechanism behind `guest_mode: true` above — when your bot's Telegram client library and Bot API version support it, Hermes uses it automatically. There's no separate config flag; it's covered by the same `guest_mode: true` setting.
+
+**Who can use it.** Guest mode gates the *chat* by mention, but the *person* @mentioning still has to be someone your bot already trusts: the caller is checked against the same user authorization as the rest of the bot — your Telegram allowlist (`TELEGRAM_ALLOWED_USERS` and the group variants) plus paired users. A mention from anyone else is ignored entirely: no placeholder, no reply, just a `Guest caller not authorized` warning in the gateway log (worth knowing when testing — a silent bot usually means the tester isn't allowlisted, not an outage). This applies to every guest interaction, including tapping a "tap to receive" media button. To deliberately open guest mode to everyone, add `*` to `TELEGRAM_ALLOWED_USERS`; with no allowlist configured at all, guest mentions are denied for everyone.
 
 **How a reply looks to the user:**
 
@@ -1093,7 +1095,7 @@ Without `TELEGRAM_HOME_CHANNEL` set, guest-mode media delivery falls back to a t
 
 - Delivery tokens expire **10 minutes** after the button is posted. Tapping "tap to receive" after that shows an error instead of the file — just ask again.
 - Tapping the same button more than once re-delivers the file rather than erroring, as long as it's still within the 10-minute window.
-- Same as plain `guest_mode`: no session stickiness. Every guest interaction — including tapping the deliver button — is its own one-shot exchange; the bot doesn't remember prior guest turns between mentions.
+- Each guest caller gets their own conversation session (keyed per chat + caller when `group_sessions_per_user` is on, which is the default), so repeat mentions from the same person continue their conversation, while different people asking in the same group stay isolated from each other. The @mention is still required every turn — memory persists, auto-engagement doesn't. Tapping a deliver button is independent of this: token redemption works regardless of session state.
 
 ## Slash Command Access Control
 

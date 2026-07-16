@@ -1,8 +1,8 @@
 ---
 name: math-via-code
-description: "Use when computing sums, percentages, ratios, projections, financial models, unit conversions, or any multi-step arithmetic. Offloads all math to code execution."
+description: "Offloads arithmetic to code execution for accuracy."
 version: 2.0.0
-author: Tom Mulkins
+author: Tom Mulkins (@tommulkins)
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
@@ -11,13 +11,9 @@ metadata:
     related_skills: [ocr-and-documents, google-workspace]
 ---
 
-# Math Via Code
+# Math Via Code Skill
 
-## Overview
-
-LLM arithmetic accuracy degrades sharply past ~150k context tokens and is unreliable even below that. This skill enforces a hard rule: all math — no matter how "simple" — goes through `execute_code` or a Python script. The only exception is a single operation on two numbers (e.g. `5 * 3`).
-
-The payoff is zero arithmetic errors on financial models, SDE calculations, projections, rollups, and any multi-step computation. Code is always right; in-head math is not.
+LLM arithmetic is unreliable — especially past ~150k context tokens. This skill enforces a hard rule: all non-trivial math goes through `execute_code` or a Python script run via `terminal`. The only exception is a single operation on two numbers (e.g. `5 * 3`). It does not replace domain judgment; it only forbids in-head arithmetic.
 
 ## When to Use
 
@@ -28,17 +24,21 @@ The payoff is zero arithmetic errors on financial models, SDE calculations, proj
 - Reading data from files or APIs and computing derived values
 - Whenever the user provides numbers and expects a computed result
 
-**Don't use for:** Trivial single-operation arithmetic on two numbers (`5 * 3`, `100 - 20`). Everything else → code.
+**Don't use for:** Trivial single-operation arithmetic on two numbers (`5 * 3`, `100 - 20`).
 
-## Procedure
+## Prerequisites
 
-### 1. Determine inputs
+- `execute_code` available for pure-Python math (no third-party packages)
+- Project Python environment via `terminal` when packages like `openpyxl` or `pandas` are required
+- Real source data (conversation numbers, workbook, API) — never fabricated test figures
 
-See **Data Sources** below for source-specific guidance. The universal rule: capture numbers as variables, never re-type from memory.
+## How to Run
 
-### 2. Write the calculation
-
-Use `execute_code` for simple in-memory math. Use `terminal` with the project's venv Python when you need installed packages (openpyxl, pandas, etc.).
+1. Capture inputs as variables (read programmatically from files/APIs; never re-type from memory).
+2. Write the calculation in Python.
+3. Run via `execute_code` (stdlib only) or `terminal` (venv Python + packages).
+4. Assert invariants and, when a source total exists, cross-check against it.
+5. Report inputs, outputs, and assertion pass/fail.
 
 ```python
 # Example: SDE from raw inputs
@@ -57,39 +57,24 @@ owner_comp = owner_salary + owner_payroll_tax + owner_auto
 
 net_profit = gp - total_overhead - owner_comp
 sde = net_profit + owner_comp
-```
 
-### 3. Run it
-
-- `execute_code` for pure-Python math (no external packages needed).
-- `terminal` when you need external packages (pandas, openpyxl, etc.) — use your project's Python environment.
-
-### 4. Verify (mandatory)
-
-Every calculation must include verification. Two approaches:
-
-**Self-check assertions** (add to the script):
-```python
 assert abs(gp + direct_costs - revenue) < 0.01, "GP + DOC should equal revenue"
 assert abs(sde - (net_profit + owner_comp)) < 0.01, "SDE = net + add-back"
-assert abs(royalties - round(revenue * 0.07, 2)) < 0.01, "Royalties = 7%"
+assert abs(overhead_royalties - round(revenue * 0.07, 2)) < 0.01, "Royalties = 7%"
 ```
 
-**Cross-check against source** (when data comes from a document, workbook, or API):
+When a script needs external packages or complex quoting, write it to the system temp dir and run the file:
+
 ```python
-assert abs(computed_sde - source_sde) < 0.01, \
-    "SDE mismatch: computed={}, source={}".format(computed_sde, source_sde)
+import tempfile
+from pathlib import Path
+
+script = Path(tempfile.gettempdir()) / "math_via_code_calc.py"
+script.write_text(code, encoding="utf-8")
+# then: terminal → python path/to/venv/bin/python script
 ```
 
-### 5. Report
-
-Present results with enough context to verify:
-- Show inputs
-- Show computed outputs
-- Show assertion results (pass/fail)
-- Flag if computed values differ from source
-
-## Common Calculations
+## Quick Reference
 
 | Calculation | Formula |
 |-------------|---------|
@@ -101,45 +86,79 @@ Present results with enough context to verify:
 | Multi-facility rollup | `sum(facility[i] for i in facilities)` |
 | Weighted average | `sum(val * weight) / sum(weights)` |
 
-## Data Sources
+| Tool | When |
+|------|------|
+| `execute_code` | Pure-Python math, no external packages |
+| `terminal` | Need pandas, openpyxl, or other installed packages |
+| `read_file` / programmatic loaders | Pull numbers from files — never hand-transcribe |
 
-The source of the numbers doesn't change the rule — compute in code, verify against source.
+## Procedure
 
-**Numbers in conversation:** Capture directly as variables. Don't re-type from memory.
+### 1. Determine inputs
 
-**From a file (Excel, CSV, PDF):** Read programmatically. Don't copy-paste partial numbers and do the rest in your head.
+Capture numbers as variables. Source does not change the rule — compute in code, verify against source.
 
-**From a web page or API:** Extract values into variables, then compute.
+- **Conversation:** Assign directly to variables.
+- **File (Excel, CSV, PDF):** Read programmatically; do not copy-paste partial numbers.
+- **Web / API:** Extract into variables, then compute.
+
+### 2. Write and run the calculation
+
+Use `execute_code` for in-memory stdlib math. Use `terminal` with the project's venv when packages are required.
+
+### 3. Verify (mandatory)
+
+**Self-check assertions** (same names as the calculation variables):
+
+```python
+assert abs(gp + direct_costs - revenue) < 0.01, "GP + DOC should equal revenue"
+assert abs(sde - (net_profit + owner_comp)) < 0.01, "SDE = net + add-back"
+assert abs(overhead_royalties - round(revenue * 0.07, 2)) < 0.01, "Royalties = 7%"
+```
+
+**Cross-check against source** (document, workbook, or API total):
+
+```python
+assert abs(computed_sde - source_sde) < 0.01, \
+    "SDE mismatch: computed={}, source={}".format(computed_sde, source_sde)
+```
+
+### 4. Report
+
+- Show inputs and computed outputs
+- Show assertion results (pass/fail)
+- Flag if computed values differ from source
 
 ### Excel / .xlsx specifics
 
-1. Use your project's Python environment (not the sandbox) when you need openpyxl or pandas installed.
-2. Always `data_only=True` to get computed values, not formulas:
+1. Use the project Python environment (not the sandbox) when openpyxl/pandas are needed.
+2. Always `data_only=True` so you get computed values, not formulas:
    ```python
    wb = openpyxl.load_workbook(path, data_only=True)
    ```
-3. Strip whitespace from labels — Excel cell values often have leading spaces:
+3. Strip whitespace from labels — Excel cells often have leading spaces:
    ```python
    label = cell.value.strip()  # NOT cell.value
    ```
-4. Write scripts to `/tmp/` and run the file rather than passing complex f-strings through subprocess.
-5. Verify facility sums match totals — sum individual facilities and compare to the "All Customers" row.
+4. Write multi-line scripts under `tempfile.gettempdir()` and run the file; avoid complex f-strings in subprocess.
+5. Verify facility sums match totals — sum individuals and compare to the "All Customers" row.
 
-## Common Pitfalls
+## Pitfalls
 
-1. **Sandbox Python missing packages.** Use your project's Python environment via `terminal` when you need external packages like pandas or openpyxl.
-2. **Excel labels have leading/trailing spaces.** Always `.strip()` label strings before comparison.
+1. **Sandbox Python missing packages.** Use the project venv via `terminal` for pandas/openpyxl.
+2. **Excel labels have leading/trailing spaces.** Always `.strip()` before comparison.
 3. **`data_only=False` returns formulas not values.** Pass `data_only=True` to `load_workbook`.
-4. **f-strings with escaped quotes break in subprocess.** Write script to `/tmp/` file, run the file.
+4. **f-strings with escaped quotes break in subprocess.** Write a temp file via `tempfile.gettempdir()`, then run it.
 5. **Rounding too early.** Keep full precision during computation; round only for display.
-6. **Transcribing numbers by hand from a source.** Read the source programmatically — hand transcription introduces errors.
-7. **Using made-up data to "test."** Always use real data from the source.
-8. **Doing "quick" mental math on 3+ numbers.** Don't. Write code. It takes 10 seconds and prevents wrong answers.
+6. **Hand-transcribing numbers.** Read the source programmatically.
+7. **Made-up "test" data.** Always use real source numbers.
+8. **"Quick" mental math on 3+ numbers.** Don't — write code.
 
-## Verification Checklist
+## Verification
 
 - [ ] All arithmetic executed via `execute_code` or a Python script — nothing computed in-head
 - [ ] Inputs captured as variables, not re-typed from memory
 - [ ] Self-check assertions pass (or cross-check against source values)
 - [ ] Rounded for display only; full precision used during computation
 - [ ] If data came from a document/workbook/API, computed result compared back to source
+- [ ] Temp scripts use `tempfile.gettempdir()`, not a hardcoded POSIX-only temp path

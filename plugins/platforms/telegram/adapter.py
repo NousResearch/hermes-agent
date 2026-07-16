@@ -215,11 +215,19 @@ try:
         Application,
         CommandHandler,
         CallbackQueryHandler,
-        InlineQueryHandler,
         MessageHandler as TelegramMessageHandler,
         ContextTypes,
         filters,
     )
+    try:
+        from telegram.ext import InlineQueryHandler
+    except ImportError:
+        # Older PTB (pre-inline-mode support) or a minimal test double that
+        # doesn't stub this symbol -- inline-query dispatch is a bonus
+        # feature, not core Telegram functionality, so its absence must not
+        # fail the whole availability check (mirrors LinkPreviewOptions's
+        # own optional-import handling just above).
+        InlineQueryHandler = Any
     from telegram.constants import ParseMode, ChatType
     from telegram.request import HTTPXRequest
     TELEGRAM_AVAILABLE = True
@@ -327,10 +335,18 @@ def check_telegram_requirements() -> bool:
         from telegram.ext import (
             Application as _App, CommandHandler as _CH,
             CallbackQueryHandler as _CQH,
-            InlineQueryHandler as _IQH,
             MessageHandler as _MH,
             ContextTypes as _CT, filters as _filters,
         )
+        try:
+            from telegram.ext import InlineQueryHandler as _IQH
+        except ImportError:
+            # Older PTB (pre-inline-mode support) or a minimal test double
+            # that doesn't stub this symbol -- inline-query dispatch is a
+            # bonus feature, not core Telegram functionality, so its absence
+            # must not fail the whole availability check (mirrors
+            # LinkPreviewOptions's own optional-import handling just above).
+            _IQH = None
         from telegram.constants import ParseMode as _PM, ChatType as _CtT
         from telegram.request import HTTPXRequest as _HR
     except ImportError:

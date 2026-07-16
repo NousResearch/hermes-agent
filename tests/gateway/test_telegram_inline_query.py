@@ -151,3 +151,48 @@ def test_check_telegram_requirements_rebinds_inline_query_handler(monkeypatch):
 
     assert result is True
     assert adapter_mod.InlineQueryHandler is _RealInlineQueryHandler
+
+
+def test_missing_inline_query_handler_does_not_break_availability(monkeypatch):
+    """Regression: InlineQueryHandler used to be bundled into the SAME
+    `from telegram.ext import (...)` statement as CallbackQueryHandler,
+    MessageHandler, ContextTypes, and filters. Any environment whose
+    telegram.ext doesn't define InlineQueryHandler -- an older PTB release
+    predating inline-mode support, or (as several pre-existing test files
+    turned out to do) a minimal test double that stubs only the handlers it
+    exercises -- raised ImportError for the WHOLE statement, so
+    check_telegram_requirements() returned False and left ParseMode, filters,
+    etc. all pinned at their None/Any import-failure fallbacks. That broke
+    real Telegram sends entirely ('NoneType' object has no attribute
+    'MARKDOWN_V2'), not just inline-query dispatch.
+
+    InlineQueryHandler must be its own try/except (mirroring the existing
+    LinkPreviewOptions optional-import a few lines above), so its absence
+    only disables the inline-query bonus feature -- core Telegram
+    functionality (ParseMode, filters, CallbackQueryHandler, ...) must still
+    become available.
+    """
+    import importlib
+    import types
+
+    import plugins.platforms.telegram.adapter as adapter_mod
+
+    real_telegram_ext = importlib.import_module("telegram.ext")
+
+    class _ExtWithoutInlineQueryHandler(types.ModuleType):
+        def __getattr__(self, name):
+            if name == "InlineQueryHandler":
+                raise AttributeError(name)
+            return getattr(real_telegram_ext, name)
+
+    stub_ext = _ExtWithoutInlineQueryHandler("telegram.ext")
+    monkeypatch.setitem(__import__("sys").modules, "telegram.ext", stub_ext)
+    monkeypatch.setattr(adapter_mod, "TELEGRAM_AVAILABLE", False)
+    monkeypatch.setattr(adapter_mod, "ParseMode", None)
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda feature, prompt=False: None)
+
+    result = adapter_mod.check_telegram_requirements()
+
+    assert result is True
+    assert adapter_mod.ParseMode is not None
+    assert adapter_mod.ParseMode.MARKDOWN_V2

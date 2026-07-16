@@ -222,6 +222,13 @@ SCHEMA_VERSION = 23
 #       tool-row-excluded trigram)
 FTS_STORAGE_VERSION = 1
 
+
+def _fts_object_missing(exc: BaseException) -> bool:
+    """True when an FTS probe failure means the table/module is ABSENT
+    (disable search) rather than transiently unavailable (keep it on)."""
+    msg = str(exc).lower()
+    return "no such table" in msg or "no such module" in msg
+
 # Cap on user-controlled FTS5 query input before regex/sanitizer processing.
 # Search queries do not need to be arbitrarily large, and bounding them keeps
 # sanitizer/runtime behavior predictable under adversarial input.
@@ -1067,6 +1074,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     model TEXT,
     model_config TEXT,
     system_prompt TEXT,
+    claude_sdk_session_id TEXT,
     parent_session_id TEXT,
     started_at REAL NOT NULL,
     ended_at REAL,
@@ -1647,6 +1655,26 @@ class SessionDB:
                     isolation_level=None,
                 )
                 self._conn.row_factory = sqlite3.Row
+                # Probe FTS availability with SELECTs (read-only-safe).
+                # Without this, search_messages() sees _fts_enabled=False and
+                # silently returns [] on every read-only handle — a false
+                # empty, not a degrade. Only a MISSING fts object disables
+                # search: a transient error (e.g. "database is locked"
+                # during a checkpoint) must not latch a silent false-empty
+                # for the handle's lifetime — leave enabled and let the
+                # query surface the error visibly.
+                try:
+                    self._conn.execute("SELECT 1 FROM messages_fts LIMIT 1")
+                    self._fts_enabled = True
+                except sqlite3.Error as exc:
+                    self._fts_enabled = not _fts_object_missing(exc)
+                try:
+                    self._conn.execute(
+                        "SELECT 1 FROM messages_fts_trigram LIMIT 1"
+                    )
+                    self._trigram_available = True
+                except sqlite3.Error:
+                    self._trigram_available = False
                 return
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -4342,6 +4370,19 @@ class SessionDB:
             conn.execute(
                 "UPDATE sessions SET model_config = ?, model = COALESCE(?, model) WHERE id = ?",
                 (model_config_json, model, session_id),
+            )
+        self._execute_write(_do)
+
+    def update_claude_sdk_session_id(
+        self, session_id: str, sdk_session_id: Optional[str]
+    ) -> None:
+        """Persist (or clear, with None) the claude-agent-sdk session id used
+        to resume the SDK conversation across gateway restarts and
+        agent-cache eviction (#25267 continuity)."""
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET claude_sdk_session_id = ? WHERE id = ?",
+                (sdk_session_id, session_id),
             )
         self._execute_write(_do)
 

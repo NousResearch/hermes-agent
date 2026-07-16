@@ -55,6 +55,28 @@ def test_registered_pattern_masks_token():
     assert "nvapi-" in out and "..." in out
 
 
+def test_prescreen_tuple_rebuilt_not_bypassed():
+    # The cheap pre-screen gate (_has_known_prefix_substring) consults
+    # _PREFIX_SUBSTRINGS. Registration after module load must REBUILD that
+    # tuple so plugin patterns flow through the same fast path as built-ins
+    # — never around it.
+    assert "nvapi-" not in redact_mod._PREFIX_SUBSTRINGS
+    assert not redact_mod._has_known_prefix_substring(f"x {NVAPI_KEY}")
+    register_redaction_patterns([NVAPI_PATTERN], source="test")
+    assert "nvapi-" in redact_mod._PREFIX_SUBSTRINGS
+    assert redact_mod._has_known_prefix_substring(f"x {NVAPI_KEY}")
+
+
+def test_patterns_attributed_per_source():
+    # Patterns are stored keyed by registration source — the seam the
+    # #64229 lifecycle/ledger path needs to drop one plugin's patterns on
+    # unload. No public removal API exists; additive-only stands.
+    register_redaction_patterns([NVAPI_PATTERN], source="plugin:alpha")
+    register_redaction_patterns([r"zk-[A-Za-z0-9]{24,}"], source="plugin:beta")
+    assert redact_mod._PLUGIN_PREFIX_PATTERNS["plugin:alpha"] == [NVAPI_PATTERN]
+    assert redact_mod._PLUGIN_PREFIX_PATTERNS["plugin:beta"] == [r"zk-[A-Za-z0-9]{24,}"]
+
+
 def test_builtins_unaffected_by_registration():
     register_redaction_patterns([NVAPI_PATTERN], source="test")
     sk = "sk-proj-AbCdEf1234567890GhIjKl"

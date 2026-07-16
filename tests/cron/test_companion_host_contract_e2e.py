@@ -89,6 +89,11 @@ def test_plugin_context_reports_versioned_runtime_capabilities():
     assert capabilities["scheduler"]["scheduled_context"] is True
     assert capabilities["scheduler"]["delivery_receipts"] is True
     assert capabilities["scheduler"]["text_only"] is True
+    assert capabilities["observations"] == {
+        "timezone": True,
+        "location": True,
+        "browser_authorization": True,
+    }
     assert capabilities["tools"]["names"] == sorted(capabilities["tools"]["names"])
     assert isinstance(capabilities["tools"]["web_search"], bool)
     assert isinstance(capabilities["tools"]["browser"], bool)

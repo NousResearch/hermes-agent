@@ -368,6 +368,11 @@ class PluginContext:
 
         return {
             "contract_version": HOST_CONTRACT_VERSION,
+            "observations": {
+                "timezone": True,
+                "location": True,
+                "browser_authorization": True,
+            },
             "scheduler": {
                 "scheduled_context": "cron_context" in VALID_HOOKS,
                 "delivery_receipts": "cron_delivery" in VALID_HOOKS,
@@ -402,6 +407,12 @@ class PluginContext:
                 "source": "host_browser",
             },
         }
+
+    def get_location_observation(self) -> Dict[str, Any]:
+        """Return one OS-mediated location observation for this plugin."""
+        from hermes_cli.host_observations import observe_location
+
+        return observe_location()
 
     # -- host-owned LLM access ----------------------------------------------
 

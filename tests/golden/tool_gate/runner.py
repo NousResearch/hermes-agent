@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import builtins
 from types import SimpleNamespace
+
+from scripts.refactor_equiv.runner import capture, load_cases
 
 
 class _InlineToolGateAdapter:
@@ -175,3 +178,50 @@ def run_case(case: dict):
             "db": [],
         }
     raise AssertionError(f"unknown case kind {kind!r}")
+
+
+def exercise_coverage():
+    mod = _impl()
+    capture(load_cases("tests/golden/tool_gate/corpus.json"), run_case)
+
+    original_import = builtins.__import__
+
+    def fail_model_tools(name, *args, **kwargs):
+        if name == "model_tools":
+            raise RuntimeError("forced import failure")
+        return original_import(name, *args, **kwargs)
+
+    builtins.__import__ = fail_model_tools
+    try:
+        mod.tool_search_scoped_names(SimpleNamespace())
+    finally:
+        builtins.__import__ = original_import
+
+    import model_tools
+
+    original_get_tool_definitions = model_tools.get_tool_definitions
+    model_tools.get_tool_definitions = lambda **kwargs: (_ for _ in ()).throw(RuntimeError("forced defs failure"))
+    try:
+        mod.tool_search_scoped_names(SimpleNamespace())
+    finally:
+        model_tools.get_tool_definitions = original_get_tool_definitions
+
+    class NoCacheAgent:
+        enabled_toolsets = None
+        disabled_toolsets = None
+
+        def __setattr__(self, name, value):
+            if name == "_tool_search_scope_cache":
+                raise RuntimeError("forced cache failure")
+            return super().__setattr__(name, value)
+
+    mod.tool_search_scoped_names(NoCacheAgent())
+
+    from tools import tool_search
+
+    original_resolve = tool_search.resolve_underlying_call
+    tool_search.resolve_underlying_call = lambda args: (_ for _ in ()).throw(RuntimeError("forced unwrap failure"))
+    try:
+        mod.resolve_tool_search_unwrap(SimpleNamespace(), tool_search.TOOL_CALL_NAME, {"name": "x"})
+    finally:
+        tool_search.resolve_underlying_call = original_resolve

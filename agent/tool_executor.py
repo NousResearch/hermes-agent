@@ -32,9 +32,11 @@ from agent.display import (
 )
 from agent.tool_guardrails import ToolGuardrailDecision
 from agent.budget_grace_gate import (
-    grace_block_message,
     grace_block_result,
-    is_readonly_grace_tool,
+)
+from agent.fork_ext.tool_gate import (
+    pre_tool_block_from_builtin_gate,
+    resolve_tool_search_unwrap,
 )
 from agent.tool_dispatch_helpers import (
     _is_destructive_command,
@@ -307,55 +309,6 @@ def _emit_cancelled_terminal_post_tool_call(
     return result
 
 
-def _tool_search_scoped_names(agent) -> frozenset:
-    """Return the deferrable tool names the session may invoke via tool_call.
-
-    The Tool Search unwrap dispatches the underlying tool directly, bypassing
-    the bridge branch (and its scope check) in
-    ``model_tools.handle_function_call``. To keep a restricted-toolset session
-    (subagent, kanban worker, curated gateway session) from reaching tools it
-    was never granted, the unwrap validates the underlying name against this
-    set: the deferrable subset of the session's own enabled/disabled toolset
-    scope.
-
-    Result is cached on the agent and refreshed when the tool registry's
-    generation changes (e.g. an MCP server reconnects), so the common case is
-    a dict lookup, not a full tool-defs rebuild on every tool call.
-    """
-    try:
-        import model_tools
-        from tools import tool_search as _ts
-        from tools.registry import registry as _registry
-    except Exception:
-        return frozenset()
-
-    enabled = getattr(agent, "enabled_toolsets", None)
-    disabled = getattr(agent, "disabled_toolsets", None)
-    cache_key = (
-        getattr(_registry, "_generation", 0),
-        frozenset(enabled) if enabled is not None else None,
-        frozenset(disabled) if disabled is not None else None,
-    )
-    cached = getattr(agent, "_tool_search_scope_cache", None)
-    if cached is not None and cached[0] == cache_key:
-        return cached[1]
-    try:
-        scoped_defs = model_tools.get_tool_definitions(
-            enabled_toolsets=enabled,
-            disabled_toolsets=disabled,
-            quiet_mode=True,
-            skip_tool_search_assembly=True,
-        ) or []
-        names = _ts.scoped_deferrable_names(scoped_defs)
-    except Exception:
-        names = frozenset()
-    try:
-        agent._tool_search_scope_cache = (cache_key, names)
-    except Exception:
-        pass
-    return names
-
-
 def _apply_tool_request_middleware_for_agent(
     agent,
     *,
@@ -522,24 +475,13 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # scope check), so we enforce session toolset scope HERE. A tool
         # the session was not granted is rejected before any checkpoint,
         # hook, or dispatch fires.
-        _ts_scope_block = None
-        try:
-            from tools import tool_search as _ts
-            if function_name == _ts.TOOL_CALL_NAME:
-                _underlying, _underlying_args, _err = _ts.resolve_underlying_call(function_args)
-                if not _err and _underlying:
-                    if _underlying in _tool_search_scoped_names(agent):
-                        function_name = _underlying
-                        function_args = _underlying_args
-                    else:
-                        _ts_scope_block = json.dumps({
-                            "error": (
-                                f"'{_underlying}' is not available in this session. "
-                                "Use tool_search to find tools you can call."
-                            ),
-                        }, ensure_ascii=False)
-        except Exception:
-            pass
+        _unwrap = resolve_tool_search_unwrap(agent, function_name, function_args)
+        function_name, function_args, _ts_scope_block, _ts_scope_message = (
+            _unwrap.function_name,
+            _unwrap.function_args,
+            _unwrap.scope_block_result,
+            _unwrap.scope_block_message,
+        )
 
         function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
             agent,
@@ -554,7 +496,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # checkpoint state (dedup slot, real snapshots).
         block_result = None
         blocked_by_guardrail = False
-        if getattr(agent, "_in_budget_grace", False) and not is_readonly_grace_tool(function_name):
+        _builtin_block = pre_tool_block_from_builtin_gate(agent, function_name, _ts_scope_message)
+        if _builtin_block is not None and _builtin_block["error_type"] == "budget_grace_block":
             # Budget-grace turn: deny-by-default side-effect lockout (Guard
             # D-core). Only the read-only allowlist may run; everything else —
             # including unknown/future tools — is refused so a runaway worker
@@ -563,7 +506,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             # carries the budget_grace_block metadata key (the shape asserted in
             # test_block_message_and_result_shape) — both dispatch paths emit the
             # same structure. middleware_trace mirrors the sibling block paths.
-            _grace_msg = grace_block_message(function_name)
+            _grace_msg = _builtin_block["message"]
             block_result = grace_block_result(function_name)
             _emit_terminal_post_tool_call(
                 agent,
@@ -577,7 +520,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 error_message=_grace_msg,
                 middleware_trace=list(middleware_trace),
             )
-        elif _ts_scope_block is not None:
+        elif _builtin_block is not None and _builtin_block["error_type"] == "tool_scope_block":
             # Out-of-scope tool_call: reject before hooks/guardrails/dispatch.
             block_result = _ts_scope_block
             _emit_terminal_post_tool_call(
@@ -1228,22 +1171,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Tool Search unwrap — see execute_tool_calls_concurrent for full
         # rationale, including the scope gate (the unwrap dispatches the
         # underlying tool directly, so session toolset scope is enforced here).
-        _ts_scope_block: Optional[str] = None
-        try:
-            from tools import tool_search as _ts
-            if function_name == _ts.TOOL_CALL_NAME:
-                _underlying, _underlying_args, _err = _ts.resolve_underlying_call(function_args)
-                if not _err and _underlying:
-                    if _underlying in _tool_search_scoped_names(agent):
-                        function_name = _underlying
-                        function_args = _underlying_args
-                    else:
-                        _ts_scope_block = (
-                            f"'{_underlying}' is not available in this session. "
-                            "Use tool_search to find tools you can call."
-                        )
-        except Exception:
-            pass
+        _unwrap = resolve_tool_search_unwrap(agent, function_name, function_args)
+        function_name, function_args, _ts_scope_block = (
+            _unwrap.function_name,
+            _unwrap.function_args,
+            _unwrap.scope_block_message,
+        )
 
         function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
             agent,
@@ -1256,13 +1189,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Check plugin hooks for a block directive before executing.
         _block_msg: Optional[str] = None
         _block_error_type = "plugin_block"
-        if getattr(agent, "_in_budget_grace", False) and not is_readonly_grace_tool(function_name):
+        _builtin_block = pre_tool_block_from_builtin_gate(agent, function_name, _ts_scope_block)
+        if _builtin_block is not None and _builtin_block["error_type"] == "budget_grace_block":
             # Budget-grace turn: deny-by-default side-effect lockout (Guard
             # D-core). Mirror of the concurrent path — only read-only tools run.
-            _block_msg = grace_block_message(function_name)
+            _block_msg = _builtin_block["message"]
             _block_error_type = "budget_grace_block"
-        elif _ts_scope_block is not None:
-            _block_msg = _ts_scope_block
+        elif _builtin_block is not None and _builtin_block["error_type"] == "tool_scope_block":
+            _block_msg = _builtin_block["message"]
             _block_error_type = "tool_scope_block"
         else:
             try:

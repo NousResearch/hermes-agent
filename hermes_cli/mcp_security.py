@@ -4,14 +4,17 @@ MCP stdio transports intentionally support arbitrary local commands so users can
 run custom servers. This module does not try to sandbox that capability. It
 blocks two high-signal abuse shapes seen in the wild:
 
-1. The exfiltration shape from #45620: a shell interpreter whose inline script
-   invokes network egress tooling.
-2. The persistence shape from the June 2026 ``hermes-0day`` campaign: a shell
+1. The exfiltration shape from #45620: an interpreter (shell or a
+   general-purpose language like python/node/perl/ruby/php) whose inline
+   script invokes network egress.
+2. The persistence shape from the June 2026 ``hermes-0day`` campaign: an
    interpreter whose inline script writes to OS persistence surfaces
    (``~/.ssh/authorized_keys``, ``/etc/ssh``, ``/etc/pam.d``, ``sudoers``,
    crontab, shell rc files). The campaign planted ``command: bash`` MCP entries
    whose payload appended an attacker SSH key to ``authorized_keys``; Hermes
    re-executed them on every cron tick / startup, re-installing the backdoor.
+   The same shape works identically via ``command: python3`` (or any other
+   inline-script interpreter) with no shell involved at all.
 
 3. A hardcoded indicator-of-compromise (IOC) blocklist for that campaign — the
    attacker's ``hermes-0day`` SSH public key and source IPs. Any entry whose
@@ -30,26 +33,36 @@ import re
 import shlex
 from typing import Any
 
-_SHELL_INTERPRETERS = frozenset({
-    "bash",
-    "sh",
-    "zsh",
-    "dash",
-    "fish",
-    "cmd",
-    "cmd.exe",
-    "powershell",
-    "powershell.exe",
-    "pwsh",
-    "pwsh.exe",
-})
+# Matches interpreter basenames including versioned binaries (python3.11,
+# python3.12, ruby3.2, perl5.36 — the norm under pyenv/homebrew/most distro
+# packaging, where the unversioned name is often just a symlink). An earlier
+# version of this check used an exact-name frozenset, which missed every
+# versioned spelling — command: python3.11 skipped the egress/persistence
+# checks below exactly like a bare, unrecognized command would, even though
+# it runs the identical inline script a bare "python3" would.
+_SCRIPT_INTERPRETER_PATTERN = re.compile(
+    r'^(?:bash|sh|zsh|dash|fish|cmd(?:\.exe)?|powershell(?:\.exe)?|pwsh(?:\.exe)?'
+    r'|python[23]?(?:\.\d+)*(?:\.exe)?|node(?:js)?(?:\.exe)?|deno'
+    r'|perl[0-9]*(?:\.\d+)*(?:\.exe)?|ruby[0-9]*(?:\.\d+)*(?:\.exe)?|php(?:\.exe)?)$',
+    re.IGNORECASE,
+)
 
 _EGRESS_PATTERN = re.compile(
     r"(?<![\w.-])(?:curl|wget|nc|ncat|socat)(?![\w.-])"
     r"|/dev/tcp/"
     r"|\bInvoke-WebRequest\b"
     r"|\bInvoke-RestMethod\b"
-    r"|\bSystem\.Net\.WebClient\b",
+    r"|\bSystem\.Net\.WebClient\b"
+    # Interpreter-native network egress, so the check above isn't only
+    # effective against shell tooling now that _SCRIPT_INTERPRETERS
+    # covers python/node/perl/ruby/php too.
+    r"|\burllib\.request\b|\burlopen\("
+    r"|\brequests\.(?:get|post|put|patch)\("
+    r"|\bsocket\.(?:socket|create_connection)\("
+    r"|\bhttp\.client\b|\bhttpx\b"
+    r"|\brequire\(['\"]https?['\"]\)|\bfetch\(|\bXMLHttpRequest\b|\bnet\.connect\("
+    r"|\bLWP::UserAgent\b|\bNet::HTTP\b|\bopen-uri\b"
+    r"|\bcurl_init\(|\bfsockopen\(|\bfile_get_contents\(['\"]https?:",
     re.IGNORECASE,
 )
 
@@ -126,8 +139,9 @@ def validate_mcp_server_entry(name: str, entry: dict[str, Any]) -> list[str]:
     scripts, npx, uvx, etc. We block three narrow shapes only:
 
     * a known hermes-0day IOC anywhere in command/args/env (hardcoded blocklist);
-    * a shell interpreter whose inline script invokes network egress (#45620);
-    * a shell interpreter whose inline script writes to an OS persistence
+    * an interpreter (shell, or python/node/perl/ruby/php run with an inline
+      script) whose inline script invokes network egress (#45620);
+    * an interpreter whose inline script writes to an OS persistence
       surface (June 2026 hermes-0day SSH/PAM/sudoers/cron shape).
     """
     if not isinstance(entry, dict):
@@ -148,7 +162,7 @@ def validate_mcp_server_entry(name: str, entry: dict[str, Any]) -> list[str]:
 
     command = entry.get("command")
     basename = _command_basename(command)
-    if basename not in _SHELL_INTERPRETERS:
+    if not _SCRIPT_INTERPRETER_PATTERN.match(basename):
         return issues
 
     script = _inline_script(entry.get("args"))
@@ -158,7 +172,7 @@ def validate_mcp_server_entry(name: str, entry: dict[str, Any]) -> list[str]:
     # 2. Network exfiltration shape.
     if _EGRESS_PATTERN.search(script):
         issue = (
-            f"MCP server '{name}' uses shell interpreter '{command}' with "
+            f"MCP server '{name}' uses interpreter '{command}' with "
             f"network egress in args"
         )
         if _EXFIL_HINT_PATTERN.search(script):
@@ -168,7 +182,7 @@ def validate_mcp_server_entry(name: str, entry: dict[str, Any]) -> list[str]:
     # 3. OS persistence shape (SSH key / PAM / sudoers / cron / rc files).
     if _PERSISTENCE_PATTERN.search(script):
         issues.append(
-            f"MCP server '{name}' uses shell interpreter '{command}' to write "
+            f"MCP server '{name}' uses interpreter '{command}' to write "
             f"to an OS persistence surface (SSH keys / PAM / sudoers / cron / "
             f"shell rc) — this is the hermes-0day backdoor shape, not a real "
             f"MCP server"

@@ -120,7 +120,7 @@ function patchVoiceUploadName(source) {
   return replaceOnce(
     source,
     `\tconst name = content.name ?? "voice.m4a";`,
-    `\t// ponytail: Spectrum transcodes bytes; keep the iMessage filename aligned.\n\tconst name = (content.name?.replace(/\\.[^./]+$/, "") || "voice") + ".m4a";`,
+    `\t// Spectrum transcodes the bytes; keep the iMessage filename aligned.\n\tconst name = (content.name?.replace(/\\.[^./]+$/, "") || "voice") + ".m4a";`,
     "voice upload filename"
   );
 }

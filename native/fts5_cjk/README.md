@@ -7,6 +7,7 @@ Build & install to ~/.hermes/lib/:
 
     ./build.sh
 
-Then run `scripts/fts_v2_migrate.py` to create + backfill messages_fts_v2,
-and set `HERMES_FTS_V2_READ=1` in ~/.hermes/.env to cut reads over.
-Override the .so location with `HERMES_FTS5_CJK_SO`.
+Then run `scripts/fts_v2_migrate.py` to create + backfill messages_fts_v2;
+reads cut over by default once the migration verifies the index. Set
+`agent.fts_v2_read: false` in ~/.hermes/config.yaml to fall back to the
+legacy tables. Override the .so location with `HERMES_FTS5_CJK_SO`.

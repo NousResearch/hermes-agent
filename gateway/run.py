@@ -1481,6 +1481,13 @@ def _bridge_max_turns_from_config(home: "Path") -> None:
     agent_cfg = cfg.get("agent", {})
     if isinstance(agent_cfg, dict) and "max_turns" in agent_cfg:
         os.environ["HERMES_MAX_ITERATIONS"] = str(agent_cfg["max_turns"])
+    # config-authoritative knobs for the FTS v2 search index (config.yaml
+    # agent.* wins over stale env; env stays the cross-process carrier and
+    # the no-config override).
+    if isinstance(agent_cfg, dict) and "fts_v2_read" in agent_cfg:
+        os.environ["HERMES_FTS_V2_READ"] = str(agent_cfg["fts_v2_read"])
+    if isinstance(agent_cfg, dict) and "search_slow_ms" in agent_cfg:
+        os.environ["HERMES_SEARCH_SLOW_MS"] = str(agent_cfg["search_slow_ms"])
 
 
 def _current_max_iterations() -> int:
@@ -1763,6 +1770,12 @@ if _config_path.exists():
                 os.environ["HERMES_AUTO_CONTINUE_FRESHNESS"] = str(
                     _agent_cfg["gateway_auto_continue_freshness"]
                 )
+            # config-authoritative knobs for the FTS v2 search index; same
+            # bridge semantics as the settings above.
+            if "fts_v2_read" in _agent_cfg:
+                os.environ["HERMES_FTS_V2_READ"] = str(_agent_cfg["fts_v2_read"])
+            if "search_slow_ms" in _agent_cfg:
+                os.environ["HERMES_SEARCH_SLOW_MS"] = str(_agent_cfg["search_slow_ms"])
         _display_cfg = _cfg.get("display", {})
         if _display_cfg and isinstance(_display_cfg, dict):
             if "busy_input_mode" in _display_cfg:

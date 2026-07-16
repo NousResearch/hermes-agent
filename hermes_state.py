@@ -574,6 +574,13 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
     """
     conn = sqlite3.connect(str(db_path), isolation_level=None)
     try:
+        # Best-effort tokenizer load: a DB carrying the messages_fts_v2 CJK
+        # index needs the cjk_unicode61 extension before any statement can
+        # touch that table — including the trigger-driven write probe below.
+        # Without it, this probe sees the DB exactly as a tokenizer-less
+        # SessionDB would (whose own open drops the v2 triggers to keep
+        # writes working).
+        load_fts5_cjk_extension(conn)
         conn.execute("PRAGMA journal_mode").fetchone()
         rows = conn.execute("PRAGMA integrity_check").fetchall()
         problems = [str(r[0]) for r in rows if r and str(r[0]).lower() != "ok"]
@@ -664,8 +671,14 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
             except sqlite3.Error:
                 pass
             msg = str(exc).lower()
-            if "no such table" in msg or "no such column" in msg:
+            if "no such column" in msg:
                 return None
+            if "no such table" in msg:
+                # A brand-new file mid-init (messages/sessions absent) is not
+                # corruption — but a missing FTS table whose sync triggers
+                # are still installed fails every message write and needs
+                # the repair path.
+                return None if "messages_fts" not in msg else str(exc)
             return str(exc)
         return None
     except sqlite3.DatabaseError as exc:
@@ -686,14 +699,19 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
 
       1. **Rebuild FTS indexes in place** via the FTS5 ``'rebuild'`` command,
          which rewrites the internal b-tree segments from the canonical
-         ``messages`` rows without dropping or recreating anything. Fixes the
-         FTS write-corruption class while preserving the schema intact.
+         ``messages`` rows without dropping or recreating anything. Covers
+         ``messages_fts_v2`` too (its cjk_unicode61 tokenizer is loaded
+         best-effort first). Fixes the FTS write-corruption class while
+         preserving the schema intact.
       2. **De-duplicate** ``sqlite_master`` (keep the lowest rowid per
          ``type``/``name``). Fixes the canonical "table X already exists"
          case and PRESERVES the existing FTS index intact.
-      3. **Drop the FTS schema** (every ``messages_fts*`` object) + ``VACUUM``.
-         The next ``SessionDB()`` open rebuilds the FTS indexes from the
-         canonical ``messages`` table.
+      3. **Drop the FTS schema** (every ``messages_fts*`` object, v2
+         included) + ``VACUUM``. The next ``SessionDB()`` open rebuilds the
+         v1 FTS indexes from the canonical ``messages`` table; a recreated
+         ``messages_fts_v2`` on a populated DB is marked needs_backfill and
+         stays out of the read path until scripts/fts_v2_migrate.py
+         completes a verified backfill.
 
     Canonical ``sessions`` / ``messages`` rows are never modified. A
     timestamped raw backup is taken first unless ``backup=False``.
@@ -729,13 +747,19 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
     try:
         conn = sqlite3.connect(str(db_path), isolation_level=None)
         try:
-            for table_name in ("messages_fts", "messages_fts_trigram"):
+            # The v2 CJK index can only be rebuilt with its tokenizer loaded;
+            # best-effort (a tokenizer-less host skips v2 at the probe below).
+            load_fts5_cjk_extension(conn)
+            for table_name in (
+                "messages_fts", "messages_fts_trigram", "messages_fts_v2"
+            ):
                 try:
                     conn.execute(
                         f"INSERT INTO {table_name}({table_name}) VALUES('rebuild')"
                     )
                 except sqlite3.OperationalError:
-                    # Table absent (FTS disabled / trigram off) — skip it.
+                    # Table absent (FTS disabled / trigram off / v2 not
+                    # migrated or tokenizer unavailable) — skip it.
                     continue
         finally:
             conn.close()
@@ -1109,6 +1133,21 @@ _FTS_V2_TRIGGERS = (
     "messages_fts_v2_update",
 )
 
+# state_meta marker set by scripts/fts_v2_migrate.py when the backfill has
+# fully covered the messages table (or by _init_schema when v2 is created on
+# an empty DB). The read path refuses to serve v2 without it — a DB where
+# only the triggers ever ran would otherwise answer searches from a partial
+# index.
+FTS_V2_READY_KEY = "fts_v2_ready"
+
+# Value stored under FTS_V2_READY_KEY when the index is known to have missed
+# writes: a tokenizer-less process dropped the v2 triggers (rows written in
+# that gap never reached the index), or the table was recreated on a
+# populated DB after a repair/manual drop. Reads stay on the legacy route
+# until scripts/fts_v2_migrate.py completes a VERIFIED backfill (rowcount
+# parity against messages) and restores the marker to "1".
+FTS_V2_NEEDS_BACKFILL = "needs_backfill"
+
 
 def fts5_cjk_so_path() -> Path:
     """Location of the cjk_unicode61 loadable extension."""
@@ -1192,6 +1231,7 @@ class SessionDB:
         # table + triggers exist and are queryable. See _probe_fts_v2().
         self._fts_cjk_loaded = False
         self._fts_v2_ready = False
+        self._fts_v1_present = True
         self._write_count = 0
         # One-shot guard for the runtime FTS rebuild recovery on the write
         # path. A corrupt FTS shadow table makes EVERY message write raise
@@ -1364,6 +1404,10 @@ class SessionDB:
                     "SELECT name FROM sqlite_master WHERE name LIKE 'messages_fts_v2%'"
                 ).fetchall()
             names = {r["name"] for r in rows}
+            with self._lock:
+                self._fts_v1_present = bool(self._conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name = 'messages_fts'"
+                ).fetchone())
             if "messages_fts_v2" not in names:
                 return False
             present_triggers = set(_FTS_V2_TRIGGERS) & names
@@ -1373,17 +1417,39 @@ class SessionDB:
                         "messages_fts_v2 triggers exist but the cjk_unicode61 "
                         "tokenizer failed to load (%s) — dropping the triggers "
                         "so message writes keep working. The v2 index is now "
-                        "STALE; re-run scripts/fts_v2_migrate.py after fixing "
-                        "the extension.",
-                        fts5_cjk_so_path(),
+                        "STALE and marked %s=%s; re-run scripts/fts_v2_migrate.py "
+                        "after fixing the extension.",
+                        fts5_cjk_so_path(), FTS_V2_READY_KEY, FTS_V2_NEEDS_BACKFILL,
                     )
                     with self._lock:
+                        # Invalidate the ready marker BEFORE dropping: every
+                        # row written while the triggers are gone is missing
+                        # from the index, so a later extension-capable open
+                        # must not trust the old marker (it would recreate the
+                        # triggers and serve an index with a silent gap).
+                        # Marker first — dying between the two statements
+                        # leaves an invalid marker with live triggers, which
+                        # is merely conservative.
+                        self._conn.execute(
+                            "INSERT INTO state_meta(key, value) VALUES (?, ?) "
+                            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                            (FTS_V2_READY_KEY, FTS_V2_NEEDS_BACKFILL),
+                        )
                         for trig in present_triggers:
                             self._conn.execute(f"DROP TRIGGER IF EXISTS {trig}")
                 return False
             if present_triggers != set(_FTS_V2_TRIGGERS):
                 return False
             with self._lock:
+                marker = self._conn.execute(
+                    "SELECT value FROM state_meta WHERE key = ?",
+                    (FTS_V2_READY_KEY,),
+                ).fetchone()
+                if not marker or str(marker[0]) != "1":
+                    # Triggers are live (dual-write) but the backfill never
+                    # finished — serving reads now would answer from a
+                    # partial index. scripts/fts_v2_migrate.py sets the flag.
+                    return False
                 self._conn.execute("SELECT rowid FROM messages_fts_v2 LIMIT 1").fetchone()
             return True
         except sqlite3.Error:
@@ -2195,21 +2261,85 @@ class SessionDB:
             # CREATE TRIGGER IF NOT EXISTS repairs trigger-only degradation from
             # an earlier no-FTS5 runtime.
             triggers_need_repair = self._fts_trigger_count(cursor) < len(_FTS_TRIGGERS)
-            self._fts_enabled = self._ensure_fts_schema(cursor, "messages_fts", FTS_SQL)
-
-            # Trigram FTS5 for CJK/substring search. This is optional relative
-            # to the main FTS table; if it cannot be created, CJK search falls
-            # back to LIKE.
-            if self._fts_enabled:
-                trigram_enabled = self._ensure_fts_schema(
-                    cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
-                )
-                self._trigram_available = trigram_enabled
-                if triggers_need_repair:
-                    self._rebuild_fts_indexes(
-                        cursor,
-                        include_trigram=trigram_enabled,
+            # v2-first: when the cjk_unicode61 tokenizer is loadable, the
+            # bigram index is the only FTS surface a DB needs. Fresh DBs get
+            # v2 natively; DBs whose v1 tables were retired by
+            # scripts/fts_v1_drop.py must NOT have them recreated here (the
+            # ensure below would resurrect an EMPTY messages_fts and silently
+            # blind every legacy-path search).
+            fts_v2_serving = False
+            if self._fts_cjk_loaded:
+                try:
+                    v2_existed = bool(cursor.execute(
+                        "SELECT 1 FROM sqlite_master WHERE name = 'messages_fts_v2'"
+                    ).fetchone())
+                    cursor.executescript(FTS_V2_SQL)
+                    fts_v2_serving = True
+                    # A DB with no messages needs no backfill: everything
+                    # that will ever be indexed arrives via the triggers.
+                    # Populated DBs get the marker from fts_v2_migrate.py.
+                    n_msgs = cursor.execute(
+                        "SELECT COUNT(*) FROM messages"
+                    ).fetchone()[0]
+                    if n_msgs == 0:
+                        cursor.execute(
+                            "INSERT INTO state_meta(key, value) VALUES (?, '1') "
+                            "ON CONFLICT(key) DO UPDATE SET value = '1'",
+                            (FTS_V2_READY_KEY,),
+                        )
+                    elif not v2_existed:
+                        # The table was just (re)created on a populated DB —
+                        # an offline repair or manual drop removed it, and
+                        # any surviving ready marker describes an index that
+                        # no longer exists. The empty index must not serve
+                        # reads until a verified backfill completes.
+                        cursor.execute(
+                            "INSERT INTO state_meta(key, value) VALUES (?, ?) "
+                            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                            (FTS_V2_READY_KEY, FTS_V2_NEEDS_BACKFILL),
+                        )
+                except sqlite3.OperationalError:
+                    logger.warning(
+                        "messages_fts_v2 ensure failed; falling back to v1 FTS",
+                        exc_info=True,
                     )
+
+            v1_present = bool(cursor.execute(
+                "SELECT 1 FROM sqlite_master WHERE name = 'messages_fts'"
+            ).fetchone())
+            fts_v2_marker_ready = False
+            if fts_v2_serving:
+                row = cursor.execute(
+                    "SELECT value FROM state_meta WHERE key = ?",
+                    (FTS_V2_READY_KEY,),
+                ).fetchone()
+                fts_v2_marker_ready = bool(row and str(row[0]) == "1")
+            if fts_v2_serving and not v1_present and fts_v2_marker_ready:
+                # v2-only DB (fresh, or v1 retired): nothing legacy to ensure.
+                # Gated on the ready marker: a v2 index awaiting a verified
+                # backfill (e.g. recreated after an offline repair) cannot
+                # serve reads yet, so the legacy tables must be (re)built
+                # below to keep search answering until the migration runs.
+                self._fts_enabled = True
+                self._trigram_available = False
+            else:
+                self._fts_enabled = self._ensure_fts_schema(cursor, "messages_fts", FTS_SQL)
+
+                # Trigram FTS5 for CJK/substring search. This is optional relative
+                # to the main FTS table; if it cannot be created, CJK search falls
+                # back to LIKE.
+                if self._fts_enabled:
+                    trigram_enabled = self._ensure_fts_schema(
+                        cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
+                    )
+                    self._trigram_available = trigram_enabled
+                    if triggers_need_repair:
+                        self._rebuild_fts_indexes(
+                            cursor,
+                            include_trigram=trigram_enabled,
+                        )
+                if fts_v2_serving:
+                    self._fts_enabled = True
 
         self._conn.commit()
 
@@ -5761,7 +5891,15 @@ class SessionDB:
     def _fts_v2_query_allowed(self, query: str) -> bool:
         if not self._fts_v2_ready:
             return False
-        if os.getenv("HERMES_FTS_V2_READ", "0").strip().lower() in ("0", "false", "off", ""):
+        # Config-authoritative knob: config.yaml agent.fts_v2_read is bridged
+        # into this env var by the gateway; default is ON once the index is
+        # ready (set 0/false to fall back to the legacy tables). After
+        # scripts/fts_v1_drop.py there is nothing to fall back TO, so the
+        # flag is ignored rather than silently blinding every search.
+        if (
+            self._fts_v1_present
+            and os.getenv("HERMES_FTS_V2_READ", "1").strip().lower() in ("0", "false", "off")
+        ):
             return False
         return not self._has_lone_cjk_run(query)
 
@@ -8037,9 +8175,11 @@ class SessionDB:
     # ── Space reclamation ──
 
     # FTS5 virtual tables whose b-tree segments we merge on optimize. The
-    # trigram table is created lazily / may be disabled, so we probe before
-    # touching it (see optimize_fts).
-    _FTS_TABLES = ("messages_fts", "messages_fts_trigram")
+    # trigram table is created lazily / may be disabled, the v1 tables may
+    # have been retired by scripts/fts_v1_drop.py, and the v2 CJK-bigram
+    # index is only queryable when this process loaded its tokenizer — so we
+    # probe each before touching it (see optimize_fts).
+    _FTS_TABLES = ("messages_fts", "messages_fts_trigram", "messages_fts_v2")
 
     def _fts_table_exists(self, name: str) -> bool:
         """True if an FTS5 virtual table is queryable in this DB."""

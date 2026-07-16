@@ -1172,6 +1172,21 @@ DEFAULT_CONFIG = {
         # detector instead of hanging forever. The env var
         # ``HERMES_LOCAL_STREAM_STALE_TIMEOUT`` overrides for escape-hatch use.
         "local_stream_stale_timeout": 900,
+        # Serve session search from the FTS v2 CJK-bigram index
+        # (messages_fts_v2) when the DB carries a verified index — the
+        # fts_v2_ready marker set by scripts/fts_v2_migrate.py after a
+        # verified backfill, or at init for fresh DBs. True (default) routes
+        # every eligible query to v2; false forces the legacy
+        # unicode61/trigram/LIKE routing. Ignored once the v1 tables were
+        # retired by scripts/fts_v1_drop.py (nothing left to fall back to).
+        # Bridged to HERMES_FTS_V2_READ (internal carrier) by the gateway.
+        "fts_v2_read": True,
+        # Slow session-search log threshold in milliseconds: searches at or
+        # above it log one line with the routing path taken (fts_v2 / fts5 /
+        # trigram / like_scan) so latency regressions stay attributable per
+        # query shape. 0 logs every search. Bridged to HERMES_SEARCH_SLOW_MS
+        # (internal carrier) by the gateway.
+        "search_slow_ms": 1000,
         # How user-attached images are presented to the main model on each turn.
         #   "auto"   — attach natively when the active model reports
         #              supports_vision=True AND the user hasn't explicitly

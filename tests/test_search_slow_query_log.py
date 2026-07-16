@@ -8,7 +8,11 @@ from hermes_state import SessionDB
 
 
 @pytest.fixture()
-def db(tmp_path):
+def db(tmp_path, monkeypatch):
+    # Legacy-shaped DB: the host may carry ~/.hermes/lib/libfts5_cjk.so, and
+    # a loadable tokenizer makes fresh DBs v2-native — which would route
+    # every query to fts_v2 and hide the legacy paths this file pins.
+    monkeypatch.setenv("HERMES_FTS5_CJK_SO", str(tmp_path / "missing.so"))
     d = SessionDB(db_path=tmp_path / "state.db")
     d.create_session(session_id="s1", source="cli", model="m")
     d.append_message("s1", role="user", content="hello graphiti 일본 MCP 정리")

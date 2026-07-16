@@ -103,6 +103,7 @@ import shutil
 import sys
 import threading
 import time
+import weakref
 from types import SimpleNamespace
 from typing import Callable
 from datetime import datetime
@@ -2300,15 +2301,17 @@ class MCPServerTask:
         new_pids: set = set()
         try:
             async with contextlib.AsyncExitStack() as stack:
-                async with _stdio_spawn_lock:
+                spawn_lock = _get_stdio_spawn_lock()
+                # Redirect subprocess stderr into a shared log file so MCP servers
+                # (FastMCP banners, slack-mcp startup JSON, etc.) don't dump onto
+                # the user's TTY and corrupt the TUI. Preserves debuggability via
+                # ~/.hermes/logs/mcp-stderr.log. Keep this setup outside the spawn
+                # attribution critical section.
+                _write_stderr_log_header(self.name)
+                _errlog = _get_mcp_stderr_log()
+                async with spawn_lock:
                     # Snapshot child PIDs before spawning so we can track the new one.
                     pids_before = _snapshot_child_pids()
-                    # Redirect subprocess stderr into a shared log file so MCP servers
-                    # (FastMCP banners, slack-mcp startup JSON, etc.) don't dump onto
-                    # the user's TTY and corrupt the TUI. Preserves debuggability via
-                    # ~/.hermes/logs/mcp-stderr.log.
-                    _write_stderr_log_header(self.name)
-                    _errlog = _get_mcp_stderr_log()
                     read_stream, write_stream = await stack.enter_async_context(
                         stdio_client(server_params, errlog=_errlog)
                     )
@@ -3659,12 +3662,31 @@ _mcp_thread: Optional[threading.Thread] = None
 _lock = threading.Lock()
 
 # Serialize only the stdio spawn-attribution window (snapshot → spawn → delta
-# → registration) so concurrent _run_stdio() coroutines on the shared MCP loop
-# cannot claim each other's child PIDs. Spawns are rare, so the serialization
-# cost is negligible; _filter_mcp_children remains defense-in-depth for
-# unrelated children. On Python 3.10+ asyncio.Lock() is loop-agnostic at
-# construction and this lock is only awaited on the MCP loop.
-_stdio_spawn_lock = asyncio.Lock()
+# → registration) so concurrent _run_stdio() coroutines on the same MCP loop
+# cannot claim each other's child PIDs. The background MCP loop can be stopped
+# and recreated, so each loop needs its own asyncio.Lock.
+_stdio_spawn_locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _get_stdio_spawn_lock() -> asyncio.Lock:
+    """Return the spawn lock for the running event loop.
+
+    The MCP background loop can be stopped and recreated
+    (_stop_mcp_loop/_ensure_mcp_loop); an asyncio.Lock binds to the loop that
+    first awaits it, so a process-global lock would raise "bound to a different
+    event loop" after a loop swap. Keyed weakly by the running loop so stale
+    locks die with their loop. Guarded by _lock because probe paths may run
+    this from different threads/loops.
+    """
+    loop = asyncio.get_running_loop()
+    with _lock:
+        lock = _stdio_spawn_locks.get(loop)
+        if lock is None:
+            lock = asyncio.Lock()
+            _stdio_spawn_locks[loop] = lock
+        return lock
 
 # PIDs of stdio MCP server subprocesses.  Tracked so we can force-kill
 # them on shutdown if the graceful cleanup (SDK context-manager teardown)

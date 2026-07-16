@@ -3,6 +3,7 @@
 import asyncio
 import subprocess
 import sys
+import threading
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from types import SimpleNamespace
@@ -48,24 +49,30 @@ class _ConcurrentSpawnRig:
     """Fake stdio transports backed by real, independently owned children."""
 
     def __init__(self):
-        self._srv_a_entered = asyncio.Event()
-        self._srv_b_entered = asyncio.Event()
+        self._preflight_barrier = threading.Barrier(2, timeout=10)
+        self.enter_attempts = {"srv_a": 0, "srv_b": 0}
         self.processes = {}
 
+    def preflight(self, _command, _args):
+        # The real OSV preflight runs in asyncio.to_thread before the spawn
+        # lock. Rendezvous there so both server coroutines are ready to race
+        # regardless of whether the production lock correctly serializes them.
+        try:
+            self._preflight_barrier.wait()
+        except threading.BrokenBarrierError:
+            pytest.fail("concurrent stdio starts did not rendezvous in OSV preflight")
+
     async def enter(self, server_name):
-        # _run_stdio takes pids_before before invoking this context manager.
-        # Force both coroutines to reach __aenter__ (and therefore take their
-        # snapshots) before either child exists. Then always spawn srv_b first:
-        # srv_b sees only B, while srv_a subsequently sees both A and B and
-        # overwrites B's ownership on the buggy snapshot-delta implementation.
-        if server_name == "srv_a":
-            self._srv_a_entered.set()
-            await asyncio.wait_for(self._srv_b_entered.wait(), timeout=2)
-        elif server_name == "srv_b":
-            await asyncio.wait_for(self._srv_a_entered.wait(), timeout=2)
-            self._srv_b_entered.set()
-        else:  # pragma: no cover - protects the test rig from accidental misuse
+        if server_name not in self.enter_attempts:  # pragma: no cover
             raise AssertionError(f"unexpected fake server name: {server_name}")
+        self.enter_attempts[server_name] += 1
+
+        # Without the production lock, both coroutines take pids_before before
+        # entering this context and then overlap here: both children appear in
+        # both snapshot deltas. With the lock, the second snapshot cannot happen
+        # until the first child has been registered, yielding clean ownership on
+        # the first connection attempt.
+        await asyncio.sleep(0.05)
 
         process = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(60)"],
@@ -124,7 +131,10 @@ def _patched_stdio_runtime(rig):
             "tools.mcp_tool._wrap_command_with_watchdog",
             side_effect=lambda command, args: (command, args),
         ),
-        patch("tools.osv_check.check_package_for_malware", return_value=None),
+        patch(
+            "tools.osv_check.check_package_for_malware",
+            side_effect=rig.preflight,
+        ),
         patch("tools.mcp_tool._write_stderr_log_header"),
         patch("tools.mcp_tool._get_mcp_stderr_log", return_value=None),
     ):
@@ -151,6 +161,9 @@ async def _running_server_pair():
     with _patched_stdio_runtime(rig):
         try:
             await asyncio.gather(start(srv_a), start(srv_b))
+            assert rig.enter_attempts == {"srv_a": 1, "srv_b": 1}
+            assert srv_a._reconnect_retries == 0
+            assert srv_b._reconnect_retries == 0
             yield rig, srv_a, srv_b
         finally:
             await asyncio.gather(

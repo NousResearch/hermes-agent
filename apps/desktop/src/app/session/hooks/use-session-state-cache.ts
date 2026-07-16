@@ -21,6 +21,7 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
+import { publishSessionState } from '@/store/session-states'
 
 import type { ClientSessionState } from '../../types'
 
@@ -263,6 +264,10 @@ export function useSessionStateCache({
       const previous = ensureSessionState(sessionId, storedSessionId)
       const next = updater({ ...previous, messages: previous.messages })
       sessionStateByRuntimeIdRef.current.set(sessionId, next)
+      // Mirror into the reactive multi-session store — session tiles (and any
+      // other non-primary surface) subscribe per runtime id there instead of
+      // through the single active $messages view.
+      publishSessionState(sessionId, next)
 
       if (previous.storedSessionId !== next.storedSessionId || !next.busy) {
         setSessionWorking(previous.storedSessionId, false)
@@ -289,6 +294,18 @@ export function useSessionStateCache({
     },
     [ensureSessionState, syncSessionStateToView]
   )
+
+  const getRuntimeIdForStoredSession = useCallback((storedSessionId: string): string | null => {
+    const runtimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+
+    if (!runtimeId) {
+      return null
+    }
+
+    const runtimeState = sessionStateByRuntimeIdRef.current.get(runtimeId)
+
+    return runtimeState?.storedSessionId === storedSessionId ? runtimeId : null
+  }, [])
 
   // When the store watchdog force-clears a stuck session (8 min of stream
   // silence — a hung or looping turn that never delivered its terminal event),
@@ -318,6 +335,7 @@ export function useSessionStateCache({
   return {
     activeSessionIdRef,
     ensureSessionState,
+    getRuntimeIdForStoredSession,
     resetViewSync,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionIdRef,

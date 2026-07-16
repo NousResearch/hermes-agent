@@ -65,6 +65,8 @@ interface HarnessHandle {
 function Harness({
   activeSessionIdRef: activeSessionIdRefProp,
   busyRef,
+  getRoutedStoredSessionId,
+  getRuntimeIdForStoredSession,
   getRouteToken,
   onReady,
   onSeedState,
@@ -80,6 +82,8 @@ function Harness({
 }: {
   activeSessionIdRef?: MutableRefObject<string | null>
   busyRef?: MutableRefObject<boolean>
+  getRoutedStoredSessionId?: () => null | string
+  getRuntimeIdForStoredSession?: (storedSessionId: string) => null | string
   getRouteToken?: () => string
   onReady: (handle: HarnessHandle) => void
   onSeedState?: (state: Record<string, unknown>) => void
@@ -116,6 +120,8 @@ function Harness({
     branchCurrentSession: async () => true,
     busyRef: localBusyRef,
     createBackendSessionForSend: createBackendSessionForSend ?? (async () => RUNTIME_SESSION_ID),
+    getRoutedStoredSessionId: getRoutedStoredSessionId ?? (() => null),
+    getRuntimeIdForStoredSession: getRuntimeIdForStoredSession ?? (() => null),
     getRouteToken: getRouteToken ?? (() => 'token'),
     handleSkinCommand: () => '',
     openMemoryGraph: openMemoryGraph ?? (() => undefined),
@@ -1344,6 +1350,209 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(calls[1]?.params).toMatchObject({ session_id: RECOVERED_SESSION_ID })
   })
 
+  it('never replaces a selected stored session when its direct runtime resume fails', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const busyRef: MutableRefObject<boolean> = { current: false }
+    const createBackendSessionForSend = vi.fn(async () => 'brand-new-session-WRONG')
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        throw new Error('4007 session not found on the active profile')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        busyRef={busyRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    expect(await handle!.submitText('keep me in the selected conversation')).toBe(false)
+    expect(busyRef.current).toBe(false)
+    expect(createBackendSessionForSend).not.toHaveBeenCalled()
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
+  })
+
+  it('resumes the ROUTED stored session instead of minting a new one when profile switching cleared both session refs', async () => {
+    // A profile swap/reconnect can temporarily clear both volatile ids while
+    // the durable route still points at the conversation the user is viewing.
+    // Enter during that window must resume the routed chat, never create a
+    // contextless session (or create it against the transient wrong profile).
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: 'rt-wrong-profile' }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let boundRuntimeId: string | null = null
+    const createBackendSessionForSend = vi.fn(async () => 'brand-new-session-WRONG')
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    const resumeStoredSession = vi.fn(async (storedSessionId: string) => {
+      expect(storedSessionId).toBe(STORED_SESSION_ID)
+      selectedStoredSessionIdRef.current = STORED_SESSION_ID
+      activeSessionIdRef.current = RECOVERED_SESSION_ID
+      boundRuntimeId = RECOVERED_SESSION_ID
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId="rt-wrong-profile"
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRoutedStoredSessionId={() => STORED_SESSION_ID}
+        getRuntimeIdForStoredSession={() => boundRuntimeId}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        resumeStoredSession={resumeStoredSession}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+
+    expect(await handle!.submitText('follow-up while the profile route is rebinding')).toBe(true)
+    expect(resumeStoredSession).toHaveBeenCalledWith(STORED_SESSION_ID)
+    expect(createBackendSessionForSend).not.toHaveBeenCalled()
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      { session_id: RECOVERED_SESSION_ID, text: 'follow-up while the profile route is rebinding' },
+      1_800_000
+    )
+  })
+
+  it('lets the durable route replace a stale selected session and runtime before submit', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: 'rt-wrong-profile' }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: 'stored-wrong-profile' }
+    let boundRuntimeId: string | null = null
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    const resumeStoredSession = vi.fn(async () => {
+      selectedStoredSessionIdRef.current = STORED_SESSION_ID
+      activeSessionIdRef.current = RECOVERED_SESSION_ID
+      boundRuntimeId = RECOVERED_SESSION_ID
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId="rt-wrong-profile"
+        activeSessionIdRef={activeSessionIdRef}
+        getRoutedStoredSessionId={() => STORED_SESSION_ID}
+        getRuntimeIdForStoredSession={() => boundRuntimeId}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        resumeStoredSession={resumeStoredSession}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    expect(await handle!.submitText('stay in the routed profile session')).toBe(true)
+    expect(resumeStoredSession).toHaveBeenCalledWith(STORED_SESSION_ID)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      { session_id: RECOVERED_SESSION_ID, text: 'stay in the routed profile session' },
+      1_800_000
+    )
+  })
+
+  it('submits directly when the routed stored session already owns the live runtime', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: RECOVERED_SESSION_ID }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_ID }
+    const requestGateway = vi.fn(async () => ({}) as never)
+    const resumeStoredSession = vi.fn()
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId={RECOVERED_SESSION_ID}
+        activeSessionIdRef={activeSessionIdRef}
+        getRoutedStoredSessionId={() => STORED_SESSION_ID}
+        getRuntimeIdForStoredSession={() => RECOVERED_SESSION_ID}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        resumeStoredSession={resumeStoredSession}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    expect(await handle!.submitText('normal follow-up')).toBe(true)
+    expect(resumeStoredSession).not.toHaveBeenCalled()
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      { session_id: RECOVERED_SESSION_ID, text: 'normal follow-up' },
+      1_800_000
+    )
+  })
+
+  it('never falls through to session.create or a stale runtime when routed-session recovery fails', async () => {
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: 'rt-wrong-profile' }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_ID }
+    const busyRef: MutableRefObject<boolean> = { current: false }
+    let recoverySucceeds = false
+    let boundRuntimeId: string | null = null
+
+    const createBackendSessionForSend = vi.fn(async () => 'brand-new-session-WRONG')
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    const resumeStoredSession = vi.fn(async () => {
+      if (!recoverySucceeds) {
+        return
+      }
+
+      activeSessionIdRef.current = RECOVERED_SESSION_ID
+      boundRuntimeId = RECOVERED_SESSION_ID
+    })
+
+    $messages.set([])
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId="rt-wrong-profile"
+        activeSessionIdRef={activeSessionIdRef}
+        busyRef={busyRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRoutedStoredSessionId={() => STORED_SESSION_ID}
+        getRuntimeIdForStoredSession={() => boundRuntimeId}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        resumeStoredSession={resumeStoredSession}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    expect(await handle!.submitText('do not fork me')).toBe(false)
+    expect(busyRef.current).toBe(false)
+    expect($messages.get()).toEqual([])
+    expect(resumeStoredSession).toHaveBeenCalledWith(STORED_SESSION_ID)
+    expect(createBackendSessionForSend).not.toHaveBeenCalled()
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
+
+    // Prove the failed attempt released the per-session submit lock. The next
+    // send can recover and submit instead of being silently rejected forever.
+    recoverySucceeds = true
+    expect(await handle!.submitText('retry after recovery')).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      { session_id: RECOVERED_SESSION_ID, text: 'retry after recovery' },
+      1_800_000
+    )
+  })
+
   it('still creates a new session for a genuine new-chat draft (no stored session selected)', async () => {
     const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
 
@@ -1453,6 +1662,7 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
   it('aborts recovery submit when the user switches sessions during timeout resume', async () => {
     const calls: { method: string; params?: Record<string, unknown> }[] = []
     let submitAttempts = 0
+
     let releaseResume: () => void = () => {}
 
     const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_A }

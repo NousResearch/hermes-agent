@@ -2935,6 +2935,7 @@ def run_job(
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}
+        _model_cfg = {}
         try:
             import yaml
             _cfg_path = str(_get_hermes_home() / "config.yaml")
@@ -2988,13 +2989,9 @@ def run_job(
         except Exception:
             pass
 
-        # Reasoning config from config.yaml (per-model override > global) —
-        # resolved through the shared chokepoint against the job's effective
-        # model (per-job override > HERMES_MODEL env > config.yaml default).
+        # Reasoning config is resolved after provider authentication so an auth
+        # fallback can first replace the primary model with its configured model.
         from hermes_constants import resolve_reasoning_config
-        reasoning_config = resolve_reasoning_config(
-            _cfg if isinstance(_cfg, dict) else {}, str(model)
-        )
 
         # Prefill messages from env or config.yaml. The top-level
         # prefill_messages_file key is canonical; agent.prefill_messages_file is
@@ -3040,6 +3037,17 @@ def run_job(
         # off-host call is ever made with a stored key.
         _guard_job_credential_exfil(job)
 
+        primary_model_for_drift = model
+        configured_provider_for_drift = (
+            str(_model_cfg.get("provider") or "").strip().lower()
+            if isinstance(_model_cfg, dict)
+            else ""
+        )
+        primary_provider_for_drift = (
+            str(job.get("provider") or "").strip().lower()
+            or configured_provider_for_drift
+            or None
+        )
         try:
             # Do not inject HERMES_INFERENCE_PROVIDER here. resolve_runtime_provider()
             # already prefers persisted config over stale shell/env overrides when
@@ -3052,28 +3060,60 @@ def run_job(
             if job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")
             runtime = resolve_runtime_provider(**runtime_kwargs)
+            primary_provider_for_drift = (
+                str(runtime.get("provider") or "").strip().lower()
+                or primary_provider_for_drift
+            )
         except AuthError as auth_exc:
-            # Primary provider auth failed — try fallback chain before giving up.
+            # Primary provider auth failed — try each configured provider/model
+            # pair atomically. Keeping the primary model while changing only the
+            # provider can silently route a paid GPT model through OpenRouter.
+            primary_provider_for_drift = (
+                str(getattr(auth_exc, "provider", "") or "").strip().lower()
+                or primary_provider_for_drift
+            )
             logger.warning("Job '%s': primary auth failed (%s), trying fallback", job_id, auth_exc)
             fb_list = get_fallback_chain(_cfg)
             runtime = None
             for entry in fb_list:
+                if not isinstance(entry, dict):
+                    continue
+                fb_provider = str(entry.get("provider") or "").strip()
+                fb_model = str(entry.get("model") or "").strip()
+                if not fb_provider or not fb_model:
+                    continue
                 try:
-                    fb_kwargs = {"requested": entry.get("provider")}
+                    from hermes_cli.fallback_config import resolve_entry_api_key
+
+                    fb_kwargs = {
+                        "requested": fb_provider,
+                        "target_model": fb_model,
+                    }
                     if entry.get("base_url"):
                         fb_kwargs["explicit_base_url"] = entry["base_url"]
-                    if entry.get("api_key"):
-                        fb_kwargs["explicit_api_key"] = entry["api_key"]
+                    fb_api_key = resolve_entry_api_key(entry)
+                    if fb_api_key:
+                        fb_kwargs["explicit_api_key"] = fb_api_key
                     runtime = resolve_runtime_provider(**fb_kwargs)
-                    logger.info("Job '%s': fallback resolved to %s", job_id, runtime.get("provider"))
+                    model = fb_model
+                    logger.info(
+                        "Job '%s': fallback resolved to %s model %s",
+                        job_id,
+                        runtime.get("provider"),
+                        fb_model,
+                    )
                     break
                 except Exception as fb_exc:
-                    logger.debug("Job '%s': fallback %s failed: %s", job_id, entry.get("provider"), fb_exc)
+                    logger.debug("Job '%s': fallback %s failed: %s", job_id, fb_provider, fb_exc)
             if runtime is None:
                 raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
         except Exception as exc:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
+
+        reasoning_config = resolve_reasoning_config(
+            _cfg if isinstance(_cfg, dict) else {}, str(model)
+        )
 
         # Provider/model-drift fail-closed guard (#44585).
         #
@@ -3097,14 +3137,16 @@ def run_job(
         _drift: list[str] = []
         _provider_snapshot = (job.get("provider_snapshot") or "").strip().lower()
         if _provider_snapshot and not (job.get("provider") or "").strip():
-            _current_provider = str(runtime.get("provider") or "").strip().lower()
+            _current_provider = str(
+                primary_provider_for_drift or runtime.get("provider") or ""
+            ).strip().lower()
             if _current_provider and _current_provider != _provider_snapshot:
                 _drift.append(
                     f"provider '{_provider_snapshot}' -> '{_current_provider}'"
                 )
         _model_snapshot = (job.get("model_snapshot") or "").strip().lower()
         if _model_snapshot and not (job.get("model") or "").strip():
-            _current_model = str(model or "").strip().lower()
+            _current_model = str(primary_model_for_drift or "").strip().lower()
             if _current_model and _current_model != _model_snapshot:
                 _drift.append(
                     f"model '{_model_snapshot}' -> '{_current_model}'"

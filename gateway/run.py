@@ -1411,30 +1411,27 @@ from contextlib import contextmanager as _contextmanager
 # Platforms that bind a host TCP port (HTTP/webhook listeners). In a profile
 # multiplexer the default profile owns the single shared listener and serves
 # every profile through the /p/<profile>/ URL prefix, so a SECONDARY profile
-# enabling one of these is always a misconfiguration: it would try to bind a
-# port already held by the default's listener. We hard-error on it rather than
-# silently dropping the adapter (see _start_one_profile_adapters).
-# Stored as platform .value strings since the Platform enum is imported below.
-_PORT_BINDING_PLATFORM_VALUES = frozenset({
-    "webhook",
-    "api_server",
-    "msgraph_webhook",
-    "feishu",
-    "wecom_callback",
-    "bluebubbles",
-    "sms",
-    "whatsapp_cloud",
-    "line",
-})
+# enabling one of these is always a misconfiguration. We skip that secondary
+# profile (SecondaryPortBindingConfigError) so a single bad profile cannot
+# take down the whole multiplexer. The set lives in gateway.config so the
+# dashboard's pre-write validation enforces the same policy.
+from gateway.config import (
+    PORT_BINDING_PLATFORM_VALUES as _PORT_BINDING_PLATFORM_VALUES,
+    platform_binds_port as _platform_binds_port,
+)
 
 
 class MultiplexConfigError(RuntimeError):
-    """A profile multiplexer config is invalid (fail-fast at startup).
+    """A profile multiplexer config is invalid.
 
-    Distinct from a transient adapter-connect failure: a transient error is
-    logged and the gateway stays alive to retry, but a config error means the
-    operator must fix config.yaml, so it aborts startup cleanly.
+    Distinct from a transient adapter-connect failure: a config error means the
+    operator must fix config.yaml. Fatal configuration errors propagate to the
+    startup guard instead of being treated as retryable adapter noise.
     """
+
+
+class SecondaryPortBindingConfigError(MultiplexConfigError):
+    """A secondary profile conflicts with the multiplexer's shared listener."""
 
 
 @_contextmanager
@@ -1470,6 +1467,61 @@ def _profile_runtime_scope(profile_home: "Path"):
     finally:
         reset_secret_scope(secret_token)
         reset_hermes_home_override(home_token)
+
+
+def load_gateway_config_for_runner() -> "GatewayConfig":
+    """Load gateway config for the process-level GatewayRunner.
+
+    When ``gateway.multiplex_profiles`` is off, this is identical to
+    ``load_gateway_config()`` (legacy single-profile path).
+
+    When multiplexing is on, reload under the default/active profile's
+    ``_profile_runtime_scope`` so platform tokens in that profile's ``.env``
+    resolve through the secret scope — the same path secondary profiles use
+    in ``_start_one_profile_adapters``. Without this, primary startup calls
+    ``load_gateway_config()`` unscoped: ``_getenv`` falls through to
+    ``os.environ``, which often has no ``TELEGRAM_BOT_TOKEN`` once the token
+    lives only under ``profiles/<name>/.env`` (#64674).
+
+    Single-profile gateways never set ``multiplex_profiles``, so they keep the
+    unscoped load and are unaffected.
+    """
+    cfg = load_gateway_config()
+    if not getattr(cfg, "multiplex_profiles", False):
+        return cfg
+    try:
+        home = get_hermes_home()
+    except Exception:
+        return cfg
+    try:
+        with _profile_runtime_scope(Path(home)):
+            return load_gateway_config()
+    except Exception:
+        logger.debug(
+            "multiplex default-scope config reload failed; using unscoped load",
+            exc_info=True,
+        )
+        return cfg
+
+
+def _platform_has_bot_credential(platform: "Platform", platform_config: "PlatformConfig") -> bool:
+    """Return True when a token-authenticated platform has a usable bot credential.
+
+    Platforms that do not use ``PlatformConfig.token`` always return True so we
+    never skip them here (Signal session paths, port-binding HTTP adapters, etc.).
+    """
+    from gateway.config import PLATFORM_TOKEN_ENV_NAMES
+
+    if platform not in PLATFORM_TOKEN_ENV_NAMES:
+        return True
+    token = getattr(platform_config, "token", None) or ""
+    if isinstance(token, str) and token.strip():
+        return True
+    # Some adapters also accept api_key as the primary credential.
+    api_key = getattr(platform_config, "api_key", None) or ""
+    if isinstance(api_key, str) and api_key.strip():
+        return True
+    return False
 
 
 _DOCKER_VOLUME_SPEC_RE = re.compile(r"^(?P<host>.+):(?P<container>/[^:]+?)(?::(?P<options>[^:]+))?$")
@@ -1780,6 +1832,7 @@ from gateway.session import (
     build_session_context_prompt,
     build_session_key,
     is_shared_multi_user_session,
+    neutralize_untrusted_inline_text,
 )
 from gateway.delivery import DeliveryRouter, looks_like_telegram_private_chat_id
 from gateway.authz_mixin import GatewayAuthorizationMixin
@@ -1985,17 +2038,12 @@ def _try_resolve_fallback_provider() -> dict | None:
             return None
         for entry in fb_list:
             try:
-                explicit_api_key = entry.get("api_key")
-                if not explicit_api_key:
-                    key_env = str(
-                        entry.get("key_env") or entry.get("api_key_env") or ""
-                    ).strip()
-                    if key_env:
-                        explicit_api_key = os.getenv(key_env, "").strip() or None
+                from hermes_cli.fallback_config import resolve_entry_api_key
+
                 runtime = resolve_runtime_provider(
                     requested=entry.get("provider"),
                     explicit_base_url=entry.get("base_url"),
-                    explicit_api_key=explicit_api_key,
+                    explicit_api_key=resolve_entry_api_key(entry),
                 )
                 # Log the literal `provider` key from config, not the resolved
                 # runtime category — an Ollama fallback resolves through the
@@ -2667,6 +2715,8 @@ def _normalize_empty_agent_response(
             )
         return response
     if api_calls > 0:
+        if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
+            return ""
         if agent_result.get("partial"):
             err = agent_result.get("error", "processing incomplete")
             return f"⚠️ Processing stopped: {str(err)[:200]}. Try again."
@@ -2692,6 +2742,30 @@ def _normalize_empty_agent_response(
         )
 
     return response
+
+
+def _is_gateway_hidden_reasoning_incomplete_turn(agent_result: dict) -> bool:
+    """Detect retry-exhausted turns with hidden reasoning but no visible answer.
+
+    The conversation loop returns the retry-exhaustion sentinel as BOTH
+    ``final_response`` and ``error`` ("Codex response remained incomplete
+    after 3 continuation attempts"), so ``final_response`` being non-empty
+    does not mean the model produced a visible answer. Treat the turn as
+    hidden when the error sentinel is present and ``final_response`` is
+    either empty or merely echoes that sentinel — any genuinely different
+    final text means the model DID answer and must be delivered.
+    """
+    if not isinstance(agent_result, dict):
+        return False
+    if agent_result.get("failed") or agent_result.get("interrupted"):
+        return False
+    if not agent_result.get("partial"):
+        return False
+    error_text = str(agent_result.get("error", "") or "").strip()
+    if "remained incomplete after" not in error_text.lower():
+        return False
+    final_response = str(agent_result.get("final_response") or "").strip()
+    return not final_response or final_response == error_text
 
 
 def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
@@ -2831,7 +2905,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
-        self.config = config or load_gateway_config()
+        # When multiplex_profiles is on, load under the default profile secret
+        # scope so bot tokens in that profile's .env resolve the same way
+        # secondary profiles do (#64674). Explicit config= injection (tests)
+        # is left untouched.
+        self.config = config if config is not None else load_gateway_config_for_runner()
         # Mark the process as a profile multiplexer when configured. This flips
         # agent.secret_scope.get_secret() to fail-closed on any unscoped
         # credential read, so a missed migration crashes loudly instead of
@@ -7138,10 +7216,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         startup_retryable_errors: list[str] = []
         
         # Initialize and connect each configured platform
+        _multiplex_on = bool(getattr(self.config, "multiplex_profiles", False))
+        _multiplex_skipped_platforms: list[Platform] = []
         for platform, platform_config in self.config.platforms.items():
             if await self._abort_startup_if_shutdown_requested():
                 return True
             if not platform_config.enabled:
+                continue
+            # Under multiplexing, a platform may be enabled on the default
+            # profile's config.yaml while its bot token lives only in a
+            # secondary profile's .env. Starting that primary adapter with an
+            # empty token fails immediately and queues an infinite reconnect
+            # loop that can never heal (#64674). Secondary profiles still
+            # start their own adapters under _profile_runtime_scope with the
+            # real token — skip the empty primary instead of failing loudly.
+            if _multiplex_on and not _platform_has_bot_credential(platform, platform_config):
+                logger.info(
+                    "Skipping %s on default profile: no bot credential in this "
+                    "profile's secrets. Secondary multiplexed profiles that "
+                    "provide the token will still connect.",
+                    platform.value,
+                )
+                _multiplex_skipped_platforms.append(platform)
                 continue
             enabled_platform_count += 1
             
@@ -7286,6 +7382,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return True
         except Exception as e:
             logger.error("Secondary-profile adapter startup failed: %s", e, exc_info=True)
+
+        # A platform we skipped on the primary for a missing credential was
+        # supposed to be picked up by a secondary profile that owns the token.
+        # If none did, the platform is enabled in config.yaml yet silently
+        # unserved — surface it loudly so the operator sees a config problem
+        # instead of a quiet dead channel (#64674 follow-up).
+        for _skipped in _multiplex_skipped_platforms:
+            _served_by_secondary = any(
+                _skipped in _profile_map
+                for _profile_map in self._profile_adapters.values()
+            )
+            if not _served_by_secondary:
+                logger.warning(
+                    "%s is enabled but no profile (default or secondary) "
+                    "provided a bot credential for it — the platform is not "
+                    "being served. Add its token to the profile that should "
+                    "own it, or disable the platform.",
+                    _skipped.value,
+                )
 
         if connected_count == 0:
             if startup_nonretryable_errors:
@@ -7981,6 +8096,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 platform_config = info["config"]
                 attempt = info["attempts"] + 1
+                # Empty-token primary configs can never reconnect; drop them so
+                # multiplex setups where a secondary profile owns the bot do
+                # not spin forever (#64674).
+                if not _platform_has_bot_credential(platform, platform_config):
+                    logger.warning(
+                        "Reconnect %s: no bot credential on queued config, "
+                        "removing from retry queue",
+                        platform.value,
+                    )
+                    del self._failed_platforms[platform]
+                    continue
                 logger.info(
                     "Reconnecting %s (attempt %d)...",
                     platform.value, attempt,
@@ -8620,10 +8746,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 connected += await self._start_one_profile_adapters(
                     profile_name, profile_home, claimed
                 )
+            except SecondaryPortBindingConfigError as e:
+                logger.warning(
+                    "Skipping secondary profile '%s' due to port-binding config error: %s",
+                    profile_name,
+                    e,
+                )
             except MultiplexConfigError:
-                # Config error (e.g. a secondary profile binding a port) is not
-                # transient — propagate so startup aborts cleanly instead of
-                # limping along with a half-configured multiplexer.
                 raise
             except Exception as e:
                 logger.error(
@@ -8634,6 +8763,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Record served profiles in runtime status for `hermes status`.
         try:
             from gateway.status import write_runtime_status
+            from gateway.pairing import PairingStore
             served = [active] + sorted(self._profile_adapters.keys())
             # Per-profile PairingStores so authz_mixin can route pairing
             # checks to the right whitelist. The active profile gets a store
@@ -8665,29 +8795,54 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "'open'."
             )
 
+        port_binding_platforms = sorted(
+            platform.value
+            for platform, platform_config in profile_cfg.platforms.items()
+            if platform_config.enabled
+            and _platform_binds_port(platform.value, platform_config.extra)
+        )
+        if port_binding_platforms:
+            joined = ", ".join(port_binding_platforms)
+            raise SecondaryPortBindingConfigError(
+                f"Profile '{profile_name}' enables port-binding platform(s) "
+                f"{joined}, but gateway.multiplex_profiles is on. The default "
+                f"profile owns the single shared HTTP listener and serves every "
+                f"profile through the /p/{profile_name}/ URL prefix. Remove "
+                f"these platform entries from profile '{profile_name}'s config.yaml "
+                f"or configure them only on the default profile."
+            )
+
         profile_map = self._profile_adapters.setdefault(profile_name, {})
         connected = 0
         for platform, platform_config in profile_cfg.platforms.items():
             if not platform_config.enabled:
                 continue
-            # A secondary profile must NOT enable a port-binding platform: the
-            # default profile's listener already serves every profile via the
-            # /p/<profile>/ prefix, so a second bind can only collide. This is a
-            # config error, not a transient failure — fail fast and loud.
-            if platform.value in _PORT_BINDING_PLATFORM_VALUES:
-                raise MultiplexConfigError(
-                    f"Profile '{profile_name}' enables the port-binding platform "
-                    f"'{platform.value}', but gateway.multiplex_profiles is on. The "
-                    f"default profile owns the single shared HTTP listener and "
-                    f"serves every profile through the /p/{profile_name}/ URL "
-                    f"prefix — a secondary profile cannot bind its own port. "
-                    f"Remove platforms.{platform.value} from profile "
-                    f"'{profile_name}'s config.yaml (configure it only on the "
-                    f"default profile)."
+            # Relay is shared process-level ingress in multiplex mode. The
+            # active profile owns the one connection; connector-stamped
+            # source.profile routes inbound turns to secondary profiles.
+            if (
+                getattr(self.config, "multiplex_profiles", False)
+                and platform is Platform.RELAY
+            ):
+                continue
+            try:
+                with _profile_runtime_scope(profile_home):
+                    adapter = self._create_adapter(platform, platform_config)
+            except Exception as e:
+                logger.error(
+                    "[MULTIPLEX] Profile '%s': _create_adapter('%s') raised %s",
+                    profile_name,
+                    platform.value,
+                    e,
+                    exc_info=True,
                 )
-            with _profile_runtime_scope(profile_home):
-                adapter = self._create_adapter(platform, platform_config)
+                continue
             if not adapter:
+                logger.warning(
+                    "[MULTIPLEX] Profile '%s': skipping platform '%s' - adapter creation returned None",
+                    profile_name,
+                    platform.value,
+                )
                 continue
 
             # Same-token conflict detection — refuse a duplicate poll.
@@ -8715,7 +8870,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
-            adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
+            adapter.set_authorization_check(
+                self._make_adapter_auth_check(adapter.platform, profile_name=profile_name)
+            )
             adapter._busy_text_mode = self._busy_text_mode
 
             try:
@@ -8734,14 +8891,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return connected
 
     def _make_profile_message_handler(self, profile_name: str):
-        """Return a message handler that stamps source.profile then delegates."""
+        """Return a message handler that stamps source.profile then delegates.
+
+        Auth runs inside ``_handle_message`` *before* the agent-turn scope is
+        installed. For secondary profiles under multiplex, wrap the whole
+        handler in ``_profile_runtime_scope`` so allowlists/tokens from that
+        profile's ``.env`` are visible to ``get_secret`` / authz.
+        """
+        from hermes_cli.profiles import get_profile_dir
+
+        try:
+            profile_home = get_profile_dir(profile_name)
+        except Exception:
+            profile_home = None
+
         async def _handler(event):
             try:
                 if getattr(event, "source", None) is not None and not event.source.profile:
                     event.source.profile = profile_name
             except Exception:
                 pass
+            if profile_home is not None:
+                with _profile_runtime_scope(profile_home):
+                    return await self._handle_message(event)
             return await self._handle_message(event)
+
         return _handler
 
     @staticmethod
@@ -8759,6 +8933,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if isinstance(val, str) and val.strip():
                 token = val.strip()
                 break
+        # Many adapters (e.g. Discord) store the token on their `config`
+        # sub-object rather than directly on the adapter. Without this lookup
+        # those adapters all return None here, the same-token conflict check
+        # is silently skipped, and every profile's adapter for that platform
+        # starts polling the same bot token — producing a per-message race
+        # for which adapter answers. See test_reads_config_token.
+        if not token:
+            cfg = getattr(adapter, "config", None)
+            if cfg is not None:
+                for attr in ("token", "bot_token"):
+                    val = getattr(cfg, attr, None)
+                    if isinstance(val, str) and val.strip():
+                        token = val.strip()
+                        break
         if not token:
             config = getattr(adapter, "config", None)
             val = getattr(config, "token", None)
@@ -8795,12 +8983,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if platform_registry.is_registered(platform.value):
                 adapter = platform_registry.create_adapter(platform.value, config)
                 if adapter is not None:
-                    # Adapters that need a back-reference to the gateway runner
-                    # (e.g. for cross-platform admin alerts) declare a
-                    # ``gateway_runner`` attribute. Inject it after creation so
-                    # plugin adapters don't need a custom factory signature.
-                    if hasattr(adapter, "gateway_runner"):
-                        adapter.gateway_runner = self
+                    # Inject a back-reference to the gateway runner so every
+                    # adapter can (a) deliver cross-platform admin alerts and
+                    # (b) resolve inbound profile routing through
+                    # ``runner._profile_name_for_source``. Unconditional:
+                    # ``BasePlatformAdapter`` declares ``gateway_runner``, so
+                    # this reaches ALL platforms (not just the ones that
+                    # pre-declared it), making profile routing platform-generic.
+                    adapter.gateway_runner = self
                     return adapter
                 # Registered but failed to instantiate — don't silently fall
                 # through to built-ins (there are none for plugin platforms).
@@ -8827,8 +9017,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return WhatsAppCloudAdapter(config)
         
         elif platform == Platform.SIGNAL:
-            from gateway.platforms.signal import SignalAdapter, check_signal_requirements
+            from gateway.platforms.signal import (
+                SignalAdapter,
+                check_signal_requirements,
+                validate_signal_config,
+            )
             if not check_signal_requirements():
+                logger.warning("Signal: runtime requirements not met")
+                return None
+            if not validate_signal_config(config):
                 logger.warning("Signal: SIGNAL_HTTP_URL or SIGNAL_ACCOUNT not configured")
                 return None
             return SignalAdapter(config)
@@ -8845,7 +9042,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not check_api_server_requirements():
                 logger.warning("API Server: aiohttp not installed")
                 return None
-            return APIServerAdapter(config)
+            adapter = APIServerAdapter(config)
+            adapter.gateway_runner = self
+            return adapter
 
         elif platform == Platform.WEBHOOK:
             from gateway.platforms.webhook import WebhookAdapter, check_webhook_requirements
@@ -8892,6 +9091,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _make_adapter_auth_check(
         self,
         platform: Platform,
+        profile_name: Optional[str] = None,
     ) -> Callable[[str, Optional[str], Optional[str]], bool]:
         """Build a platform-bound auth callback for adapter use.
 
@@ -8904,6 +9104,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         The returned callback delegates to :meth:`_is_user_authorized` so the
         full auth chain — platform allowlists, group allowlists, pairing
         store, allow-all flags — stays the single source of truth.
+
+        ``profile_name`` binds the callback to the secondary adapter's own
+        multiplex profile, so its ``SessionSource`` resolves that profile's
+        secret scope instead of falling back to the active profile.
         """
         def check(
             user_id: str,
@@ -8917,6 +9121,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 chat_id=chat_id or "",
                 chat_type=chat_type or "group",
                 user_id=user_id,
+                profile=profile_name,
             )
             return self._is_user_authorized(source)
         return check
@@ -9564,7 +9769,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # /fast and /reasoning are config-only and take effect next
             # message, so they fall through to the catch-all busy response
             # below — users should wait and set them between turns.
-            if _cmd_def_inner and _cmd_def_inner.name in {"yolo", "verbose"}:
+            if _cmd_def_inner and _cmd_def_inner.name in {"yolo", "verbose", "footer"}:
                 if _cmd_def_inner.name == "yolo":
                     return await self._handle_yolo_command(event)
                 if _cmd_def_inner.name == "verbose":
@@ -10052,6 +10257,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "background":
             return await self._handle_background_command(event)
 
+        if canonical == "queue":
+            queue_payload = event.get_command_args().strip()
+            if not queue_payload:
+                return "Usage: /queue <prompt>"
+            try:
+                event.text = queue_payload
+            except Exception:
+                pass
+
         if canonical == "steer":
             # No active agent — /steer has no tool call to inject into.
             # Strip the prefix so downstream treats it as a normal user
@@ -10508,7 +10722,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             thread_sessions_per_user=_thread_sessions_per_user,
         )
         if _is_shared_multi_user and source.user_name:
-            message_text = f"[{source.user_name}] {message_text}"
+            # source.user_name is the platform display name — attacker-
+            # influenceable on any platform that lets participants set their
+            # own name. Neutralize embedded newlines/control chars before
+            # interpolating it into every message in the shared session, or
+            # a hostile name can masquerade as a fake markdown section
+            # (mirrors the same field's treatment in
+            # build_session_context_prompt via _format_untrusted_prompt_value).
+            _safe_user_name = neutralize_untrusted_inline_text(source.user_name)
+            message_text = f"[{_safe_user_name}] {message_text}"
 
         # Prepend channel context from history backfill (if any).  This
         # happens after sender-prefix so the prefix only applies to the
@@ -11543,6 +11765,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     _comp = getattr(_hyg_agent, "context_compressor", None)
                                     if _comp is not None and getattr(_comp, "_last_compress_aborted", False):
                                         _err = getattr(_comp, "_last_summary_error", None) or "unknown error"
+                                        # Force-redact: provider exception text
+                                        # may contain credentials; this message
+                                        # reaches gateway users directly.
+                                        from agent.redact import redact_sensitive_text
+                                        _err = redact_sensitive_text(_err, force=True)
                                         _warn_msg = (
                                             "⚠️ Context compression aborted "
                                             f"({_err}). No messages were dropped — "
@@ -11641,7 +11868,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
             platform_name = source.platform.value
             env_key = _home_target_env_var(platform_name)
-            if not os.getenv(env_key):
+            # Multiplex: home channel may live only in the profile secret
+            # scope / PlatformConfig, not process os.environ.
+            home_env = ""
+            try:
+                from agent.secret_scope import get_secret
+
+                home_env = (get_secret(env_key) or "").strip() if env_key else ""
+            except Exception:
+                home_env = ""
+            if not home_env:
+                home_env = (os.getenv(env_key) or "").strip() if env_key else ""
+            # Also honor in-memory / yaml home_channel on this platform.
+            try:
+                if not home_env and self.config.get_home_channel(source.platform):
+                    home_env = "set"
+            except Exception:
+                pass
+            # Secondary-profile platforms (e.g. Slack on yolo) may only exist
+            # under that profile's loaded config — check after scope install.
+            if not home_env:
+                try:
+                    from hermes_cli.profiles import get_profile_dir
+                    from gateway.config import load_gateway_config as _lgc
+                    prof = (getattr(source, "profile", None) or "").strip()
+                    if prof and prof != "default":
+                        # Already inside profile scope for secondary handlers;
+                        # re-read live config for home_channel.
+                        _pcfg = _lgc()
+                        if _pcfg.get_home_channel(source.platform):
+                            home_env = "set"
+                except Exception:
+                    pass
+            if not home_env:
                 # Slack dispatches all Hermes commands through a single
                 # parent slash command `/hermes`; bare `/sethome` is not
                 # registered and would fail with "app did not respond".
@@ -11809,6 +12068,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return None
 
             response = agent_result.get("final_response") or ""
+            # Hidden-reasoning-only retry exhaustion: the loop's sentinel text
+            # ("Codex response remained incomplete after 3 continuation
+            # attempts") doubles as final_response, so it would be delivered
+            # verbatim into the channel — where peer agents can ingest it as a
+            # completed assistant turn (#51628). Blank it here so the normal
+            # empty-response handling (and the suppression below) applies.
+            if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
+                response = ""
             try:
                 from gateway.response_filters import is_intentional_silence_agent_result
                 _intentional_silence = is_intentional_silence_agent_result(
@@ -12039,6 +12306,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # forgets what was just asked.  Persist the user turn so the
             # conversation is preserved. (#7100)
             agent_failed_early = bool(agent_result.get("failed"))
+            hidden_reasoning_incomplete = _is_gateway_hidden_reasoning_incomplete_turn(
+                agent_result
+            )
             _err_str_for_classify = str(agent_result.get("error", "")).lower()
             # Use specific multi-word phrases (not bare "exceed" or "token")
             # to avoid false positives on transient errors like "rate limit
@@ -12066,6 +12336,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "Transient agent failure in session %s — persisting user "
                     "message so conversation context is preserved on retry.",
                     session_entry.session_id,
+                )
+            elif hidden_reasoning_incomplete:
+                logger.warning(
+                    "Suppressing hidden-reasoning-only incomplete gateway turn "
+                    "for session %s: %s",
+                    session_entry.session_id,
+                    agent_result.get("error", "processing incomplete"),
                 )
 
             # When compression is exhausted, the session is permanently too
@@ -12150,11 +12427,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # entries that were stripped before the agent saw them.
             if is_context_overflow_failure:
                 pass  # handled above — skip all transcript writes
-            elif agent_failed_early:
+            elif agent_failed_early or hidden_reasoning_incomplete:
                 # Transient failure (429/timeout/5xx): persist only the user
                 # message so the next message can load a transcript that
                 # reflects what was said.  Skip the assistant error text since
-                # it's a gateway-generated hint, not model output. (#7100)
+                # it's a gateway-generated hint, not model output. Hidden-
+                # reasoning-only incomplete turns follow the same persistence
+                # rule so peer-agent channels don't ingest them as completed
+                # assistant turns. (#7100, #51628)
                 _user_entry = {
                     "role": "user",
                     "content": (
@@ -13493,6 +13773,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         media_urls: Optional[List[str]] = None,
         media_types: Optional[List[str]] = None,
     ) -> None:
+        """Profile-scoping wrapper around the background agent task.
+
+        When multiplexing is active, resolve the inbound source's profile and
+        run the whole task inside ``_profile_runtime_scope`` so credentials
+        resolve from that profile's secret scope. Mirrors the pattern in
+        ``_run_agent``.
+        """
+        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            return await self._run_background_task_inner(
+                prompt, source, task_id, event_message_id, media_urls, media_types,
+            )
+
+        profile_home = self._resolve_profile_home_for_source(source)
+        with _profile_runtime_scope(profile_home):
+            return await self._run_background_task_inner(
+                prompt, source, task_id, event_message_id, media_urls, media_types,
+            )
+
+    async def _run_background_task_inner(
+        self,
+        prompt: str,
+        source: "SessionSource",
+        task_id: str,
+        event_message_id: Optional[str] = None,
+        media_urls: Optional[List[str]] = None,
+        media_types: Optional[List[str]] = None,
+    ) -> None:
         """Execute a background agent task and deliver the result to the chat."""
         from run_agent import AIAgent
 
@@ -13826,7 +14133,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Best-effort semantic rename of a newly auto-created Discord thread."""
         if not await asyncio.to_thread(self._is_discord_auto_thread_lane, source):
             return
-        adapter = self.adapters.get(source.platform) if getattr(self, "adapters", None) else None
+        adapter = self._adapter_for_source(source) if getattr(self, "adapters", None) else None
         if adapter is None:
             return
         rename_thread = getattr(adapter, "rename_thread", None)
@@ -17246,19 +17553,108 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
             )
 
+    def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
+        """Resolve the profile name for an inbound source via configured routes.
+
+        Returns ``None`` when multiplexing is off, no routes are configured, or
+        no route matches. Callers (``build_source``,
+        ``_resolve_profile_home_for_source``) treat ``None`` as "use the
+        default/active profile". When ``gateway.profile_routes`` is configured,
+        the most specific matching route wins (guild < channel < thread). See
+        :mod:`gateway.profile_routing` for matching rules.
+
+        Gated on ``gateway.multiplex_profiles``: routing stamps
+        ``source.profile``, which selects the session-key namespace and batch
+        keys — but the profile-scoped agent run only activates under
+        multiplexing. Without this gate, a configured route with multiplexing
+        off would namespace batch/session keys by profile while the agent
+        still runs in ``agent:main``, splitting the two out of agreement.
+        """
+        config = getattr(self, "config", None)
+        if not getattr(config, "multiplex_profiles", False):
+            return None
+        routes = getattr(config, "profile_routes", None)
+        if not routes:
+            return None
+        from gateway.profile_routing import match_profile_route
+        try:
+            matched = match_profile_route(
+                routes,
+                platform=source.platform.value,
+                guild_id=getattr(source, "guild_id", None),
+                chat_id=source.chat_id,
+                thread_id=getattr(source, "thread_id", None),
+                parent_chat_id=getattr(source, "parent_chat_id", None),
+            )
+        except Exception:
+            logger.warning(
+                "Profile route matching failed for %s/%s, falling back to default",
+                source.platform, source.chat_id, exc_info=True,
+            )
+            return None
+        if matched:
+            return matched.profile
+        logger.debug(
+            "No profile route matched: platform=%s chat_id=%s thread_id=%s parent_chat_id=%s",
+            source.platform.value, source.chat_id,
+            getattr(source, "thread_id", None), getattr(source, "parent_chat_id", None),
+        )
+        return None
+
     def _resolve_profile_home_for_source(self, source: SessionSource) -> "Path":
         """Resolve which profile's HERMES_HOME should serve this inbound source.
 
-        Prefers the profile the source was routed to (``source.profile`` — set
-        by the /p/<profile>/ URL prefix or a per-credential adapter), falling
-        back to the active profile (the multiplexer's own home).
+        Resolution order:
+          1. ``source.profile`` — set by /p/<profile>/ URL prefix, per-credential
+             adapter ownership, OR profile_routes matching at ``build_source`` time.
+          2. ``_profile_name_for_source`` — re-run routing here as a defensive
+             fallback for sources that bypass ``build_source``.
+          3. The active profile (the multiplexer's own home).
         """
-        from hermes_cli.profiles import get_active_profile_name, get_profile_dir
+        from hermes_cli.profiles import (
+            get_active_profile_name,
+            get_profile_dir,
+            profile_exists,
+        )
+        from hermes_constants import get_hermes_home
+        
+        # Track whether a profile was explicitly requested (vs. falling back to default)
+        explicit_profile = None
         try:
-            name = (source.profile or "").strip() or get_active_profile_name() or "default"
-            return get_profile_dir(name)
+            name = (source.profile or "").strip()
+            if name:
+                explicit_profile = name  # User explicitly set this profile
+            if not name:
+                name = self._profile_name_for_source(source)
+                if name:
+                    explicit_profile = name  # Routing explicitly set this profile
+            if not name:
+                name = get_active_profile_name() or "default"
+            
+            profile_dir = get_profile_dir(name)
+            # Warn if an explicit profile doesn't exist on disk
+            if explicit_profile and not profile_exists(name):
+                logger.warning(
+                    "Profile %r does not exist for source %s/%s (guild_id=%s), "
+                    "falling back to global HERMES_HOME",
+                    explicit_profile,
+                    source.platform.value,
+                    source.chat_id,
+                    getattr(source, "guild_id", None),
+                )
+                return get_hermes_home()
+            return profile_dir
         except Exception:
-            from hermes_constants import get_hermes_home
+            # Catch normalization errors, path errors, etc.
+            logger.warning(
+                "Failed to resolve profile directory for source %s/%s (guild_id=%s), "
+                "falling back to global HERMES_HOME: %s",
+                source.platform.value,
+                source.chat_id,
+                getattr(source, "guild_id", None),
+                explicit_profile or "(no profile)",
+                exc_info=True,
+            )
             return get_hermes_home()
 
     async def _run_agent_inner(
@@ -18442,6 +18838,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _cache_lock = getattr(self, "_agent_cache_lock", None)
             _cache = getattr(self, "_agent_cache", None)
 
+            # Peek at the cached entry's snapshot session_id (if any) so we can
+            # check, OUTSIDE the cache lock, whether THAT session_id is a DEAD
+            # session in state.db. This closes a gap in the #54947 fix: that
+            # fix treats "cached session_id != current session_id" as an
+            # intentional /resume-style switch and reuses the agent unchanged.
+            # But the #54878 self-heal produces the exact same tuple shape
+            # when it recovers a routing key away from a session that was
+            # already ended — the cached AIAgent still belongs to the DEAD
+            # session, not a valid sibling conversation. Reusing it lets that
+            # turn's post-run "session split" sync write the routing key
+            # straight back onto the dead session_id, undoing the self-heal
+            # and looping every message until an interrupt happens to race in
+            # first (the #54878 x #54947 interaction — no existing upstream
+            # issue tracks this combination as of 2026-07-12).
+            _peek_cached_sid = None
+            if _cache_lock and _cache is not None:
+                with _cache_lock:
+                    _peek_entry = _cache.get(session_key)
+                if _peek_entry and len(_peek_entry) > 3:
+                    _peek_cached_sid = _peek_entry[3]
+            _cached_sid_is_dead = False
+            if (
+                _peek_cached_sid is not None
+                and session_id is not None
+                and _peek_cached_sid != session_id
+            ):
+                try:
+                    _cached_sid_is_dead = self.session_store._is_session_ended_in_db(
+                        _peek_cached_sid
+                    )
+                except Exception:
+                    _cached_sid_is_dead = False
+
             # Detect cross-process writes: when another process (e.g. hermes
             # dashboard) appends to the same session in the shared SessionDB,
             # the cached agent's in-memory transcript becomes stale.  Compare
@@ -18481,7 +18910,50 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             and session_id is not None
                             and _cached_sid != session_id
                         )
-                        if (
+                        # Re-validate the OUTSIDE-lock dead-session peek
+                        # against the tuple actually read under THIS lock —
+                        # the cache entry could have been replaced between
+                        # the peek and this lock acquisition, and a stale
+                        # "dead" verdict must never be applied to a
+                        # different (possibly live) cached agent.
+                        _stale_dead_sid_reuse = (
+                            _session_id_mismatch
+                            and _cached_sid_is_dead
+                            and _cached_sid == _peek_cached_sid
+                        )
+                        if _stale_dead_sid_reuse:
+                            # #54878 x #54947 interaction: the routing key
+                            # was just self-healed away from a session that
+                            # state.db already marked ended, but the cached
+                            # AIAgent here still belongs to that DEAD
+                            # session_id. The #54947 "different session_id
+                            # under the same key = intentional switch, reuse
+                            # freely" rule does not hold here — this isn't a
+                            # sibling conversation, it's a stale agent left
+                            # over from before the self-heal. Reusing it lets
+                            # this turn's post-run "session split" sync write
+                            # the routing key straight back onto the dead
+                            # session_id, undoing the self-heal and looping
+                            # every message until an interrupt happens to
+                            # race in first. Discard and rebuild fresh
+                            # instead, same as a genuine cross-process write.
+                            logger.info(
+                                "Agent cache invalidated for session %s: "
+                                "cached agent's session_id %s is ended in "
+                                "state.db (stale self-heal artifact, "
+                                "#54878 x #54947) — discarding instead of "
+                                "reusing across the routing recovery",
+                                session_key, _cached_sid,
+                            )
+                            evicted = self._agent_cache.pop(session_key, None)
+                            _ev_agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
+                            if _ev_agent and _ev_agent is not _AGENT_PENDING_SENTINEL:
+                                # Same deferred-cleanup rationale as the
+                                # cross-process branch below (#52197): don't
+                                # block the event loop / cache lock on
+                                # memory-provider shutdown or socket teardown.
+                                _xproc_evicted_agent = _ev_agent
+                        elif (
                             not _session_id_mismatch
                             and _cached_mc is not None
                             and _current_msg_count is not None

@@ -3990,21 +3990,58 @@ async def get_action_status(name: str, lines: int = 200):
     }
 
 
-# Per-row fields that no session LIST consumer reads but that dominate the
-# payload. ``system_prompt`` is the fully rendered prompt — tens of KB per
-# row — and made a 21-row /api/sessions response 528KB (96% dead weight),
-# re-fetched by the desktop sidebar on every refresh. The desktop's
-# SessionInfo type doesn't declare either field and the web UI never touches
-# them; ``GET /api/sessions/{id}`` detail reads stay complete. List callers
-# that genuinely need the full rows can pass ``?full=1``.
-_SESSION_LIST_HEAVY_FIELDS = ("system_prompt", "model_config")
+# Explicit public response shapes. SessionDB rows also contain user/chat/thread
+# identities, routing keys, origin_json, rendered prompts, model config, backend
+# URLs, and compression diagnostics. Projecting from an allowlist prevents a
+# future schema column from becoming an API field by accident.
+_SESSION_LIST_RESPONSE_FIELDS = (
+    "id",
+    "source",
+    "model",
+    "title",
+    "started_at",
+    "ended_at",
+    "last_active",
+    "is_active",
+    "message_count",
+    "tool_call_count",
+    "input_tokens",
+    "output_tokens",
+    "preview",
+    "parent_session_id",
+    "archived",
+    "cwd",
+    "git_branch",
+    "git_repo_root",
+    "_lineage_root_id",
+    "handoff_platform",
+    "handoff_state",
+    "profile",
+    "is_default_profile",
+)
+
+_SESSION_DETAIL_RESPONSE_FIELDS = (
+    *_SESSION_LIST_RESPONSE_FIELDS,
+    "end_reason",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "reasoning_tokens",
+    "estimated_cost_usd",
+    "actual_cost_usd",
+    "cost_status",
+    "api_call_count",
+    "rewind_count",
+)
 
 
-def _strip_session_list_rows(sessions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    for s in sessions:
-        for key in _SESSION_LIST_HEAVY_FIELDS:
-            s.pop(key, None)
-    return sessions
+def _project_session_response(
+    session: Dict[str, Any],
+    *,
+    detail: bool = False,
+) -> Dict[str, Any]:
+    """Build a new public session DTO from an explicit field allowlist."""
+    fields = _SESSION_DETAIL_RESPONSE_FIELDS if detail else _SESSION_LIST_RESPONSE_FIELDS
+    return {key: session[key] for key in fields if key in session}
 
 
 @app.get("/api/sessions")
@@ -4032,8 +4069,10 @@ def get_sessions(
     chain). ``recent`` keeps a long-running conversation on the first page
     after it auto-compresses into a fresh continuation id.
 
-    Rows omit ``system_prompt``/``model_config`` (the payload-dominating
-    fields no list UI reads) unless ``full=1`` is passed.
+    All rows use an explicit public field allowlist. ``full=1`` is retained
+    for compatibility but does not change the metadata allowlist or expose
+    prompts, model config, routing identities, backend URLs, raw handoff
+    errors, or future database columns.
     """
     if archived not in ("exclude", "only", "include"):
         raise HTTPException(
@@ -4069,10 +4108,9 @@ def get_sessions(
                 include_archived=include_archived,
                 archived_only=archived_only,
                 order_by_last_active=order == "recent",
-                # SQL-level projection: when the caller didn't ask for full
-                # rows, skip the system_prompt blob inside SQLite too (pairs
-                # with the API-level _strip_session_list_rows below).
-                compact_rows=not full,
+                # Always skip the rendered system prompt at SQL level. full=1
+                # is not a raw-row escape.
+                compact_rows=True,
             )
             total = db.session_count(
                 source=source or None,
@@ -4094,9 +4132,12 @@ def get_sessions(
                     s["is_default_profile"] = profile_name == "default"
                 # SQLite stores the flag as 0/1; expose a real JSON boolean.
                 s["archived"] = bool(s.get("archived"))
-            if not full:
-                _strip_session_list_rows(sessions)
-            return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
+            return {
+                "sessions": [_project_session_response(s) for s in sessions],
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+            }
         finally:
             db.close()
     except HTTPException:
@@ -4127,8 +4168,8 @@ def get_profiles_sessions(
     interacts (sends a message). A user with a single (default) profile gets the
     same rows as ``/api/sessions``, just tagged ``profile="default"``.
 
-    Rows omit ``system_prompt``/``model_config`` unless ``full=1`` — same
-    list projection as ``/api/sessions``.
+    Rows use the same explicit public allowlist as ``/api/sessions``.
+    ``full=1`` does not change that allowlist or return raw DB rows.
     """
     if archived not in ("exclude", "only", "include"):
         raise HTTPException(status_code=400, detail="archived must be one of: exclude, only, include")
@@ -4191,8 +4232,8 @@ def get_profiles_sessions(
                 include_archived=include_archived,
                 archived_only=archived_only,
                 order_by_last_active=order == "recent",
-                # Same SQL-level blob skip as /api/sessions (see above).
-                compact_rows=not full,
+                # Same full=1 behavior as /api/sessions (see above).
+                compact_rows=True,
             )
             profile_total = db.session_count(
                 source=source_filter,
@@ -4221,10 +4262,8 @@ def get_profiles_sessions(
     sort_key = "last_active" if order == "recent" else "started_at"
     merged.sort(key=lambda s: s.get(sort_key) or s.get("started_at") or 0, reverse=True)
     window = merged[offset:offset + limit]
-    if not full:
-        _strip_session_list_rows(window)
     return {
-        "sessions": window,
+        "sessions": [_project_session_response(s) for s in window],
         "total": total,
         "profile_totals": profile_totals,
         "limit": limit,
@@ -9978,7 +10017,13 @@ async def get_session_detail(session_id: str, profile: Optional[str] = None):
             raise HTTPException(status_code=404, detail="Session not found")
         if profile:
             session["profile"] = _cron_profile_home(profile)[0]
-        return session
+            session["is_default_profile"] = session["profile"] == "default"
+        session["archived"] = bool(session.get("archived"))
+        session["is_active"] = (
+            session.get("ended_at") is None
+            and (time.time() - session.get("started_at", 0)) < 300
+        )
+        return _project_session_response(session, detail=True)
     finally:
         db.close()
 

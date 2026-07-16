@@ -355,7 +355,6 @@ export interface SessionInfo {
   handoff_platform?: null | string
   /** Handoff lifecycle: 'pending' | 'in_progress' | 'completed' | 'failed'. */
   handoff_state?: null | string
-  handoff_error?: null | string
   /** Owning profile name, set by the cross-profile aggregator
    *  (`/api/profiles/sessions`). Absent on legacy single-profile responses,
    *  which the UI treats as the default profile. */

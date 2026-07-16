@@ -1195,69 +1195,204 @@ class TestWebServerEndpoints:
         assert captured["list"] == 3
         assert captured["count"] == 3
 
-    def _create_session_with_heavy_fields(self, session_id: str) -> None:
+    @staticmethod
+    def _private_session_fields() -> set[str]:
+        return {
+            "user_id",
+            "session_key",
+            "chat_id",
+            "chat_type",
+            "thread_id",
+            "display_name",
+            "origin_json",
+            "expiry_finalized",
+            "model_config",
+            "system_prompt",
+            "billing_provider",
+            "billing_base_url",
+            "billing_mode",
+            "cost_source",
+            "pricing_version",
+            "handoff_error",
+            "compression_failure_cooldown_until",
+            "compression_failure_error",
+            "compression_fallback_streak",
+            "future_private_field",
+        }
+
+    def _create_session_with_private_fields(self, session_id: str) -> None:
         from hermes_state import SessionDB
 
         db = SessionDB()
         try:
             db.create_session(
                 session_id=session_id,
-                source="cli",
+                source="discord",
+                model="example-model",
                 system_prompt="# SOUL.md\n" + ("prompt body " * 500),
                 model_config={"temperature": 0.7, "notes": "x" * 200},
+                user_id="example-user",
+                session_key="discord:example-route",
+                chat_id="example-chat",
+                chat_type="guild",
+                thread_id="example-thread",
+                cwd="/workspace/example",
             )
+            db.record_gateway_session_peer(
+                session_id,
+                source="discord",
+                user_id="example-user",
+                session_key="discord:example-route",
+                chat_id="example-chat",
+                chat_type="guild",
+                thread_id="example-thread",
+                display_name="Example route label",
+                origin_json=json.dumps({"platform": "discord", "peer": "example"}),
+            )
+
+            def _write_private_fields(conn):
+                columns = {
+                    row[1]
+                    for row in conn.execute("PRAGMA table_info(sessions)").fetchall()
+                }
+                if "future_private_field" not in columns:
+                    conn.execute(
+                        "ALTER TABLE sessions ADD COLUMN future_private_field TEXT"
+                    )
+                conn.execute(
+                    """UPDATE sessions
+                       SET title = ?, git_branch = ?, git_repo_root = ?,
+                           billing_provider = ?, billing_base_url = ?,
+                           api_call_count = ?, handoff_platform = ?,
+                           handoff_state = ?, handoff_error = ?,
+                           compression_failure_error = ?, future_private_field = ?
+                       WHERE id = ?""",
+                    (
+                        "Example session title",
+                        "feature/example",
+                        "/workspace/example",
+                        "example-provider",
+                        "https://backend.invalid/v1",
+                        7,
+                        "discord",
+                        "failed",
+                        "raw handoff diagnostic",
+                        "private compression diagnostic",
+                        "future private value",
+                        session_id,
+                    ),
+                )
+
+            db._execute_write(_write_private_fields)
         finally:
             db.close()
 
-    def test_get_sessions_strips_heavy_fields_by_default(self):
-        """List rows must omit system_prompt/model_config.
+    def test_get_sessions_uses_explicit_public_allowlist(self):
+        """List rows retain client metadata but omit routing/internal fields."""
+        from hermes_cli import web_server
 
-        system_prompt is the fully rendered prompt (tens of KB per row) and
-        dominated the sidebar payload (96% of a 528KB response); no list UI
-        reads it. Detail reads (GET /api/sessions/{id}) stay complete.
-        """
-        self._create_session_with_heavy_fields("lean-list-row")
+        self._create_session_with_private_fields("allowlisted-list-row")
 
-        resp = self.client.get("/api/sessions?limit=20&offset=0")
-        assert resp.status_code == 200
-        rows = [s for s in resp.json()["sessions"] if s["id"] == "lean-list-row"]
+        response = web_server.get_sessions(limit=20, offset=0)
+        rows = [
+            s
+            for s in response["sessions"]
+            if s["id"] == "allowlisted-list-row"
+        ]
         assert rows, "created session missing from list"
         row = rows[0]
-        assert "system_prompt" not in row
-        assert "model_config" not in row
-        # The light fields the sidebar actually renders must survive.
-        for key in ("id", "source", "started_at", "message_count", "is_active"):
-            assert key in row
+        assert not (self._private_session_fields() & row.keys())
+        assert {
+            "id",
+            "source",
+            "model",
+            "title",
+            "started_at",
+            "ended_at",
+            "last_active",
+            "is_active",
+            "message_count",
+            "tool_call_count",
+            "input_tokens",
+            "output_tokens",
+            "preview",
+            "parent_session_id",
+            "archived",
+            "cwd",
+            "git_branch",
+            "git_repo_root",
+            "handoff_platform",
+            "handoff_state",
+        } <= row.keys()
 
-    def test_get_sessions_full_param_keeps_heavy_fields(self):
-        """?full=1 is the escape hatch for callers that need complete rows."""
-        self._create_session_with_heavy_fields("full-list-row")
+    def test_get_sessions_full_param_remains_allowlisted(self):
+        """?full=1 cannot change the list metadata allowlist."""
+        from hermes_cli import web_server
 
-        resp = self.client.get("/api/sessions?limit=20&offset=0&full=1")
-        assert resp.status_code == 200
-        rows = [s for s in resp.json()["sessions"] if s["id"] == "full-list-row"]
-        assert rows, "created session missing from list"
+        self._create_session_with_private_fields("allowlisted-full-row")
+
+        ordinary = web_server.get_sessions(limit=20, offset=0)
+        full = web_server.get_sessions(limit=20, offset=0, full=True)
+        ordinary_rows = [
+            s
+            for s in ordinary["sessions"]
+            if s["id"] == "allowlisted-full-row"
+        ]
+        rows = [
+            s
+            for s in full["sessions"]
+            if s["id"] == "allowlisted-full-row"
+        ]
+        assert ordinary_rows and rows, "created session missing from list"
         row = rows[0]
-        assert row["system_prompt"].startswith("# SOUL.md")
-        assert "temperature" in (row["model_config"] or "")
+        assert row.keys() == ordinary_rows[0].keys()
+        assert not (self._private_session_fields() & row.keys())
 
-    def test_profiles_sessions_strips_heavy_fields_by_default(self):
+    def test_profiles_sessions_uses_same_public_allowlists(self):
         """The cross-profile aggregate applies the same list projection."""
-        self._create_session_with_heavy_fields("lean-profiles-row")
+        from hermes_cli import web_server
 
-        resp = self.client.get("/api/profiles/sessions?limit=20&offset=0")
-        assert resp.status_code == 200
-        rows = [s for s in resp.json()["sessions"] if s["id"] == "lean-profiles-row"]
+        self._create_session_with_private_fields("allowlisted-profiles-row")
+
+        response = web_server.get_profiles_sessions(limit=20, offset=0)
+        rows = [
+            s
+            for s in response["sessions"]
+            if s["id"] == "allowlisted-profiles-row"
+        ]
         assert rows, "created session missing from profiles list"
         row = rows[0]
-        assert "system_prompt" not in row
-        assert "model_config" not in row
+        assert not (self._private_session_fields() & row.keys())
         assert row["profile"] == "default"
+        assert row["is_default_profile"] is True
 
-        full = self.client.get("/api/profiles/sessions?limit=20&offset=0&full=1")
-        assert full.status_code == 200
-        full_rows = [s for s in full.json()["sessions"] if s["id"] == "lean-profiles-row"]
-        assert full_rows and full_rows[0]["system_prompt"].startswith("# SOUL.md")
+        full = web_server.get_profiles_sessions(limit=20, offset=0, full=True)
+        full_rows = [
+            s
+            for s in full["sessions"]
+            if s["id"] == "allowlisted-profiles-row"
+        ]
+        assert full_rows
+        assert full_rows[0].keys() == row.keys()
+        assert not (self._private_session_fields() & full_rows[0].keys())
+
+    def test_get_session_detail_uses_explicit_public_allowlist(self):
+        """Detail cannot expose routing data or a future database column."""
+        from hermes_cli import web_server
+
+        self._create_session_with_private_fields("allowlisted-detail-row")
+
+        row = asyncio.run(web_server.get_session_detail("allowlisted-detail-row"))
+        assert row["id"] == "allowlisted-detail-row"
+        assert row["model"] == "example-model"
+        assert row["title"] == "Example session title"
+        assert row["cwd"] == "/workspace/example"
+        assert row["git_branch"] == "feature/example"
+        assert row["handoff_platform"] == "discord"
+        assert row["handoff_state"] == "failed"
+        assert row["api_call_count"] == 7
+        assert isinstance(row["archived"], bool)
+        assert not (self._private_session_fields() & row.keys())
 
     def test_rename_session_updates_title(self):
         """PATCH /api/sessions/{id} renames a session (regression: the route

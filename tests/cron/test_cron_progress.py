@@ -495,3 +495,121 @@ def test_progress_script_wrapper_preserves_claim_heartbeat_path(monkeypatch):
 
     assert result == (True, "done")
     assert calls == [("job1", "watch.py")]
+
+
+def test_run_job_reuses_script_progress_state_for_agent_heartbeat(
+    tmp_path, monkeypatch
+):
+    import sys
+
+    import cron.scheduler as scheduler
+    import hermes_state
+    from hermes_cli import env_loader, runtime_provider
+    from tools import mcp_tool
+
+    observed = {}
+
+    class FakeAgent:
+        def __init__(self, **_kwargs):
+            pass
+
+        def run_conversation(self, *_args, **_kwargs):
+            return {
+                "completed": True,
+                "final_response": "done",
+                "messages": [],
+            }
+
+        def get_activity_summary(self):
+            return {"seconds_since_activity": 0.0}
+
+        def close(self):
+            pass
+
+    fake_run_agent = type(sys)("run_agent")
+    fake_run_agent.AIAgent = FakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(scheduler, "load_config", lambda: {})
+    monkeypatch.setattr(
+        scheduler,
+        "_build_job_prompt",
+        lambda job, prerun_script=None: "run the agent",
+    )
+    monkeypatch.setattr(scheduler, "_resolve_origin", lambda job: None)
+    monkeypatch.setattr(scheduler, "_resolve_delivery_target", lambda job: None)
+    monkeypatch.setattr(
+        scheduler, "_resolve_cron_enabled_toolsets", lambda job, cfg: None
+    )
+    monkeypatch.setattr(scheduler, "_teardown_cron_agent", lambda *_args: None)
+    monkeypatch.setattr(hermes_state, "SessionDB", lambda: None)
+    monkeypatch.setattr(env_loader, "reset_secret_source_cache", lambda: None)
+    monkeypatch.setattr(env_loader, "load_hermes_dotenv", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        runtime_provider,
+        "resolve_runtime_provider",
+        lambda **_kwargs: {
+            "provider": "test",
+            "api_key": "test",
+            "base_url": "http://test.local",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr(mcp_tool, "discover_mcp_tools", lambda: [])
+    monkeypatch.setenv("HERMES_CRON_TIMEOUT", "60")
+
+    def fake_script_progress(job, script_path, cfg, state, **_kwargs):
+        observed["script_state"] = state
+        state["last_sent_at"] = 120.0
+        state["message_ids"]["telegram:123:42"] = "script-progress-message"
+        return True, '{"wakeAgent": true}'
+
+    monkeypatch.setattr(
+        scheduler, "_run_job_script_with_progress", fake_script_progress
+    )
+
+    real_wait = scheduler.concurrent.futures.wait
+    wait_calls = 0
+
+    def fake_wait(futures, timeout):
+        nonlocal wait_calls
+        wait_calls += 1
+        if wait_calls == 1:
+            return set(), set(futures)
+        return real_wait(futures, timeout=timeout)
+
+    monkeypatch.setattr(scheduler.concurrent.futures, "wait", fake_wait)
+
+    def fake_agent_progress(job, agent, cfg, state, **_kwargs):
+        observed["agent_state"] = state
+        observed["edit_in_place"] = cfg["edit_in_place"]
+
+    monkeypatch.setattr(
+        scheduler, "_maybe_send_cron_progress", fake_agent_progress
+    )
+
+    success, _output, response, error = scheduler.run_job(
+        {
+            "id": "job1",
+            "name": "script then agent",
+            "script": "watch.py",
+            "model": "test-model",
+            "schedule_display": "manual",
+            "progress": {
+                "enabled": True,
+                "initial_delay_seconds": 1,
+                "interval_seconds": 1,
+                "edit_in_place": True,
+            },
+        }
+    )
+
+    assert success is True, error
+    assert response == "done"
+    assert observed["agent_state"] is observed["script_state"]
+    assert observed["agent_state"]["last_sent_at"] == 120.0
+    assert observed["agent_state"]["message_ids"] == {
+        "telegram:123:42": "script-progress-message"
+    }
+    assert observed["edit_in_place"] is True

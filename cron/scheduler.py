@@ -3281,6 +3281,7 @@ def run_job(
     # the whole agent run. We pass the result into _build_job_prompt so
     # the script is only executed once.
     prerun_script = None
+    _progress_state = None
     script_path = job.get("script")
     if script_path:
         try:
@@ -3291,7 +3292,7 @@ def run_job(
             job,
             _script_progress_source,
         )
-        _script_progress_state = {
+        _progress_state = {
             "started_at": time.monotonic(),
             "last_sent_at": 0.0,
             "message_ids": {},
@@ -3300,7 +3301,7 @@ def run_job(
             job,
             script_path,
             _script_progress_cfg,
-            _script_progress_state,
+            _progress_state,
             adapters=adapters,
             loop=loop,
         )
@@ -3771,11 +3772,12 @@ def run_job(
             _cron_timeout = 600.0
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
         _progress_cfg = _resolve_cron_progress_config(job, _cfg)
-        _progress_state = {
-            "started_at": time.monotonic(),
-            "last_sent_at": 0.0,
-            "message_ids": {},
-        }
+        if _progress_state is None:
+            _progress_state = {
+                "started_at": time.monotonic(),
+                "last_sent_at": 0.0,
+                "message_ids": {},
+            }
         _POLL_INTERVAL = 5.0
         # Keep the one-shot run_claim fresh while the run is alive (#62002):
         # the claim TTL is a dead-owner detector, but without a heartbeat a

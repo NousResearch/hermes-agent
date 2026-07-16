@@ -9928,6 +9928,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             split_history_for_partial_compress,
             summarize_compress_preview,
         )
+        from agent.conversation_compression import (
+            finalize_context_engine_compression_notification,
+        )
 
         # Args after the command word (e.g. "/compress here 3" -> "here 3").
         raw_args = ""
@@ -10027,14 +10030,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     approx_tokens=approx_tokens,
                     focus_topic=focus_topic or None,
                     force=True,
+                    defer_context_engine_notification=True,
                 )
-                # Re-append the verbatim tail after the compressed head.
-                # The split guarantees `tail` begins on a user turn, so the
-                # compressed-head -> tail boundary is normally valid
-                # (the head's compressed output ends on assistant/tool).
-                # rejoin_compressed_head_and_tail() additionally guards the
-                # seam against any illegal user->user / assistant->assistant
-                # adjacency, defending provider role-alternation rules.
                 if partial and tail:
                     compressed = rejoin_compressed_head_and_tail(compressed, tail)
                 self.conversation_history = compressed
@@ -10054,6 +10051,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     # compressed handoff for the child session. Persist it from
                     # offset 0 so resume can recover the continuation after exit.
                     self.agent._flush_messages_to_session_db(self.conversation_history, None)
+                finalize_context_engine_compression_notification(
+                    self.agent,
+                    committed=True,
+                )
                 new_tokens = estimate_request_tokens_rough(
                     self.conversation_history,
                     system_prompt=_sys_prompt,
@@ -10078,6 +10079,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     print(f"     {summary['note']}")
 
             except Exception as e:
+                finalize_context_engine_compression_notification(
+                    self.agent,
+                    committed=False,
+                )
                 print(f"  ❌ Compression failed: {e}")
 
 

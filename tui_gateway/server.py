@@ -3553,6 +3553,9 @@ def _compress_session_history(
     before_messages: list | None = None,
     history_version: int | None = None,
 ) -> tuple[int, dict]:
+    from agent.conversation_compression import (
+        finalize_context_engine_compression_notification,
+    )
     from agent.model_metadata import estimate_request_tokens_rough
 
     agent = session["agent"]
@@ -3581,16 +3584,28 @@ def _compress_session_history(
     # cached prompt (which already contains the agent identity block)
     # makes the rebuild append the identity a second time. Mirrors the
     # CLI's _manual_compress fix for issue #15281.
-    compressed, _ = agent._compress_context(
-        history,
-        None,
-        approx_tokens=approx_tokens,
-        focus_topic=focus_topic or None,
-    )
+    try:
+        compressed, _ = agent._compress_context(
+            history,
+            None,
+            approx_tokens=approx_tokens,
+            focus_topic=focus_topic or None,
+            defer_context_engine_notification=True,
+        )
+    except Exception:
+        finalize_context_engine_compression_notification(
+            agent,
+            committed=False,
+        )
+        raise
     with session["history_lock"]:
         if int(session.get("history_version", 0)) != history_version:
             # External mutation during compaction — drop the compressed
             # result so we don't clobber concurrent edits.
+            finalize_context_engine_compression_notification(
+                agent,
+                committed=False,
+            )
             usage = _get_usage(agent)
             return 0, usage
         session["history"] = compressed
@@ -8992,6 +9007,10 @@ def _(rid, params: dict) -> dict:
         return _err(
             rid, 4009, "session busy — /interrupt the current turn before /compress"
         )
+    from agent.conversation_compression import (
+        finalize_context_engine_compression_notification,
+    )
+
     sid = params.get("session_id", "")
     focus_topic = str(params.get("focus_topic", "") or "").strip()
     try:
@@ -9059,6 +9078,10 @@ def _(rid, params: dict) -> dict:
             )
             info = _session_info(agent, session)
             _emit("session.info", sid, info)
+            finalize_context_engine_compression_notification(
+                agent,
+                committed=True,
+            )
             return _ok(
                 rid,
                 {
@@ -9080,6 +9103,10 @@ def _(rid, params: dict) -> dict:
             # no-op, or raised.
             _status_update(sid, "ready")
     except Exception as e:
+        finalize_context_engine_compression_notification(
+            session["agent"],
+            committed=False,
+        )
         return _err(rid, 5005, str(e))
 
 
@@ -13950,6 +13977,10 @@ def _(rid, params: dict) -> dict:
             return _err(
                 rid, 4009, "session busy — /interrupt the current turn before /compress"
             )
+        from agent.conversation_compression import (
+            finalize_context_engine_compression_notification,
+        )
+
         sid = params.get("session_id", "")
         if _session_uses_compute_host(session):
             command = f"/{name}" + (f" {arg}" if arg else "")
@@ -14023,6 +14054,10 @@ def _(rid, params: dict) -> dict:
                 compression_state=getattr(_agent, "context_compressor", None),
             )
             _emit("session.info", sid, _session_info(session.get("agent"), session))
+            finalize_context_engine_compression_notification(
+                _agent,
+                committed=True,
+            )
             return _ok(
                 rid,
                 {
@@ -14033,6 +14068,10 @@ def _(rid, params: dict) -> dict:
                 },
             )
         except Exception as exc:
+            finalize_context_engine_compression_notification(
+                session["agent"],
+                committed=False,
+            )
             return _err(rid, 5009, f"compress failed: {exc}")
 
     return _err(rid, 4018, f"not a quick/plugin/bundle/skill command: {name}")
@@ -15058,6 +15097,9 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             # while CLI and gateway both did.
             from agent.manual_compression_feedback import summarize_manual_compression
             from agent.model_metadata import estimate_request_tokens_rough
+            from agent.conversation_compression import (
+                finalize_context_engine_compression_notification,
+            )
 
             with session["history_lock"]:
                 _before_messages = list(session.get("history", []))
@@ -15097,6 +15139,10 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             _lines = [_fb["headline"], _fb["token_line"]]
             if _fb.get("note"):
                 _lines.append(_fb["note"])
+            finalize_context_engine_compression_notification(
+                agent,
+                committed=True,
+            )
             return "\n".join(_lines)
         elif name == "fast" and agent:
             mode = arg.lower()
@@ -15112,6 +15158,15 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
 
             process_registry.kill_all()
     except Exception as e:
+        if name == "compress" and agent:
+            from agent.conversation_compression import (
+                finalize_context_engine_compression_notification,
+            )
+
+            finalize_context_engine_compression_notification(
+                agent,
+                committed=False,
+            )
         return f"live session sync failed: {e}"
     return ""
 

@@ -74,6 +74,7 @@ class TestCodexBuildKwargs:
             reasoning_config={"effort": "high"},
         )
         assert kw.get("reasoning", {}).get("effort") == "high"
+        assert transport._last_reasoning_effort == "high"
 
     @pytest.mark.parametrize("effort, wire_effort", [("max", "max"), ("ultra", "max")])
     def test_extended_reasoning_efforts_use_api_wire_value(self, transport, effort, wire_effort):
@@ -92,6 +93,33 @@ class TestCodexBuildKwargs:
             reasoning_config={"enabled": False},
         )
         assert "reasoning" not in kw or kw.get("include") == []
+        assert transport._last_reasoning_effort is None
+
+    def test_wire_effort_tracks_github_capability_resolution(self, transport):
+        kw = transport.build_kwargs(
+            model="github-model",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            is_github_responses=True,
+            reasoning_config={"enabled": True, "effort": "ultra"},
+            # AIAgent resolves this through the GitHub model capability list.
+            github_reasoning_extra={"effort": "medium"},
+        )
+
+        assert kw["reasoning"] == {"effort": "medium"}
+        assert transport._last_reasoning_effort == "medium"
+
+    def test_wire_effort_is_none_when_xai_omits_unsupported_dial(self, transport):
+        kw = transport.build_kwargs(
+            model="grok-4",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            is_xai_responses=True,
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+
+        assert "reasoning" not in kw
+        assert transport._last_reasoning_effort is None
 
     def test_cache_key_is_content_addressed_not_session_id(self, transport):
         """prompt_cache_key is content-addressed from the static prefix

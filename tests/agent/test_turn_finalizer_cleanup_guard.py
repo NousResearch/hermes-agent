@@ -8,6 +8,8 @@ for must still be returned.  Previously any of those raised straight out of
 traceback and lost the whole turn.
 """
 
+from types import SimpleNamespace
+
 import pytest
 
 from agent.turn_finalizer import finalize_turn
@@ -35,6 +37,7 @@ class _StubAgent:
         self.provider = "stub"
         self.api_mode = "codex_responses"
         self.reasoning_config = None
+        self._transport = SimpleNamespace(_last_reasoning_effort=None)
         self.base_url = "http://stub"
         self.session_id = "sess-1"
         self.quiet_mode = True
@@ -100,6 +103,9 @@ class _StubAgent:
 
     def _sync_external_memory_for_turn(self, **k):
         pass
+
+    def _get_transport(self):
+        return self._transport
 
 
 def _run(
@@ -177,6 +183,7 @@ def test_clean_turn_has_no_cleanup_errors_key():
 def test_turn_result_exposes_effective_reasoning_effort():
     agent = _StubAgent(raise_in=())
     agent.reasoning_config = {"enabled": True, "effort": "high"}
+    agent._transport._last_reasoning_effort = "high"
     result = _run(agent)
     assert result["reasoning_effort"] == "high"
 

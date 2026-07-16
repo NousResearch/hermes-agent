@@ -58,6 +58,10 @@ class ResponsesApiTransport(ProviderTransport):
     # response are stamped with the endpoint that minted them. Plain class
     # attribute default; mutated on the instance, not the class.
     _last_issuer_kind: Optional[str] = None
+    # Wire-effective effort from the most recent request payload.  Keep this
+    # next to ``_last_issuer_kind``: both are per-call metadata consumed after
+    # ``build_kwargs`` by later response/finalization paths.
+    _last_reasoning_effort: Optional[str] = None
 
     @property
     def api_mode(self) -> str:
@@ -381,6 +385,21 @@ class ResponsesApiTransport(ProviderTransport):
                 merged_extra_body.update(existing_extra_body)
             merged_extra_body.setdefault("prompt_cache_key", cache_key)
             kwargs["extra_body"] = merged_extra_body
+
+        # Capture the final payload value after provider capability resolution
+        # and request overrides.  Consumers such as the gateway footer must not
+        # reconstruct routing/clamp rules from agent config: xAI may omit the
+        # dial, GitHub Models may select a supported fallback, and overrides can
+        # replace the value immediately before the request is sent.
+        wire_reasoning = kwargs.get("reasoning")
+        wire_effort = (
+            wire_reasoning.get("effort")
+            if isinstance(wire_reasoning, dict)
+            else None
+        )
+        self._last_reasoning_effort = (
+            str(wire_effort).strip().lower() if wire_effort is not None else None
+        ) or None
 
         return kwargs
 

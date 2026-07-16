@@ -838,6 +838,23 @@ def _normalize_job_optional_text(value: Any, *, strip_trailing_slash: bool = Fal
     return text or None
 
 
+def _normalize_reasoning_effort(value: Any) -> Optional[str]:
+    """Validate and normalize an optional per-job reasoning effort."""
+    if value is None:
+        return None
+    from hermes_constants import parse_reasoning_effort
+
+    raw = str(value).strip().lower()
+    if not raw:
+        return None
+    if parse_reasoning_effort(value) is None:
+        raise ValueError(
+            "Invalid reasoning_effort. Expected one of: "
+            "none, false, disabled, minimal, low, medium, high, xhigh, max."
+        )
+    return raw
+
+
 def _compute_provider_model_snapshots(
     *,
     provider: Any,
@@ -911,6 +928,7 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    reasoning_effort: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -987,6 +1005,7 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
+    normalized_reasoning_effort = _normalize_reasoning_effort(reasoning_effort)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -1082,6 +1101,8 @@ def create_job(
     # global cron.mirror_delivery config, default off).
     if normalized_attach is not None:
         job["attach_to_session"] = normalized_attach
+    if normalized_reasoning_effort is not None:
+        job["reasoning_effort"] = normalized_reasoning_effort
 
     with _jobs_lock():
         jobs = load_jobs()
@@ -1172,8 +1193,15 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 else:
                     updates["workdir"] = _normalize_workdir(_wd)
 
+            if "reasoning_effort" in updates:
+                updates["reasoning_effort"] = _normalize_reasoning_effort(
+                    updates["reasoning_effort"]
+                )
+
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})
+            if updated.get("reasoning_effort") is None:
+                updated.pop("reasoning_effort", None)
             schedule_changed = "schedule" in updates
             inference_fields_changed = bool(
                 {"provider", "model", "base_url", "no_agent"}.intersection(updates)

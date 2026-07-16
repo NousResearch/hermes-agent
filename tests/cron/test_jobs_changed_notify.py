@@ -11,8 +11,18 @@ import pytest
 
 @pytest.fixture
 def temp_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    yield tmp_path
+    home = tmp_path / ".hermes"
+    (home / "cron" / "output").mkdir(parents=True)
+    (home / "scripts").mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import cron.jobs as jobs
+
+    monkeypatch.setattr(jobs, "HERMES_DIR", home)
+    monkeypatch.setattr(jobs, "CRON_DIR", home / "cron")
+    monkeypatch.setattr(jobs, "JOBS_FILE", home / "cron" / "jobs.json")
+    monkeypatch.setattr(jobs, "OUTPUT_DIR", home / "cron" / "output")
+    yield home
 
 
 def test_notify_helper_calls_provider_on_jobs_changed(monkeypatch):

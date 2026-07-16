@@ -153,6 +153,8 @@ def cron_list(show_all: bool = False):
         print(f"    Repeat:    {repeat_str}")
         print(f"    Next run:  {next_run}")
         print(f"    Deliver:   {deliver_str}")
+        if job.get("reasoning_effort") is not None:
+            print(f"    Reasoning: {job['reasoning_effort']}")
         if skills:
             print(f"    Skills:    {', '.join(skills)}")
         script = job.get("script")
@@ -305,6 +307,7 @@ def cron_create(args):
         name=getattr(args, "name", None),
         deliver=getattr(args, "deliver", None),
         repeat=getattr(args, "repeat", None),
+        reasoning_effort=getattr(args, "reasoning_effort", None),
         skill=getattr(args, "skill", None),
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
         script=getattr(args, "script", None),
@@ -369,6 +372,7 @@ def cron_edit(args):
         name=getattr(args, "name", None),
         deliver=getattr(args, "deliver", None),
         repeat=getattr(args, "repeat", None),
+        reasoning_effort=getattr(args, "reasoning_effort", None),
         skills=final_skills,
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),

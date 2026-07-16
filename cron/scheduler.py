@@ -114,6 +114,22 @@ class CronPromptInjectionBlocked(Exception):
     """
 
 
+def _resolve_cron_reasoning_config(job: dict, cfg: Any) -> dict | None:
+    """Resolve a cron job's reasoning config with per-job precedence."""
+    from hermes_constants import parse_reasoning_effort
+
+    job_value = job.get("reasoning_effort") if "reasoning_effort" in job else None
+    if job_value is not None and str(job_value).strip():
+        parsed = parse_reasoning_effort(job_value)
+        if parsed is not None:
+            return parsed
+
+    agent_cfg = (cfg or {}).get("agent") or {}
+    if not isinstance(agent_cfg, dict):
+        agent_cfg = {}
+    return parse_reasoning_effort(agent_cfg.get("reasoning_effort", ""))
+
+
 def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     """Toolsets a cron-spawned agent must never receive.
 
@@ -3049,12 +3065,8 @@ def run_job(
         except Exception:
             pass
 
-        # Reasoning config from config.yaml (raw value — a YAML boolean False
-        # means thinking disabled, see parse_reasoning_effort)
-        from hermes_constants import parse_reasoning_effort
-        reasoning_config = parse_reasoning_effort(
-            _cfg.get("agent", {}).get("reasoning_effort", "")
-        )
+        # Reasoning config from the per-job override or config.yaml fallback.
+        reasoning_config = _resolve_cron_reasoning_config(job, _cfg)
 
         # Prefill messages from env or config.yaml. The top-level
         # prefill_messages_file key is canonical; agent.prefill_messages_file is

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -130,14 +130,33 @@ def test_slash_worker_drain_threads_are_named():
     # This is a regression guard: anonymous threads (no name) make it
     # impossible to identify the source of leaked threads in py-spy dumps.
     # The fix gives them explicit names: slash-drain-stdout, slash-drain-stderr.
-    import inspect
-
     from tui_gateway import server
 
-    source = inspect.getsource(_SlashWorker := server._SlashWorker)
-    assert "slash-drain-stdout" in source, (
-        "_SlashWorker should name its stdout drain thread 'slash-drain-stdout'"
-    )
-    assert "slash-drain-stderr" in source, (
-        "_SlashWorker should name its stderr drain thread 'slash-drain-stderr'"
-    )
+    stdout_thread = MagicMock()
+    stderr_thread = MagicMock()
+    with (
+        patch.object(server.subprocess, "Popen"),
+        patch.object(
+            server.threading,
+            "Thread",
+            side_effect=[stdout_thread, stderr_thread],
+        ) as thread_cls,
+    ):
+        worker = server._SlashWorker(session_key="test-key", model="test-model")
+
+    assert thread_cls.call_args_list == [
+        call(
+            target=worker._drain_stdout,
+            daemon=True,
+            name="slash-drain-stdout",
+        ),
+        call(
+            target=worker._drain_stderr,
+            daemon=True,
+            name="slash-drain-stderr",
+        ),
+    ]
+    assert worker._drain_thread_stdout is stdout_thread
+    assert worker._drain_thread_stderr is stderr_thread
+    stdout_thread.start.assert_called_once_with()
+    stderr_thread.start.assert_called_once_with()

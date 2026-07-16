@@ -78,6 +78,18 @@ impl ReleaseSource {
     pub fn parse(url: &str) -> Result<Self> {
         if url.starts_with("file://") {
             let path = url.strip_prefix("file://").unwrap();
+            // On Windows, file:///D:/path leaves a leading slash before the
+            // drive letter (/D:/path) which is invalid. Strip it.
+            #[cfg(windows)]
+            let path = {
+                let p = path.trim_start_matches('/');
+                // Restore UNC paths (file://server/share → //server/share)
+                if path.starts_with("//") || url.starts_with("file:////") {
+                    format!("//{}", p.trim_start_matches('/'))
+                } else {
+                    p.to_string()
+                }
+            };
             Ok(ReleaseSource::File {
                 base_path: PathBuf::from(path),
             })

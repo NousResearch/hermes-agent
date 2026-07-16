@@ -138,6 +138,14 @@ const diffMetricLine = (name: string, a: number, b: number, fmt: (n: number) => 
   return `${name}: ${fmt(a)} → ${fmt(b)}  (${sign}${fmt(Math.abs(d)) || '0'})`
 }
 
+export const formatDelegationCaps = (maxSpawnDepth: null | number, maxConcurrentChildren: null | number): string => {
+  if (maxSpawnDepth === 0) {
+    return 'delegation disabled (d0)'
+  }
+
+  return maxSpawnDepth == null ? '' : `caps d${maxSpawnDepth}/${maxConcurrentChildren ?? '?'}`
+}
+
 // ── Sub-components ───────────────────────────────────────────────────
 
 function GanttStrip({
@@ -866,9 +874,7 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
     .map(([k, v]) => `${k}×${v}`)
     .join(' · ')
 
-  const capsLabel = delegation.maxSpawnDepth
-    ? `caps d${delegation.maxSpawnDepth}/${delegation.maxConcurrentChildren ?? '?'}`
-    : ''
+  const capsLabel = formatDelegationCaps(delegation.maxSpawnDepth, delegation.maxConcurrentChildren)
 
   const title =
     replayMode && effectiveSnapshot

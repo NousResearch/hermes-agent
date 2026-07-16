@@ -1,7 +1,9 @@
+import { formatDelegationCaps } from '../../../components/agentsOverlay.js'
 import type {
   BrowserManageResponse,
   CommandsCatalogResponse,
   DelegationPauseResponse,
+  DelegationStatusResponse,
   ProcessStopResponse,
   ReloadEnvResponse,
   ReloadMcpResponse,
@@ -313,10 +315,22 @@ export const opsCommands: SlashCommand[] = [
       }
 
       if (sub === 'status') {
-        const d = getDelegationState()
-        ctx.transcript.sys(
-          `delegation · ${d.paused ? 'paused' : 'active'} · caps d${d.maxSpawnDepth ?? '?'}/${d.maxConcurrentChildren ?? '?'}`
-        )
+        ctx.gateway
+          .rpc<DelegationStatusResponse>('delegation.status', {})
+          .then(
+            ctx.guarded<DelegationStatusResponse>(r => {
+              applyDelegationStatus(r)
+              const d = getDelegationState()
+              const caps = formatDelegationCaps(d.maxSpawnDepth, d.maxConcurrentChildren)
+
+              ctx.transcript.sys(
+                d.maxSpawnDepth === 0
+                  ? caps
+                  : `delegation · ${d.paused ? 'paused' : 'active'} · ${caps || 'caps d?/?'}`
+              )
+            })
+          )
+          .catch(ctx.guardedErr)
 
         return
       }

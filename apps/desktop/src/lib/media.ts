@@ -125,25 +125,25 @@ export async function gatewayMediaDataUrl(path: string): Promise<string> {
 }
 
 // Remote-mode replacement for opening gateway-local file paths with file://.
-// The file lives on the gateway, so fetch it over the authenticated fs bridge
-// and hand the bytes to the local browser shell as a download.
-export async function downloadGatewayMediaFile(path: string): Promise<void> {
-  const dataUrl = await readDesktopFileDataUrl(filePathFromMediaPath(path))
+// The file lives on the gateway, so ask the Electron main process to fetch the
+// bytes through the authenticated backend connection and save them locally. This
+// avoids browser/OS downloads losing OAuth cookies and avoids the data-URL cap
+// used by preview endpoints.
+export async function downloadGatewayMediaFile(
+  path: string
+): Promise<{ canceled?: boolean; path?: string; saved: boolean }> {
+  const file = filePathFromMediaPath(path)
+  const conn = $connection.get()
 
-  if (!dataUrl) {
-    throw new Error('Gateway returned no file data')
+  if (!window.hermesDesktop?.saveGatewayFile) {
+    throw new Error('Desktop file download bridge is unavailable')
   }
 
-  const response = await fetch(dataUrl)
-  const blobUrl = URL.createObjectURL(await response.blob())
-  const anchor = document.createElement('a')
-  anchor.href = blobUrl
-  anchor.download = mediaName(path)
-  anchor.rel = 'noopener noreferrer'
-  document.body.appendChild(anchor)
-  anchor.click()
-  anchor.remove()
-  window.setTimeout(() => URL.revokeObjectURL(blobUrl), 30_000)
+  return window.hermesDesktop.saveGatewayFile({
+    path: file,
+    profile: conn?.profile,
+    suggestedName: mediaName(file)
+  })
 }
 
 export function mediaDisplayLabel(path: string): string {

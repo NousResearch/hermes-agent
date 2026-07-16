@@ -799,8 +799,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # Interactive model picker state per chat
         self._model_picker_state: Dict[str, dict] = {}
         self._choice_picker_state: Dict[str, dict] = {}
-        # Approval button state: message_id → session_key
-        self._approval_state: Dict[int, str] = {}
+        # Approval button state: approval_id → {session_key, admin_user_id, chat_id}
+        self._approval_state: Dict[int, dict] = {}
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
         # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
         self._slash_confirm_state: Dict[str, str] = {}
@@ -5031,7 +5031,8 @@ class TelegramAdapter(BasePlatformAdapter):
         allow_permanent: bool = True,
         allow_session: bool = True,
         smart_denied: bool = False,
-            **kwargs: Any,
+        admin_user_id: Optional[str] = None,
+        **kwargs: Any,
     ) -> SendResult:
         """Send an inline-keyboard approval prompt with interactive buttons.
 
@@ -5097,8 +5098,12 @@ class TelegramAdapter(BasePlatformAdapter):
 
             msg = await self._send_message_with_thread_fallback(**kwargs)
 
-            # Store session_key keyed by approval_id for the callback handler
-            self._approval_state[approval_id] = session_key
+            # Store session_key, admin_user_id and chat_id for callback validation.
+            self._approval_state[approval_id] = {
+                "session_key": session_key,
+                "admin_user_id": str(admin_user_id or ""),
+                "chat_id": str(chat_id),
+            }
 
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -5968,11 +5973,33 @@ class TelegramAdapter(BasePlatformAdapter):
                     await query.answer(text="⛔ You are not authorized to approve commands.")
                     return
 
-                session_key = self._approval_state.pop(approval_id, None)
-                if not session_key:
+                state = self._approval_state.pop(approval_id, None)
+                if not state:
                     await query.answer(text="This approval has already been resolved.")
                     return
 
+                # Validate delegation admin identity: the button click must come
+                # from the configured admin user AND the expected chat.
+                session_key = state["session_key"]
+                if state.get("admin_user_id") and query.from_user:
+                    caller_id = str(getattr(query.from_user, "id", ""))
+                    if caller_id != state["admin_user_id"]:
+                        logger.warning(
+                            "[Telegram] Unauthorized approval click: "
+                            "expected admin %s, got %s (approval_id=%s)",
+                            state["admin_user_id"], caller_id, approval_id,
+                        )
+                        await query.answer(text="⛔ Not authorized to approve this command.")
+                        return
+                if state.get("chat_id") and query_chat_id:
+                    if str(query_chat_id) != state["chat_id"]:
+                        logger.warning(
+                            "[Telegram] Approval click from wrong chat: "
+                            "expected %s, got %s (approval_id=%s)",
+                            state["chat_id"], query_chat_id, approval_id,
+                        )
+                        await query.answer(text="⛔ Not authorized to approve this command.")
+                        return
                 user_display = getattr(query.from_user, "first_name", "User")
 
                 # Resolve the approval FIRST — unblocks the agent thread.

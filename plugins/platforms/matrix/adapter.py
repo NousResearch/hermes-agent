@@ -320,6 +320,7 @@ class _MatrixApprovalPrompt:
         self.resolved = resolved
         self.requester_user_id = requester_user_id
         self.expires_at = expires_at
+        self.admin_user_id: str = ""  # delegation admin user_id
         self.bot_reaction_events: dict[str, str] = {}  # emoji -> event_id
 
 
@@ -2066,6 +2067,7 @@ class MatrixAdapter(BasePlatformAdapter):
         allow_permanent: bool = True,
         allow_session: bool = True,
         smart_denied: bool = False,
+        admin_user_id: Optional[str] = None,
             **kwargs: Any,
     ) -> SendResult:
         """Send a reaction-based exec approval prompt for Matrix."""
@@ -2109,6 +2111,7 @@ class MatrixAdapter(BasePlatformAdapter):
             requester_user_id=requester_user_id,
             expires_at=time.monotonic() + max(self._approval_timeout_seconds, 0),
         )
+        prompt.admin_user_id = str(admin_user_id or "")
         old_event = self._approval_prompt_by_session.get(session_key)
         if old_event:
             self._approval_prompts_by_event.pop(old_event, None)
@@ -3392,6 +3395,15 @@ class MatrixAdapter(BasePlatformAdapter):
             prompt = self._approval_prompts_by_event.get(reacts_to)
             if prompt and not prompt.resolved:
                 if room_id != prompt.chat_id:
+                    return
+                # Validate delegation admin identity: the reaction must come
+                # from the configured admin user, not just any room member.
+                if prompt.admin_user_id and sender and sender != prompt.admin_user_id:
+                    logger.warning(
+                        "[Matrix] Unauthorized approval reaction: expected admin %s, "
+                        "got %s (room=%s, session_key=%s)",
+                        prompt.admin_user_id, sender, room_id, prompt.session_key[:16],
+                    )
                     return
                 if self._matrix_prompt_expired(prompt):
                     await self._expire_matrix_approval_prompt(room_id, reacts_to, prompt)

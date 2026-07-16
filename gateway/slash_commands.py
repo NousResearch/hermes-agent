@@ -4706,6 +4706,18 @@ class GatewaySlashCommandsMixin:
         if _delegation is None:
             return None  # Not a delegated approval
 
+        # Verify the user is a configured admin — typed /approve or /deny must
+        # come from the actual admin, not just any member of the admin's chat.
+        from gateway.approval_delegation import is_admin_user
+        _src_uid = str(source.user_id or "")
+        if not is_admin_user(_src_plat, _src_uid):
+            logger.warning(
+                "[approval-delegation] Unauthorized user %s (%s) "
+                "attempted to resolve delegated approval for session %s",
+                _src_uid, _src_plat, _delegation.get("session_key", "")[:16],
+            )
+            return None  # Silently ignore — attacker shouldn't know delegation exists
+
         from tools.approval import resolve_gateway_approval, has_blocking_approval
 
         target_sk = _delegation["session_key"]
@@ -4781,7 +4793,7 @@ class GatewaySlashCommandsMixin:
                         log_message="Delegation user notify error",
                     )
                     if _notify_fut is not None:
-                        _notify_fut.result(timeout=15)
+                        await asyncio.wrap_future(_notify_fut)
                 except Exception:
                     pass
 

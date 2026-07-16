@@ -2006,6 +2006,7 @@ class FeishuAdapter(BasePlatformAdapter):
         allow_permanent: bool = True,
         allow_session: bool = True,
         smart_denied: bool = False,
+        admin_user_id: Optional[str] = None,
         **kwargs: Any,
     ) -> SendResult:
         """Send an interactive card with approval buttons.
@@ -2084,6 +2085,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     "session_key": session_key,
                     "message_id": result.message_id or "",
                     "chat_id": chat_id,
+                    "admin_user_id": str(admin_user_id or ""),
                 }
             return result
         except Exception as exc:
@@ -2780,6 +2782,17 @@ class FeishuAdapter(BasePlatformAdapter):
                 approval_id,
                 expected_chat_id,
                 callback_chat_id,
+            )
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        # Validate delegation admin identity: the button click must come
+        # from the configured admin user, not just any member of the chat.
+        expected_admin_uid = str(state.get("admin_user_id", "") or "")
+        if expected_admin_uid and open_id and open_id != expected_admin_uid:
+            logger.warning(
+                "[Feishu] Unauthorized approval click: expected admin %s, "
+                "got %s (approval_id=%s)",
+                expected_admin_uid, open_id, approval_id,
             )
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 

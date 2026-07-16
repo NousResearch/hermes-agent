@@ -5238,6 +5238,7 @@ class SlackAdapter(BasePlatformAdapter):
         allow_permanent: bool = True,
         allow_session: bool = True,
         smart_denied: bool = False,
+        admin_user_id: Optional[str] = None,
         **kwargs: Any,
     ) -> SendResult:
         """Send a Block Kit approval prompt with interactive buttons.
@@ -5771,11 +5772,18 @@ class SlackAdapter(BasePlatformAdapter):
         # forwarded cards from being approved in other channels.
         stored = self._approval_resolved.get(msg_ts)
         if stored:
-            _, expected_chat_id = stored
+            _, expected_chat_id, expected_admin_uid = stored
             if expected_chat_id and channel_id and expected_chat_id != channel_id:
                 logger.warning(
                     "[Slack] Unauthorized approval click: expected chat %s, got %s (user=%s)",
                     expected_chat_id, channel_id, user_id,
+                )
+                return
+            if expected_admin_uid and user_id and user_id != expected_admin_uid:
+                logger.warning(
+                    "[Slack] Unauthorized approval click: expected admin %s, "
+                    "got %s (chat=%s, msg_ts=%s)",
+                    expected_admin_uid, user_id, channel_id, msg_ts,
                 )
                 return
 
@@ -5789,7 +5797,7 @@ class SlackAdapter(BasePlatformAdapter):
         choice = choice_map.get(action_id, "deny")
 
         # Prevent double-clicks — atomic pop; first caller gets (False,…), others get default (True,…)
-        stored = self._approval_resolved.pop(msg_ts, (True, ""))
+        stored = self._approval_resolved.pop(msg_ts, (True, "", ""))
         if stored[0]:
             return
 

@@ -4086,8 +4086,9 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     return json.dumps({
                         "error": (
                             f"MCP server '{server_name}' transport is down; "
-                            f"reconnect requested. Give it a few seconds "
-                            f"to come back, or use alternative approaches."
+                            f"reconnect requested. It may take a few seconds "
+                            f"to come back. Alternative approaches may be used "
+                            f"in the meantime."
                         )
                     }, ensure_ascii=False)
                 return json.dumps({

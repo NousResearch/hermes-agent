@@ -80,6 +80,16 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
+        "card_project": t.card_project,
+        "card_id": t.card_id,
+        "intent_hash": t.intent_hash,
+        "card_step": t.card_step,
+        "superseded_by": t.superseded_by,
+        "generation": t.generation,
+        "explicit_unblock_generation": t.explicit_unblock_generation,
+        "pr_head": t.pr_head,
+        "pr_checks": t.pr_checks,
+        "quarantine_fingerprint": t.quarantine_fingerprint,
     }
 
 
@@ -367,6 +377,17 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "that require immediate human ops (R3 gate) "
                                "to skip the brief running-to-blocked transition.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
+
+    # --- import-card ---
+    p_import_card = sub.add_parser(
+        "import-card",
+        help="Atomically import a card graph from JSON; Hermes generates canonical keys",
+    )
+    p_import_card.add_argument(
+        "source",
+        help="JSON file path, or '-' to read the payload from stdin",
+    )
+    p_import_card.add_argument("--json", action="store_true", help="Emit JSON output")
 
     # --- swarm ---
     p_swarm = sub.add_parser(
@@ -956,6 +977,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         handlers = {
             "init":     _cmd_init,
             "create":   _cmd_create,
+            "import-card": _cmd_import_card,
             "swarm":    _cmd_swarm,
             "list":     _cmd_list,
             "ls":       _cmd_list,
@@ -1386,6 +1408,57 @@ def _cmd_create(args: argparse.Namespace) -> int:
             running, message = _check_dispatcher_presence()
             if not running and message:
                 print(f"\n⚠  {message}", file=sys.stderr)
+    return 0
+
+
+def _cmd_import_card(args: argparse.Namespace) -> int:
+    try:
+        if args.source == "-":
+            payload = json.load(sys.stdin)
+        else:
+            with Path(args.source).expanduser().open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"kanban: cannot read card import: {exc}", file=sys.stderr)
+        return 2
+    if not isinstance(payload, dict):
+        print("kanban: card import payload must be a JSON object", file=sys.stderr)
+        return 2
+    allowed = {
+        "project", "card_id", "intent_hash", "steps", "retrospective_task_id",
+    }
+    extra = set(payload) - allowed
+    if extra:
+        print(
+            f"kanban: unknown card import field(s): {', '.join(sorted(extra))}",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        with kb.connect_closing() as conn:
+            result = kb.import_card_batch(
+                conn,
+                project=payload.get("project", ""),
+                card_id=payload.get("card_id", ""),
+                intent_hash=payload.get("intent_hash", ""),
+                steps=payload.get("steps", []),
+                retrospective_task_id=payload.get("retrospective_task_id"),
+                created_by=_profile_author(),
+            )
+    except (TypeError, ValueError) as exc:
+        print(f"kanban: {exc}", file=sys.stderr)
+        return 2
+    if getattr(args, "json", False):
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        ordered = ", ".join(
+            f"{step}={task_id}" for step, task_id in result["tasks"].items()
+        )
+        print(
+            f"Imported {result['card_id']} atomically "
+            f"(created={len(result['created'])}, reused={len(result['reused'])}): "
+            f"{ordered}"
+        )
     return 0
 
 

@@ -46,7 +46,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status as http_status
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from hermes_cli import kanban_db
 from hermes_cli import kanban_diagnostics as kd
@@ -652,6 +652,97 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
         return body
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
+
+
+class CardImportStepBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    step: str
+    title: str
+    body: Optional[str] = None
+    assignee: Optional[str] = None
+    priority: int = 0
+    workspace_kind: str = "scratch"
+    workspace_path: Optional[str] = None
+    branch_name: Optional[str] = None
+    tenant: Optional[str] = None
+    parents: list[str] = Field(default_factory=list)
+    external_parents: list[str] = Field(default_factory=list)
+    triage: bool = False
+    max_runtime_seconds: Optional[int] = None
+    skills: Optional[list[str]] = None
+    max_retries: Optional[int] = None
+    goal_mode: bool = False
+    goal_max_turns: Optional[int] = None
+
+class CardImportBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    project: str
+    card_id: str
+    intent_hash: str
+    steps: list[CardImportStepBody]
+    retrospective_task_id: Optional[str] = None
+
+@router.post("/card-imports")
+def import_card(payload: CardImportBody, board: Optional[str] = Query(None)):
+    """Create/rekey/deduplicate a complete card graph in one transaction."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        result = kanban_db.import_card_batch(
+            conn,
+            project=payload.project,
+            card_id=payload.card_id,
+            intent_hash=payload.intent_hash,
+            steps=[step.model_dump() for step in payload.steps],
+            retrospective_task_id=payload.retrospective_task_id,
+        )
+        result["task_rows"] = {
+            step: _task_dict(task)
+            for step, task_id in result["tasks"].items()
+            if (task := kanban_db.get_task(conn, task_id)) is not None
+        }
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    finally:
+        conn.close()
+
+
+class TaskObservablesBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    generation: Optional[int] = None
+    pr_head: Optional[str] = None
+    pr_checks: Optional[dict[str, str]] = None
+
+@router.put("/tasks/{task_id}/observables")
+def update_task_observables(
+    task_id: str,
+    payload: TaskObservablesBody,
+    board: Optional[str] = Query(None),
+):
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        observable_kwargs: dict[str, Any] = {}
+        if "pr_head" in payload.model_fields_set:
+            observable_kwargs["pr_head"] = payload.pr_head
+        if "pr_checks" in payload.model_fields_set:
+            observable_kwargs["pr_checks"] = payload.pr_checks
+        return kanban_db.set_task_observables(
+            conn,
+            task_id,
+            generation=payload.generation,
+            **observable_kwargs,
+        )
+    except ValueError as exc:
+        if kanban_db.get_task(conn, task_id) is None:
+            raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc))
     finally:
         conn.close()
 

@@ -132,6 +132,7 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # spirit (default 2) but counts a different signal: manual unblock recurrences,
 # not dispatcher spawn/crash/timeout failures.
 BLOCK_RECURRENCE_LIMIT = 2
+QUARANTINE_BLOCKED_RUN_LIMIT = 3
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
@@ -915,6 +916,17 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    card_project: Optional[str] = None
+    card_id: Optional[str] = None
+    intent_hash: Optional[str] = None
+    card_step: Optional[str] = None
+    superseded_by: Optional[str] = None
+    generation: int = 0
+    explicit_unblock_generation: int = 0
+    pr_head: Optional[str] = None
+    pr_checks: Optional[dict] = None
+    quarantine_fingerprint: Optional[str] = None
+    quarantine_observables: Optional[dict] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -928,6 +940,24 @@ class Task:
                     skills_value = [str(s) for s in parsed if s]
             except Exception:
                 skills_value = None
+        pr_checks_value: Optional[dict] = None
+        quarantine_observables_value: Optional[dict] = None
+        for column, target in (
+            ("pr_checks", "pr"),
+            ("quarantine_observables", "quarantine"),
+        ):
+            if column not in keys or not row[column]:
+                continue
+            try:
+                parsed = json.loads(row[column])
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            if target == "pr":
+                pr_checks_value = parsed
+            else:
+                quarantine_observables_value = parsed
         return cls(
             id=row["id"],
             title=row["title"],
@@ -999,6 +1029,23 @@ class Task:
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
             ),
+            card_project=row["card_project"] if "card_project" in keys else None,
+            card_id=row["card_id"] if "card_id" in keys else None,
+            intent_hash=row["intent_hash"] if "intent_hash" in keys else None,
+            card_step=row["card_step"] if "card_step" in keys else None,
+            superseded_by=row["superseded_by"] if "superseded_by" in keys else None,
+            generation=int(row["generation"] or 0) if "generation" in keys else 0,
+            explicit_unblock_generation=(
+                int(row["explicit_unblock_generation"] or 0)
+                if "explicit_unblock_generation" in keys else 0
+            ),
+            pr_head=row["pr_head"] if "pr_head" in keys else None,
+            pr_checks=pr_checks_value,
+            quarantine_fingerprint=(
+                row["quarantine_fingerprint"]
+                if "quarantine_fingerprint" in keys else None
+            ),
+            quarantine_observables=quarantine_observables_value,
         )
 
 
@@ -1177,6 +1224,31 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
     block_recurrences    INTEGER NOT NULL DEFAULT 0
+    ,card_project        TEXT
+    ,card_id             TEXT
+    ,intent_hash         TEXT
+    ,card_step           TEXT
+    ,superseded_by       TEXT
+    ,generation          INTEGER NOT NULL DEFAULT 0
+    ,explicit_unblock_generation INTEGER NOT NULL DEFAULT 0
+    ,pr_head             TEXT
+    ,pr_checks           TEXT
+    ,quarantine_fingerprint TEXT
+    ,quarantine_observables TEXT
+);
+
+CREATE TABLE IF NOT EXISTS task_supersessions (
+    loser_id       TEXT PRIMARY KEY,
+    survivor_id    TEXT NOT NULL,
+    canonical_key  TEXT NOT NULL,
+    reason         TEXT NOT NULL,
+    created_at     INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS task_retrospectives (
+    task_id                TEXT PRIMARY KEY,
+    retrospective_task_id  TEXT NOT NULL,
+    created_at             INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1850,6 +1922,190 @@ def init_db(
     return path
 
 
+_CARD_COMPONENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+_INTENT_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+_LEGACY_CARD_KEY_RE = re.compile(
+    r"^card:(?P<card_id>[^:]+):(?P<intent_hash>[0-9a-fA-F]{64}):(?P<step>[^:]+)$"
+)
+
+
+def canonical_card_idempotency_key(
+    project: str,
+    card_id: str,
+    intent_hash: str,
+    step: str,
+) -> str:
+    """Return the only idempotency key accepted for imported card steps."""
+    values = {
+        "project": str(project).strip(),
+        "card_id": str(card_id).strip(),
+        "step": str(step).strip(),
+    }
+    for name, value in values.items():
+        if not _CARD_COMPONENT_RE.fullmatch(value):
+            raise ValueError(
+                f"{name} must match {_CARD_COMPONENT_RE.pattern!r}; got {value!r}"
+            )
+    normalized_hash = str(intent_hash).strip().lower()
+    if not _INTENT_HASH_RE.fullmatch(normalized_hash):
+        raise ValueError("intent_hash must be a 64-character lowercase hex digest")
+    return (
+        f"v1:{values['project']}:{values['card_id']}:"
+        f"{normalized_hash}:{values['step']}"
+    )
+
+
+def _supersession_rank_sql() -> str:
+    # Delivered evidence wins, then integration state, then the oldest stable
+    # task id. The final id tiebreak makes the survivor independent of query or
+    # insertion order.
+    return """
+        CASE status
+          WHEN 'done' THEN 0 WHEN 'review' THEN 1 WHEN 'archived' THEN 2
+          WHEN 'running' THEN 3 WHEN 'blocked' THEN 4 WHEN 'triage' THEN 5
+          WHEN 'ready' THEN 6 WHEN 'todo' THEN 7 WHEN 'scheduled' THEN 8
+          ELSE 9 END,
+        CASE WHEN result IS NOT NULL AND result != '' THEN 0 ELSE 1 END,
+        created_at ASC, id ASC
+    """
+
+
+def _supersede_task_in_txn(
+    conn: sqlite3.Connection,
+    loser_id: str,
+    survivor_id: str,
+    canonical_key: str,
+    *,
+    reason: str,
+) -> None:
+    if loser_id == survivor_id:
+        return
+    now = int(time.time())
+    row = conn.execute(
+        "SELECT current_run_id FROM tasks WHERE id = ?", (loser_id,)
+    ).fetchone()
+    if row is None:
+        return
+    if row["current_run_id"] is not None:
+        conn.execute(
+            "UPDATE task_runs SET status = 'released', outcome = 'released', "
+            "ended_at = ?, claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+            "summary = COALESCE(summary, 'SUPERSEDED_BY ' || ?) "
+            "WHERE id = ? AND ended_at IS NULL",
+            (now, survivor_id, int(row["current_run_id"])),
+        )
+    conn.execute(
+        "UPDATE tasks SET status = 'archived', superseded_by = ?, "
+        "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+        "current_run_id = NULL WHERE id = ?",
+        (survivor_id, loser_id),
+    )
+    conn.execute(
+        "INSERT INTO task_supersessions "
+        "(loser_id, survivor_id, canonical_key, reason, created_at) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(loser_id) DO UPDATE SET "
+        "survivor_id = excluded.survivor_id, canonical_key = excluded.canonical_key, "
+        "reason = excluded.reason",
+        (loser_id, survivor_id, canonical_key, reason, now),
+    )
+    _append_event(
+        conn,
+        loser_id,
+        "superseded",
+        {"relation": "SUPERSEDED_BY", "survivor_id": survivor_id, "reason": reason},
+    )
+
+
+def _dedupe_idempotency_key_in_txn(
+    conn: sqlite3.Connection,
+    key: str,
+    *,
+    reason: str,
+) -> Optional[str]:
+    rows = conn.execute(
+        "SELECT id FROM tasks WHERE idempotency_key = ? AND superseded_by IS NULL "
+        f"ORDER BY {_supersession_rank_sql()}",
+        (key,),
+    ).fetchall()
+    if not rows:
+        return None
+    survivor_id = rows[0]["id"]
+    for row in rows[1:]:
+        _supersede_task_in_txn(
+            conn, row["id"], survivor_id, key, reason=reason
+        )
+    return survivor_id
+
+
+def _migrate_runtime_convergence(conn: sqlite3.Connection) -> None:
+    """Rekey history, preserve one deterministic survivor, then enforce it."""
+    scope = contextlib.nullcontext(conn) if conn.in_transaction else write_txn(conn)
+    with scope:
+        # A development build briefly used a broader predicate. Drop it before
+        # rekeying so upgrading that build cannot collide mid-migration.
+        conn.execute("DROP INDEX IF EXISTS ux_tasks_idempotency_survivor")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS task_supersessions ("
+            "loser_id TEXT PRIMARY KEY, survivor_id TEXT NOT NULL, "
+            "canonical_key TEXT NOT NULL, reason TEXT NOT NULL, created_at INTEGER NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS task_retrospectives ("
+            "task_id TEXT PRIMARY KEY, retrospective_task_id TEXT NOT NULL, "
+            "created_at INTEGER NOT NULL)"
+        )
+
+        legacy_rows = conn.execute(
+            "SELECT id, idempotency_key, project_id FROM tasks "
+            "WHERE idempotency_key LIKE 'card:%' AND superseded_by IS NULL"
+        ).fetchall()
+        for row in legacy_rows:
+            match = _LEGACY_CARD_KEY_RE.fullmatch(row["idempotency_key"] or "")
+            if match is None:
+                continue
+            project = str(row["project_id"] or "legacy")
+            project = re.sub(r"[^A-Za-z0-9_.-]+", "-", project).strip("-.") or "legacy"
+            card_id = re.sub(
+                r"[^A-Za-z0-9_.-]+", "-", match.group("card_id")
+            ).strip("-.") or "legacy-card"
+            step = re.sub(
+                r"[^A-Za-z0-9_.-]+", "-", match.group("step")
+            ).strip("-.") or "legacy-step"
+            new_key = canonical_card_idempotency_key(
+                project, card_id, match.group("intent_hash").lower(), step
+            )
+            conn.execute(
+                "UPDATE tasks SET idempotency_key = ?, card_project = COALESCE(card_project, ?), "
+                "card_id = COALESCE(card_id, ?), intent_hash = COALESCE(intent_hash, ?), "
+                "card_step = COALESCE(card_step, ?) WHERE id = ?",
+                (
+                    new_key, project, card_id,
+                    match.group("intent_hash").lower(), step, row["id"],
+                ),
+            )
+
+        duplicate_keys = conn.execute(
+            "SELECT idempotency_key FROM tasks "
+            "WHERE idempotency_key LIKE 'v1:%' AND superseded_by IS NULL "
+            "GROUP BY idempotency_key HAVING COUNT(*) > 1 "
+            "ORDER BY idempotency_key"
+        ).fetchall()
+        for row in duplicate_keys:
+            _dedupe_idempotency_key_in_txn(
+                conn, row["idempotency_key"], reason="historical_rekey"
+            )
+
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_tasks_idempotency_survivor "
+            "ON tasks(idempotency_key) "
+            "WHERE idempotency_key LIKE 'v1:%' AND superseded_by IS NULL"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_tasks_idempotency ON tasks(idempotency_key)"
+        )
+
+
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     """Add columns that were introduced after v1 release to legacy DBs.
 
@@ -1986,6 +2242,28 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences",
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
+
+    runtime_columns = {
+        "card_project": "card_project TEXT",
+        "card_id": "card_id TEXT",
+        "intent_hash": "intent_hash TEXT",
+        "card_step": "card_step TEXT",
+        "superseded_by": "superseded_by TEXT",
+        "generation": "generation INTEGER NOT NULL DEFAULT 0",
+        "explicit_unblock_generation": (
+            "explicit_unblock_generation INTEGER NOT NULL DEFAULT 0"
+        ),
+        "pr_head": "pr_head TEXT",
+        "pr_checks": "pr_checks TEXT",
+        "quarantine_fingerprint": "quarantine_fingerprint TEXT",
+        "quarantine_observables": "quarantine_observables TEXT",
+    }
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
+    for column, declaration in runtime_columns.items():
+        if column not in cols:
+            _add_column_if_missing(conn, "tasks", column, declaration)
+
+    _migrate_runtime_convergence(conn)
 
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
@@ -2435,6 +2713,10 @@ def create_task(
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
+    if idempotency_key and str(idempotency_key).startswith("v1:"):
+        raise ValueError(
+            "v1 card idempotency keys are reserved; use import_card_batch"
+        )
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(
             f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}"
@@ -2537,16 +2819,22 @@ def create_task(
             )
         skills_list = cleaned
 
-    # Idempotency check — return the existing task instead of creating a
-    # duplicate. Done BEFORE entering write_txn to keep the fast path fast
-    # and to avoid holding a write lock during the lookup. Race is
-    # acceptable: two concurrent creators with the same key might both
-    # insert, at which point both rows exist but the next lookup stabilises.
+    # Idempotency check — archived survivors remain survivors. Re-importing a
+    # card must converge on historical evidence, not manufacture a fresh task
+    # because the winning row has moved columns.
     if idempotency_key:
-        row = conn.execute(
+        archived_clause = (
+            "" if str(idempotency_key).startswith("v1:")
+            else "AND status != 'archived' "
+        )
+        query = (
             "SELECT id FROM tasks WHERE idempotency_key = ? "
-            "AND status != 'archived' "
-            "ORDER BY created_at DESC LIMIT 1",
+            "AND superseded_by IS NULL "
+            + archived_clause
+            + f"ORDER BY {_supersession_rank_sql()} LIMIT 1"
+        )
+        row = conn.execute(
+            query,
             (idempotency_key,),
         ).fetchone()
         if row:
@@ -2683,11 +2971,524 @@ def create_task(
                 )
             return task_id
         except sqlite3.IntegrityError:
+            if idempotency_key:
+                survivor = conn.execute(
+                    "SELECT id FROM tasks WHERE idempotency_key = ? "
+                    "AND superseded_by IS NULL LIMIT 1",
+                    (idempotency_key,),
+                ).fetchone()
+                if survivor:
+                    return survivor["id"]
             if attempt == 1:
                 raise
             # Retry with a fresh id.
             continue
     raise RuntimeError("unreachable")
+
+
+_CARD_IMPORT_STEP_FIELDS = {
+    "step", "title", "body", "assignee", "priority", "workspace_kind",
+    "workspace_path", "branch_name", "tenant", "parents", "external_parents",
+    "triage", "max_runtime_seconds", "skills", "max_retries", "goal_mode",
+    "goal_max_turns",
+}
+
+
+def _converge_card_step_history_in_txn(
+    conn: sqlite3.Connection,
+    *,
+    project: str,
+    card_id: str,
+    intent_hash: str,
+    step: str,
+) -> tuple[Optional[str], list[str]]:
+    canonical_key = canonical_card_idempotency_key(
+        project, card_id, intent_hash, step
+    )
+    legacy_key = f"card:{card_id}:{intent_hash}:{step}"
+    legacy_canonical = f"v1:legacy:{card_id}:{intent_hash}:{step}"
+    candidates = conn.execute(
+        "SELECT id FROM tasks WHERE superseded_by IS NULL AND ("
+        "idempotency_key IN (?, ?, ?) OR "
+        "(card_id = ? AND intent_hash = ? AND card_step = ?)) "
+        f"ORDER BY {_supersession_rank_sql()}",
+        (
+            canonical_key, legacy_key, legacy_canonical,
+            card_id, intent_hash, step,
+        ),
+    ).fetchall()
+    if not candidates:
+        return None, []
+    survivor_id = candidates[0]["id"]
+    losers: list[str] = []
+    for row in candidates[1:]:
+        losers.append(row["id"])
+        _supersede_task_in_txn(
+            conn,
+            row["id"],
+            survivor_id,
+            canonical_key,
+            reason="card_import_rekey",
+        )
+    conn.execute(
+        "UPDATE tasks SET idempotency_key = ?, card_project = ?, card_id = ?, "
+        "intent_hash = ?, card_step = ? WHERE id = ?",
+        (canonical_key, project, card_id, intent_hash, step, survivor_id),
+    )
+    return survivor_id, losers
+
+
+def import_card_batch(
+    conn: sqlite3.Connection,
+    *,
+    project: str,
+    card_id: str,
+    intent_hash: str,
+    steps: Iterable[dict[str, Any]],
+    created_by: str = "card-import-api",
+    retrospective_task_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Atomically import a card graph with API-owned canonical keys.
+
+    Validation happens before ``BEGIN IMMEDIATE``. Every task, link,
+    retrospective relation, rekey and supersession then commits together or
+    rolls back together.
+    """
+    normalized_hash = str(intent_hash).strip().lower()
+    normalized_steps: list[dict[str, Any]] = []
+    step_names: set[str] = set()
+    for raw in steps:
+        if not isinstance(raw, dict):
+            raise ValueError("each card step must be an object")
+        extra = set(raw) - _CARD_IMPORT_STEP_FIELDS
+        if extra:
+            raise ValueError(f"unknown card step field(s): {', '.join(sorted(extra))}")
+        step = str(raw.get("step") or "").strip()
+        title = str(raw.get("title") or "").strip()
+        if not title:
+            raise ValueError(f"title is required for card step {step!r}")
+        canonical_card_idempotency_key(project, card_id, normalized_hash, step)
+        if step in step_names:
+            raise ValueError(f"duplicate card step: {step}")
+        step_names.add(step)
+        parents = [str(value).strip() for value in raw.get("parents", []) if str(value).strip()]
+        external_parents = [
+            str(value).strip()
+            for value in raw.get("external_parents", [])
+            if str(value).strip()
+        ]
+        workspace_kind = str(raw.get("workspace_kind") or "scratch")
+        if workspace_kind not in VALID_WORKSPACE_KINDS:
+            raise ValueError(
+                f"workspace_kind must be one of {sorted(VALID_WORKSPACE_KINDS)}"
+            )
+        branch_name = str(raw.get("branch_name") or "").strip() or None
+        if branch_name and workspace_kind != "worktree":
+            raise ValueError("branch_name is only valid for worktree workspaces")
+        skills = raw.get("skills")
+        if skills is not None and not isinstance(skills, list):
+            raise ValueError(f"skills for step {step!r} must be a list")
+        normalized_steps.append(
+            {
+                **raw,
+                "step": step,
+                "title": title,
+                "parents": parents,
+                "external_parents": external_parents,
+                "workspace_kind": workspace_kind,
+                "branch_name": branch_name,
+                "assignee": _canonical_assignee(raw.get("assignee")),
+            }
+        )
+    if not normalized_steps:
+        raise ValueError("at least one card step is required")
+    for item in normalized_steps:
+        unknown = sorted(set(item["parents"]) - step_names)
+        if unknown:
+            raise ValueError(
+                f"step {item['step']!r} references unknown parent step(s): "
+                f"{', '.join(unknown)}"
+            )
+
+    project = str(project).strip()
+    card_id = str(card_id).strip()
+    created: list[str] = []
+    reused: list[str] = []
+    superseded: list[str] = []
+    task_ids: dict[str, str] = {}
+    now = int(time.time())
+    with write_txn(conn):
+        external_ids = sorted(
+            {parent for item in normalized_steps for parent in item["external_parents"]}
+        )
+        if retrospective_task_id:
+            external_ids.append(str(retrospective_task_id))
+        missing = _find_missing_parents(conn, external_ids)
+        if missing:
+            raise ValueError(f"unknown external task(s): {', '.join(missing)}")
+
+        for item in normalized_steps:
+            step = item["step"]
+            survivor_id, losers = _converge_card_step_history_in_txn(
+                conn,
+                project=project,
+                card_id=card_id,
+                intent_hash=normalized_hash,
+                step=step,
+            )
+            superseded.extend(losers)
+            if survivor_id:
+                task_ids[step] = survivor_id
+                reused.append(survivor_id)
+                continue
+
+            key = canonical_card_idempotency_key(
+                project, card_id, normalized_hash, step
+            )
+            for attempt in range(2):
+                task_id = _new_task_id()
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO tasks (
+                            id, title, body, assignee, status, priority,
+                            created_by, created_at, workspace_kind, workspace_path,
+                            branch_name, tenant, idempotency_key, max_runtime_seconds,
+                            skills, max_retries, goal_mode, goal_max_turns,
+                            card_project, card_id, intent_hash, card_step
+                        ) VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            task_id, item["title"], item.get("body"), item["assignee"],
+                            int(item.get("priority") or 0), created_by, now,
+                            item["workspace_kind"], item.get("workspace_path"),
+                            item["branch_name"], item.get("tenant"), key,
+                            (
+                                int(item["max_runtime_seconds"])
+                                if item.get("max_runtime_seconds") is not None else None
+                            ),
+                            json.dumps(item.get("skills")) if item.get("skills") is not None else None,
+                            int(item["max_retries"]) if item.get("max_retries") is not None else None,
+                            1 if item.get("goal_mode") else 0,
+                            int(item["goal_max_turns"]) if item.get("goal_max_turns") is not None else None,
+                            project, card_id, normalized_hash, step,
+                        ),
+                    )
+                    break
+                except sqlite3.IntegrityError:
+                    existing = conn.execute(
+                        "SELECT id FROM tasks WHERE idempotency_key = ? "
+                        "AND superseded_by IS NULL",
+                        (key,),
+                    ).fetchone()
+                    if existing:
+                        task_id = existing["id"]
+                        reused.append(task_id)
+                        break
+                    if attempt == 1:
+                        raise
+            task_ids[step] = task_id
+            if task_id not in reused:
+                created.append(task_id)
+                _append_event(
+                    conn,
+                    task_id,
+                    "created",
+                    {
+                        "source": "card_import_batch",
+                        "project": project,
+                        "card_id": card_id,
+                        "intent_hash": normalized_hash,
+                        "step": step,
+                    },
+                )
+
+        for item in normalized_steps:
+            child_id = task_ids[item["step"]]
+            parent_ids = [task_ids[name] for name in item["parents"]]
+            parent_ids.extend(item["external_parents"])
+            for parent_id in parent_ids:
+                if parent_id == child_id:
+                    raise ValueError("a task cannot depend on itself")
+                if _would_cycle(conn, parent_id, child_id):
+                    raise ValueError(
+                        f"linking {parent_id} -> {child_id} would create a cycle"
+                    )
+                conn.execute(
+                    "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
+                    (parent_id, child_id),
+                )
+            if child_id in created:
+                if item.get("triage"):
+                    status = "triage"
+                else:
+                    undone = conn.execute(
+                        "SELECT 1 FROM task_links l JOIN tasks p ON p.id = l.parent_id "
+                        "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
+                        (child_id,),
+                    ).fetchone()
+                    status = "todo" if undone else "ready"
+                conn.execute(
+                    "UPDATE tasks SET status = ? WHERE id = ?", (status, child_id)
+                )
+            if retrospective_task_id:
+                conn.execute(
+                    "INSERT INTO task_retrospectives "
+                    "(task_id, retrospective_task_id, created_at) VALUES (?, ?, ?) "
+                    "ON CONFLICT(task_id) DO UPDATE SET "
+                    "retrospective_task_id = excluded.retrospective_task_id",
+                    (child_id, retrospective_task_id, now),
+                )
+
+    return {
+        "project": project,
+        "card_id": card_id,
+        "intent_hash": normalized_hash,
+        "tasks": task_ids,
+        "created": created,
+        "reused": reused,
+        "superseded": superseded,
+    }
+
+
+def _canonical_pr_checks(checks: Optional[dict[str, Any]]) -> dict[str, str]:
+    if checks is None:
+        return {}
+    if not isinstance(checks, dict):
+        raise ValueError("pr_checks must be an object keyed by check name")
+    return {
+        str(name): str(state)
+        for name, state in sorted(checks.items(), key=lambda item: str(item[0]))
+    }
+
+
+def _task_observables_in_txn(
+    conn: sqlite3.Connection, task_id: str
+) -> dict[str, Any]:
+    task = conn.execute(
+        "SELECT generation, explicit_unblock_generation, assignee, pr_head, pr_checks "
+        "FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if task is None:
+        raise ValueError(f"unknown task: {task_id}")
+    parents = conn.execute(
+        "SELECT p.id, p.status, p.completed_at FROM tasks p "
+        "JOIN task_links l ON l.parent_id = p.id WHERE l.child_id = ? "
+        "ORDER BY p.id",
+        (task_id,),
+    ).fetchall()
+    try:
+        checks = json.loads(task["pr_checks"] or "{}")
+    except (TypeError, ValueError):
+        checks = {}
+    return {
+        "generation": int(task["generation"] or 0),
+        "parents": [
+            {
+                "id": row["id"],
+                "status": row["status"],
+                "completed_at": row["completed_at"],
+            }
+            for row in parents
+        ],
+        "pr": {"head": task["pr_head"], "checks": _canonical_pr_checks(checks)},
+        "owner": task["assignee"],
+        "explicit_unblock_generation": int(task["explicit_unblock_generation"] or 0),
+    }
+
+
+def observable_fingerprint(observables: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        observables, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _release_quarantine_if_changed_in_txn(
+    conn: sqlite3.Connection, task_id: str
+) -> bool:
+    row = conn.execute(
+        "SELECT quarantine_fingerprint, status FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None or not row["quarantine_fingerprint"]:
+        return False
+    observables = _task_observables_in_txn(conn, task_id)
+    fingerprint = observable_fingerprint(observables)
+    if fingerprint == row["quarantine_fingerprint"]:
+        return False
+    undone = conn.execute(
+        "SELECT 1 FROM task_links l JOIN tasks p ON p.id = l.parent_id "
+        "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    new_status = "todo" if undone else "ready"
+    conn.execute(
+        "UPDATE tasks SET quarantine_fingerprint = NULL, "
+        "quarantine_observables = NULL, status = CASE WHEN status = 'triage' "
+        "THEN ? ELSE status END WHERE id = ?",
+        (new_status, task_id),
+    )
+    _append_event(
+        conn,
+        task_id,
+        "quarantine_released",
+        {"reason": "observable_change", "fingerprint": fingerprint},
+    )
+    return True
+
+
+_OBSERVABLE_UNSET = object()
+
+
+def set_task_observables(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    generation: Optional[int] = None,
+    pr_head: Any = _OBSERVABLE_UNSET,
+    pr_checks: Any = _OBSERVABLE_UNSET,
+) -> dict[str, Any]:
+    """Persist typed observable state and release only on fingerprint change."""
+    with write_txn(conn):
+        if conn.execute("SELECT 1 FROM tasks WHERE id = ?", (task_id,)).fetchone() is None:
+            raise ValueError(f"unknown task: {task_id}")
+        updates: list[str] = []
+        params: list[Any] = []
+        if generation is not None:
+            if int(generation) < 0:
+                raise ValueError("generation must be >= 0")
+            updates.append("generation = ?")
+            params.append(int(generation))
+        if pr_head is not _OBSERVABLE_UNSET:
+            updates.append("pr_head = ?")
+            params.append(str(pr_head).strip() or None if pr_head is not None else None)
+        if pr_checks is not _OBSERVABLE_UNSET:
+            updates.append("pr_checks = ?")
+            params.append(
+                json.dumps(
+                    _canonical_pr_checks(pr_checks),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
+        if updates:
+            params.append(task_id)
+            conn.execute(
+                f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?", params
+            )
+        released = _release_quarantine_if_changed_in_txn(conn, task_id)
+        observables = _task_observables_in_txn(conn, task_id)
+        return {
+            "observables": observables,
+            "fingerprint": observable_fingerprint(observables),
+            "quarantine_released": released,
+        }
+
+
+def _quarantine_after_block_in_txn(
+    conn: sqlite3.Connection, task_id: str
+) -> Optional[str]:
+    outcomes = conn.execute(
+        "SELECT outcome FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT ?",
+        (task_id, QUARANTINE_BLOCKED_RUN_LIMIT),
+    ).fetchall()
+    if len(outcomes) < QUARANTINE_BLOCKED_RUN_LIMIT or any(
+        row["outcome"] != "blocked" for row in outcomes
+    ):
+        return None
+    observables = _task_observables_in_txn(conn, task_id)
+    fingerprint = observable_fingerprint(observables)
+    row = conn.execute(
+        "SELECT quarantine_fingerprint, assignee FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row["quarantine_fingerprint"] == fingerprint:
+        return None
+    conn.execute(
+        "UPDATE tasks SET status = 'triage', quarantine_fingerprint = ?, "
+        "quarantine_observables = ?, claim_lock = NULL, claim_expires = NULL, "
+        "worker_pid = NULL WHERE id = ?",
+        (
+            fingerprint,
+            json.dumps(observables, sort_keys=True, separators=(",", ":")),
+            task_id,
+        ),
+    )
+    triage_key = f"quarantine:{task_id}:{fingerprint}"
+    existing = conn.execute(
+        "SELECT id FROM tasks WHERE idempotency_key = ? AND superseded_by IS NULL",
+        (triage_key,),
+    ).fetchone()
+    if existing:
+        triage_id = existing["id"]
+    else:
+        triage_id = _new_task_id()
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO tasks (id, title, body, assignee, status, priority, "
+            "created_by, created_at, workspace_kind, idempotency_key) "
+            "VALUES (?, ?, ?, ?, 'triage', 100, 'step-back-gate', ?, 'scratch', ?)",
+            (
+                triage_id,
+                f"Triage frozen task {task_id}",
+                "Three consecutive blocked outcomes. Resume only after an observable "
+                "generation/parent/PR-HEAD-check/owner/explicit-unblock change.",
+                row["assignee"],
+                now,
+                triage_key,
+            ),
+        )
+        _append_event(
+            conn,
+            triage_id,
+            "created",
+            {"source": "step_back_gate", "frozen_task_id": task_id, "fingerprint": fingerprint},
+        )
+    _append_event(
+        conn,
+        task_id,
+        "quarantined",
+        {
+            "fingerprint": fingerprint,
+            "blocked_runs": QUARANTINE_BLOCKED_RUN_LIMIT,
+            "triage_task_id": triage_id,
+        },
+    )
+    return triage_id
+
+
+def _refresh_quarantines(conn: sqlite3.Connection) -> int:
+    released = 0
+    with write_txn(conn):
+        rows = conn.execute(
+            "SELECT id FROM tasks WHERE quarantine_fingerprint IS NOT NULL "
+            "AND superseded_by IS NULL ORDER BY id"
+        ).fetchall()
+        for row in rows:
+            if _release_quarantine_if_changed_in_txn(conn, row["id"]):
+                released += 1
+    return released
+
+
+_STEP_BACK_CARD_RE = re.compile(
+    r"(?:-v(?:[2-9]|[1-9][0-9]+)(?:-|$)|-fix(?:-|$)|-recovery(?:-|$))"
+)
+
+
+def _step_back_gate_reason(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    row = conn.execute("SELECT card_id FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None or not row["card_id"] or not _STEP_BACK_CARD_RE.search(row["card_id"]):
+        return None
+    retrospective = conn.execute(
+        "SELECT r.retrospective_task_id, t.status FROM task_retrospectives r "
+        "LEFT JOIN tasks t ON t.id = r.retrospective_task_id WHERE r.task_id = ?",
+        (task_id,),
+    ).fetchone()
+    if retrospective is None or retrospective["status"] != "done":
+        return "retrospective_required"
+    return None
 
 
 def _find_missing_parents(conn: sqlite3.Connection, parents: Iterable[str]) -> list[str]:
@@ -2803,6 +3604,7 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
             )
         else:
             conn.execute("UPDATE tasks SET assignee = ? WHERE id = ?", (profile, task_id))
+        _release_quarantine_if_changed_in_txn(conn, task_id)
         _append_event(conn, task_id, "assigned", {"assignee": profile})
         return True
 
@@ -4963,6 +5765,7 @@ def block_task(
                 conn, task_id, "dependency_wait",
                 {"reason": reason, "kind": kind}, run_id=run_id,
             )
+            _quarantine_after_block_in_txn(conn, task_id)
             routed_to = "todo"
             _blocked_task = get_task(conn, task_id)
             _fire_kanban_lifecycle_hook(
@@ -5076,6 +5879,7 @@ def block_task(
                 {"reason": reason, "kind": kind, "recurrences": recurrences},
                 run_id=run_id,
             )
+        _quarantine_after_block_in_txn(conn, task_id)
         _blocked_task = get_task(conn, task_id)
     _fire_kanban_lifecycle_hook(
         "kanban_task_blocked",
@@ -5172,7 +5976,9 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     now = int(time.time())
     with write_txn(conn):
         stale = conn.execute(
-            "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
+            "SELECT current_run_id FROM tasks WHERE id = ? AND "
+            "(status IN ('blocked', 'scheduled') OR "
+            "(status = 'triage' AND quarantine_fingerprint IS NOT NULL))",
             (task_id,),
         ).fetchone()
         if stale and stale["current_run_id"]:
@@ -5212,12 +6018,15 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         # start for the dispatcher's retry budget.
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "consecutive_failures = 0, last_failure_error = NULL "
-            "WHERE id = ? AND status IN ('blocked', 'scheduled')",
+            "consecutive_failures = 0, last_failure_error = NULL, "
+            "explicit_unblock_generation = explicit_unblock_generation + 1 "
+            "WHERE id = ? AND (status IN ('blocked', 'scheduled') OR "
+            "(status = 'triage' AND quarantine_fingerprint IS NOT NULL))",
             (new_status, task_id),
         )
         if cur.rowcount != 1:
             return False
+        _release_quarantine_if_changed_in_txn(conn, task_id)
         _append_event(
             conn, task_id, "unblocked",
             {"status": new_status} if new_status != "ready" else None,
@@ -7572,6 +8381,7 @@ def _dispatch_once_locked(
         result.rate_limited.extend(_crash_rate_limited)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
+    _refresh_quarantines(conn)
 
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full
@@ -7727,6 +8537,18 @@ def _dispatch_once_locked(
                     (row["id"], row_assignee, current)
                 )
                 continue
+        step_back_reason = _step_back_gate_reason(conn, row["id"])
+        if step_back_reason is not None:
+            result.respawn_guarded.append((row["id"], step_back_reason))
+            if not dry_run:
+                with write_txn(conn):
+                    _append_event(
+                        conn,
+                        row["id"],
+                        "step_back_guarded",
+                        {"reason": step_back_reason},
+                    )
+            continue
         # Respawn guard: refuse to re-spawn when useful work is already
         # in-flight/recent, or when the last failure is a deterministic
         # blocker (quota / auth). The guard defers the spawn this tick so

@@ -117,6 +117,37 @@ class TestAuthzAllowAllScope:
         assert runner._is_user_authorized(_qq_dm_source(profile=None)) is True
 
 
+class TestAuthzAllowlistScope:
+    """Pins the per-platform user-allowlist read (not just the allow-all flag).
+
+    Distinct from the allow-all tests: here QQ_ALLOW_ALL_USERS is absent, so
+    authorization depends entirely on the scoped QQ_ALLOWED_USERS matching the
+    sender — reverting that read to raw os.getenv would default-deny.
+    """
+
+    def test_scoped_user_allowlist_authorizes(self, monkeypatch):
+        monkeypatch.setenv("QQ_ALLOWED_USERS", "")  # global env has no allowlist
+        runner = _make_qq_runner()
+        ss.set_multiplex_active(True)
+        tok = ss.set_secret_scope({"QQ_ALLOWED_USERS": "user-1,user-2"})
+        try:
+            assert runner._is_user_authorized(_qq_dm_source()) is True
+        finally:
+            ss.reset_secret_scope(tok)
+
+    def test_scoped_user_allowlist_excludes_non_member(self, monkeypatch):
+        monkeypatch.setenv("QQ_ALLOWED_USERS", "user-1")  # primary env admits user-1
+        runner = _make_qq_runner()
+        ss.set_multiplex_active(True)
+        # Secondary scope lists only user-9 → user-1 must NOT inherit the
+        # primary's environ allowlist.
+        tok = ss.set_secret_scope({"QQ_ALLOWED_USERS": "user-9"})
+        try:
+            assert runner._is_user_authorized(_qq_dm_source()) is False
+        finally:
+            ss.reset_secret_scope(tok)
+
+
 class TestStartupValidatorScope:
     @staticmethod
     def _open_dm_config():

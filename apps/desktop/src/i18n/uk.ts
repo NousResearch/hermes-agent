@@ -80,7 +80,8 @@ export const uk = defineLocale({
       useLocalGateway: 'Використати локальний шлюз',
       openLogs: 'Відкрити логи',
       repairHint: 'Відновлення повторно запускає інсталятор і може зайняти кілька хвилин.',
-      remoteSignInHint: 'Відкриває вікно входу в шлюз. Виберіть локальний шлюз для перемикання на вбудований бекенд.',
+      remoteSignInHint: signInLabel =>
+        `Виходить зі збереженої віддаленої браузерної сесії, а потім відкриває ${signInLabel}. Виберіть локальний шлюз, щоб перемкнутися на вбудований бекенд.`,
       hideRecentLogs: 'Сховати останні логи',
       showRecentLogs: 'Показати останні логи',
       signedInTitle: 'Вхід виконано',
@@ -632,8 +633,6 @@ export const uk = defineLocale({
       enterValueFirst: 'Спочатку введіть значення.',
       couldNotSave: 'Не вдалося зберегти облікові дані.',
       remove: 'Видалити',
-      or: 'або',
-      escToCancel: 'Esc для скасування',
       getKey: 'Отримати ключ',
       saving: 'Збереження'
     },
@@ -918,7 +917,6 @@ export const uk = defineLocale({
     ageHours: hours => `${hours}год тому`,
     durationSeconds: seconds => `${seconds}с`,
     durationMinutes: (minutes, seconds) => `${minutes}хв ${seconds}с`,
-    tokensK: k => `${k}тис. ток`,
     tokens: value => `${value} ток`
   },
 
@@ -979,7 +977,6 @@ export const uk = defineLocale({
     gatewayRunning: 'Шлюз месенджерів працює',
     gatewayStopped: 'Шлюз месенджерів зупинено',
     hermesActiveSessions: (version, count) => `Hermes ${version} · Активних сесій ${count}`,
-    restartMessaging: 'Перезапустити месенджери',
     updateHermes: 'Оновити Hermes',
     actionRunning: 'виконується',
     actionDone: 'завершено',
@@ -1390,7 +1387,6 @@ export const uk = defineLocale({
     shiftClickHint: 'Shift-клік для закріплення',
     noWorkspace: 'Без робочого простору',
     newSessionIn: label => `Нова сесія в ${label}`,
-    reorderWorkspace: label => `Перевпорядкувати робочий простір ${label}`,
     showMoreIn: (count, label) => `Показати ще ${count} в ${label}`,
     loading: 'Завантаження…',
     loadMore: 'Завантажити ще',
@@ -1997,10 +1993,9 @@ export const uk = defineLocale({
       loadingQuestion: 'Завантаження питання…',
       other: 'Інше (введіть відповідь)',
       placeholder: 'Введіть відповідь…',
-      shortcutSuffix: ' для надсилання',
-      back: 'Назад',
       skip: 'Пропустити',
-      send: 'Надіслати'
+      skipped: 'Пропущено',
+      continueLabel: 'Продовжити'
     },
     tool: {
       code: 'Код',
@@ -2071,7 +2066,7 @@ export const uk = defineLocale({
     sessionBusy: 'Сесія зайнята',
     branchStopCurrent: 'Зупиніть поточний хід перед гілкуванням цього чату.',
     branchNoText: 'Це повідомлення не має тексту для гілкування.',
-    branchTitle: 'Гілка',
+    branchTitle: n => `Чернетка: гілка №${n}`,
     branchFailed: 'Помилка гілкування',
     deleteFailed: 'Помилка видалення',
     archived: 'Архівовано',

@@ -7,7 +7,12 @@ import { ExportedMessageRepository } from '@assistant-ui/react'
 // mode (titlebar -webkit-app-region:drag swallowing clicks on *stuck* sticky
 // bubbles) is not reproducible in jsdom — see USER_BUBBLE_BASE_CLASS's no-drag
 // carve-out in thread.tsx.
-import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
+import {
+  type AppendMessage,
+  AssistantRuntimeProvider,
+  type ThreadMessage,
+  useExternalStoreRuntime
+} from '@assistant-ui/react'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -79,7 +84,9 @@ function assistantMessage(): ThreadMessage {
 }
 
 // Mirrors chat/index.tsx: incremental runtime + messageRepository + onEdit.
-function IncrementalHarness({ onEdit }: { onEdit: () => Promise<void> }) {
+type EditHandler = (message: AppendMessage) => Promise<void>
+
+function IncrementalHarness({ onEdit }: { onEdit: EditHandler }) {
   const repository = ExportedMessageRepository.fromArray([userMessage(), assistantMessage()])
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
@@ -100,7 +107,7 @@ function IncrementalHarness({ onEdit }: { onEdit: () => Promise<void> }) {
 }
 
 // Control: stock external store runtime.
-function StockHarness({ onEdit }: { onEdit: () => Promise<void> }) {
+function StockHarness({ onEdit }: { onEdit: EditHandler }) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages: [userMessage(), assistantMessage()],
     isRunning: false,
@@ -138,5 +145,83 @@ describe('click-to-edit user message', () => {
     await waitFor(() => {
       expect(container.querySelector('[data-slot="aui_edit-composer-root"]')).toBeTruthy()
     })
+  })
+
+  it('does not submit or commit IME input until composition ends', async () => {
+    const onEdit = vi.fn(async (_message: AppendMessage) => {})
+
+    render(<IncrementalHarness onEdit={onEdit} />)
+
+    const bubble = await screen.findByRole('button', { name: 'Edit message' })
+
+    fireEvent.click(bubble)
+
+    const editor = await screen.findByRole('textbox', { name: 'Edit message' })
+    const draft = editor.parentElement?.querySelector<HTMLTextAreaElement>('textarea[name="input"]')
+
+    expect(draft?.value).toBe('edit me please')
+
+    fireEvent.compositionStart(editor)
+    editor.textContent = 'に'
+    fireEvent.input(editor)
+    editor.textContent = 'こんにちは'
+    fireEvent.input(editor)
+
+    expect(draft?.value).toBe('edit me please')
+
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    await new Promise(resolve => window.setTimeout(resolve, 0))
+    expect(onEdit).not.toHaveBeenCalled()
+    expect(draft?.value).toBe('edit me please')
+
+    fireEvent.compositionEnd(editor)
+
+    await waitFor(() => {
+      expect(draft?.value).toBe('こんにちは')
+    })
+
+    fireEvent.keyDown(editor, { key: 'Enter' })
+
+    await waitFor(() => {
+      expect(onEdit).toHaveBeenCalledTimes(1)
+    })
+
+    expect(onEdit.mock.calls[0]?.[0].content).toEqual([{ type: 'text', text: 'こんにちは' }])
+  })
+
+  it('ignores Chromium IME Enter after composition ends and submits the finalized draft on a later Enter', async () => {
+    const onEdit = vi.fn(async (_message: AppendMessage) => {})
+
+    render(<IncrementalHarness onEdit={onEdit} />)
+
+    const bubble = await screen.findByRole('button', { name: 'Edit message' })
+
+    fireEvent.click(bubble)
+
+    const editor = await screen.findByRole('textbox', { name: 'Edit message' })
+    const draft = editor.parentElement?.querySelector<HTMLTextAreaElement>('textarea[name="input"]')
+
+    fireEvent.compositionStart(editor)
+    editor.textContent = 'こんにちは'
+    fireEvent.input(editor)
+    fireEvent.compositionEnd(editor)
+
+    await waitFor(() => {
+      expect(draft?.value).toBe('こんにちは')
+    })
+
+    fireEvent.keyDown(editor, { key: 'Enter', isComposing: false, keyCode: 229 })
+
+    await new Promise(resolve => window.setTimeout(resolve, 0))
+    expect(onEdit).not.toHaveBeenCalled()
+
+    fireEvent.keyDown(editor, { key: 'Enter', isComposing: false, keyCode: 13 })
+
+    await waitFor(() => {
+      expect(onEdit).toHaveBeenCalledTimes(1)
+    })
+
+    expect(onEdit.mock.calls[0]?.[0].content).toEqual([{ type: 'text', text: 'こんにちは' }])
   })
 })

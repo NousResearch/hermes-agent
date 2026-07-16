@@ -5718,6 +5718,13 @@ class DispatchResult:
     subsequent tick when the assignee has capacity. Separate bucket so
     telemetry / dashboards can show "this profile is busy" vs
     "task is genuinely stuck"."""
+    skipped_budget_paused: list[tuple[str, str, str]] = field(default_factory=list)
+    """Tasks deferred this tick because the spend guard paused their
+    assignee's billing lane or profile (``profile_gate`` returned a
+    reason). Each entry is ``(task_id, assignee, reason)``. The task
+    stays ``ready``/``review`` and is picked up once the daily budget
+    window resets or the operator runs ``spend.sh resume``. NOT counted
+    as a stuck tick by health telemetry."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -6960,6 +6967,7 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    profile_gate=None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -6994,6 +7002,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            profile_gate=profile_gate,
         )
     with _dispatch_tick_lock(db_path) as held:
         if not held:
@@ -7010,6 +7019,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            profile_gate=profile_gate,
         )
 
 
@@ -7026,8 +7036,15 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    profile_gate=None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
+
+    ``profile_gate`` is an optional ``Callable[[str], Optional[str]]``
+    consulted before claiming ready/review tasks: a non-None return is a
+    human-readable reason to defer every task assigned to that profile
+    this tick (spend-guard budget pause). Deferred tasks keep their
+    status and are recorded in ``DispatchResult.skipped_budget_paused``.
 
     Steps:
       1. Reclaim stale running tasks (TTL expired).
@@ -7238,6 +7255,16 @@ def _dispatch_once_locked(
                     (row["id"], row_assignee, current)
                 )
                 continue
+        # Spend-guard budget gate: defer (don't claim) tasks for profiles
+        # whose billing lane is paused. The task stays ready and is picked
+        # up when the daily window resets or the operator resumes the lane.
+        if profile_gate is not None:
+            _gate_reason = profile_gate(row_assignee)
+            if _gate_reason:
+                result.skipped_budget_paused.append(
+                    (row["id"], row_assignee, _gate_reason)
+                )
+                continue
         # Respawn guard: refuse to re-spawn when useful work is already
         # in-flight/recent, or when the last failure is a deterministic
         # blocker (quota / auth). The guard defers the spawn this tick so
@@ -7359,6 +7386,14 @@ def _dispatch_once_locked(
         if profile_exists is not None and not profile_exists(row["assignee"]):
             result.skipped_nonspawnable.append(row["id"])
             continue
+        # Spend-guard budget gate (same semantics as the ready loop).
+        if profile_gate is not None:
+            _gate_reason = profile_gate(row["assignee"])
+            if _gate_reason:
+                result.skipped_budget_paused.append(
+                    (row["id"], row["assignee"], _gate_reason)
+                )
+                continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
             continue

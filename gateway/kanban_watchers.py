@@ -929,6 +929,35 @@ class GatewayKanbanWatchersMixin:
                         max_in_progress_per_profile,
                     )
 
+        # Spend-guard budget gate: rebuilt each tick from the throttle flag
+        # file (mtime-cached read). Fully fault-isolated — any import/config
+        # failure just disables the gate for that tick; the spend feature
+        # must never break dispatch. `paused_logged` implements log-once
+        # per pause/resume transition so a throttled profile doesn't spam
+        # the log every 30s tick.
+        paused_logged: set[str] = set()
+
+        def _build_budget_gate():
+            try:
+                from agent import spend_meter
+
+                spend_cfg = spend_meter.load_spend_config()
+                if not (spend_cfg.enabled and spend_cfg.throttle_enabled):
+                    return None
+                throttle = spend_meter.read_throttle()
+                if not (throttle.paused_lanes or throttle.paused_profiles):
+                    return None
+
+                def _gate(profile: str):
+                    try:
+                        return spend_meter.is_profile_paused(profile, throttle, spend_cfg)
+                    except Exception:
+                        return None
+
+                return _gate
+            except Exception:
+                return None
+
         # Initial delay so the gateway finishes wiring adapters before the
         # dispatcher spawns workers (those workers may hit gateway notify
         # subscriptions etc.). Matches the notifier watcher's delay.
@@ -972,7 +1001,7 @@ class GatewayKanbanWatchersMixin:
                 or "database disk image is malformed" in msg
             )
 
-        def _tick_once_for_board(slug: str) -> "Optional[object]":
+        def _tick_once_for_board(slug: str, budget_gate=None) -> "Optional[object]":
             """Run one dispatch_once for a specific board.
 
             Runs in a worker thread via `asyncio.to_thread`. `board=slug`
@@ -1022,6 +1051,7 @@ class GatewayKanbanWatchersMixin:
                     stale_timeout_seconds=stale_timeout_seconds,
                     default_assignee=default_assignee,
                     max_in_progress_per_profile=max_in_progress_per_profile,
+                    profile_gate=budget_gate,
                 )
             except sqlite3.DatabaseError as exc:
                 if _is_corrupt_board_db_error(exc):
@@ -1071,10 +1101,11 @@ class GatewayKanbanWatchersMixin:
                 boards = _kb.list_boards(include_archived=False)
             except Exception:
                 boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+            budget_gate = _build_budget_gate()
             out: list[tuple[str, "Optional[object]"]] = []
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
-                out.append((slug, _tick_once_for_board(slug)))
+                out.append((slug, _tick_once_for_board(slug, budget_gate)))
             return out
 
         def _ready_nonempty() -> bool:
@@ -1234,6 +1265,7 @@ class GatewayKanbanWatchersMixin:
                     await asyncio.to_thread(_auto_decompose_tick, _ad_per_tick)
                 results = await asyncio.to_thread(_tick_once)
                 any_spawned = False
+                budget_deferred: dict[str, str] = {}
                 for slug, res in (results or []):
                     if res is not None and getattr(res, "spawned", None):
                         any_spawned = True
@@ -1250,9 +1282,32 @@ class GatewayKanbanWatchersMixin:
                             res.promoted,
                             len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
                         )
-                # Health telemetry (aggregate across boards)
+                    for _tid, _assignee, _reason in (
+                        getattr(res, "skipped_budget_paused", None) or []
+                    ):
+                        budget_deferred.setdefault(_assignee, _reason)
+                # Log-once per pause/resume transition, not every 30s tick.
+                for _assignee, _reason in budget_deferred.items():
+                    if _assignee not in paused_logged:
+                        paused_logged.add(_assignee)
+                        logger.info(
+                            "kanban dispatcher: profile %s budget-paused (%s); "
+                            "tasks stay queued until the window resets or "
+                            "`spend.sh resume`",
+                            _assignee,
+                            _reason,
+                        )
+                for _assignee in paused_logged - set(budget_deferred):
+                    paused_logged.discard(_assignee)
+                    logger.info(
+                        "kanban dispatcher: profile %s no longer budget-deferred",
+                        _assignee,
+                    )
+                # Health telemetry (aggregate across boards). A tick where
+                # tasks were only deferred by the spend guard is throttled,
+                # not stuck — don't count it toward the stuck warning.
                 ready_pending = await asyncio.to_thread(_ready_nonempty)
-                if ready_pending and not any_spawned:
+                if ready_pending and not any_spawned and not budget_deferred:
                     bad_ticks += 1
                 else:
                     bad_ticks = 0

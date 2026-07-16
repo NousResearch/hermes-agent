@@ -20,8 +20,24 @@ from __future__ import annotations
 
 import json
 import re
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
-_JITER_PARSE_ERROR_RE = re.compile(r" at line \d+ column \d+$")
+import pytest
+
+from run_agent import AIAgent
+
+# Kept in lock-step with agent/conversation_loop.py's _JITER_PARSE_ERROR_RE —
+# jiter/serde_json's small, stable error-message vocabulary, verified
+# directly against the installed jiter package, not just the line/column
+# suffix (an unrelated ValueError could coincidentally share that suffix).
+_JITER_PARSE_ERROR_RE = re.compile(
+    r"^(?:eof while parsing|trailing (?:characters|comma)|key must be a string|"
+    r"expected value|invalid (?:type|escape|unicode|length)|control character|"
+    r"number out of range|recursion limit exceeded|duplicate field|unknown field)"
+    r".* at line \d+ column \d+$",
+    re.IGNORECASE,
+)
 
 
 def _mirror_agent_predicate(err: BaseException) -> bool:
@@ -196,17 +212,109 @@ class TestJiterParseErrorIsRetryable:
             # confirm the jiter carve-out doesn't need to fire for it.
             assert not _mirror_agent_predicate(exc)
 
-
-class TestAgentLoopSourceHasJiterCarveOut:
-    """Belt-and-suspenders: the production source must include the carve-out."""
-
-    def test_conversation_loop_excludes_jiter_parse_error_from_local_validation(self):
-        import inspect
-        from agent import conversation_loop
-        src = inspect.getsource(conversation_loop)
-        assert "is_local_validation_error" in src
-        assert "_JITER_PARSE_ERROR_RE" in src or "jiter" in src.lower(), (
-            "agent/conversation_loop.py must carve out jiter's plain-ValueError "
-            "parse failures from the is_local_validation_error classification "
-            "— see #65147."
+    def test_unrelated_valueerror_with_same_line_column_suffix_is_not_matched(self):
+        """A same-shaped SUFFIX alone must not be enough to match — only
+        jiter/serde_json's actual message vocabulary should. An app-level
+        validation error that happens to end in "at line N column N" (e.g.
+        a config-file parser reporting its own location) must still abort
+        as a local programming bug, not silently retry."""
+        assert _mirror_agent_predicate(
+            ValueError("custom field validation failed at line 1 column 223")
         )
+        assert _mirror_agent_predicate(
+            ValueError("unexpected indentation at line 4 column 10")
+        )
+
+
+_TEST_AGENT_KWARGS = {
+    "api_key": "-".join(["not", "a", "real", "credential", "placeholder"]),
+    "base_url": "https://openrouter.ai/api/v1",
+    "quiet_mode": True,
+    "skip_context_files": True,
+    "skip_memory": True,
+}
+
+
+def _agent_with_mocked_client():
+    """Minimal AIAgent with a mocked OpenAI client, ready for run_conversation."""
+    with (
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        a = AIAgent(**_TEST_AGENT_KWARGS)
+    a.client = MagicMock()
+    a._cached_system_prompt = "You are helpful."
+    a._use_prompt_caching = False
+    a.tool_delay = 0
+    a.compression_enabled = False
+    a.save_trajectories = False
+
+    return a
+
+
+def _mock_success_response(content="Done"):
+    msg = SimpleNamespace(
+        content=content, tool_calls=None, reasoning=None,
+        reasoning_content=None, reasoning_details=None,
+    )
+    choice = SimpleNamespace(message=msg, finish_reason="stop")
+    resp = SimpleNamespace(choices=[choice], model="test/model", usage=None)
+
+    return resp
+
+
+class TestJiterParseErrorRealLoopRetry:
+    """Real end-to-end coverage through agent.run_conversation() — not a
+    source scan. A source-presence check (inspect.getsource) passes when
+    the implementation is subtly broken and fails on a pure refactor with
+    identical behavior; it also can't run against a built/bundled artifact.
+    Drive the actual retry classifier instead, mirroring the pattern in
+    tests/run_agent/test_streaming.py's failing-first-call/succeeding-
+    second-call tests."""
+
+    def test_jiter_style_valueerror_retries_then_succeeds(self):
+        agent = _agent_with_mocked_client()
+        agent.client.chat.completions.create.side_effect = [
+            ValueError("expected value at line 1 column 223"),
+            _mock_success_response("Done"),
+        ]
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time.sleep"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert agent.client.chat.completions.create.call_count == 2, (
+            "A jiter-shaped ValueError on the first call must be retried, not "
+            "aborted as a local programming bug — see #65147."
+        )
+        assert result.get("completed") is True
+        assert result.get("failed") is not True
+
+    def test_unrelated_valueerror_with_same_suffix_aborts_without_retry(self):
+        """Sanity check for the negative case: a same-suffix but non-jiter
+        ValueError must still abort immediately as a local validation
+        error, proving the carve-out is jiter-specific and not just
+        matching the line/column suffix shape."""
+        agent = _agent_with_mocked_client()
+        agent.client.chat.completions.create.side_effect = ValueError(
+            "custom field validation failed at line 1 column 223"
+        )
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.time.sleep"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert agent.client.chat.completions.create.call_count == 1, (
+            "A non-jiter ValueError sharing only the line/column suffix must "
+            "abort immediately, not retry."
+        )
+        assert result.get("failed") is True

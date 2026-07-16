@@ -58,6 +58,24 @@ def test_sse_frame_ensure_ascii_false_preserves_raw_bytes():
     assert raw != _sse_frame(payload)  # different bytes from the default
 
 
+def test_sse_frame_ensure_ascii_false_reproduces_session_event_stream():
+    """The session event stream (api_server.py:~2236) historically used
+    ``json.dumps(payload, ensure_ascii=False)`` + ``.encode('utf-8')`` — the
+    one genuinely unicode-distinct SSE writer. _sse_frame(event=name,
+    ensure_ascii=False) must reproduce its exact bytes, raw non-ASCII included.
+    """
+
+    def old_session(name, payload):
+        data = json.dumps(payload, ensure_ascii=False)
+        return f"event: {name}\ndata: {data}\n\n".encode("utf-8")
+
+    for name, payload in (
+        ("session.update", {"text": "café — Münchner 🏔", "id": 1}),
+        ("thread.message.delta", {"content": "héllo wörld ✓", "seq": 3}),
+    ):
+        assert _sse_frame(payload, event=name, ensure_ascii=False) == old_session(name, payload)
+
+
 def test_sse_frame_typed_object_roundtrip():
     obj = {"id": "x", "choices": [{"index": 0, "delta": {"content": "hi"}}]}
     out = _sse_frame(obj)

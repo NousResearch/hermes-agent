@@ -3832,8 +3832,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 if item is None:
                     break
                 name, payload = item
-                data = json.dumps(payload, ensure_ascii=False)
-                await response.write(f"event: {name}\ndata: {data}\n\n".encode("utf-8"))
+                await response.write(_sse_frame(payload, event=name, ensure_ascii=False))
         except (asyncio.CancelledError, ConnectionResetError):
             task.cancel()
             raise

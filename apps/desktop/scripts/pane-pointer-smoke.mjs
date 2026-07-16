@@ -520,6 +520,46 @@ async function main() {
   check(initial.persistedOpen.browser === true, 'fresh profile: Browser visibility seeded into persisted store')
   check(initial.persistedOpen.qc === true, 'fresh profile: QC visibility seeded into persisted store')
 
+  console.log('\n— 1b. titlebar drag-strip geometry (OS drag regions vs control clusters)')
+  {
+    // An OS drag region wins hit-testing at the compositor level: DOM z-index,
+    // pointer-events and even a no-drag class on a FIXED cluster do not
+    // reliably carve it out. Synthetic CDP clicks bypass native drag
+    // hit-testing entirely, so a strip that overlaps a titlebar button passes
+    // every pointer scenario here while real mouse clicks drag the window.
+    // The only trustworthy contract is geometric: no visible titlebar button
+    // may intersect any [-webkit-app-region:drag] rect.
+    const geo = await cdp.eval(`(() => {
+      const rectOf = el => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height } }
+      const cls = el => el.getAttribute('class') || ''
+      const all = [...document.querySelectorAll('*')]
+      const drags = all
+        .filter(el => cls(el).includes('app-region:drag'))
+        .map(el => ({ cls: cls(el).slice(0, 90), rect: rectOf(el) }))
+        .filter(d => d.rect.w > 0 && d.rect.h > 0)
+      const buttons = all
+        .filter(el => cls(el).includes('app-region:no-drag'))
+        .filter(el => getComputedStyle(el).position === 'fixed')
+        .flatMap(el => [...el.querySelectorAll('button')])
+        .map(b => ({ label: b.getAttribute('aria-label') || b.textContent.trim().slice(0, 24), rect: rectOf(b) }))
+        .filter(b => b.rect.w > 0 && b.rect.h > 0)
+      return { buttons, drags }
+    })()`)
+    logLine({ kind: 'drag-geometry', ...geo })
+    check(geo.drags.length > 0, `drag-geometry: window drag strips present (${geo.drags.length})`)
+    check(geo.buttons.length > 0, `drag-geometry: fixed titlebar buttons present (${geo.buttons.length})`)
+    const overlaps = (a, b) =>
+      Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x) > 1 && Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y) > 1
+    for (const btn of geo.buttons) {
+      const hits = geo.drags.filter(d => overlaps(btn.rect, d.rect))
+      check(
+        hits.length === 0,
+        `drag-geometry: '${btn.label}' clear of every OS drag region`,
+        hits.length ? { btn, hits } : undefined
+      )
+    }
+  }
+
   const paneZones = {}
   console.log('\n— 2. calibration + single-toggle independence (pointer)')
   for (const key of ['sessions', 'browser', 'qc']) {

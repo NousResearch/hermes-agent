@@ -22,6 +22,7 @@ import { DesktopOnboardingOverlay } from '@/components/onboarding'
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { emitGatewayEvent } from '@/contrib/events'
+import { useContributions } from '@/contrib/react/use-contributions'
 import { getSessionMessages, triggerCronJob } from '@/hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { sessionMessagesSignature } from '@/lib/session-signatures'
@@ -815,7 +816,14 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // sits ABOVE the grid, so AppShell's pane-width anchoring doesn't apply.
   const SYSTEM_TOOL_COUNT = 4
   const paneToolCount = rightTitlebarTools.filter(tool => !tool.hidden).length
-  const systemToolsWidth = `calc(${SYSTEM_TOOL_COUNT} * (var(--titlebar-control-size) + 0.25rem))`
+  // Plugin buttons in the titleBar.appControls slot widen the fixed cluster
+  // beyond the static system tools (justify-end puts them leftmost). The drag
+  // strip's carve-out and the pane-tools anchor must count them too: an OS
+  // drag region wins hit-testing at the compositor level, so a strip that
+  // encroaches on the cluster swallows real pointer clicks on the plugin
+  // buttons (synthetic/CDP events bypass native drag hit-testing and hide it).
+  const appControlCount = useContributions('titleBar.appControls').length
+  const systemToolsWidth = `calc(${SYSTEM_TOOL_COUNT + appControlCount} * (var(--titlebar-control-size) + 0.25rem))`
 
   const titlebarToolsWidth =
     paneToolCount > 0

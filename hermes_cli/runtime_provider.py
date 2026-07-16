@@ -369,6 +369,21 @@ def _parse_api_mode(raw: Any) -> Optional[str]:
     return None
 
 
+def _provider_profile_api_mode(provider: str, base_url: str = "") -> str:
+    """Return a registered ProviderProfile's declared api_mode, or "".
+
+    Delegates to the canonical helper in hermes_cli.providers (single source of
+    truth). Lazy import keeps the providers-discovery → hermes_cli import cycle
+    from firing at module load.
+    """
+    try:
+        from hermes_cli.providers import _provider_profile_api_mode as _impl
+
+        return _impl(provider, base_url)
+    except Exception:
+        return ""
+
+
 def _nous_inference_base_url_override() -> str:
     """Return the trusted Nous runtime base URL override, if configured.
 
@@ -522,6 +537,19 @@ def _resolve_runtime_from_pool_entry(
             detected = _detect_api_mode_for_url(base_url)
             if detected:
                 api_mode = detected
+            else:
+                # Fall back to a registered ProviderProfile's declared api_mode.
+                # Plugin providers (plugins/model-providers/<name>/) set their
+                # wire protocol via ProviderProfile.api_mode but are invisible
+                # to the built-in tables; without this a plugin provider that
+                # speaks codex_responses / anthropic_messages on its default
+                # (e.g. loopback) endpoint silently resolves to chat_completions
+                # on the --provider one-shot path. The helper is base_url-gated:
+                # a user override to a different endpoint (MiniMax /v1 opt-out)
+                # leaves the chat_completions default in place.
+                profile_mode = _provider_profile_api_mode(provider, base_url)
+                if profile_mode:
+                    api_mode = profile_mode
 
     # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
     # Anthropic SDK prepends its own /v1/messages to the base_url.  Normalize
@@ -1183,6 +1211,25 @@ def _resolve_openrouter_runtime(
     env_openrouter_base_url = _getenv("OPENROUTER_BASE_URL", "").strip()
     env_custom_base_url = _getenv("CUSTOM_BASE_URL", "").strip()
 
+    # A registered ProviderProfile is how plugin providers under
+    # plugins/model-providers/<name>/ declare their own default endpoint + wire
+    # protocol. When such a provider falls through to this openrouter/custom
+    # fallback (it's unknown to PROVIDER_REGISTRY and has no credential pool),
+    # its profile base_url is the correct default — not the OpenRouter root —
+    # and its declared api_mode must be honored. Look it up once so both the
+    # base_url chain below and the api_mode resolution can consult it.
+    _profile = None
+    _profile_base_url = ""
+    if requested_norm and requested_norm not in ("custom", "auto", "openrouter"):
+        try:
+            from providers import get_provider_profile as _gpp
+
+            _profile = _gpp(requested_provider)
+            _profile_base_url = (getattr(_profile, "base_url", "") or "").strip().rstrip("/")
+        except Exception:
+            _profile = None
+            _profile_base_url = ""
+
     # Use config base_url when available and the provider context matches.
     # OPENAI_BASE_URL env var is no longer consulted — config.yaml is
     # the single source of truth for endpoint URLs.
@@ -1200,6 +1247,7 @@ def _resolve_openrouter_runtime(
         (explicit_base_url or "").strip()
         or env_custom_base_url
         or (cfg_base_url.strip() if use_config_base_url else "")
+        or _profile_base_url
         or env_openrouter_base_url
         or OPENROUTER_BASE_URL
     ).rstrip("/")
@@ -1260,9 +1308,18 @@ def _resolve_openrouter_runtime(
 
     # When "custom" was explicitly requested, preserve that as the provider
     # name instead of silently relabeling to "openrouter" (#2562).
+    # Likewise, when a registered ProviderProfile matched (a plugin provider
+    # under plugins/model-providers/<name>/), preserve its own name — relabeling
+    # it to "openrouter" would misreport the provider to callers and break the
+    # --provider one-shot contract for plugin providers.
     # Also provide a placeholder API key for local servers that don't require
     # authentication — the OpenAI SDK requires a non-empty api_key string.
-    effective_provider = "custom" if requested_norm == "custom" else "openrouter"
+    if requested_norm == "custom":
+        effective_provider = "custom"
+    elif _profile is not None:
+        effective_provider = requested_provider
+    else:
+        effective_provider = "openrouter"
 
     # For custom endpoints, check if a credential pool exists
     if effective_provider == "custom" and base_url:
@@ -1278,13 +1335,26 @@ def _resolve_openrouter_runtime(
     if effective_provider == "custom" and not api_key and not _is_openrouter_url:
         api_key = "no-key-required"
 
+    if effective_provider == "custom":
+        api_mode = _resolve_plain_custom_api_mode(model_cfg, base_url)
+    else:
+        # Non-custom fallthrough (provider unknown to PROVIDER_REGISTRY /
+        # models.dev). When a registered ProviderProfile matched above, its
+        # base_url is now the resolved endpoint and its declared api_mode is the
+        # correct wire protocol — honor it as the last signal before the
+        # chat_completions default so plugin providers whose endpoint URL isn't
+        # self-describing (e.g. a loopback signing proxy) don't silently degrade.
+        _profile_mode = (getattr(_profile, "api_mode", "") or "") if _profile else ""
+        api_mode = (
+            _parse_api_mode(model_cfg.get("api_mode"))
+            or _detect_api_mode_for_url(base_url)
+            or _profile_mode
+            or "chat_completions"
+        )
+
     return {
         "provider": effective_provider,
-        "api_mode": _resolve_plain_custom_api_mode(model_cfg, base_url)
-        if effective_provider == "custom"
-        else _parse_api_mode(model_cfg.get("api_mode"))
-        or _detect_api_mode_for_url(base_url)
-        or "chat_completions",
+        "api_mode": api_mode,
         "base_url": base_url,
         "api_key": api_key,
         "source": source,
@@ -2201,6 +2271,18 @@ def resolve_runtime_provider(
                 detected = _detect_api_mode_for_url(base_url)
                 if detected:
                     api_mode = detected
+                else:
+                    # Fall back to a registered ProviderProfile's declared
+                    # api_mode. Mirrors the pool-entry branch: a plugin provider
+                    # (plugins/model-providers/<name>/) declares its wire
+                    # protocol via ProviderProfile.api_mode but is invisible to
+                    # the built-in tables, so without this it silently resolves
+                    # to chat_completions on the env-var credential path too.
+                    # base_url-gated: a user override to a different endpoint
+                    # leaves the chat_completions default in place.
+                    profile_mode = _provider_profile_api_mode(provider, base_url)
+                    if profile_mode:
+                        api_mode = profile_mode
         # Normalize the /v1 suffix for OpenCode by API mode (see comment above).
         if provider in {"opencode-zen", "opencode-go"}:
             from hermes_cli.models import normalize_opencode_base_url

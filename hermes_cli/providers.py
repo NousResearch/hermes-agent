@@ -604,7 +604,8 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
       1. Host-mandated mode (special endpoints that only accept one protocol).
       2. Known provider → transport → TRANSPORT_TO_API_MODE.
       3. Direct provider checks (bedrock).
-      4. Default: 'chat_completions'.
+      4. Registered ProviderProfile.api_mode (plugin providers on their own endpoint).
+      5. Default: 'chat_completions'.
     """
     mandated = host_mandated_api_mode(base_url)
     if mandated is not None:
@@ -618,7 +619,62 @@ def determine_api_mode(provider: str, base_url: str = "") -> str:
     if provider == "bedrock":
         return "bedrock_converse"
 
+    # Registered provider-profile registry (plugins/model-providers/<name>/).
+    # A plugin provider declares its wire protocol via ``ProviderProfile.api_mode``
+    # but is invisible to ``get_provider()`` (which only knows models.dev +
+    # HERMES_OVERLAYS). Without this, a plugin provider that speaks
+    # codex_responses or anthropic_messages on its default endpoint (e.g. a
+    # loopback signing proxy) silently falls through to chat_completions.
+    #
+    # The helper only applies the profile mode when we're on the provider's own
+    # endpoint (no base_url, or base_url == the profile's declared base_url).
+    # A user base_url override to a *different* endpoint (e.g. a MiniMax /v1
+    # opt-out of its default /anthropic route) is left to the chat default.
+    #
+    # URL-based host heuristics (api.anthropic.com, /anthropic, api.openai.com,
+    # bedrock-runtime.*, kimi.com/coding) are already handled by
+    # ``host_mandated_api_mode`` at the top of this function, so they are not
+    # repeated here.
+    profile_mode = _provider_profile_api_mode(provider, base_url)
+    if profile_mode:
+        return profile_mode
+
     return "chat_completions"
+
+
+def _provider_profile_api_mode(provider: str, base_url: str = "") -> str:
+    """Return the api_mode declared by a registered ProviderProfile, or "".
+
+    Bridges the plugin provider registry (``providers/``) into api_mode
+    resolution. Lazy import: ``providers`` discovery imports plugins which may
+    import back into ``hermes_cli``, so importing at module load could deadlock
+    a partially-initialized module.
+
+    ``base_url`` gating: the declared api_mode applies only when the caller is
+    on the provider's *own* endpoint — either no base_url at all, or a base_url
+    equal to the profile's declared ``base_url``. When a user overrides
+    base_url to something else (e.g. MiniMax's ``/v1`` OpenAI-compatible route,
+    which opts out of the profile's default ``/anthropic`` messages route), the
+    profile mode must NOT be forced — the URL override is the stronger signal
+    and the caller falls back to its default (chat_completions).
+    """
+    try:
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(provider)
+        if profile is None:
+            return ""
+        declared = getattr(profile, "api_mode", "") or ""
+        if not declared:
+            return ""
+        if base_url:
+            profile_base = (getattr(profile, "base_url", "") or "").rstrip("/")
+            if base_url.rstrip("/") != profile_base:
+                return ""  # user override to a different endpoint — defer
+        return declared
+    except Exception:
+        pass
+    return ""
 
 
 # -- Provider from user config ------------------------------------------------

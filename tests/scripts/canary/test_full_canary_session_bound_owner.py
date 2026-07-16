@@ -4,9 +4,15 @@ import inspect
 
 import hashlib
 import json
+import os
+import subprocess
+import urllib.parse
 from collections.abc import Mapping
 
+import pytest
+from gateway import canonical_writer_foundation_phase_b as foundation_phase_b
 import gateway.canonical_writer_preflight_publisher as preflight_publisher
+from gateway import canonical_writer_schema_reconciliation_bootstrap as reconciliation_bootstrap
 from scripts.canary import full_canary_owner_launcher as launcher
 from scripts.canary import writer_release
 
@@ -23,6 +29,20 @@ def test_stopped_release_activation_inventory_matches_writer_release_contract():
     assert launcher._STOPPED_RELEASE_ACTIVATION_PATHS == writer_paths
     assert tuple(str(path) for path in preflight_publisher._ACTIVATION_PATHS) == (
         writer_paths
+    )
+
+
+def test_stopped_release_service_inventory_matches_writer_release_contract():
+    assert launcher._STOPPED_RELEASE_UNITS == writer_release._STOPPED_SERVICE_UNITS
+    assert launcher._STOPPED_RELEASE_UNITS == foundation_phase_b.SERVICE_UNITS
+    assert launcher._STOPPED_RELEASE_UNITS == (
+        "muncho-canary-discord-edge.service",
+        "muncho-discord-egress.service",
+        "muncho-canonical-writer.service",
+        "muncho-canonical-writer-phase-b-readiness.service",
+        "muncho-canonical-writer-export.service",
+        "muncho-canonical-writer-export.timer",
+        "hermes-cloud-gateway.service",
     )
 
 
@@ -262,6 +282,105 @@ def test_writer_preflight_publisher_contract_is_accepted_by_owner_validator():
         expected_external_iam_policy_sha256="b" * 64,
     ) == plan
     assert launcher.validate_writer_preflight_receipt(receipt, plan=plan) == receipt
+
+
+@pytest.mark.parametrize(
+    ("command", "error_type", "expected_code"),
+    (
+        ("plan", "RuntimeError", "writer_preflight_plan_runtime_failed"),
+        ("apply", "ValueError", "writer_preflight_apply_validation_failed"),
+        ("apply", "UnexpectedError", "writer_preflight_apply_remote_failed"),
+    ),
+)
+def test_writer_preflight_transport_preserves_safe_remote_failure_stage(
+    monkeypatch,
+    command,
+    error_type,
+    expected_code,
+):
+    failure = {
+        "schema": launcher.WRITER_PREFLIGHT_FAILURE_SCHEMA,
+        "ok": False,
+        "error_code": "writer_preflight_publication_failed",
+        "error_type": error_type,
+    }
+    observed = {}
+    transport = object.__new__(launcher.IapWriterPreflightTransport)
+
+    def run_remote(_remote, **kwargs):
+        observed.update(kwargs)
+        return subprocess.CompletedProcess(
+            args=(),
+            returncode=2,
+            stdout=_canonical(failure) + b"\n",
+        )
+
+    monkeypatch.setattr(transport, "_run_remote", run_remote)
+
+    with pytest.raises(launcher.OwnerLauncherError) as raised:
+        transport._run_writer_preflight_command(
+            RELEASE_SHA,
+            command,
+            account="owner@example.com",
+            external_iam_policy_sha256="b" * 64,
+            approved_plan_sha256=("c" * 64 if command == "apply" else None),
+        )
+
+    assert raised.value.code == expected_code
+    assert observed["allowed_returncodes"] == frozenset({0, 2})
+
+
+@pytest.mark.parametrize(
+    ("returncode", "payload"),
+    (
+        (2, _writer_preflight_plan()),
+        (
+            0,
+            {
+                "schema": launcher.WRITER_PREFLIGHT_FAILURE_SCHEMA,
+                "ok": False,
+                "error_code": "writer_preflight_publication_failed",
+                "error_type": "RuntimeError",
+            },
+        ),
+        (
+            2,
+            {
+                "schema": launcher.WRITER_PREFLIGHT_FAILURE_SCHEMA,
+                "ok": False,
+                "error_code": "writer_preflight_publication_failed",
+                "error_type": "RuntimeError",
+                "unexpected": "must-not-pass",
+            },
+        ),
+    ),
+)
+def test_writer_preflight_transport_rejects_returncode_payload_mismatch(
+    monkeypatch,
+    returncode,
+    payload,
+):
+    transport = object.__new__(launcher.IapWriterPreflightTransport)
+    monkeypatch.setattr(
+        transport,
+        "_run_remote",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            args=(),
+            returncode=returncode,
+            stdout=_canonical(payload) + b"\n",
+        ),
+    )
+
+    with pytest.raises(
+        launcher.OwnerLauncherError,
+        match="writer_preflight_output_invalid",
+    ):
+        transport._run_writer_preflight_command(
+            RELEASE_SHA,
+            "plan",
+            account="owner@example.com",
+            external_iam_policy_sha256="b" * 64,
+        )
 
 
 def _anchor() -> dict[str, object]:
@@ -628,3 +747,1180 @@ def test_session_bound_terminal_failure_validates_without_legacy_authority():
         "completed_at_unix",
         "receipt_sha256",
     }
+
+
+def test_schema_reconciliation_remote_exchange_is_exactly_three_frames():
+    session = object.__new__(launcher._IapRemoteSession)
+    session._stdin_closed = False
+    session._frames_written = 0
+    session._messages_read = 1
+    calls: list[tuple[bytes, bool]] = []
+
+    def write(frame, *, close_stdin):
+        calls.append((bytes(frame), close_stdin))
+        session._frames_written += 1
+        session._messages_read += 1
+        session._stdin_closed = close_stdin
+        return {"round": session._frames_written}
+
+    session._write_frame = write
+
+    a1 = (
+        launcher.SCHEMA_RECONCILIATION_ADMIN_PREFLIGHT_MAGIC
+        + (2).to_bytes(4, "big")
+        + b"{}"
+        + b"x" * launcher.SCHEMA_RECONCILIATION_CREDENTIAL_BYTES
+    )
+    a2 = (
+        launcher.SCHEMA_RECONCILIATION_PREFLIGHT_AUTHORIZATION_MAGIC
+        + (2).to_bytes(4, "big")
+        + b"{}"
+    )
+    c3 = (
+        launcher.SCHEMA_RECONCILIATION_ADMIN_CLEANUP_MAGIC
+        + (2).to_bytes(4, "big")
+        + b"{}"
+    )
+    assert session.schema_reconciliation_exchange(a1, terminal=False) == {
+        "round": 1
+    }
+    assert session.schema_reconciliation_exchange(a2, terminal=False) == {
+        "round": 2
+    }
+    assert session.schema_reconciliation_exchange(c3, terminal=True) == {
+        "round": 3
+    }
+    assert calls == [(a1, False), (a2, False), (c3, True)]
+    with pytest.raises(
+        launcher.OwnerLauncherError,
+        match="schema_reconciliation_remote_frame_state_invalid",
+    ):
+        session.schema_reconciliation_exchange(c3, terminal=True)
+
+
+def test_schema_reconciliation_remote_exchange_rejects_early_terminal():
+    session = object.__new__(launcher._IapRemoteSession)
+    session._stdin_closed = False
+    session._frames_written = 0
+    session._messages_read = 1
+
+    with pytest.raises(
+        launcher.OwnerLauncherError,
+        match="schema_reconciliation_remote_frame_state_invalid",
+    ):
+        session.schema_reconciliation_exchange(
+            launcher.SCHEMA_RECONCILIATION_ADMIN_PREFLIGHT_MAGIC
+            + (2).to_bytes(4, "big")
+            + b"{}"
+            + b"x" * launcher.SCHEMA_RECONCILIATION_CREDENTIAL_BYTES,
+            terminal=True,
+        )
+
+
+def test_schema_reconciliation_first_frame_rechecks_authority_before_write():
+    session = object.__new__(launcher._IapRemoteSession)
+    session._stdin_closed = False
+    session._frames_written = 0
+    session._messages_read = 1
+    calls: list[object] = []
+
+    def write(
+        frame,
+        *,
+        close_stdin,
+        write_guard,
+        on_first_write,
+        on_write_complete,
+    ):
+        calls.append((bytes(frame), close_stdin))
+        write_guard()
+        on_first_write()
+        calls.append("write")
+        on_write_complete()
+        return {"schema": "preflight"}
+
+    session._write_frame = write
+    a1 = (
+        launcher.SCHEMA_RECONCILIATION_ADMIN_PREFLIGHT_MAGIC
+        + (2).to_bytes(4, "big")
+        + b"{}"
+        + b"x" * launcher.SCHEMA_RECONCILIATION_CREDENTIAL_BYTES
+    )
+    assert session.schema_reconciliation_exchange_before(
+        a1,
+        write_guard=lambda: calls.append("guard"),
+        on_first_write=lambda: calls.append("first"),
+        on_write_complete=lambda: calls.append("complete"),
+    ) == {"schema": "preflight"}
+    assert calls == [
+        (a1, False),
+        "guard",
+        "first",
+        "write",
+        "complete",
+    ]
+
+
+def test_remote_session_current_authority_guard_is_repeatable():
+    session = object.__new__(launcher._IapRemoteSession)
+    calls: list[str] = []
+    session._authority_guard = lambda: calls.append("authority")
+
+    session.require_current_authority()
+    session.require_current_authority()
+
+    assert calls == ["authority", "authority"]
+
+
+def test_remote_session_abort_requires_exact_remote_exit_two():
+    read_descriptor, write_descriptor = os.pipe()
+    os.close(write_descriptor)
+    stdout = os.fdopen(read_descriptor, "rb", buffering=0)
+
+    class _ExitedProcess:
+        def __init__(self):
+            self.stdout = stdout
+
+        def wait(self, _timeout):
+            return 2
+
+    session = object.__new__(launcher._IapRemoteSession)
+    session._process = _ExitedProcess()
+    session._termination_timeout = 1.0
+    session._buffer = bytearray()
+    session._stdout_eof = False
+    session._stdin_closed = True
+    session._termination_proven = False
+    postflight = []
+    session._run_postflight = lambda: postflight.append("postflight")
+    session._force_local_stop = lambda: pytest.fail("must not force stop")
+    try:
+        session.abort_and_prove_terminated()
+    finally:
+        stdout.close()
+
+    assert session._termination_proven is True
+    assert postflight == ["postflight"]
+
+
+def test_schema_reconciliation_first_frame_guard_failure_writes_nothing():
+    session = object.__new__(launcher._IapRemoteSession)
+    session._stdin_closed = False
+    session._frames_written = 0
+    session._messages_read = 1
+    calls: list[str] = []
+
+    def reject() -> None:
+        raise launcher.OwnerLauncherError("authority_changed")
+
+    def write(
+        _frame,
+        *,
+        close_stdin,
+        write_guard,
+        on_first_write,
+        on_write_complete,
+    ):
+        assert close_stdin is False
+        write_guard()
+        on_first_write()
+        calls.append("write")
+        on_write_complete()
+        return {"schema": "preflight"}
+
+    session._write_frame = write
+    a1 = (
+        launcher.SCHEMA_RECONCILIATION_ADMIN_PREFLIGHT_MAGIC
+        + (2).to_bytes(4, "big")
+        + b"{}"
+        + b"x" * launcher.SCHEMA_RECONCILIATION_CREDENTIAL_BYTES
+    )
+    with pytest.raises(launcher.OwnerLauncherError, match="authority_changed"):
+        session.schema_reconciliation_exchange_before(
+            a1,
+            write_guard=reject,
+            on_first_write=lambda: None,
+            on_write_complete=lambda: None,
+        )
+    assert calls == []
+
+
+def test_schema_reconciliation_remote_exchange_rejects_wrong_frame_shape():
+    session = object.__new__(launcher._IapRemoteSession)
+    session._stdin_closed = False
+    session._frames_written = 0
+    session._messages_read = 1
+
+    with pytest.raises(
+        launcher.OwnerLauncherError,
+        match="schema_reconciliation_remote_frame_invalid",
+    ):
+        session.schema_reconciliation_exchange(
+            launcher.SCHEMA_RECONCILIATION_PREFLIGHT_AUTHORIZATION_MAGIC
+            + (2).to_bytes(4, "big")
+            + b"{}",
+            terminal=False,
+        )
+
+
+def test_schema_reconciliation_transport_and_signatures_are_domain_separated():
+    assert launcher.IapSchemaReconciliationTransport._MODULE == (
+        "gateway.canonical_writer_schema_reconciliation_bootstrap"
+    )
+    assert launcher.IapSchemaReconciliationTransport._COMMANDS == {"run"}
+    namespaces = {
+        launcher.SCHEMA_RECONCILIATION_ADMIN_PREFLIGHT_SSHSIG_NAMESPACE,
+        launcher.SCHEMA_RECONCILIATION_PREFLIGHT_AUTHORIZATION_SSHSIG_NAMESPACE,
+        launcher.SCHEMA_RECONCILIATION_ADMIN_CLEANUP_SSHSIG_NAMESPACE,
+    }
+    assert len(namespaces) == 3
+    assert all(value.endswith("-v2") for value in namespaces)
+
+
+def test_schema_reconciliation_cli_action_is_mutually_exclusive():
+    arguments = launcher._cli_parser().parse_args([
+        "--release-sha",
+        RELEASE_SHA,
+        "--reconcile-legacy-canary-db",
+    ])
+
+    assert arguments.reconcile_legacy_canary_db is True
+    assert arguments.publish_writer_preflight is False
+    assert arguments.apply_phase_b_foundation is False
+    with pytest.raises(SystemExit):
+        launcher._cli_parser().parse_args([
+            "--release-sha",
+            RELEASE_SHA,
+            "--reconcile-legacy-canary-db",
+            "--publish-writer-preflight",
+        ])
+
+
+def test_schema_reconciliation_cli_dispatches_exact_owner_boundaries(monkeypatch):
+    calls = []
+    emitted = []
+    owner_identity = object()
+    gcloud_configuration = object()
+    database_client = object()
+    transport = object()
+    receipt = {"ok": True, "terminal_sha256": "e" * 64}
+
+    class _TrustedExecutable:
+        def trusted_command_prefix(self):
+            calls.append("trusted_command_prefix")
+            return ("/trusted/python",)
+
+    executable = _TrustedExecutable()
+    monkeypatch.setattr(
+        launcher,
+        "require_trusted_owner_runtime",
+        lambda release: calls.append(("runtime", release)) or executable,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "require_local_launcher_provenance",
+        lambda release: calls.append(("provenance", release)) or "f" * 64,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_validate_owner_interpreter_invocation",
+        lambda path: calls.append(("interpreter", path)),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "PinnedGcloudConfiguration",
+        lambda: gcloud_configuration,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "GcloudOwnerAccessToken",
+        lambda **kwargs: (
+            calls.append(("identity", kwargs)) or owner_identity
+        ),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "IapSchemaReconciliationTransport",
+        lambda identity, **kwargs: (
+            calls.append(("transport", identity, kwargs)) or transport
+        ),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "GoogleRestClient",
+        lambda identity: (
+            calls.append(("database_client", identity)) or database_client
+        ),
+    )
+
+    def reconcile(**kwargs):
+        calls.append(("reconcile", kwargs))
+        kwargs["provenance_guard"](kwargs["release_sha"])
+        return receipt
+
+    monkeypatch.setattr(launcher, "reconcile_legacy_canary_schema", reconcile)
+    monkeypatch.setattr(launcher, "_emit_canonical_line", emitted.append)
+
+    result = launcher.main([
+        "--release-sha",
+        RELEASE_SHA,
+        "--reconcile-legacy-canary-db",
+    ])
+
+    assert result == 0
+    assert emitted == [receipt]
+    reconcile_call = next(item for item in calls if item[0] == "reconcile")
+    assert reconcile_call[1]["release_sha"] == RELEASE_SHA
+    assert reconcile_call[1]["transport"] is transport
+    assert reconcile_call[1]["cloud_sql_client"] is database_client
+    assert reconcile_call[1]["owner_identity"] is owner_identity
+    assert not any(
+        item[0] in {"writer_preflight", "phase_b"}
+        for item in calls
+        if isinstance(item, tuple)
+    )
+
+
+def test_schema_reconciliation_cli_rejects_external_iam_before_runtime(
+    monkeypatch,
+):
+    emitted = []
+    monkeypatch.setattr(
+        launcher,
+        "require_trusted_owner_runtime",
+        lambda _release: pytest.fail("invalid CLI reached trusted runtime"),
+    )
+    monkeypatch.setattr(launcher, "_emit_canonical_line", emitted.append)
+
+    result = launcher.main([
+        "--release-sha",
+        RELEASE_SHA,
+        "--reconcile-legacy-canary-db",
+        "--external-iam-policy-sha256",
+        "f" * 64,
+    ])
+
+    assert result == 2
+    assert emitted[0]["error_code"] == "schema_reconciliation_owner_cli_invalid"
+
+
+class _RecordingReconciliationSigner:
+    def __init__(self):
+        self.calls = []
+
+    def sign(self, message, *, namespace, expected_authority):
+        self.calls.append((message, namespace, expected_authority))
+        return "-----BEGIN SSH SIGNATURE-----\nfixed\n-----END SSH SIGNATURE-----\n"
+
+
+def _schema_reconciliation_gate():
+    return {
+        "issued_at_unix": NOW - 10,
+        "expires_at_unix": NOW + 1_000,
+        "gate_sha256": "1" * 64,
+        "release_revision": RELEASE_SHA,
+        "plan_sha256": "2" * 64,
+        "temporary_admin_username_sha256": "3" * 64,
+        "owner_subject_sha256": OWNER_SHA,
+        "owner_key_id": "4" * 64,
+        "journal_head": {
+            "state": "empty",
+            "authorized_intent_sha256": None,
+            "terminal_receipt_sha256": None,
+            "head_sha256": "5" * 64,
+        },
+    }
+
+
+class _RoleBoundReconciliationClient:
+    def __init__(self, username: str, database_roles: list[str]) -> None:
+        self.username = username
+        self.calls: list[tuple[str, str, object]] = []
+        self.list_etag = "non-authoritative-list-etag"
+        self.describe_etag = "exact-etag-v1"
+        self.list_payload = {
+            "kind": "sql#usersList",
+            "items": [
+                {
+                    "kind": "sql#user",
+                    "name": username,
+                    "project": launcher.PROJECT,
+                    "instance": launcher.SQL_INSTANCE,
+                    "host": "",
+                    # Deliberately no type or databaseRoles: this matches the
+                    # real users.list projection and must remain presence-only.
+                    "etag": self.list_etag,
+                }
+            ],
+        }
+        self.describe_payload = {
+            "kind": "sql#user",
+            "databaseRoles": list(database_roles),
+            "etag": self.describe_etag,
+            "host": "",
+            "instance": launcher.SQL_INSTANCE,
+            "name": username,
+            "project": launcher.PROJECT,
+            "type": "BUILT_IN",
+        }
+
+    def request_json(self, method, url, *, body=None):
+        self.calls.append((method, url, body))
+        assert method == "GET"
+        assert body is None
+        if url == (
+            f"{launcher.CloudSqlTemporaryAdmin._BASE}/instances/"
+            f"{launcher.SQL_INSTANCE}/users"
+        ):
+            return self.list_payload
+        encoded_username = urllib.parse.quote(self.username, safe="")
+        if url == (
+            f"{launcher.CloudSqlTemporaryAdmin._BASE}/instances/"
+            f"{launcher.SQL_INSTANCE}/users/{encoded_username}?host="
+        ):
+            return self.describe_payload
+        raise AssertionError(f"unexpected Cloud SQL request: {method} {url}")
+
+
+def _role_bound_schema_reconciliation_cloud_boundary(
+    database_roles: list[str],
+) -> launcher.CloudSqlSchemaReconciliationAdmin:
+    username = "muncho_canary_admin_" + "a" * 16
+    operation = ("CREATE_USER", "DONE", OWNER_SHA, True)
+    operations = {"authority-operation": operation}
+    client = _RoleBoundReconciliationClient(username, database_roles)
+    boundary = launcher.CloudSqlSchemaReconciliationAdmin(client)
+    boundary._mutation_operation_baseline = frozenset()
+    boundary._mutation_relevant_baseline = {}
+    boundary._confirmed_authority_operation_name = "authority-operation"
+    boundary._confirmed_authority_operation_type = "CREATE_USER"
+    boundary._expected_owner_subject_sha256 = OWNER_SHA
+    boundary._expected_mutation_context_sha256 = "f" * 64
+    boundary._instance_operations = lambda: operations
+    boundary._stable_instance_operations = lambda: operations
+    return boundary
+
+
+def test_schema_reconciliation_cloud_boundary_uses_fenced_describes_for_partial_list() -> None:
+    username = "muncho_canary_admin_" + "a" * 16
+    boundary = _role_bound_schema_reconciliation_cloud_boundary(
+        list(launcher.SCHEMA_RECONCILIATION_DATABASE_ROLES)
+    )
+    operation_snapshots = []
+    operations = boundary._instance_operations()
+    boundary._instance_operations = lambda: (
+        operation_snapshots.append(dict(operations)) or operations
+    )
+
+    resource = boundary._role_bound_resource(
+        username,
+        require_exact_roles=True,
+    )
+
+    assert resource is not None
+    assert resource["databaseRoles"] == list(
+        launcher.SCHEMA_RECONCILIATION_DATABASE_ROLES
+    )
+    assert resource["etag"] == "exact-etag-v1"
+    assert resource["host"] == ""
+    assert resource["type"] == "BUILT_IN"
+    client = boundary._client
+    assert isinstance(client, _RoleBoundReconciliationClient)
+    list_calls = [call for call in client.calls if call[1] == boundary._users_url]
+    describe_calls = [
+        call for call in client.calls if call[1] == boundary._user_url(username)
+    ]
+    assert len(operation_snapshots) == 4
+    assert len(list_calls) == 4
+    assert len(describe_calls) == 2
+    assert client.list_etag != resource["etag"]
+
+
+def test_schema_reconciliation_cloud_boundary_rejects_describe_drift() -> None:
+    username = "muncho_canary_admin_" + "a" * 16
+    boundary = _role_bound_schema_reconciliation_cloud_boundary(
+        list(launcher.SCHEMA_RECONCILIATION_DATABASE_ROLES)
+    )
+    client = boundary._client
+    assert isinstance(client, _RoleBoundReconciliationClient)
+    original_request = client.request_json
+    describe_calls = 0
+
+    def drifting_request(method, url, *, body=None):
+        nonlocal describe_calls
+        payload = original_request(method, url, body=body)
+        if url == boundary._user_url(username):
+            describe_calls += 1
+            if describe_calls == 2:
+                return {**payload, "etag": "drifted-describe-etag"}
+        return payload
+
+    client.request_json = drifting_request
+
+    with pytest.raises(
+        launcher.OwnerLauncherError,
+        match="cloud_sql_schema_reconciliation_admin_resource_drifted",
+    ):
+        boundary._role_bound_resource(
+            username,
+            require_exact_roles=True,
+        )
+
+
+def test_schema_reconciliation_cloud_boundary_is_exact_custom_role_only() -> None:
+    username = "muncho_canary_admin_" + "a" * 16
+    boundary = _role_bound_schema_reconciliation_cloud_boundary(
+        list(launcher.SCHEMA_RECONCILIATION_DATABASE_ROLES)
+    )
+
+    assert boundary._create_user_body(username, "q" * 64) == {
+        "databaseRoles": list(launcher.SCHEMA_RECONCILIATION_DATABASE_ROLES),
+        "instance": launcher.SQL_INSTANCE,
+        "name": username,
+        "password": "q" * 64,
+        "project": launcher.PROJECT,
+        "type": "BUILT_IN",
+    }
+    assert boundary._update_user_query_values(username) == {
+        "databaseRoles": list(launcher.SCHEMA_RECONCILIATION_DATABASE_ROLES),
+        "host": "",
+        "name": username,
+        "revokeExistingRoles": "true",
+    }
+    receipt = boundary.temporary_admin_authority_receipt(username)
+    assert receipt["schema"] == launcher.TEMPORARY_ADMIN_AUTHORITY_RECEIPT_SCHEMA
+    assert receipt["database_roles"] == list(
+        launcher.SCHEMA_RECONCILIATION_DATABASE_ROLES
+    )
+    assert receipt["cloudsqlsuperuser_absent"] is True
+    assert receipt["resource_etag_sha256"] == hashlib.sha256(
+        b"exact-etag-v1"
+    ).hexdigest()
+    assert receipt["receipt_sha256"] == hashlib.sha256(
+        _canonical({key: value for key, value in receipt.items() if key != "receipt_sha256"})
+    ).hexdigest()
+
+
+def test_schema_reconciliation_cloud_boundary_rejects_extra_cloudsqlsuperuser() -> None:
+    username = "muncho_canary_admin_" + "a" * 16
+    boundary = _role_bound_schema_reconciliation_cloud_boundary([
+        *launcher.SCHEMA_RECONCILIATION_DATABASE_ROLES,
+        "cloudsqlsuperuser",
+    ])
+
+    with pytest.raises(
+        launcher.OwnerLauncherError,
+        match="cloud_sql_schema_reconciliation_admin_resource_invalid",
+    ):
+        boundary.temporary_admin_authority_receipt(username)
+
+
+def test_schema_reconciliation_cloud_update_revokes_every_stale_role_in_query() -> None:
+    username = "muncho_canary_admin_" + "a" * 16
+
+    class Client:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str, Mapping[str, object]]] = []
+
+        def request_json(self, method, url, *, body=None):
+            self.calls.append((method, url, body))
+            return {"name": "role-replacement-operation"}
+
+    client = Client()
+    boundary = launcher.CloudSqlSchemaReconciliationAdmin(client)
+    boundary._fixed_update_etag = "stale-user-etag"
+    boundary._ensure_mutation_observation = lambda: None
+    boundary._settle_user_presence = lambda *_args, **_kwargs: True
+    boundary._record_operation_name = lambda *_args, **_kwargs: (
+        "role-replacement-operation"
+    )
+    boundary._wait_operation = lambda *_args, **_kwargs: None
+    boundary._confirm_direct_mutation_operation = lambda *_args, **_kwargs: None
+
+    boundary.rotate_existing(username, "q" * 64)
+
+    method, url, body = client.calls[-1]
+    query = urllib.parse.parse_qs(
+        urllib.parse.urlsplit(url).query,
+        keep_blank_values=True,
+    )
+    assert method == "PUT"
+    assert query == {
+        "databaseRoles": list(launcher.SCHEMA_RECONCILIATION_DATABASE_ROLES),
+        "host": [""],
+        "name": [username],
+        "revokeExistingRoles": ["true"],
+    }
+    assert body["etag"] == "stale-user-etag"
+    assert body["revokeExistingRoles"] is True
+
+
+def test_schema_reconciliation_uses_role_bound_cloud_boundary_by_default() -> None:
+    default = inspect.signature(
+        launcher.reconcile_legacy_canary_schema
+    ).parameters["boundary_factory"].default
+    assert default is launcher.CloudSqlSchemaReconciliationAdmin
+
+
+def test_schema_reconciliation_owner_builders_bind_all_three_signed_frames():
+    signer = _RecordingReconciliationSigner()
+    authority = object()
+    gate = _schema_reconciliation_gate()
+    credential = bytearray(b"c" * 64)
+    cloud_authority = {"receipt_sha256": "6" * 64}
+    admin = launcher.build_schema_reconciliation_admin_preflight(
+        gate=gate,
+        cloud_sql_authority_receipt=cloud_authority,
+        credential=credential,
+        signer=signer,
+        owner_authority=authority,
+        now_unix=NOW,
+        nonce_factory=lambda size: b"a" * size,
+    )
+    admin_unsigned = {
+        key: value
+        for key, value in admin.items()
+        if key not in {"authority_claim_sha256", "signature_sshsig"}
+    }
+    assert admin["authority_claim_sha256"] == hashlib.sha256(
+        _canonical(admin_unsigned)
+    ).hexdigest()
+    assert signer.calls[-1][0] == (
+        reconciliation_bootstrap.admin_preflight_signature_payload(admin)
+    )
+    assert signer.calls[-1][1] == (
+        reconciliation_bootstrap.ADMIN_PREFLIGHT_OWNER_SSHSIG_NAMESPACE
+    )
+
+    challenge = {
+        "preflight_challenge_sha256": "7" * 64,
+        "preflight": {
+            "state": "exact_old_missing_one_helper",
+            "preflight_sha256": "8" * 64,
+            "observed_contract_sha256": "9" * 64,
+            "truth_receipt_sha256": "a" * 64,
+        },
+    }
+    authorization = launcher.build_schema_reconciliation_preflight_authorization(
+        gate=gate,
+        admin_preflight=admin,
+        challenge=challenge,
+        signer=signer,
+        owner_authority=authority,
+        now_unix=NOW + 1,
+        nonce_factory=lambda size: b"b" * size,
+    )
+    authorization_unsigned = {
+        key: value
+        for key, value in authorization.items()
+        if key not in {"preflight_authorization_claim_sha256", "signature_sshsig"}
+    }
+    assert authorization["execution_mode"] == "reconcile_missing_helper"
+    assert authorization["preflight_authorization_claim_sha256"] == hashlib.sha256(
+        _canonical(authorization_unsigned)
+    ).hexdigest()
+    assert signer.calls[-1][0] == (
+        reconciliation_bootstrap.preflight_authorization_signature_payload(
+            authorization
+        )
+    )
+
+    intermediate = {"database_intermediate_sha256": "b" * 64}
+    absence = {"evidence_sha256": "c" * 64}
+    cleanup = launcher.build_schema_reconciliation_admin_cleanup(
+        gate=gate,
+        admin_preflight=admin,
+        challenge=challenge,
+        authorization=authorization,
+        intermediate=intermediate,
+        cloud_sql_absence_receipt=absence,
+        signer=signer,
+        owner_authority=authority,
+        now_unix=NOW + 2,
+        nonce_factory=lambda size: b"d" * size,
+    )
+    cleanup_unsigned = {
+        key: value
+        for key, value in cleanup.items()
+        if key not in {"cleanup_claim_sha256", "signature_sshsig"}
+    }
+    assert cleanup["cleanup_claim_sha256"] == hashlib.sha256(
+        _canonical(cleanup_unsigned)
+    ).hexdigest()
+    assert signer.calls[-1][0] == (
+        reconciliation_bootstrap.admin_cleanup_signature_payload(cleanup)
+    )
+    assert [call[1] for call in signer.calls] == [
+        reconciliation_bootstrap.ADMIN_PREFLIGHT_OWNER_SSHSIG_NAMESPACE,
+        reconciliation_bootstrap.PREFLIGHT_AUTHORIZATION_OWNER_SSHSIG_NAMESPACE,
+        reconciliation_bootstrap.ADMIN_CLEANUP_OWNER_SSHSIG_NAMESPACE,
+    ]
+
+
+def test_schema_reconciliation_a1_frame_carries_only_exact_opaque_credential():
+    credential = bytearray(b"z" * 64)
+    claim = {"schema": "fixed"}
+    frame = launcher._schema_reconciliation_frame(
+        launcher.SCHEMA_RECONCILIATION_ADMIN_PREFLIGHT_MAGIC,
+        claim,
+        credential=credential,
+    )
+    payload = _canonical(claim)
+
+    assert bytes(frame[:4]) == launcher.SCHEMA_RECONCILIATION_ADMIN_PREFLIGHT_MAGIC
+    assert int.from_bytes(frame[4:8], "big") == len(payload)
+    assert bytes(frame[8 : 8 + len(payload)]) == payload
+    assert bytes(frame[-64:]) == bytes(credential)
+    assert hashlib.sha256(bytes(credential)).hexdigest().encode() not in frame
+
+
+def _fixed_owner_authority():
+    public = bytes.fromhex(
+        "4f928fd117e2e62f1e52b0095d6ab552"
+        "4370707f5e9b295efdc62479ce887e26"
+    )
+    return launcher._PhaseBOwnerPublicAuthority(
+        public_key_ed25519_hex=public.hex(),
+        key_id=hashlib.sha256(public).hexdigest(),
+        public_key_file_sha256="d" * 64,
+        public_fingerprint=launcher.PHASE_B_OWNER_PUBLIC_KEY_FINGERPRINT,
+        public_key_source={
+            "path": "fixed",
+            "file_sha256": "d" * 64,
+            "device": 1,
+            "inode": 2,
+            "uid": 501,
+            "gid": 20,
+            "mode": "0600",
+            "size": 100,
+        },
+        _public_blob=b"public",
+        _public_item_identity=(1,) * 10,
+        _private_item_identity=(2,) * 10,
+    )
+
+
+class _FixedSchemaReconciliationSigner(_RecordingReconciliationSigner):
+    def __init__(self, authority):
+        super().__init__()
+        self.authority = authority
+
+    def inspect(self):
+        return self.authority
+
+
+class _SchemaReconciliationOwnerIdentity:
+    def __init__(self, account):
+        self.account = account
+        self.owner_subject_sha256 = None
+        self.bound = False
+
+    def account_for_read_only_preflight(self):
+        return self.account
+
+    def bind_approved_subject(self, expected):
+        assert expected == hashlib.sha256(self.account.encode()).hexdigest()
+        self.owner_subject_sha256 = expected
+        self.bound = True
+
+    def require_stable(self):
+        assert self.bound
+
+
+class _SchemaReconciliationBoundary:
+    def __init__(
+        self,
+        events,
+        *,
+        cleanup_fails=False,
+        create_fails=False,
+        authority_fails=False,
+    ):
+        self.events = events
+        self.cleanup_fails = cleanup_fails
+        self.create_fails = create_fails
+        self.authority_fails = authority_fails
+        self.ambiguous = False
+
+    def begin_mutation_observation(self, **values):
+        self.events.append(("begin", values))
+
+    def create_or_rotate_recovery(self, username, password):
+        self.events.append(("create", username, len(password)))
+        if self.create_fails:
+            raise launcher.OwnerLauncherError("cloud_sql_operation_failed")
+
+    def temporary_admin_authority_receipt(self, username):
+        self.events.append(("authority", username))
+        return {"receipt_sha256": "6" * 64}
+
+    def require_current_authority(self, username):
+        self.events.append(("require", username))
+        if self.authority_fails:
+            raise launcher.OwnerLauncherError(
+                "cloud_sql_mutation_evidence_unconfirmed"
+            )
+
+    def delete_and_confirm_absent(self, username):
+        self.events.append(("delete", username))
+        if self.cleanup_fails:
+            raise launcher.CleanupBlocked("delete_unconfirmed")
+
+    def reconciliation_receipt(self):
+        return {"evidence_sha256": "c" * 64}
+
+    def mutation_reconciliation_required(self):
+        return self.ambiguous
+
+    def reconcile_ambiguous_mutation_and_confirm_absent(self, username):
+        self.events.append(("reconcile", username))
+
+
+class _SchemaReconciliationSession:
+    def __init__(
+        self,
+        gate,
+        challenge,
+        intermediate,
+        terminal,
+        events,
+        *,
+        fail_a2=False,
+        abort_fails=False,
+    ):
+        self.gate = gate
+        self.challenge = challenge
+        self.intermediate = intermediate
+        self.terminal = terminal
+        self.events = events
+        self.fail_a2 = fail_a2
+        self.abort_fails = abort_fails
+        self.round = 0
+
+    def read_gate(self):
+        return self.gate
+
+    def require_current_authority(self):
+        self.events.append("iap")
+
+    def schema_reconciliation_exchange_before(
+        self,
+        frame,
+        *,
+        write_guard,
+        on_first_write,
+        on_write_complete,
+    ):
+        self.events.append(("a1", bytes(frame[:4])))
+        write_guard()
+        on_first_write()
+        on_write_complete()
+        return self.challenge
+
+    def schema_reconciliation_exchange(self, frame, *, terminal):
+        self.round += 1
+        self.events.append(("exchange", self.round, bytes(frame[:4]), terminal))
+        if self.round == 1:
+            if self.fail_a2:
+                raise launcher.OwnerLauncherError("remote_apply_failed")
+            return self.intermediate
+        return self.terminal
+
+    def mark_validated(self, terminal):
+        assert terminal == self.terminal
+        self.events.append("validated")
+
+    def abort_and_prove_terminated(self):
+        self.events.append("aborted")
+        if self.abort_fails:
+            raise launcher.RemoteTerminationUnconfirmed()
+
+    def close(self):
+        self.events.append("closed")
+
+
+class _SchemaReconciliationTransport:
+    def __init__(self, session):
+        self.session = session
+
+    def open_reconciliation(self, release_sha):
+        assert release_sha == RELEASE_SHA
+        return self.session
+
+
+def _patch_schema_reconciliation_owner_validators(monkeypatch):
+    monkeypatch.setattr(
+        reconciliation_bootstrap,
+        "validate_gate",
+        lambda value, **_kwargs: value,
+    )
+    monkeypatch.setattr(
+        reconciliation_bootstrap,
+        "validate_preflight_challenge_for_owner",
+        lambda value, **_kwargs: value,
+    )
+    monkeypatch.setattr(
+        reconciliation_bootstrap,
+        "validate_database_intermediate_for_owner",
+        lambda value, **_kwargs: value,
+    )
+    monkeypatch.setattr(
+        reconciliation_bootstrap,
+        "validate_terminal_for_owner",
+        lambda value, **_kwargs: value,
+    )
+
+
+def _schema_reconciliation_owner_case(
+    events,
+    *,
+    fail_a2=False,
+    cleanup_fails=False,
+    create_fails=False,
+    authority_fails=False,
+    abort_fails=False,
+):
+    authority = _fixed_owner_authority()
+    account = "owner@example.com"
+    owner_subject = hashlib.sha256(account.encode()).hexdigest()
+    gate = {
+        **_schema_reconciliation_gate(),
+        "release_revision": RELEASE_SHA,
+        "owner_subject_sha256": owner_subject,
+        "owner_public_key_ed25519_hex": authority.public_key_ed25519_hex,
+        "owner_key_id": authority.key_id,
+        "owner_public_fingerprint": authority.public_fingerprint,
+        "temporary_admin_username": (
+            launcher.ADMIN_USERNAME_PREFIX + ("2" * 64)[:16]
+        ),
+        "expires_at_unix": NOW + 1_200,
+    }
+    challenge = {
+        "preflight_challenge_sha256": "7" * 64,
+        "preflight": {
+            "state": "exact_old_missing_one_helper",
+            "preflight_sha256": "8" * 64,
+            "observed_contract_sha256": "9" * 64,
+            "truth_receipt_sha256": "a" * 64,
+        },
+    }
+    intermediate = {"database_intermediate_sha256": "b" * 64}
+    terminal = {"ok": True, "terminal_sha256": "e" * 64}
+    session = _SchemaReconciliationSession(
+        gate,
+        challenge,
+        intermediate,
+        terminal,
+        events,
+        fail_a2=fail_a2,
+        abort_fails=abort_fails,
+    )
+    boundary = _SchemaReconciliationBoundary(
+        events,
+        cleanup_fails=cleanup_fails,
+        create_fails=create_fails,
+        authority_fails=authority_fails,
+    )
+    return {
+        "authority": authority,
+        "identity": _SchemaReconciliationOwnerIdentity(account),
+        "session": session,
+        "transport": _SchemaReconciliationTransport(session),
+        "boundary": boundary,
+    }
+
+
+def test_schema_reconciliation_owner_orchestrates_and_cleans_before_c3(monkeypatch):
+    _patch_schema_reconciliation_owner_validators(monkeypatch)
+    events = []
+    case = _schema_reconciliation_owner_case(events)
+    credential = bytearray(b"q" * 64)
+
+    receipt = launcher.reconcile_legacy_canary_schema(
+        release_sha=RELEASE_SHA,
+        transport=case["transport"],
+        cloud_sql_client=object(),
+        owner_identity=case["identity"],
+        now=lambda: NOW,
+        password_factory=lambda: credential,
+        nonce_factory=lambda size: b"n" * size,
+        signer=_FixedSchemaReconciliationSigner(case["authority"]),
+        boundary_factory=lambda _client: case["boundary"],
+        secret_hardener=lambda: None,
+        provenance_guard=lambda _revision: None,
+    )
+
+    assert receipt == case["session"].terminal
+    assert credential == bytearray(64)
+    delete_index = next(i for i, item in enumerate(events) if item[0] == "delete")
+    c3_index = next(
+        i
+        for i, item in enumerate(events)
+        if isinstance(item, tuple)
+        and item[:3]
+        == (
+            "exchange",
+            2,
+            launcher.SCHEMA_RECONCILIATION_ADMIN_CLEANUP_MAGIC,
+        )
+    )
+    assert delete_index < c3_index
+    assert events[-2:] == ["validated", "closed"]
+
+
+def test_schema_reconciliation_owner_failure_still_deletes_admin(monkeypatch):
+    _patch_schema_reconciliation_owner_validators(monkeypatch)
+    events = []
+    case = _schema_reconciliation_owner_case(events, fail_a2=True)
+    credential = bytearray(b"r" * 64)
+
+    with pytest.raises(launcher.OwnerLauncherError, match="remote_apply_failed"):
+        launcher.reconcile_legacy_canary_schema(
+            release_sha=RELEASE_SHA,
+            transport=case["transport"],
+            cloud_sql_client=object(),
+            owner_identity=case["identity"],
+            now=lambda: NOW,
+            password_factory=lambda: credential,
+            nonce_factory=lambda size: b"n" * size,
+            signer=_FixedSchemaReconciliationSigner(case["authority"]),
+            boundary_factory=lambda _client: case["boundary"],
+            secret_hardener=lambda: None,
+            provenance_guard=lambda _revision: None,
+        )
+
+    assert credential == bytearray(64)
+    abort_index = events.index("aborted")
+    delete_index = next(i for i, item in enumerate(events) if item[0] == "delete")
+    assert abort_index < delete_index
+
+
+def test_schema_reconciliation_unconfirmed_abort_defers_admin_delete(monkeypatch):
+    _patch_schema_reconciliation_owner_validators(monkeypatch)
+    events = []
+    case = _schema_reconciliation_owner_case(
+        events,
+        fail_a2=True,
+        abort_fails=True,
+    )
+
+    with pytest.raises(launcher.CleanupBlocked) as error:
+        launcher.reconcile_legacy_canary_schema(
+            release_sha=RELEASE_SHA,
+            transport=case["transport"],
+            cloud_sql_client=object(),
+            owner_identity=case["identity"],
+            now=lambda: NOW,
+            password_factory=lambda: bytearray(b"u" * 64),
+            nonce_factory=lambda size: b"n" * size,
+            signer=_FixedSchemaReconciliationSigner(case["authority"]),
+            boundary_factory=lambda _client: case["boundary"],
+            secret_hardener=lambda: None,
+            provenance_guard=lambda _revision: None,
+        )
+
+    assert error.value.cause_code == "remote_termination_unconfirmed"
+    assert "aborted" in events
+    assert not any(
+        isinstance(item, tuple) and item[0] == "delete" for item in events
+    )
+    assert events[-1] == "closed"
+
+
+def test_schema_reconciliation_definitive_rotation_failure_still_proves_absence(
+    monkeypatch,
+):
+    _patch_schema_reconciliation_owner_validators(monkeypatch)
+    events = []
+    case = _schema_reconciliation_owner_case(
+        events,
+        create_fails=True,
+        authority_fails=True,
+    )
+
+    with pytest.raises(
+        launcher.OwnerLauncherError,
+        match="cloud_sql_operation_failed",
+    ):
+        launcher.reconcile_legacy_canary_schema(
+            release_sha=RELEASE_SHA,
+            transport=case["transport"],
+            cloud_sql_client=object(),
+            owner_identity=case["identity"],
+            now=lambda: NOW,
+            password_factory=lambda: bytearray(b"t" * 64),
+            nonce_factory=lambda size: b"n" * size,
+            signer=_FixedSchemaReconciliationSigner(case["authority"]),
+            boundary_factory=lambda _client: case["boundary"],
+            secret_hardener=lambda: None,
+            provenance_guard=lambda _revision: None,
+        )
+
+    abort_index = events.index("aborted")
+    delete_index = next(i for i, item in enumerate(events) if item[0] == "delete")
+    assert abort_index < delete_index
+
+
+def test_schema_reconciliation_cleanup_failure_overrides_remote_failure(monkeypatch):
+    _patch_schema_reconciliation_owner_validators(monkeypatch)
+    events = []
+    case = _schema_reconciliation_owner_case(
+        events,
+        fail_a2=True,
+        cleanup_fails=True,
+    )
+
+    with pytest.raises(launcher.CleanupBlocked):
+        launcher.reconcile_legacy_canary_schema(
+            release_sha=RELEASE_SHA,
+            transport=case["transport"],
+            cloud_sql_client=object(),
+            owner_identity=case["identity"],
+            now=lambda: NOW,
+            password_factory=lambda: bytearray(b"s" * 64),
+            nonce_factory=lambda size: b"n" * size,
+            signer=_FixedSchemaReconciliationSigner(case["authority"]),
+            boundary_factory=lambda _client: case["boundary"],
+            secret_hardener=lambda: None,
+            provenance_guard=lambda _revision: None,
+        )
+
+
+def test_schema_reconciliation_cleanup_state_failure_does_not_skip_session_close(
+    monkeypatch,
+):
+    _patch_schema_reconciliation_owner_validators(monkeypatch)
+    events = []
+    case = _schema_reconciliation_owner_case(events)
+
+    class _UnavailableStateBoundary(_SchemaReconciliationBoundary):
+        def begin_mutation_observation(self, **values):
+            self.events.append(("begin", values))
+            raise launcher.OwnerLauncherError("begin_observation_failed")
+
+        def mutation_reconciliation_required(self):
+            raise RuntimeError("state unavailable")
+
+    boundary = _UnavailableStateBoundary(events)
+    with pytest.raises(
+        launcher.OwnerLauncherError,
+        match="begin_observation_failed",
+    ) as error:
+        launcher.reconcile_legacy_canary_schema(
+            release_sha=RELEASE_SHA,
+            transport=case["transport"],
+            cloud_sql_client=object(),
+            owner_identity=case["identity"],
+            now=lambda: NOW,
+            password_factory=lambda: bytearray(b"s" * 64),
+            nonce_factory=lambda size: b"n" * size,
+            signer=_FixedSchemaReconciliationSigner(case["authority"]),
+            boundary_factory=lambda _client: boundary,
+            secret_hardener=lambda: None,
+            provenance_guard=lambda _revision: None,
+        )
+
+    assert events[-1] == "closed"
+    assert launcher._attached_cleanup_failure_codes(error.value) == (
+        "schema_reconciliation_admin_cleanup_state_failed",
+    )

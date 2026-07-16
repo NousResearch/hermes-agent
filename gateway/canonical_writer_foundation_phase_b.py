@@ -191,6 +191,7 @@ SERVICE_UNITS = (
     "muncho-canary-discord-edge.service",
     "muncho-discord-egress.service",
     "muncho-canonical-writer.service",
+    "muncho-canonical-writer-phase-b-readiness.service",
     "muncho-canonical-writer-export.service",
     "muncho-canonical-writer-export.timer",
     "hermes-cloud-gateway.service",

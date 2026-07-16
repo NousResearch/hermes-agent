@@ -9,7 +9,7 @@ the production PostgreSQL wire/backend path.  No Cloud service is contacted.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import datetime as dt
 import hashlib
 import json
@@ -26,10 +26,17 @@ import uuid
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from gateway import canonical_writer_schema_reconciliation as schema_reconciliation
+from gateway import (
+    canonical_writer_schema_reconciliation_db as schema_reconciliation_db,
+)
+from gateway.canonical_writer_foundation import _load_source_artifacts_for_tests
 from gateway.canonical_writer_db import (
+    CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY,
     CanonicalWriterDB,
     CredentialSource,
     ManagedCloudSQLAdminHBAReceipt,
+    PostgresProtocolError,
     RoutineIdentity,
     WriterDBConfig,
     WriterPrivilegePolicy,
@@ -58,6 +65,10 @@ from gateway.canonical_writer_postgres_backend import (
 from gateway.canonical_writer_bootstrap import export_projection_events
 from gateway.canonical_projection_export import validate_projection_export
 from gateway.canonical_writer_protocol import CanonicalWriterOperation
+from gateway.canonical_writer_schema_reconciliation import (
+    SchemaContractAsset,
+    collect_schema_contract,
+)
 from gateway.discord_edge_protocol import (
     DiscordEdgeReceiptOutcome,
     parse_request_for_reconciliation,
@@ -79,8 +90,11 @@ LEGACY_RECONCILIATION = (
     ROOT / "scripts" / "sql" / "canonical_writer_legacy_reconcile_v1.sql"
 )
 IMAGE = "postgres:18"
-DATABASE = "canonical_writer_e2e"
-LOGIN = "canonical_writer_login"
+SCHEMA_CONTRACT_ASSET = (
+    ROOT / "gateway/assets/canonical_writer_schema_contract_v1.json"
+)
+DATABASE = "muncho_canary_brain"
+LOGIN = "muncho_canary_writer_login"
 DISCORD_GUILD_ID = "1282725267068157972"
 GUILD_CHANNEL = "1504852408227069993"
 SYNTHETIC_PUBLIC_CANARY_CHANNEL = "1526858760100909066"
@@ -280,6 +294,36 @@ def _psql_fields(name: str, database: str, sql: str) -> list[str]:
     return _psql_fields_as(name, database, "postgres", sql)
 
 
+def _canonical14_identity(name: str) -> list[str]:
+    return _psql_fields(
+        name,
+        DATABASE,
+        "WITH row_receipts AS (SELECT event.event_id, "
+        "pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to("
+        "pg_catalog.jsonb_build_object("
+        "'event_id', pg_catalog.to_jsonb(event)->'event_id',"
+        "'schema_version', pg_catalog.to_jsonb(event)->'schema_version',"
+        "'event_type', pg_catalog.to_jsonb(event)->'event_type',"
+        "'occurred_at', pg_catalog.to_jsonb(event)->'occurred_at',"
+        "'case_id', pg_catalog.to_jsonb(event)->'case_id',"
+        "'source', pg_catalog.to_jsonb(event)->'source',"
+        "'actor', pg_catalog.to_jsonb(event)->'actor',"
+        "'subject', pg_catalog.to_jsonb(event)->'subject',"
+        "'evidence', pg_catalog.to_jsonb(event)->'evidence',"
+        "'decision', pg_catalog.to_jsonb(event)->'decision',"
+        "'status', pg_catalog.to_jsonb(event)->'status',"
+        "'next_action', pg_catalog.to_jsonb(event)->'next_action',"
+        "'safety', pg_catalog.to_jsonb(event)->'safety',"
+        "'payload', pg_catalog.to_jsonb(event)->'payload')::text, 'UTF8'"
+        ")), 'hex') AS row_sha FROM public.canonical_event_log AS event) "
+        "SELECT pg_catalog.count(*)::text, pg_catalog.encode(pg_catalog.sha256("
+        "pg_catalog.convert_to('canonical-writer-legacy-reconcile-v1:canonical14'"
+        " || E'\\n' || COALESCE(pg_catalog.string_agg(event_id::text || ':' || "
+        "row_sha, E'\\n' ORDER BY event_id), ''), 'UTF8')), 'hex') "
+        "FROM row_receipts;",
+    )
+
+
 def _jsonb_sql(value: object) -> str:
     encoded = json.dumps(
         value,
@@ -435,7 +479,12 @@ def real_writer_stack(tmp_path_factory: pytest.TempPathFactory) -> RealWriterSta
     environment["POSTGRES_PASSWORD"] = admin_password
 
     try:
-        _run(["docker", "pull", IMAGE], timeout=300)
+        if subprocess.run(
+            ["docker", "image", "inspect", IMAGE],
+            capture_output=True,
+            check=False,
+        ).returncode:
+            _run(["docker", "pull", IMAGE], timeout=300)
         _run(
             [
                 "docker",
@@ -499,7 +548,7 @@ def real_writer_stack(tmp_path_factory: pytest.TempPathFactory) -> RealWriterSta
             "CREATE ROLE cloudsqlsuperuser LOGIN NOSUPERUSER CREATEDB CREATEROLE "
             "NOREPLICATION NOBYPASSRLS;\n"
             "CREATE DATABASE cloudsqladmin OWNER cloudsqladmin;\n"
-            f"CREATE DATABASE {DATABASE};\n"
+            f"CREATE DATABASE {DATABASE} OWNER cloudsqlsuperuser;\n"
             f"REVOKE ALL ON DATABASE {DATABASE} FROM PUBLIC;\n"
             f"GRANT CONNECT ON DATABASE {DATABASE} TO {CANONICAL_WRITER_ROLE};\n",
             secrets_=(writer_password,),
@@ -601,6 +650,621 @@ def real_writer_stack(tmp_path_factory: pytest.TempPathFactory) -> RealWriterSta
             capture_output=True,
             text=True,
             check=False,
+        )
+
+
+def test_release_schema_contract_asset_matches_real_postgresql_18(
+    real_writer_stack: RealWriterStack,
+) -> None:
+    database = real_writer_stack.backend._database
+    session = _open_postgres_session(database._config)
+    try:
+        observed = collect_schema_contract(
+            session,
+            config=database._config,
+            policy=database._policy,
+            managed_hba_receipt=(
+                database._policy.managed_cloudsqladmin_hba_rejection_receipt
+            ),
+        )
+    finally:
+        session.close()
+
+    asset = SchemaContractAsset.from_bytes(SCHEMA_CONTRACT_ASSET.read_bytes())
+    assert asset.postgresql_major == 18
+    assert asset.base_artifact_sha256 == hashlib.sha256(
+        MIGRATION.read_bytes()
+    ).hexdigest()
+    assert observed.value == asset.contract.value
+
+
+def _temporary_admin_config(
+    writer_config: WriterDBConfig,
+    tmp_path: Path,
+    *,
+    admin: str,
+    password: str,
+) -> WriterDBConfig:
+    credential = tmp_path / (admin + "-password")
+    credential.write_text(password + "\n", encoding="utf-8")
+    credential.chmod(0o600)
+    return WriterDBConfig(
+        host=writer_config.host,
+        tls_server_name=writer_config.tls_server_name,
+        port=writer_config.port,
+        database=writer_config.database,
+        user=admin,
+        ca_file=writer_config.ca_file,
+        credential=CredentialSource(
+            expected_uid=os.getuid(),
+            path=credential,
+        ),
+        connect_timeout_seconds=writer_config.connect_timeout_seconds,
+        io_timeout_seconds=writer_config.io_timeout_seconds,
+        application_name="muncho-schema-reconciliation-e2e",
+    )
+
+
+def _schema_reconciliation_role_graph(name: str, admin: str) -> list[str]:
+    return _psql_fields(
+        name,
+        DATABASE,
+        "WITH role_graph AS (SELECT membership.roleid, membership.member, "
+        "membership.grantor, membership.admin_option, "
+        "membership.inherit_option, membership.set_option, "
+        "granted.rolname AS granted_name, member.rolname AS member_name, "
+        "grantor.rolname AS grantor_name FROM pg_catalog.pg_auth_members AS "
+        "membership JOIN pg_catalog.pg_roles AS granted ON granted.oid = "
+        "membership.roleid JOIN pg_catalog.pg_roles AS member ON member.oid = "
+        "membership.member JOIN pg_catalog.pg_roles AS grantor ON grantor.oid "
+        "= membership.grantor WHERE member.rolname IN ('"
+        + admin
+        + "', 'canonical_brain_migration_owner') OR granted.rolname IN ('"
+        + admin
+        + "', 'canonical_brain_migration_owner') OR grantor.rolname IN ('"
+        + admin
+        + "', 'canonical_brain_migration_owner')) SELECT "
+        "pg_catalog.count(*)::text, "
+        "pg_catalog.count(DISTINCT roleid)::text, "
+        "pg_catalog.string_agg(granted_name, ',' ORDER BY granted_name), "
+        "pg_catalog.min(member_name), pg_catalog.min(grantor_name), "
+        "pg_catalog.bool_and(NOT admin_option), "
+        "pg_catalog.bool_and(inherit_option), "
+        "pg_catalog.bool_and(NOT set_option) FROM role_graph;",
+    )
+
+
+def _install_cloudsql_api_role_graph(name: str, admin: str) -> None:
+    """Model the exact membership rows written by the Cloud SQL Admin API.
+
+    Stock PostgreSQL requires the SQL grantor to hold ADMIN OPTION, while the
+    managed API records ``cloudsqladmin`` directly without creating that extra
+    membership.  Seed the ordinary grants first, then change only their
+    catalog grantor so the production collector sees the real Cloud shape.
+    """
+
+    _psql(
+        name,
+        DATABASE,
+        f"GRANT {CANONICAL_WRITER_MIGRATION_OWNER}, {CANONICAL_WRITER_ROLE} "
+        f"TO {admin} WITH ADMIN FALSE, INHERIT TRUE, SET FALSE "
+        "GRANTED BY postgres;\n"
+        "WITH cloud_grantor AS (SELECT oid FROM pg_catalog.pg_roles "
+        "WHERE rolname = 'cloudsqladmin'), temporary_login AS (SELECT oid "
+        "FROM pg_catalog.pg_roles WHERE rolname = '"
+        + admin
+        + "'), expected_roles AS (SELECT oid FROM pg_catalog.pg_roles WHERE "
+        "rolname IN ('canonical_brain_migration_owner', "
+        "'canonical_brain_writer')) UPDATE pg_catalog.pg_auth_members AS "
+        "membership SET grantor = cloud_grantor.oid FROM cloud_grantor, "
+        "temporary_login WHERE membership.member = temporary_login.oid AND "
+        "membership.roleid IN (SELECT oid FROM expected_roles);\n",
+    )
+
+
+def _create_quarantine_truth_anchors(name: str) -> None:
+    _psql(
+        name,
+        DATABASE,
+        "CREATE SCHEMA canonical_brain_legacy_quarantine "
+        "AUTHORIZATION postgres;\n"
+        "CREATE TABLE canonical_brain_legacy_quarantine."
+        "canonical_event_log_legacy_v1 ();\n"
+        "CREATE TABLE canonical_brain_legacy_quarantine."
+        "reconciliation_receipts ();\n",
+    )
+
+
+def _trampoline_semantic_identity(name: str) -> tuple[str, str]:
+    fields = _psql_fields(
+        name,
+        DATABASE,
+        "WITH identity AS (SELECT routine.oid::text AS routine_oid, "
+        "pg_catalog.jsonb_build_object('pg_proc', "
+        "pg_catalog.to_jsonb(routine), 'owner_name', owner.rolname, "
+        "'language_name', language.lanname, 'definition', "
+        "pg_catalog.pg_get_functiondef(routine.oid), 'comment', "
+        "pg_catalog.obj_description(routine.oid, 'pg_proc'), "
+        "'security_labels', COALESCE((SELECT pg_catalog.jsonb_agg("
+        "pg_catalog.to_jsonb(security_label) ORDER BY security_label.provider, "
+        "security_label.objsubid, security_label.label) FROM "
+        "pg_catalog.pg_seclabel AS security_label WHERE "
+        "security_label.classoid = 'pg_catalog.pg_proc'::pg_catalog.regclass "
+        "AND security_label.objoid = routine.oid), '[]'::jsonb), "
+        "'dependencies', COALESCE((SELECT pg_catalog.jsonb_agg("
+        "pg_catalog.to_jsonb(dependency) ORDER BY dependency.refclassid, "
+        "dependency.refobjid, dependency.refobjsubid, dependency.deptype) "
+        "FROM pg_catalog.pg_depend AS dependency WHERE dependency.classid = "
+        "'pg_catalog.pg_proc'::pg_catalog.regclass AND dependency.objid = "
+        "routine.oid AND dependency.objsubid = 0), '[]'::jsonb), "
+        "'shared_dependencies', COALESCE((SELECT pg_catalog.jsonb_agg("
+        "pg_catalog.to_jsonb(shared_dependency) ORDER BY "
+        "shared_dependency.dbid, shared_dependency.refclassid, "
+        "shared_dependency.refobjid, shared_dependency.deptype) FROM "
+        "pg_catalog.pg_shdepend AS shared_dependency WHERE "
+        "shared_dependency.classid = "
+        "'pg_catalog.pg_proc'::pg_catalog.regclass AND "
+        "shared_dependency.objid = routine.oid AND "
+        "shared_dependency.objsubid = 0), '[]'::jsonb)) AS semantic FROM "
+        "pg_catalog.pg_proc AS routine JOIN pg_catalog.pg_language AS language "
+        "ON language.oid = routine.prolang JOIN pg_catalog.pg_roles AS owner "
+        "ON owner.oid = routine.proowner WHERE routine.oid = "
+        "pg_catalog.to_regprocedure("
+        "'canonical_brain._deterministic_uuid(text)')) SELECT routine_oid, "
+        "pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to("
+        "semantic::text, 'UTF8')), 'hex') FROM identity;",
+    )
+    assert len(fields) == 2
+    return fields[0], fields[1]
+
+
+def test_real_postgresql_18_sealed_schema_reconciliation_preserves_truth(
+    real_writer_stack: RealWriterStack,
+    tmp_path: Path,
+) -> None:
+    name = real_writer_stack.name
+    database = real_writer_stack.backend._database
+    writer_config = database._config
+    admin = "muncho_canary_admin_" + "f" * 16
+    password = secrets.token_hex(32)
+    escaped_password = password.replace("'", "''")
+    seeded_case = "case:schema-reconciliation:4097"
+    target_asset = SchemaContractAsset.from_bytes(
+        SCHEMA_CONTRACT_ASSET.read_bytes()
+    )
+    artifact = _load_source_artifacts_for_tests()["base_migration"]
+    plan = schema_reconciliation._build_plan_from_artifact(
+        "f" * 40,
+        target_asset.contract,
+        artifact,
+        target_asset_sha256=target_asset.sha256,
+    )
+    admin_config = _temporary_admin_config(
+        writer_config,
+        tmp_path,
+        admin=admin,
+        password=password,
+    )
+    writer_probe = _open_postgres_session(writer_config)
+    try:
+        tls_peer_certificate_sha256 = (
+            writer_probe.tls_peer_certificate_sha256
+        )
+    finally:
+        writer_probe.close()
+    managed_hba_receipt = replace(
+        _test_managed_hba_receipt(writer_config),
+        server_certificate_sha256=tls_peer_certificate_sha256,
+    )
+    expected_role_graph = [
+        "2",
+        "2",
+        "canonical_brain_migration_owner,canonical_brain_writer",
+        admin,
+        "cloudsqladmin",
+        "t",
+        "t",
+        "t",
+    ]
+
+    assert _psql_fields(
+        name,
+        DATABASE,
+        "SELECT pg_catalog.count(*)::text FROM public.canonical_event_log;",
+    ) == ["0"]
+    try:
+        _psql(
+            name,
+            DATABASE,
+            f"CREATE ROLE {admin} LOGIN INHERIT NOSUPERUSER NOCREATEDB "
+            "NOCREATEROLE NOREPLICATION NOBYPASSRLS "
+            f"PASSWORD '{escaped_password}';\n"
+            "DROP FUNCTION "
+            "canonical_brain._discord_guild_routeback_target_valid(jsonb);\n"
+            "INSERT INTO public.canonical_event_log (event_id, schema_version, "
+            "event_type, occurred_at, case_id, source, actor, subject, evidence, "
+            "decision, status, next_action, safety, payload) SELECT "
+            "('00000000-0000-4000-8000-' || "
+            "pg_catalog.lpad(source.ordinal::text, 12, '0'))::uuid, "
+            "'canonical_event.v1', 'case.note', "
+            "'2026-07-16T00:00:00Z'::timestamptz + "
+            "source.ordinal * interval '1 microsecond', '"
+            + seeded_case
+            + "', pg_catalog.jsonb_build_object('system', "
+            "'schema-reconciliation-e2e', 'ordinal', source.ordinal), "
+            "'{\"type\":\"agent\"}'::jsonb, '{\"type\":\"case\"}'::jsonb, "
+            "'[]'::jsonb, '{}'::jsonb, '{\"state\":\"noted\"}'::jsonb, "
+            "'{}'::jsonb, '{}'::jsonb, pg_catalog.jsonb_build_object("
+            "'summary', 'persistent reconciliation row', 'ordinal', "
+            "source.ordinal) FROM pg_catalog.generate_series(1, 4097) AS "
+            "source(ordinal);\n",
+            secrets_=(password,),
+        )
+        _create_quarantine_truth_anchors(name)
+        _install_cloudsql_api_role_graph(name, admin)
+        assert _schema_reconciliation_role_graph(name, admin) == (
+            expected_role_graph
+        )
+        assert _psql_fields(
+            name,
+            DATABASE,
+            "SELECT pg_catalog.to_regprocedure("
+            "'canonical_brain._discord_guild_routeback_target_valid(jsonb)') "
+            "IS NULL;",
+        ) == ["t"]
+        trampoline_before = _trampoline_semantic_identity(name)
+        reconciliation_database = (
+            schema_reconciliation_db.PostgresSchemaReconciliationDatabase(
+                plan=plan,
+                target=target_asset.contract,
+                admin_config=admin_config,
+                writer_config=writer_config,
+                managed_hba_receipt=managed_hba_receipt,
+            )
+        )
+
+        with reconciliation_database.transaction(
+            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
+        ) as transaction:
+            transaction.lock_canonical_truth()
+            old_contract = transaction.observe_contract()
+            truth_before = transaction.observe_canonical_truth()
+            assert old_contract.value == schema_reconciliation._old_contract_value(
+                target_asset.contract
+            )
+            assert len(truth_before.relation_receipts) == 10
+            assert tuple(
+                item.relation for item in truth_before.relation_receipts
+            ) == schema_reconciliation.CANONICAL_TRUTH_RELATIONS
+            assert truth_before.row_count == 4097
+            assert truth_before.canonical_data_row_count == 4097
+            assert truth_before.relation_receipts[0].row_count == 4097
+            assert truth_before.relation_receipts[0].chunk_count == 2
+            assert all(
+                item.row_count == 0 and item.chunk_count == 0
+                for item in truth_before.relation_receipts[1:]
+            )
+            assert tuple(
+                item.anchor
+                for item in truth_before.quarantine_anchor_receipts
+            ) == schema_reconciliation.CANONICAL_QUARANTINE_ANCHORS
+            assert tuple(
+                (item.owner, item.kind, item.persistence)
+                for item in truth_before.quarantine_anchor_receipts
+            ) == (
+                ("postgres", "n", ""),
+                ("postgres", "r", "p"),
+                ("postgres", "r", "p"),
+            )
+            assert all(
+                item.object_oid > 0 and len(item.acl_sha256) == 64
+                for item in truth_before.quarantine_anchor_receipts
+            )
+            transaction.execute_sql(plan.mutation_sql)
+            target_contract = transaction.observe_contract()
+            truth_after = transaction.observe_canonical_truth()
+            assert target_contract.value == target_asset.contract.value
+            assert target_contract.helper_catalog_identity == (
+                target_asset.contract.helper_catalog_identity
+            )
+            assert truth_after == truth_before
+
+        assert _trampoline_semantic_identity(name) == trampoline_before
+        assert _schema_reconciliation_role_graph(name, admin) == (
+            expected_role_graph
+        )
+
+        with reconciliation_database.transaction(
+            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
+        ) as replay:
+            replay.lock_canonical_truth()
+            replay_contract = replay.observe_contract()
+            replay_truth = replay.observe_canonical_truth()
+            assert replay_contract.value == target_asset.contract.value
+            assert replay_truth == truth_before
+
+        assert _trampoline_semantic_identity(name) == trampoline_before
+        assert _schema_reconciliation_role_graph(name, admin) == (
+            expected_role_graph
+        )
+        _psql(name, DATABASE, f"DROP ROLE {admin};\n")
+
+        terminal = schema_reconciliation_db.collect_post_delete_terminal_receipt(
+            plan=plan,
+            target=target_asset.contract,
+            temporary_login=admin,
+            writer_config=writer_config,
+            managed_hba_receipt=managed_hba_receipt,
+            pre_delete_canonical_truth=truth_before,
+        )
+        assert terminal.observed_contract_sha256 == target_asset.contract.sha256
+        assert terminal.writer_session_identity_exact is True
+        assert terminal.temporary_login_absent is True
+        assert terminal.temporary_login_inventory_empty is True
+        assert terminal.migration_owner_memberships_absent is True
+        assert terminal.writer_authority_exact is True
+        assert terminal.writer_ping_verified is True
+        assert terminal.writer_ping_request_id == (
+            "schema-reconciliation-post-delete-terminal-v1"
+        )
+        assert terminal.fresh_writer_session_closed is True
+        assert terminal.tls_peer_certificate_sha256 == (
+            tls_peer_certificate_sha256
+        )
+        assert terminal.pre_delete_canonical_truth_receipt_sha256 == (
+            truth_before.sha256
+        )
+    finally:
+        _psql(
+            name,
+            DATABASE,
+            f"DROP ROLE IF EXISTS {admin};\n"
+            + _migration_invocation(
+                DATABASE,
+                MIGRATION.read_text(encoding="utf-8"),
+            )
+            + "\nDELETE FROM public.canonical_event_log WHERE case_id = '"
+            + seeded_case
+            + "';\n"
+            "DROP SCHEMA IF EXISTS canonical_brain_legacy_quarantine "
+            "CASCADE;\n",
+        )
+
+
+def test_real_postgresql_18_quarantine_projection_binds_object_identity(
+    real_writer_stack: RealWriterStack,
+    tmp_path: Path,
+) -> None:
+    name = real_writer_stack.name
+    database = real_writer_stack.backend._database
+    writer_config = database._config
+    admin = "muncho_canary_admin_" + "e" * 16
+    password = secrets.token_hex(32)
+    escaped_password = password.replace("'", "''")
+    target_asset = SchemaContractAsset.from_bytes(
+        SCHEMA_CONTRACT_ASSET.read_bytes()
+    )
+    artifact = _load_source_artifacts_for_tests()["base_migration"]
+    plan = schema_reconciliation._build_plan_from_artifact(
+        "e" * 40,
+        target_asset.contract,
+        artifact,
+        target_asset_sha256=target_asset.sha256,
+    )
+    admin_config = _temporary_admin_config(
+        writer_config,
+        tmp_path,
+        admin=admin,
+        password=password,
+    )
+    writer_probe = _open_postgres_session(writer_config)
+    try:
+        tls_peer_certificate_sha256 = (
+            writer_probe.tls_peer_certificate_sha256
+        )
+    finally:
+        writer_probe.close()
+    managed_hba_receipt = replace(
+        _test_managed_hba_receipt(writer_config),
+        server_certificate_sha256=tls_peer_certificate_sha256,
+    )
+    trampoline_before = _trampoline_semantic_identity(name)
+
+    try:
+        _psql(
+            name,
+            DATABASE,
+            f"CREATE ROLE {admin} LOGIN INHERIT NOSUPERUSER NOCREATEDB "
+            "NOCREATEROLE NOREPLICATION NOBYPASSRLS "
+            f"PASSWORD '{escaped_password}';\n",
+            secrets_=(password,),
+        )
+        _create_quarantine_truth_anchors(name)
+        _install_cloudsql_api_role_graph(name, admin)
+        assert _schema_reconciliation_role_graph(name, admin) == [
+            "2",
+            "2",
+            "canonical_brain_migration_owner,canonical_brain_writer",
+            admin,
+            "cloudsqladmin",
+            "t",
+            "t",
+            "t",
+        ]
+        reconciliation_database = (
+            schema_reconciliation_db.PostgresSchemaReconciliationDatabase(
+                plan=plan,
+                target=target_asset.contract,
+                admin_config=admin_config,
+                writer_config=writer_config,
+                managed_hba_receipt=managed_hba_receipt,
+            )
+        )
+
+        with reconciliation_database.transaction(
+            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
+        ) as first_observation:
+            first_observation.lock_canonical_truth()
+            contract_a = first_observation.observe_contract()
+            truth_a = first_observation.observe_canonical_truth()
+        assert contract_a.value == target_asset.contract.value
+
+        _psql(
+            name,
+            DATABASE,
+            "DROP TABLE canonical_brain_legacy_quarantine."
+            "reconciliation_receipts;\n"
+            "CREATE TABLE canonical_brain_legacy_quarantine."
+            "reconciliation_receipts ();\n",
+        )
+        with reconciliation_database.transaction(
+            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
+        ) as second_observation:
+            second_observation.lock_canonical_truth()
+            truth_b = second_observation.observe_canonical_truth()
+
+        assert truth_b.relation_receipts == truth_a.relation_receipts
+        assert truth_b.canonical14_sha256 == truth_a.canonical14_sha256
+        assert truth_b.quarantine_anchor_receipts[:2] == (
+            truth_a.quarantine_anchor_receipts[:2]
+        )
+        anchor_a = truth_a.quarantine_anchor_receipts[2]
+        anchor_b = truth_b.quarantine_anchor_receipts[2]
+        assert anchor_b.object_oid != anchor_a.object_oid
+        assert replace(anchor_b, object_oid=anchor_a.object_oid) == anchor_a
+        assert (
+            truth_b.quarantine_anchors_sha256
+            != truth_a.quarantine_anchors_sha256
+        )
+        assert truth_b.sha256 != truth_a.sha256
+
+        _psql(
+            name,
+            DATABASE,
+            "CREATE TABLE canonical_brain_legacy_quarantine."
+            "unexpected_data_relation ();\n",
+        )
+        with reconciliation_database.transaction(
+            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
+        ) as rejected_observation:
+            rejected_observation.lock_canonical_truth()
+            assert rejected_observation.observe_contract().value == (
+                target_asset.contract.value
+            )
+            with pytest.raises(
+                PostgresProtocolError,
+                match="schema_reconciliation_quarantine_anchor_invalid",
+            ):
+                rejected_observation.observe_canonical_truth()
+
+        assert _trampoline_semantic_identity(name) == trampoline_before
+        assert _psql_fields(
+            name,
+            DATABASE,
+            "SELECT pg_catalog.count(*)::text FROM public.canonical_event_log;",
+        ) == ["0"]
+        _psql(
+            name,
+            DATABASE,
+            "DROP TABLE canonical_brain_legacy_quarantine."
+            "unexpected_data_relation;\n",
+        )
+        with reconciliation_database.transaction(
+            advisory_lock_key=CANONICAL_WRITER_DEPLOYMENT_LOCK_KEY
+        ) as final_observation:
+            final_observation.lock_canonical_truth()
+            assert final_observation.observe_contract().value == (
+                target_asset.contract.value
+            )
+            assert final_observation.observe_canonical_truth() == truth_b
+    finally:
+        _psql(
+            name,
+            DATABASE,
+            f"DROP ROLE IF EXISTS {admin};\n"
+            "DROP SCHEMA IF EXISTS canonical_brain_legacy_quarantine "
+            "CASCADE;\n",
+        )
+
+
+def test_stock_postgresql_18_rejects_wrong_cloud_role_graph_cleanly(
+    real_writer_stack: RealWriterStack,
+) -> None:
+    """The exact custom-role path must not be faked with cloudsqlsuperuser."""
+
+    name = real_writer_stack.name
+    admin = "muncho_canary_admin_" + "a" * 16
+    asset = SchemaContractAsset.from_bytes(SCHEMA_CONTRACT_ASSET.read_bytes())
+    artifact = _load_source_artifacts_for_tests()["base_migration"]
+    plan = schema_reconciliation._build_plan_from_artifact(
+        "a" * 40,
+        asset.contract,
+        artifact,
+        target_asset_sha256=asset.sha256,
+    )
+    before_truth = _canonical14_identity(name)
+
+    _psql(
+        name,
+        DATABASE,
+        "DROP FUNCTION "
+        "canonical_brain._discord_guild_routeback_target_valid(jsonb);\n"
+        f"CREATE ROLE {admin} LOGIN INHERIT NOSUPERUSER CREATEDB CREATEROLE "
+        "NOREPLICATION NOBYPASSRLS;\n"
+        "GRANT cloudsqlsuperuser TO cloudsqladmin "
+        "WITH ADMIN TRUE, INHERIT FALSE, SET TRUE;\n"
+        f"GRANT cloudsqlsuperuser TO {admin} "
+        "WITH ADMIN FALSE, INHERIT TRUE, SET TRUE "
+        "GRANTED BY cloudsqladmin;\n",
+        )
+    try:
+        with pytest.raises(RuntimeError):
+            _psql_as(
+                name,
+                DATABASE,
+                admin,
+                "BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;\n"
+                + plan.mutation_sql
+                + "\nCOMMIT;\n",
+            )
+
+        assert _psql_fields(
+            name,
+            DATABASE,
+            "SELECT pg_catalog.to_regprocedure("
+            "'canonical_brain._discord_guild_routeback_target_valid(jsonb)') "
+            "IS NULL, (SELECT pg_catalog.count(*) FROM "
+            "pg_catalog.pg_auth_members AS membership JOIN "
+            "pg_catalog.pg_roles AS owner ON owner.oid = membership.roleid "
+            "OR owner.oid = membership.member WHERE owner.rolname = "
+            "'canonical_brain_migration_owner')::text;",
+        ) == ["t", "0"]
+        assert _psql_fields(
+            name,
+            DATABASE,
+            "SELECT pg_catalog.count(*)::text, "
+            "pg_catalog.bool_and(NOT membership.admin_option), "
+            "pg_catalog.bool_and(membership.inherit_option), "
+            "pg_catalog.bool_and(membership.set_option), "
+            "pg_catalog.min(grantor.rolname) FROM pg_catalog.pg_auth_members "
+            "AS membership JOIN pg_catalog.pg_roles AS granted ON granted.oid = "
+            "membership.roleid JOIN pg_catalog.pg_roles AS member ON member.oid = "
+            "membership.member JOIN pg_catalog.pg_roles AS grantor ON grantor.oid = "
+            "membership.grantor WHERE granted.rolname = 'cloudsqlsuperuser' AND "
+            f"member.rolname = '{admin}';",
+        ) == ["1", "t", "t", "t", "cloudsqladmin"]
+        assert _canonical14_identity(name) == before_truth
+    finally:
+        _psql(
+            name,
+            DATABASE,
+            f"DROP ROLE IF EXISTS {admin};\n"
+            "REVOKE cloudsqlsuperuser FROM cloudsqladmin "
+            "GRANTED BY postgres;\n"
+            + _migration_invocation(
+                DATABASE,
+                MIGRATION.read_text(encoding="utf-8"),
+            ),
         )
 
 

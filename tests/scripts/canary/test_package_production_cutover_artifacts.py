@@ -1356,6 +1356,10 @@ def test_packager_binds_gateway_imports_to_its_target_release_under_isolation(
         "def render_production_capability_units(**kwargs): raise AssertionError\n",
         encoding="utf-8",
     )
+    (gateway / "production_cron_continuity_package.py").write_text(
+        "PLAN_SCHEMA='muncho-production-cron-packaged-continuity-plan.v4'\n",
+        encoding="utf-8",
+    )
     (gateway / "operational_edge_catalog.py").write_text(
         "CREDENTIALS_BY_DOMAIN={name:() for name in ("
         "'adventico_email','bitrix','canonical','github','infrastructure',"
@@ -1464,6 +1468,10 @@ def test_build_emits_six_distinct_self_contained_action_sealed_artifacts(tmp_pat
         assert "gateway" not in imported_roots
         assert "scripts" not in imported_roots
         assert f"ALLOWED_ACTIONS = {actions!r}" in source
+        assert (
+            "PRODUCTION_CRON_CONTINUITY_PLAN_SCHEMA = "
+            f"{package.PRODUCTION_CRON_CONTINUITY_PLAN_SCHEMA!r}"
+        ) in source
         assert "__MUNCHO_" not in source
         assert "muncho_canary_brain" not in source
         assert "legacy reconciliation refuses the production database" not in source

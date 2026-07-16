@@ -79,6 +79,9 @@ from gateway.production_capability_units import (
     BROWSER_CONFIG_MODE,
     render_production_capability_units,
 )
+from gateway.production_cron_continuity_package import (
+    PLAN_SCHEMA as PRODUCTION_CRON_CONTINUITY_PLAN_SCHEMA,
+)
 from gateway import production_owner_runtime
 
 
@@ -98,6 +101,7 @@ SENTINELS = {
     "__MUNCHO_CONNECTOR_UNIT_TEMPLATE__",
     "__MUNCHO_GATEWAY_CONNECTOR_DROP_IN_BYTES__",
     "__MUNCHO_PRODUCTION_CAPABILITY_PREREQUISITE_CONTRACT__",
+    "__MUNCHO_PRODUCTION_CRON_CONTINUITY_PLAN_SCHEMA__",
     "__MUNCHO_SEALED_RUNTIME_ARTIFACT_REQUEST__",
 }
 UNIT_INPUT_SCHEMA = "muncho-production-cutover-unit-inputs.v2"
@@ -1142,6 +1146,10 @@ def render_artifact(
     rendered = rendered.replace(
         "__MUNCHO_PRODUCTION_CAPABILITY_PREREQUISITE_CONTRACT__",
         repr(dict(prerequisite_contract)),
+    )
+    rendered = rendered.replace(
+        "__MUNCHO_PRODUCTION_CRON_CONTINUITY_PLAN_SCHEMA__",
+        repr(PRODUCTION_CRON_CONTINUITY_PLAN_SCHEMA),
     )
     rendered = rendered.replace(
         "__MUNCHO_SEALED_RUNTIME_ARTIFACT_REQUEST__",

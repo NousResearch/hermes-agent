@@ -116,6 +116,9 @@ FIXTURE_EDGE_PUBLIC_KEY_PATH = (
 )
 WRITER_PREFLIGHT_PLAN_SCHEMA = "muncho-writer-preflight-publication-plan.v2"
 WRITER_PREFLIGHT_RECEIPT_SCHEMA = "muncho-writer-preflight-publication.v3"
+WRITER_PREFLIGHT_FAILURE_SCHEMA = (
+    "muncho-writer-preflight-publication-failure.v2"
+)
 WRITER_PREFLIGHT_MODULE = "gateway.canonical_writer_preflight_publisher"
 WRITER_PREFLIGHT_EVIDENCE_BASE = (
     "/var/lib/muncho-writer-canary-evidence/staged-publication"
@@ -159,7 +162,11 @@ WRITER_EXTERNAL_IAM_LIVE_PATH = (
 WRITER_OWNER_APPROVAL_ROOT = "/etc/muncho/writer-activation/approvals"
 SQL_INSTANCE = "muncho-canary-pg18-v2"
 TEMPORARY_ADMIN_AUTHORITY_RECEIPT_SCHEMA = (
-    "muncho-cloud-sql-temporary-admin-authority.v1"
+    "muncho-cloud-sql-temporary-admin-authority.v2"
+)
+SCHEMA_RECONCILIATION_DATABASE_ROLES = (
+    "canonical_brain_migration_owner",
+    "canonical_brain_writer",
 )
 CANARY_BOOTSTRAP_LOGIN = "canonical_brain_canary_bootstrap_login"
 CANARY_BOOTSTRAP_DATABASE_ROLE = "canonical_brain_canary_bootstrap"
@@ -236,6 +243,30 @@ PHASE_B_APPROVAL_SSHSIG_NAMESPACE = (
 PHASE_B_SOURCE_AUTH_SSHSIG_NAMESPACE = (
     "muncho-canonical-writer-phase-b-source-auth-v1"
 )
+SCHEMA_RECONCILIATION_ADMIN_PREFLIGHT_SSHSIG_NAMESPACE = (
+    "muncho-canonical-writer-schema-reconciliation-admin-preflight-owner-v2"
+)
+SCHEMA_RECONCILIATION_PREFLIGHT_AUTHORIZATION_SSHSIG_NAMESPACE = (
+    "muncho-canonical-writer-schema-reconciliation-preflight-authorization-owner-v2"
+)
+SCHEMA_RECONCILIATION_ADMIN_CLEANUP_SSHSIG_NAMESPACE = (
+    "muncho-canonical-writer-schema-reconciliation-admin-cleanup-owner-v2"
+)
+SCHEMA_RECONCILIATION_ADMIN_PREFLIGHT_MAGIC = b"MSA2"
+SCHEMA_RECONCILIATION_PREFLIGHT_AUTHORIZATION_MAGIC = b"MSP2"
+SCHEMA_RECONCILIATION_ADMIN_CLEANUP_MAGIC = b"MSC2"
+SCHEMA_RECONCILIATION_CREDENTIAL_BYTES = 64
+SCHEMA_RECONCILIATION_MIN_GATE_REMAINING_SECONDS = 900
+_SCHEMA_RECONCILIATION_TRANSITIONS = {
+    ("empty", "exact_old_missing_one_helper"): "reconcile_missing_helper",
+    ("empty", "exact_target"): "adopt_existing_target",
+    (
+        "authorized_intent",
+        "exact_old_missing_one_helper",
+    ): "resume_durable_intent",
+    ("authorized_intent", "exact_target"): "terminalize_durable_intent",
+    ("terminal", "exact_target"): "reattest_terminal",
+}
 PHASE_B_OWNER_AUTHORITY_KIND = "skyvision_mac_ops_ed25519"
 PHASE_B_OWNER_APPROVAL_ROOT = Path(
     "/Users/emillomliev/.hermes/owner-approvals/phase-b"
@@ -338,6 +369,7 @@ _STOPPED_RELEASE_UNITS = (
     "muncho-canary-discord-edge.service",
     "muncho-discord-egress.service",
     "muncho-canonical-writer.service",
+    "muncho-canonical-writer-phase-b-readiness.service",
     "muncho-canonical-writer-export.service",
     "muncho-canonical-writer-export.timer",
     "hermes-cloud-gateway.service",
@@ -1271,6 +1303,9 @@ class _PhaseBOwnerExternalSigner:
             not in {
                 PHASE_B_APPROVAL_SSHSIG_NAMESPACE,
                 PHASE_B_SOURCE_AUTH_SSHSIG_NAMESPACE,
+                SCHEMA_RECONCILIATION_ADMIN_PREFLIGHT_SSHSIG_NAMESPACE,
+                SCHEMA_RECONCILIATION_PREFLIGHT_AUTHORIZATION_SSHSIG_NAMESPACE,
+                SCHEMA_RECONCILIATION_ADMIN_CLEANUP_SSHSIG_NAMESPACE,
             }
         ):
             raise OwnerLauncherError("phase_b_owner_signing_request_invalid")
@@ -1416,6 +1451,304 @@ class _PhaseBOwnerExternalSigner:
         except (TypeError, ValueError) as exc:
             raise OwnerLauncherError("phase_b_owner_signature_invalid") from exc
         return signature
+
+
+def _schema_reconciliation_time_window(
+    gate: Mapping[str, Any],
+    *,
+    now_unix: int,
+) -> tuple[int, int]:
+    if (
+        type(now_unix) is not int
+        or type(gate.get("issued_at_unix")) is not int
+        or type(gate.get("expires_at_unix")) is not int
+        or not gate["issued_at_unix"] <= now_unix < gate["expires_at_unix"]
+    ):
+        raise OwnerLauncherError("schema_reconciliation_owner_frame_expired")
+    expires_at = min(int(gate["expires_at_unix"]), now_unix + 300)
+    if expires_at <= now_unix:
+        raise OwnerLauncherError("schema_reconciliation_owner_frame_expired")
+    return now_unix, expires_at
+
+
+def _schema_reconciliation_nonce_sha256(
+    nonce_factory: Callable[[int], bytes],
+) -> str:
+    try:
+        nonce = nonce_factory(32)
+    except BaseException:
+        raise OwnerLauncherError("schema_reconciliation_owner_nonce_failed") from None
+    if not isinstance(nonce, bytes) or len(nonce) != 32:
+        raise OwnerLauncherError("schema_reconciliation_owner_nonce_failed")
+    return _sha256(nonce)
+
+
+def _schema_reconciliation_signed_claim(
+    unsigned: Mapping[str, Any],
+    *,
+    digest_field: str,
+    signature_payload: Callable[[Mapping[str, Any]], bytes],
+    namespace: str,
+    signer: _PhaseBOwnerExternalSigner,
+    owner_authority: _PhaseBOwnerPublicAuthority,
+) -> Mapping[str, Any]:
+    if (
+        not isinstance(unsigned, Mapping)
+        or not isinstance(digest_field, str)
+        or not digest_field
+        or not callable(signature_payload)
+    ):
+        raise OwnerLauncherError("schema_reconciliation_owner_claim_invalid")
+    template = {
+        **copy.deepcopy(dict(unsigned)),
+        digest_field: _sha256(_canonical_bytes(unsigned)),
+        "signature_sshsig": "",
+    }
+    try:
+        payload = signature_payload(template)
+        signature = signer.sign(
+            payload,
+            namespace=namespace,
+            expected_authority=owner_authority,
+        )
+    except OwnerLauncherError:
+        raise
+    except BaseException:
+        raise OwnerLauncherError(
+            "schema_reconciliation_owner_claim_invalid"
+        ) from None
+    if not isinstance(signature, str) or not signature:
+        raise OwnerLauncherError("schema_reconciliation_owner_claim_invalid")
+    return {**template, "signature_sshsig": signature}
+
+
+def _schema_reconciliation_frame(
+    magic: bytes,
+    claim: Mapping[str, Any],
+    *,
+    credential: bytearray | None = None,
+) -> bytearray:
+    allowed = {
+        SCHEMA_RECONCILIATION_ADMIN_PREFLIGHT_MAGIC,
+        SCHEMA_RECONCILIATION_PREFLIGHT_AUTHORIZATION_MAGIC,
+        SCHEMA_RECONCILIATION_ADMIN_CLEANUP_MAGIC,
+    }
+    if magic not in allowed or not isinstance(claim, Mapping):
+        raise OwnerLauncherError("schema_reconciliation_owner_frame_invalid")
+    expects_credential = magic == SCHEMA_RECONCILIATION_ADMIN_PREFLIGHT_MAGIC
+    if expects_credential:
+        if (
+            not isinstance(credential, bytearray)
+            or len(credential) != SCHEMA_RECONCILIATION_CREDENTIAL_BYTES
+        ):
+            raise OwnerLauncherError(
+                "schema_reconciliation_owner_frame_invalid"
+            )
+    elif credential is not None:
+        raise OwnerLauncherError("schema_reconciliation_owner_frame_invalid")
+    payload = _canonical_bytes(claim)
+    if not 2 <= len(payload) <= PHASE_B_MAX_RESPONSE_BYTES:
+        raise OwnerLauncherError("schema_reconciliation_owner_frame_invalid")
+    frame = bytearray(magic + struct.pack(">I", len(payload)) + payload)
+    if credential is not None:
+        frame.extend(credential)
+    return frame
+
+
+def build_schema_reconciliation_admin_preflight(
+    *,
+    gate: Mapping[str, Any],
+    cloud_sql_authority_receipt: Mapping[str, Any],
+    credential: bytearray,
+    signer: _PhaseBOwnerExternalSigner,
+    owner_authority: _PhaseBOwnerPublicAuthority,
+    now_unix: int,
+    nonce_factory: Callable[[int], bytes] = secrets.token_bytes,
+) -> Mapping[str, Any]:
+    from gateway import canonical_writer_schema_reconciliation_bootstrap as bootstrap
+
+    issued_at, expires_at = _schema_reconciliation_time_window(
+        gate,
+        now_unix=now_unix,
+    )
+    if (
+        not isinstance(credential, bytearray)
+        or len(credential) != bootstrap.OPAQUE_CREDENTIAL_BYTES
+        or bootstrap.OPAQUE_CREDENTIAL_BYTES
+        != SCHEMA_RECONCILIATION_CREDENTIAL_BYTES
+    ):
+        raise OwnerLauncherError("schema_reconciliation_owner_frame_invalid")
+    unsigned = {
+        "schema": bootstrap.OWNER_ADMIN_PREFLIGHT_SCHEMA,
+        "frame_schema": bootstrap.ADMIN_PREFLIGHT_FRAME_SCHEMA,
+        "action": "authorize_temporary_admin_locked_preflight",
+        "approved": True,
+        "gate_sha256": gate["gate_sha256"],
+        "release_revision": gate["release_revision"],
+        "plan_sha256": gate["plan_sha256"],
+        "temporary_admin_username_sha256": gate[
+            "temporary_admin_username_sha256"
+        ],
+        "owner_subject_sha256": gate["owner_subject_sha256"],
+        "owner_key_id": gate["owner_key_id"],
+        "cloud_sql_authority_receipt": copy.deepcopy(
+            dict(cloud_sql_authority_receipt)
+        ),
+        "cloud_sql_authority_receipt_sha256": (
+            cloud_sql_authority_receipt.get("receipt_sha256")
+        ),
+        "credential_present": True,
+        "credential_length": len(credential),
+        "issued_at_unix": issued_at,
+        "expires_at_unix": expires_at,
+        "nonce_sha256": _schema_reconciliation_nonce_sha256(nonce_factory),
+        "secret_material_recorded": False,
+    }
+    return _schema_reconciliation_signed_claim(
+        unsigned,
+        digest_field="authority_claim_sha256",
+        signature_payload=bootstrap.admin_preflight_signature_payload,
+        namespace=SCHEMA_RECONCILIATION_ADMIN_PREFLIGHT_SSHSIG_NAMESPACE,
+        signer=signer,
+        owner_authority=owner_authority,
+    )
+
+
+def build_schema_reconciliation_preflight_authorization(
+    *,
+    gate: Mapping[str, Any],
+    admin_preflight: Mapping[str, Any],
+    challenge: Mapping[str, Any],
+    signer: _PhaseBOwnerExternalSigner,
+    owner_authority: _PhaseBOwnerPublicAuthority,
+    now_unix: int,
+    nonce_factory: Callable[[int], bytes] = secrets.token_bytes,
+) -> Mapping[str, Any]:
+    from gateway import canonical_writer_schema_reconciliation_bootstrap as bootstrap
+
+    issued_at, expires_at = _schema_reconciliation_time_window(
+        gate,
+        now_unix=now_unix,
+    )
+    journal = gate.get("journal_head")
+    preflight = challenge.get("preflight")
+    if not isinstance(journal, Mapping) or not isinstance(preflight, Mapping):
+        raise OwnerLauncherError("schema_reconciliation_owner_frame_invalid")
+    mode = _SCHEMA_RECONCILIATION_TRANSITIONS.get(
+        (str(journal.get("state")), str(preflight.get("state")))
+    )
+    if mode is None:
+        raise OwnerLauncherError("schema_reconciliation_transition_invalid")
+    unsigned = {
+        "schema": bootstrap.OWNER_PREFLIGHT_AUTHORIZATION_SCHEMA,
+        "frame_schema": bootstrap.PREFLIGHT_AUTHORIZATION_FRAME_SCHEMA,
+        "action": "apply_schema_reconciliation",
+        "approved": True,
+        "gate_sha256": gate["gate_sha256"],
+        "authority_claim_sha256": admin_preflight[
+            "authority_claim_sha256"
+        ],
+        "preflight_challenge_sha256": challenge[
+            "preflight_challenge_sha256"
+        ],
+        "release_revision": gate["release_revision"],
+        "plan_sha256": gate["plan_sha256"],
+        "journal_head_sha256": journal["head_sha256"],
+        "execution_mode": mode,
+        "preflight_sha256": preflight["preflight_sha256"],
+        "preflight_state": preflight["state"],
+        "observed_contract_sha256": preflight[
+            "observed_contract_sha256"
+        ],
+        "truth_receipt_sha256": preflight["truth_receipt_sha256"],
+        "owner_subject_sha256": gate["owner_subject_sha256"],
+        "owner_key_id": gate["owner_key_id"],
+        "issued_at_unix": issued_at,
+        "expires_at_unix": expires_at,
+        "nonce_sha256": _schema_reconciliation_nonce_sha256(nonce_factory),
+        "stored_authorized_intent_sha256": journal[
+            "authorized_intent_sha256"
+        ],
+        "stored_terminal_receipt_sha256": journal[
+            "terminal_receipt_sha256"
+        ],
+        "secret_material_recorded": False,
+    }
+    return _schema_reconciliation_signed_claim(
+        unsigned,
+        digest_field="preflight_authorization_claim_sha256",
+        signature_payload=bootstrap.preflight_authorization_signature_payload,
+        namespace=(
+            SCHEMA_RECONCILIATION_PREFLIGHT_AUTHORIZATION_SSHSIG_NAMESPACE
+        ),
+        signer=signer,
+        owner_authority=owner_authority,
+    )
+
+
+def build_schema_reconciliation_admin_cleanup(
+    *,
+    gate: Mapping[str, Any],
+    admin_preflight: Mapping[str, Any],
+    challenge: Mapping[str, Any],
+    authorization: Mapping[str, Any],
+    intermediate: Mapping[str, Any],
+    cloud_sql_absence_receipt: Mapping[str, Any],
+    signer: _PhaseBOwnerExternalSigner,
+    owner_authority: _PhaseBOwnerPublicAuthority,
+    now_unix: int,
+    nonce_factory: Callable[[int], bytes] = secrets.token_bytes,
+) -> Mapping[str, Any]:
+    from gateway import canonical_writer_schema_reconciliation_bootstrap as bootstrap
+
+    issued_at, expires_at = _schema_reconciliation_time_window(
+        gate,
+        now_unix=now_unix,
+    )
+    unsigned = {
+        "schema": bootstrap.OWNER_ADMIN_CLEANUP_SCHEMA,
+        "frame_schema": bootstrap.ADMIN_CLEANUP_FRAME_SCHEMA,
+        "action": "confirm_temporary_admin_absence",
+        "approved": True,
+        "gate_sha256": gate["gate_sha256"],
+        "authority_claim_sha256": admin_preflight[
+            "authority_claim_sha256"
+        ],
+        "preflight_challenge_sha256": challenge[
+            "preflight_challenge_sha256"
+        ],
+        "preflight_authorization_claim_sha256": authorization[
+            "preflight_authorization_claim_sha256"
+        ],
+        "database_intermediate_sha256": intermediate[
+            "database_intermediate_sha256"
+        ],
+        "release_revision": gate["release_revision"],
+        "plan_sha256": gate["plan_sha256"],
+        "temporary_admin_username_sha256": gate[
+            "temporary_admin_username_sha256"
+        ],
+        "owner_subject_sha256": gate["owner_subject_sha256"],
+        "owner_key_id": gate["owner_key_id"],
+        "cloud_sql_absence_receipt": copy.deepcopy(
+            dict(cloud_sql_absence_receipt)
+        ),
+        "cloud_sql_absence_receipt_sha256": (
+            cloud_sql_absence_receipt.get("evidence_sha256")
+        ),
+        "issued_at_unix": issued_at,
+        "expires_at_unix": expires_at,
+        "nonce_sha256": _schema_reconciliation_nonce_sha256(nonce_factory),
+        "secret_material_recorded": False,
+    }
+    return _schema_reconciliation_signed_claim(
+        unsigned,
+        digest_field="cleanup_claim_sha256",
+        signature_payload=bootstrap.admin_cleanup_signature_payload,
+        namespace=SCHEMA_RECONCILIATION_ADMIN_CLEANUP_SSHSIG_NAMESPACE,
+        signer=signer,
+        owner_authority=owner_authority,
+    )
 
 
 def _object_without_duplicate_keys(
@@ -5133,6 +5466,9 @@ class CloudSqlTemporaryAdmin:
             "type": "BUILT_IN",
         }
 
+    def _update_user_query_values(self, username: str) -> Mapping[str, object]:
+        return {"host": "", "name": username}
+
     def _users_and_exact_resource(
         self,
         *,
@@ -5316,7 +5652,10 @@ class CloudSqlTemporaryAdmin:
         self._ensure_mutation_observation()
         if not self._settle_user_presence(username, expected=True):
             raise OwnerLauncherError("temporary_admin_recovery_user_missing")
-        query = urllib.parse.urlencode({"host": "", "name": username})
+        query = urllib.parse.urlencode(
+            self._update_user_query_values(username),
+            doseq=True,
+        )
         self._mutation_ambiguous = True
         self._mutation_ambiguity_observed = True
         try:
@@ -5707,6 +6046,243 @@ class CloudSqlTemporaryAdmin:
         )
 
 
+class CloudSqlSchemaReconciliationAdmin(CloudSqlTemporaryAdmin):
+    """Exact owner-approved Cloud SQL login for one schema repair.
+
+    Cloud SQL grants custom PostgreSQL roles with INHERIT but without SET.
+    The migration-owner membership is full ephemeral owner-equivalent
+    authority over Canonical Brain objects; it is not ordinary writer access.
+    This boundary never pretends the login can SET ROLE.  It binds that exact
+    authority to the sealed owner-owned trampoline and explicitly revokes
+    every stale role when recovering a deterministic prior login.
+    """
+
+    _DATABASE_ROLES = SCHEMA_RECONCILIATION_DATABASE_ROLES
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._fixed_update_etag: str | None = None
+
+    @staticmethod
+    def _valid_etag(value: object) -> bool:
+        return (
+            isinstance(value, str)
+            and 1 <= len(value) <= 1024
+            and all(0x21 <= ord(character) <= 0x7E for character in value)
+        )
+
+    def _validate_exact_user_resource(
+        self,
+        item: Mapping[str, Any],
+        *,
+        username: str,
+    ) -> Mapping[str, Any]:
+        if (
+            not self._valid_target_username(username)
+            or item.get("kind") != "sql#user"
+            or item.get("name") != username
+            or item.get("project") != PROJECT
+            or item.get("instance") != SQL_INSTANCE
+            or item.get("host") not in (None, "")
+        ):
+            raise OwnerLauncherError("invalid_cloud_sql_users")
+        # The real Cloud SQL users.list response omits databaseRoles and may
+        # carry an ETag that differs from users.get.  Treat this projection as
+        # presence-only; every authority-bearing field is read from users.get.
+        return {
+            "instance": SQL_INSTANCE,
+            "name": username,
+            "project": PROJECT,
+        }
+
+    def _validate_described_resource(
+        self,
+        item: Mapping[str, Any],
+        *,
+        username: str,
+        require_exact_roles: bool,
+    ) -> Mapping[str, Any]:
+        roles = item.get("databaseRoles")
+        etag = item.get("etag")
+        if (
+            not self._valid_target_username(username)
+            or item.get("kind") != "sql#user"
+            or item.get("name") != username
+            or item.get("project") != PROJECT
+            or item.get("instance") != SQL_INSTANCE
+            or item.get("type") != "BUILT_IN"
+            or item.get("host") != ""
+            or not self._valid_etag(etag)
+            or "password" in item
+            or type(roles) is not list
+            or any(not isinstance(role, str) for role in roles)
+            or len(roles) != len(set(roles))
+            or (
+                require_exact_roles
+                and sorted(roles) != list(self._DATABASE_ROLES)
+            )
+        ):
+            raise OwnerLauncherError(
+                "cloud_sql_schema_reconciliation_admin_resource_invalid"
+            )
+        return {
+            "databaseRoles": sorted(roles),
+            "etag": etag,
+            "host": "",
+            "instance": SQL_INSTANCE,
+            "name": username,
+            "project": PROJECT,
+            "type": "BUILT_IN",
+        }
+
+    def _user_url(self, username: str) -> str:
+        if not self._valid_target_username(username):
+            raise OwnerLauncherError("invalid_admin_username")
+        encoded_username = urllib.parse.quote(username, safe="")
+        query = urllib.parse.urlencode({"host": ""})
+        return f"{self._users_url}/{encoded_username}?{query}"
+
+    def _description_snapshot(
+        self,
+        username: str,
+        *,
+        require_exact_roles: bool,
+    ) -> Mapping[str, Any] | None:
+        before = self._instance_operations()
+        names, _presence = self._users_and_exact_resource(
+            exact_admin_username=username
+        )
+        resource: Mapping[str, Any] | None = None
+        if username in names:
+            try:
+                payload = self._client.request_json(
+                    "GET",
+                    self._user_url(username),
+                )
+            except OwnerLauncherError:
+                raise OwnerLauncherError(
+                    "cloud_sql_schema_reconciliation_admin_resource_drifted"
+                ) from None
+            resource = self._validate_described_resource(
+                payload,
+                username=username,
+                require_exact_roles=require_exact_roles,
+            )
+        after = self._instance_operations()
+        if before != after:
+            raise OwnerLauncherError(
+                "cloud_sql_schema_reconciliation_admin_resource_drifted"
+            )
+        return resource
+
+    def _role_bound_resource(
+        self,
+        username: str,
+        *,
+        require_exact_roles: bool,
+    ) -> Mapping[str, Any] | None:
+        first = self._description_snapshot(
+            username,
+            require_exact_roles=require_exact_roles,
+        )
+        second = self._description_snapshot(
+            username,
+            require_exact_roles=require_exact_roles,
+        )
+        if first != second:
+            raise OwnerLauncherError(
+                "cloud_sql_schema_reconciliation_admin_resource_drifted"
+            )
+        return second
+
+    def _create_user_body(self, username: str, password: str) -> Mapping[str, Any]:
+        return {
+            **super()._create_user_body(username, password),
+            "databaseRoles": list(self._DATABASE_ROLES),
+        }
+
+    def _update_user_query_values(self, username: str) -> Mapping[str, object]:
+        return {
+            "host": "",
+            "name": username,
+            "databaseRoles": list(self._DATABASE_ROLES),
+            "revokeExistingRoles": "true",
+        }
+
+    def _update_user_body(self, username: str, password: str) -> Mapping[str, Any]:
+        if self._fixed_update_etag is None:
+            raise OwnerLauncherError(
+                "cloud_sql_schema_reconciliation_admin_resource_invalid"
+            )
+        return {
+            "databaseRoles": list(self._DATABASE_ROLES),
+            "etag": self._fixed_update_etag,
+            "name": username,
+            "password": password,
+            "revokeExistingRoles": True,
+            "type": "BUILT_IN",
+        }
+
+    def create_or_rotate_recovery(self, username: str, password: str) -> None:
+        if not self._valid_target_username(username):
+            raise OwnerLauncherError("invalid_admin_username")
+        self._ensure_mutation_observation()
+        resource = self._role_bound_resource(
+            username,
+            require_exact_roles=False,
+        )
+        if resource is None:
+            self.create(username, password)
+        else:
+            etag = resource.get("etag")
+            if not self._valid_etag(etag):
+                raise OwnerLauncherError(
+                    "cloud_sql_schema_reconciliation_admin_resource_invalid"
+                )
+            self._fixed_update_etag = str(etag)
+            try:
+                self.rotate_existing(username, password)
+            finally:
+                self._fixed_update_etag = None
+        self.require_current_authority(username)
+
+    def require_current_authority(self, username: str) -> None:
+        super().require_current_authority(username)
+        resource = self._role_bound_resource(username, require_exact_roles=True)
+        if resource is None:
+            self._mutation_ambiguous = True
+            self._mutation_ambiguity_observed = True
+            raise OwnerLauncherError(
+                "cloud_sql_schema_reconciliation_admin_authority_unconfirmed"
+            )
+        super().require_current_authority(username)
+
+    def temporary_admin_authority_receipt(
+        self,
+        username: str,
+    ) -> Mapping[str, Any]:
+        base = dict(super().temporary_admin_authority_receipt(username))
+        base.pop("receipt_sha256", None)
+        resource = self._role_bound_resource(username, require_exact_roles=True)
+        if resource is None:
+            raise OwnerLauncherError(
+                "cloud_sql_schema_reconciliation_admin_authority_unconfirmed"
+            )
+        self.require_current_authority(username)
+        unsigned = {
+            **base,
+            "database_roles": list(self._DATABASE_ROLES),
+            "cloudsqlsuperuser_absent": True,
+            "resource_etag_sha256": _sha256(
+                str(resource["etag"]).encode("ascii")
+            ),
+        }
+        return {
+            **unsigned,
+            "receipt_sha256": _sha256(_canonical_bytes(unsigned)),
+        }
+
+
 class CloudSqlCanaryBootstrapLogin(CloudSqlTemporaryAdmin):
     """Fixed Cloud SQL boundary for the canary bootstrap login.
 
@@ -5838,6 +6414,16 @@ class CloudSqlCanaryBootstrapLogin(CloudSqlTemporaryAdmin):
             "name": CANARY_BOOTSTRAP_LOGIN,
             "password": password,
             "type": "BUILT_IN",
+        }
+
+    def _update_user_query_values(self, username: str) -> Mapping[str, object]:
+        if username != CANARY_BOOTSTRAP_LOGIN:
+            raise OwnerLauncherError("cloud_sql_bootstrap_login_target_invalid")
+        return {
+            "host": "",
+            "name": CANARY_BOOTSTRAP_LOGIN,
+            "databaseRoles": [CANARY_BOOTSTRAP_DATABASE_ROLE],
+            "revokeExistingRoles": "true",
         }
 
     def begin_mutation_observation(self) -> None:
@@ -8031,6 +8617,8 @@ class RemoteSecretSession(Protocol):
 
     def mark_validated(self, receipt: Mapping[str, Any]) -> None: ...
 
+    def abort_and_prove_terminated(self) -> None: ...
+
     def close(self) -> None: ...
 
 
@@ -8088,6 +8676,7 @@ class _IapRemoteSession:
         termination_timeout_seconds: float = 15.0,
         maximum_line_bytes: int = _MAX_JSON_LINE_BYTES,
         postflight_guard: Callable[[], None] | None = None,
+        authority_guard: Callable[[], None] | None = None,
     ) -> None:
         if (
             len(argv) < len(_GCLOUD_PYTHON_ISOLATION_ARGS) + 3
@@ -8113,6 +8702,11 @@ class _IapRemoteSession:
             raise OwnerLauncherError("remote_ndjson_limit_invalid")
         self._maximum_line_bytes = maximum_line_bytes
         self._postflight_guard = postflight_guard or (lambda: None)
+        self._authority_guard = authority_guard or self._postflight_guard
+        if not callable(self._postflight_guard) or not callable(
+            self._authority_guard
+        ):
+            raise OwnerLauncherError("iap_ssh_authority_guard_invalid")
         self._postflight_completed = False
         try:
             self._process = popen_factory(
@@ -8148,6 +8742,16 @@ class _IapRemoteSession:
     @property
     def terminal_receipt_validated(self) -> bool:
         return self._validated_terminal
+
+    def require_current_authority(self) -> None:
+        """Recheck the same pinned IAP/OS Login authorization snapshot."""
+
+        try:
+            self._authority_guard()
+        except OwnerLauncherError:
+            raise
+        except BaseException:
+            raise OwnerLauncherError("iap_ssh_authorization_changed") from None
 
     def _read_line(self, timeout_seconds: float) -> Mapping[str, Any]:
         if not 0 < timeout_seconds <= 2_400:
@@ -8210,6 +8814,7 @@ class _IapRemoteSession:
         close_stdin: bool,
         write_guard: Callable[[], None] | None = None,
         on_first_write: Callable[[], None] | None = None,
+        on_write_complete: Callable[[], None] | None = None,
     ) -> Mapping[str, Any]:
         if self._stdin_closed:
             raise OwnerLauncherError("remote_frame_state_invalid")
@@ -8285,6 +8890,15 @@ class _IapRemoteSession:
                     pass
             view.release()
             source_view.release()
+        if on_write_complete is not None:
+            try:
+                on_write_complete()
+            except OwnerLauncherError:
+                raise
+            except BaseException:
+                raise OwnerLauncherError(
+                    "iap_ssh_post_write_cleanup_failed"
+                ) from None
         self._frames_written += 1
         return self._read_line(self._post_frame_timeout)
 
@@ -8342,6 +8956,102 @@ class _IapRemoteSession:
         finally:
             view.release()
         return self._write_frame(frame, close_stdin=terminal)
+
+    def schema_reconciliation_exchange(
+        self,
+        frame: bytes | bytearray | memoryview,
+        *,
+        terminal: bool,
+    ) -> Mapping[str, Any]:
+        """Exchange one frame in the fixed three-frame reconciliation v2 flow."""
+
+        if (
+            type(terminal) is not bool
+            or self._stdin_closed
+            or self._frames_written >= 3
+            or self._messages_read != self._frames_written + 1
+            or terminal is not (self._frames_written == 2)
+        ):
+            raise OwnerLauncherError(
+                "schema_reconciliation_remote_frame_state_invalid"
+            )
+        self._validate_schema_reconciliation_frame(
+            frame,
+            sequence=self._frames_written,
+        )
+        return self._write_frame(frame, close_stdin=terminal)
+
+    @staticmethod
+    def _validate_schema_reconciliation_frame(
+        frame: bytes | bytearray | memoryview,
+        *,
+        sequence: int,
+    ) -> None:
+        if type(sequence) is not int or sequence not in {0, 1, 2}:
+            raise OwnerLauncherError(
+                "schema_reconciliation_remote_frame_invalid"
+            )
+        try:
+            view = memoryview(frame).cast("B")
+        except (TypeError, ValueError):
+            raise OwnerLauncherError(
+                "schema_reconciliation_remote_frame_invalid"
+            ) from None
+        try:
+            if view.nbytes < 10:
+                raise OwnerLauncherError(
+                    "schema_reconciliation_remote_frame_invalid"
+                )
+            magic = bytes(view[:4])
+            payload_size = struct.unpack(">I", view[4:8])[0]
+            expected_magic = (
+                SCHEMA_RECONCILIATION_ADMIN_PREFLIGHT_MAGIC,
+                SCHEMA_RECONCILIATION_PREFLIGHT_AUTHORIZATION_MAGIC,
+                SCHEMA_RECONCILIATION_ADMIN_CLEANUP_MAGIC,
+            )[sequence]
+            credential_size = (
+                SCHEMA_RECONCILIATION_CREDENTIAL_BYTES if sequence == 0 else 0
+            )
+            if (
+                magic != expected_magic
+                or not 2 <= payload_size <= PHASE_B_MAX_RESPONSE_BYTES
+                or view.nbytes != 8 + payload_size + credential_size
+            ):
+                raise OwnerLauncherError(
+                    "schema_reconciliation_remote_frame_invalid"
+                )
+        finally:
+            view.release()
+
+    def schema_reconciliation_exchange_before(
+        self,
+        frame: bytes | bytearray | memoryview,
+        *,
+        write_guard: Callable[[], None],
+        on_first_write: Callable[[], None],
+        on_write_complete: Callable[[], None],
+    ) -> Mapping[str, Any]:
+        """Send only A1 after one last owner/Cloud authority recheck."""
+
+        if (
+            self._stdin_closed
+            or self._frames_written != 0
+            or self._messages_read != 1
+            or not callable(write_guard)
+            or not callable(on_first_write)
+            or not callable(on_write_complete)
+        ):
+            raise OwnerLauncherError(
+                "schema_reconciliation_remote_frame_state_invalid"
+            )
+        self._validate_schema_reconciliation_frame(frame, sequence=0)
+        return self._write_frame(
+            frame,
+            close_stdin=False,
+            write_guard=write_guard,
+            on_first_write=on_first_write,
+            on_write_complete=on_write_complete,
+        )
 
     def finish(self, frame: bytes | bytearray | memoryview) -> Mapping[str, Any]:
         if (
@@ -8436,6 +9146,57 @@ class _IapRemoteSession:
         self._termination_proven = True
         self._run_postflight()
 
+    def abort_and_prove_terminated(self) -> None:
+        """Close stdin and require the remote fail-closed process to exit 2."""
+
+        if self._termination_proven:
+            self._run_postflight()
+            return
+        deadline = time.monotonic() + self._termination_timeout
+        selector: selectors.BaseSelector | None = None
+        drained = len(self._buffer)
+        self._buffer.clear()
+        try:
+            self._close_stdin()
+            descriptor = self._process.stdout.fileno()
+            selector = selectors.DefaultSelector()
+            selector.register(descriptor, selectors.EVENT_READ)
+            while not self._stdout_eof:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise OwnerLauncherError("iap_ssh_termination_timeout")
+                if not selector.select(min(remaining, 1.0)):
+                    continue
+                chunk = os.read(descriptor, 64 * 1024)
+                if not chunk:
+                    self._stdout_eof = True
+                    break
+                drained += len(chunk)
+                if drained > _HTTP_RESPONSE_MAX_BYTES:
+                    raise OwnerLauncherError("remote_ndjson_oversized")
+            try:
+                returncode = self._process.wait(
+                    max(0.1, deadline - time.monotonic())
+                )
+            except subprocess.TimeoutExpired:
+                raise OwnerLauncherError(
+                    "iap_ssh_termination_timeout"
+                ) from None
+            if returncode != 2:
+                raise OwnerLauncherError("iap_ssh_abort_exit_mismatch")
+            self._termination_proven = True
+            self._run_postflight()
+        except BaseException:
+            self._force_local_stop()
+            try:
+                self._run_postflight()
+            except BaseException:
+                pass
+            raise RemoteTerminationUnconfirmed() from None
+        finally:
+            if selector is not None:
+                selector.close()
+
     def _run_postflight(self) -> None:
         if self._postflight_completed:
             return
@@ -8487,6 +9248,15 @@ class IapCoordinatorTransport:
 
     _RELEASE_BASE = "/opt/muncho-canary-releases"
     _MODULE = "gateway.canonical_full_canary_coordinator"
+    _COMMANDS = frozenset({
+        "publish-coordinator-input",
+        "preflight-phase-b-apply",
+        "preflight-phase-b-live-run",
+        "install-discord-token",
+        "phase-b-apply",
+        "run",
+        "stop-and-retire-discord-token",
+    })
 
     def __init__(
         self,
@@ -8561,15 +9331,7 @@ class IapCoordinatorTransport:
     ) -> tuple[str, ...]:
         if not _RELEASE_SHA.fullmatch(release_sha):
             raise OwnerLauncherError("invalid_release_sha")
-        if command not in {
-            "publish-coordinator-input",
-            "preflight-phase-b-apply",
-            "preflight-phase-b-live-run",
-            "install-discord-token",
-            "phase-b-apply",
-            "run",
-            "stop-and-retire-discord-token",
-        }:
+        if command not in self._COMMANDS:
             raise OwnerLauncherError("invalid_coordinator_command")
         command_prefix = self._gcloud_executable.trusted_command_prefix()
         if (
@@ -8900,6 +9662,7 @@ class IapCoordinatorTransport:
             post_frame_timeout_seconds=post_frame_timeout_seconds,
             maximum_line_bytes=maximum_line_bytes,
             postflight_guard=postflight,
+            authority_guard=postflight,
         )
 
     def _postflight(self) -> None:
@@ -9013,6 +9776,26 @@ class IapCoordinatorTransport:
             approved=True,
             post_frame_timeout_seconds=2_400.0,
         )
+
+
+class IapSchemaReconciliationTransport(IapCoordinatorTransport):
+    """Pinned transport for the packaged reconciliation v2 state machine."""
+
+    _MODULE = "gateway.canonical_writer_schema_reconciliation_bootstrap"
+    _COMMANDS = frozenset({"run"})
+
+    def open_reconciliation(self, release_sha: str) -> _IapRemoteSession:
+        return self._open(
+            release_sha,
+            "run",
+            # G0 is secret-free and carries the exact owner subject.  The
+            # launcher binds that subject before creating the Cloud SQL user
+            # and rechecks this same IAP snapshot at A1 first byte.
+            approved=False,
+            post_frame_timeout_seconds=2_400.0,
+            maximum_line_bytes=PHASE_B_MAX_RESPONSE_BYTES,
+        )
+
 
 def validate_phase_b_apply_gate(
     value: Any,
@@ -9525,6 +10308,426 @@ def apply_phase_b_foundation(
         raise
     finally:
         _close_session_preserving_primary(session, primary)
+
+
+def _cleanup_schema_reconciliation_admin(
+    boundary: CloudSqlTemporaryAdmin,
+    *,
+    username: str,
+) -> Mapping[str, Any]:
+    """Prove the deterministic temporary admin absent without blind delete."""
+
+    try:
+        boundary.require_current_authority(username)
+    except OwnerLauncherError as exc:
+        try:
+            if boundary.mutation_reconciliation_required():
+                boundary.reconcile_ambiguous_mutation_and_confirm_absent(
+                    username
+                )
+            else:
+                boundary.delete_and_confirm_absent(username)
+        except CleanupBlocked:
+            raise
+        except OwnerLauncherError as cleanup_error:
+            raise CleanupBlocked(cleanup_error.code) from None
+    else:
+        try:
+            boundary.delete_and_confirm_absent(username)
+        except CleanupBlocked:
+            raise
+        except OwnerLauncherError as exc:
+            raise CleanupBlocked(exc.code) from None
+    try:
+        return boundary.reconciliation_receipt()
+    except OwnerLauncherError as exc:
+        raise CleanupBlocked(exc.code) from None
+
+
+def reconcile_legacy_canary_schema(
+    *,
+    release_sha: str,
+    transport: IapSchemaReconciliationTransport,
+    cloud_sql_client: GoogleRestClient,
+    owner_identity: GcloudOwnerAccessToken,
+    now: Callable[[], int] = lambda: int(time.time()),
+    password_factory: Callable[[], bytearray] = _new_admin_password,
+    nonce_factory: Callable[[int], bytes] = secrets.token_bytes,
+    signer: _PhaseBOwnerExternalSigner | None = None,
+    boundary_factory: Callable[
+        [GoogleRestClient], CloudSqlTemporaryAdmin
+    ] = CloudSqlSchemaReconciliationAdmin,
+    secret_hardener: Callable[[], None] = harden_owner_secret_process,
+    provenance_guard: Callable[
+        [str], None
+    ] = require_owner_runtime_and_launcher_provenance,
+) -> Mapping[str, Any]:
+    """Run only the stopped G0/A1/P1/A2/I2/C3/T3 repair protocol."""
+
+    if not isinstance(release_sha, str) or _RELEASE_SHA.fullmatch(release_sha) is None:
+        raise OwnerLauncherError("invalid_release_sha")
+    from gateway import canonical_writer_schema_reconciliation_bootstrap as bootstrap
+
+    signal_fence = _OwnerSignalFence()
+    signal_fence.install()
+    session: _IapRemoteSession | None = None
+    boundary: CloudSqlTemporaryAdmin | None = None
+    credential: bytearray | None = None
+    admin_frame: bytearray | None = None
+    authorization_frame: bytearray | None = None
+    cleanup_frame: bytearray | None = None
+    cleanup_receipt: Mapping[str, Any] | None = None
+    terminal: Mapping[str, Any] | None = None
+    expected_username: str | None = None
+    primary: BaseException | None = None
+    mutation_request_started = False
+    mutation_may_exist = False
+    database_intermediate_validated = False
+    database_capability_terminated = False
+    cleanup_complete = False
+    try:
+        provenance_guard(release_sha)
+        secret_hardener()
+        account = owner_identity.account_for_read_only_preflight()
+        expected_owner_subject = _sha256(account.encode("utf-8"))
+        owner_signer = signer or _PhaseBOwnerExternalSigner()
+        owner_authority = owner_signer.inspect()
+        if (
+            owner_authority.public_fingerprint
+            != PHASE_B_OWNER_PUBLIC_KEY_FINGERPRINT
+            or _sha256(owner_authority.public_fingerprint.encode("ascii"))
+            != PHASE_B_PINNED_APPROVAL_SOURCE_SHA256
+        ):
+            raise OwnerLauncherError(
+                "schema_reconciliation_owner_authority_invalid"
+            )
+
+        session = transport.open_reconciliation(release_sha)
+        gate_raw = session.read_gate()
+        current = now()
+        try:
+            gate = bootstrap.validate_gate(
+                gate_raw,
+                owner_public_key_ed25519_hex=(
+                    owner_authority.public_key_ed25519_hex
+                ),
+                owner_public_fingerprint=owner_authority.public_fingerprint,
+                now_unix=current,
+            )
+        except BaseException as exc:
+            if isinstance(exc, OwnerLauncherError):
+                raise
+            raise OwnerLauncherError(
+                "schema_reconciliation_gate_invalid"
+            ) from None
+        expected_username = ADMIN_USERNAME_PREFIX + gate["plan_sha256"][:16]
+        if (
+            gate["release_revision"] != release_sha
+            or gate["owner_subject_sha256"] != expected_owner_subject
+            or gate["owner_public_key_ed25519_hex"]
+            != owner_authority.public_key_ed25519_hex
+            or gate["owner_key_id"] != owner_authority.key_id
+            or gate["owner_public_fingerprint"]
+            != owner_authority.public_fingerprint
+            or gate["temporary_admin_username"] != expected_username
+            or current + SCHEMA_RECONCILIATION_MIN_GATE_REMAINING_SECONDS
+            >= gate["expires_at_unix"]
+        ):
+            raise OwnerLauncherError(
+                "schema_reconciliation_gate_binding_invalid"
+            )
+        owner_identity.bind_approved_subject(expected_owner_subject)
+        owner_identity.require_stable()
+        session.require_current_authority()
+        provenance_guard(release_sha)
+
+        boundary = boundary_factory(cloud_sql_client)
+        boundary.begin_mutation_observation(
+            expected_owner_subject_sha256=expected_owner_subject,
+            expected_mutation_context_sha256=gate["gate_sha256"],
+        )
+        credential = password_factory()
+        if (
+            not isinstance(credential, bytearray)
+            or len(credential) != SCHEMA_RECONCILIATION_CREDENTIAL_BYTES
+        ):
+            _wipe(credential if isinstance(credential, bytearray) else None)
+            credential = None
+            raise OwnerLauncherError(
+                "schema_reconciliation_admin_credential_invalid"
+            )
+        try:
+            credential_text = credential.decode("ascii", errors="strict")
+        except UnicodeError:
+            raise OwnerLauncherError(
+                "schema_reconciliation_admin_credential_invalid"
+            ) from None
+        if re.fullmatch(r"[A-Za-z0-9_-]{64}", credential_text) is None:
+            credential_text = ""
+            raise OwnerLauncherError(
+                "schema_reconciliation_admin_credential_invalid"
+            )
+        mutation_request_started = True
+        try:
+            boundary.create_or_rotate_recovery(expected_username, credential_text)
+        finally:
+            credential_text = ""
+        mutation_may_exist = True
+        cloud_authority = boundary.temporary_admin_authority_receipt(
+            expected_username
+        )
+        admin_preflight = build_schema_reconciliation_admin_preflight(
+            gate=gate,
+            cloud_sql_authority_receipt=cloud_authority,
+            credential=credential,
+            signer=owner_signer,
+            owner_authority=owner_authority,
+            now_unix=now(),
+            nonce_factory=nonce_factory,
+        )
+        admin_frame = _schema_reconciliation_frame(
+            SCHEMA_RECONCILIATION_ADMIN_PREFLIGHT_MAGIC,
+            admin_preflight,
+            credential=credential,
+        )
+
+        def guard_admin_first_byte() -> None:
+            provenance_guard(release_sha)
+            owner_identity.require_stable()
+            session.require_current_authority()
+            if owner_signer.inspect() != owner_authority:
+                raise OwnerLauncherError(
+                    "schema_reconciliation_owner_authority_changed"
+                )
+            if (
+                now() + _SECRET_FRAME_TRANSMIT_MARGIN_SECONDS
+                >= admin_preflight["expires_at_unix"]
+            ):
+                raise OwnerLauncherError(
+                    "schema_reconciliation_admin_preflight_expired"
+                )
+            boundary.require_current_authority(expected_username)
+
+        def wipe_admin_material_after_write() -> None:
+            nonlocal credential, admin_frame
+            _wipe(credential)
+            _wipe(admin_frame)
+            credential = None
+            admin_frame = None
+
+        challenge_raw = session.schema_reconciliation_exchange_before(
+            admin_frame,
+            write_guard=guard_admin_first_byte,
+            on_first_write=lambda: None,
+            on_write_complete=wipe_admin_material_after_write,
+        )
+        _wipe(credential)
+        _wipe(admin_frame)
+        credential = None
+        admin_frame = None
+        try:
+            challenge = bootstrap.validate_preflight_challenge_for_owner(
+                challenge_raw,
+                gate=gate,
+                admin_preflight=admin_preflight,
+                now_unix=now(),
+            )
+        except BaseException:
+            raise OwnerLauncherError(
+                "schema_reconciliation_preflight_challenge_invalid"
+            ) from None
+
+        owner_identity.require_stable()
+        session.require_current_authority()
+        provenance_guard(release_sha)
+        boundary.require_current_authority(expected_username)
+        authorization = build_schema_reconciliation_preflight_authorization(
+            gate=gate,
+            admin_preflight=admin_preflight,
+            challenge=challenge,
+            signer=owner_signer,
+            owner_authority=owner_authority,
+            now_unix=now(),
+            nonce_factory=nonce_factory,
+        )
+        authorization_frame = _schema_reconciliation_frame(
+            SCHEMA_RECONCILIATION_PREFLIGHT_AUTHORIZATION_MAGIC,
+            authorization,
+        )
+        intermediate_raw = session.schema_reconciliation_exchange(
+            authorization_frame,
+            terminal=False,
+        )
+        _wipe(authorization_frame)
+        authorization_frame = None
+        try:
+            intermediate = bootstrap.validate_database_intermediate_for_owner(
+                intermediate_raw,
+                gate=gate,
+                admin_preflight=admin_preflight,
+                challenge=challenge,
+                authorization=authorization,
+                now_unix=now(),
+            )
+        except BaseException:
+            raise OwnerLauncherError(
+                "schema_reconciliation_database_intermediate_invalid"
+            ) from None
+        database_intermediate_validated = True
+        database_capability_terminated = True
+
+        cleanup_receipt = _cleanup_schema_reconciliation_admin(
+            boundary,
+            username=expected_username,
+        )
+        cleanup_complete = True
+        cleanup = build_schema_reconciliation_admin_cleanup(
+            gate=gate,
+            admin_preflight=admin_preflight,
+            challenge=challenge,
+            authorization=authorization,
+            intermediate=intermediate,
+            cloud_sql_absence_receipt=cleanup_receipt,
+            signer=owner_signer,
+            owner_authority=owner_authority,
+            now_unix=now(),
+            nonce_factory=nonce_factory,
+        )
+        cleanup_frame = _schema_reconciliation_frame(
+            SCHEMA_RECONCILIATION_ADMIN_CLEANUP_MAGIC,
+            cleanup,
+        )
+        terminal_raw = session.schema_reconciliation_exchange(
+            cleanup_frame,
+            terminal=True,
+        )
+        _wipe(cleanup_frame)
+        cleanup_frame = None
+        try:
+            terminal = bootstrap.validate_terminal_for_owner(
+                terminal_raw,
+                gate=gate,
+                admin_preflight=admin_preflight,
+                challenge=challenge,
+                authorization=authorization,
+                intermediate=intermediate,
+                cleanup=cleanup,
+                now_unix=now(),
+            )
+        except BaseException:
+            raise OwnerLauncherError(
+                "schema_reconciliation_terminal_invalid"
+            ) from None
+        session.mark_validated(terminal)
+        session.close()
+        session = None
+        owner_identity.require_stable()
+        provenance_guard(release_sha)
+    except BaseException as exc:
+        primary = exc
+    finally:
+        signal_fence.begin_cleanup()
+        _wipe(credential)
+        _wipe(admin_frame)
+        _wipe(authorization_frame)
+        _wipe(cleanup_frame)
+        credential = None
+        admin_frame = None
+        authorization_frame = None
+        cleanup_frame = None
+        reconciliation_required = False
+        if (
+            boundary is not None
+            and expected_username is not None
+            and not cleanup_complete
+            and not mutation_request_started
+            and not mutation_may_exist
+        ):
+            try:
+                reconciliation_required = (
+                    boundary.mutation_reconciliation_required()
+                )
+            except BaseException as reconciliation_error:
+                code = (
+                    reconciliation_error.code
+                    if isinstance(reconciliation_error, OwnerLauncherError)
+                    else "schema_reconciliation_admin_cleanup_state_failed"
+                )
+                state_error = CleanupBlocked(code)
+                if primary is None:
+                    primary = state_error
+                else:
+                    _attach_cleanup_failure(
+                        primary,
+                        OwnerLauncherError(state_error.cause_code),
+                    )
+        needs_cleanup = bool(
+            boundary is not None
+            and expected_username is not None
+            and not cleanup_complete
+            and (
+                mutation_request_started
+                or mutation_may_exist
+                or reconciliation_required
+            )
+        )
+        if (
+            needs_cleanup
+            and session is not None
+            and not database_intermediate_validated
+        ):
+            try:
+                session.abort_and_prove_terminated()
+                database_capability_terminated = True
+                session = None
+            except BaseException as termination_error:
+                code = (
+                    termination_error.code
+                    if isinstance(termination_error, OwnerLauncherError)
+                    else "remote_termination_unconfirmed"
+                )
+                blocked = CleanupBlocked(code)
+                if primary is not None:
+                    _attach_cleanup_failure(blocked, primary)
+                primary = blocked
+        if (
+            needs_cleanup
+            and boundary is not None
+            and expected_username is not None
+            and database_capability_terminated
+        ):
+            try:
+                cleanup_receipt = _cleanup_schema_reconciliation_admin(
+                    boundary,
+                    username=expected_username,
+                )
+                cleanup_complete = True
+            except BaseException as cleanup_error:
+                if not isinstance(cleanup_error, CleanupBlocked):
+                    code = (
+                        cleanup_error.code
+                        if isinstance(cleanup_error, OwnerLauncherError)
+                        else "schema_reconciliation_admin_cleanup_failed"
+                    )
+                    cleanup_error = CleanupBlocked(code)
+                if primary is not None:
+                    _attach_cleanup_failure(cleanup_error, primary)
+                primary = cleanup_error
+        if session is not None:
+            _close_session_preserving_primary(session, primary)
+        try:
+            signal_fence.restore()
+        except BaseException as cleanup_error:
+            if primary is None:
+                primary = cleanup_error
+            else:
+                _attach_cleanup_failure(primary, cleanup_error)
+
+    if primary is not None:
+        raise primary
+    if terminal is None or cleanup_receipt is None or not cleanup_complete:
+        raise OwnerLauncherError("schema_reconciliation_terminal_incomplete")
+    return terminal
 
 
 def _validate_stopped_release_service_states(value: Any) -> list[dict[str, Any]]:
@@ -11829,6 +13032,35 @@ def _writer_authority_frame_sha256(frame: bytes) -> str:
 class IapWriterPreflightTransport(IapStoppedReleaseTransport):
     """Run the sealed, no-service-start writer staging publisher over IAP."""
 
+    _FAILURE_TYPES = {
+        "RuntimeError": "runtime_failed",
+        "ValueError": "validation_failed",
+        "PermissionError": "approval_failed",
+        "OSError": "io_failed",
+    }
+
+    @classmethod
+    def _raise_structured_failure(
+        cls,
+        command: str,
+        value: Mapping[str, Any],
+    ) -> None:
+        if (
+            set(value) != {"schema", "ok", "error_code", "error_type"}
+            or value.get("schema") != WRITER_PREFLIGHT_FAILURE_SCHEMA
+            or value.get("ok") is not False
+            or value.get("error_code") != "writer_preflight_publication_failed"
+            or not isinstance(value.get("error_type"), str)
+            or re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", value["error_type"])
+            is None
+        ):
+            raise OwnerLauncherError("writer_preflight_output_invalid")
+        category = cls._FAILURE_TYPES.get(
+            value["error_type"],
+            "remote_failed",
+        )
+        raise OwnerLauncherError(f"writer_preflight_{command}_{category}")
+
     def _run_writer_preflight_command(
         self,
         release_sha: str,
@@ -11871,6 +13103,7 @@ class IapWriterPreflightTransport(IapStoppedReleaseTransport):
         completed = self._run_remote(
             remote,
             account=account,
+            allowed_returncodes=frozenset({0, 2}),
             timeout_seconds=900.0 if command == "apply" else 300.0,
         )
         if (
@@ -11880,12 +13113,17 @@ class IapWriterPreflightTransport(IapStoppedReleaseTransport):
         ):
             raise OwnerLauncherError("writer_preflight_output_invalid")
         try:
-            return _decode_json_object(
+            value = _decode_json_object(
                 completed.stdout,
                 maximum=_HTTP_RESPONSE_MAX_BYTES,
             )
         except OwnerLauncherError:
             raise OwnerLauncherError("writer_preflight_output_invalid") from None
+        if completed.returncode == 2:
+            self._raise_structured_failure(command, value)
+        if value.get("schema") == WRITER_PREFLIGHT_FAILURE_SCHEMA:
+            raise OwnerLauncherError("writer_preflight_output_invalid")
+        return value
 
     def publish(
         self,
@@ -13108,6 +14346,14 @@ def _cli_parser() -> argparse.ArgumentParser:
         ),
     )
     actions.add_argument(
+        "--reconcile-legacy-canary-db",
+        action="store_true",
+        help=(
+            "repair or adopt only the sealed legacy canary schema while all "
+            "canary services remain stopped"
+        ),
+    )
+    actions.add_argument(
         "--publish-writer-preflight",
         action="store_true",
         help="stage and attest writer-only inputs without starting services",
@@ -13200,15 +14446,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise OwnerLauncherError("host_receipt_rotation_plan_invalid")
         if (
             (
-                arguments.apply_phase_b_foundation
+                arguments.reconcile_legacy_canary_db
+                or arguments.apply_phase_b_foundation
                 or arguments.publish_coordinator_input
             )
             and arguments.external_iam_policy_sha256 is not None
         ):
             code = (
-                "phase_b_owner_cli_invalid"
-                if arguments.apply_phase_b_foundation
-                else "coordinator_input_owner_cli_invalid"
+                "schema_reconciliation_owner_cli_invalid"
+                if arguments.reconcile_legacy_canary_db
+                else (
+                    "phase_b_owner_cli_invalid"
+                    if arguments.apply_phase_b_foundation
+                    else "coordinator_input_owner_cli_invalid"
+                )
             )
             raise OwnerLauncherError(code)
         if arguments.bootstrap_trusted_runtime:
@@ -13292,6 +14543,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             receipt = fixture_transport.publish(
                 release_sha,
                 external_iam_policy_sha256=external_iam_policy_sha256,
+            )
+            runtime_and_provenance_guard(release_sha)
+            _emit_canonical_line(receipt)
+            return 0
+        if arguments.reconcile_legacy_canary_db:
+            transport = IapSchemaReconciliationTransport(
+                owner_identity,
+                gcloud_executable=gcloud_executable,
+                gcloud_configuration=gcloud_configuration,
+            )
+            receipt = reconcile_legacy_canary_schema(
+                release_sha=release_sha,
+                transport=transport,
+                cloud_sql_client=GoogleRestClient(owner_identity),
+                owner_identity=owner_identity,
+                provenance_guard=runtime_and_provenance_guard,
             )
             runtime_and_provenance_guard(release_sha)
             _emit_canonical_line(receipt)
@@ -13434,6 +14701,7 @@ __all__ = [
     "CleanupBlocked",
     "CloudSqlCanaryBootstrapLogin",
     "CloudSqlCreateNotCommitted",
+    "CloudSqlSchemaReconciliationAdmin",
     "CloudSqlTemporaryAdmin",
     "COORDINATOR_FAILURE_SCHEMA",
     "COORDINATOR_INPUT_PUBLICATION_SCHEMA",
@@ -13469,6 +14737,7 @@ __all__ = [
     "IapCoordinatorTransport",
     "IapFixturePublicationTransport",
     "IapHostReceiptRotationTransport",
+    "IapSchemaReconciliationTransport",
     "IapStoppedReleaseTransport",
     "IapWriterActivationBridgeTransport",
     "IapWriterPreflightTransport",
@@ -13494,6 +14763,15 @@ __all__ = [
     "RECOVERY_SECRET_GATE_SCHEMA",
     "RECOVERY_WORKER_COMPLETION_SCHEMA",
     "RECOVERY_WORKER_LEASE_SCHEMA",
+    "SCHEMA_RECONCILIATION_ADMIN_CLEANUP_MAGIC",
+    "SCHEMA_RECONCILIATION_ADMIN_CLEANUP_SSHSIG_NAMESPACE",
+    "SCHEMA_RECONCILIATION_ADMIN_PREFLIGHT_MAGIC",
+    "SCHEMA_RECONCILIATION_ADMIN_PREFLIGHT_SSHSIG_NAMESPACE",
+    "SCHEMA_RECONCILIATION_CREDENTIAL_BYTES",
+    "SCHEMA_RECONCILIATION_MIN_GATE_REMAINING_SECONDS",
+    "SCHEMA_RECONCILIATION_PREFLIGHT_AUTHORIZATION_MAGIC",
+    "SCHEMA_RECONCILIATION_PREFLIGHT_AUTHORIZATION_SSHSIG_NAMESPACE",
+    "SCHEMA_RECONCILIATION_DATABASE_ROLES",
     "SESSION_BOUND_APPROVAL_REQUEST_SCHEMA",
     "SESSION_BOUND_COORDINATOR_RECEIPT_SCHEMA",
     "SESSION_BOUND_OWNER_RECEIPT_SCHEMA",
@@ -13506,6 +14784,7 @@ __all__ = [
     "STOPPED_RELEASE_RECEIPT_SCHEMA",
     "WRITER_PREFLIGHT_PLAN_SCHEMA",
     "WRITER_PREFLIGHT_RECEIPT_SCHEMA",
+    "WRITER_PREFLIGHT_FAILURE_SCHEMA",
     "STOPPED_RELEASE_SOURCE_BASE",
     "STOPPED_RELEASE_SOURCE_REPOSITORY",
     "TRUSTED_RUNTIME_BOOTSTRAP_RECEIPT_SCHEMA",
@@ -13520,6 +14799,9 @@ __all__ = [
     "build_discord_retirement_ack",
     "build_discord_retirement_ack_frame",
     "build_final_approval_frame",
+    "build_schema_reconciliation_admin_cleanup",
+    "build_schema_reconciliation_admin_preflight",
+    "build_schema_reconciliation_preflight_authorization",
     "build_writer_authority_frame",
     "build_writer_owner_approval",
     "bootstrap_trusted_gcloud_runtime",
@@ -13529,6 +14811,7 @@ __all__ = [
     "apply_phase_b_foundation",
     "collect_fresh_writer_external_iam",
     "main",
+    "reconcile_legacy_canary_schema",
     "require_local_launcher_provenance",
     "validate_current_phase_b_live_gate",
     "validate_coordinator_input_publication_receipt",

@@ -212,6 +212,7 @@ def test_fixed_systemctl_observation_is_read_only_and_closed():
         "muncho-canary-discord-edge.service",
         "muncho-discord-egress.service",
         "muncho-canonical-writer.service",
+        "muncho-canonical-writer-phase-b-readiness.service",
         "muncho-canonical-writer-export.service",
         "muncho-canonical-writer-export.timer",
         "hermes-cloud-gateway.service",
@@ -222,7 +223,7 @@ def test_fixed_systemctl_observation_is_read_only_and_closed():
         for command in runner.commands
         if command.argv[0] == str(writer_release.DEFAULT_SYSTEMCTL_EXECUTABLE)
     ]
-    assert len(states) == len(service_commands) == 6
+    assert len(states) == len(service_commands) == 7
     for command, unit in zip(service_commands, writer_release._STOPPED_SERVICE_UNITS):
         assert command.argv == (
             "/usr/bin/systemctl",
@@ -422,6 +423,18 @@ def _completed_release(tmp_path: Path, monkeypatch):
     spec.phase_b_runtime_module_origin.write_text(
         "phase_b_runtime = True\n", encoding="utf-8"
     )
+    for module_path in (
+        spec.schema_reconciliation_module_origin,
+        spec.schema_reconciliation_db_module_origin,
+        spec.schema_reconciliation_bootstrap_module_origin,
+        spec.schema_reconciliation_runtime_module_origin,
+    ):
+        module_path.write_text(
+            f"{module_path.stem} = True\n",
+            encoding="utf-8",
+        )
+    spec.schema_contract_asset_origin.parent.mkdir(parents=True, exist_ok=True)
+    spec.schema_contract_asset_origin.write_text("{}\n", encoding="utf-8")
     spec.runtime_dependency_module_origin.write_text(
         "runtime_dependencies = True\n", encoding="utf-8"
     )

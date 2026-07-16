@@ -586,6 +586,42 @@ def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, An
     return result if changed else messages
 
 
+def _image_part_label(part: Dict[str, Any]) -> str:
+    """Render a multimodal image part as a short text label for the summarizer.
+
+    Keeps a real, referenceable URL when the image lives at an http(s)
+    address — the summary can then preserve the handle so the agent (or a
+    later vision_analyze call) can still reach the image after compaction.
+    Base64 ``data:`` URLs carry no reusable reference and would flood the
+    summarizer input, so they collapse to ``[image]``.
+    """
+    url = ""
+    if isinstance(part.get("image_url"), dict):
+        url = str(part["image_url"].get("url") or "")
+    elif isinstance(part.get("image_url"), str):
+        url = part["image_url"]
+    elif isinstance(part.get("url"), str):
+        url = part["url"]
+    if url.startswith(("http://", "https://")):
+        return f"[image: {url}]"
+    return "[image]"
+
+
+def _str_arg(args: dict, key: str, default: str = "") -> str:
+    """Safely get a string argument from parsed tool args.
+
+    LLMs sometimes return non-string parameter values (e.g. bool, int) for
+    tool calls.  Calling ``len()`` / ``.count()`` / slicing on those causes
+    ``TypeError`` / ``AttributeError`` which crashes context compression.
+    This helper coerces any value to ``str`` so downstream code can assume
+    a string is always returned.
+    """
+    val = args.get(key, default)
+    if isinstance(val, str):
+        return val
+    return str(val) if val is not None else default
+
+
 def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) -> str:
     """Create an informative 1-line summary of a tool call + result.
 
@@ -598,10 +634,29 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
         [terminal] ran `npm test` -> exit 0, 47 lines output
         [read_file] read config.py from line 1 (1,200 chars)
         [search_files] content search for 'compress' in agent/ -> 12 matches
+
+    Never raises: models sometimes emit non-string argument values (bool,
+    int, None) and the args here come from persisted session history, so a
+    single malformed historical call must not crash compression — which
+    retries on the same history and would crash-loop. Individual branches
+    coerce the values they slice/measure (keeping summaries informative);
+    this wrapper is the backstop for anything they miss.
     """
+    try:
+        return _summarize_tool_result_unguarded(tool_name, tool_args, tool_content)
+    except Exception as exc:  # noqa: BLE001 — a summary must never crash compression
+        logger.debug("Tool-result summary failed for %s: %s", tool_name, exc)
+        _len = len(tool_content) if isinstance(tool_content, str) else 0
+        return f"[{tool_name}] ({_len:,} chars result)"
+
+
+def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_content: str) -> str:
+    """Build the summary line (unguarded; see ``_summarize_tool_result``)."""
     try:
         args = json.loads(tool_args) if tool_args else {}
     except (json.JSONDecodeError, TypeError):
+        args = {}
+    if not isinstance(args, dict):
         args = {}
 
     content = tool_content or ""
@@ -609,7 +664,7 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
     line_count = content.count("\n") + 1 if content.strip() else 0
 
     if tool_name == "terminal":
-        cmd = args.get("command", "")
+        cmd = _str_arg(args, "command")
         if len(cmd) > 80:
             cmd = cmd[:77] + "..."
         exit_match = re.search(r'"exit_code"\s*:\s*(-?\d+)', content)
@@ -623,7 +678,7 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
 
     if tool_name == "write_file":
         path = args.get("path", "?")
-        written_lines = args.get("content", "").count("\n") + 1 if args.get("content") else "?"
+        written_lines = _str_arg(args, "content").count("\n") + 1 if args.get("content") else "?"
         return f"[write_file] wrote to {path} ({written_lines} lines)"
 
     if tool_name == "search_files":
@@ -652,20 +707,30 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
 
     if tool_name == "web_extract":
         urls = args.get("urls", [])
-        url_desc = urls[0] if isinstance(urls, list) and urls else "?"
+        first = urls[0] if isinstance(urls, list) and urls else "?"
+        # web_search results are dicts ({"url"/"href": ...}) and models often
+        # forward them straight into web_extract. Unwrap to the URL string so
+        # the summary stays readable and the ``+=`` below never hits the
+        # ``dict + str`` TypeError that would abort pre-compression pruning.
+        if isinstance(first, dict):
+            first = first.get("url") or first.get("href") or "?"
+        elif not isinstance(first, str):
+            first = "?"
+        url_desc = first
         if isinstance(urls, list) and len(urls) > 1:
             url_desc += f" (+{len(urls) - 1} more)"
         return f"[web_extract] {url_desc} ({content_len:,} chars)"
 
     if tool_name == "delegate_task":
-        goal = args.get("goal", "")
+        goal = _str_arg(args, "goal")
         if len(goal) > 60:
             goal = goal[:57] + "..."
         return f"[delegate_task] '{goal}' ({content_len:,} chars result)"
 
     if tool_name == "execute_code":
-        code_preview = (args.get("code") or "")[:60].replace("\n", " ")
-        if len(args.get("code", "")) > 60:
+        code_str = _str_arg(args, "code")
+        code_preview = code_str[:60].replace("\n", " ")
+        if len(code_str) > 60:
             code_preview += "..."
         return f"[execute_code] `{code_preview}` ({line_count} lines output)"
 
@@ -674,7 +739,7 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
         return f"[{tool_name}] name={name} ({content_len:,} chars)"
 
     if tool_name == "vision_analyze":
-        question = args.get("question", "")[:50]
+        question = _str_arg(args, "question")[:50]
         return f"[vision_analyze] '{question}' ({content_len:,} chars)"
 
     if tool_name == "memory":
@@ -730,12 +795,16 @@ class ContextCompressor(ContextEngine):
         self._context_probe_persistable = False
         self._previous_summary = None
         self._last_summary_error = None
+        self._consecutive_timeout_failures = 0
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
+        self._fallback_compression_streak = 0
+        self._verify_compaction_cleared_threshold = False
+        self._last_compression_made_progress = False
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
         self._last_summary_error = None
         self._last_compress_aborted = False
@@ -765,12 +834,16 @@ class ContextCompressor(ContextEngine):
         """
         self._previous_summary = None
         self._last_summary_error = None
+        self._consecutive_timeout_failures = 0
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
+        self._fallback_compression_streak = 0
+        self._verify_compaction_cleared_threshold = False
+        self._last_compression_made_progress = False
         self._summary_failure_cooldown_until = 0.0
         self._last_compress_aborted = False
         self._context_probed = False
@@ -786,12 +859,85 @@ class ContextCompressor(ContextEngine):
         self._session_id = session_id or ""
         self._summary_failure_cooldown_until = 0.0
         self._last_summary_error = None
+        self._consecutive_timeout_failures = 0
+        self._fallback_compression_streak = 0
         self.get_active_compression_failure_cooldown()
+        self._load_fallback_compression_streak()
 
     def on_session_start(self, session_id: str, **kwargs) -> None:
         """Bind session-scoped compression state for a new or resumed session."""
         super().on_session_start(session_id, **kwargs)
-        self.bind_session_state(kwargs.get("session_db", getattr(self, "_session_db", None)), session_id)
+        boundary_reason = kwargs.get("boundary_reason")
+        old_session_id = kwargs.get("old_session_id")
+        session_db = kwargs.get("session_db", getattr(self, "_session_db", None))
+        previous_fallback_streak = self._fallback_compression_streak
+        if boundary_reason == "compression" and old_session_id:
+            getter = getattr(session_db, "get_compression_fallback_streak", None)
+            if callable(getter):
+                try:
+                    stored_streak = getter(old_session_id)
+                    if isinstance(stored_streak, (int, float, str)):
+                        previous_fallback_streak = max(0, int(stored_streak))
+                except (TypeError, ValueError, sqlite3.Error) as exc:
+                    logger.debug("compression parent fallback streak lookup failed: %s", exc)
+                except Exception as exc:
+                    logger.debug(
+                        "compression parent fallback streak lookup failed (non-sqlite): %s",
+                        exc,
+                    )
+        self.bind_session_state(session_db, session_id)
+        if boundary_reason == "compression":
+            # Rotation creates a fresh child row before this callback. Preserve
+            # the logical conversation's streak until boundary bookkeeping
+            # persists the updated value onto the child row.
+            self._fallback_compression_streak = previous_fallback_streak
+
+    def _load_fallback_compression_streak(self) -> None:
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
+        getter = getattr(session_db, "get_compression_fallback_streak", None)
+        if not session_id or not callable(getter):
+            return
+        try:
+            stored_streak = getter(session_id)
+            self._fallback_compression_streak = max(
+                0,
+                int(stored_streak)
+                if isinstance(stored_streak, (int, float, str))
+                else 0,
+            )
+        except (TypeError, ValueError, sqlite3.Error) as exc:
+            logger.debug("compression fallback streak lookup failed: %s", exc)
+        except Exception as exc:
+            logger.debug("compression fallback streak lookup failed (non-sqlite): %s", exc)
+
+    def _persist_fallback_compression_streak(self) -> None:
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
+        setter = getattr(session_db, "set_compression_fallback_streak", None)
+        if not session_id or not callable(setter):
+            return
+        try:
+            setter(session_id, self._fallback_compression_streak)
+        except sqlite3.Error as exc:
+            logger.debug("compression fallback streak persist failed: %s", exc)
+        except Exception as exc:
+            logger.debug("compression fallback streak persist failed (non-sqlite): %s", exc)
+
+    def record_completed_compaction(self, *, used_fallback: bool = False) -> None:
+        """Record one completed boundary and its summary quality."""
+        self._verify_compaction_cleared_threshold = True
+        if used_fallback:
+            self._fallback_compression_streak += 1
+            if not self.quiet_mode:
+                logger.warning(
+                    "Compaction completed with a deterministic fallback summary. "
+                    "fallback_compression_streak=%d",
+                    self._fallback_compression_streak,
+                )
+        elif self._fallback_compression_streak:
+            self._fallback_compression_streak = 0
+        self._persist_fallback_compression_streak()
 
     def get_active_compression_failure_cooldown(self) -> Optional[Dict[str, Any]]:
         """Return the live compression-failure cooldown for the bound session."""
@@ -862,6 +1008,7 @@ class ContextCompressor(ContextEngine):
     def _clear_compression_failure_cooldown(self) -> None:
         self._summary_failure_cooldown_until = 0.0
         self._last_summary_error = None
+        self._consecutive_timeout_failures = 0
 
         session_db = getattr(self, "_session_db", None)
         session_id = getattr(self, "_session_id", "")
@@ -889,6 +1036,12 @@ class ContextCompressor(ContextEngine):
         max_tokens: int | None = None,
     ) -> None:
         """Update model info after a model switch or fallback activation."""
+        runtime_changed = any((
+            model != self.model,
+            provider != self.provider,
+            base_url != self.base_url,
+            api_mode != self.api_mode,
+        ))
         self.model = model
         self.base_url = base_url
         self.api_key = api_key
@@ -944,6 +1097,11 @@ class ContextCompressor(ContextEngine):
         self.last_compression_rough_tokens = 0
         self.awaiting_real_usage_after_compression = False
         self._ineffective_compression_count = 0
+        if runtime_changed:
+            self._fallback_compression_streak = 0
+            self._persist_fallback_compression_streak()
+        self._verify_compaction_cleared_threshold = False
+        self._last_compression_made_progress = False
 
     # When the MINIMUM_CONTEXT_LENGTH floor meets/exceeds a small context
     # window, compacting at the percentage (50% → 32K of a 64K window) wastes
@@ -1131,6 +1289,16 @@ class ContextCompressor(ContextEngine):
         # Anti-thrashing: track whether last compression was effective
         self._last_compression_savings_pct: float = 100.0
         self._ineffective_compression_count: int = 0
+        # Consecutive completed deterministic-fallback boundaries. Unlike the
+        # real-usage effectiveness counter, ordinary fitting responses must not
+        # reset this breaker; only a healthy completed summary does.
+        self._fallback_compression_streak: int = 0
+        # Set after a completed compression boundary; consumed by the next
+        # provider-reported prompt count in update_from_response().
+        self._verify_compaction_cleared_threshold: bool = False
+        # Lets the boundary wrapper distinguish a completed rewrite from a
+        # no-op/abort without inferring progress from message-list length.
+        self._last_compression_made_progress: bool = False
         self._summary_failure_cooldown_until: float = 0.0
         self._last_summary_error: Optional[str] = None
         # When summary generation fails and a static fallback is inserted,
@@ -1177,8 +1345,50 @@ class ContextCompressor(ContextEngine):
             if self.last_prompt_tokens < self.threshold_tokens:
                 if self.awaiting_real_usage_after_compression and self.last_compression_rough_tokens > 0:
                     self.last_rough_tokens_when_real_prompt_fit = self.last_compression_rough_tokens
+                # Any real provider reading below the trigger proves the prompt
+                # fits again. Clear the real-usage effectiveness latch even
+                # when this response was not immediately after compaction. The
+                # independent fallback streak is boundary-scoped and survives
+                # ordinary fitting responses during context regrowth.
+                self._ineffective_compression_count = 0
             else:
                 self.last_rough_tokens_when_real_prompt_fit = 0
+
+            # Anti-thrashing verdict, judged HERE because this is the only place
+            # that sees the provider's real prompt count for the just-compacted
+            # conversation. Effectiveness is "did the prompt get under the
+            # threshold?", not "did the message list shrink?": compaction can
+            # only shrink messages, while the system prompt and tool schemas are
+            # an incompressible floor (with 50+ tools, 20-30K tokens — see
+            # #14695). When that floor alone meets the threshold, every pass
+            # shrinks messages by a healthy margin yet leaves the prompt over the
+            # line, so the next turn compacts again, forever.
+            #
+            # It must NOT live in should_compress(): that runs twice per turn
+            # with two different measures (a rough preflight estimate and the
+            # real post-response count, #36718), and the rough one can dip below
+            # the threshold and reset the strike every turn, re-opening the loop.
+            # Keying on real usage compares like with like and fires exactly once
+            # per compaction.
+            if self._verify_compaction_cleared_threshold:
+                if self.last_prompt_tokens >= self.threshold_tokens:
+                    self._ineffective_compression_count += 1
+                    if not self.quiet_mode:
+                        logger.warning(
+                            "Compaction did not clear the threshold: %d real "
+                            "tokens still >= %d. The incompressible prompt "
+                            "(system prompt + tool schemas) may already exceed "
+                            "it, in which case shrinking messages cannot help. "
+                            "ineffective_compression_count=%d",
+                            self.last_prompt_tokens, self.threshold_tokens,
+                            self._ineffective_compression_count,
+                        )
+                else:
+                    self._ineffective_compression_count = 0
+        # Consume the pending-verification flag once real usage arrives, whether
+        # or not prompt_tokens was reported, so a usage-less response can't leave
+        # it armed for a later, unrelated reading.
+        self._verify_compaction_cleared_threshold = False
         self.awaiting_real_usage_after_compression = False
 
     def should_defer_preflight_to_real_usage(self, rough_tokens: int) -> bool:
@@ -1233,6 +1443,10 @@ class ContextCompressor(ContextEngine):
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens < self.threshold_tokens:
             return False
+        return not self._automatic_compression_blocked()
+
+    def _automatic_compression_blocked(self) -> bool:
+        """Return whether automatic compaction is in cooldown or tripped."""
         # Do not trigger compression while the summary LLM is in cooldown.
         # On a 429/transient failure _generate_summary() sets a cooldown and
         # returns None; compress() then inserts a static fallback marker and
@@ -1249,18 +1463,23 @@ class ContextCompressor(ContextEngine):
                     "Compression deferred — summary LLM in cooldown for %.0fs more",
                     _cooldown_remaining,
                 )
-            return False
+            return True
         # Anti-thrashing: back off if recent compressions were ineffective
-        if self._ineffective_compression_count >= 2:
+        if (
+            self._ineffective_compression_count >= 2
+            or self._fallback_compression_streak >= 2
+        ):
             if not self.quiet_mode:
                 logger.warning(
-                    "Compression skipped — last %d compressions saved <10%% each. "
-                    "Consider /new to start a fresh session, or /compress <topic> "
-                    "for focused compression.",
+                    "Compression skipped — repeated compaction attempts did not "
+                    "restore healthy context. ineffective=%d fallback=%d. "
+                    "Consider /new to start fresh, or /compress <topic> for "
+                    "focused compression.",
                     self._ineffective_compression_count,
+                    self._fallback_compression_streak,
                 )
-            return False
-        return True
+            return True
+        return False
 
     # ------------------------------------------------------------------
     # Tool output pruning (cheap pre-pass, no LLM call)
@@ -1470,7 +1689,24 @@ class ContextCompressor(ContextEngine):
         parts = []
         for msg in turns:
             role = msg.get("role", "unknown")
-            content = redact_sensitive_text(msg.get("content") or "")
+            content = msg.get("content")
+            if isinstance(content, list):
+                text_parts: list[str] = []
+                for part in content:
+                    if isinstance(part, dict):
+                        ptype = part.get("type")
+                        if ptype == "text":
+                            text_parts.append(part.get("text", ""))
+                        elif ptype in {"image", "image_url", "input_image"}:
+                            text_parts.append(_image_part_label(part))
+                        else:
+                            # Unknown part type — keep a marker so the
+                            # summarizer knows content existed here.
+                            text_parts.append(f"[{ptype or 'attachment'}]")
+                    elif isinstance(part, str):
+                        text_parts.append(part)
+                content = "\n".join(text_parts)
+            content = redact_sensitive_text(content or "")
             content = _MEDIA_DIRECTIVE_RE.sub("[media attachment]", content)
             # Strip inline reasoning blocks (<think>, <reasoning>, etc.) from
             # assistant content before it reaches the summarizer. Reasoning
@@ -2056,6 +2292,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             _is_timeout = (
                 _status in {408, 429, 502, 504}
                 or "timeout" in _err_str
+                or "timed out" in _err_str
             )
             # Non-JSON / malformed-body responses from misconfigured providers
             # or proxies (e.g. an HTML 502 page returned with
@@ -2145,7 +2382,30 @@ This compaction should PRIORITISE preserving all information related to the focu
             # Transient errors (timeout, rate limit, network, JSON decode,
             # streaming premature-close) — shorter cooldown for JSON decode and
             # streaming-closed since those conditions can self-resolve quickly.
-            _transient_cooldown = 30 if (_is_json_decode or _is_streaming_closed) else 60
+            # Timeout-class failures escalate with consecutive occurrences:
+            # a session whose transcript structurally exceeds what the
+            # summary route can produce within its deadline will fail the
+            # same way every time, and re-burning the full timeout every
+            # 60s turns each subsequent turn into a multi-minute stall
+            # (#62452). 60s → 300s → 900s (capped); any successful summary
+            # resets the streak via _clear_compression_failure_cooldown().
+            # Timeout takes precedence over the streaming-closed short rung:
+            # a "timed out" error also matches _is_connection_error, but a
+            # deadline exhaustion is the structural repeat-offender class,
+            # not a transient mid-stream drop.
+            if _is_timeout:
+                self._consecutive_timeout_failures = (
+                    getattr(self, "_consecutive_timeout_failures", 0) + 1
+                )
+                _TIMEOUT_COOLDOWN_LADDER = (60, 300, 900)
+                _transient_cooldown = _TIMEOUT_COOLDOWN_LADDER[
+                    min(self._consecutive_timeout_failures,
+                        len(_TIMEOUT_COOLDOWN_LADDER)) - 1
+                ]
+            elif _is_json_decode or _is_streaming_closed:
+                _transient_cooldown = 30
+            else:
+                _transient_cooldown = 60
             err_text = str(e).strip() or e.__class__.__name__
             if len(err_text) > 220:
                 err_text = err_text[:217].rstrip() + "..."
@@ -2820,6 +3080,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compress_aborted = False
+        self._last_compression_made_progress = False
         # NOTE: do NOT reset _last_summary_auth_failure or
         # _last_summary_network_failure here.  These flags are set by
         # _generate_summary() on a terminal failure and are already cleared on
@@ -2840,10 +3101,21 @@ This compaction should PRIORITISE preserving all information related to the focu
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self._protect_head_size(messages) + 3 + 1
         if n_messages <= _min_for_compress:
+            # Record the no-op, exactly as the sibling "no compressable window"
+            # branch below does (#40803). Returning without touching the
+            # anti-thrashing counter leaves should_compress() saying True on a
+            # transcript that can never shrink: when the prompt sits above the
+            # threshold because of the incompressible floor (system prompt +
+            # tool schemas), every subsequent turn re-fires a compaction that
+            # returns here unchanged, and the CLI appears frozen.
+            self._ineffective_compression_count += 1
+            self._last_compression_savings_pct = 0.0
             if not self.quiet_mode:
                 logger.warning(
-                    "Cannot compress: only %d messages (need > %d)",
+                    "Cannot compress: only %d messages (need > %d). "
+                    "ineffective_compression_count=%d",
                     n_messages, _min_for_compress,
+                    self._ineffective_compression_count,
                 )
             return messages
 
@@ -3139,15 +3411,26 @@ This compaction should PRIORITISE preserving all information related to the focu
         compressed = _strip_historical_media(compressed)
 
         new_estimate = estimate_messages_tokens_rough(compressed)
-        saved_estimate = display_tokens - new_estimate
 
-        # Anti-thrashing: track compression effectiveness
-        savings_pct = (saved_estimate / display_tokens * 100) if display_tokens > 0 else 0
+        # Anti-thrashing: measure effectiveness on a like-for-like basis.
+        #
+        # ``display_tokens`` is usually ``current_tokens`` — the provider's real
+        # prompt count, which includes the system prompt and tool schemas.
+        # ``new_estimate`` covers the messages ONLY. Comparing the two makes a
+        # compaction that freed almost nothing look like it saved ~96%, so the
+        # counter below resets every pass and the anti-thrashing guard is dead
+        # code. Compaction can only shrink messages, so score it against the
+        # messages it was given.
+        pre_estimate = estimate_messages_tokens_rough(messages)
+        saved_estimate = pre_estimate - new_estimate
+        savings_pct = (saved_estimate / pre_estimate * 100) if pre_estimate > 0 else 0
         self._last_compression_savings_pct = savings_pct
-        if savings_pct < 10:
-            self._ineffective_compression_count += 1
-        else:
-            self._ineffective_compression_count = 0
+
+        # Message-only savings are diagnostic. The anti-thrashing verdict is
+        # owned by the next provider-reported prompt count, which answers the
+        # actual question: did this completed boundary get under the threshold?
+        # Counting a low message-savings estimate here as well would give one
+        # compaction two strikes when that real reading remains over threshold.
 
         if not self.quiet_mode:
             logger.info(
@@ -3164,5 +3447,6 @@ This compaction should PRIORITISE preserving all information related to the focu
         # are positional; this single terminal sweep makes it structural so a
         # future copy site cannot re-leak the marker into the child-session flush.
         _strip_persistence_markers(compressed)
+        self._last_compression_made_progress = True
 
         return compressed

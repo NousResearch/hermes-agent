@@ -10,7 +10,7 @@ transport:
   command: uvx
   args:
     - --from
-    - git+https://github.com/zapabob/notebooklm-mcp-cli@b9cf0e2
+    - git+https://github.com/zapabob/notebooklm-mcp-cli@b9cf0e2c47d41f908fe1b61825225934e2a77271
     - notebooklm-mcp
 
 auth:

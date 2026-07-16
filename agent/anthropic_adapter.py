@@ -68,11 +68,12 @@ THINKING_BUDGET = {"xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
 # maps to low on every model.  See:
 # https://platform.claude.com/docs/en/about-claude/models/migration-guide
 ADAPTIVE_EFFORT_MAP = {
-    "max": "max",
-    "xhigh": "xhigh",
-    "high": "high",
-    "medium": "medium",
-    "low": "low",
+    "ultra":   "max",
+    "max":     "max",
+    "xhigh":   "xhigh",
+    "high":    "high",
+    "medium":  "medium",
+    "low":     "low",
     "minimal": "low",
 }
 

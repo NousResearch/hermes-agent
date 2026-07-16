@@ -739,6 +739,25 @@ class TestStripBearerPrefix:
         assert _strip_bearer_prefix(None) is None  # type: ignore[arg-type]
 
 
+class TestBearerAuthPersistence:
+    def test_secret_and_header_are_persisted_separately(self):
+        from hermes_cli.config import get_env_value
+        from hermes_cli.mcp_config import _save_bearer_auth_token
+
+        headers = _save_bearer_auth_token("My Server", "Bearer secret-value")
+
+        assert headers == {
+            "Authorization": "Bearer ${MCP_MY_SERVER_API_KEY}",
+        }
+        assert get_env_value("MCP_MY_SERVER_API_KEY") == "secret-value"
+
+    def test_empty_token_is_rejected(self):
+        from hermes_cli.mcp_config import _save_bearer_auth_token
+
+        with pytest.raises(ValueError, match="Bearer token is required"):
+            _save_bearer_auth_token("empty", "Bearer   ")
+
+
 # ---------------------------------------------------------------------------
 # Tests: config helpers
 # ---------------------------------------------------------------------------

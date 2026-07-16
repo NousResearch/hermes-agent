@@ -21,6 +21,7 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
+import { publishSessionState } from '@/store/session-states'
 
 import type { ClientSessionState } from '../../types'
 
@@ -131,7 +132,10 @@ export function useSessionStateCache({
   }, [])
 
   const resetViewSync = useCallback(() => {
+    // Drop any RAF-pending transcript stage so a backgrounded turn cannot
+    // repaint over the chat the user just switched to (#47709 / #47743).
     pendingViewStateRef.current = null
+    viewSessionIdRef.current = null
 
     if (viewSyncRafRef.current !== null && typeof window !== 'undefined') {
       window.cancelAnimationFrame(viewSyncRafRef.current)
@@ -260,6 +264,10 @@ export function useSessionStateCache({
       const previous = ensureSessionState(sessionId, storedSessionId)
       const next = updater({ ...previous, messages: previous.messages })
       sessionStateByRuntimeIdRef.current.set(sessionId, next)
+      // Mirror into the reactive multi-session store — session tiles (and any
+      // other non-primary surface) subscribe per runtime id there instead of
+      // through the single active $messages view.
+      publishSessionState(sessionId, next)
 
       if (previous.storedSessionId !== next.storedSessionId || !next.busy) {
         setSessionWorking(previous.storedSessionId, false)

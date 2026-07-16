@@ -2471,7 +2471,7 @@ class CLICommandsMixin:
 
         Usage:
             /reasoning              Show current effort level and display state
-            /reasoning <level>      Set reasoning effort (none, minimal, low, medium, high, xhigh)
+            /reasoning <level>      Set effort (none, minimal, low, medium, high, xhigh, max, ultra)
             /reasoning show|on      Show model thinking/reasoning in output
             /reasoning hide|off     Hide model thinking/reasoning from output
             /reasoning full         Show complete thinking (no 10-line clamp)
@@ -2493,7 +2493,7 @@ class CLICommandsMixin:
             full_state = "full" if getattr(self, "reasoning_full", False) else "clamped to 10 lines"
             _cprint(f"  {_ACCENT}Reasoning effort:  {level}{_RST}")
             _cprint(f"  {_ACCENT}Reasoning display: {display_state} ({full_state}){_RST}")
-            _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|show|hide|full|clamp>{_RST}")
+            _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|max|ultra|show|hide|full|clamp>{_RST}")
             return
 
         arg = parts[1].strip().lower()
@@ -2534,7 +2534,7 @@ class CLICommandsMixin:
         parsed = _parse_reasoning_config(arg)
         if parsed is None:
             _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
-            _cprint(f"  {_DIM}Valid levels: none, minimal, low, medium, high, xhigh{_RST}")
+            _cprint(f"  {_DIM}Valid levels: none, minimal, low, medium, high, xhigh, max, ultra{_RST}")
             _cprint(f"  {_DIM}Display:      show, hide{_RST}")
             return
 

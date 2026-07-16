@@ -3,6 +3,7 @@
 import logging
 import ntpath
 import os
+import platform
 import re
 import shutil
 import signal
@@ -15,7 +16,7 @@ from pathlib import Path
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 from hermes_cli._subprocess_compat import windows_hide_flags
 
-_IS_WINDOWS = sys.platform == "win32"
+_IS_WINDOWS = platform.system() == "Windows"
 
 logger = logging.getLogger(__name__)
 
@@ -49,25 +50,29 @@ def _msys_to_windows_path(cwd: str) -> str:
 
 
 def _windows_to_bash_path(path: str, path_style: str = "msys") -> str:
-    """Translate a native Windows drive path to the active bash path syntax."""
     if not _IS_WINDOWS or not path:
         return path
     if path == "~" or path == "~/" or path.startswith("~/"):
         return path
     if path.startswith("\\\\"):
         return "//" + path.lstrip("\\").replace("\\", "/")
-    m = re.match(r"^([a-zA-Z]):[\\/](.*)$", path)
-    if not m:
+    match = re.match(r"^([a-zA-Z]):[\\/](.*)$", path)
+    if not match:
         return path.replace("\\", "/")
-    drive = m.group(1).lower()
-    tail = m.group(2).replace("\\", "/")
+    drive = match.group(1).lower()
+    tail = match.group(2).replace("\\", "/")
     prefix = f"/mnt/{drive}" if path_style == "wsl" else f"/{drive}"
-    if tail:
-        return f"{prefix}/{tail}"
-    return f"{prefix}/"
+    return f"{prefix}/{tail}" if tail else f"{prefix}/"
 
 
 def _windows_to_msys_path(cwd: str) -> str:
+    """Translate a native Windows path (``C:\\Users\\x``) to Git Bash /
+    MSYS form (``/c/Users/x``) so ``builtin cd`` resolves it reliably.
+
+    No-ops on non-Windows hosts or for paths that aren't drive-qualified
+    native Windows paths. Returns the input unchanged when no translation
+    applies.
+    """
     if not _IS_WINDOWS or not cwd:
         return cwd
     m = re.match(r'^([a-zA-Z]):[\\/]*(.*)$', cwd)
@@ -76,6 +81,35 @@ def _windows_to_msys_path(cwd: str) -> str:
     drive = m.group(1).lower()
     tail = (m.group(2) or "").replace('\\', '/').lstrip('/')
     return f"/{drive}/{tail}" if tail else f"/{drive}/"
+
+
+def _bash_safe_path(path: str) -> str:
+    """Return *path* in a form safe to embed in a Git Bash script.
+
+    Native ``C:\\Users\\x`` / ``C:/Users/x`` → ``/c/Users/x`` via
+    :func:`_windows_to_msys_path`. Mixed MSYS leftovers
+    (``/c/Users\\Alexander\\Documents``) get backslashes normalized so
+    bash does not eat ``\\U`` and trip the ``Directory \\drivers\\etc``
+    failure class. No-op off Windows and for empty input.
+
+    ``get_temp_dir`` already emits forward-slash ``C:/...`` forms for
+    Python compatibility; those still need the ``/c/...`` rewrite —
+    MSYS argument conversion treats ``C:/...`` as a Windows path and
+    can corrupt the login-shell ``drivers\\etc`` lookup.
+    """
+    if not _IS_WINDOWS or not path:
+        return path
+    path = _windows_to_msys_path(path)
+    if "\\" in path:
+        path = path.replace("\\", "/")
+    return path
+
+
+def _quote_bash_path(path: str) -> str:
+    """Quote *path* for safe interpolation into a Git Bash script on Windows."""
+    import shlex
+
+    return shlex.quote(_bash_safe_path(path))
 
 
 def _resolve_safe_cwd(cwd: str) -> str:
@@ -114,8 +148,23 @@ def _resolve_safe_cwd(cwd: str) -> str:
 # Hermes-internal env vars that should NOT leak into terminal subprocesses.
 _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
 
-# Bedrock is auth_type="aws_sdk" but its bearer token is a Hermes-managed
-# inference secret, unlike the user's general AWS operator credential chain.
+# Hermes-managed AWS *inference* credentials for ``auth_type="aws_sdk"``
+# providers (Bedrock).  Scoped DELIBERATELY NARROW: this lists only the
+# Bedrock-specific bearer token, which is a Hermes inference secret exactly
+# analogous to ``OPENAI_API_KEY`` — nobody drives the ``aws``/``terraform``/
+# ``boto3`` toolchain off it, so stripping it from terminal/execute_code
+# subprocesses costs no user capability.
+#
+# The GENERAL AWS credential chain (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY,
+# AWS_SESSION_TOKEN, AWS_PROFILE, and the config/role pointers) is INTENTIONALLY
+# left inheritable.  Per SECURITY.md §3.2 the local terminal is the user's
+# trusted operator shell; the agent having the same general AWS access the
+# user's own shell has is the intended posture, not a leak.  Hard-blocklisting
+# those vars would (a) regress every user who runs aws/terraform/cdk/boto3 in
+# the agent terminal — not just Bedrock users, since the registry is iterated
+# unconditionally — and (b) be unrecoverable, because env_passthrough.py
+# refuses to re-allow anything in this blocklist (GHSA-rhgp-j443-p4rf).  See
+# issue #32314 discussion.
 _AWS_SDK_CREDENTIAL_ENV_VARS = frozenset({
     "AWS_BEARER_TOKEN_BEDROCK",
 })
@@ -208,8 +257,6 @@ def _build_provider_env_blocklist() -> frozenset:
         "TWILIO_AUTH_TOKEN",
         "TWILIO_PHONE_NUMBER",
         "TWILIO_PHONE_NUMBER_SID",
-        "GATEWAY_ALLOWED_USERS",
-        "HERMES_DASHBOARD_SESSION_TOKEN",
         "DINGTALK_CLIENT_ID",
         "DINGTALK_CLIENT_SECRET",
         "FEISHU_APP_ID",
@@ -232,6 +279,8 @@ def _build_provider_env_blocklist() -> frozenset:
         "QQ_STT_API_KEY",
         "TERMINAL_SSH_KEY",
         "LANGFUSE_SECRET_KEY",
+        "HERMES_DASHBOARD_SESSION_TOKEN",
+        "GATEWAY_ALLOWED_USERS",
         "GH_TOKEN",
         "GITHUB_APP_ID",
         "GITHUB_APP_PRIVATE_KEY_PATH",
@@ -542,6 +591,23 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     return env
 
 
+def _is_wsl_bash_stub(candidate: str | None) -> bool:
+    if not candidate:
+        return False
+
+    try:
+        resolved = ntpath.normcase(ntpath.abspath(candidate))
+    except (OSError, ValueError):
+        resolved = os.path.normcase(str(candidate))
+
+    windows_dir = ntpath.normcase(os.environ.get("WINDIR", r"C:\Windows"))
+    windows_apps = ntpath.normcase(os.environ.get("LOCALAPPDATA", ""))
+    stubs = {ntpath.normcase(ntpath.join(windows_dir, "System32", "bash.exe"))}
+    if windows_apps:
+        stubs.add(ntpath.normcase(ntpath.join(windows_apps, "Microsoft", "WindowsApps", "bash.exe")))
+    return resolved in stubs
+
+
 def _find_bash() -> str:
     """Find bash for command execution."""
     if not _IS_WINDOWS:
@@ -553,69 +619,180 @@ def _find_bash() -> str:
             or "/bin/sh"
         )
 
+    candidates: list[str] = []
+
     custom = os.environ.get("HERMES_GIT_BASH_PATH")
     if custom and os.path.isfile(custom):
-        return custom
+        candidates.append(custom)
 
-    def _win_join(*parts: str) -> str:
-        return ntpath.join(*(part for part in parts if part))
-
-    def _is_wsl_bash_stub(candidate: str | None) -> bool:
-        if not candidate:
-            return False
-        try:
-            resolved = ntpath.normcase(ntpath.abspath(candidate))
-        except (OSError, ValueError):
-            resolved = ntpath.normcase(str(candidate))
-        windir = ntpath.normcase(os.environ.get("WINDIR", r"C:\Windows"))
-        local_appdata = ntpath.normcase(os.environ.get("LOCALAPPDATA", ""))
-        wsl_paths = [_win_join(windir, "system32", "bash.exe")]
-        if local_appdata:
-            wsl_paths.append(
-                _win_join(local_appdata, "microsoft", "windowsapps", "bash.exe")
-            )
-        return any(resolved == ntpath.normcase(path) for path in wsl_paths)
-
-    # Prefer our own portable Git install first — this way a broken or
-    # partially-uninstalled system Git can't hijack the bash lookup.  The
-    # install.ps1 installer always drops portable Git here when the user
-    # didn't already have a working system Git.
+    # Prefer our own portable Git install — a broken or partially-uninstalled
+    # system Git (or a stale HERMES_GIT_BASH_PATH pointing at one) must not
+    # brick the terminal.  install.ps1 drops PortableGit here when needed.
     #
     # Layouts (both checked so upgrades between MinGit and PortableGit
     # installs work transparently):
     #   PortableGit: %LOCALAPPDATA%\hermes\git\bin\bash.exe   (primary)
     #   MinGit:      %LOCALAPPDATA%\hermes\git\usr\bin\bash.exe (legacy/32-bit fallback)
     _local_appdata = os.environ.get("LOCALAPPDATA", "")
-    _hermes_portable_git = _win_join(_local_appdata, "hermes", "git") if _local_appdata else ""
+    _hermes_portable_git = os.path.join(_local_appdata, "hermes", "git") if _local_appdata else ""
     if _hermes_portable_git:
         for candidate in (
-            _win_join(_hermes_portable_git, "bin", "bash.exe"),        # PortableGit (primary)
-            _win_join(_hermes_portable_git, "usr", "bin", "bash.exe"), # MinGit fallback
+            os.path.join(_hermes_portable_git, "bin", "bash.exe"),        # PortableGit (primary)
+            os.path.join(_hermes_portable_git, "usr", "bin", "bash.exe"), # MinGit fallback
         ):
-            if os.path.isfile(candidate):
-                return candidate
+            if os.path.isfile(candidate) and candidate not in candidates:
+                candidates.append(candidate)
 
     # Check known Git for Windows install locations before PATH lookup.
     # On machines with both WSL and Git for Windows, shutil.which("bash")
     # may return WSL's bash (which doesn't understand Windows paths and
     # will fail silently).  Explicit Git-for-Windows paths avoid that.
     for candidate in (
-        _win_join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
-        _win_join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
-        _win_join(_local_appdata, "Programs", "Git", "bin", "bash.exe"),
+        os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Git", "bin", "bash.exe"),
+        os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "Git", "bin", "bash.exe"),
+        os.path.join(_local_appdata, "Programs", "Git", "bin", "bash.exe") if _local_appdata else "",
     ):
-        if candidate and os.path.isfile(candidate):
-            return candidate
+        if candidate and os.path.isfile(candidate) and candidate not in candidates:
+            candidates.append(candidate)
 
     found = shutil.which("bash")
-    if found and not _is_wsl_bash_stub(found):
-        return found
+    if found and not _is_wsl_bash_stub(found) and found not in candidates:
+        candidates.append(found)
+
+    # Prefer the first candidate that can actually start.  A stale
+    # HERMES_GIT_BASH_PATH pointing at a broken Git-for-Windows install
+    # (``Directory \\drivers\\etc does not exist``) must not win over a
+    # healthy portable Git under %LOCALAPPDATA%\\hermes\\git.
+    for candidate in candidates:
+        if _bash_starts(candidate):
+            if candidate != custom and custom and os.path.isfile(custom):
+                logger.warning(
+                    "HERMES_GIT_BASH_PATH=%s fails to start; using %s instead",
+                    custom,
+                    candidate,
+                )
+            return candidate
+
+    if candidates:
+        # Last resort: return the first path even if the probe failed, so the
+        # caller still sees the real bash error instead of "not found".
+        return candidates[0]
 
     raise RuntimeError(
         "Git Bash not found. Hermes Agent requires Git for Windows on Windows.\n"
         "Install it from: https://git-scm.com/download/win\n"
         "Or set HERMES_GIT_BASH_PATH to your bash.exe location."
     )
+
+
+_bash_starts_cache: dict[str, bool] = {}
+
+
+def _bash_starts(bash: str) -> bool:
+    """True if *bash* can run a trivial non-login command.
+
+    Uses ``--noprofile --norc`` so a broken login post-install
+    (``Directory \\drivers\\etc``) does not falsely condemn an otherwise
+    usable bash.  Cached per path for the process lifetime.
+    """
+    cached = _bash_starts_cache.get(bash)
+    if cached is not None:
+        return cached
+
+    try:
+        result = subprocess.run(
+            [bash, "--noprofile", "--norc", "-c", "exit 0"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            creationflags=windows_hide_flags() if _IS_WINDOWS else 0,
+        )
+        ok = result.returncode == 0
+        if not ok:
+            combined = f"{result.stdout or ''}{result.stderr or ''}"
+            logger.debug("bash probe failed for %s: %s", bash, combined.strip()[:200])
+    except Exception as exc:
+        logger.debug("bash probe error for %s: %s", bash, exc)
+        ok = False
+
+    _bash_starts_cache[bash] = ok
+    return ok
+
+
+_git_bash_bin_dirs_cache: "list[str] | None" = None
+
+
+def _git_bash_bin_dirs() -> list[str]:
+    """Git Bash's coreutils/binary dirs, in ``/etc/profile`` precedence order.
+
+    A non-login ``bash -c`` (the fallback used when ``bash -l`` is broken —
+    the classic Windows ``Directory \\drivers\\etc does not exist`` failure)
+    never sources ``/etc/profile``, so it never gets ``…\\usr\\bin`` on PATH.
+    That directory holds every coreutil the file/terminal tools shell out to
+    (``cat``, ``mktemp``, ``mv``, ``wc``, ``head``, ``stat``, ``chmod``,
+    ``mkdir``, ``find`` …).  Without it, ``write_file`` fails with an empty
+    error (the failure text went to a missing binary's stderr) and terminal
+    commands exit 127.  We derive these dirs from the resolved ``bash.exe`` so
+    the fallback shell can find coreutils regardless of the login shell.
+
+    Returns ``[]`` off Windows or when bash can't be located.  Dirs are
+    returned in the order Git Bash's own ``/etc/profile`` prepends them
+    (mingw first, then usr/bin, then bin) and only if they exist on disk.
+    """
+    global _git_bash_bin_dirs_cache
+    if _git_bash_bin_dirs_cache is not None:
+        return _git_bash_bin_dirs_cache
+
+    if not _IS_WINDOWS:
+        _git_bash_bin_dirs_cache = []
+        return _git_bash_bin_dirs_cache
+
+    dirs: list[str] = []
+    try:
+        bash = _find_bash()
+    except Exception:
+        _git_bash_bin_dirs_cache = []
+        return _git_bash_bin_dirs_cache
+
+    bin_dir = os.path.dirname(bash)          # <root>\bin  or  <root>\usr\bin
+    parent = os.path.dirname(bin_dir)
+    # MinGit ships bash under usr\bin; PortableGit/system Git under bin.
+    root = os.path.dirname(parent) if os.path.basename(parent).lower() == "usr" else parent
+
+    # Order mirrors Git-for-Windows /etc/profile so coreutils win over the
+    # same-named Windows System32 tools (find.exe, sort.exe) inside the shell.
+    for candidate in (
+        os.path.join(root, "mingw64", "bin"),
+        os.path.join(root, "mingw32", "bin"),
+        os.path.join(root, "usr", "local", "bin"),
+        os.path.join(root, "usr", "bin"),
+        os.path.join(root, "bin"),
+    ):
+        if os.path.isdir(candidate) and candidate not in dirs:
+            dirs.append(candidate)
+
+    _git_bash_bin_dirs_cache = dirs
+    return dirs
+
+
+def _prepend_git_bash_dirs(existing_path: str) -> str:
+    """Prepend Git Bash's binary dirs to ``existing_path`` if missing.
+
+    No-op off Windows or when the dirs can't be resolved.  First-occurrence
+    wins, so a PATH that already lists a dir keeps its position.  This is what
+    lets the non-login ``bash -c`` fallback find coreutils; in the healthy
+    case the session snapshot re-exports the full login PATH inside the shell,
+    so this only matters when that snapshot is absent.
+    """
+    git_dirs = _git_bash_bin_dirs()
+    if not git_dirs:
+        return existing_path
+    sep = os.pathsep
+    entries = [e for e in existing_path.split(sep) if e] if existing_path else []
+    missing = [d for d in git_dirs if d not in entries]
+    if not missing:
+        return existing_path
+    return sep.join([*missing, *entries])
 
 
 # POSIX-sh-family shells that understand the ``[shell, "-lic", "set +m; …"]``
@@ -665,29 +842,6 @@ def _find_shell() -> str:
         ):
             return user_shell
     return _find_bash()
-
-
-def _windows_bash_path_style_from_path(bash_path: str) -> str:
-    """Return the Windows drive-prefix style expected by a bash executable."""
-    if not _IS_WINDOWS or not bash_path:
-        return "msys"
-    normalized = os.path.normcase(os.path.normpath(bash_path))
-    if (
-        normalized.endswith(r"\windows\system32\bash.exe")
-        or normalized.endswith(r"\microsoft\windowsapps\bash.exe")
-    ):
-        return "wsl"
-    return "msys"
-
-
-def _detect_windows_bash_path_style() -> str:
-    """Detect whether Windows bash expects Git Bash or WSL drive prefixes."""
-    if not _IS_WINDOWS:
-        return "msys"
-    try:
-        return _windows_bash_path_style_from_path(_find_bash())
-    except Exception:
-        return "msys"
 
 
 # Standard PATH entries for environments with minimal PATH.
@@ -762,14 +916,14 @@ def _resolve_hermes_bin_dir() -> str | None:
 def _prepend_hermes_bin_dir(existing_path: str) -> str:
     """Prepend the hermes install dir to ``existing_path`` if it's missing.
 
-    Cross-platform (uses ``_IS_WINDOWS``). First-occurrence wins, so a PATH
+    Cross-platform (uses ``os.pathsep``). First-occurrence wins, so a PATH
     that already contains the dir is returned unchanged. Returns the input
     unchanged when the install dir can't be resolved.
     """
     bin_dir = _resolve_hermes_bin_dir()
     if not bin_dir:
         return existing_path
-    sep = ";" if _IS_WINDOWS else ":"
+    sep = os.pathsep
     entries = [e for e in existing_path.split(sep) if e] if existing_path else []
     if bin_dir in entries:
         return existing_path
@@ -887,6 +1041,13 @@ def _make_run_env(env: dict) -> dict:
     path_key = _path_env_key(run_env)
     if path_key is not None:
         new_path = _append_missing_sane_path_entries(run_env.get(path_key, ""))
+        # On Windows, ensure Git Bash's coreutils dirs (…\usr\bin etc.) are on
+        # PATH.  A non-login ``bash -c`` fallback (used when ``bash -l`` is
+        # broken) never sources /etc/profile, so without this cat/mktemp/mv and
+        # friends are missing and every write_file/terminal call fails (empty
+        # error / exit 127).  No-op off Windows and when a login snapshot is
+        # healthy (the snapshot re-exports the full PATH inside the shell).
+        new_path = _prepend_git_bash_dirs(new_path)
         # Ensure the hermes install dir is reachable so plugins can shell out
         # to bare ``hermes`` via the terminal tool even when the gateway was
         # launched without it on PATH (systemd, service managers, cron, etc.).
@@ -1005,8 +1166,6 @@ class LocalEnvironment(BaseEnvironment):
         if cwd:
             cwd = os.path.expanduser(cwd)
         super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
-        self.uses_msys_paths = _IS_WINDOWS
-        self.windows_bash_path_style = _detect_windows_bash_path_style()
         self.init_session()
 
     def get_temp_dir(self) -> str:
@@ -1057,15 +1216,14 @@ class LocalEnvironment(BaseEnvironment):
 
         return "/tmp"
 
-    def _quote_cwd_for_cd(self, cwd: str) -> str:
-        if _IS_WINDOWS:
-            cwd = _windows_to_bash_path(cwd, self.windows_bash_path_style)
-        return super()._quote_cwd_for_cd(cwd)
+    @staticmethod
+    def _quote_cwd_for_cd(cwd: str) -> str:
+        """Use native paths for Python, but Git Bash-friendly paths for cd."""
+        return BaseEnvironment._quote_cwd_for_cd(_windows_to_msys_path(cwd))
 
-    def _quote_path_for_shell(self, path: str) -> str:
-        if _IS_WINDOWS:
-            path = _windows_to_bash_path(path, self.windows_bash_path_style)
-        return super()._quote_path_for_shell(path)
+    def _quote_shell_path(self, path: str) -> str:
+        """Rewrite native/mixed Windows paths before quoting for Git Bash."""
+        return _quote_bash_path(path)
 
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,

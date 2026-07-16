@@ -29,6 +29,7 @@ from typing import Any, Dict, Optional
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
+from agent.errors import EmptyStreamError
 from agent.gemini_native_adapter import is_native_gemini_base_url
 from agent.model_metadata import is_local_endpoint
 from agent.message_sanitization import (
@@ -280,6 +281,129 @@ def _check_stale_giveup(agent) -> None:
         )
 
 
+def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
+    """Run one non-streaming LLM request for the active api_mode and return it.
+
+    Shared by the interrupt-worker path (``interruptible_api_call``) and the
+    inline path (``direct_api_call``) so the per-api_mode dispatch — codex /
+    anthropic / bedrock / MoA / OpenAI-compatible — lives in exactly one place.
+
+    ``make_client(reason)`` builds the per-request OpenAI client for the codex
+    and OpenAI-compatible branches; the worker path uses it to register the
+    client with its stranger-thread abort machinery, the inline path uses it to
+    capture the client for its own ``finally`` close. The anthropic / bedrock /
+    MoA branches manage their own clients and never call it. All interrupt,
+    abort, cancellation, and close semantics stay in the callers — this helper
+    only issues the request.
+    """
+    if agent.api_mode == "codex_responses":
+        request_client = make_client("codex_stream_request")
+        return agent._run_codex_stream(
+            api_kwargs,
+            client=request_client,
+            on_first_delta=getattr(agent, "_codex_on_first_delta", None),
+        )
+    if agent.api_mode == "anthropic_messages":
+        return agent._anthropic_messages_create(api_kwargs)
+    if agent.api_mode == "bedrock_converse":
+        # Bedrock uses boto3 directly — no OpenAI client needed.
+        # normalize_converse_response produces an OpenAI-compatible
+        # SimpleNamespace so the rest of the agent loop can treat
+        # bedrock responses like chat_completions responses.
+        from agent.bedrock_adapter import (
+            _get_bedrock_runtime_client,
+            invalidate_runtime_client,
+            is_stale_connection_error,
+            normalize_converse_response,
+        )
+        region = api_kwargs.pop("__bedrock_region__", "us-east-1")
+        api_kwargs.pop("__bedrock_converse__", None)
+        client = _get_bedrock_runtime_client(region)
+        try:
+            raw_response = client.converse(**api_kwargs)
+        except Exception as _bedrock_exc:
+            # Evict the cached client on stale-connection failures
+            # so the outer retry loop builds a fresh client/pool.
+            if is_stale_connection_error(_bedrock_exc):
+                invalidate_runtime_client(region)
+            raise
+        return normalize_converse_response(raw_response)
+    if agent.provider == "moa":
+        # MoA is a virtual chat-completions provider backed by the
+        # in-process MoAClient facade. Do not rebuild a request-local
+        # OpenAI client from the virtual runtime metadata.
+        return agent.client.chat.completions.create(**api_kwargs)
+    request_client = make_client("chat_completion_request")
+    return request_client.chat.completions.create(**api_kwargs)
+
+
+def should_use_direct_api_call(agent) -> bool:
+    """Whether a cron OpenAI-wire request should skip the interrupt worker.
+
+    Issue #62151 is specific to OpenRouter's chat-completions path inside the
+    gateway cron thread stack. Keep native/Codex/Bedrock/MoA transports on their
+    established workers: their cancellation and client ownership differ, and
+    the report provides no evidence that those paths share the pre-HTTP wedge.
+    """
+    return (
+        getattr(agent, "platform", None) == "cron"
+        and getattr(agent, "api_mode", None) == "chat_completions"
+        and getattr(agent, "provider", None) != "moa"
+    )
+
+
+def direct_api_call(agent, api_kwargs: dict):
+    """Run a non-streaming LLM call inline on the conversation thread.
+
+    Used when ``should_use_direct_api_call`` is True. Skips the interrupt worker
+    (whose only job is interactive-interrupt responsiveness, which this context
+    does not have) so the nested-pool deadlock (#62151) cannot occur. Because the
+    request runs in-flight normally, the per-request OpenAI client's own httpx
+    timeout (provider ``request_timeout_seconds`` / ``HERMES_API_TIMEOUT``) bounds
+    a genuinely hung provider — the same bound interactive calls already rely on.
+    """
+    _check_stale_giveup(agent)
+    agent._touch_activity("waiting for non-streaming API response")
+    request_client_holder = {"client": None}
+    request_client_lock = threading.Lock()
+
+    def _abort_active_request(reason: str) -> None:
+        """Abort the inline request from cron's watchdog/interrupt thread."""
+        with request_client_lock:
+            request_client = request_client_holder["client"]
+        if request_client is not None:
+            agent._abort_request_openai_client(request_client, reason=reason)
+
+    def _make_client(reason: str):
+        client = agent._create_request_openai_client(reason=reason, api_kwargs=api_kwargs)
+        with request_client_lock:
+            request_client_holder["client"] = client
+        agent._active_request_abort = _abort_active_request
+        return client
+
+    try:
+        response = _dispatch_nonstreaming_api_request(
+            agent, api_kwargs, make_client=_make_client
+        )
+    except Exception:
+        if getattr(agent, "_interrupt_requested", False):
+            raise InterruptedError("Agent interrupted during API call") from None
+        raise
+    else:
+        if getattr(agent, "_interrupt_requested", False):
+            raise InterruptedError("Agent interrupted during API call")
+        _reset_stale_streak(agent)
+        return response
+    finally:
+        if getattr(agent, "_active_request_abort", None) is _abort_active_request:
+            agent._active_request_abort = None
+        with request_client_lock:
+            request_client = request_client_holder["client"]
+            request_client_holder["client"] = None
+        if request_client is not None:
+            agent._close_request_openai_client(request_client, reason="request_complete")
+
+
 def interruptible_api_call(agent, api_kwargs: dict):
     """
     Run the API call in a background thread so the main conversation loop
@@ -294,6 +418,12 @@ def interruptible_api_call(agent, api_kwargs: dict):
     the main retry loop can try again with backoff / credential rotation /
     provider fallback.
     """
+    # Cron and other non-interactive, nested-pool contexts must not spawn the
+    # interrupt worker — it wedges before the socket opens on the 2nd+ call
+    # (#62151). Run inline instead. See should_use_direct_api_call.
+    if should_use_direct_api_call(agent):
+        return direct_api_call(agent, api_kwargs)
+
     result = {"response": None, "error": None}
 
     # Cross-turn stale-call circuit breaker (#58962) — non-streaming sibling
@@ -357,59 +487,19 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
     def _call():
         try:
-            if agent.api_mode == "codex_responses":
-                request_client = _set_request_client(
+            # _set_request_client registers each per-request OpenAI client with
+            # the stranger-thread abort machinery above; the shared dispatch
+            # helper builds it via this callback so the interrupt / stale-call
+            # detectors can force-close the worker's connection.
+            result["response"] = _dispatch_nonstreaming_api_request(
+                agent,
+                api_kwargs,
+                make_client=lambda reason: _set_request_client(
                     agent._create_request_openai_client(
-                        reason="codex_stream_request",
-                        api_kwargs=api_kwargs,
+                        reason=reason, api_kwargs=api_kwargs
                     )
-                )
-                result["response"] = agent._run_codex_stream(
-                    api_kwargs,
-                    client=request_client,
-                    on_first_delta=getattr(agent, "_codex_on_first_delta", None),
-                )
-            elif agent.api_mode == "anthropic_messages":
-                result["response"] = agent._anthropic_messages_create(api_kwargs)
-            elif agent.api_mode == "bedrock_converse":
-                # Bedrock uses boto3 directly — no OpenAI client needed.
-                # normalize_converse_response produces an OpenAI-compatible
-                # SimpleNamespace so the rest of the agent loop can treat
-                # bedrock responses like chat_completions responses.
-                from agent.bedrock_adapter import (
-                    _get_bedrock_runtime_client,
-                    invalidate_runtime_client,
-                    is_stale_connection_error,
-                    normalize_converse_response,
-                )
-
-                region = api_kwargs.pop("__bedrock_region__", "us-east-1")
-                api_kwargs.pop("__bedrock_converse__", None)
-                client = _get_bedrock_runtime_client(region)
-                try:
-                    raw_response = client.converse(**api_kwargs)
-                except Exception as _bedrock_exc:
-                    # Evict the cached client on stale-connection failures
-                    # so the outer retry loop builds a fresh client/pool.
-                    if is_stale_connection_error(_bedrock_exc):
-                        invalidate_runtime_client(region)
-                    raise
-                result["response"] = normalize_converse_response(raw_response)
-            elif agent.provider == "moa":
-                # MoA is a virtual chat-completions provider backed by the
-                # in-process MoAClient facade. Do not rebuild a request-local
-                # OpenAI client from the virtual runtime metadata.
-                result["response"] = agent.client.chat.completions.create(**api_kwargs)
-            else:
-                request_client = _set_request_client(
-                    agent._create_request_openai_client(
-                        reason="chat_completion_request",
-                        api_kwargs=api_kwargs,
-                    )
-                )
-                result["response"] = request_client.chat.completions.create(
-                    **api_kwargs
-                )
+                ),
+            )
         except Exception as e:
             # If the request was cancelled by the main thread's interrupt
             # handler, the transport error is the expected consequence of our
@@ -458,6 +548,29 @@ def interruptible_api_call(agent, api_kwargs: dict):
         if _codex_floor:
             _stale_timeout = max(_stale_timeout, _codex_floor)
 
+    # ── Codex absolute hard ceiling (#64507) ──────────────────────────
+    # ``openai_codex_stale_timeout_floor`` *raises* the stale timeout (up to
+    # 1200s at >100k tokens) so healthy gateway-scale payloads aren't aborted.
+    # The scaled no-byte TTFB watchdog catches dead streams that never emit a
+    # first byte, but a request that emits SOME bytes and then wedges (the
+    # issue-64507 symptom: vision-inflated request, worker idle, no ended_at)
+    # is only reclaimed at the (high) stale floor. Add a flat, finite hard
+    # ceiling on total request time that ALWAYS applies to openai-codex
+    # requests regardless of the TTFB/stale interaction, so a stalled request
+    # is recovered (retry loop / visible failure) instead of hanging
+    # indefinitely. The default sits ABOVE the maximum stale floor (1200s) so
+    # it never clamps an intentionally-raised timeout for healthy large
+    # requests — it is a backstop against unbounded growth, not a tighter
+    # limit. Tunable via HERMES_CODEX_HARD_TIMEOUT_SECONDS (set to 0 to
+    # disable the ceiling entirely; that restores the pre-fix behavior).
+    _codex_hard_timeout = _env_float("HERMES_CODEX_HARD_TIMEOUT_SECONDS", 1500.0)
+    if (
+        _codex_watchdog_enabled
+        and _openai_codex_backend
+        and _codex_hard_timeout > 0
+    ):
+        _stale_timeout = min(_stale_timeout, _codex_hard_timeout)
+
     if _est_tokens_for_codex_watchdog > 100_000:
         _codex_idle_timeout_default = 180.0
     elif _est_tokens_for_codex_watchdog > 50_000:
@@ -488,25 +601,28 @@ def interruptible_api_call(agent, api_kwargs: dict):
             and _ttfb_disable_above > 0
             and _est_tokens_for_codex_watchdog >= _ttfb_disable_above
         ):
-            _ttfb_enabled = False
-            logger.info(
-                "Disabling openai-codex no-byte TTFB watchdog for large request "
-                "(context=~%s tokens >= %.0f). Waiting for backend response instead. "
-                "Set HERMES_CODEX_TTFB_STRICT=1 to force early reconnects.",
-                f"{_est_tokens_for_codex_watchdog:,}",
-                _ttfb_disable_above,
-            )
-        else:
-            _ttfb_cap = _env_float("HERMES_CODEX_TTFB_MAX_SECONDS", 120.0)
-            if _ttfb_cap > 0 and _ttfb_timeout > _ttfb_cap:
+            _large_request_ttfb_timeout = _codex_idle_timeout_default
+            if _ttfb_timeout < _large_request_ttfb_timeout:
                 logger.info(
-                    "Capping openai-codex no-byte TTFB timeout from %.0fs to %.0fs "
-                    "(context=~%s tokens). Set HERMES_CODEX_TTFB_MAX_SECONDS to tune.",
+                    "Scaling openai-codex no-byte TTFB watchdog from %.0fs to %.0fs "
+                    "for large request (context=~%s tokens >= %.0f). "
+                    "Set HERMES_CODEX_TTFB_STRICT=1 to keep the smaller cutoff.",
                     _ttfb_timeout,
-                    _ttfb_cap,
+                    _large_request_ttfb_timeout,
                     f"{_est_tokens_for_codex_watchdog:,}",
+                    _ttfb_disable_above,
                 )
-                _ttfb_timeout = _ttfb_cap
+                _ttfb_timeout = _large_request_ttfb_timeout
+        _ttfb_cap = _env_float("HERMES_CODEX_TTFB_MAX_SECONDS", 120.0)
+        if _ttfb_cap > 0 and _ttfb_timeout > _ttfb_cap:
+            logger.info(
+                "Capping openai-codex no-byte TTFB timeout from %.0fs to %.0fs "
+                "(context=~%s tokens). Set HERMES_CODEX_TTFB_MAX_SECONDS to tune.",
+                _ttfb_timeout,
+                _ttfb_cap,
+                f"{_est_tokens_for_codex_watchdog:,}",
+            )
+            _ttfb_timeout = _ttfb_cap
 
     _codex_idle_enabled = _codex_watchdog_enabled
     _codex_idle_timeout = _env_float(
@@ -532,12 +648,23 @@ def interruptible_api_call(agent, api_kwargs: dict):
         t.join(timeout=0.3)
         _poll_count += 1
 
-        # Touch activity every ~30s so the gateway's inactivity
-        # monitor knows we're alive while waiting for the response.
+        # Every ~30s: touch activity for the gateway inactivity monitor AND
+        # rewrite the live spinner/status line so CLI/TUI/Desktop users see
+        # what the agent is waiting on instead of an unexplained generic
+        # spinner (the "infinite thinking" complaint — the wait itself is
+        # usually a slow/overloaded provider, but the UI never said so).
         if _poll_count % 100 == 0:  # 100 × 0.3s = 30s
             _elapsed = time.time() - _call_start
-            agent._touch_activity(
-                f"waiting for non-streaming response ({int(_elapsed)}s elapsed)"
+            _deadline = _stale_timeout
+            if (
+                _ttfb_enabled
+                and getattr(agent, "_codex_stream_last_event_ts", None) is None
+            ):
+                _deadline = min(_deadline, _ttfb_timeout)
+            agent._emit_wait_notice(
+                f"⏳ waiting on {api_kwargs.get('model', 'the provider')} — "
+                f"{int(_elapsed)}s with no response yet (provider may be slow "
+                f"or overloaded; auto-reconnect at {int(_deadline)}s)"
             )
 
         _elapsed = time.time() - _call_start
@@ -584,6 +711,10 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 _close_request_client_once("codex_ttfb_kill")
             except Exception:
                 pass
+            agent._emit_wait_notice(
+                f"⚠ no response from provider in {int(_elapsed)}s — "
+                f"reconnecting..."
+            )
             agent._touch_activity(
                 f"codex stream killed after {int(_elapsed)}s with no first byte"
             )
@@ -1673,6 +1804,28 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 api_mode=agent.api_mode,
             )
 
+        # Re-resolve reasoning_config for the new fallback model (Closes #21256).
+        # Shared chokepoint: per-model override > global reasoning_effort
+        # (YAML boolean False = disabled). Wrapped in try/except because a
+        # config load failure must not kill the swap.
+        try:
+            from hermes_cli.config import load_config
+            from hermes_constants import resolve_reasoning_config
+
+            agent.reasoning_config = resolve_reasoning_config(
+                load_config() or {}, agent.model
+            )
+            logger.info(
+                "Fallback %s: reasoning_config resolved: %s",
+                agent.model, agent.reasoning_config,
+            )
+        except Exception as _reasoning_err:
+            logger.debug(
+                "Failed to resolve reasoning_config for fallback %s; keeping current: %s",
+                agent.model, _reasoning_err,
+            )
+            # Keep whatever reasoning_config was active — don't break the fallback swap.
+
         # Keep the prompt's self-identity in sync with the model actually
         # answering, so "what model are you?" doesn't report the primary.
         rewrite_prompt_model_identity(agent, fb_model, fb_provider)
@@ -2041,6 +2194,15 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     """
     if agent._interrupt_requested:
         raise InterruptedError("Agent interrupted before streaming API call")
+
+    # Cron and other non-interactive, nested-pool contexts deadlock on the
+    # spawned worker thread (#62151). They also have no stream consumer, so the
+    # deltas this path produces go nowhere. Delegate to the non-streaming entry
+    # (which runs inline via should_use_direct_api_call) exactly like the codex
+    # branch below — routing through the _interruptible_api_call method keeps the
+    # outer loop's per-request retry/refresh seam intact.
+    if should_use_direct_api_call(agent):
+        return agent._interruptible_api_call(api_kwargs)
 
     if agent.api_mode == "codex_responses":
         # Codex streams internally via _run_codex_stream. The main dispatch
@@ -2598,7 +2760,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             and not reasoning_parts
             and not tool_calls_acc
         ):
-            raise RuntimeError(
+            raise EmptyStreamError(
                 "Provider returned an empty stream with no finish_reason "
                 "(possible upstream error or malformed SSE response)."
             )
@@ -2687,6 +2849,17 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         works unchanged.
         """
         has_tool_use = False
+        # Zero-event guard parity with the chat_completions path: track
+        # whether the provider delivered ANY stream event. On an eventless
+        # stream the real Anthropic SDK's get_final_message() raises
+        # AssertionError (no message_start ⇒ no final-message snapshot);
+        # OpenAI-compat shims may instead fabricate a contentless Message
+        # with no stop_reason, or return None under ``python -O`` (assert
+        # stripped). Every one of those shapes is normalized below to
+        # EmptyStreamError so the shared _call() retry loop treats it as
+        # transient instead of surfacing a raw AssertionError or a
+        # fabricated "successful" empty turn.
+        saw_stream_event = False
 
         # Reset stale-stream timer for this attempt
         last_chunk_time["t"] = time.time()
@@ -2714,6 +2887,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             except Exception:
                 pass
             for event in stream:
+                saw_stream_event = True
                 # Update stale-stream timer on every event so the
                 # outer poll loop knows data is flowing.  Without
                 # this, the detector kills healthy long-running
@@ -2774,7 +2948,38 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # this return value is discarded anyway.
             if agent._interrupt_requested:
                 return None
-            return stream.get_final_message()
+            # Zero-event guard (parity with the chat_completions zero-chunk
+            # guard above). Real SDK: an eventless stream has no
+            # message_start, so get_final_message() raises AssertionError
+            # (final-message snapshot is None) — normalize that to
+            # EmptyStreamError so it gets the transient retry budget
+            # instead of surfacing raw.
+            try:
+                _final_message = stream.get_final_message()
+            except AssertionError:
+                if not saw_stream_event:
+                    raise EmptyStreamError(
+                        "Provider returned an empty stream with no events "
+                        "(possible upstream error or malformed event stream)."
+                    ) from None
+                raise
+            # Shim variants of the same failure: an OpenAI-compat adapter
+            # may fabricate a contentless Message with no stop_reason, or
+            # return None where the SDK assert would have fired (e.g.
+            # ``python -O``). A real completed response always carries a
+            # stop_reason, so this cannot fire on legitimate turns.
+            if not saw_stream_event and (
+                _final_message is None
+                or (
+                    not getattr(_final_message, "content", None)
+                    and getattr(_final_message, "stop_reason", None) is None
+                )
+            ):
+                raise EmptyStreamError(
+                    "Provider returned an empty stream with no stop_reason "
+                    "(possible upstream error or malformed event stream)."
+                )
+            return _final_message
 
     def _call():
         import httpx as _httpx
@@ -2827,6 +3032,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         ),
                     )
                     _is_stream_parse_err = agent._is_provider_stream_parse_error(e)
+                    _is_empty_stream = isinstance(e, EmptyStreamError)
 
                     # If the stream died AFTER some tokens were delivered:
                     # normally we don't retry (the user already saw text,
@@ -2978,6 +3184,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         or _is_conn_err
                         or _is_sse_conn_err
                         or _is_stream_parse_err
+                        or _is_empty_stream
                     ):
                         # Transient network / timeout error. Retry the
                         # streaming request with a fresh connection first.
@@ -3021,17 +3228,32 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             mid_tool_call=False,
                             diag=request_client_holder.get("diag"),
                         )
-                        agent._buffer_status(
-                            "❌ Provider returned malformed streaming data after "
-                            f"{_max_stream_retries + 1} attempts. "
-                            "The provider may be experiencing issues — "
-                            "try again in a moment."
-                            if _is_stream_parse_err
-                            else "❌ Connection to provider failed after "
-                            f"{_max_stream_retries + 1} attempts. "
-                            "The provider may be experiencing issues — "
-                            "try again in a moment."
-                        )
+                        if _is_stream_parse_err:
+                            _exhausted_msg = (
+                                "❌ Provider returned malformed streaming data after "
+                                f"{_max_stream_retries + 1} attempts. "
+                                "The provider may be experiencing issues — "
+                                "try again in a moment."
+                            )
+                        elif _is_empty_stream:
+                            # The connection SUCCEEDED (stream opened) but the
+                            # provider sent no chunks — saying "connection
+                            # failed" here sends users chasing network issues
+                            # when the problem is the provider/endpoint.
+                            _exhausted_msg = (
+                                "❌ Provider returned an empty response stream "
+                                f"after {_max_stream_retries + 1} attempts. "
+                                "The provider may be experiencing issues — "
+                                "try again in a moment."
+                            )
+                        else:
+                            _exhausted_msg = (
+                                "❌ Connection to provider failed after "
+                                f"{_max_stream_retries + 1} attempts. "
+                                "The provider may be experiencing issues — "
+                                "try again in a moment."
+                            )
+                        agent._buffer_status(_exhausted_msg)
                     else:
                         _err_lower = str(e).lower()
                         _is_stream_unsupported = (
@@ -3154,9 +3376,29 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         if _hb_now - _last_heartbeat >= _HEARTBEAT_INTERVAL:
             _last_heartbeat = _hb_now
             _waiting_secs = int(_hb_now - last_chunk_time["t"])
-            agent._touch_activity(
-                f"waiting for stream response ({_waiting_secs}s, no chunks yet)"
-            )
+            if _waiting_secs >= _HEARTBEAT_INTERVAL:
+                # No chunks for 30s+ — rewrite the live spinner/status line
+                # so CLI/TUI/Desktop users see WHAT the wait is (slow or
+                # overloaded provider / long thinking pause) instead of an
+                # unexplained generic spinner, and WHEN recovery kicks in.
+                if (
+                    _stream_stale_timeout is not None
+                    and _stream_stale_timeout != float("inf")
+                ):
+                    _recovery = f"; auto-reconnect at {int(_stream_stale_timeout)}s"
+                else:
+                    _recovery = ""
+                agent._emit_wait_notice(
+                    f"⏳ waiting on {api_kwargs.get('model', 'the provider')} — "
+                    f"{_waiting_secs}s with no output yet (provider may be "
+                    f"slow or overloaded, or the model is thinking{_recovery})"
+                )
+            else:
+                # Chunks are flowing — keep the activity tracker fresh but
+                # leave the live display alone.
+                agent._touch_activity(
+                    f"waiting for stream response ({_waiting_secs}s, no chunks yet)"
+                )
 
         # Detect stale streams: connections kept alive by SSE pings
         # but delivering no real chunks.  Kill the client so the
@@ -3201,6 +3443,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # Reset the timer so we don't kill repeatedly while
             # the inner thread processes the closure.
             last_chunk_time["t"] = time.time()
+            agent._emit_wait_notice(
+                f"⚠ no output from provider for {int(_stale_elapsed)}s — "
+                f"reconnecting..."
+            )
             agent._touch_activity(
                 f"stale stream detected after {int(_stale_elapsed)}s, reconnecting"
             )

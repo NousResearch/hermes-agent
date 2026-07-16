@@ -37,6 +37,7 @@ from tools.binary_extensions import BINARY_EXTENSIONS
 from agent.file_safety import (
     build_write_denied_paths,
     build_write_denied_prefixes,
+    get_write_denied_error,
     is_write_denied as _shared_is_write_denied,
 )
 
@@ -145,7 +146,7 @@ def _has_bom(text: Optional[str]) -> bool:
 
 def _windows_bash_path_to_drive(path: str) -> str:
     """Convert Git Bash/MSYS drive paths back to native Windows syntax."""
-    if os.name != "nt" or not path:
+    if not _IS_WINDOWS or not path:
         return path
     match = re.match(r"^/mnt/([a-zA-Z])(?:/(.*))?$", path)
     if match:
@@ -170,6 +171,17 @@ def _is_write_denied(path: str) -> bool:
         return True
     native_path = _windows_bash_path_to_drive(path)
     return native_path != path and _shared_is_write_denied(native_path)
+
+
+def _write_denied_error(path: str, verb: str | None = None) -> str | None:
+    native_path = _windows_bash_path_to_drive(path)
+    for candidate in (path, native_path):
+        denied = get_write_denied_error(candidate, verb=verb)
+        if denied:
+            return denied
+        if _shared_is_write_denied(candidate):
+            return f"{verb or 'Write'} denied: path is protected"
+    return None
 
 
 # =============================================================================
@@ -624,7 +636,7 @@ def _looks_like_linter_unusable(base_cmd: str, output: str) -> bool:
 
 def _is_windows_wsl_bash(bash_path: str) -> bool:
     """Return True for Windows WSL bash launchers."""
-    if os.name != "nt" or not bash_path:
+    if not _IS_WINDOWS or not bash_path:
         return False
     normalized = os.path.normcase(os.path.normpath(bash_path))
     return (
@@ -635,7 +647,7 @@ def _is_windows_wsl_bash(bash_path: str) -> bool:
 
 def _windows_drive_path_for_bash(path: str, path_style: str = "msys") -> str:
     """Convert native Windows drive paths to bash drive path syntax."""
-    if os.name != "nt" or not path:
+    if not _IS_WINDOWS or not path:
         return path
     match = re.match(r"^([a-zA-Z]):[\\/](.*)$", path)
     if not match:
@@ -1028,7 +1040,19 @@ class ShellFileOperations(FileOperations):
         return path
     
     def _escape_shell_arg(self, arg: str) -> str:
-        """Escape a string for safe use in shell commands."""
+        """Escape a string for safe use in shell commands.
+
+        On Windows native drive paths (``C:\\Users\\x`` / ``C:/Users/x``)
+        and mixed MSYS leftovers (``/c/Users\\x``) are rewritten to the
+        Git Bash ``/c/Users/x`` form via ``_bash_safe_path``: bash eats
+        backslashes and MSYS otherwise mangles drive paths into the
+        ``Directory \\drivers\\etc does not exist`` failure class. Reuses
+        the env-layer translator so shell file ops and the terminal ``cd``
+        agree on the path form. No-op off Windows and for plain POSIX paths.
+        """
+        from tools.environments.local import _bash_safe_path
+
+        arg = _bash_safe_path(arg)
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
@@ -1347,8 +1371,9 @@ class ShellFileOperations(FileOperations):
 
     def _python_delete(self, path: str, recursive: bool) -> WriteResult:
         path = self._expand_path(path)
-        if _is_write_denied(path):
-            return WriteResult(error=f"Delete denied: {path} is a protected path")
+        denied = _write_denied_error(path, verb="Delete")
+        if denied:
+            return WriteResult(error=denied)
 
         # We can't shell out to ``rm`` here — it doesn't exist on Windows
         # ``cmd.exe`` or PowerShell, so this code path is what's left when
@@ -1393,8 +1418,9 @@ class ShellFileOperations(FileOperations):
         src = self._expand_path(src)
         dst = self._expand_path(dst)
         for p in (src, dst):
-            if _is_write_denied(p):
-                return WriteResult(error=f"Move denied: {p} is a protected path")
+            denied = _write_denied_error(p, verb="Move")
+            if denied:
+                return WriteResult(error=denied)
         result = self._exec(
             f"mv {self._escape_shell_arg(src)} {self._escape_shell_arg(dst)}"
         )
@@ -1441,8 +1467,9 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        if _is_write_denied(path):
-            return WriteResult(error=f"Write denied: '{path}' is a protected system/credential file.")
+        denied = _write_denied_error(path, verb="Write")
+        if denied:
+            return WriteResult(error=denied)
 
         # ── Fail-closed pre-write syntax gate ───────────────────────────
         # Validate the CANDIDATE content BEFORE any bytes touch disk —
@@ -1624,8 +1651,9 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        if _is_write_denied(path):
-            return PatchResult(error=f"Write denied: '{path}' is a protected system/credential file.")
+        denied = _write_denied_error(path, verb="Write")
+        if denied:
+            return PatchResult(error=denied)
 
         # Read current content
         read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
@@ -2565,3 +2593,4 @@ class ShellFileOperations(FileOperations):
                 truncated=total > offset + limit or bool(limit_reason),
                 limit_reason=limit_reason,
             )
+_IS_WINDOWS = os.name == "nt"

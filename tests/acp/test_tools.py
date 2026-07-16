@@ -227,6 +227,26 @@ class TestBuildToolStart:
         assert result.content is None
         assert result.raw_input is None
 
+    def test_build_tool_start_survives_non_string_command(self):
+        """A malformed (non-string) terminal command previously raised
+        TypeError in build_tool_title (len(None)) and aborted the render."""
+        result = build_tool_start("tc-bad-cmd", "terminal", {"command": None})
+        assert isinstance(result, ToolCallStart)
+        assert result.kind == "execute"  # tool identity preserved in the fallback
+
+    def test_build_tool_start_survives_non_string_path(self):
+        """A non-string read_file path previously raised a ToolCallLocation
+        pydantic ValidationError in extract_locations and aborted the render."""
+        result = build_tool_start("tc-bad-path", "read_file", {"path": {"p": "x"}})
+        assert isinstance(result, ToolCallStart)
+        assert result.kind == "read"
+
+    def test_build_tool_start_survives_non_string_goal(self):
+        """A non-string delegate_task goal previously raised TypeError
+        (len(123)) in build_tool_title and aborted the render."""
+        result = build_tool_start("tc-bad-goal", "delegate_task", {"goal": 123})
+        assert isinstance(result, ToolCallStart)
+
     def test_build_tool_start_for_web_extract_is_compact(self):
         """web_extract start should stay compact; title identifies URLs."""
         args = {"urls": ["https://example.com/docs"]}

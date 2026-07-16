@@ -25,36 +25,74 @@ describe('gateway event routing', () => {
     expect(gatewayEventRequiresSessionId(undefined)).toBe(false)
   })
 
-  it('routes unscoped events to the sole busy session', () => {
-    const states = new Map([
-      ['bg-runtime', { busy: true }],
-      ['fg-runtime', { busy: false }]
-    ])
+  it('keeps unscoped stream events pinned to the session that started them', () => {
+    const started = resolveGatewayEventSessionId({
+      activeSessionId: 'session-a',
+      eventType: 'message.start',
+      explicitSessionId: '',
+      unscopedStreamSessionId: null
+    })
 
-    expect(resolveGatewayEventSessionId('', 'fg-runtime', states)).toBe('bg-runtime')
+    expect(started).toEqual({
+      drop: false,
+      nextUnscopedStreamSessionId: 'session-a',
+      sessionId: 'session-a'
+    })
+
+    const delta = resolveGatewayEventSessionId({
+      activeSessionId: 'session-b',
+      eventType: 'message.delta',
+      explicitSessionId: '',
+      unscopedStreamSessionId: started.nextUnscopedStreamSessionId
+    })
+
+    expect(delta).toEqual({
+      drop: false,
+      nextUnscopedStreamSessionId: 'session-a',
+      sessionId: 'session-a'
+    })
+
+    const completed = resolveGatewayEventSessionId({
+      activeSessionId: 'session-b',
+      eventType: 'message.complete',
+      explicitSessionId: '',
+      unscopedStreamSessionId: delta.nextUnscopedStreamSessionId
+    })
+
+    expect(completed).toEqual({
+      drop: false,
+      nextUnscopedStreamSessionId: null,
+      sessionId: 'session-a'
+    })
   })
 
-  it('prefers the active session when multiple sessions are busy', () => {
-    const states = new Map([
-      ['bg-runtime', { busy: true }],
-      ['fg-runtime', { busy: true }]
-    ])
+  it('routes a new unscoped stream start to the currently active session', () => {
+    const routed = resolveGatewayEventSessionId({
+      activeSessionId: 'session-b',
+      eventType: 'message.start',
+      explicitSessionId: '',
+      unscopedStreamSessionId: 'session-a'
+    })
 
-    expect(resolveGatewayEventSessionId('', 'fg-runtime', states)).toBe('fg-runtime')
+    expect(routed).toEqual({
+      drop: false,
+      nextUnscopedStreamSessionId: 'session-b',
+      sessionId: 'session-b'
+    })
   })
 
-  it('drops ambiguous unscoped events when several sessions are busy and active is quiet', () => {
-    const states = new Map([
-      ['a-runtime', { busy: true }],
-      ['b-runtime', { awaitingResponse: true }]
-    ])
+  it('keeps explicit events scoped and clears a matching pinned stream on completion', () => {
+    const routed = resolveGatewayEventSessionId({
+      activeSessionId: 'session-b',
+      eventType: 'message.complete',
+      explicitSessionId: 'session-a',
+      unscopedStreamSessionId: 'session-a'
+    })
 
-    expect(resolveGatewayEventSessionId('', 'quiet-runtime', states)).toBeNull()
-  })
-
-  it('keeps explicit session ids authoritative', () => {
-    const states = new Map([['bg-runtime', { busy: true }]])
-
-    expect(resolveGatewayEventSessionId('explicit-runtime', 'fg-runtime', states)).toBe('explicit-runtime')
+    expect(routed).toEqual({
+      drop: false,
+      nextUnscopedStreamSessionId: null,
+      sessionId: 'session-a'
+    })
   })
 })

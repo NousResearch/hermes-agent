@@ -27,7 +27,8 @@ class TestResolvePath:
 
     def test_windows_msys_absolute_path_normalizes_to_drive_path(self, monkeypatch):
         """Git Bash /c/... absolute paths must normalize to Windows drive paths."""
-        monkeypatch.setattr(os, "name", "nt", raising=False)
+        from tools import file_operations
+        monkeypatch.setattr(file_operations, "_IS_WINDOWS", True)
         from tools.file_tools import _msys_path_to_windows
 
         result = _msys_path_to_windows("/c/Users/alice/project/file.txt")
@@ -36,7 +37,8 @@ class TestResolvePath:
 
     def test_windows_msys_absolute_path_supports_other_drives(self, monkeypatch):
         """MSYS drive prefixes are not limited to C:."""
-        monkeypatch.setattr(os, "name", "nt", raising=False)
+        from tools import file_operations
+        monkeypatch.setattr(file_operations, "_IS_WINDOWS", True)
         from tools.file_tools import _msys_path_to_windows
 
         result = _msys_path_to_windows("/d/hermes jiyi/2026-04-29.md")
@@ -45,7 +47,8 @@ class TestResolvePath:
 
     def test_windows_wsl_absolute_path_normalizes_to_drive_path(self, monkeypatch):
         """WSL /mnt/c/... absolute paths must normalize to Windows drive paths."""
-        monkeypatch.setattr(os, "name", "nt", raising=False)
+        from tools import file_operations
+        monkeypatch.setattr(file_operations, "_IS_WINDOWS", True)
         from tools.file_tools import _msys_path_to_windows
 
         result = _msys_path_to_windows("/mnt/c/Users/alice/project/file.txt")

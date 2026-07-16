@@ -145,30 +145,25 @@ def test_fetch_api_models_sends_extra_headers_to_models_probe(monkeypatch):
     captured = {}
 
     class FakeResponse:
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {"data": [{"id": "proxy-model"}]}
-
-    class FakeClient:
-        def __init__(self, *args, **kwargs):
-            captured["client_kwargs"] = kwargs
-
         def __enter__(self):
             return self
 
         def __exit__(self, exc_type, exc, tb):
             return False
 
-        def get(self, url, headers=None):
-            captured["url"] = url
-            captured["headers"] = {
-                key.lower(): value for key, value in (headers or {}).items()
-            }
-            return FakeResponse()
+        def read(self):
+            return b'{"data": [{"id": "proxy-model"}]}'
 
-    monkeypatch.setattr("httpx.Client", FakeClient)
+    def fake_urlopen(request, timeout=0):
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        captured["headers"] = {
+            key.lower(): value
+            for key, value in request.header_items()
+        }
+        return FakeResponse()
+
+    monkeypatch.setattr(models_mod, "_urlopen_model_catalog_request", fake_urlopen)
 
     models = models_mod.fetch_api_models(
         "proxy-key",

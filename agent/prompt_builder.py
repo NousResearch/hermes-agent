@@ -727,8 +727,12 @@ PLATFORM_HINTS = {
     ),
     "tui": (
         "You are running in the Hermes terminal UI (TUI). "
-        "Markdown and math (LaTeX, using $...$ or $$...$$) render natively "
-        "here — use standard single-backslash LaTeX, never double-escape. "
+        "Markdown renders here, and math is recognized as $...$ (inline) or "
+        "$$...$$ (display) and converted to terminal-friendly Unicode on a "
+        "best-effort basis — commands it can't convert are shown as raw "
+        "LaTeX. Use standard single-backslash LaTeX, never double-escape, "
+        "and prefer plain Unicode-expressible math over heavy LaTeX "
+        "constructs. "
         "Cron jobs scheduled from this session are LOCAL-ONLY: their output is "
         "saved (viewable via cronjob action='list') but is NOT delivered back "
         "into this TUI session — there is no live-delivery channel here. If the "

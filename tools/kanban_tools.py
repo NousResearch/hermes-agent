@@ -927,6 +927,7 @@ def _handle_create(args: dict, **kw) -> str:
     # fall back to scratch as before. Explicit None path stays None.
     workspace_kind = args.get("workspace_kind")
     workspace_path = args.get("workspace_path")
+    branch_name = args.get("branch_name")
     project_id = args.get("project") or args.get("project_id")
     _inherit_workspace = workspace_kind is None and workspace_path is None
     if workspace_kind is None:
@@ -982,6 +983,7 @@ def _handle_create(args: dict, **kw) -> str:
                 priority=int(priority) if priority is not None else 0,
                 workspace_kind=str(workspace_kind),
                 workspace_path=workspace_path,
+                branch_name=branch_name,
                 project_id=project_id,
                 triage=triage,
                 idempotency_key=idempotency_key,
@@ -1706,6 +1708,13 @@ KANBAN_CREATE_SCHEMA = {
                 "description": (
                     "Absolute path for 'dir' or 'worktree' workspace. "
                     "Relative paths are rejected at dispatch."
+                ),
+            },
+            "branch_name": {
+                "type": "string",
+                "description": (
+                    "Exact git branch for a 'worktree' workspace. Rejected "
+                    "for other workspace kinds."
                 ),
             },
             "project": {

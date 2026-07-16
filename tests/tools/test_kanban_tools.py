@@ -1303,6 +1303,40 @@ def test_create_explicit_workspace_beats_inheritance(monkeypatch, worker_env):
         conn.close()
 
 
+def test_create_persists_explicit_worktree_branch(worker_env):
+    """Router cards can pin the exact branch required by an approved plan."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    out = kt._handle_create({
+        "title": "planned worktree",
+        "assignee": "peer",
+        "workspace_kind": "worktree",
+        "workspace_path": "/tmp/planned-worktree",
+        "branch_name": "feature/planned-branch",
+    })
+    result = json.loads(out)
+    assert result["ok"] is True
+    with kb.connect() as conn:
+        task = kb.get_task(conn, result["task_id"])
+        assert task is not None
+        assert task.workspace_kind == "worktree"
+        assert task.workspace_path == "/tmp/planned-worktree"
+        assert task.branch_name == "feature/planned-branch"
+
+
+def test_create_rejects_branch_for_non_worktree(worker_env):
+    from tools import kanban_tools as kt
+
+    result = json.loads(kt._handle_create({
+        "title": "invalid branch",
+        "assignee": "peer",
+        "workspace_kind": "scratch",
+        "branch_name": "feature/not-a-worktree",
+    }))
+    assert "branch_name is only valid for worktree workspaces" in result["error"]
+
+
 def test_create_no_worker_task_stays_scratch(monkeypatch, worker_env):
     """Orchestrator/CLI callers (no HERMES_KANBAN_TASK) still default to
     scratch — inheritance only applies to task-scoped workers."""

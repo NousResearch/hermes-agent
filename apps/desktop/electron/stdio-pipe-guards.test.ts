@@ -1,15 +1,13 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
+
 import { test } from 'vitest'
 
 import { installStdioPipeErrorGuards, isIgnorablePipeError } from './stdio-pipe-guards'
 
 test('identifies broken standard pipe errors', () => {
   assert.equal(isIgnorablePipeError(Object.assign(new Error('closed'), { code: 'EPIPE' })), true)
-  assert.equal(
-    isIgnorablePipeError(Object.assign(new Error('destroyed'), { code: 'ERR_STREAM_DESTROYED' })),
-    true
-  )
+  assert.equal(isIgnorablePipeError(Object.assign(new Error('destroyed'), { code: 'ERR_STREAM_DESTROYED' })), true)
   assert.equal(isIgnorablePipeError(new Error('broken pipe')), true)
   assert.equal(isIgnorablePipeError(new Error('unrelated failure')), false)
 })

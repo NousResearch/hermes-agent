@@ -445,12 +445,7 @@ describe('assistant-ui streaming renderer', () => {
 
     expect(screen.getByRole('status', { name: 'Hermes is loading a response' })).toBeTruthy()
 
-    rerender(
-      <ManualStreamingHarness
-        isRunning={true}
-        messages={[userMessage(), assistantMessage('first chunk')]}
-      />
-    )
+    rerender(<ManualStreamingHarness isRunning={true} messages={[userMessage(), assistantMessage('first chunk')]} />)
 
     await waitFor(() => {
       expect(container.textContent).toContain('first chunk')

@@ -130,7 +130,9 @@ describe('SkillsView toolset management', () => {
     await renderSkills()
 
     expect((await screen.findAllByText('SurfSense')).length).toBeGreaterThan(0)
-    expect(screen.getAllByText(/Manim, HeyGen, HyperFrames, AITuber OnAir, irodoriTTS, MP4 audio muxing/).length).toBeGreaterThan(0)
+    expect(
+      screen.getAllByText(/Manim, HeyGen, HyperFrames, AITuber OnAir, irodoriTTS, MP4 audio muxing/).length
+    ).toBeGreaterThan(0)
     expect(screen.getByText('surfsense_video_plan')).toBeTruthy()
     expect(screen.getByText('surfsense_video_mux')).toBeTruthy()
   })

@@ -17,6 +17,7 @@ function pushUnique(candidates: string[], entry: string | null | undefined) {
   if (!entry || candidates.includes(entry)) {
     return
   }
+
   candidates.push(entry)
 }
 
@@ -47,9 +48,11 @@ function resolveDashboardWebDist({
 
   if (dashboardOverride) {
     const resolved = path.resolve(dashboardOverride)
+
     if (fileExists(path.join(resolved, 'index.html'))) {
       return resolved
     }
+
     warn(`[web-dist] HERMES_DESKTOP_DASHBOARD_WEB_DIST set but index.html missing at ${resolved}`)
   }
 
@@ -58,6 +61,7 @@ function resolveDashboardWebDist({
   pushUnique(candidates, cliWebDistForRoot(hermesRoot))
   pushUnique(candidates, cliWebDistForRoot(hermesRootOverride))
   pushUnique(candidates, cliWebDistForRoot(activeHermesRoot))
+
   if (!isPackaged) {
     pushUnique(candidates, cliWebDistForRoot(sourceRepoRoot))
   }
@@ -73,6 +77,7 @@ function resolveDashboardWebDist({
     `[web-dist] no dashboard web dist found (tried: ${candidates.join(', ') || '(none)'}). ` +
       `Build with: npm install --workspace web && npm run build -w web`
   )
+
   return fallback
 }
 

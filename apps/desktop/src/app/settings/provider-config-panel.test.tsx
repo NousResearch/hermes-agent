@@ -110,7 +110,9 @@ describe('ProviderConfigPanel', () => {
     const view = await renderPanel()
     const panel = within(view.container)
 
-    expect((await panel.findByLabelText('API URL') as HTMLInputElement).value).toBe('https://api.hindsight.vectorize.io')
+    expect(((await panel.findByLabelText('API URL')) as HTMLInputElement).value).toBe(
+      'https://api.hindsight.vectorize.io'
+    )
     expect((panel.getByLabelText('Bank ID') as HTMLInputElement).value).toBe('hermes')
     expect(panel.getByText('Cloud')).toBeTruthy()
     expect(panel.getAllByText('Hindsight Cloud API (lightweight, just needs an API key)').length).toBeGreaterThan(0)

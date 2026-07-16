@@ -1489,6 +1489,71 @@ def clean(cfg):
     return results
 
 
+def clean_manifest_targets(targets, cfg):
+    """Execute cleanup for FILESYSTEM.md manifest entries (source=='filesystem_md').
+
+    Built-in targets are handled by clean(); this runs only the manifest-extended
+    entries, applying safe age-based deletion (mirrors clean_logs: never delete
+    anything younger than its max_age_days, always honor dry_run). `never_touch`
+    entries are excluded by the merge step, so they never reach here. Returns a
+    list of result dicts matching clean()'s shape.
+    """
+    dry_run = cfg.get("dry_run", False)
+    results = []
+
+    for tid, t in sorted(targets.items()):
+        if t.get("source") != "filesystem_md":
+            continue
+        if t.get("action") == "never_touch":
+            continue
+
+        path = t.get("path")
+        if not path or not os.path.exists(path):
+            continue
+
+        max_age = t.get("max_age_days")
+        if max_age is None:
+            # Manifest entry without an age threshold is assessment-only — skip
+            # deletion so we never act on an unbounded path.
+            results.append({"action": f"manifest:{tid}", "tier": t.get("tier", 3),
+                            "compressed": 0, "deleted": 0, "bytes_freed": 0,
+                            "errors": [], "skipped": "no max_age_days"})
+            continue
+
+        result = {"action": f"manifest:{tid}", "tier": t.get("tier", 3),
+                  "compressed": 0, "deleted": 0, "bytes_freed": 0, "errors": []}
+
+        if os.path.isfile(path):
+            if age_days(path) > max_age:
+                size = os.path.getsize(path)
+                result["deleted"] += 1
+                result["bytes_freed"] += size
+                if not dry_run:
+                    try:
+                        os.remove(path)
+                    except Exception as e:
+                        result["errors"].append(f"remove {path}: {e}")
+        elif os.path.isdir(path):
+            for dp, _, filenames in os.walk(path):
+                for f in filenames:
+                    fp = os.path.join(dp, f)
+                    if not os.path.isfile(fp):
+                        continue
+                    if age_days(fp) > max_age:
+                        size = os.path.getsize(fp)
+                        result["deleted"] += 1
+                        result["bytes_freed"] += size
+                        if not dry_run:
+                            try:
+                                os.remove(fp)
+                            except Exception as e:
+                                result["errors"].append(f"remove {fp}: {e}")
+
+        results.append(result)
+
+    return results
+
+
 # ── Main ───────────────────────────────────────────────────────────────────
 
 def main():
@@ -1529,6 +1594,10 @@ def main():
         output.append("FILESYSTEM.md: not found (using built-in defaults)")
 
     # ── Discovery mode ──
+    # Discovery always runs (to populate `targets`) when --discover is passed
+    # or when no FILESYSTEM.md exists yet. But FILESYSTEM.md is ONLY written
+    # when --discover is explicit — never as a side effect of --assess or
+    # --clean --dry-run (those must stay read-only / non-mutating).
     if args.discover or not md_path:
         output.append("")
         output.append("── Discovery ──")
@@ -1542,10 +1611,10 @@ def main():
                 size = du(path) if os.path.exists(path) else 0
                 output.append(f"  [T{t.get('tier','?')}] {t.get('description', tid)}: {fmt(size)}")
 
-        # Create or update FILESYSTEM.md
-        fs_md_path = os.path.join(PROFILE_HOME, "references", "FILESYSTEM.md")
+        # Write FILESYSTEM.md ONLY on explicit --discover.
+        if args.discover:
+            fs_md_path = os.path.join(PROFILE_HOME, "references", "FILESYSTEM.md")
 
-        if args.discover or not md_path:
             if md_path:
                 # File exists but may lack manifest — add it
                 output.append(f"\nUpdating FILESYSTEM.md at {fs_md_path}...")
@@ -1579,6 +1648,8 @@ def main():
         output.append("")
         output.append("── Cleanup Results ──")
         results = clean(cfg)
+        # Manifest-extended targets (from FILESYSTEM.md) actually execute here.
+        results.extend(clean_manifest_targets(targets or {}, cfg))
         total_freed = 0
         for r in results:
             freed = r.get("bytes_freed", 0)

@@ -1,6 +1,6 @@
 ---
 name: genie
-description: VPS disk cleanup, root filesystem audit, and backup retention. Deletes old snaps, logs, and cron files; investigates disk spikes; enforces one historical backup on the VPS. Not for database maintenance beyond analysis, log rotation configuration, or real-time monitoring.
+description: VPS disk cleanup, root audit, and backup retention.
 version: 1.7.0
 author: Indigo Karasu (indigokarasu)
 license: MIT
@@ -161,8 +161,8 @@ When disk is critically high, flag these in the report even if `--clean` cannot 
 
 ## Known Issues / Pitfalls
 
-### backup_retention can delete the most-recent rollback snapshot (CONFIRMED BUG)
-`clean_backup_retention` keeps only the single newest candidate across ALL backup classes combined (`keep = valid[:1]`). The most-recent pre-update `state-snapshot` is itself a candidate in this scan. If a different backup file (e.g. a `transactions.db` copy) has a newer mtime, the snapshot is pushed into `reclaim` and `shutil.rmtree`'d — **violating the Safety Rule "the most recent snapshot is always preserved."** Symptom: after `--clean`, `clean_snapshots` reports `snapshots: freed 0.0 B` (the dir is already empty, so it has nothing to preserve) — do NOT read that 0.0 B as proof the snapshot survived. Verify the snapshot dir directly (see Verification). Fix is pending in `scripts/genie.py`; until then, treat snapshot preservation as UNVERIFIED after any `--clean` run. See `references/genie-snapshot-retention-bug.md` for the full analysis and reproduction recipe.
+### backup_retention snapshot safety (FIXED 2026-07-16)
+`clean_backup_retention` previously kept only the single newest candidate across ALL backup classes combined, which could push the most-recent pre-update `state-snapshot` into `reclaim` and `rm -rf` it. `backup_retention_plan()` now **excludes `state-snapshot` candidates** (genie.py:`backup_retention_plan`) so the cross-class "keep 1" rule can never reclaim a snapshot — the bug that deleted the 13 GB pre-update rollback snapshot on 2026-07-12. The most recent snapshot is still preserved by `clean_snapshots()` independently. Verify the snapshot dir directly after any `--clean` run (see Verification); do not read `clean_snapshots`'s `freed 0.0 B` as proof the snapshot survived. Full analysis and reproduction recipe: `references/genie-snapshot-retention-bug.md`.
 
 ### genie emits no per-file deletion manifest
 `--clean` prints only aggregate totals (e.g. "backup_retention: freed 26.6 GB"). Deleted paths are NOT logged. Once files are removed they are unrecoverable (no git/LFS tracking of `/root/.hermes`). To answer "what was deleted," reconstruct by comparing directory state before/after — you cannot recover a file list from the tool output. Always capture `ls -la` of every backup class BEFORE `--clean` if you need an audit trail.

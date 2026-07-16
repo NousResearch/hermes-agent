@@ -2,6 +2,7 @@
 
 import { type FC, useEffect, useState } from 'react'
 
+import { BrowserImageActions } from '@/components/chat/browser-image-actions'
 import { DiffusionCanvas } from '@/components/chat/image-generation-placeholder'
 import { ImageActionButton, ImageLightbox } from '@/components/chat/zoomable-image'
 import { useImageDownload } from '@/hooks/use-image-download'
@@ -160,6 +161,7 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
             />
           </button>
         )}
+        {loaded && src && <BrowserImageActions className="group-hover/image:opacity-100" src={src} />}
         {loaded && src && (
           <ImageActionButton className="group-hover/image:opacity-100" copy={copy} onClick={download} saving={saving} />
         )}

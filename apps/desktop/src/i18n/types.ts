@@ -2102,6 +2102,38 @@ export interface Translations {
 
   desktop: {
     audioReadFailed: string
+    browserTitle: string
+    openInBrowser: string
+    openInQc: string
+    browserBack: string
+    browserForward: string
+    browserReload: string
+    browserPin: string
+    browserUnpin: string
+    browserOpenExternal: string
+    browserCapture: string
+    browserCapturePreview: string
+    browserSaveCapture: string
+    browserClosePreview: string
+    browserUrlPlaceholder: string
+    browserNewTab: string
+    browserTabLimit: string
+    browserCloseTab: string
+    browserQc: string
+    browserQcNote: string
+    browserQcEvidence: string
+    browserQcPass: string
+    browserQcFail: string
+    browserQcUnchecked: string
+    browserEmpty: string
+    browserInvalidUrl: string
+    browserQcComposition: string
+    browserQcColor: string
+    browserQcTypography: string
+    browserQcSpacing: string
+    browserQcContrast: string
+    browserQcClipping: string
+    browserQcReferenceMatch: string
     sessionUnavailable: string
     createSessionFailed: string
     promptFailed: string

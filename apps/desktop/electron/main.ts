@@ -24,7 +24,8 @@ import {
   screen,
   session,
   shell,
-  systemPreferences
+  systemPreferences,
+  webContents
 } from 'electron'
 import nodePty from 'node-pty'
 
@@ -35,6 +36,17 @@ import { canImportHermesCli, verifyHermesCli } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
 import { runBootstrap } from './bootstrap-runner'
+import {
+  applyBrowserWebviewPolicy,
+  BROWSER_WEBVIEW_PARTITION,
+  browserGuestPopupPolicy,
+  createBrowserCaptureCache,
+  installBrowserGuestPermissionPolicy,
+  isBrowserCapturePngDestination,
+  isBrowserGuestNavigationAllowed,
+  PREVIEW_WEBVIEW_PARTITION,
+  sanitizeBrowserCaptureFilename
+} from './browser-webview'
 import {
   authModeFromStatus,
   buildGatewayWsUrl,
@@ -165,6 +177,7 @@ const APP_ROOT = app.getAppPath()
 // ESM loader is broken on Electron 40's Node (ERR_INVALID_RETURN_PROPERTY_VALUE).
 // Dev (`npm run dev`) and prod both load the esbuild output from dist/.
 const PRELOAD_PATH = path.join(APP_ROOT, 'dist', 'electron-preload.js')
+const browserCaptureCache = createBrowserCaptureCache()
 
 // Remote displays (SSH X11 forwarding, VNC, RDP) make Chromium's GPU
 // compositor flicker — accelerated layers can't be presented cleanly over the
@@ -6946,6 +6959,9 @@ async function startHermes() {
 // Alt+wheel scale, so inheriting the global UI zoom would render the mascot
 // larger than its window and crop it. Chat windows keep zoom on.
 function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {}) {
+  const ownerId = win.webContents.id
+  win.webContents.once('destroyed', () => browserCaptureCache.removeOwner(ownerId))
+
   installPreviewShortcut(win)
   installDevToolsShortcut(win)
 
@@ -6958,6 +6974,32 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
   }
 
   installContextMenu(win)
+  win.webContents.on('will-attach-webview', (event, webPreferences, params) => {
+    if (!applyBrowserWebviewPolicy(params, webPreferences)) {
+      event.preventDefault()
+    }
+  })
+  win.webContents.on('did-attach-webview', (_event, guestWebContents) => {
+    guestWebContents.setWindowOpenHandler(details => browserGuestPopupPolicy(details.url))
+    let guestPartition: string | undefined
+
+    if (guestWebContents.session === session.fromPartition(BROWSER_WEBVIEW_PARTITION)) {
+      guestPartition = BROWSER_WEBVIEW_PARTITION
+    } else if (guestWebContents.session === session.fromPartition(PREVIEW_WEBVIEW_PARTITION)) {
+      guestPartition = PREVIEW_WEBVIEW_PARTITION
+    }
+
+    guestWebContents.on('will-navigate', (event, url) => {
+      if (!isBrowserGuestNavigationAllowed(guestPartition, url)) {
+        event.preventDefault()
+      }
+    })
+    guestWebContents.on('will-redirect', (event, url) => {
+      if (!isBrowserGuestNavigationAllowed(guestPartition, url)) {
+        event.preventDefault()
+      }
+    })
+  })
   win.webContents.setWindowOpenHandler(details => {
     openExternalUrl(details.url)
 
@@ -8141,6 +8183,85 @@ ipcMain.on('hermes:translucency', (_event, payload) => {
   }
 })
 
+function ownedBrowserGuest(sender, rawGuestWebContentsId) {
+  const guestWebContentsId = Number(rawGuestWebContentsId)
+
+  if (!Number.isSafeInteger(guestWebContentsId) || guestWebContentsId <= 0) {
+    throw new Error('Invalid browser guest')
+  }
+
+  const guest = webContents.fromId(guestWebContentsId)
+
+  if (
+    !guest ||
+    guest.isDestroyed() ||
+    guest.hostWebContents?.id !== sender.id ||
+    guest.session !== session.fromPartition(BROWSER_WEBVIEW_PARTITION)
+  ) {
+    throw new Error('Browser guest is not owned by this window')
+  }
+
+  return guest
+}
+
+ipcMain.handle('hermes:browser:capture', async (event, guestWebContentsId) => {
+  const guest = ownedBrowserGuest(event.sender, guestWebContentsId)
+  const image = await guest.capturePage()
+  const { width, height } = image.getSize()
+
+  const captureId = browserCaptureCache.put({
+    ownerId: event.sender.id,
+    png: image.toPNG(),
+    width,
+    height
+  })
+
+  if (!captureId) {
+    throw new Error('Browser capture exceeds the temporary cache limit')
+  }
+
+  const capture = browserCaptureCache.get(captureId, event.sender.id)
+
+  if (!capture) {
+    throw new Error('Browser capture is unavailable')
+  }
+
+  return {
+    captureId,
+    dataUrl: image.toDataURL(),
+    width,
+    height,
+    createdAt: capture.createdAt
+  }
+})
+
+ipcMain.handle('hermes:browser:saveCapture', async (event, captureId, suggestedName) => {
+  const capture = browserCaptureCache.get(captureId, event.sender.id)
+
+  if (!capture) {
+    throw new Error('Browser capture is unavailable')
+  }
+
+  const options = { defaultPath: sanitizeBrowserCaptureFilename(suggestedName) }
+  const ownerWindow = BrowserWindow.fromWebContents(event.sender)
+
+  const result = ownerWindow ? await dialog.showSaveDialog(ownerWindow, options) : await dialog.showSaveDialog(options)
+
+  if (result.canceled) {
+    return { canceled: true }
+  }
+
+  const destination = result.filePath
+
+  if (!isBrowserCapturePngDestination(destination)) {
+    throw new Error('Browser capture must be saved as a PNG file')
+  }
+
+  await fs.promises.writeFile(destination, capture.png)
+  browserCaptureCache.remove(captureId, event.sender.id)
+
+  return { canceled: false, path: destination }
+})
 ipcMain.handle('hermes:openExternal', (_event, url) => {
   if (!openExternalUrl(url)) {
     throw new Error('Invalid external URL')
@@ -9091,6 +9212,8 @@ app.whenReady().then(() => {
   }
 
   installMediaPermissions()
+  installBrowserGuestPermissionPolicy(session.fromPartition(BROWSER_WEBVIEW_PARTITION))
+  installBrowserGuestPermissionPolicy(session.fromPartition(PREVIEW_WEBVIEW_PARTITION))
   registerMediaProtocol()
   installEmbedReferer()
   registerDeepLinkProtocol()

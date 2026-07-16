@@ -113,6 +113,8 @@ export const host = {
 
 // -- react bridge -------------------------------------------------------------
 
+/** Explicit browser/QC surface actions; they never react to background tool results. */
+export { type BrowserTabInput, openBrowserQc, openBrowserSurface } from '@/app/browser/store'
 // Every contribution surface, plugin-reachable: register keybinds, palette
 // commands, routes, themes, panes, composer extensions, and bar items with
 // the same area ids + payload types core uses.

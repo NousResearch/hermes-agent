@@ -15,7 +15,7 @@ This doc contains two kinds of content, maintained differently:
 - **Principles** (flatness, intent, feedback, motion, cancellation) are durable.
   They hold as components come and go.
 - **Named contracts** (tokens, `Button` variants, primitive names) are the
-  design system's current API. They are maintained *with* the code: if you
+  design system's current API. They are maintained _with_ the code: if you
   change a primitive, token, or variant, update its entry here **in the same
   change** — a stale name in this file is a bug, exactly like a stale type.
 
@@ -67,6 +67,21 @@ Navigation must preserve context. A background session finishing, a tool result
 arriving, or a project refresh may update badges and cached data; it must not
 replace the foreground transcript or steal focus.
 
+## Browser / QC workbench
+
+### Delivered v1
+
+- Browser is a first-class pane and tree destination. Its guest overlay is fixed and reparent-safe so pane and tree moves preserve the mounted guest surface.
+- Browser presentation authority is renderer- and window-scoped. Persist only bounded tab/QC metadata; never persist inline capture bytes.
+- Electron applies guest security policy and exposes only narrow, typed capture IPC. The v1 in-app guest capture uses `capturePage`; it does not promise an external-window capture path.
+- An explicit user action opens, navigates, captures, or focuses browser/QC work. Background tool results may offer actions, but never move focus, navigate, or open a pane.
+- The implementation has no vendor-specific code and adds no model tool. The public SDK remains limited to vendor-neutral open and QC primitives.
+- Deterministic fixtures cover browser/QC state and guest/capture behavior so tests do not depend on live sites or timing.
+
+### Bounded follow-up
+
+External-window `cua-driver` capture may be added behind the same invariant: it must not move the cursor, send keyboard input, steal app focus, or consume Space. It remains separate from v1's in-app guest `capturePage` limitation.
+
 ## Surfaces & elevation
 
 Floating panels (base `Dialog`, route overlays, boot/install/update surfaces,
@@ -88,15 +103,15 @@ for call-site shadow or border inventions.
 
 ## Stroke & color tokens
 
-| Token | Use |
-| --- | --- |
-| `--ui-stroke-primary…quaternary` | hairlines, in descending strength |
-| `--ui-stroke-tertiary` | the default in-panel divider / list hairline |
-| `--stroke-nous` | the overlay hairline (pairs with `shadow-nous`) |
-| `--ui-text-primary / -secondary / -tertiary` | text hierarchy |
-| `--ui-bg-quaternary` | soft control fill (secondary button) |
-| `--chrome-action-hover` | hover fill for quiet controls |
-| `--theme-primary`, `--ui-accent` | brand/accent |
+| Token                                        | Use                                             |
+| -------------------------------------------- | ----------------------------------------------- |
+| `--ui-stroke-primary…quaternary`             | hairlines, in descending strength               |
+| `--ui-stroke-tertiary`                       | the default in-panel divider / list hairline    |
+| `--stroke-nous`                              | the overlay hairline (pairs with `shadow-nous`) |
+| `--ui-text-primary / -secondary / -tertiary` | text hierarchy                                  |
+| `--ui-bg-quaternary`                         | soft control fill (secondary button)            |
+| `--chrome-action-hover`                      | hover fill for quiet controls                   |
+| `--theme-primary`, `--ui-accent`             | brand/accent                                    |
 
 Never hardcode `border-gray-*`, `bg-white`, `text-black`, etc. The white tile in
 `BrandMark` is the one sanctioned literal (the mark needs a fixed backdrop).
@@ -118,6 +133,7 @@ that sit inside a heading/sentence; replaces `h-auto px-0 py-0`), `micro`
 `icon-sm` / `icon-lg` / `icon-titlebar`.
 
 Notes:
+
 - Text buttons are square (no radius) and sized by padding + line-height (no
   fixed heights). Only icon buttons carry the shared 4px radius.
 - SVGs inherit `size-3.5` (`size-3` at `xs`). Don't re-set icon size.
@@ -178,6 +194,10 @@ Notes:
   route overlays, dialogs, and boot surfaces must not compete through ad-hoc
   z-index literals.
 
+- Browser/QC workbench changes preserve the delivered-v1 security, authority,
+  explicit-action, and capture limitations documented above; external-window
+  capture remains the bounded follow-up.
+
 ## Iconography & brand
 
 - **Tabler** is the default component/chrome set. Import its curated aliases and
@@ -199,7 +219,7 @@ Notes:
 - Quick, functional transitions (~100ms on controls). Respect
   `prefers-reduced-motion` for anything beyond a fade.
 - Choreographed exits (e.g. onboarding's "matrix" fade-down) stagger per-element
-  then settle the surface — the outer container's fade is *delayed* so it
+  then settle the surface — the outer container's fade is _delayed_ so it
   doesn't swallow the inner animation. Don't let a global fade race the detail.
 - Motion follows state; it never delays state. Selection, drag targets, cancel,
   and pressed feedback paint in the current frame.

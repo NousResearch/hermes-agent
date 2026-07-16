@@ -59,6 +59,7 @@ import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/t
 import { isSecondaryWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
+import { PersistentBrowser } from '../browser/persistent'
 import { requestComposerInsert } from '../chat/composer/focus'
 import { useComposerActions } from '../chat/hooks/use-composer-actions'
 import { CommandPalette } from '../command-palette'
@@ -941,6 +942,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
       {/* Single persistent xterm host chasing the terminal pane's slot rect. */}
       <PersistentTerminal onAddSelectionToChat={composer.addTerminalSelectionAttachment} />
+      {/* Browser guests stay mounted here while their pane slot is hidden, moved,
+          stacked, or resized; only the fixed overlay follows the live slot rect. */}
+      <PersistentBrowser />
     </ContribWiringContext.Provider>
   )
 }

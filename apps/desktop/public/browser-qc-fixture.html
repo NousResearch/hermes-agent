@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hermes Browser QC Fixture</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family:
+          Inter,
+          ui-sans-serif,
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          'Segoe UI',
+          sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        min-height: 100vh;
+        margin: 0;
+        background:
+          linear-gradient(135deg, rgba(63, 81, 181, 0.08) 25%, transparent 25%) 0 0 / 32px 32px,
+          linear-gradient(315deg, rgba(0, 135, 90, 0.07) 25%, transparent 25%) 0 0 / 32px 32px,
+          #eef2f8;
+        color: #10243d;
+      }
+      main {
+        width: min(1080px, calc(100vw - 48px));
+        margin: 32px auto;
+        overflow: hidden;
+        border: 1px solid #b9c6d8;
+        border-radius: 20px;
+        background: #ffffff;
+        box-shadow: 0 24px 64px rgba(16, 36, 61, 0.16);
+      }
+      header {
+        position: relative;
+        overflow: hidden;
+        padding: 40px 44px;
+        background: linear-gradient(120deg, #173b63 0%, #3157a4 55%, #6d3aa8 100%);
+        color: #ffffff;
+      }
+      header::after {
+        position: absolute;
+        top: -84px;
+        right: -36px;
+        width: 280px;
+        height: 280px;
+        border: 36px solid rgba(255, 255, 255, 0.12);
+        border-radius: 50%;
+        content: '';
+      }
+      h1 {
+        position: relative;
+        z-index: 1;
+        margin: 0;
+        font-size: 36px;
+        line-height: 44px;
+        letter-spacing: -0.02em;
+      }
+      header p {
+        position: relative;
+        z-index: 1;
+        max-width: 540px;
+        margin-bottom: 0;
+        color: #dce9ff;
+      }
+      p {
+        font-size: 16px;
+        line-height: 24px;
+      }
+      .content {
+        padding: 28px;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 18px;
+      }
+      .tile {
+        min-height: 210px;
+        padding: 22px;
+        border: 1px solid #c5d0df;
+        border-radius: 14px;
+        background: linear-gradient(180deg, #ffffff, #f7f9fc);
+      }
+      .tile h2 {
+        margin: 0 0 14px;
+        font-size: 18px;
+      }
+      .palette {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 7px;
+      }
+      .swatch {
+        height: 58px;
+        border-radius: 8px;
+      }
+      .swatch:nth-child(1) {
+        background: #173b63;
+      }
+      .swatch:nth-child(2) {
+        background: #3157a4;
+      }
+      .swatch:nth-child(3) {
+        background: #6d3aa8;
+      }
+      .swatch:nth-child(4) {
+        background: #00875a;
+      }
+      .swatch:nth-child(5) {
+        background: #ffb000;
+      }
+      .bars {
+        display: grid;
+        gap: 12px;
+      }
+      .bar {
+        height: 18px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, #3157a4, #7c92c6);
+      }
+      .bar:nth-child(2) {
+        width: 76%;
+      }
+      .bar:nth-child(3) {
+        width: 48%;
+      }
+      .type-specimen strong {
+        display: block;
+        margin-bottom: 8px;
+        font-size: 27px;
+        letter-spacing: -0.03em;
+      }
+      .type-specimen span {
+        display: block;
+        color: #496078;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 13px;
+        line-height: 22px;
+      }
+      .reference {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        align-items: center;
+        gap: 24px;
+        margin-top: 18px;
+        padding: 22px;
+        border: 3px dashed #00875a;
+        border-radius: 14px;
+        background:
+          linear-gradient(45deg, rgba(0, 135, 90, 0.08) 25%, transparent 25%) 0 0 / 20px 20px,
+          #e4fff3;
+      }
+      .reference-mark {
+        display: grid;
+        width: 56px;
+        height: 56px;
+        place-items: center;
+        border-radius: 50%;
+        background: #00875a;
+        color: #ffffff;
+        font-size: 26px;
+        font-weight: 700;
+      }
+      .clip-frame {
+        margin-top: 18px;
+        padding: 14px;
+        border-radius: 12px;
+        background: #fff4f4;
+      }
+      .clip {
+        width: 230px;
+        margin: 0;
+        overflow: hidden;
+        white-space: nowrap;
+        border: 2px solid #c81e1e;
+        background: #ffffff;
+      }
+      @media (max-width: 760px) {
+        main {
+          width: min(100% - 24px, 1080px);
+          margin: 12px auto;
+        }
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Reference heading</h1>
+        <p>Stable contrast, typography, color, composition, and spacing targets for repeatable Browser/QC checks.</p>
+      </header>
+      <div class="content">
+        <section class="grid" aria-label="QC reference tiles">
+          <article class="tile">
+            <h2>Color system</h2>
+            <div class="palette" aria-label="Reference color palette">
+              <span class="swatch"></span><span class="swatch"></span><span class="swatch"></span>
+              <span class="swatch"></span><span class="swatch"></span>
+            </div>
+            <p>Five fixed swatches expose hue and contrast drift.</p>
+          </article>
+          <article class="tile">
+            <h2>Composition</h2>
+            <div class="bars" aria-label="Reference spacing bars">
+              <span class="bar"></span><span class="bar"></span><span class="bar"></span>
+            </div>
+            <p>Aligned blocks make spacing and clipping regressions visible.</p>
+          </article>
+          <article class="tile type-specimen">
+            <h2>Typography</h2>
+            <strong>Hermes Aa</strong>
+            <span>Regular · 16 / 24</span>
+            <span>Heading · 36 / 44</span>
+            <span>Mono · 13 / 22</span>
+          </article>
+        </section>
+        <section class="reference">
+          <div>
+            <h2>Reference match target</h2>
+            <p>Dashed edge, patterned fill, and fixed badge provide a deterministic comparison region.</p>
+          </div>
+          <div class="reference-mark">✓</div>
+        </section>
+        <div class="clip-frame">
+          <p class="clip">Clipping target: this fixed line intentionally exceeds its container.</p>
+        </div>
+      </div>
+    </main>
+  </body>
+</html>

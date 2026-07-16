@@ -53,6 +53,8 @@ import { $filePreviewTarget, $previewTarget, closeRightRail } from '@/store/prev
 import { $reviewOpen, closeReview, REVIEW_PANE_ID } from '@/store/review'
 import { $currentCwd, $selectedStoredSessionId, $sessions, sessionMatchesStoredId } from '@/store/session'
 
+import { BrowserPane } from '../browser/pane'
+import { $browserOpen, $browserRevealRequest, BROWSER_PANE_ID, setBrowserOpen } from '../browser/store'
 import type { SessionDragPayload } from '../chat/composer/inline-refs'
 import { watchRouteTiles } from '../chat/route-tile'
 import { startSessionDrag } from '../chat/session-drag'
@@ -167,6 +169,20 @@ registry.registerMany([
     // is moot): a short deck, not a third of the window.
     data: { placement: 'bottom', height: '20vh', minHeight: '7.5rem', maxHeight: '80vh', revealOnPreset: true },
     render: () => <WiredPane part="terminal" />
+  },
+  {
+    id: BROWSER_PANE_ID,
+    area: 'panes',
+    title: 'browser',
+    data: {
+      placement: 'right',
+      collapsible: true,
+      dock: { pane: 'workspace', pos: 'right' },
+      width: 'clamp(24rem, 45vw, 60rem)',
+      minWidth: '20rem',
+      maxWidth: '90vw'
+    },
+    render: () => <BrowserPane />
   },
   {
     id: 'files',
@@ -533,6 +549,20 @@ bindPaneCollapse(
   () => setTerminalTakeover(false),
   () => setTerminalTakeover(true)
 )
+// Browser tabs and QC are window-scoped, persistent presentation. Explicit
+// open requests carry a separate transient reveal signal so repeated image/SDK
+// actions front the pane without background navigation stealing focus.
+bindPaneVisibility(
+  BROWSER_PANE_ID,
+  $browserOpen,
+  () => setBrowserOpen(false),
+  () => setBrowserOpen(true)
+)
+$browserRevealRequest.listen(() => {
+  if ($browserOpen.get()) {
+    revealTreePane(BROWSER_PANE_ID)
+  }
+})
 
 // Preview EXISTS only while something is previewed (old-shell semantics:
 // closing the last preview tab closes the pane; a new target opens + fronts

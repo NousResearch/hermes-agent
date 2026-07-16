@@ -228,19 +228,33 @@
       h("div", { className: "hm-label" }, "Personal account /usage · routing: " + routingDesc),
       keys.length === 0
         ? h("div", { className: "hm-empty" }, "Account /usage unavailable (no OAuth snapshot yet — next poll).")
-        : h("div", { className: "hm-hbars" }, keys.map(function (k) {
-            const pct = windows[k].pct || 0;
-            let status = "good", statusText = "ok";
-            if (pct >= 80) { status = "critical"; statusText = "hot — api-key failover"; }
-            else if (pct >= 60) { status = "warning"; statusText = "elevated"; }
-            return h("div", { key: k, className: "hm-hbar-row" },
-              h("span", { className: "hm-hbar-label" }, WINDOW_LABELS[k]),
-              h("div", { className: "hm-hbar-track" },
-                h("div", { className: "hm-hbar-fill hm-fill-" + status, style: { width: Math.min(100, pct) + "%" } })
-              ),
-              h("span", { className: "hm-hbar-value hm-status-" + status }, pct.toFixed(0) + "% · " + statusText)
-            );
-          }))
+        : h("div", { className: "hm-hbars" },
+            keys.map(function (k) {
+              const pct = windows[k].pct || 0;
+              let status = "good", statusText = "ok";
+              if (pct >= 80) { status = "critical"; statusText = "hot"; }
+              else if (pct >= 60) { status = "warning"; statusText = "elevated"; }
+              return h("div", { key: k, className: "hm-hbar-row" },
+                h("span", { className: "hm-hbar-label" }, WINDOW_LABELS[k]),
+                h("div", { className: "hm-hbar-track" },
+                  h("div", { className: "hm-hbar-fill hm-fill-" + status, style: { width: Math.min(100, pct) + "%" } })
+                ),
+                h("span", { className: "hm-hbar-value hm-status-" + status }, pct.toFixed(0) + "% · " + statusText)
+              );
+            }).concat(account && account.credits ? [(function () {
+              const c = account.credits;
+              const pct = c.pct || 0;
+              let status = "good", statusText = "$" + (c.remaining_usd || 0).toFixed(2) + " left";
+              if (pct >= 95) { status = "critical"; statusText = "$" + (c.remaining_usd || 0).toFixed(2) + " left — failover soon"; }
+              else if (pct >= 80) { status = "warning"; statusText = "$" + (c.remaining_usd || 0).toFixed(2) + " left"; }
+              return h("div", { key: "credits", className: "hm-hbar-row" },
+                h("span", { className: "hm-hbar-label" }, "Extra credits (month)"),
+                h("div", { className: "hm-hbar-track" },
+                  h("div", { className: "hm-hbar-fill hm-fill-" + status, style: { width: Math.min(100, pct) + "%" } })
+                ),
+                h("span", { className: "hm-hbar-value hm-status-" + status }, pct.toFixed(0) + "% · " + statusText)
+              );
+            })()] : []))
     );
   }
 
@@ -257,7 +271,7 @@
       h("table", { className: "hm-table" },
         h("thead", null, h("tr", null,
           ["profile", "runs", "ok", "blocked", "crashed", "timeout", "gave up", "avg run",
-           "sent back", "reviews ✓/✗", "violations", "follow-ups/session", "tokens 7d"].map(function (c) {
+           "sent back", "reviews ✓/✗", "violations", "follow-ups/session", "tokens 7d", "ctx/call"].map(function (c) {
             return h("th", { key: c }, c);
           })
         )),
@@ -280,7 +294,8 @@
             h("td", null, (a.reviews_approved || 0) + " / " + (a.reviews_rejected || 0)),
             h("td", { className: violations > 0 ? "hm-num-warn" : "" }, violations),
             h("td", null, ref.followups_per_session != null ? ref.followups_per_session : "—"),
-            h("td", null, u ? fmtTok(u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens) : "—")
+            h("td", null, u ? fmtTok(u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens) : "—"),
+            h("td", null, u && u.context_per_call != null ? fmtTok(u.context_per_call) : "—")
           );
         }))
       )

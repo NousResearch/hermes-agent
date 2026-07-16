@@ -77,6 +77,11 @@ class SpendConfig:
     personal_share: float = 0.8
     account_limit_threshold: float = 0.80
     resume_threshold: float = 0.60
+    # Extra-usage credit guards: the 5h plan window only triggers failover
+    # when the credit pool can't absorb the spillover; credits themselves
+    # trigger failover near exhaustion.
+    credit_floor_usd: float = 5.0
+    credit_limit_threshold: float = 0.95
 
     def lane_cap(self, lane: str) -> Optional[Decimal]:
         cap = (self.lanes.get(lane) or {}).get("daily_cap_usd")
@@ -163,6 +168,10 @@ def _parse_spend_section(spend: dict) -> SpendConfig:
         out.account_limit_threshold = float(routing["account_limit_threshold"])
     if routing.get("resume_threshold") is not None:
         out.resume_threshold = float(routing["resume_threshold"])
+    if routing.get("credit_floor_usd") is not None:
+        out.credit_floor_usd = float(routing["credit_floor_usd"])
+    if routing.get("credit_limit_threshold") is not None:
+        out.credit_limit_threshold = float(routing["credit_limit_threshold"])
     return out
 
 
@@ -344,7 +353,8 @@ def fetch_personal_account_usage() -> Optional[dict]:
             response.raise_for_status()
         payload = response.json() or {}
         windows: Dict[str, dict] = {}
-        max_pct = 0.0
+        five_hour_pct = 0.0
+        weekly_pct = 0.0
         for key in ("five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"):
             window = payload.get(key) or {}
             util = window.get("utilization")
@@ -352,13 +362,40 @@ def fetch_personal_account_usage() -> Optional[dict]:
                 continue
             pct = float(util) * 100 if float(util) <= 1 else float(util)
             windows[key] = {"pct": round(pct, 1), "resets_at": window.get("resets_at")}
-            # Opus week doesn't gate sonnet workers; exclude it from the
-            # failover signal (rule-engineer is personal-lane regardless).
-            if key != "seven_day_opus":
-                max_pct = max(max_pct, pct)
+            if key == "five_hour":
+                five_hour_pct = pct
+            elif key != "seven_day_opus":
+                # Opus week doesn't gate sonnet workers; exclude it from the
+                # failover signal (rule-engineer is personal-lane regardless).
+                weekly_pct = max(weekly_pct, pct)
         if not windows:
             return None
-        return {"windows": windows, "max_pct": round(max_pct, 1), "fetched_at": time.time()}
+        # Extra-usage credit pool (plan overflow bills these at API-like
+        # rates). amount fields are already major-unit floats here; the
+        # `spend` block mirrors them in minor units.
+        extra = payload.get("extra_usage") or {}
+        credits: Optional[dict] = None
+        if extra.get("is_enabled"):
+            used = extra.get("used_credits")
+            limit = extra.get("monthly_limit")
+            places = int(extra.get("decimal_places") or 0)
+            if isinstance(used, (int, float)) and isinstance(limit, (int, float)) and limit:
+                scale = 10 ** places
+                credits = {
+                    "used_usd": round(float(used) / scale, 2),
+                    "limit_usd": round(float(limit) / scale, 2),
+                    "remaining_usd": round((float(limit) - float(used)) / scale, 2),
+                    "pct": round(float(used) / float(limit) * 100, 1),
+                }
+        return {
+            "windows": windows,
+            "five_hour_pct": round(five_hour_pct, 1),
+            "weekly_pct": round(weekly_pct, 1),
+            # Back-compat: max over the gating windows (legacy consumers).
+            "max_pct": round(max(five_hour_pct, weekly_pct), 1),
+            "credits": credits,
+            "fetched_at": time.time(),
+        }
     except Exception:
         return None
 
@@ -645,14 +682,34 @@ def compute_and_write_throttle(
                 return usd, cap
             return None
 
-        # Account exhaustion signal: /usage window utilization with
-        # hysteresis (enter at account_limit_threshold, leave below
-        # resume_threshold), or the personal lane's est-equivalent cap.
-        max_pct = float((account or {}).get("max_pct") or 0.0)
-        enter = cfg.account_limit_threshold * 100
-        resume = cfg.resume_threshold * 100
+        # Account exhaustion signal, credits-aware (Diego 2026-07-16): the
+        # weekly windows always gate; the 5h window gates only when the
+        # extra-usage credit pool can't absorb the spillover (bursts within
+        # credit headroom keep riding the account); the credit pool itself
+        # gates near exhaustion. Hysteresis: enter at
+        # account_limit_threshold, leave below resume_threshold.
+        acc = account or {}
+        five = float(acc.get("five_hour_pct") or acc.get("max_pct") or 0.0)
+        weekly = float(acc.get("weekly_pct") or 0.0)
+        credits = acc.get("credits")
+        credits_hot = bool(credits) and (
+            float(credits.get("remaining_usd") or 0) <= cfg.credit_floor_usd
+            or float(credits.get("pct") or 0) >= cfg.credit_limit_threshold * 100
+        )
+        five_gates = credits is None or credits_hot
         was_limited = prev_routing.get("mode") == "api_key_only"
-        account_hot = max_pct >= enter or (was_limited and max_pct >= resume)
+        bar = (cfg.resume_threshold if was_limited else cfg.account_limit_threshold) * 100
+        hot_reasons = []
+        if weekly >= bar:
+            hot_reasons.append(f"weekly /usage window at {weekly:.0f}%")
+        if five >= bar and five_gates:
+            hot_reasons.append(f"5h /usage window at {five:.0f}% with no credit headroom")
+        if credits_hot:
+            hot_reasons.append(
+                "extra-usage credits nearly exhausted "
+                f"(${float((credits or {}).get('remaining_usd') or 0):.2f} left)"
+            )
+        account_hot = bool(hot_reasons)
         personal_over = _lane_over_cap("personal_oauth")
         account_exhausted = account_hot or bool(personal_over)
         api_over = _lane_over_cap("api_key")
@@ -664,7 +721,7 @@ def compute_and_write_throttle(
             paused["api_key"] = {"usd": float(usd), "cap": float(cap), "since": now}
         if account_exhausted:
             reason = (
-                f"personal account at {max_pct:.0f}% of a /usage window"
+                "; ".join(hot_reasons)
                 if account_hot
                 else "personal lane over its daily est-equivalent cap"
             )
@@ -904,6 +961,12 @@ def format_status(ledger: dict, cfg: SpendConfig, throttle: Optional[ThrottleSta
         }
         for key, info in account["windows"].items():
             parts.append(f"{labels.get(key, key)} {info.get('pct', 0):.0f}%")
+        credits = account.get("credits")
+        if credits:
+            parts.append(
+                f"credits ${credits.get('used_usd', 0):.2f}/${credits.get('limit_usd', 0):.2f}"
+                f" ({credits.get('pct', 0):.0f}%)"
+            )
         lines.append("  Account /usage: " + " | ".join(parts))
     if throttle and throttle.routing:
         mode = throttle.routing.get("mode", "?")
@@ -949,6 +1012,12 @@ def format_routing_transition(
         util = " | ".join(
             f"{labels[k]} {v.get('pct', 0):.0f}%" for k, v in windows.items() if k in labels
         )
+        credits = (account or {}).get("credits")
+        if credits:
+            util += (
+                f" | credits ${credits.get('remaining_usd', 0):.2f} left"
+                f" of ${credits.get('limit_usd', 0):.2f}"
+            )
         parts.append(f"Account /usage: {util}")
     if old_mode:
         parts.append(f"(was: {old_mode.replace('_', '-')})")

@@ -187,6 +187,10 @@ def compute_usage() -> Dict[str, Any]:
                 (floor,),
             ).fetchone()
             if row and row["sessions"]:
+                # Context volume per API call — the fleet's dominant cost
+                # driver (cache writes+reads dwarf output ~7:1). This is
+                # the KPI the token-economy protocol should push down.
+                ctx = row["inp"] + row["cr"] + row["cw"]
                 profiles.append(
                     {
                         "profile": profile,
@@ -197,6 +201,7 @@ def compute_usage() -> Dict[str, Any]:
                         "cache_write_tokens": row["cw"],
                         "api_calls": row["api"],
                         "tool_calls": row["tools"],
+                        "context_per_call": int(ctx / row["api"]) if row["api"] else None,
                     }
                 )
             for mrow in conn.execute(

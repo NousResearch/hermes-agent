@@ -473,3 +473,63 @@ def test_split_accrual_attributes_fractionally(tmp_path):
     assert ledger["lanes"]["personal_oauth"]["usd"] == pytest.approx(1.6)
     assert ledger["lanes"]["api_key"]["usd"] == pytest.approx(0.4)
     assert ledger["profiles"]["workerA"]["usd"] == pytest.approx(2.0)
+
+
+# ─── Credits-aware failover ──────────────────────────────────────────────────
+
+
+def _acct(five=0.0, weekly=0.0, credits=None):
+    return {
+        "five_hour_pct": five,
+        "weekly_pct": weekly,
+        "max_pct": max(five, weekly),
+        "credits": credits,
+        "windows": {"five_hour": {"pct": five}, "seven_day": {"pct": weekly}},
+    }
+
+
+def test_five_hour_burst_with_credit_headroom_stays_split(tmp_path):
+    """5h at 100% spills into credits — no failover while headroom exists."""
+    cfg = swap_cfg()
+    ledger = spend_meter.empty_ledger("2026-07-16", TZ)
+    path = tmp_path / "throttle.json"
+    account = _acct(five=100.0, weekly=7.0,
+                    credits={"used_usd": 50.0, "limit_usd": 100.0,
+                             "remaining_usd": 50.0, "pct": 50.0})
+    state = compute_and_write_throttle(ledger, cfg, path=path, now=NOON, account=account)
+    assert state.routing["mode"] == "split"
+
+
+def test_five_hour_burst_without_credits_fails_over(tmp_path):
+    cfg = swap_cfg()
+    ledger = spend_meter.empty_ledger("2026-07-16", TZ)
+    path = tmp_path / "throttle.json"
+    state = compute_and_write_throttle(
+        ledger, cfg, path=path, now=NOON, account=_acct(five=100.0, weekly=7.0, credits=None)
+    )
+    assert state.routing["mode"] == "api_key_only"
+    assert "5h" in state.routing["reason"]
+
+
+def test_credits_near_exhaustion_fails_over(tmp_path):
+    cfg = swap_cfg()
+    ledger = spend_meter.empty_ledger("2026-07-16", TZ)
+    path = tmp_path / "throttle.json"
+    account = _acct(five=10.0, weekly=7.0,
+                    credits={"used_usd": 97.0, "limit_usd": 100.0,
+                             "remaining_usd": 3.0, "pct": 97.0})
+    state = compute_and_write_throttle(ledger, cfg, path=path, now=NOON, account=account)
+    assert state.routing["mode"] == "api_key_only"
+    assert "credits" in state.routing["reason"]
+
+
+def test_weekly_window_always_gates_even_with_credits(tmp_path):
+    cfg = swap_cfg()
+    ledger = spend_meter.empty_ledger("2026-07-16", TZ)
+    path = tmp_path / "throttle.json"
+    account = _acct(five=10.0, weekly=85.0,
+                    credits={"used_usd": 10.0, "limit_usd": 100.0,
+                             "remaining_usd": 90.0, "pct": 10.0})
+    state = compute_and_write_throttle(ledger, cfg, path=path, now=NOON, account=account)
+    assert state.routing["mode"] == "api_key_only"
+    assert "weekly" in state.routing["reason"]

@@ -113,10 +113,10 @@ jobs:
           DIFF_COUNT=$(find test-results -name '*-diff.png' 2>/dev/null | wc -l)
           ACTUAL_COUNT=$(find test-results -name '*-actual.png' 2>/dev/null | wc -l)
 
-          if [ "$DIFF_COUNT" -eq 0 ] && [ "$ACTUAL_COUNT" -eq 0 ]; then
-            echo "✅ All screenshots matched their baselines (or no baselines existed yet)." >> "$GITHUB_STEP_SUMMARY"
+          if [ "$DIFF_COUNT" -eq 0 ]; then
+            echo "✅ All $ACTUAL_COUNT screenshot(s) matched their baselines (or no baselines existed yet)." >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "📸 **$DIFF_COUNT screenshot(s) differ from baseline:**" >> "$GITHUB_STEP_SUMMARY"
+            echo "📸 **$DIFF_COUNT of $ACTUAL_COUNT screenshot(s) differ from baseline:**" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "| Test | Diff | Actual | Expected |" >> "$GITHUB_STEP_SUMMARY"
             echo "|------|------|--------|----------|" >> "$GITHUB_STEP_SUMMARY"
@@ -127,11 +127,16 @@ jobs:
               test_name=$(basename "$base")
               echo "| $test_name | [diff]($diff) | [actual](${base}-actual.png) | [expected](${base}-expected.png) |" >> "$GITHUB_STEP_SUMMARY"
             done
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "Diff images are in the \`playwright-test-results\` artifact. Download and open to compare." >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "**To update baselines:** merge to main (baselines auto-update on main runs) or run \`npx playwright test --update-snapshots\` locally." >> "$GITHUB_STEP_SUMMARY"
           fi
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          echo "📥 Artifacts on the [run page](${RUN_URL}/artifacts):" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`playwright-test-results\` — all screenshots (actual + expected + diff) + traces" >> "$GITHUB_STEP_SUMMARY"
+          echo "- \`playwright-report\` — interactive HTML report" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**To update baselines:** merge to main (baselines auto-update on main runs) or run \`npx playwright test --update-snapshots\` locally." >> "$GITHUB_STEP_SUMMARY"
 
           # Also parse the JSON report for pass/fail counts
           if [ -f playwright-report/results.json ]; then

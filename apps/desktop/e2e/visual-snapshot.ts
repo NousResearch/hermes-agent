@@ -7,10 +7,10 @@
  * as artifacts.  This keeps visual regressions visible without gating PRs
  * on pixel-perfect matches.
  *
- * When a screenshot matches the baseline, nothing happens.  When it
- * differs, this helper writes three images to the test's output dir:
+ * The actual screenshot is always written to the test output dir so CI
+ * artifacts include every screenshot — not just the ones that diffed.
+ * When it differs, this helper also writes expected and diff images:
  *   <name>-actual.png, <name>-expected.png, <name>-diff.png
- * These are picked up by the "Upload test results" artifact step.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -83,6 +83,8 @@ export async function expectVisualSnapshot(
   if (info.config.updateSnapshots === 'all' || info.config.updateSnapshots === 'changed') {
     fs.mkdirSync(path.dirname(baselinePath), { recursive: true })
     fs.writeFileSync(baselinePath, actual)
+    // Also write to the output dir so CI artifacts include the screenshot.
+    fs.writeFileSync(info.outputPath(`${outputName}-actual.png`), actual)
     console.log(`[visual-baseline] updated ${baselinePath}`)
     return
   }
@@ -132,11 +134,14 @@ export async function expectVisualSnapshot(
     { actual: actual.toString('base64'), expected: expected.toString('base64') },
   )
 
+  // Always write the actual screenshot to the output dir so CI artifacts
+  // include every screenshot — not just the ones that diffed.
+  fs.writeFileSync(info.outputPath(`${outputName}-actual.png`), actual)
+
   if (comparison.mismatchRatio <= 0.01) {
     return
   }
 
-  fs.writeFileSync(info.outputPath(`${outputName}-actual.png`), actual)
   fs.writeFileSync(info.outputPath(`${outputName}-expected.png`), expected)
   fs.writeFileSync(info.outputPath(`${outputName}-diff.png`), Buffer.from(comparison.diff, 'base64'))
   console.log(

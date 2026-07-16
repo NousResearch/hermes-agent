@@ -1235,6 +1235,35 @@ class Test403Enrichment:
 
 
 # ---------------------------------------------------------------------------
+# Action: edit_thread
+# ---------------------------------------------------------------------------
+
+class TestEditThread:
+    @patch("tools.discord_tool._discord_request")
+    def test_edit_thread_renames_channel(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "thread-123", "name": "日程和 Todo"}
+
+        result = json.loads(discord_admin_handler(
+            action="edit_thread",
+            channel_id="thread-123",
+            name="日程和 Todo",
+        ))
+
+        assert result == {
+            "success": True,
+            "channel_id": "thread-123",
+            "name": "日程和 Todo",
+        }
+        mock_req.assert_called_once_with(
+            "PATCH",
+            "/channels/thread-123",
+            "test-token",
+            body={"name": "日程和 Todo"},
+        )
+
+
+# ---------------------------------------------------------------------------
 # model_tools integration — dynamic schema replaces static
 # ---------------------------------------------------------------------------
 

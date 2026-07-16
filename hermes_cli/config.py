@@ -2479,6 +2479,11 @@ DEFAULT_CONFIG = {
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
         "thread_require_mention": False,  # If True, require @mention in threads too (multi-bot threads)
         "bots_require_inline_mention": False,  # Multi-bot rooms: if True, another bot must type @thisbot in its message to trigger a reply; a Discord reply/quote alone won't. Prevents two bots auto-replying to each other forever. Does not affect humans.
+        "allow_bots": "none",              # none, mentions, or all; bot messages remain blocked by default
+        "trusted_bot_ids": [],              # Optional explicit allowlist for cross-Profile bot IDs
+        "bot_relay_cooldown_seconds": 10,   # Minimum delay between accepted messages from one bot in one channel
+        "bot_relay_window_seconds": 60,     # Sliding window for the relay burst limiter
+        "bot_relay_max_messages": 3,        # Maximum accepted messages per trusted bot/channel/window
         "history_backfill": True,         # If True, prepend recent channel scrollback when bot is triggered (recovers messages missed while require_mention gated them out)
         "history_backfill_limit": 50,     # Max number of recent messages to scan when assembling the backfill block
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing

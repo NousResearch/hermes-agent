@@ -21,7 +21,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from contextlib import suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
 
@@ -882,6 +882,19 @@ class DiscordAdapter(BasePlatformAdapter):
         # Dedup cache: prevents duplicate bot responses when Discord
         # RESUME replays events after reconnects.
         self._dedup = MessageDeduplicator()
+        # Cross-bot relay circuit breaker. Even trusted bots must use an
+        # inline mention, and bursts are bounded so two Profiles cannot
+        # ping-pong forever.
+        self._bot_relay_events: Dict[tuple[str, str], deque[float]] = {}
+        self._bot_relay_cooldown = max(
+            0.0, env_float("HERMES_DISCORD_BOT_RELAY_COOLDOWN_SECONDS", 10.0)
+        )
+        self._bot_relay_window = max(
+            1.0, env_float("HERMES_DISCORD_BOT_RELAY_WINDOW_SECONDS", 60.0)
+        )
+        self._bot_relay_max = max(
+            1, env_int("HERMES_DISCORD_BOT_RELAY_MAX_MESSAGES", 3)
+        )
         # Reply threading mode: "off" (no replies), "first" (reply on first
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
@@ -1131,12 +1144,19 @@ class DiscordAdapter(BasePlatformAdapter):
                     allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
                     if allow_bots == "none":
                         return
-                    elif allow_bots == "mentions":
+                    trusted_bot_ids = self._discord_trusted_bot_ids()
+                    if trusted_bot_ids and str(message.author.id) not in trusted_bot_ids:
+                        return
+                    if allow_bots == "mentions":
                         if not self._self_is_explicitly_mentioned(message):
                             return
                     if (
                         self._discord_bots_require_inline_mention()
                         and not self._self_is_raw_mentioned(message)
+                    ):
+                        return
+                    if not self._accept_bot_relay(
+                        str(message.author.id), str(message.channel.id)
                     ):
                         return
                     # "all" falls through; bot is permitted — skip the
@@ -4900,6 +4920,41 @@ class DiscordAdapter(BasePlatformAdapter):
             "on",
         }
 
+    def _discord_trusted_bot_ids(self) -> set[str]:
+        """Return the explicit allowlist for cross-Profile bot messages."""
+        raw = os.getenv("DISCORD_TRUSTED_BOT_IDS", "").strip()
+        if not raw:
+            return set()
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            parsed = raw.split(",")
+        if isinstance(parsed, str):
+            parsed = parsed.split(",")
+        elif not isinstance(parsed, (list, tuple, set)):
+            parsed = [parsed]
+        return {
+            str(item).strip().strip("'\"")
+            for item in parsed
+            if item is not None and str(item).strip()
+        }
+
+    def _accept_bot_relay(self, author_id: str, channel_id: str) -> bool:
+        """Apply cooldown and burst limits to accepted bot-authored messages."""
+        now = time.monotonic()
+        key = (str(author_id), str(channel_id))
+        events = self._bot_relay_events.setdefault(key, deque())
+        while events and now - events[0] > self._bot_relay_window:
+            events.popleft()
+        if events and now - events[-1] < self._bot_relay_cooldown:
+            logger.info("[%s] Dropping bot relay during cooldown from %s", self.name, author_id)
+            return False
+        if len(events) >= self._bot_relay_max:
+            logger.info("[%s] Dropping bot relay after burst limit from %s", self.name, author_id)
+            return False
+        events.append(now)
+        return True
+
     def _discord_channel_keys(self, message: Any, parent_channel_id: Optional[str] = None) -> set[str]:
         """Return channel identifiers accepted by Discord channel config gates.
 
@@ -8279,6 +8334,20 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         os.environ["DISCORD_THREAD_REQUIRE_MENTION"] = str(discord_cfg["thread_require_mention"]).lower()
     if "bots_require_inline_mention" in discord_cfg and not os.getenv("DISCORD_BOTS_REQUIRE_INLINE_MENTION"):
         os.environ["DISCORD_BOTS_REQUIRE_INLINE_MENTION"] = str(discord_cfg["bots_require_inline_mention"]).lower()
+    if "allow_bots" in discord_cfg and not os.getenv("DISCORD_ALLOW_BOTS"):
+        os.environ["DISCORD_ALLOW_BOTS"] = str(discord_cfg["allow_bots"]).lower()
+    trusted_bot_ids = discord_cfg.get("trusted_bot_ids")
+    if trusted_bot_ids is not None and not os.getenv("DISCORD_TRUSTED_BOT_IDS"):
+        if isinstance(trusted_bot_ids, list):
+            trusted_bot_ids = ",".join(str(v) for v in trusted_bot_ids)
+        os.environ["DISCORD_TRUSTED_BOT_IDS"] = str(trusted_bot_ids)
+    for yaml_key, env_key in (
+        ("bot_relay_cooldown_seconds", "HERMES_DISCORD_BOT_RELAY_COOLDOWN_SECONDS"),
+        ("bot_relay_window_seconds", "HERMES_DISCORD_BOT_RELAY_WINDOW_SECONDS"),
+        ("bot_relay_max_messages", "HERMES_DISCORD_BOT_RELAY_MAX_MESSAGES"),
+    ):
+        if yaml_key in discord_cfg and not os.getenv(env_key):
+            os.environ[env_key] = str(discord_cfg[yaml_key])
     platforms_cfg = yaml_cfg.get("platforms")
     platform_extra_cfg = {}
     if isinstance(platforms_cfg, dict):

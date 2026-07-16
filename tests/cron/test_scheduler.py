@@ -1,10 +1,12 @@
 """Tests for cron/scheduler.py — origin resolution, delivery routing, and error logging."""
 
 import contextlib
+import asyncio
 import itertools
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -4350,6 +4352,26 @@ class TestCronDeliveryMirror:
         # Case-insensitive platform match.
         assert _target_matches_origin(origin, "Telegram", "123", None) is True
 
+    def test_discord_parent_channel_origin_allows_new_thread_lane(self):
+        """A parent-channel origin is the correct scope for a new cron thread."""
+        from cron.scheduler import _target_matches_origin
+
+        origin = {"platform": "discord", "chat_id": "1525133234139041842"}
+        assert _target_matches_origin(origin, "discord", "1525133234139041842", None) is True
+
+    def test_old_thread_origin_does_not_match_parent_channel_delivery(self):
+        """A stale thread origin must not silently mirror a parent-channel target."""
+        from cron.scheduler import _target_matches_origin
+
+        origin = {
+            "platform": "discord",
+            "chat_id": "1526758663577010208",
+            "thread_id": "1526758663577010208",
+        }
+        assert _target_matches_origin(
+            origin, "discord", "1525133234139041842", None,
+        ) is False
+
     def test_target_matches_origin_rejects_other_chat(self):
         from cron.scheduler import _target_matches_origin
 
@@ -4490,6 +4512,42 @@ class TestCronDeliveryMirror:
                 {"id": "j1", "name": "Brief"}, adapter, "123", loop=MagicMock(),
             )
         assert tid == "9001"
+
+    def test_open_thread_applies_date_name_template(self):
+        """A configured template uses Hermes time and reaches the adapter."""
+        from cron.scheduler import _open_continuable_cron_thread
+
+        adapter = MagicMock()
+        adapter.create_handoff_thread = AsyncMock(return_value="9002")
+
+        def _run_now(coro, _loop):
+            fut = MagicMock()
+            fut.result.return_value = asyncio.run(coro)
+            return fut
+
+        job = {
+            "id": "j2",
+            "name": "AI digest",
+            "thread_name_template": "{date}AI摘要",
+        }
+        frozen = datetime(2026, 7, 16, 11, 30, tzinfo=timezone.utc)
+        with patch("cron.scheduler._hermes_now", return_value=frozen), \
+             patch("agent.async_utils.safe_schedule_threadsafe", side_effect=_run_now):
+            tid = _open_continuable_cron_thread(
+                job, adapter, "123", loop=MagicMock(),
+            )
+
+        assert tid == "9002"
+        adapter.create_handoff_thread.assert_awaited_once_with("123", "2026-07-16AI摘要")
+
+    def test_invalid_thread_name_template_falls_back_to_default(self):
+        from cron.scheduler import _continuable_cron_thread_name
+
+        assert _continuable_cron_thread_name({
+            "id": "j3",
+            "name": "AI digest",
+            "thread_name_template": "{missing}",
+        }) == "Hermes — AI digest"
 
     def test_open_thread_returns_none_on_dm_platform(self):
         """A DM-only adapter (WhatsApp) inherits the base create_handoff_thread

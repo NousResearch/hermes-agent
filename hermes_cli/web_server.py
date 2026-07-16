@@ -54,6 +54,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from hermes_cli import __version__, __release_date__
 from hermes_cli.config import (
+    apply_terminal_config_to_env,
     cfg_get,
     DEFAULT_CONFIG,
     OPTIONAL_ENV_VARS,
@@ -152,6 +153,14 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     real gateway on the same HERMES_HOME — whichever process grabs the lock
     first wins the tick.
     """
+    try:
+        apply_terminal_config_to_env()
+    except Exception:
+        _log.exception(
+            "Desktop cron scheduler disabled: terminal config could not be resolved"
+        )
+        return
+
     from cron.scheduler_provider import resolve_cron_scheduler
 
     provider = resolve_cron_scheduler()

@@ -7788,6 +7788,69 @@ class TestDesktopCronTicker:
         with self._client():
             assert called.wait(3.0), "expected cron tick under HERMES_DESKTOP=1"
 
+    def test_ticker_applies_terminal_config_before_first_tick(
+        self, monkeypatch, _isolate_hermes_home
+    ):
+        import threading
+        import cron.scheduler as sched
+
+        config_path = Path(os.environ["HERMES_HOME"]) / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "terminal": {
+                        "backend": "docker",
+                        "docker_volumes": ["/host/project:/workspace:rw"],
+                        "docker_extra_args": ["--network=none"],
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.delenv("TERMINAL_DOCKER_VOLUMES", raising=False)
+        monkeypatch.delenv("TERMINAL_DOCKER_EXTRA_ARGS", raising=False)
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+
+        called = threading.Event()
+        observed = {}
+
+        def capture_terminal_env(*_args, **_kwargs):
+            observed["backend"] = os.environ.get("TERMINAL_ENV")
+            observed["volumes"] = os.environ.get("TERMINAL_DOCKER_VOLUMES")
+            observed["extra_args"] = os.environ.get("TERMINAL_DOCKER_EXTRA_ARGS")
+            called.set()
+
+        monkeypatch.setattr(sched, "tick", capture_terminal_env)
+
+        with self._client():
+            assert called.wait(3.0), "expected cron tick under HERMES_DESKTOP=1"
+
+        assert observed == {
+            "backend": "docker",
+            "volumes": '["/host/project:/workspace:rw"]',
+            "extra_args": '["--network=none"]',
+        }
+
+    def test_ticker_does_not_run_when_terminal_config_bridge_fails(
+        self, monkeypatch, _isolate_hermes_home
+    ):
+        import threading
+        import cron.scheduler as sched
+        from hermes_cli import web_server
+
+        called = threading.Event()
+        monkeypatch.setattr(sched, "tick", lambda *_a, **_k: called.set())
+        monkeypatch.setattr(
+            web_server,
+            "apply_terminal_config_to_env",
+            MagicMock(side_effect=RuntimeError("invalid terminal config")),
+        )
+
+        web_server._start_desktop_cron_ticker(threading.Event(), interval=0)
+
+        assert not called.is_set(), "cron must not fall back to host execution"
+
     def test_ticker_skipped_without_desktop(self, monkeypatch, _isolate_hermes_home):
         import threading
         import cron.scheduler as sched

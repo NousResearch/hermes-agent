@@ -1246,6 +1246,10 @@
     "local_main": "6b85c5ff268fbdc9fa70d9565d12af1235a14842"
   },
   "target_sha": "2ea39daeb1f675d72e5c21c9400f2d58d7e6d71a",
-  "tree_sha": "c87e3478bc79066de5bdb3a41400233342de48e6",
-  "upstream": "origin/main"
+  "tree_sha": "1732a5e4a0bbe19d5314e3dddc5b745574165542",
+  "upstream": "origin/main",
+  "vacuous_coverage_ack": {
+    "at": "2026-07-16T13:23:50.018432+00:00",
+    "reason": "rank-6 extraction moves fork intent to agent/fork_ext/tool_gate.py; no prior manifest god-file entry existed to migrate"
+  }
 }

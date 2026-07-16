@@ -120,6 +120,36 @@ def compaction_ext_mutations() -> list[Mutation]:
     ]
 
 
+def tool_gate_mutations() -> list[Mutation]:
+    """Mutations for the pure tool-gate extraction output classes."""
+    return [
+        Mutation(
+            "return-value: invert tool_call scope membership",
+            lambda p: replace_once(
+                p,
+                "if underlying in tool_search_scoped_names(agent):",
+                "if underlying not in tool_search_scoped_names(agent):",
+            ),
+        ),
+        Mutation(
+            "message-emit: change tool scope block guidance",
+            lambda p: replace_once(
+                p,
+                "Use tool_search to find tools you can call.",
+                "Use a different tool discovery flow.",
+            ),
+        ),
+        Mutation(
+            "branch-classification: strip code_execution inheritance exemption",
+            lambda p: replace_once(
+                p,
+                '_TOOLSET_STRIP_EXEMPT = frozenset({"code_execution"})',
+                "_TOOLSET_STRIP_EXEMPT = frozenset()",
+            ),
+        ),
+    ]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--module", required=True)
@@ -130,6 +160,8 @@ def main(argv: list[str] | None = None) -> int:
         mutations = relay_header_mutations()
     elif module.endswith("compaction_ext.py"):
         mutations = compaction_ext_mutations()
+    elif module.endswith("tool_gate.py"):
+        mutations = tool_gate_mutations()
     else:
         mutations = []
     if not mutations:

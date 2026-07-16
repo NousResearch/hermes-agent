@@ -73,5 +73,19 @@
       "tests/golden/relay_headers/"
     ],
     "why": "Claude API proxy pool requests must keep per-session affinity and classify interactive versus background relay lanes without stamping third-party providers."
+  },
+  {
+    "feature": "tool-search unwrap scope gate and delegate code_execution inheritance exemption",
+    "tests": [
+      "tests/run_agent/test_tool_call_guardrail_runtime.py",
+      "tests/tools/test_tool_search.py::TestRegression_ToolsetScoping::test_tool_call_rejects_out_of_scope_tool",
+      "tests/tools/test_tool_search.py::TestRegression_ToolsetScoping::test_scoped_deferrable_names_helper",
+      "tests/tools/test_delegate_toolset_scope.py::TestToolsetIntersection::test_strip_blocked_removes_delegation"
+    ],
+    "paths": [
+      "agent/fork_ext/tool_gate.py",
+      "tests/golden/tool_gate/"
+    ],
+    "why": "Tool-search bridge calls must be scoped to the session's granted deferrable tools, and inherited subagent toolsets must keep the fork's code_execution exemption while stripping blocked delegation surfaces."
   }
 ]

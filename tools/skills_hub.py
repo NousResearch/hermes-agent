@@ -3595,8 +3595,7 @@ def install_from_quarantine(
     # path can never refer to a redirected target.
     install_dir = _resolve_lock_install_path(install_rel_path, safe_skill_name)
 
-    if install_dir.exists():
-        shutil.rmtree(install_dir)
+    backup_dir: Optional[Path] = None
 
     # Warn (but don't block) if SKILL.md is very large
     skill_md = quarantine_path / "SKILL.md"
@@ -3630,28 +3629,51 @@ def install_from_quarantine(
         )
 
     install_dir.parent.mkdir(parents=True, exist_ok=True)
-    shutil.move(str(quarantine_path), str(install_dir))
+    lock_path = _lock_file()
+    prior_lock = lock_path.read_bytes() if lock_path.exists() else None
+    if install_dir.exists():
+        backup_dir = install_dir.with_name(
+            f".{safe_skill_name}.rollback-{os.getpid()}-{time.time_ns()}"
+        )
+        install_dir.rename(backup_dir)
 
-    # Record in lock file
-    lock = HubLockFile()
-    lock.record_install(
-        name=safe_skill_name,
-        source=bundle.source,
-        identifier=bundle.identifier,
-        trust_level=bundle.trust_level,
-        scan_verdict=scan_result.verdict,
-        skill_hash=content_hash(install_dir),
-        install_path=str(install_dir.relative_to(_skills_dir())),
-        files=list(bundle.files.keys()),
-        metadata=bundle.metadata,
-        scan_provenance=scan_provenance or getattr(scan_result, "scan_provenance", None),
-    )
+    try:
+        shutil.move(str(quarantine_path), str(install_dir))
 
-    append_audit_log(
-        "INSTALL", safe_skill_name, bundle.source,
-        bundle.trust_level, scan_result.verdict,
-        content_hash(install_dir),
-    )
+        # Record in lock file only after the promoted tree is in place.
+        lock = HubLockFile()
+        lock.record_install(
+            name=safe_skill_name,
+            source=bundle.source,
+            identifier=bundle.identifier,
+            trust_level=bundle.trust_level,
+            scan_verdict=scan_result.verdict,
+            skill_hash=content_hash(install_dir),
+            install_path=str(install_dir.relative_to(_skills_dir())),
+            files=list(bundle.files.keys()),
+            metadata=bundle.metadata,
+            scan_provenance=scan_provenance or getattr(scan_result, "scan_provenance", None),
+        )
+
+        append_audit_log(
+            "INSTALL", safe_skill_name, bundle.source,
+            bundle.trust_level, scan_result.verdict,
+            content_hash(install_dir),
+        )
+    except Exception:
+        if install_dir.exists():
+            shutil.rmtree(install_dir)
+        if backup_dir is not None and backup_dir.exists():
+            backup_dir.rename(install_dir)
+        if prior_lock is None:
+            lock_path.unlink(missing_ok=True)
+        else:
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            lock_path.write_bytes(prior_lock)
+        raise
+    else:
+        if backup_dir is not None and backup_dir.exists():
+            shutil.rmtree(backup_dir)
 
     return install_dir
 

@@ -467,11 +467,15 @@ class TestCmdUpdate:
         )
         mock_sanitize.return_value = mock_target
 
-        mock_run.return_value = MagicMock(returncode=0, stdout="Updated", stderr="")
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stdout="", stderr=""),
+            MagicMock(returncode=0, stdout="abc123\n", stderr=""),
+            MagicMock(returncode=0, stdout="Updated", stderr=""),
+        ]
 
         cmd_update("test-plugin")
 
-        mock_run.assert_called_once()
+        assert mock_run.call_count == 3
 
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")

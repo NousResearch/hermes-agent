@@ -633,6 +633,28 @@ def cmd_install(
     console.print()
 
 
+def _validate_updated_plugin(target: Path, expected_name: str) -> None:
+    """Fail closed when a pulled revision no longer satisfies the plugin contract."""
+    manifest = _read_manifest(target)
+    if not manifest and not (target / "__init__.py").exists():
+        raise PluginOperationError("updated revision has no plugin manifest or __init__.py")
+    declared_name = str(manifest.get("name") or expected_name)
+    if declared_name != expected_name:
+        raise PluginOperationError(
+            f"updated revision changed plugin name from {expected_name!r} to {declared_name!r}"
+        )
+    mv = manifest.get("manifest_version")
+    if mv is not None:
+        try:
+            mv_int = int(mv)
+        except (TypeError, ValueError) as exc:
+            raise PluginOperationError(f"invalid manifest_version {mv!r}") from exc
+        if mv_int > _SUPPORTED_MANIFEST_VERSION:
+            raise PluginOperationError(
+                f"plugin requires manifest_version {mv_int}; supported maximum is {_SUPPORTED_MANIFEST_VERSION}"
+            )
+
+
 def cmd_update(name: str) -> None:
     """Update an installed plugin by pulling latest from its git remote."""
     from rich.console import Console
@@ -653,11 +675,44 @@ def cmd_update(name: str) -> None:
         )
         sys.exit(1)
 
-    console.print(f"[dim]Updating {name}...[/dim]")
+    status = subprocess.run(
+        ["git", "status", "--porcelain"], cwd=target, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if status.returncode != 0 or status.stdout.strip():
+        console.print("[red]Error:[/red] Plugin working tree must be clean before update.")
+        sys.exit(1)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=target, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    if head.returncode != 0:
+        console.print(f"[red]Error:[/red] {(head.stderr or head.stdout).strip()}")
+        sys.exit(1)
+    previous_head = head.stdout.strip()
 
+    console.print(f"[dim]Updating {name}...[/dim]")
     ok, output = _git_pull_plugin_dir(target)
+    if ok:
+        try:
+            _validate_updated_plugin(target, name)
+        except PluginOperationError as exc:
+            rollback = subprocess.run(
+                ["git", "reset", "--hard", previous_head], cwd=target, text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            )
+            detail = "rollback complete" if rollback.returncode == 0 else f"ROLLBACK FAILED: {rollback.stdout.strip()}"
+            console.print(f"[red]Error:[/red] update rejected: {exc}; {detail}")
+            sys.exit(1)
     if not ok:
-        console.print(f"[red]Error:[/red] {output}")
+        # Pull may have partially advanced refs/files before failing. Restore the
+        # exact verified revision and report rollback failure explicitly.
+        rollback = subprocess.run(
+            ["git", "reset", "--hard", previous_head], cwd=target, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        )
+        detail = "rollback complete" if rollback.returncode == 0 else f"ROLLBACK FAILED: {rollback.stdout.strip()}"
+        console.print(f"[red]Error:[/red] {output}; {detail}")
         sys.exit(1)
 
     # Copy any new .example files

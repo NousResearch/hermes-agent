@@ -107,20 +107,26 @@ MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 
 
-def _sse_frame(data: Any, *, event: str = None) -> bytes:
-    """Encode one SSE frame: optional ``event:`` line, then ``data: <json>\\n\\n``.
+def _sse_frame(data: Any, *, event: str = None, ensure_ascii: bool = True) -> bytes:
+    """Encode one SSE frame: optional ``event:`` line, then ``data: <json>\n\n``.
 
-    Replaces five near-identical inline
-    ``f"data: {json.dumps(...)}\\n\\n".encode()`` call sites in the
-    ``_write_sse_chat_completion`` streaming path — pure dedup, no
-    behavior change intended for those. Left the pre-serialized-string
-    sites elsewhere (e.g. the ``_write_event``/``queue`` writers that
-    already dumps with ``ensure_ascii=False``) alone, since routing them
-    through this helper's plain ``json.dumps(data)`` would silently
-    change their unicode-escaping behavior.
+    The single source of truth for SSE frame serialization across every
+    streaming writer in this module — ``_write_sse_chat_completion`` (the
+    five call sites it was first extracted from), ``_write_sse_responses``'s
+    inner ``_write_event`` closure, and the ``/v1/runs`` event stream.  All
+    three used the identical ``json.dumps(data)`` / ``json.dumps(...,
+    ensure_ascii=False)`` + ``"\\ndata: ...\\n\\n"`` shape; routing them all
+    through here keeps the on-the-wire format in exactly one place.
+
+    ``ensure_ascii`` defaults to ``True``, byte-identical to a bare
+    ``json.dumps(data)``.  Callers that must preserve raw non-ASCII bytes on
+    the wire (the Responses-API writer historically used
+    ``ensure_ascii=False``) pass ``ensure_ascii=False`` explicitly — the
+    option exists so every writer shares one helper without changing any
+    existing byte stream.
     """
     prefix = f"event: {event}\n" if event else ""
-    return f"{prefix}data: {json.dumps(data)}\n\n".encode()
+    return f"{prefix}data: {json.dumps(data, ensure_ascii=ensure_ascii)}\n\n".encode()
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -2862,8 +2868,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if "sequence_number" not in data:
                 data["sequence_number"] = sequence_number
             sequence_number += 1
-            payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
-            await response.write(payload.encode())
+            await response.write(_sse_frame(data, event=event_type))
 
         def _envelope(status: str) -> Dict[str, Any]:
             env: Dict[str, Any] = {
@@ -4752,8 +4757,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     # Run finished — send final SSE comment and close
                     await response.write(b": stream closed\n\n")
                     break
-                payload = f"data: {json.dumps(event)}\n\n"
-                await response.write(payload.encode())
+                payload = _sse_frame(event)
+                await response.write(payload)
         except Exception as exc:
             logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
         finally:

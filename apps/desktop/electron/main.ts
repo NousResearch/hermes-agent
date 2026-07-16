@@ -100,6 +100,7 @@ import {
   TEXT_PREVIEW_SOURCE_MAX_BYTES
 } from './hardening'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
+import { resolveRebuiltMacApp } from './mac-rebuilt-app'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
 import {
@@ -2917,10 +2918,7 @@ async function applyUpdatesPosixInApp(opts: any) {
     }
   }
 
-  const rebuiltApp = [
-    path.join(updateRoot, 'apps', 'desktop', 'release', 'mac-arm64', 'Hermes.app'),
-    path.join(updateRoot, 'apps', 'desktop', 'release', 'mac', 'Hermes.app')
-  ].find(directoryExists)
+  const rebuiltApp = resolveRebuiltMacApp(updateRoot)
 
   const targetApp = runningAppBundle()
 

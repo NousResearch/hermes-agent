@@ -5435,25 +5435,7 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any)
                 return _ok(rid, {"status": "steered"})
         except Exception:
             pass  # fall through to queue
-    preserve_async_delegation = False
-    if mode == "interrupt":
-        try:
-            from tools.async_delegation import has_active_for_session
-
-            preserve_async_delegation = has_active_for_session(
-                session_key=str(session.get("session_key") or ""),
-                origin_ui_session_id=str(sid or ""),
-                parent_session_id=str(getattr(agent, "session_id", "") or ""),
-            )
-        except Exception:
-            preserve_async_delegation = False
-
-    if (
-        mode != "queue"
-        and not preserve_async_delegation
-        and agent is not None
-        and hasattr(agent, "interrupt")
-    ):
+    if mode != "queue" and agent is not None and hasattr(agent, "interrupt"):
         try:
             agent.interrupt()
         except Exception:

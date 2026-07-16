@@ -7340,6 +7340,125 @@ def _hermes_exe_shims(scripts_dir: Path) -> list[Path]:
     return [scripts_dir / f"{name}.exe" for name in sorted(names)]
 
 
+def _detect_running_inside_hermes_session(scripts_dir: Path) -> bool:
+    """Detect whether ``hermes update`` is running inside an active Hermes session.
+
+    On Windows the setuptools ``hermes.exe`` launcher is a separate native
+    process that spawns ``python.exe`` (the interpreter running our code).
+    ``_detect_concurrent_hermes_instances`` deliberately excludes ancestor
+    shims so a user-initiated ``hermes update`` from a Hermes terminal
+    doesn't flag its own launcher as a concurrent instance.
+
+    However, when the *agent itself* shells out ``hermes update`` (e.g. via
+    the terminal tool), that same ancestor hermes.exe is still an active
+    session that holds a file lock on the venv shim.  The update will fail
+    during file replacement with WinError 32, but only *after* the concurrent
+    check has already passed — the user gets a confusing mid-update error
+    instead of an upfront explanation.
+
+    This helper checks whether the current process has an ancestor whose
+    exe matches one of our venv shims **and** whose PID is not the immediate
+    launcher parent (i.e. there's a hermes.exe *somewhere* in the ancestry
+    beyond just the native launcher spawned for *this* update invocation).
+
+    The distinguishing signal: when the user runs ``hermes update`` from a
+    separate terminal, the only ancestor shim is the launcher for this
+    specific command. When the agent runs it, the chain looks like:
+    hermes.exe (session) → python.exe (agent) → hermes.exe (update launcher)
+    → python.exe (this code). The *session's* hermes.exe is an ancestor
+    beyond the immediate launcher, and it won't close until the session ends.
+
+    We detect this by checking for a matching shim anywhere beyond the
+    immediate parent. An ancestor returned by ``psutil`` is still alive,
+    and a live shim keeps the executable locked regardless of whether the
+    session is otherwise idle.
+
+    Returns ``True`` if running inside an active Hermes session on Windows,
+    ``False`` otherwise. Never raises — best-effort, like
+    ``_detect_concurrent_hermes_instances``.
+
+    See issue #65585.
+    """
+    if not _is_windows():
+        return False
+
+    try:
+        import psutil
+    except Exception:
+        return False
+
+    # Build the set of shim paths to match against.
+    shim_paths: set[str] = set()
+    for shim in _hermes_exe_shims(scripts_dir):
+        try:
+            shim_paths.add(str(shim.resolve()).lower())
+        except OSError:
+            shim_paths.add(str(shim).lower())
+    if not shim_paths:
+        return False
+
+    # Walk our ancestor chain. The immediate launcher (parent) is expected
+    # and excluded by _detect_concurrent_hermes_instances. We're looking
+    # for a *grandparent+* ancestor whose exe is a Hermes shim — that means
+    # an active Hermes session spawned this update, not a user in a
+    # separate terminal.
+    try:
+        current = psutil.Process(os.getpid())
+        ancestors = current.parents()
+    except Exception:
+        return False
+
+    # The parent (index 0) is the launcher spawned for this specific
+    # ``hermes update`` invocation — skip it. Any ancestor beyond that
+    # whose exe matches a shim indicates the update is running inside
+    # an active Hermes session.
+    for i, ancestor in enumerate(ancestors):
+        if i == 0:
+            # Skip the immediate launcher parent.
+            continue
+        try:
+            anc_exe = ancestor.exe()
+        except Exception:
+            continue
+        if not anc_exe:
+            continue
+        try:
+            anc_norm = str(Path(anc_exe).resolve()).lower()
+        except (OSError, ValueError):
+            anc_norm = str(anc_exe).lower()
+        if anc_norm in shim_paths:
+            return True
+
+    return False
+
+
+def _format_inside_hermes_session_message(scripts_dir: Path) -> str:
+    """Build a clear message for running ``hermes update`` inside a session.
+
+    Unlike the concurrent-instances message (which lists other processes the
+    user needs to close), this message explains that the update is running
+    *from inside* Hermes itself and the session's file lock cannot be
+    released until the session exits.
+    """
+    shim = scripts_dir / "hermes.exe"
+    return "\n".join([
+        "✗ You are running `hermes update` from inside an active Hermes session.",
+        "",
+        f"  The session's {shim} is running and holds a file lock on the",
+        "  venv executable. Windows blocks REPLACE on a running .exe, so the",
+        "  update cannot complete while this session is active.",
+        "",
+        "  To update Hermes:",
+        "    1. Exit this Hermes session (/quit or close the terminal)",
+        "    2. Open a separate terminal (not inside Hermes)",
+        "    3. Run: hermes update",
+        "",
+        "  If you need to update without exiting the session, you can try:",
+        "    hermes update --force",
+        "  (this attempts the update anyway, but may fail mid-write)",
+    ])
+
+
 def _detect_concurrent_hermes_instances(
     scripts_dir: Path, *, exclude_pid: int | None = None
 ) -> list[tuple[int, str]]:
@@ -9807,12 +9926,26 @@ def _cmd_update_impl(args, gateway_mode: bool):
     print()
 
     # On Windows, abort early if another hermes.exe is holding the venv shim
-    # open. Continuing would result in a string of WinError 32 warnings and
+    # open.  Continuing would result in a string of WinError 32 warnings and
     # then either a deferred-rename leftover or a failed git-pull fast path
     # that silently falls back to the slower ZIP route. See issue #26670.
     if _is_windows() and not getattr(args, "force", False):
         scripts_dir = _venv_scripts_dir()
         if scripts_dir is not None:
+            # Detect if we're running inside an active Hermes session (e.g.
+            # the agent shelled out to run ``hermes update``).  The ancestor
+            # hermes.exe holds a file lock on the venv shim that will cause
+            # the update to fail during file replacement, but
+            # ``_detect_concurrent_hermes_instances`` deliberately excludes
+            # ancestor shims to avoid false positives when the user invokes
+            # the update from a terminal that happens to be inside Hermes.
+            # This separate check catches the case where the ancestor is
+            # still an active session that cannot be closed mid-update.
+            # See issue #65585.
+            if _detect_running_inside_hermes_session(scripts_dir):
+                print(_format_inside_hermes_session_message(scripts_dir))
+                sys.exit(2)
+
             concurrent = _detect_concurrent_hermes_instances(scripts_dir)
             if concurrent:
                 print(_format_concurrent_instances_message(concurrent, scripts_dir))

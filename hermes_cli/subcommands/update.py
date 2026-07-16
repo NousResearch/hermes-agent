@@ -65,7 +65,7 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         "--force",
         action="store_true",
         default=False,
-        help="Windows: proceed with the update even when another hermes.exe is detected. The concurrent process will likely cause WinError 32 warnings and may leave a reboot-deferred .exe replacement. Does NOT bypass the venv-process guard (see --force-venv).",
+        help="Windows: proceed even when another hermes.exe or an active parent Hermes session is detected. The running process will likely cause WinError 32 warnings and may leave a reboot-deferred .exe replacement. Does NOT bypass the venv-process guard (see --force-venv).",
     )
     update_parser.add_argument(
         "--force-venv",

@@ -1117,6 +1117,14 @@ def _handle_create(args: dict, **kw) -> str:
         return tool_error(
             f"parents must be a list of task ids, got {type(parents).__name__}"
         )
+    supersede_ids = args.get("supersede_ids") or []
+    if isinstance(supersede_ids, str):
+        supersede_ids = [supersede_ids]
+    if not isinstance(supersede_ids, (list, tuple)):
+        return tool_error(
+            "supersede_ids must be a list of task ids, "
+            f"got {type(supersede_ids).__name__}"
+        )
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
@@ -1162,11 +1170,39 @@ def _handle_create(args: dict, **kw) -> str:
             )
             new_task = kb.get_task(conn, new_tid)
             subscribed = _maybe_auto_subscribe(conn, new_tid)
-            return _ok(
-                task_id=new_tid,
-                status=new_task.status if new_task else None,
-                subscribed=subscribed,
-            )
+            result = {
+                "task_id": new_tid,
+                "status": new_task.status if new_task else None,
+                "subscribed": subscribed,
+            }
+            if supersede_ids:
+                # Re-anchor cleanup: retire the cards this creation replaces
+                # in the same operation, so superseded acceptance never stays
+                # live in todo/ready for a dispatcher to pick up. The new
+                # card already exists at this point, so a failure here must
+                # degrade to a reported error, never eat the created id.
+                try:
+                    superseded, supersede_skipped = kb.supersede_tasks(
+                        conn,
+                        [str(x) for x in supersede_ids],
+                        new_task_id=new_tid,
+                        # No identity fallback: with HERMES_PROFILE unset the
+                        # created_by trust condition simply can't match, and
+                        # only the caller-task link conditions remain.
+                        actor=os.environ.get("HERMES_PROFILE"),
+                        caller_task_id=os.environ.get("HERMES_KANBAN_TASK"),
+                    )
+                except Exception as exc:
+                    logger.exception("kanban_create: supersede step failed")
+                    result["superseded"] = []
+                    result["supersede_skipped"] = [str(x) for x in supersede_ids]
+                    result["supersede_error"] = str(exc)
+                else:
+                    # A skipped id means the card was NOT archived (untrusted,
+                    # running, done, or missing) and still needs attention.
+                    result["superseded"] = superseded
+                    result["supersede_skipped"] = supersede_skipped
+            return _ok(**result)
         finally:
             conn.close()
     except ValueError as e:
@@ -1753,7 +1789,25 @@ KANBAN_CREATE_SCHEMA = {
                     "until every parent reaches 'done'; then it "
                     "auto-promotes to 'ready'. Typical fan-in: list "
                     "all the researcher task ids when creating a "
-                    "synthesizer task."
+                    "synthesizer task. NOTE the direction: parents are "
+                    "PREREQUISITES that must finish first. Do NOT list "
+                    "your own current task here if you intend to wait "
+                    "for the new card — that deadlocks the lane (the "
+                    "child waits on you while you wait on it)."
+                ),
+            },
+            "supersede_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Task ids this new card REPLACES (re-anchoring a "
+                    "lane). Each listed card that is still parked in "
+                    "todo/ready/blocked and was created by you (or "
+                    "under your task) is archived with a 'superseded' "
+                    "event pointing at the new card, in the same "
+                    "operation — so stale acceptance never stays live "
+                    "for the dispatcher. Running/done cards and cards "
+                    "you don't own are skipped and reported back."
                 ),
             },
             "tenant": {

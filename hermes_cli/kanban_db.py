@@ -2662,11 +2662,28 @@ def create_task(
                         session_id,
                     ),
                 )
-                for pid in parents:
-                    conn.execute(
+                # Parent edges carry the same invariants as link_tasks()
+                # (no self-dependency, no cycles) and emit a first-class
+                # ``linked`` event per edge actually inserted: uniform
+                # edge-event queries must see every task_links write, or a
+                # dependency graph cannot be reconstructed from history.
+                # Duplicate ids in ``parents`` are one edge, not two.
+                for pid in dict.fromkeys(parents):
+                    if pid == task_id:
+                        raise ValueError("a task cannot depend on itself")
+                    if _would_cycle(conn, pid, task_id):
+                        raise ValueError(
+                            f"linking {pid} -> {task_id} would create a cycle"
+                        )
+                    link_cur = conn.execute(
                         "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
                         (pid, task_id),
                     )
+                    if link_cur.rowcount == 1:
+                        _append_event(
+                            conn, task_id, "linked",
+                            {"parent": pid, "child": task_id, "via": "create_task"},
+                        )
                 _append_event(
                     conn,
                     task_id,
@@ -4963,6 +4980,41 @@ def block_task(
                 conn, task_id, "dependency_wait",
                 {"reason": reason, "kind": kind}, run_id=run_id,
             )
+            # Inversion guard: a task that parks on a dependency wait while
+            # it still has live CHILDREN is starving them — children cannot
+            # promote until THIS task reaches done/archived, so if this
+            # task is itself waiting on those children (the self-defer
+            # pattern), nothing in the lane can ever move. Detection-only:
+            # emit a loud anomaly event for routers/humans; no auto-unlink.
+            starved_children = [
+                str(r["id"])
+                for r in conn.execute(
+                    "SELECT t.id FROM tasks t "
+                    "JOIN task_links l ON l.child_id = t.id "
+                    "WHERE l.parent_id = ? "
+                    "  AND t.status NOT IN ('done', 'archived') "
+                    "ORDER BY t.id",
+                    (task_id,),
+                ).fetchall()
+            ]
+            if starved_children:
+                _append_event(
+                    conn,
+                    task_id,
+                    "dependency_inversion_suspected",
+                    {
+                        "reason": reason,
+                        "starved_children": starved_children,
+                        "hint": (
+                            "this task parked on a dependency wait while "
+                            "live children wait on it; if it is waiting for "
+                            "those children the lane is deadlocked — either "
+                            "reverse the links (children become parents of "
+                            "this task) or archive the superseded cards"
+                        ),
+                    },
+                    run_id=run_id,
+                )
             routed_to = "todo"
             _blocked_task = get_task(conn, task_id)
             _fire_kanban_lifecycle_hook(
@@ -5494,6 +5546,13 @@ def decompose_triage_task(
                 "VALUES (?, ?)",
                 (cid, task_id),
             )
+            # First-class edge event so link forensics don't depend on
+            # reconstructing decompose payloads (these edges gate the
+            # root, so their provenance matters most of all).
+            _append_event(
+                conn, task_id, "linked",
+                {"parent": cid, "child": task_id, "via": "decompose_root_as_child"},
+            )
 
         # Flip the root: triage -> todo, set assignee to the orchestrator.
         sets = ["status = 'todo'"]
@@ -5563,6 +5622,128 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
     # for a later dispatcher tick.
     recompute_ready(conn)
     return True
+
+
+def _supersede_actor_matches(created_by, actor):
+    """True when ``created_by`` names ``actor`` — either verbatim or as the
+    actor segment of the ``worker:<actor>:<task>`` / ``gateway:<actor>``
+    provenance format ``format_created_by`` stamps."""
+    created = (created_by or "").strip()
+    target = (actor or "").strip()
+    if not created or not target:
+        return False
+    if created == target:
+        return True
+    parts = created.split(":")
+    return len(parts) >= 2 and parts[1] == target
+
+
+def supersede_tasks(
+    conn: sqlite3.Connection,
+    old_ids: Iterable[str],
+    *,
+    new_task_id: str,
+    actor: Optional[str] = None,
+    caller_task_id: Optional[str] = None,
+) -> tuple[list[str], list[str]]:
+    """Archive superseded cards as part of re-anchoring onto ``new_task_id``.
+
+    When an orchestrator replaces a lane (new canonical chain of cards),
+    the OLD cards must not stay live in ``todo``/``ready`` carrying
+    acceptance the orchestrator itself just declared wrong — a dispatcher
+    tick could pick them up and implement known-bad work. This performs
+    the cleanup in the same operation as the replacement.
+
+    Per old card, archiving is allowed only when a trust condition holds
+    (mirrors ``_verify_created_cards``):
+
+    * ``created_by`` mentions ``actor`` (you created it, you may retire it);
+    * ``created_by`` contains ``caller_task_id`` (created by a worker run
+      on the same root task);
+    * the card is linked as a ``task_links`` child of ``caller_task_id``.
+
+    Only parked statuses (``todo``/``ready``/``blocked``) are eligible:
+    ``running`` cards have a live worker, ``done`` cards are completed
+    history, and neither is "superseded live work". Ineligible or
+    untrusted ids are returned in ``skipped`` — partial success is the
+    caller's to report, never a silent drop.
+
+    Returns ``(superseded, skipped)``.
+    """
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for oid in (str(x).strip() for x in (old_ids or [])):
+        if oid and oid not in seen:
+            seen.add(oid)
+            ordered.append(oid)
+
+    superseded: list[str] = []
+    skipped: list[str] = []
+    linked_children: set[str] = (
+        set(child_ids(conn, caller_task_id)) if caller_task_id else set()
+    )
+    for oid in ordered:
+        # Never let a lane retire its own replacement or the card the
+        # caller is currently running on.
+        if oid == new_task_id or (caller_task_id and oid == caller_task_id):
+            skipped.append(oid)
+            continue
+        row = conn.execute(
+            "SELECT status, created_by FROM tasks WHERE id = ?", (oid,),
+        ).fetchone()
+        if row is None or row["status"] not in ("todo", "ready", "blocked"):
+            skipped.append(oid)
+            continue
+        created_by = row["created_by"]
+        trusted = (
+            _supersede_actor_matches(created_by, actor)
+            or (caller_task_id and caller_task_id in (created_by or ""))
+            or oid in linked_children
+        )
+        if not trusted:
+            skipped.append(oid)
+            continue
+        # Archive + provenance in ONE transaction, with the parked-status
+        # restriction re-checked inside the UPDATE itself: a card claimed
+        # by a dispatcher between the SELECT above and this write must not
+        # be archived out from under its worker, and a card that was NOT
+        # archived must never carry a "superseded" event/comment.
+        archived_now = False
+        with write_txn(conn):
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'archived', "
+                "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+                "WHERE id = ? AND status IN ('todo', 'ready', 'blocked')",
+                (oid,),
+            )
+            if cur.rowcount == 1:
+                archived_now = True
+                _append_event(
+                    conn, oid, "superseded",
+                    {"by": new_task_id, "actor": actor},
+                )
+                _append_event(conn, oid, "archived", None)
+                if actor:
+                    conn.execute(
+                        "INSERT INTO task_comments (task_id, author, body, created_at) "
+                        "VALUES (?, ?, ?, ?)",
+                        (
+                            oid,
+                            actor,
+                            f"Superseded by {new_task_id}; archived as part of "
+                            f"the re-anchor (no longer the canonical path).",
+                            int(time.time()),
+                        ),
+                    )
+        if archived_now:
+            superseded.append(oid)
+        else:
+            skipped.append(oid)
+    if superseded:
+        # One promotion pass for the whole batch (archived parents unblock
+        # children the same as done), not one per archived card.
+        recompute_ready(conn)
+    return superseded, skipped
 
 
 def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:

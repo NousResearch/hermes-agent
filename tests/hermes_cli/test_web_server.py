@@ -7232,7 +7232,11 @@ class TestValidateProviderCredential:
     def test_loopback_probe_ignores_proxy_env_end_to_end(self, monkeypatch):
         """Real localhost server + HTTP(S)_PROXY pointing at a dead port: the
         probe must still enumerate the models. Fails before the fix (httpx
-        routes the loopback request into the dead proxy)."""
+        routes the loopback request into the dead proxy).
+
+        Every bypass spelling is cleared first: an inherited `no_proxy` would
+        route the unfixed client straight to the server and let this pass on a
+        build that still trusts the environment."""
         import http.server
         import threading
 
@@ -7255,9 +7259,11 @@ class TestValidateProviderCredential:
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
+            for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                        "https_proxy", "http_proxy", "all_proxy", "NO_PROXY", "no_proxy"):
+                monkeypatch.delenv(key, raising=False)
             monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
             monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:9")
-            monkeypatch.delenv("NO_PROXY", raising=False)
             base_url = f"http://127.0.0.1:{server.server_port}/v1"
             data = self._post("OPENAI_BASE_URL", base_url).json()
         finally:

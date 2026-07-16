@@ -419,6 +419,38 @@ describe('saveOnboardingLocalEndpoint', () => {
     expect(calls).not.toContain('/api/model/set')
   })
 
+  it('surfaces the probe detail when a reachable endpoint answers with an error', async () => {
+    const calls: string[] = []
+    installApiMock(async ({ path }: { path: string }) => {
+      calls.push(path)
+
+      if (path === '/api/providers/validate') {
+        // What the backend reports when something answers /v1/models with a
+        // non-2xx status — an intercepting proxy, or a gateway with no model
+        // loaded. Reachable, but not empty-handed for the same reason.
+        return {
+          ok: true,
+          reachable: true,
+          message: 'http://127.0.0.1:8000/v1/models answered HTTP 502.',
+          models: []
+        }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    const result = await saveOnboardingLocalEndpoint('http://127.0.0.1:8000/v1', '', {
+      requestGateway: readyGateway()
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('answered HTTP 502')
+    // The status is the whole point: flattening it into "advertised no models"
+    // is what sent people hunting for a model that was never the problem.
+    expect(result.message).not.toContain('advertised no models')
+    expect(calls).not.toContain('/api/model/set')
+  })
+
   it('auto-discovers the model and persists provider=custom + base_url, then finishes', async () => {
     const calls: { body?: unknown; path: string }[] = []
 

@@ -22,6 +22,7 @@ from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_cli.config import cfg_get
+from hermes_cli.plugins import invoke_hook
 from hermes_cli.secret_prompt import masked_secret_prompt
 
 logger = logging.getLogger(__name__)
@@ -498,6 +499,29 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
         plugin_name = manifest.get("name") or (
             subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else _repo_name_from_url(git_url)
         )
+
+        # Security gate: let plugins scan the freshly cloned, not-yet-trusted
+        # artifact before it is promoted into ~/.hermes/plugins. A returned
+        # reason aborts the install (fail-closed), same contract as
+        # validate_mcp_server_entry for MCP servers.
+        gate_reasons: list[str] = []
+        for ret in invoke_hook(
+            "pre_plugin_install",
+            name=plugin_name,
+            git_url=git_url,
+            subdir=subdir,
+            path=str(tmp_target),
+            manifest=manifest,
+        ):
+            if isinstance(ret, str):
+                gate_reasons.append(ret)
+            elif isinstance(ret, (list, tuple)):
+                gate_reasons.extend(str(x) for x in ret if x)
+        if gate_reasons:
+            raise PluginOperationError(
+                f"Plugin '{plugin_name}' blocked by an install gate:\n"
+                + "\n".join(f"  - {r}" for r in gate_reasons)
+            )
 
         try:
             target = _sanitize_plugin_name(plugin_name, plugins_dir)

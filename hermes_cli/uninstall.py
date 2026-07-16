@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
@@ -28,6 +29,107 @@ def log_warn(msg: str):
 def get_project_root() -> Path:
     """Get the project installation directory."""
     return Path(__file__).parent.parent.resolve()
+
+
+def _is_hermes_distribution_metadata(path: Path) -> bool:
+    """Return whether a ``*.dist-info``/``*.egg-info`` entry belongs to Hermes."""
+    name = path.name.lower()
+    for suffix in (".dist-info", ".egg-info"):
+        if not name.endswith(suffix):
+            continue
+        stem = name[: -len(suffix)]
+        return stem == "hermes_agent" or stem.startswith(
+            ("hermes_agent-", "hermes-agent-")
+        )
+    return False
+
+
+def _pyproject_is_hermes(pyproject_path: Path) -> bool:
+    """Return whether a pyproject identifies the Hermes Agent distribution."""
+    try:
+        with pyproject_path.open("rb") as f:
+            project = tomllib.load(f).get("project", {})
+    except (OSError, tomllib.TOMLDecodeError):
+        return False
+    name = str(project.get("name", "")).strip().lower().replace("_", "-")
+    return name == "hermes-agent"
+
+
+def _project_root_removal_safety(
+    project_root: Path,
+    hermes_home: Path,
+) -> tuple[bool, str]:
+    """Validate that ``project_root`` is a dedicated Hermes source checkout.
+
+    A wheel puts ``hermes_cli/uninstall.py`` directly under the interpreter's
+    shared ``site-packages`` directory, so deriving the project root from
+    ``__file__`` must never be enough to authorize a recursive delete.  This
+    guard is deliberately fail-closed and lives at the final ``rmtree``
+    boundary so every caller, including ``--yes`` and the desktop module
+    entrypoint, gets the same protection.
+    """
+    try:
+        root = project_root.resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        return False, f"the installation path could not be resolved safely ({exc})"
+
+    if root == Path(root.anchor):
+        return False, "the installation path is a filesystem root"
+
+    if any(part.lower() in {"site-packages", "dist-packages"} for part in root.parts):
+        return False, "the installation path is inside a shared Python package directory"
+
+    protected_paths = [
+        ("your home directory", Path.home()),
+        ("the Hermes data directory", hermes_home),
+        ("the active interpreter prefix", Path(sys.prefix)),
+        ("the base interpreter prefix", Path(sys.base_prefix)),
+        ("the active interpreter exec prefix", Path(sys.exec_prefix)),
+        ("the base interpreter exec prefix", Path(sys.base_exec_prefix)),
+    ]
+    checked: set[Path] = set()
+    for label, protected_path in protected_paths:
+        try:
+            protected = protected_path.resolve(strict=False)
+        except (OSError, RuntimeError) as exc:
+            return False, f"a protected path could not be resolved safely ({label}: {exc})"
+        if protected in checked:
+            continue
+        checked.add(protected)
+        # Refuse both the protected directory itself and any ancestor whose
+        # recursive removal would also remove that protected directory.
+        if root == protected or root in protected.parents:
+            return False, f"the installation path is {label} or one of its parents"
+
+    try:
+        metadata_entries = [
+            child
+            for child in root.iterdir()
+            if child.name.lower().endswith((".dist-info", ".egg-info"))
+        ]
+    except OSError as exc:
+        return False, f"the installation directory could not be inspected safely ({exc})"
+
+    unrelated = [
+        child.name
+        for child in metadata_entries
+        if not _is_hermes_distribution_metadata(child)
+    ]
+    if unrelated:
+        sample = ", ".join(sorted(unrelated)[:3])
+        return False, f"the directory contains unrelated Python distributions ({sample})"
+
+    hermes_module = root / "hermes_cli" / "uninstall.py"
+    # A generic .git directory is not proof that the whole repository belongs
+    # to Hermes.  Require package metadata that identifies this exact project;
+    # otherwise a copied hermes_cli module inside an unrelated monorepo could
+    # authorize deleting that monorepo.
+    if not hermes_module.is_file() or not _pyproject_is_hermes(
+        root / "pyproject.toml"
+    ):
+        return False, "the directory is not a verifiable Hermes source checkout"
+
+    return True, "verified Hermes source checkout"
 
 
 def find_shell_configs() -> list:
@@ -722,7 +824,15 @@ def _print_uninstall_dry_run(*, project_root: Path, hermes_home: Path, full_unin
     print("  • Hermes PATH entries from shell configs / Windows User PATH")
     print("  • Hermes wrapper scripts and Hermes-managed node/npm/npx symlinks")
     print("  • Desktop Chat GUI artifacts")
-    print(f"  • Code checkout: {project_root}")
+    if project_root.exists():
+        safe_to_remove, reason = _project_root_removal_safety(project_root, hermes_home)
+    else:
+        safe_to_remove, reason = True, "installation directory is already absent"
+    if safe_to_remove:
+        print(f"  • Code checkout: {project_root}")
+    else:
+        print(f"  • Package-managed code will not be recursively removed: {project_root}")
+        print(f"    Reason: {reason}")
     if full_uninstall:
         print(f"  • Hermes config/data: {hermes_home}")
         if _is_default_hermes_home(hermes_home):
@@ -833,16 +943,24 @@ def _perform_uninstall(
     # 4. Remove installation directory (code)
     log_info("Removing installation directory...")
     
-    # Check if we're running from within the install dir
-    # We need to be careful here
+    # Never authorize recursive deletion from __file__ alone. In a wheel,
+    # project_root is the interpreter's shared site-packages directory.
     try:
         if project_root.exists():
-            # If the install is inside ~/.hermes/, just remove the hermes-agent subdir
-            if hermes_home in project_root.parents or project_root.parent == hermes_home:
-                shutil.rmtree(project_root)
-                log_success(f"Removed {project_root}")
+            safe_to_remove, reason = _project_root_removal_safety(
+                project_root,
+                hermes_home,
+            )
+            if not safe_to_remove:
+                log_warn(f"Refusing to recursively remove {project_root}: {reason}")
+                log_info(
+                    "Hermes code was left intact. Remove package-managed installs "
+                    "with the same tool that installed them (for example, "
+                    "'python -m pip uninstall hermes-agent', "
+                    "'uv tool uninstall hermes-agent', or "
+                    "'pipx uninstall hermes-agent')."
+                )
             else:
-                # Installation is somewhere else entirely
                 shutil.rmtree(project_root)
                 log_success(f"Removed {project_root}")
     except Exception as e:

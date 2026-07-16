@@ -7,7 +7,12 @@ from hermes_cli import uninstall
 def test_dry_run_prints_plan_without_mutating(monkeypatch, tmp_path, capsys):
     project_root = tmp_path / "hermes-agent"
     hermes_home = tmp_path / ".hermes"
-    project_root.mkdir()
+    (project_root / "hermes_cli").mkdir(parents=True)
+    (project_root / "hermes_cli" / "uninstall.py").write_text("# source checkout\n")
+    (project_root / ".git").mkdir()
+    (project_root / "pyproject.toml").write_text(
+        '[project]\nname = "hermes-agent"\nversion = "1.0"\n'
+    )
     hermes_home.mkdir()
     (hermes_home / "config.yaml").write_text("model: {}\n")
 

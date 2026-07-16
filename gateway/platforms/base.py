@@ -5694,6 +5694,17 @@ class BasePlatformAdapter(ABC):
                 # the whole budget — leaves split_at at 0, so ``remaining``
                 # never shrinks and the while-loop spins forever appending
                 # empty chunks (an unbounded hang / OOM).
+                #
+                # Length contract for a degenerate budget: a codepoint is the
+                # smallest indivisible unit, so when the budget is smaller than
+                # one codepoint (e.g. max_length=1 with a 2-unit surrogate pair
+                # under utf16_len) the emitted chunk WILL exceed max_length by
+                # that one codepoint. That is intentional — emitting the
+                # codepoint whole preserves the content, whereas the only
+                # alternatives are dropping it (data loss) or looping forever.
+                # Real callers never hit this: platform caps are hundreds/
+                # thousands, and the relay path normalizes a 0/negative
+                # descriptor bound to 4096 (see gateway/relay/descriptor.py).
                 split_at = max(1, _cp_limit)
 
             # Avoid splitting inside an inline code span (`...`).

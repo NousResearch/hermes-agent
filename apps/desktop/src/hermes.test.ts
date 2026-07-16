@@ -10,7 +10,8 @@ import {
   getSessionMessages,
   getStatus,
   listAllProfileSessions,
-  listSessions
+  listSessions,
+  setApiRequestProfile
 } from './hermes'
 import { refreshActiveProfile } from './store/profile'
 
@@ -33,6 +34,7 @@ describe('Hermes REST session helpers', () => {
   })
 
   afterEach(() => {
+    setApiRequestProfile(null)
     vi.restoreAllMocks()
     Reflect.deleteProperty(window, 'hermesDesktop')
   })
@@ -94,6 +96,7 @@ describe('Hermes REST session helpers', () => {
   })
 
   it('gives the whole startup data burst the long timeout, not just profiles', async () => {
+    setApiRequestProfile(null)
     api.mockResolvedValue({})
 
     const bootCalls: [() => Promise<unknown>, string][] = [
@@ -151,6 +154,79 @@ describe('Hermes REST session helpers', () => {
     expect(api).toHaveBeenCalledWith(
       expect.objectContaining({
         path: '/api/model/options?refresh=1&include_unconfigured=1'
+      })
+    )
+  })
+})
+
+describe('Hermes REST cron helpers honour the active profile', () => {
+  let api: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    api = vi.fn().mockResolvedValue([])
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { api }
+    })
+  })
+
+  afterEach(() => {
+    // _apiProfile is module-level state in hermes.ts; reset so it never leaks
+    // into the session helpers describe above (or another suite entirely).
+    setApiRequestProfile(null)
+    vi.restoreAllMocks()
+    Reflect.deleteProperty(window, 'hermesDesktop')
+  })
+
+  it('scopes the cron job listing to the active profile', async () => {
+    setApiRequestProfile('worker_alpha')
+
+    await getCronJobs()
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/cron/jobs?profile=worker_alpha',
+        timeoutMs: 60_000
+      })
+    )
+  })
+
+  it('omits the profile query when no profile is set (single-profile / legacy)', async () => {
+    // _apiProfile defaults to null; the unscoped path is preserved so the
+    // legacy single-profile install behaves identically to before the fix.
+    await getCronJobs()
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/cron/jobs',
+        timeoutMs: 60_000
+      })
+    )
+  })
+
+  it('treats empty-string profiles as null (still unscoped)', async () => {
+    // setApiRequestProfile coerces '' to null via `profile || null`.
+    setApiRequestProfile('')
+
+    await getCronJobs()
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/cron/jobs',
+        timeoutMs: 60_000
+      })
+    )
+  })
+
+  it('url-encodes profile names with reserved characters', async () => {
+    setApiRequestProfile('team a/b')
+
+    await getCronJobs()
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/cron/jobs?profile=team%20a%2Fb',
+        timeoutMs: 60_000
       })
     )
   })

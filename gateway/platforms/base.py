@@ -5656,7 +5656,13 @@ class BasePlatformAdapter(ABC):
                 chunks.append(prefix + remaining)
                 break
 
-            # Find a natural split point (prefer newlines, then spaces).
+            # Find a natural split point. Preference order, chosen to avoid
+            # cutting mid-sentence / mid-word:
+            #   1. \n\n (paragraph break) — strongest signal.
+            #   2. Sentence-ending punctuation followed by a space (. ? !)
+            #   3. \n (any single line break)
+            #   4. Space (last resort before hard cap)
+            #
             # When _len != len (e.g. utf16_len for Telegram), headroom is
             # measured in the custom unit.  We need codepoint-based slice
             # positions that stay within the custom-unit budget.
@@ -5669,9 +5675,31 @@ class BasePlatformAdapter(ABC):
             else:
                 _cp_limit = headroom
             region = remaining[:_cp_limit]
-            split_at = region.rfind("\n")
-            if split_at < _cp_limit // 2:
-                split_at = region.rfind(" ")
+
+            split_at = -1
+            # 1. paragraph break
+            para_idx = region.find("\n\n")
+            if para_idx >= max(_cp_limit // 4, 200):
+                split_at = para_idx
+            if split_at < 0:
+                # 2. sentence end + space
+                best_sentence = -1
+                for punct in (". ", "? ", "! "):
+                    idx = region.find(punct)
+                    if idx >= max(_cp_limit // 4, 200) and idx > best_sentence:
+                        best_sentence = idx
+                if best_sentence >= 0:
+                    split_at = best_sentence + 2  # include ". " in chunk
+            if split_at < 0:
+                # 3. any line break
+                nl_idx = region.rfind("\n")
+                if nl_idx >= _cp_limit // 4:
+                    split_at = nl_idx
+            if split_at < 0:
+                # 4. word boundary (last-resort before hard cap)
+                sp_idx = region.rfind(" ")
+                if sp_idx >= _cp_limit // 2:
+                    split_at = sp_idx
             if split_at < 1:
                 split_at = _cp_limit
 

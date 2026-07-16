@@ -31,6 +31,8 @@ from gateway.config import (
     DEFAULT_STREAMING_EDIT_INTERVAL as _DEFAULT_STREAMING_EDIT_INTERVAL,
     DEFAULT_STREAMING_BUFFER_THRESHOLD as _DEFAULT_STREAMING_BUFFER_THRESHOLD,
     DEFAULT_STREAMING_CURSOR as _DEFAULT_STREAMING_CURSOR,
+    DEFAULT_STREAMING_MAX_EDIT_CHARS as _DEFAULT_STREAMING_MAX_EDIT_CHARS,
+    DEFAULT_STREAMING_HARD_EDIT_CHARS as _DEFAULT_STREAMING_HARD_EDIT_CHARS,
 )
 from gateway.response_filters import (
     is_intentional_silence_response as _is_intentional_silence_response,
@@ -51,12 +53,90 @@ _NEW_SEGMENT = object()
 _COMMENTARY = object()
 
 
+def find_paragraph_break(
+    text: str,
+    soft_target: int,
+    hard_limit: int,
+) -> Optional[int]:
+    """Locate the earliest natural split point in ``text`` for in-stream chunking.
+
+    Walks ``text`` from ``soft_target`` codepoints onward, looking for the
+    earliest break in priority order:
+
+      1. ``\\n\\n`` (paragraph break) — strongest visual signal.
+      2. ``\\n`` followed by a non-space (line break inside a paragraph).
+      3. Sentence-ending punctuation followed by a space (``". "``, ``"? "``,
+         ``"! "``) — preserves sentence boundaries when the model emits
+         long single-paragraph prose.
+      4. ``\\n`` (any line break) — last resort before ``hard_limit``.
+
+    Returns the codepoint offset where ``text`` should be split, or ``None``
+    if no break is found before ``hard_limit`` codepoints.  ``soft_target``
+    is the minimum chunk size — the function never returns a position below
+    it, so very short replies never get fragmented.
+
+    Args:
+        text: Accumulated streaming buffer.
+        soft_target: Minimum chunk size in codepoints. Split positions below
+            this are ignored — gives the chunk enough body to be worth its
+            split overhead.
+        hard_limit: Maximum chunk size in codepoints. The search stops here
+            even if no natural break exists, so a single chunk never grows
+            past this and overruns the platform's animation window.
+
+    Returns:
+        Codepoint offset to split at, or ``None`` if no acceptable break
+        exists before ``hard_limit``.
+    """
+    if hard_limit <= 0 or soft_target >= len(text):
+        # Nothing to split, or hard_limit too small to ever be reached.
+        return None
+
+    # Restrict the search window to [soft_target, hard_limit).
+    start = max(0, soft_target)
+    end = min(len(text), hard_limit)
+    if end <= start:
+        return None
+    window = text[start:end]
+
+    # Priority 1: paragraph break (\n\n).
+    idx = window.find("\n\n")
+    if idx >= 0:
+        return start + idx
+
+    # Priority 2: single \n followed by non-space (line break inside prose).
+    scan = 0
+    while scan < len(window):
+        nl = window.find("\n", scan)
+        if nl < 0:
+            break
+        if nl + 1 < len(window) and not window[nl + 1].isspace():
+            return start + nl
+        scan = nl + 1
+
+    # Priority 3: sentence-ending punctuation followed by a space.
+    for punct in (". ", "? ", "! "):
+        idx = window.find(punct)
+        if idx >= 0:
+            return start + idx + len(punct)  # split AFTER the punctuation+space
+
+    # Priority 4: any \n before hard_limit.
+    idx = window.find("\n")
+    if idx >= 0:
+        return start + idx
+
+    # No natural break before hard_limit — caller will force-split at hard_limit.
+    return None
+
+
 @dataclass
 class StreamConsumerConfig:
     """Runtime config for a single stream consumer instance."""
     edit_interval: float = _DEFAULT_STREAMING_EDIT_INTERVAL
     buffer_threshold: int = _DEFAULT_STREAMING_BUFFER_THRESHOLD
     cursor: str = _DEFAULT_STREAMING_CURSOR
+    max_edit_chars: int = _DEFAULT_STREAMING_MAX_EDIT_CHARS
+    hard_edit_chars: int = _DEFAULT_STREAMING_HARD_EDIT_CHARS
     buffer_only: bool = False
     # When >0, the final edit for a streamed response is delivered as a
     # fresh message if the original preview has been visible for at least
@@ -702,17 +782,46 @@ class GatewayStreamConsumer:
 
                     # Existing message: edit it with the first chunk, then
                     # start a new message for the overflow remainder.
+                    #
+                    # Paragraph-aware split: trigger when accumulated text
+                    # exceeds hard_edit_chars (the per-bubble animation
+                    # ceiling). Within that, prefer the earliest natural
+                    # boundary from find_paragraph_break — never cut mid-
+                    # sentence or mid-word. If no boundary exists before
+                    # hard_edit_chars, force-split at hard_edit_chars so the
+                    # bubble size is always bounded and Telegram's client-
+                    # side edit-animation has time to complete before the
+                    # next edit lands. This avoids the "flashing" replay
+                    # artifact where successive edits interrupt each
+                    # other's bubble animation.
                     while (
-                        _len_fn(self._accumulated) > _safe_limit
+                        _len_fn(self._accumulated) > self.cfg.hard_edit_chars
                         and self._message_id is not None
                         and self._edit_supported
                     ):
-                        _cp_budget = _custom_unit_to_cp(
-                            self._accumulated, _safe_limit, _len_fn,
+                        natural_split = find_paragraph_break(
+                            self._accumulated,
+                            soft_target=self.cfg.max_edit_chars,
+                            hard_limit=self.cfg.hard_edit_chars,
                         )
-                        split_at = self._accumulated.rfind("\n", 0, _cp_budget)
-                        if split_at < _safe_limit // 2:
-                            split_at = _safe_limit
+                        if natural_split is not None:
+                            split_at = natural_split
+                        else:
+                            # No natural break before hard_edit_chars — fall
+                            # back to the character-count split (preserves
+                            # existing behaviour for single-paragraph walls
+                            # of text). Use codepoint budget so we slice on
+                            # whole characters even when _len_fn != len.
+                            _cp_budget = _custom_unit_to_cp(
+                                self._accumulated,
+                                self.cfg.hard_edit_chars,
+                                _len_fn,
+                            )
+                            split_at = self._accumulated.rfind(
+                                "\n", 0, _cp_budget,
+                            )
+                            if split_at < self.cfg.hard_edit_chars // 2:
+                                split_at = _cp_budget
                         chunk = self._accumulated[:split_at]
                         # finalize=True so the adapter applies platform-specific
                         # rich-text markup (e.g. Telegram MarkdownV2). This

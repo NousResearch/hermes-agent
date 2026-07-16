@@ -547,6 +547,18 @@ class PlatformConfig:
 DEFAULT_STREAMING_EDIT_INTERVAL: float = 0.8
 DEFAULT_STREAMING_BUFFER_THRESHOLD: int = 24
 DEFAULT_STREAMING_CURSOR: str = " ▉"
+# Soft target for in-stream split: prefer to break at a paragraph boundary
+# once accumulated text crosses this many codepoints. Set well below
+# Telegram's client-side edit-animation window (~700ms for a 1500-char
+# bubble at ~1ms/char render) so successive edits never overlap and cause
+# the "flashing" animation-replay artifact. Below this, edits stay on the
+# natural time + buffer_threshold rhythm.
+DEFAULT_STREAMING_MAX_EDIT_CHARS: int = 600
+# Hard cap: if no paragraph boundary exists between MAX_EDIT_CHARS and
+# HARD_EDIT_CHARS, the consumer splits at the cap rather than letting
+# one giant bubble animate longer than the next edit interval.  Keeps the
+# edit-animation window bounded even for single-paragraph walls of text.
+DEFAULT_STREAMING_HARD_EDIT_CHARS: int = 1500
 
 
 @dataclass
@@ -573,6 +585,16 @@ class StreamingConfig:
     edit_interval: float = DEFAULT_STREAMING_EDIT_INTERVAL
     buffer_threshold: int = DEFAULT_STREAMING_BUFFER_THRESHOLD
     cursor: str = DEFAULT_STREAMING_CURSOR
+    # Paragraph-aware in-stream split. The stream consumer splits a long
+    # reply into multiple Telegram bubbles at the earliest paragraph
+    # boundary found after max_edit_chars, never before. If no clean
+    # paragraph boundary exists between max_edit_chars and hard_edit_chars,
+    # it splits at hard_edit_chars rather than waiting for one — that
+    # bounds the per-bubble edit-animation time and prevents the
+    # "flashing" replay artifact on long single-paragraph replies.
+    # Both values are codepoints (not bytes, not UTF-16 units).
+    max_edit_chars: int = DEFAULT_STREAMING_MAX_EDIT_CHARS
+    hard_edit_chars: int = DEFAULT_STREAMING_HARD_EDIT_CHARS
     # Ported from openclaw/openclaw#72038.  When >0, the final edit for
     # a long-running streamed response is delivered as a fresh message
     # if the original preview has been visible for at least this many
@@ -589,6 +611,8 @@ class StreamingConfig:
             "edit_interval": self.edit_interval,
             "buffer_threshold": self.buffer_threshold,
             "cursor": self.cursor,
+            "max_edit_chars": self.max_edit_chars,
+            "hard_edit_chars": self.hard_edit_chars,
             "fresh_final_after_seconds": self.fresh_final_after_seconds,
         }
 
@@ -606,6 +630,12 @@ class StreamingConfig:
                 data.get("buffer_threshold"), DEFAULT_STREAMING_BUFFER_THRESHOLD,
             ),
             cursor=data.get("cursor", DEFAULT_STREAMING_CURSOR),
+            max_edit_chars=_coerce_int(
+                data.get("max_edit_chars"), DEFAULT_STREAMING_MAX_EDIT_CHARS,
+            ),
+            hard_edit_chars=_coerce_int(
+                data.get("hard_edit_chars"), DEFAULT_STREAMING_HARD_EDIT_CHARS,
+            ),
             fresh_final_after_seconds=_coerce_float(
                 data.get("fresh_final_after_seconds"), 0.0
             ),

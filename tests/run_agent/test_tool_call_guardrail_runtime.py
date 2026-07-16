@@ -86,6 +86,23 @@ def _hard_stop_config(**overrides) -> dict:
     return cfg
 
 
+def _generic_halt_result() -> str:
+    return json.dumps(
+        {
+            "version": "unrelated-plugin-envelope/v3",
+            "error": "MISSING_CREDENTIALS: OpenAI API key is missing",
+            "guardrail_request": {
+                "schema": "hermes.tool_guardrail.request/v1",
+                "action": "halt",
+                "code": "missing_credentials",
+                "message": "OpenAI API key is missing",
+                "tool_name": "terminal",
+                "count": 1,
+            },
+        }
+    )
+
+
 def test_default_sequential_path_warns_repeated_exact_failure_without_blocking_execution():
     agent = _make_agent("web_search")
     args = {"query": "same"}
@@ -266,6 +283,50 @@ def test_default_run_conversation_warns_without_guardrail_halt():
     assert result["final_response"] == "done"
     tool_contents = [m["content"] for m in result["messages"] if m.get("role") == "tool"]
     assert any("repeated_exact_failure_warning" in content for content in tool_contents)
+
+
+def test_generic_plugin_request_halts_after_first_failed_tool_result():
+    agent = _make_agent("terminal", max_iterations=10)
+    agent.client.chat.completions.create.side_effect = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[
+                _mock_tool_call(
+                    "terminal",
+                    json.dumps({"command": "deploy"}),
+                    "c-auth",
+                )
+            ],
+        ),
+        _mock_response(content="SHOULD_NOT_BE_REQUESTED", finish_reason="stop"),
+    ]
+
+    with (
+        patch("run_agent.handle_function_call", return_value=_generic_halt_result()) as mock_hfc,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("deploy the service")
+
+    mock_hfc.assert_called_once()
+    assert result["api_calls"] == 1
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert result["guardrail"]["action"] == "halt"
+    assert result["guardrail"]["code"] == "requested_missing_credentials"
+    assert result["guardrail"]["tool_name"] == "terminal"
+    assert result["guardrail"]["count"] == 1
+    assert "non-retryable blocker" in result["final_response"]
+    assert "OpenAI API key is missing" in result["final_response"]
+    assert "repeated non-progressing" not in result["final_response"]
+    tool_result = next(
+        message["content"]
+        for message in result["messages"]
+        if message.get("role") == "tool"
+    )
+    assert "hermes.tool_guardrail.request/v1" in tool_result
+    assert "Tool loop hard stop" in tool_result
 
 
 def test_config_enabled_hard_stop_run_conversation_returns_controlled_guardrail_halt_without_top_level_error():

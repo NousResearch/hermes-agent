@@ -469,7 +469,7 @@ export function ChatSidebar({
     setSearchPending(true)
 
     const id = window.setTimeout(() => {
-      void searchSessions(trimmedQuery, activeProfile)
+      void searchSessions(trimmedQuery)
         .then(res => {
           if (myToken === inFlightSearchRef.current) {
             setServerMatches(res.results)
@@ -493,8 +493,13 @@ export function ChatSidebar({
 
     return () => {
       window.clearTimeout(id)
+      // Invalidate the in-flight token so a pending resolution that
+      // settles after cleanup (component unmount, query change) is
+      // dropped deterministically instead of calling setState on the
+      // unmounted component.
+      inFlightSearchRef.current++
     }
-  }, [trimmedQuery, activeProfile])
+  }, [trimmedQuery])
 
   const searchResults = useMemo(() => {
     if (!trimmedQuery) {

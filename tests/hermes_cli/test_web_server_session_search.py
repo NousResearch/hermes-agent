@@ -62,6 +62,9 @@ class _FakeSessionDB:
 def test_desktop_session_search_merges_id_matches_before_content_matches(monkeypatch):
     monkeypatch.setattr("hermes_state.SessionDB", _FakeSessionDB)
 
+    # `profile` is echoed from the request profile param; this test calls
+    # without one so each row tags itself as None (renderer's defensive
+    # spread coerces null → omitted on the SessionInfo).
     response = asyncio.run(web_server.search_sessions(q="20260603", limit=2))
 
     # ID match surfaces first; the content hit on the SAME session is deduped
@@ -76,6 +79,7 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
                 "source": "cli",
                 "model": "claude",
                 "session_started": 100,
+                "profile": None,
             },
             {
                 "session_id": "content_session",
@@ -85,6 +89,7 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
                 "source": "desktop",
                 "model": "gpt",
                 "session_started": 200,
+                "profile": None,
             },
         ]
     }

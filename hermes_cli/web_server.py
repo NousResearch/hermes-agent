@@ -4356,6 +4356,14 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
                 payload = dict(payload)
                 payload["session_id"] = lineage_tip(root)
                 payload["lineage_root"] = root
+                # Echo the profile the request was scoped to so the renderer's
+                # row component can tag handlers with the owning profile.
+                # `add_lineage_result` runs after the request opens the DB
+                # under `?profile=`, so the value is the authoritative name
+                # the live gateway sees. Absent when the caller omits profile
+                # (single-profile users, or pre-pool backends), in which case
+                # the renderer treats the row as the default profile.
+                payload["profile"] = profile
                 seen[root] = payload
 
             # Direct ID matches first: users often paste a session id from CLI,

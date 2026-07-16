@@ -2431,6 +2431,20 @@ async def stream_events(ws: WebSocket):
     if not _ws_upgrade_authorized(ws):
         await ws.close(code=http_status.WS_1008_POLICY_VIOLATION)
         return
+
+    # Board selection is pinned at the WS handshake; re-subscribe to switch
+    # boards.  Validate before accept: a stale browser may reconnect after its
+    # board was archived, and connect(board=...) would recreate its directory
+    # and empty DB.
+    ws_board_raw = ws.query_params.get("board")
+    try:
+        ws_board = kanban_db._normalize_board_slug(ws_board_raw) if ws_board_raw else None
+    except ValueError:
+        ws_board = None
+    if ws_board and not kanban_db.board_exists(ws_board):
+        await ws.close(code=http_status.WS_1008_POLICY_VIOLATION)
+        return
+
     await ws.accept()
     try:
         since_raw = ws.query_params.get("since", "0")
@@ -2438,16 +2452,6 @@ async def stream_events(ws: WebSocket):
             cursor = int(since_raw)
         except ValueError:
             cursor = 0
-
-        # Board selection — pinned at the WS handshake; re-subscribe to
-        # switch boards. Changing boards mid-stream would require
-        # reconciling two cursors, so the UI just opens a new WS on
-        # board change.
-        ws_board_raw = ws.query_params.get("board")
-        try:
-            ws_board = kanban_db._normalize_board_slug(ws_board_raw) if ws_board_raw else None
-        except ValueError:
-            ws_board = None
 
         def _fetch_new(cursor_val: int) -> tuple[int, list[dict]]:
             conn = kanban_db.connect(board=ws_board)

@@ -894,6 +894,20 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
     ) as ws:
         assert ws is not None  # handshake succeeded
 
+    # A stale browser must not resurrect an archived/removed board merely by
+    # reconnecting its old event-stream URL.  Create/remove a real board first
+    # so this exercises the exact on-disk state produced by `boards rm`.
+    kb.create_board("removed-board")
+    kb.remove_board("removed-board")
+    assert not kb.board_exists("removed-board")
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with c.websocket_connect(
+            "/api/plugins/kanban/events?token=secret-xyz&board=removed-board"
+        ):
+            pass
+    assert exc.value.code == 1008
+    assert not kb.board_exists("removed-board")
+
 
 def test_ws_events_accepts_gated_ticket(tmp_path, monkeypatch):
     """Gated OAuth mode: the WS must accept a single-use ?ticket= (and reject

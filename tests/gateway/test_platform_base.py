@@ -631,12 +631,15 @@ class TestMediaExtensionAllowlistParity:
 
     def test_unknown_extension_not_black_holed_by_cleanup(self):
         """A MEDIA: tag with an unknown extension is NOT stripped from the
-        body — it survives so extract_local_files can still see the bare path,
-        rather than vanishing entirely (the core of issue #34517)."""
+        body by the extension-anchored cleanup — and when the path does not
+        validate (nonexistent file here), it is not delivered either, so the
+        tag survives visibly instead of vanishing (the core of issue #34517).
+        Validated unknown-extension paths DO deliver — see
+        TestUniversalMediaEgress (#36060)."""
         from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
         text = "Saved to MEDIA:/tmp/data.weirdext done"
         media, _ = BasePlatformAdapter.extract_media(text)
-        assert media == []  # unknown extension is not a deliverable MEDIA tag
+        assert media == []  # nonexistent path fails validation, not delivered
         stripped = MEDIA_TAG_CLEANUP_RE.sub("", text)
         assert "/tmp/data.weirdext" in stripped  # path preserved, not dropped
 
@@ -647,6 +650,167 @@ class TestMediaExtensionAllowlistParity:
         assert "MEDIA:" not in stripped
         assert "/tmp/report.md" not in stripped
         assert "Here is your report:" in stripped
+
+
+class TestExtensionlessMediaDelivery:
+    """Regression: MEDIA: tags for extension-less files (Caddyfile, Makefile)."""
+
+    def _patch_allow_root(self, monkeypatch, root):
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            (str(root),),
+        )
+        monkeypatch.delenv("HERMES_MEDIA_DELIVERY_STRICT", raising=False)
+
+    def test_extensionless_media_extracted_when_file_validates(self, tmp_path, monkeypatch):
+        root = tmp_path / "output"
+        root.mkdir()
+        caddy = root / "Caddyfile"
+        caddy.write_text("localhost {}", encoding="utf-8")
+        self._patch_allow_root(monkeypatch, root)
+
+        content = f"Here is your config:\nMEDIA:{caddy}\nDone."
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == str(caddy.resolve())
+        assert "MEDIA:" not in cleaned
+        assert "Done." in cleaned
+
+    def test_extensionless_media_left_visible_when_not_on_disk(self, tmp_path, monkeypatch):
+        root = tmp_path / "output"
+        root.mkdir()
+        self._patch_allow_root(monkeypatch, root)
+
+        content = "MEDIA:/nonexistent/Caddyfile"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert "MEDIA:/nonexistent/Caddyfile" in cleaned
+
+    def test_strip_media_directives_for_display_strips_validated_extensionless(
+        self, tmp_path, monkeypatch,
+    ):
+        root = tmp_path / "output"
+        root.mkdir()
+        caddy = root / "Caddyfile"
+        caddy.write_text("x", encoding="utf-8")
+        self._patch_allow_root(monkeypatch, root)
+
+        text = f"MEDIA:{caddy}"
+        stripped = BasePlatformAdapter.strip_media_directives_for_display(text)
+        assert "MEDIA:" not in stripped
+
+    def test_as_document_directive_stripped_without_media_tag(self):
+        """[[as_document]] must be stripped even when no MEDIA: tag is present.
+
+        The display/strip guards short-circuit on text containing none of the
+        delivery directives; [[as_document]] must be in that guard or it leaks
+        to the user as visible text on any image-only response.
+        """
+        from gateway.platforms.base import _strip_media_directives
+
+        text = "Here is your image. [[as_document]]"
+        assert "[[as_document]]" not in _strip_media_directives(text)
+        assert "[[as_document]]" not in (
+            BasePlatformAdapter.strip_media_directives_for_display(text)
+        )
+
+
+class TestUniversalMediaEgress:
+    """#36060: every MEDIA: path is deliverable regardless of file type.
+
+    Known extensions extract unconditionally (MEDIA_TAG_CLEANUP_RE); unknown
+    extensions and extension-less files extract via the validated pass —
+    delivered when validate_media_delivery_path accepts them, left visible
+    when it does not (nonexistent, denylisted).
+    """
+
+    def _patch_allow_root(self, monkeypatch, root):
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            (str(root),),
+        )
+        monkeypatch.delenv("HERMES_MEDIA_DELIVERY_STRICT", raising=False)
+
+    @pytest.mark.parametrize("name", [
+        "script.py", "server.log", "notes.weirdext", "app.ts", "run.sh",
+        "config.toml", "styles.css", "contract.sol",
+    ])
+    def test_unknown_extension_delivered_when_file_validates(
+        self, tmp_path, monkeypatch, name,
+    ):
+        root = tmp_path / "output"
+        root.mkdir()
+        f = root / name
+        f.write_text("content", encoding="utf-8")
+        self._patch_allow_root(monkeypatch, root)
+
+        content = f"Here you go:\nMEDIA:{f}\nDone."
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == str(f.resolve())
+        assert "MEDIA:" not in cleaned
+        assert "Done." in cleaned
+
+    def test_unknown_extension_left_visible_when_not_on_disk(
+        self, tmp_path, monkeypatch,
+    ):
+        root = tmp_path / "output"
+        root.mkdir()
+        self._patch_allow_root(monkeypatch, root)
+
+        content = "MEDIA:/nonexistent/script.py"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert "MEDIA:/nonexistent/script.py" in cleaned
+
+    def test_denylisted_paths_still_rejected_regardless_of_extension(
+        self, tmp_path, monkeypatch,
+    ):
+        # A denylisted path must not deliver even though .py/.log/etc now
+        # route through the validated pass. _media_delivery_denied_paths()
+        # reads _MEDIA_DELIVERY_DENIED_PREFIXES at call time, so patching the
+        # tuple exercises the real denylist logic.
+        secret_dir = tmp_path / "secrets"
+        secret_dir.mkdir()
+        f = secret_dir / "creds.py"
+        f.write_text("TOKEN = 'x'", encoding="utf-8")
+        monkeypatch.setattr(
+            "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
+            (str(secret_dir),),
+        )
+        monkeypatch.delenv("HERMES_MEDIA_DELIVERY_STRICT", raising=False)
+
+        content = f"MEDIA:{f}"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert "MEDIA:" in cleaned  # rejected tag stays visible
+
+    def test_strip_for_display_strips_validated_unknown_extension(
+        self, tmp_path, monkeypatch,
+    ):
+        root = tmp_path / "output"
+        root.mkdir()
+        f = root / "server.log"
+        f.write_text("x", encoding="utf-8")
+        self._patch_allow_root(monkeypatch, root)
+
+        text = f"MEDIA:{f}"
+        stripped = BasePlatformAdapter.strip_media_directives_for_display(text)
+        assert "MEDIA:" not in stripped
+
+    def test_strip_for_display_keeps_unvalidated_unknown_extension(self):
+        text = "MEDIA:/nonexistent/server.log"
+        stripped = BasePlatformAdapter.strip_media_directives_for_display(text)
+        assert "MEDIA:/nonexistent/server.log" in stripped
+
+    def test_known_extension_still_unconditional(self):
+        # Known extensions keep the pre-#36060 behavior: extracted (and the
+        # tag stripped) even when the file does not exist — downstream
+        # delivery surfaces the failure.
+        content = "MEDIA:/nonexistent/report.pdf"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/nonexistent/report.pdf", False)]
+        assert "MEDIA:" not in cleaned
 
 
 class TestMediaDeliveryPathValidation:
@@ -722,6 +886,28 @@ class TestMediaDeliveryPathValidation:
         monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(extra_root))
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(media_file)) == str(media_file.resolve())
+
+    def test_allows_stale_kanban_attachment_but_not_neighboring_workspace(
+        self, tmp_path, monkeypatch,
+    ):
+        """Strict mode trusts durable attachments without trusting scratch."""
+        self._patch_roots(monkeypatch)
+        monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path / "hermes"))
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+        board_root = tmp_path / "hermes" / "kanban" / "boards" / "research"
+        board_root.mkdir(parents=True)
+        (board_root / "kanban.db").touch()
+        attachment = board_root / "attachments" / "t_12345678" / "report.pdf"
+        scratch = board_root / "workspaces" / "t_12345678" / "notes.txt"
+        attachment.parent.mkdir(parents=True)
+        scratch.parent.mkdir(parents=True)
+        attachment.write_bytes(b"%PDF")
+        scratch.write_text("private", encoding="utf-8")
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(attachment)) == str(
+            attachment.resolve()
+        )
+        assert BasePlatformAdapter.validate_media_delivery_path(str(scratch)) is None
 
     def test_recency_trust_allows_freshly_produced_file(self, tmp_path, monkeypatch):
         """A PDF the agent just wrote to /tmp should be deliverable.
@@ -927,6 +1113,38 @@ class TestMediaDeliveryDefaultMode:
         )
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(env_file)) is None
+
+    @pytest.mark.parametrize(
+        "rel",
+        [
+            "mcp-tokens/github.json",
+            "mcp-tokens/github.client.json",
+            "mcp-tokens/github.meta.json",
+        ],
+    )
+    def test_denylist_blocks_mcp_oauth_tokens(self, tmp_path, monkeypatch, rel):
+        """Live MCP OAuth tokens/client creds under ~/.hermes/mcp-tokens/ must
+        never deliver as native media — same exfil class as auth.json/.env.
+        Sibling to the pairing/ directory denylist entry.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        hermes_dir = fake_home / ".hermes"
+        (hermes_dir / "mcp-tokens").mkdir(parents=True)
+        secret = hermes_dir / rel
+        secret.write_text('{"access_token": "live-bearer-abc123"}')
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr(
+            "gateway.platforms.base._HERMES_HOME",
+            hermes_dir,
+        )
+        monkeypatch.setattr(
+            "gateway.platforms.base._HERMES_ROOT",
+            hermes_dir,
+        )
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
 
     def test_denylist_blocks_hermes_config_in_active_profile(self, tmp_path, monkeypatch):
         """The active profile config stays blocked in default mode."""
@@ -1385,6 +1603,76 @@ class TestTruncateMessage:
         assert "(1/" in chunks[0]
         assert f"({len(chunks)}/{len(chunks)})" in chunks[-1]
 
+    @staticmethod
+    def _truncate_with_timeout(content, max_length, *, len_fn=None, timeout=3.0):
+        """Run truncate_message on a worker thread; fail if it doesn't return.
+
+        Guards against the regression where a pathologically small max_length
+        made the split loop never consume any input and spin forever.
+        """
+        import threading
+
+        box: dict = {}
+
+        def _run():
+            box["result"] = BasePlatformAdapter.truncate_message(
+                content, max_length, len_fn=len_fn
+            )
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        t.join(timeout=timeout)
+        assert not t.is_alive(), (
+            f"truncate_message hung (infinite loop) for max_length={max_length}"
+        )
+        return box["result"]
+
+    def test_pathological_small_max_length_terminates(self):
+        # max_length 0 and 1 previously drove the split loop into an unbounded
+        # hang (headroom -> 0, split_at -> 0, remaining never shrinks). It must
+        # terminate and preserve every character across the chunks.
+        import re
+
+        for max_length in (0, 1, 2):
+            chunks = self._truncate_with_timeout("abcdefghij", max_length)
+            assert chunks, f"no chunks for max_length={max_length}"
+            reassembled = "".join(
+                re.sub(r"\s*\(\d+/\d+\)$", "", c) for c in chunks
+            )
+            for ch in "abcdefghij":
+                assert ch in reassembled, f"char {ch!r} lost at max_length={max_length}"
+
+    def test_pathological_small_max_length_utf16_terminates(self):
+        # Under utf16_len (Telegram), a surrogate-pair emoji is 2 units wide, so
+        # a budget below that maps to zero codepoints — the same stall vector.
+        from gateway.platforms.base import utf16_len
+
+        chunks = self._truncate_with_timeout("😀😀😀😀😀", 1, len_fn=utf16_len)
+        assert chunks
+        assert "😀" in "".join(chunks)
+
+    def test_sub_codepoint_budget_emits_whole_codepoints_without_data_loss(self):
+        """Length contract for a budget too small to fit one codepoint.
+
+        A codepoint is indivisible, so with max_length=1 and utf16_len a 2-unit
+        emoji cannot fit — the loop emits it whole rather than dropping it or
+        spinning. The documented, intentional consequence is that such a chunk
+        EXCEEDS max_length by that one codepoint; in return every codepoint is
+        preserved (no data loss) and the call terminates.
+        """
+        import re
+
+        from gateway.platforms.base import utf16_len
+
+        chunks = self._truncate_with_timeout("😀😀😀", 1, len_fn=utf16_len)
+        assert chunks
+        bodies = [re.sub(r"\s*\(\d+/\d+\)$", "", c) for c in chunks]
+        # No data loss: all three emojis survive across the chunks.
+        assert "".join(bodies).count("😀") == 3
+        # Contract: a chunk carrying a 2-unit emoji necessarily exceeds the
+        # 1-unit budget — assert that explicitly so the behavior is pinned.
+        assert any(utf16_len(b) > 1 for b in bodies)
+
     def test_code_block_first_chunk_closed(self):
         adapter = self._adapter()
         msg = "Before\n```python\n" + "x = 1\n" * 100 + "```\nAfter"
@@ -1702,3 +1990,126 @@ class TestMediaDeliveryDiagnosability:
         assert any(r.endswith("cache/documents") for r in roots)
         # Legacy layout still present.
         assert any(r.endswith("image_cache") for r in roots)
+
+
+# ---------------------------------------------------------------------------
+# Media-send fallback must not leak host filesystem paths into chat
+# ---------------------------------------------------------------------------
+
+
+class _CapturingAdapter(BasePlatformAdapter):
+    """Minimal concrete BasePlatformAdapter that records what send() sees.
+
+    The four media-send fallbacks (send_voice, send_video, send_document,
+    send_image_file) historically forwarded their *_path argument into the
+    chat text. That argument is a host filesystem path inside the Hermes
+    cache, so any subclass that fell back to super() — like the Telegram
+    adapter on a rejected video — would leak the host's directory layout
+    into the user's chat.
+    """
+
+    def __init__(self):
+        from gateway.config import Platform, PlatformConfig
+        super().__init__(PlatformConfig(enabled=True), Platform.TELEGRAM)
+        self.sent: list[dict] = []
+
+    async def connect(self) -> bool:  # pragma: no cover - not exercised
+        return True
+
+    async def disconnect(self) -> None:  # pragma: no cover - not exercised
+        return None
+
+    async def get_chat_info(self, chat_id):  # pragma: no cover - not exercised
+        return {"name": chat_id, "type": "dm"}
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        from gateway.platforms.base import SendResult
+        self.sent.append({
+            "chat_id": chat_id,
+            "content": content,
+            "reply_to": reply_to,
+            "metadata": metadata,
+        })
+        return SendResult(success=True, message_id="m1")
+
+
+class TestMediaFallbackDoesNotLeakHostPath:
+    """Regression: the four base-class media fallbacks must not echo *_path.
+
+    Telegram, Discord, and Slack adapters all fall back to these base
+    implementations on native-send failure. When they did, the user saw
+    a chat message like ``🎬 Video: /home/.../hermes/cache/video/abc.mp4``
+    — a host filesystem path with no actionable information.
+    """
+
+    SENSITIVE_PATH = "/home/jayne/.hermes/cache/media/sensitive_host_path_abc123.bin"
+
+    @pytest.mark.asyncio
+    async def test_send_voice_fallback_omits_audio_path(self):
+        adapter = _CapturingAdapter()
+        result = await adapter.send_voice(chat_id="123", audio_path=self.SENSITIVE_PATH)
+        assert result.success
+        assert len(adapter.sent) == 1
+        sent_text = adapter.sent[0]["content"]
+        assert self.SENSITIVE_PATH not in sent_text
+        assert "/home/" not in sent_text
+        assert "audio" in sent_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_send_video_fallback_omits_video_path(self):
+        adapter = _CapturingAdapter()
+        result = await adapter.send_video(chat_id="123", video_path=self.SENSITIVE_PATH)
+        assert result.success
+        sent_text = adapter.sent[0]["content"]
+        assert self.SENSITIVE_PATH not in sent_text
+        assert "/home/" not in sent_text
+        assert "video" in sent_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_send_document_fallback_omits_file_path(self):
+        adapter = _CapturingAdapter()
+        result = await adapter.send_document(chat_id="123", file_path=self.SENSITIVE_PATH)
+        assert result.success
+        sent_text = adapter.sent[0]["content"]
+        assert self.SENSITIVE_PATH not in sent_text
+        assert "/home/" not in sent_text
+        assert "file" in sent_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_send_document_fallback_includes_explicit_filename_only(self):
+        """A caller-supplied file_name is user-facing and may be shown — but
+        the host file_path argument must still be suppressed."""
+        adapter = _CapturingAdapter()
+        result = await adapter.send_document(
+            chat_id="123",
+            file_path=self.SENSITIVE_PATH,
+            file_name="report.pdf",
+        )
+        assert result.success
+        sent_text = adapter.sent[0]["content"]
+        assert self.SENSITIVE_PATH not in sent_text
+        assert "/home/" not in sent_text
+        assert "report.pdf" in sent_text
+
+    @pytest.mark.asyncio
+    async def test_send_image_file_fallback_omits_image_path(self):
+        adapter = _CapturingAdapter()
+        result = await adapter.send_image_file(chat_id="123", image_path=self.SENSITIVE_PATH)
+        assert result.success
+        sent_text = adapter.sent[0]["content"]
+        assert self.SENSITIVE_PATH not in sent_text
+        assert "/home/" not in sent_text
+        assert "image" in sent_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_caption_is_preserved_in_fallback(self):
+        """The user-supplied caption is still shown — only the path is suppressed."""
+        adapter = _CapturingAdapter()
+        await adapter.send_video(
+            chat_id="123",
+            video_path=self.SENSITIVE_PATH,
+            caption="Here's the daily summary.",
+        )
+        sent_text = adapter.sent[0]["content"]
+        assert "Here's the daily summary." in sent_text
+        assert self.SENSITIVE_PATH not in sent_text

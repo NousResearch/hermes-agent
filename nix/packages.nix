@@ -70,4 +70,8 @@ in
   tui = full.hermesTui;
   web = full.hermesWeb;
   desktop = full.hermesDesktop;
+
+  # Shared lockfile updater from #65237 — one `nix run .#update-npm-lockfile`
+  # replaces the old per-package update_*_lockfile bins.
+  update-npm-lockfile = full.hermesNpmLib.updateNpmLockfile;
 }

@@ -14,10 +14,13 @@
     uv2nix = {
       url = "github:pyproject-nix/uv2nix";
       inputs.nixpkgs.follows = "nixpkgs";
+      inputs.pyproject-nix.follows = "pyproject-nix";
     };
     pyproject-build-systems = {
       url = "github:pyproject-nix/build-system-pkgs";
       inputs.nixpkgs.follows = "nixpkgs";
+      inputs.pyproject-nix.follows = "pyproject-nix";
+      inputs.uv2nix.follows = "uv2nix";
     };
     npm-lockfile-fix = {
       url = "github:jeslie0/npm-lockfile-fix";
@@ -42,11 +45,15 @@
       ];
 
       flake = {
-        # Stable Nix:  nixpkgs.overlays = [ (import ./nix/overlay.nix) ];
-        # A plain `final: prev:` overlay — re-exported verbatim. It self-sources
-        # its build inputs from nix/inputs.nix (the same flake.lock), so flake
-        # and non-flake consumers get the same pinned derivations.
-        overlays.default = import ./nix/overlay.nix;
+        # Flake consumers get a pure alias of this flake's locked package
+        # (same idea as #65237) so pkgs.hermes-agent == .#default.
+        # Stable (non-flake) Nix still uses nix/overlay.nix, which rebuilds
+        # against the consumer's nixpkgs with build inputs from flake.lock:
+        #   nixpkgs.overlays = [ (import ./nix/overlay.nix) ];
+        overlays.default =
+          final: _: {
+            hermes-agent = inputs.self.packages.${final.stdenv.hostPlatform.system}.default;
+          };
 
         # Stable Nix:  imports = [ ./nix/module.nix ]; with the overlay applied
         # so pkgs.hermes-agent (module.nix's default package) resolves.

@@ -59,6 +59,37 @@ class TestGenerateTitle:
         with patch("hermes_cli.config.load_config", side_effect=RuntimeError("bad config")):
             assert _title_language() == ""
 
+    def test_default_timeout_delegates_to_auxiliary_config(self):
+        captured_kwargs = {}
+
+        def mock_call_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "Configured Timeout"
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            assert generate_title("question", "answer") == "Configured Timeout"
+
+        assert captured_kwargs["task"] == "title_generation"
+        assert captured_kwargs["timeout"] is None
+
+    def test_explicit_timeout_still_overrides_config(self):
+        captured_kwargs = {}
+
+        def mock_call_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "Explicit Timeout"
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            assert generate_title("question", "answer", timeout=123.0) == "Explicit Timeout"
+
+        assert captured_kwargs["timeout"] == 123.0
+
     def test_strips_quotes(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
@@ -67,6 +98,37 @@ class TestGenerateTitle:
         with patch("agent.title_generator.call_llm", return_value=mock_response):
             title = generate_title("how do I set up docker", "First install...")
             assert title == "Setting Up Docker Environment"
+
+    def test_strips_think_blocks(self):
+        """Reasoning-model output wrapped in <think>...</think> must not
+        leak into the session title."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = (
+            "<think>The user wants a title. I'll summarize the topic "
+            "concisely.</think>Debugging Python Import Errors"
+        )
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("help me fix this import", "Sure...")
+            assert title == "Debugging Python Import Errors"
+            assert "<think>" not in title
+            assert "summarize" not in title
+
+    def test_strips_unterminated_think_block(self):
+        """An unterminated <think> block (no close tag) must still be
+        stripped so the leaked reasoning doesn't become the title."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = (
+            "<think>Let me reason about a good title for this session"
+        )
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("hello", "hi there")
+            # Everything from the unterminated open tag onward is stripped,
+            # leaving nothing → None.
+            assert title is None
 
     def test_strips_title_prefix(self):
         mock_response = MagicMock()
@@ -193,6 +255,50 @@ class TestAutoTitleSession:
         with patch("agent.title_generator.generate_title", return_value=None):
             auto_title_session(db, "sess-1", "hi", "hello")
             db.set_session_title.assert_not_called()
+
+    def test_never_raises_when_body_throws(self):
+        """Daemon-thread target must swallow ALL exceptions (e.g. the
+        post-update stale-module ImportError) instead of spraying a raw
+        traceback into the terminal via the default threading excepthook."""
+        db = MagicMock()
+        db.get_session_title.return_value = None
+
+        with patch(
+            "agent.title_generator._auto_title_session",
+            side_effect=ImportError(
+                "cannot import name 'set_conversation_context' from 'agent.portal_tags'"
+            ),
+        ):
+            auto_title_session(db, "sess-1", "hi", "hello")  # must not raise
+
+    def test_body_exception_routed_to_failure_callback(self):
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        seen = []
+
+        boom = ImportError("stale module")
+        with patch("agent.title_generator._auto_title_session", side_effect=boom):
+            auto_title_session(
+                db,
+                "sess-1",
+                "hi",
+                "hello",
+                failure_callback=lambda task, exc: seen.append((task, exc)),
+            )
+        assert seen == [("title generation", boom)]
+
+    def test_failure_callback_errors_also_swallowed(self):
+        db = MagicMock()
+        db.get_session_title.return_value = None
+
+        def bad_cb(task, exc):
+            raise RuntimeError("callback itself broke")
+
+        with patch(
+            "agent.title_generator._auto_title_session",
+            side_effect=ImportError("stale module"),
+        ):
+            auto_title_session(db, "sess-1", "hi", "hello", failure_callback=bad_cb)
 
 
 class TestMaybeAutoTitle:

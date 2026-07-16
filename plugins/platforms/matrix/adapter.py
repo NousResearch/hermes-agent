@@ -57,7 +57,7 @@ import mimetypes
 import os
 import re
 import time
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 from dataclasses import dataclass, field
 
 from html import escape as _html_escape
@@ -128,6 +128,7 @@ from gateway.platforms.base import (
     SendResult,
     resolve_proxy_url,
     proxy_kwargs_for_aiohttp,
+    _ssrf_redirect_guard,
 )
 from gateway.platforms.helpers import ThreadParticipationTracker
 
@@ -336,6 +337,21 @@ class _MatrixModelPickerPrompt:
     bot_reaction_events: dict[str, str] = field(default_factory=dict)
 
 
+@dataclass
+class _MatrixChoicePickerPrompt:
+    """Tracks a pending Matrix reaction-based choice picker (/reasoning, /fast)."""
+
+    chat_id: str
+    message_id: str
+    session_key: str
+    choices: dict[str, str]  # emoji -> value
+    on_choice_selected: Any
+    requester_user_id: str | None = None
+    expires_at: float | None = None
+    resolved: bool = False
+    bot_reaction_events: dict[str, str] = field(default_factory=dict)
+
+
 # Matrix message size limit (4000 chars practical, spec has no hard limit
 # but clients render poorly above this).
 MAX_MESSAGE_LENGTH = 4000
@@ -383,6 +399,14 @@ _MATRIX_MODEL_PICKER_REACTIONS = (
     "8\ufe0f\u20e3",
     "9\ufe0f\u20e3",
     "\U0001f51f",
+)
+
+# Choice pickers (/reasoning, /fast) can need more than 10 slots
+# (8 effort levels + none + reset/show/hide = 12), so extend the keycap
+# set with lettered squares.
+_MATRIX_CHOICE_PICKER_REACTIONS = _MATRIX_MODEL_PICKER_REACTIONS + (
+    "\U0001f170\ufe0f",  # 🅰️
+    "\U0001f171\ufe0f",  # 🅱️
 )
 
 _MATRIX_CAPABILITIES: Dict[str, str] = {
@@ -805,6 +829,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self._device_id: str = config.extra.get("device_id", "") or os.getenv(
             "MATRIX_DEVICE_ID", ""
         )
+        self._device_id_unverified: bool = False
 
         self._client: Any = None  # mautrix.client.Client
         self._crypto_db: Any = None  # mautrix.util.async_db.Database
@@ -952,6 +977,7 @@ class MatrixAdapter(BasePlatformAdapter):
         except ValueError:
             self._approval_timeout_seconds = 300
         self._model_picker_prompts_by_event: Dict[str, _MatrixModelPickerPrompt] = {}
+        self._choice_picker_prompts_by_event: Dict[str, _MatrixChoicePickerPrompt] = {}
         allowed_users_raw = os.getenv("MATRIX_ALLOWED_USERS", "")
         self._allowed_user_ids: Set[str] = {
             u.strip() for u in allowed_users_raw.split(",") if u.strip()
@@ -1038,6 +1064,12 @@ class MatrixAdapter(BasePlatformAdapter):
         self, client: Any, local_ed25519: str
     ) -> bool:
         """Re-query the server after share_keys() and verify our ed25519 key matches."""
+        if not client.device_id or self._device_id_unverified:
+            logger.warning(
+                "Matrix: skipping post-upload key verification — "
+                "device_id not yet established"
+            )
+            return True
         try:
             resp = await client.query_keys({client.mxid: [client.device_id]})
             dk = getattr(resp, "device_keys", {}) or {}
@@ -1064,6 +1096,12 @@ class MatrixAdapter(BasePlatformAdapter):
         Returns True if keys are valid or were successfully re-uploaded.
         Returns False if verification fails (caller should refuse E2EE).
         """
+        if not client.device_id or self._device_id_unverified:
+            logger.warning(
+                "Matrix: skipping device key verification — "
+                "device_id not yet established"
+            )
+            return True
         try:
             resp = await client.query_keys({client.mxid: [client.device_id]})
         except Exception as exc:
@@ -1138,6 +1176,13 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to the Matrix homeserver and start syncing."""
+        self._device_id_unverified = False
+        if self._client is not None:
+            try:
+                await self.disconnect()
+            except Exception as exc:
+                logger.warning("Matrix: error disconnecting before reconnect: %s", exc)
+
         from mautrix.api import HTTPAPI
         from mautrix.client import Client
         from mautrix.client.state_store import MemoryStateStore, MemorySyncStore
@@ -1187,6 +1232,36 @@ class MatrixAdapter(BasePlatformAdapter):
                 effective_device_id = self._device_id or resolved_device_id
                 if effective_device_id:
                     client.device_id = effective_device_id
+
+                if not client.device_id:
+                    try:
+                        dev_resp = await client.query_keys({client.mxid: []})
+                        all_devices = (
+                            (getattr(dev_resp, "device_keys", {}) or {})
+                            .get(str(client.mxid)) or {}
+                        )
+                        if len(all_devices) == 1:
+                            client.device_id = next(iter(all_devices))
+                        elif len(all_devices) == 0:
+                            logger.warning(
+                                "Matrix: no devices found for %s — "
+                                "key verification will be skipped",
+                                client.mxid,
+                            )
+                    except Exception as exc:
+                        logger.warning(
+                            "Matrix: device list query failed: %s", exc
+                        )
+
+                if not client.device_id:
+                    logger.warning(
+                        "Matrix: device_id could not be resolved for %s. "
+                        "Set MATRIX_DEVICE_ID for full key verification. "
+                        "E2EE will proceed without server-side device "
+                        "key confirmation.",
+                        client.mxid,
+                    )
+                    self._device_id_unverified = True
 
                 logger.info(
                     "Matrix: using access token for %s%s",
@@ -1408,9 +1483,21 @@ class MatrixAdapter(BasePlatformAdapter):
         # Without this the INVITE handler below never fires.
         client.add_dispatcher(MembershipEventDispatcher)
 
-        client.add_event_handler(EventType.ROOM_MESSAGE, self._on_room_message)
-        client.add_event_handler(EventType.REACTION, self._on_reaction)
-        client.add_event_handler(IntEvt.INVITE, self._on_invite)
+        client.add_event_handler(
+            EventType.ROOM_MESSAGE,
+            self._on_room_message,
+            wait_sync=True,
+        )
+        client.add_event_handler(
+            EventType.REACTION,
+            self._on_reaction,
+            wait_sync=True,
+        )
+        client.add_event_handler(
+            IntEvt.INVITE,
+            self._on_invite,
+            wait_sync=True,
+        )
 
         # Initial sync to catch up, then start background sync.
         self._startup_ts = time.time()
@@ -1766,36 +1853,57 @@ class MatrixAdapter(BasePlatformAdapter):
 
         fname = url.rsplit("/", 1)[-1].split("?")[0] or "image.png"
 
+        def _safe_redirect_target(current_url: str, location: str) -> str:
+            """Resolve a redirect Location and re-validate it against SSRF policy.
+
+            A public-looking URL can 302-redirect the gateway toward loopback,
+            private-network, or cloud-metadata endpoints. Validating only the
+            final URL is insufficient because the connection to the unsafe hop
+            has already been made. Re-check every hop before following it.
+            """
+            next_url = urljoin(current_url, location)
+            if not is_safe_url(next_url):
+                raise ValueError("blocked unsafe redirect URL")
+            return next_url
+
         try:
             import aiohttp as _aiohttp
 
             _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(self._proxy_url)
             async with _aiohttp.ClientSession(**_sess_kw) as http:
-                async with http.get(
-                    url,
-                    timeout=_aiohttp.ClientTimeout(total=30),
-                    allow_redirects=True,
-                    **_req_kw,
-                ) as resp:
-                    resp.raise_for_status()
-                    if not is_safe_url(str(resp.url)):
-                        raise ValueError("blocked unsafe redirect URL")
-                    _check_content_length(resp.headers)
-                    parts: list[bytes] = []
-                    total = 0
-                    async for chunk in resp.content.iter_chunked(65536):
-                        total = _append_chunk(parts, total, bytes(chunk))
-                    ct = _check_image_content_type(
-                        getattr(resp, "content_type", None)
-                        or resp.headers.get("content-type", "application/octet-stream")
-                    )
-                    return b"".join(parts), ct, fname
+                fetch_url = url
+                for _ in range(20):
+                    async with http.get(
+                        fetch_url,
+                        timeout=_aiohttp.ClientTimeout(total=30),
+                        allow_redirects=False,
+                        **_req_kw,
+                    ) as resp:
+                        if resp.status in {301, 302, 303, 307, 308}:
+                            location = resp.headers.get("Location")
+                            if not location:
+                                raise ValueError("redirect missing Location")
+                            fetch_url = _safe_redirect_target(fetch_url, location)
+                            continue
+                        resp.raise_for_status()
+                        _check_content_length(resp.headers)
+                        parts: list[bytes] = []
+                        total = 0
+                        async for chunk in resp.content.iter_chunked(65536):
+                            total = _append_chunk(parts, total, bytes(chunk))
+                        ct = _check_image_content_type(
+                            getattr(resp, "content_type", None)
+                            or resp.headers.get("content-type", "application/octet-stream")
+                        )
+                        return b"".join(parts), ct, fname
+                raise ValueError("too many redirects")
         except ImportError:
             import httpx
 
             _httpx_kw: dict = {}
             if self._proxy_url:
                 _httpx_kw["proxy"] = self._proxy_url
+            _httpx_kw["event_hooks"] = {"response": [_ssrf_redirect_guard]}
             async with httpx.AsyncClient(**_httpx_kw) as http:
                 async with http.stream(
                     "GET",
@@ -1804,8 +1912,6 @@ class MatrixAdapter(BasePlatformAdapter):
                     timeout=30,
                 ) as resp:
                     resp.raise_for_status()
-                    if not is_safe_url(str(resp.url)):
-                        raise ValueError("blocked unsafe redirect URL")
                     _check_content_length(resp.headers)
                     parts: list[bytes] = []
                     total = 0
@@ -1918,6 +2024,8 @@ class MatrixAdapter(BasePlatformAdapter):
         session_key: str,
         description: str = "dangerous command",
         metadata: Optional[dict] = None,
+        allow_permanent: bool = True,
+        smart_denied: bool = False,
     ) -> SendResult:
         """Send a reaction-based exec approval prompt for Matrix."""
         if not self._client:
@@ -1925,12 +2033,18 @@ class MatrixAdapter(BasePlatformAdapter):
 
         requester_user_id = str((metadata or {}).get("requester_user_id") or "") or None
         cmd_preview = command[:2000] + "..." if len(command) > 2000 else command
+        scope_choices = ""
+        if smart_denied:
+            scope_choices = "Smart DENY: owner override applies to this one operation only.\n"
+        else:
+            scope_choices = "Reply `!approve session` to approve this pattern for the session, "
+            if allow_permanent:
+                scope_choices += "`!approve always` to approve permanently, "
         text = (
             "⚠️ **Dangerous command requires approval**\n"
             f"```\n{cmd_preview}\n```\n"
             f"Reason: {description}\n\n"
-            "Reply `!approve` to execute, `!approve session` to approve this pattern for the session, "
-            "`!approve always` to approve permanently, or `!deny` to cancel.\n\n"
+            f"{scope_choices}Reply `!approve` to execute once, or `!deny` to cancel.\n\n"
             "You can also click the reaction to approve:\n"
             "✅ = approve\n"
             "❎ = deny"
@@ -1953,7 +2067,8 @@ class MatrixAdapter(BasePlatformAdapter):
         self._approval_prompts_by_event[result.message_id] = prompt
         self._approval_prompt_by_session[session_key] = result.message_id
 
-        for emoji in ("✅", "♾️", "❌"):
+        reactions = ("✅", "❌") if smart_denied or not allow_permanent else ("✅", "♾️", "❌")
+        for emoji in reactions:
             try:
                 reaction_result = await self._send_reaction(chat_id, result.message_id, emoji)
                 # Save the bot's reaction event_id for later cleanup
@@ -2042,6 +2157,66 @@ class MatrixAdapter(BasePlatformAdapter):
                     prompt.bot_reaction_events[emoji] = str(reaction_event_id)
             except Exception as exc:
                 logger.debug("Matrix: failed to add model picker reaction %s: %s", emoji, exc)
+
+        return result
+
+    async def send_choice_picker(
+        self,
+        chat_id: str,
+        title: str,
+        choices: list,
+        session_key: str,
+        on_choice_selected,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a Matrix reaction-based choice picker (/reasoning, /fast).
+
+        Generic single-level companion to ``send_model_picker``. Each choice
+        dict: ``{"value": str, "label": str, "is_current": bool}``.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        emoji_choices: dict[str, str] = {}
+        lines = [title, ""]
+        for i, choice in enumerate(choices):
+            if i >= len(_MATRIX_CHOICE_PICKER_REACTIONS):
+                break
+            emoji = _MATRIX_CHOICE_PICKER_REACTIONS[i]
+            value = str(choice.get("value") or "")
+            label = str(choice.get("label") or value)
+            if choice.get("is_current"):
+                label = f"{label} ← current"
+            emoji_choices[emoji] = value
+            lines.append(f"{emoji} {label}")
+
+        if not emoji_choices:
+            return SendResult(success=False, error="No choices")
+
+        lines.append("")
+        lines.append("React to choose.")
+        result = await self.send(chat_id, "\n".join(lines), metadata=metadata)
+        if not result.success or not result.message_id:
+            return result
+
+        prompt = _MatrixChoicePickerPrompt(
+            chat_id=chat_id,
+            message_id=result.message_id,
+            session_key=session_key,
+            choices=emoji_choices,
+            on_choice_selected=on_choice_selected,
+            requester_user_id=str((metadata or {}).get("requester_user_id") or "") or None,
+            expires_at=time.monotonic() + max(self._approval_timeout_seconds, 0),
+        )
+        self._choice_picker_prompts_by_event[result.message_id] = prompt
+
+        for emoji in emoji_choices:
+            try:
+                reaction_event_id = await self._send_reaction(chat_id, result.message_id, emoji)
+                if reaction_event_id:
+                    prompt.bot_reaction_events[emoji] = str(reaction_event_id)
+            except Exception as exc:
+                logger.debug("Matrix: failed to add choice picker reaction %s: %s", emoji, exc)
 
         return result
 
@@ -2149,9 +2324,14 @@ class MatrixAdapter(BasePlatformAdapter):
         """Read a local file and upload it."""
         p = Path(file_path).expanduser()
         if not p.exists():
-            return await self.send(
-                room_id, f"{caption or ''}\n(file not found: {file_path})", reply_to
+            # file_path is a host-local path; never echo it into chat.
+            logger.warning(
+                "[%s] upload fallback: media file not found for %s",
+                self.name, file_path,
             )
+            text = f"{caption}\n⚠️ Couldn't deliver the attachment." if caption \
+                else "⚠️ Couldn't deliver the attachment."
+            return await self.send(room_id, text, reply_to)
         try:
             file_size = p.stat().st_size
         except OSError:
@@ -2264,7 +2444,18 @@ class MatrixAdapter(BasePlatformAdapter):
         if inspect.isawaitable(tasks):
             tasks = await tasks
         if tasks:
-            await asyncio.gather(*tasks)
+            # return_exceptions=True so one failing event handler doesn't abort
+            # the whole gather and silently drop the SIBLING events in the same
+            # sync response (a bare gather re-raises the first exception, leaving
+            # the rest of the batch unprocessed). Mirrors the invite/redaction
+            # gathers above. Surface each failure instead of swallowing it.
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.warning(
+                        "Matrix: event handler failed during sync dispatch: %s",
+                        result,
+                    )
 
     def _is_self_sender(self, sender: str) -> bool:
         """Return True if the sender refers to the bot's own account.
@@ -2942,6 +3133,19 @@ class MatrixAdapter(BasePlatformAdapter):
             return True
         except Exception as exc:
             logger.warning("Matrix: error joining %s: %s", room_id, exc)
+            # Abandoned rooms (no current members) surface as "no servers
+            # in the room have been provided" or "room not found". The
+            # pending invite keeps retrying every startup unless we
+            # explicitly leave it. The match is narrow enough that
+            # transient failures still leave the invite untouched for the
+            # next try.
+            msg = str(exc).lower()
+            if ("no servers" in msg) or ("room not found" in msg):
+                try:
+                    await self._client.leave_room(RoomID(room_id))
+                    logger.info("Matrix: declined dead invite to %s", room_id)
+                except Exception:
+                    pass
             return False
 
     def _schedule_invite_join(
@@ -3208,6 +3412,40 @@ class MatrixAdapter(BasePlatformAdapter):
                     )
                 return
 
+            choice_prompt = self._choice_picker_prompts_by_event.get(reacts_to)
+            if choice_prompt and not choice_prompt.resolved:
+                if room_id != choice_prompt.chat_id:
+                    return
+                if self._matrix_prompt_expired(choice_prompt):
+                    self._choice_picker_prompts_by_event.pop(reacts_to, None)
+                    return
+                if not await self._validate_matrix_prompt_reactor(
+                    room_id, reacts_to, sender, choice_prompt, "choice picker"
+                ):
+                    return
+                value = choice_prompt.choices.get(key)
+                if value is None:
+                    await self._send_invalid_reaction_feedback(
+                        room_id,
+                        reacts_to,
+                        "That reaction is not one of the available choices.",
+                    )
+                    return
+                choice_prompt.resolved = True
+                self._choice_picker_prompts_by_event.pop(reacts_to, None)
+                try:
+                    confirmation = await choice_prompt.on_choice_selected(room_id, value)
+                    if confirmation:
+                        await self.send(room_id, confirmation, reply_to=reacts_to)
+                except Exception as exc:
+                    logger.error("Failed to apply choice from Matrix reaction: %s", exc)
+                    await self.send(
+                        room_id,
+                        f"Failed to apply selection: {exc}",
+                        reply_to=reacts_to,
+                    )
+                return
+
     def _matrix_prompt_expired(self, prompt: Any) -> bool:
         expires_at = getattr(prompt, "expires_at", None)
         return expires_at is not None and time.monotonic() > float(expires_at)
@@ -3335,6 +3573,7 @@ class MatrixAdapter(BasePlatformAdapter):
             thread_sessions_per_user=self.config.extra.get(
                 "thread_sessions_per_user", False
             ),
+            profile=event.source.profile,
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
@@ -4386,23 +4625,14 @@ def interactive_setup() -> None:
                 __import__("mautrix")
             except ImportError:
                 print_info(f"Installing {matrix_pkg}...")
-                import subprocess
-                uv_bin = shutil.which("uv")
-                if uv_bin:
-                    result = subprocess.run(
-                        [uv_bin, "pip", "install", "--python", _sys.executable, matrix_pkg],
-                        capture_output=True, text=True,
-                    )
-                else:
-                    result = subprocess.run(
-                        [_sys.executable, "-m", "pip", "install", matrix_pkg],
-                        capture_output=True, text=True,
-                    )
+                from hermes_cli.tools_config import _pip_install
+
+                result = _pip_install([matrix_pkg])
                 if result.returncode == 0:
                     print_success(f"{matrix_pkg} installed")
                 else:
                     print_warning(
-                        f"Install failed — run manually: pip install "
+                        f"Install failed — run manually: uv pip install "
                         f"'{matrix_pkg}' asyncpg aiosqlite Markdown aiohttp-socks"
                     )
 

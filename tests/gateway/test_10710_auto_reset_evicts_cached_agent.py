@@ -90,3 +90,49 @@ def test_evict_cached_agent_method_exists():
         "GatewayRunner._evict_cached_agent is the helper the auto-reset "
         "cleanup depends on (#10710)."
     )
+
+
+def _references_name(node: ast.AST, literal: str) -> bool:
+    """True if a string constant equal to ``literal`` appears anywhere under ``node``."""
+    return any(
+        isinstance(n, ast.Constant) and n.value == literal for n in ast.walk(node)
+    )
+
+
+def test_auto_reset_cleanup_clears_last_resolved_model():
+    """Regression test for #58403.
+
+    The auto-reset cleanup block (daily/idle/suspended, fingerprinted by
+    `_set_session_reasoning_override` + `was_auto_reset = False`) already
+    pops `_session_model_overrides` and `_pending_model_notes` — the same
+    "full conversation boundary" treatment /new and the compression-exhausted
+    auto-reset give `_last_resolved_model`. Without also popping
+    `_last_resolved_model` here, the fresh auto-reset session could serve a
+    model cached before the reset on a transient config-cache miss.
+    """
+    tree = ast.parse(inspect.getsource(gateway_run))
+
+    found = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        calls = _calls(node)
+        if (
+            "_set_session_reasoning_override" in calls
+            and _assigns_false(node, "was_auto_reset")
+        ):
+            assert _references_name(node, "_last_resolved_model") and "pop" in _calls(
+                node
+            ), (
+                "gateway/run.py auto-reset cleanup block must also pop the "
+                "session's entry from `_last_resolved_model`, mirroring the "
+                "existing `_session_model_overrides`/`_pending_model_notes` "
+                "pops in the same block (#58403)."
+            )
+            found = True
+            break
+    assert found, (
+        "could not locate the auto-reset transient-state cleanup block in "
+        "gateway/run.py (fingerprint: _set_session_reasoning_override + "
+        "was_auto_reset = False)."
+    )

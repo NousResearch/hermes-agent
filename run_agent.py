@@ -2855,6 +2855,13 @@ class AIAgent:
         with self._active_children_lock:
             children_copy = list(self._active_children)
         for child in children_copy:
+            # Background delegation is intentionally independent of the
+            # parent's foreground turn. `/stop` interrupts the parent and its
+            # synchronous children, but detached children report back through
+            # their own completion-delivery turn and remain explicitly
+            # killable through interrupt_subagent().
+            if getattr(child, "_delegate_detached", False):
+                continue
             try:
                 child.interrupt(message)
             except Exception as e:

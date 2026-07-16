@@ -93,10 +93,11 @@ import {
   $sessions,
   $sessionsLoading,
   $sessionsTotal,
+  $workingSessionIds,
   sessionPinId,
   setCurrentCwd
 } from '@/store/session'
-import { $sessionActivityIds } from '@/store/session-activity'
+import { $sessionActivityKeys, sessionActivityKey } from '@/store/session-activity'
 import { $focusedStoredSessionId, type SplitDir } from '@/store/session-states'
 
 import {
@@ -228,7 +229,7 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onLoadMoreSessions: () => Promise<void> | void
   onLoadMoreProfileSessions?: (profile: string) => Promise<void> | void
   onLoadMoreMessaging?: (platform: string) => Promise<void> | void
-  onResumeSession: (sessionId: string) => void
+  onResumeSession: (sessionId: string, profile?: string) => void
   onDeleteSession: (sessionId: string) => void
   onArchiveSession: (sessionId: string) => void
   onBranchSession: (sessionId: string) => void
@@ -302,7 +303,8 @@ export function ChatSidebar({
   const sessionsLoading = useStore($sessionsLoading)
   const sessionsTotal = useStore($sessionsTotal)
   const sessionProfileTotals = useStore($sessionProfileTotals)
-  const sessionActivityIds = useStore($sessionActivityIds)
+  const sessionActivityKeys = useStore($sessionActivityKeys)
+  const workingSessionIds = useStore($workingSessionIds)
   const profiles = useStore($profiles)
   const profileScope = useStore($profileScope)
   // Only surface the profile switcher when more than one profile exists, so
@@ -394,7 +396,17 @@ export function ChatSidebar({
     [visibleSessions]
   )
 
-  const workingSessionIdSet = useMemo(() => new Set(sessionActivityIds), [sessionActivityIds])
+  const workingSessionIdSet = useMemo(() => {
+    const scoped = new Set(sessionActivityKeys)
+
+    return new Set(
+      visibleSessions.flatMap(session =>
+        [session.id, session._lineage_root_id].filter((id): id is string =>
+          Boolean(id && scoped.has(sessionActivityKey(session.profile, id)))
+        )
+      )
+    )
+  }, [sessionActivityKeys, visibleSessions])
 
   // Index sessions by both their live id and their lineage-root id so a pin
   // stored as the pre-compression root resolves to the live continuation tip.

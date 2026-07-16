@@ -6,7 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AppView } from '@/app/routes'
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $sessions, $unreadFinishedSessionIds } from '@/store/session'
+import {
+  $sessions,
+  $unreadFinishedSessionIds,
+  acknowledgeSessionCompletion,
+  clearAllSessionUnread,
+  getUniqueSessionCompletion
+} from '@/store/session'
 import { registerTranscriptSurface, type TranscriptSurfaceRegistration } from '@/store/thread-scroll'
 import type { RpcEvent } from '@/types/hermes'
 
@@ -75,6 +81,16 @@ function complete(sessionId: string) {
   act(() => handleEvent!({ payload: { text: 'done' }, session_id: sessionId, type: 'message.complete' }))
 }
 
+function commitVisibleSurface(surface: TranscriptSurfaceRegistration, storedSessionId: string) {
+  const rendered = getUniqueSessionCompletion(storedSessionId)
+
+  surface.setRenderedCompletion(rendered)
+
+  if (rendered) {
+    acknowledgeSessionCompletion(storedSessionId, rendered.completion, rendered.profile)
+  }
+}
+
 function fail(sessionId: string) {
   act(() => handleEvent!({ payload: { message: 'boom' }, session_id: sessionId, type: 'error' }))
 }
@@ -86,7 +102,7 @@ describe('useMessageStream unread completion tracking', () => {
     currentView = 'chat'
     handleEvent = null
     $sessions.set([])
-    $unreadFinishedSessionIds.set([])
+    clearAllSessionUnread()
     activeSurface = registerTranscriptSurface(ACTIVE_STORED_ID, true)
     vi.spyOn(globalThis.document, 'hasFocus').mockImplementation(() => focused)
     vi.spyOn(globalThis.document, 'hidden', 'get').mockImplementation(() => hidden)
@@ -97,7 +113,7 @@ describe('useMessageStream unread completion tracking', () => {
     activeSurface?.dispose()
     activeSurface = null
     $sessions.set([])
-    $unreadFinishedSessionIds.set([])
+    clearAllSessionUnread()
     vi.restoreAllMocks()
   })
 
@@ -105,6 +121,7 @@ describe('useMessageStream unread completion tracking', () => {
     await mountStream()
 
     complete(ACTIVE_RUNTIME_ID)
+    commitVisibleSurface(activeSurface!, ACTIVE_STORED_ID)
 
     expect($unreadFinishedSessionIds.get()).toEqual([])
   })
@@ -122,6 +139,7 @@ describe('useMessageStream unread completion tracking', () => {
     await mountStream()
 
     complete(BACKGROUND_RUNTIME_ID)
+    commitVisibleSurface(tile, BACKGROUND_STORED_ID)
 
     expect($unreadFinishedSessionIds.get()).toEqual([])
     tile.dispose()
@@ -134,6 +152,7 @@ describe('useMessageStream unread completion tracking', () => {
     await mountStream()
 
     complete(ACTIVE_RUNTIME_ID)
+    commitVisibleSurface(activeSurface!, 'active-tip')
 
     expect($unreadFinishedSessionIds.get()).toEqual([])
   })
@@ -190,5 +209,27 @@ describe('useMessageStream unread completion tracking', () => {
     fail(BACKGROUND_RUNTIME_ID)
 
     expect($unreadFinishedSessionIds.get()).toEqual([BACKGROUND_STORED_ID])
+  })
+
+  it('rejects a delayed completion from the gateway epoch before reset', async () => {
+    await mountStream()
+
+    act(() =>
+      handleEvent!({
+        payload: { completion_generation: 1, completion_id: 'old-turn' },
+        session_id: BACKGROUND_RUNTIME_ID,
+        type: 'message.start'
+      })
+    )
+    clearAllSessionUnread()
+    act(() =>
+      handleEvent!({
+        payload: { completion_generation: 1, completion_id: 'old-turn', text: 'late' },
+        session_id: BACKGROUND_RUNTIME_ID,
+        type: 'message.complete'
+      })
+    )
+
+    expect($unreadFinishedSessionIds.get()).toEqual([])
   })
 })

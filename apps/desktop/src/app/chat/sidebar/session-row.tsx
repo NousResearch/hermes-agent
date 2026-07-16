@@ -15,8 +15,8 @@ import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { coarseElapsed } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { $backgroundRunningSessionIds } from '@/store/composer-status'
-import { $unreadFinishedSessionIds } from '@/store/session'
-import { $attentionSessionIds, openSessionTile } from '@/store/session-states'
+import { $attentionSessionIds, $unreadFinishedSessionIds, sessionHasUnread, sessionNeedsInput } from '@/store/session'
+import { openSessionTile } from '@/store/session-states'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { SidebarRowBody, SidebarRowGrab, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
@@ -85,10 +85,12 @@ export function SidebarSessionRow({
   const handoffSource = handoffOriginSource(session.handoff_state, session.handoff_platform)
   const handoffLabel = handoffSource ? (sessionSourceLabel(handoffSource) ?? handoffSource) : null
   // True when a clarify prompt in this session is waiting on the user.
-  const needsInput = useStore($attentionSessionIds).includes(session.id)
+  useStore($attentionSessionIds)
+  const needsInput = sessionNeedsInput(session.id, session.profile)
   // True when the session's most recent turn finished in the background (while
   // the user was viewing a different session) and hasn't been opened since.
-  const isUnread = useStore($unreadFinishedSessionIds).includes(session.id)
+  useStore($unreadFinishedSessionIds)
+  const isUnread = sessionHasUnread(session.id, session.profile)
   // True when a terminal(background=true) process is alive in this session.
   const hasBackground = useStore($backgroundRunningSessionIds).includes(session.id)
 
@@ -97,12 +99,12 @@ export function SidebarSessionRow({
   // to collapse them at the leaf is backwards.
   const dotState: SessionDotState = needsInput
     ? 'needs-input'
-    : isWorking
-      ? 'working'
-      : hasBackground
-        ? 'background'
-        : isUnread
-          ? 'unread'
+    : isUnread
+      ? 'unread'
+      : isWorking
+        ? 'working'
+        : hasBackground
+          ? 'background'
           : 'idle'
 
   return (

@@ -158,6 +158,7 @@ export function delegateTaskPayloads(
 
     return {
       depth: 0,
+      detached: args.background === true,
       duration_seconds: payload.duration_s,
       goal,
       status,

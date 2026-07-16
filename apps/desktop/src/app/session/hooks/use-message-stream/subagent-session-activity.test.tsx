@@ -64,6 +64,7 @@ const subagentEvent = (status: 'completed' | 'running'): RpcEvent => ({
     status,
     subagent_id: 'review-1'
   },
+  profile: 'default',
   session_id: RUNTIME_ID,
   type: status === 'running' ? 'subagent.start' : 'subagent.complete'
 })
@@ -71,7 +72,7 @@ const subagentEvent = (status: 'completed' | 'running'): RpcEvent => ({
 describe('useMessageStream subagent session activity', () => {
   beforeEach(() => {
     handleEvent = null
-    $sessions.set([{ _lineage_root_id: LINEAGE_ROOT_ID, id: STORED_ID } as never])
+    $sessions.set([{ _lineage_root_id: LINEAGE_ROOT_ID, id: STORED_ID, profile: 'default' } as never])
     $workingSessionIds.set([])
     $subagentsBySession.set({})
     $unreadFinishedSessionIds.set([])
@@ -118,7 +119,7 @@ describe('useMessageStream subagent session activity', () => {
     expect($sessionActivityIds.get()).toEqual([LINEAGE_ROOT_ID, CHILD_ID, STORED_ID])
 
     act(() => {
-      $sessions.set([{ _lineage_root_id: LINEAGE_ROOT_ID, id: 'second-continuation' } as never])
+      $sessions.set([{ _lineage_root_id: LINEAGE_ROOT_ID, id: 'second-continuation', profile: 'default' } as never])
     })
 
     expect($sessionActivityIds.get()).toEqual([LINEAGE_ROOT_ID, CHILD_ID, 'second-continuation'])
@@ -131,9 +132,19 @@ describe('useMessageStream subagent session activity', () => {
 
     act(() =>
       handleEvent!({
-        payload: {},
+        payload: { turn_kind: 'async_delegation' } as never,
         session_id: RUNTIME_ID,
         type: 'message.start'
+      })
+    )
+
+    expect($sessionActivityIds.get()).toEqual([LINEAGE_ROOT_ID, CHILD_ID, 'second-continuation'])
+
+    act(() =>
+      handleEvent!({
+        payload: { subagent_ids: ['review-1'] } as never,
+        session_id: RUNTIME_ID,
+        type: 'delegation.delivery'
       })
     )
 

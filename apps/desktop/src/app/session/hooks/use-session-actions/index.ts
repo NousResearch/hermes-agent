@@ -24,6 +24,7 @@ import {
   $newChatWorkspaceTarget,
   $sessions,
   $yoloActive,
+  getSessionCompletionToken,
   type NewChatWorkspaceTarget,
   sessionPinId,
   setActiveSessionId,
@@ -449,7 +450,15 @@ export function useSessionActions({
         // runtime so the tile skips a redundant resume.
         upsertOptimisticSession(created, stored, null, null)
         const runtimeInfo = applyRuntimeInfo(created.info)
-        updateSessionState(created.session_id, state => (runtimeInfo ? { ...state, ...runtimeInfo } : state), stored)
+        updateSessionState(
+          created.session_id,
+          state => ({
+            ...state,
+            ...(runtimeInfo ?? {}),
+            profile: normalizeProfileKey($activeGatewayProfile.get())
+          }),
+          stored
+        )
 
         openSessionTile(stored, dir)
         patchSessionTile(stored, { runtimeId: created.session_id })
@@ -499,6 +508,7 @@ export function useSessionActions({
       resetViewSync()
       setSelectedStoredSessionId(storedSessionId)
       selectedStoredSessionIdRef.current = storedSessionId
+      navigate(sessionRoute(storedSessionId), { replace: replaceRoute })
       // Optimistically clear any prior resume-failure latch for this session:
       // we're attempting a fresh resume, so the self-heal in use-route-resume
       // must not keep treating it as stranded. It's re-armed below only if THIS
@@ -552,6 +562,7 @@ export function useSessionActions({
       // id loads as fast as a sidebar click instead of hanging on a list scan.
       const storedForProfile = await resolveStoredSession(storedSessionId)
       const sessionProfile = storedForProfile?.profile
+      const normalizedSessionProfile = normalizeProfileKey(sessionProfile)
 
       if (resumeRequestRef.current !== requestId) {
         return
@@ -572,10 +583,11 @@ export function useSessionActions({
           $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
 
         let cachedViewState =
-          !cachedState.model && stored?.model != null
+          (!cachedState.model && stored?.model != null) || cachedState.profile !== normalizedSessionProfile
             ? {
                 ...cachedState,
-                model: stored.model || ''
+                ...(!cachedState.model && stored?.model != null ? { model: stored.model || '' } : {}),
+                profile: normalizedSessionProfile
               }
             : cachedState
 
@@ -890,6 +902,8 @@ export function useSessionActions({
             ...state,
             ...(runtimeInfo ?? {}),
             messages: messagesForView,
+            profile: normalizedSessionProfile,
+            renderedCompletion: getSessionCompletionToken(storedSessionId) ?? state.renderedCompletion,
             busy: resumedRunning,
             awaitingResponse: resumedRunning
           }),
@@ -981,6 +995,7 @@ export function useSessionActions({
       activeSessionIdRef,
       busyRef,
       copy,
+      navigate,
       requestGateway,
       resetViewSync,
       runtimeIdByStoredSessionIdRef,

@@ -10,12 +10,25 @@ export interface SessionUnreadVersion {
   source: string
 }
 
-export interface SessionUnreadEntry extends SessionUnreadVersion {
+export interface SessionCompletionToken {
+  epoch: SessionUnreadVersion
+  generation: number
+  id: string
+}
+
+export interface SessionUnreadEntry {
+  acknowledged: boolean
+  completion: SessionCompletionToken
+  profile?: string
   sessionId: string
-  unread: boolean
 }
 
 interface SessionUnreadChangedMessage {
+  entry: SessionUnreadEntry
+  type: 'session-unread-changed'
+}
+
+interface LegacySessionUnreadChangedMessage {
   revision?: number
   sessionId: string
   source?: string
@@ -44,6 +57,7 @@ interface SessionsChangedMessage {
 }
 
 type SessionSyncMessage =
+  | LegacySessionUnreadChangedMessage
   | SessionUnreadChangedMessage
   | SessionUnreadResetMessage
   | SessionUnreadSnapshotMessage
@@ -75,13 +89,33 @@ function isSessionUnreadVersion(value: unknown): value is SessionUnreadVersion {
 }
 
 function isSessionUnreadEntry(value: unknown): value is SessionUnreadEntry {
-  if (!isSessionUnreadVersion(value)) {
+  if (!value || typeof value !== 'object') {
     return false
   }
 
-  const candidate = value as unknown as Record<string, unknown>
+  const candidate = value as Record<string, unknown>
 
-  return typeof candidate.sessionId === 'string' && typeof candidate.unread === 'boolean'
+  return (
+    typeof candidate.sessionId === 'string' &&
+    (candidate.profile === undefined || typeof candidate.profile === 'string') &&
+    typeof candidate.acknowledged === 'boolean' &&
+    isSessionCompletionToken(candidate.completion)
+  )
+}
+
+function isSessionCompletionToken(value: unknown): value is SessionCompletionToken {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const candidate = value as Record<string, unknown>
+
+  return (
+    typeof candidate.id === 'string' &&
+    typeof candidate.generation === 'number' &&
+    Number.isFinite(candidate.generation) &&
+    isSessionUnreadVersion(candidate.epoch)
+  )
 }
 
 function isSessionSyncMessage(value: unknown): value is SessionSyncMessage {
@@ -96,10 +130,10 @@ function isSessionSyncMessage(value: unknown): value is SessionSyncMessage {
   }
 
   if (candidate.type === 'session-unread-changed') {
-    // revision/source are optional for rolling-update compatibility with an
-    // older Desktop window. The receiver assigns legacy messages a local
-    // observed revision before applying them.
-    return typeof candidate.sessionId === 'string' && typeof candidate.unread === 'boolean'
+    return (
+      isSessionUnreadEntry(candidate.entry) ||
+      (typeof candidate.sessionId === 'string' && typeof candidate.unread === 'boolean')
+    )
   }
 
   if (candidate.type === 'session-unread-reset') {
@@ -163,7 +197,7 @@ export function onSessionsChanged(handler: () => void): () => void {
 }
 
 export function broadcastSessionUnreadChanged(entry: SessionUnreadEntry): void {
-  channel?.postMessage({ ...entry, type: 'session-unread-changed' } satisfies SessionUnreadChangedMessage)
+  channel?.postMessage({ entry, type: 'session-unread-changed' } satisfies SessionUnreadChangedMessage)
 }
 
 export function broadcastSessionUnreadReset(version: SessionUnreadVersion): void {
@@ -192,6 +226,7 @@ export function requestSessionUnreadSnapshot(): void {
 
 interface SessionUnreadSyncHandlers {
   onChange: (entry: SessionUnreadEntry) => void
+  onLegacyChange: (sessionId: string, unread: boolean, version: SessionUnreadVersion) => void
   onReset: (version: SessionUnreadVersion) => void
   onSnapshot: (entries: SessionUnreadEntry[], reset: null | SessionUnreadVersion) => void
   onSnapshotRequest: (source: string) => void
@@ -210,19 +245,22 @@ export function onSessionUnreadSync(handlers: SessionUnreadSyncHandlers): () => 
     const message = event.data
 
     if (message.type === 'session-unread-changed') {
-      const entry = isSessionUnreadEntry(message)
-        ? message
-        : { ...nextSessionUnreadVersion(), sessionId: message.sessionId, unread: message.unread }
+      if ('entry' in message && isSessionUnreadEntry(message.entry)) {
+        observeRevision(message.entry.completion.epoch.revision)
+        handlers.onChange(message.entry)
+      } else if ('sessionId' in message) {
+        const version = isSessionUnreadVersion(message) ? message : nextSessionUnreadVersion()
 
-      observeRevision(entry.revision)
-      handlers.onChange(entry)
+        observeRevision(version.revision)
+        handlers.onLegacyChange(message.sessionId, message.unread, version)
+      }
     } else if (message.type === 'session-unread-reset') {
       observeRevision(message.revision)
       handlers.onReset(message)
     } else if (message.type === 'session-unread-snapshot-request') {
       handlers.onSnapshotRequest(message.source)
     } else if (message.type === 'session-unread-snapshot' && message.target === sourceId) {
-      message.entries.forEach(entry => observeRevision(entry.revision))
+      message.entries.forEach(entry => observeRevision(entry.completion.epoch.revision))
 
       if (message.reset) {
         observeRevision(message.reset.revision)

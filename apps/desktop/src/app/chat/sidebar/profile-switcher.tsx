@@ -19,7 +19,7 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useStore } from '@nanostores/react'
-import { type CSSProperties, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { type CSSProperties, useEffect, useId, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { CodeEditor } from '@/components/chat/code-editor'
@@ -59,8 +59,14 @@ import {
   setShowAllProfiles,
   sortByProfileOrder
 } from '@/store/profile'
-import { $attentionSessionIds, $sessions, $unreadFinishedSessionIds } from '@/store/session'
-import { $sessionActivityIds } from '@/store/session-activity'
+import {
+  $attentionSessionIds,
+  $sessions,
+  $unreadFinishedSessionIds,
+  getAttentionSessionScopeKeys,
+  getUnreadSessionScopeKeys
+} from '@/store/session'
+import { $sessionActivityKeys } from '@/store/session-activity'
 import type { ProfileInfo } from '@/types/hermes'
 
 import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
@@ -178,20 +184,16 @@ export function ProfileRail() {
   const order = useStore($profileOrder)
   const colors = useStore($profileColors)
   const sessions = useStore($sessions)
-  const workingSessionIds = useStore($sessionActivityIds)
-  const attentionSessionIds = useStore($attentionSessionIds)
-  const unreadSessionIds = useStore($unreadFinishedSessionIds)
+  const workingSessionIds = useStore($sessionActivityKeys)
+  useStore($attentionSessionIds)
+  useStore($unreadFinishedSessionIds)
 
-  const activityByProfile = useMemo(
-    () =>
-      deriveProfileActivityByProfile({
-        attentionSessionIds,
-        sessions,
-        unreadSessionIds,
-        workingSessionIds
-      }),
-    [attentionSessionIds, sessions, unreadSessionIds, workingSessionIds]
-  )
+  const activityByProfile = deriveProfileActivityByProfile({
+    attentionSessionIds: getAttentionSessionScopeKeys(),
+    sessions,
+    unreadSessionIds: getUnreadSessionScopeKeys(),
+    workingSessionIds
+  })
 
   const activityForProfile = (name: null | string | undefined): ProfileActivity =>
     activityByProfile[normalizeProfileKey(name)] ?? 'idle'
@@ -583,7 +585,7 @@ function ProfileDropdown({
     <Select onValueChange={name => name && onSelect(name)} value={value}>
       <SelectTrigger
         aria-describedby={activityDescription ? activityDescriptionId : undefined}
-        aria-label={activeProfile?.name ?? p.title}
+        aria-label={p.title}
         className="relative min-w-0 flex-1 overflow-visible"
         data-profile-activity={triggerActivity === 'idle' ? undefined : triggerActivity}
         size="xs"

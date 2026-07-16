@@ -3,7 +3,7 @@ import type { MutableRefObject } from 'react'
 import { useEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { getSessionMessages, type SessionInfo } from '@/hermes'
+import { getSession, getSessionMessages, type SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
 import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
@@ -15,6 +15,7 @@ import {
   $newChatWorkspaceTarget,
   $resumeFailedSessionId,
   $selectedStoredSessionId,
+  requestSessionResumeProfile,
   setActiveSessionId,
   setActiveSessionStoredIdRotation,
   setCurrentCwd,
@@ -29,10 +30,12 @@ import { sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
 
 import { useSessionActions } from './use-session-actions'
+import { resolveStoredSession } from './use-session-actions/utils'
 
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   deleteSession: vi.fn(),
+  getSession: vi.fn(),
   getSessionMessages: vi.fn(),
   listAllProfileSessions: vi.fn(),
   setApiRequestProfile: vi.fn(),
@@ -40,6 +43,38 @@ vi.mock('@/hermes', async importOriginal => ({
 }))
 
 const RUNTIME_SESSION_ID = 'rt-new-001'
+
+describe('resolveStoredSession profile ownership', () => {
+  afterEach(() => {
+    setSessions([])
+    $activeGatewayProfile.set('default')
+    vi.mocked(getSession).mockReset()
+  })
+
+  it('chooses the active profile when cached rows collide on raw id', async () => {
+    setSessions([
+      storedSession({ id: 'same', profile: 'alpha', title: 'Alpha' }),
+      storedSession({ id: 'same', profile: 'beta', title: 'Beta' })
+    ])
+    $activeGatewayProfile.set('beta')
+
+    await expect(resolveStoredSession('same')).resolves.toMatchObject({ profile: 'beta', title: 'Beta' })
+    expect(getSession).not.toHaveBeenCalled()
+  })
+
+  it('honors an explicit switcher profile when cached rows collide on raw id', async () => {
+    setSessions([
+      storedSession({ id: 'same', profile: 'alpha', title: 'Alpha' }),
+      storedSession({ id: 'same', profile: 'beta', title: 'Beta' })
+    ])
+    $activeGatewayProfile.set('alpha')
+    requestSessionResumeProfile('same', 'beta')
+
+    await expect(resolveStoredSession('same')).resolves.toMatchObject({ profile: 'beta', title: 'Beta' })
+    expect(getSession).not.toHaveBeenCalled()
+  })
+})
+
 type HarnessHandle = Pick<
   ReturnType<typeof useSessionActions>,
   'createBackendSessionForSend' | 'startFreshSessionDraft'

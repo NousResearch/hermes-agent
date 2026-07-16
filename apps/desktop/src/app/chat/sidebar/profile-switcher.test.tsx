@@ -110,7 +110,7 @@ describe('ProfileRail activity indicators', () => {
     expect(claireButton.querySelector('[data-profile-activity-pip="needs-input"]')).toBeTruthy()
   })
 
-  it('keeps the parent profile active while an independent review subagent runs', () => {
+  it('keeps the unseen parent result above its running independent review', () => {
     $workingSessionIds.set([])
     $unreadFinishedSessionIds.set(['claire-run'])
     upsertSubagent(
@@ -123,14 +123,15 @@ describe('ProfileRail activity indicators', () => {
       },
       true,
       'subagent.start',
-      'claire-run'
+      'claire-run',
+      'claire'
     )
 
     renderRail()
 
-    expect(screen.getByRole('button', { name: 'claire · Session running' }).getAttribute('data-profile-activity')).toBe(
-      'working'
-    )
+    expect(
+      screen.getByRole('button', { name: 'claire · New result, not viewed' }).getAttribute('data-profile-activity')
+    ).toBe('unread')
   })
 
   it('surfaces the strongest hidden profile activity on the condensed trigger', () => {
@@ -145,7 +146,7 @@ describe('ProfileRail activity indicators', () => {
 
     renderRail()
 
-    const trigger = screen.getByRole('combobox', { name: 'p1' })
+    const trigger = screen.getByRole('combobox', { name: 'Profiles' })
     const description = globalThis.document.getElementById(trigger.getAttribute('aria-describedby') ?? '')
 
     expect(description?.textContent).toBe('p12 · Needs input')

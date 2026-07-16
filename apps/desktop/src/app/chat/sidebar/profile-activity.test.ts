@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
+import { sessionScopeKey } from '@/store/session'
+import { sessionActivityKey } from '@/store/session-activity'
+
 import { deriveProfileActivityByProfile, type ProfileActivitySession } from './profile-activity'
 
 const session = (id: string, profile?: string, lineageRootId?: string): ProfileActivitySession => ({
@@ -14,7 +17,7 @@ describe('deriveProfileActivityByProfile', () => {
       attentionSessionIds: ['needs-answer'],
       sessions: [session('default-run'), session('needs-answer', 'claire'), session('finished', 'wallace')],
       unreadSessionIds: ['finished'],
-      workingSessionIds: ['default-run', 'needs-answer']
+      workingSessionIds: [sessionActivityKey('default', 'default-run'), sessionActivityKey('claire', 'needs-answer')]
     })
 
     expect(activity).toEqual({
@@ -29,7 +32,7 @@ describe('deriveProfileActivityByProfile', () => {
       attentionSessionIds: ['blocked'],
       sessions: [session('finished', 'claire'), session('running', 'claire'), session('blocked', 'claire')],
       unreadSessionIds: ['finished'],
-      workingSessionIds: ['running', 'blocked']
+      workingSessionIds: [sessionActivityKey('claire', 'running'), sessionActivityKey('claire', 'blocked')]
     })
 
     expect(activity.claire).toBe('needs-input')
@@ -40,21 +43,21 @@ describe('deriveProfileActivityByProfile', () => {
       attentionSessionIds: [],
       sessions: [session('finished', 'claire'), session('running', 'claire')],
       unreadSessionIds: ['finished'],
-      workingSessionIds: ['running']
+      workingSessionIds: [sessionActivityKey('claire', 'running')]
     })
 
     expect(activity.claire).toBe('unread')
   })
 
-  it('keeps one conversation working while its independent review follows an unseen parent completion', () => {
+  it('keeps an unseen parent completion above its still-running independent review', () => {
     const activity = deriveProfileActivityByProfile({
       attentionSessionIds: [],
       sessions: [session('parent', 'claire')],
       unreadSessionIds: ['parent'],
-      workingSessionIds: ['parent']
+      workingSessionIds: [sessionActivityKey('claire', 'parent')]
     })
 
-    expect(activity.claire).toBe('working')
+    expect(activity.claire).toBe('unread')
   })
 
   it('matches activity through a compression lineage root and ignores unknown ids', () => {
@@ -62,9 +65,31 @@ describe('deriveProfileActivityByProfile', () => {
       attentionSessionIds: ['missing-attention'],
       sessions: [session('live-tip', 'claire', 'lineage-root')],
       unreadSessionIds: ['missing-unread'],
-      workingSessionIds: ['lineage-root']
+      workingSessionIds: [sessionActivityKey('claire', 'lineage-root')]
     })
 
     expect(activity).toEqual({ claire: 'working' })
+  })
+
+  it('does not project a same-id working session onto another profile', () => {
+    const activity = deriveProfileActivityByProfile({
+      attentionSessionIds: [],
+      sessions: [session('same', 'alpha'), session('same', 'beta')],
+      unreadSessionIds: [],
+      workingSessionIds: [sessionActivityKey('alpha', 'same')]
+    })
+
+    expect(activity).toEqual({ alpha: 'working' })
+  })
+
+  it('does not let a raw compatibility id override scoped unread ownership', () => {
+    const activity = deriveProfileActivityByProfile({
+      attentionSessionIds: [],
+      sessions: [session('same', 'alpha'), session('same', 'beta')],
+      unreadSessionIds: ['same', sessionScopeKey('alpha', 'same')],
+      workingSessionIds: []
+    })
+
+    expect(activity).toEqual({ alpha: 'unread' })
   })
 })

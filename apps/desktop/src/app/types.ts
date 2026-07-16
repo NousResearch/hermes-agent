@@ -1,6 +1,7 @@
 import type * as React from 'react'
 
 import type { ChatMessage } from '@/lib/chat-messages'
+import type { SessionCompletionToken } from '@/store/session-sync'
 import type { UsageStats } from '@/types/hermes'
 
 export interface ContextSuggestion {
@@ -137,13 +138,16 @@ export interface SidebarNavItem {
 }
 
 export interface ClientSessionState {
+  activeCompletion?: null | SessionCompletionToken
   storedSessionId: string | null
+  profile?: string
   messages: ChatMessage[]
   branch: string
   cwd: string
   model: string
   provider: string
   reasoningEffort: string
+  renderedCompletion?: null | SessionCompletionToken
   serviceTier: string
   fast: boolean
   yolo: boolean

@@ -1,4 +1,6 @@
 import { normalizeProfileKey } from '@/store/profile'
+import { sessionScopeKey } from '@/store/session'
+import { sessionActivityKey } from '@/store/session-activity'
 
 export type ProfileActivity = 'idle' | 'needs-input' | 'unread' | 'working'
 
@@ -26,9 +28,23 @@ export function profileActivityPriority(activity: ProfileActivity): number {
   return ACTIVITY_PRIORITY[activity]
 }
 
-function sessionMatches(ids: ReadonlySet<string>, session: ProfileActivitySession): boolean {
-  return ids.has(session.id) || Boolean(session._lineage_root_id && ids.has(session._lineage_root_id))
+const idMatchesScoped = (ids: Set<string>, profile: null | string | undefined, id: string) => {
+  if (ids.has(sessionScopeKey(profile, id))) {
+    return true
+  }
+
+  const suffix = `\u0000${id}`
+
+  return ![...ids].some(value => value.endsWith(suffix)) && ids.has(id)
 }
+
+const sessionMatchesScoped = (ids: Set<string>, session: ProfileActivitySession) =>
+  idMatchesScoped(ids, session.profile, session.id) ||
+  Boolean(session._lineage_root_id && idMatchesScoped(ids, session.profile, session._lineage_root_id))
+
+const sessionMatchesWorking = (ids: Set<string>, session: ProfileActivitySession) =>
+  ids.has(sessionActivityKey(session.profile, session.id)) ||
+  Boolean(session._lineage_root_id && ids.has(sessionActivityKey(session.profile, session._lineage_root_id)))
 
 /**
  * Collapse session-level activity into one actionable state per owning profile.
@@ -50,12 +66,12 @@ export function deriveProfileActivityByProfile({
   const byProfile: Record<string, ProfileActivity> = {}
 
   for (const session of sessions) {
-    const activity: ProfileActivity = sessionMatches(attention, session)
+    const activity: ProfileActivity = sessionMatchesScoped(attention, session)
       ? 'needs-input'
-      : sessionMatches(working, session)
-        ? 'working'
-        : sessionMatches(unread, session)
-          ? 'unread'
+      : sessionMatchesScoped(unread, session)
+        ? 'unread'
+        : sessionMatchesWorking(working, session)
+          ? 'working'
           : 'idle'
 
     if (activity === 'idle') {

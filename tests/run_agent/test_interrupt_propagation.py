@@ -54,6 +54,18 @@ class TestInterruptPropagationToChild(unittest.TestCase):
         assert is_interrupted() is False
         assert parent._interrupt_thread_signal_pending is True
 
+    def test_parent_interrupt_skips_detached_child(self):
+        parent = self._make_bare_agent()
+        synchronous = self._make_bare_agent()
+        detached = self._make_bare_agent()
+        detached._delegate_detached = True
+        parent._active_children.extend([synchronous, detached])
+
+        parent.interrupt("stop foreground turn")
+
+        assert synchronous._interrupt_requested is True
+        assert detached._interrupt_requested is False
+
     def test_child_clear_interrupt_at_start_clears_thread(self):
         """child.clear_interrupt() at start of run_conversation clears the
         bound execution thread's interrupt flag.

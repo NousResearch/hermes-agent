@@ -6,9 +6,15 @@ import { useNavigate } from 'react-router-dom'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { cn } from '@/lib/utils'
-import { $unreadFinishedSessionIds } from '@/store/session'
-import { $attentionSessionIds } from '@/store/session-states'
-import { $sessionActivityIds } from '@/store/session-activity'
+import {
+  $attentionSessionIds,
+  $unreadFinishedSessionIds,
+  requestSessionResumeProfile,
+  sessionHasUnread,
+  sessionNeedsInput,
+  sessionScopeKey
+} from '@/store/session'
+import { $sessionActivityKeys, sessionActivityKey } from '@/store/session-activity'
 import { $switcherIndex, $switcherOpen, $switcherSessions, closeSwitcher } from '@/store/session-switcher'
 
 import { HUD_ITEM, HUD_POSITION, HUD_SURFACE, HUD_TEXT } from './floating-hud'
@@ -16,11 +22,11 @@ import { sessionRoute } from './routes'
 
 // Compact session-switcher HUD — keyboard-driven from `use-keybinds`, rows
 // clickable via mousedown (Ctrl+click on macOS). No Dialog: Tab stays global.
-export function SessionSwitcher() {
+export function SessionSwitcher({ onResume }: { onResume?: (sessionId: string) => void }) {
   const open = useStore($switcherOpen)
   const sessions = useStore($switcherSessions)
   const index = useStore($switcherIndex)
-  const working = useStore($sessionActivityIds)
+  const working = useStore($sessionActivityKeys)
   const attention = useStore($attentionSessionIds)
   const unread = useStore($unreadFinishedSessionIds)
   const { t } = useI18n()
@@ -37,12 +43,16 @@ export function SessionSwitcher() {
   }
 
   const workingIds = new Set(working)
-  const attentionIds = new Set(attention)
-  const unreadIds = new Set(unread)
 
-  const pick = (sessionId: string) => {
+  const pick = (sessionId: string, profile?: string) => {
     closeSwitcher()
-    navigate(sessionRoute(sessionId))
+    requestSessionResumeProfile(sessionId, profile)
+
+    if (onResume) {
+      onResume(sessionId)
+    } else {
+      navigate(sessionRoute(sessionId))
+    }
   }
 
   return createPortal(
@@ -64,16 +74,16 @@ export function SessionSwitcher() {
       >
         {sessions.map((session, i) => {
           const selected = i === index
-          const sessionWorking = workingIds.has(session.id)
-          const sessionAttention = attentionIds.has(session.id)
-          const sessionUnread = unreadIds.has(session.id)
+          const sessionWorking = workingIds.has(sessionActivityKey(session.profile, session.id))
+          const sessionAttention = sessionNeedsInput(session.id, session.profile)
+          const sessionUnread = sessionHasUnread(session.id, session.profile)
 
           const activityText = sessionAttention
             ? t.profiles.activityNeedsInput
-            : sessionWorking
-              ? t.profiles.activityRunning
-              : sessionUnread
-                ? t.profiles.activityUnread
+            : sessionUnread
+              ? t.profiles.activityUnread
+              : sessionWorking
+                ? t.profiles.activityRunning
                 : null
 
           return (
@@ -85,10 +95,10 @@ export function SessionSwitcher() {
                 selected ? 'bg-accent text-accent-foreground' : 'text-(--ui-text-secondary)'
               )}
               data-working={sessionWorking ? 'true' : undefined}
-              key={session.id}
+              key={sessionScopeKey(session.profile, session.id)}
               onMouseDown={e => {
                 e.preventDefault()
-                pick(session.id)
+                pick(session.id, session.profile)
               }}
               ref={selected ? activeRef : undefined}
             >

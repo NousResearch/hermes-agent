@@ -1,15 +1,21 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $attentionSessionIds, $sessions, $unreadFinishedSessionIds, $workingSessionIds } from '@/store/session'
+import {
+  $attentionSessionIds,
+  $sessions,
+  $unreadFinishedSessionIds,
+  $workingSessionIds,
+  consumeRequestedSessionResumeProfile
+} from '@/store/session'
 import { $switcherIndex, $switcherOpen, $switcherSessions } from '@/store/session-switcher'
 import { $subagentsBySession, upsertSubagent } from '@/store/subagents'
 import type { SessionInfo } from '@/types/hermes'
 
 import { SessionSwitcher } from './session-switcher'
 
-const session = (id: string, title: string): SessionInfo => ({ id, title }) as SessionInfo
+const session = (id: string, title: string): SessionInfo => ({ id, profile: 'default', title }) as SessionInfo
 
 describe('SessionSwitcher background review activity', () => {
   beforeEach(() => {
@@ -39,7 +45,8 @@ describe('SessionSwitcher background review activity', () => {
       { child_session_id: 'review-child', status: 'running', subagent_id: 'review' },
       true,
       'subagent.start',
-      'parent'
+      'parent',
+      'default'
     )
 
     render(
@@ -73,5 +80,20 @@ describe('SessionSwitcher background review activity', () => {
     expect(screen.getByText('Needs input').classList.contains('sr-only')).toBe(true)
     expect(dot?.classList.contains('rotate-45')).toBe(true)
     expect(screen.queryByText('New result, not viewed')).toBeNull()
+  })
+
+  it('forwards the clicked row profile to the resume boundary', () => {
+    const onResume = vi.fn()
+    $switcherSessions.set([{ ...session('same', 'Beta session'), profile: 'beta' }])
+
+    render(
+      <MemoryRouter>
+        <SessionSwitcher onResume={onResume} />
+      </MemoryRouter>
+    )
+    fireEvent.mouseDown(screen.getByText('Beta session'))
+
+    expect(onResume).toHaveBeenCalledWith('same')
+    expect(consumeRequestedSessionResumeProfile('same')).toBe('beta')
   })
 })

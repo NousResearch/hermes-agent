@@ -1,4 +1,5 @@
 import { ThreadPrimitive, useAuiEvent, useAuiState } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
 import {
   type ComponentProps,
   type CSSProperties,
@@ -16,6 +17,7 @@ import { useStickToBottom } from 'use-stick-to-bottom'
 
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { $unreadFinishedSessionIds, getUniqueSessionCompletion } from '@/store/session'
 import {
   onScrollToBottomRequest,
   onThreadEditClose,
@@ -130,6 +132,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       .join('\n')
   )
 
+  const unreadFinishedSessionIds = useStore($unreadFinishedSessionIds)
+
   const { t } = useI18n()
   const groups = buildGroups(messageSignature)
   const renderEmpty = groups.length === 0 && Boolean(emptyPlaceholder)
@@ -239,6 +243,13 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   }, [sessionKey, transcriptVisible])
 
   useEffect(() => transcriptSurfaceRef.current?.setAtBottom(isAtBottom), [isAtBottom])
+
+  useEffect(() => {
+    // Runs only after the assistant-ui message tree commits. Tie the surface to
+    // that painted completion rather than acknowledging in the gateway stack.
+    void unreadFinishedSessionIds
+    transcriptSurfaceRef.current?.setRenderedCompletion(sessionKey ? getUniqueSessionCompletion(sessionKey) : null)
+  }, [messageSignature, sessionKey, unreadFinishedSessionIds])
 
   // Floating jump button (outside this subtree) → return to the bottom.
   useEffect(() => onScrollToBottomRequest(() => void scrollToBottom()), [scrollToBottom])

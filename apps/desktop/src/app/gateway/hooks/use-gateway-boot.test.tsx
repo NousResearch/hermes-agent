@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $desktopBoot } from '@/store/boot'
 import { $gatewayState } from '@/store/session'
+import { $subagentsBySession, upsertSubagent } from '@/store/subagents'
 
 import { useGatewayBoot } from './use-gateway-boot'
 
@@ -28,6 +29,7 @@ class FakeWebSocket {
   // errors (a dead remote). Mirrors a VPS going away after the first connect.
   static mode: 'open' | 'fail' = 'open'
   static instances: FakeWebSocket[] = []
+  static delegationActive: unknown[] = []
 
   readyState = 0
   private listeners: Record<string, Set<Listener>> = {}
@@ -59,6 +61,22 @@ class FakeWebSocket {
   close() {
     this.readyState = FakeWebSocket.CLOSED
     this.emit('close', {})
+  }
+
+  send(raw: string) {
+    const frame = JSON.parse(raw) as { id?: number | string; method?: string }
+
+    if (frame.method === 'delegation.status') {
+      setTimeout(() => {
+        this.emit('message', {
+          data: JSON.stringify({ id: frame.id, result: { active: FakeWebSocket.delegationActive } })
+        })
+      }, 0)
+    }
+  }
+
+  pushEvent(event: { payload?: unknown; session_id?: string; type: string }) {
+    this.emit('message', { data: JSON.stringify({ method: 'event', params: event }) })
   }
 
   // Force-drop an open socket, as a sleeping laptop / restarted remote would.
@@ -105,9 +123,11 @@ function fakeDesktop() {
   }
 }
 
+const capturedEvents: Array<{ profile?: string; session_id?: string; type: string }> = []
+
 function Harness() {
   useGatewayBoot({
-    handleGatewayEvent: () => undefined,
+    handleGatewayEvent: event => capturedEvents.push(event),
     onConnectionReady: () => undefined,
     onGatewayReady: () => undefined,
     refreshHermesConfig: async () => undefined,
@@ -123,9 +143,12 @@ beforeEach(() => {
   vi.useFakeTimers()
   FakeWebSocket.mode = 'open'
   FakeWebSocket.instances = []
+  FakeWebSocket.delegationActive = []
+  capturedEvents.length = 0
   ;(globalThis as { WebSocket: unknown }).WebSocket = FakeWebSocket
   ;(window as { hermesDesktop?: unknown }).hermesDesktop = fakeDesktop()
   $gatewayState.set('idle')
+  $subagentsBySession.set({})
   $desktopBoot.set({
     error: null,
     fakeMode: false,
@@ -162,6 +185,38 @@ async function advanceBackoff() {
 }
 
 describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => {
+  it('tags primary events with the named profile adopted before the socket opens', async () => {
+    const desktop = fakeDesktop()
+    desktop.profile.get = vi.fn(async () => ({ profile: 'work' }))
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    act(() => {
+      FakeWebSocket.instances[0].pushEvent({ session_id: 'runtime-work', type: 'subagent.start' })
+    })
+
+    expect(capturedEvents.at(-1)).toMatchObject({ profile: 'work', session_id: 'runtime-work' })
+  })
+
+  it('keeps existing activity when a reconnect snapshot contains a malformed row', async () => {
+    upsertSubagent(
+      'runtime-default',
+      { detached: true, goal: 'live review', status: 'running', subagent_id: 'live' },
+      true,
+      'subagent.start',
+      'owner-default',
+      'default'
+    )
+    FakeWebSocket.delegationActive = [{}]
+
+    render(<Harness />)
+    await flushAsync()
+
+    expect($subagentsBySession.get()['runtime-default']).toMatchObject([{ id: 'live', profile: 'default' }])
+  })
+
   it('INITIAL boot against a dead VPS: getConnection hangs (waitForHermes) → app sits in the connecting combo, then fails', async () => {
     // The report's actual path: a fresh launch pointed at an unreachable VPS.
     // startHermes()'s remote branch awaits waitForHermes() for 45s before it

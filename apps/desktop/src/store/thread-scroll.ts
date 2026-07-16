@@ -1,5 +1,7 @@
 import { atom, type WritableAtom } from 'nanostores'
 
+import type { SessionRenderedCompletion } from './session'
+
 // "Is the thread parked at the bottom" is owned by use-stick-to-bottom inside
 // ThreadMessageList (the scroll container). That state lives only in that
 // subtree, so ThreadMessageList mirrors it into these atoms for the composer,
@@ -15,18 +17,23 @@ export const $threadJumpButtonVisible = atom(false)
 // session key and own bottom state. Pane tabs unmount inactive content, so this
 // is also the source of truth for whether a transcript is genuinely painted.
 // Keep tokens per mount: split layouts may show the same session more than once.
-const transcriptSurfaces = new Map<string, Map<symbol, boolean>>()
+interface TranscriptSurfaceState {
+  atBottom: boolean
+  rendered: null | SessionRenderedCompletion
+}
+
+const transcriptSurfaces = new Map<string, Map<symbol, TranscriptSurfaceState>>()
 
 export const $visibleTranscriptSessionIds = atom<string[]>([])
 
-function publishVisibleTranscriptSessions(): void {
+function publishVisibleTranscriptSessions(force = false): void {
   const visible = [...transcriptSurfaces]
-    .filter(([, surfaces]) => [...surfaces.values()].some(Boolean))
+    .filter(([, surfaces]) => [...surfaces.values()].some(surface => surface.atBottom))
     .map(([sessionId]) => sessionId)
 
   const current = $visibleTranscriptSessionIds.get()
 
-  if (current.length !== visible.length || current.some((sessionId, index) => sessionId !== visible[index])) {
+  if (force || current.length !== visible.length || current.some((sessionId, index) => sessionId !== visible[index])) {
     $visibleTranscriptSessionIds.set(visible)
   }
 }
@@ -34,13 +41,14 @@ function publishVisibleTranscriptSessions(): void {
 export interface TranscriptSurfaceRegistration {
   dispose: () => void
   setAtBottom: (atBottom: boolean) => void
+  setRenderedCompletion: (rendered: null | SessionRenderedCompletion) => void
 }
 
 export function registerTranscriptSurface(sessionId: string, atBottom: boolean): TranscriptSurfaceRegistration {
   const token = Symbol(sessionId)
-  const surfaces = transcriptSurfaces.get(sessionId) ?? new Map<symbol, boolean>()
+  const surfaces = transcriptSurfaces.get(sessionId) ?? new Map<symbol, TranscriptSurfaceState>()
 
-  surfaces.set(token, atBottom)
+  surfaces.set(token, { atBottom, rendered: null })
   transcriptSurfaces.set(sessionId, surfaces)
   publishVisibleTranscriptSessions()
 
@@ -59,14 +67,41 @@ export function registerTranscriptSurface(sessionId: string, atBottom: boolean):
     setAtBottom: next => {
       const current = transcriptSurfaces.get(sessionId)
 
-      if (!current || current.get(token) === next) {
+      const surface = current?.get(token)
+
+      if (!current || !surface || surface.atBottom === next) {
         return
       }
 
-      current.set(token, next)
+      current.set(token, { ...surface, atBottom: next })
       publishVisibleTranscriptSessions()
+    },
+    setRenderedCompletion: rendered => {
+      const current = transcriptSurfaces.get(sessionId)
+      const surface = current?.get(token)
+
+      if (!current || !surface || surface.rendered === rendered) {
+        return
+      }
+
+      current.set(token, { ...surface, rendered })
+      publishVisibleTranscriptSessions(true)
     }
   }
+}
+
+export function visibleRenderedTranscriptCompletions(): Array<SessionRenderedCompletion & { sessionId: string }> {
+  const rendered: Array<SessionRenderedCompletion & { sessionId: string }> = []
+
+  for (const [sessionId, surfaces] of transcriptSurfaces) {
+    for (const surface of surfaces.values()) {
+      if (surface.atBottom && surface.rendered) {
+        rendered.push({ ...surface.rendered, sessionId })
+      }
+    }
+  }
+
+  return rendered
 }
 
 export function transcriptIsVisibleAtBottom(sessionId: string | null | undefined): boolean {

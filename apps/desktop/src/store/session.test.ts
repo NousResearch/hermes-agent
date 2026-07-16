@@ -9,10 +9,15 @@ import {
   $connection,
   $currentCwd,
   $selectedStoredSessionId,
+  $sessions,
   $unreadFinishedSessionIds,
   applyConfiguredDefaultProjectDir,
+  clearSessionLineageAliases,
   mergeSessionPage,
+  sessionLineageIds,
+  sessionLineageRootId,
   sessionPinId,
+  sessionScopeKey,
   setCurrentCwd,
   setSelectedStoredSessionId,
   setSessionUnread,
@@ -187,6 +192,22 @@ describe('mergeSessionPage', () => {
 
     expect(merged.map(s => s.id)).toEqual(['b', 'a-new'])
   })
+
+  it('keeps colliding raw ids isolated by profile while merging a profile page', () => {
+    const previous = [
+      session({ id: 'same', profile: 'alpha', title: 'Alpha old' }),
+      session({ id: 'same', profile: 'beta', title: 'Beta' })
+    ]
+
+    const incoming = [session({ id: 'same', message_count: 4, profile: 'alpha', title: 'Alpha fresh' })]
+
+    const merged = mergeSessionPage(previous, incoming, [sessionScopeKey('beta', 'same')])
+
+    expect(merged.map(row => [row.profile, row.id, row.title])).toEqual([
+      ['beta', 'same', 'Beta'],
+      ['alpha', 'same', 'Alpha fresh']
+    ])
+  })
 })
 
 describe('workspaceCwdForNewSession', () => {
@@ -311,6 +332,28 @@ describe('getRecentlySettledSessionIds', () => {
     publishSessionState('rt1', workingAgain)
 
     expect(getRecentlySettledSessionIds()).toEqual([])
+  })
+})
+
+describe('compression lineage aliases', () => {
+  beforeEach(() => {
+    clearSessionLineageAliases()
+    $sessions.set([])
+  })
+
+  afterEach(() => {
+    clearSessionLineageAliases()
+    $sessions.set([])
+  })
+
+  it('keeps intermediate compression tips aliased to the original root', () => {
+    $sessions.set([
+      session({ _lineage_root_id: 'root', id: 'tip-1' }),
+      session({ _lineage_root_id: 'tip-1', id: 'tip-2' })
+    ])
+
+    expect(sessionLineageIds('tip-2')).toEqual(expect.arrayContaining(['root', 'tip-1', 'tip-2']))
+    expect(sessionLineageRootId('tip-2')).toBe('root')
   })
 })
 

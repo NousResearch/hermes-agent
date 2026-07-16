@@ -424,6 +424,21 @@ def test_slash_exec_compress_flag_on_applies_host_control_mirror(monkeypatch):
 
 
 def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
+    def normalized_events(events):
+        normalized = []
+
+        for event, sid, payload in events:
+            if isinstance(payload, dict):
+                payload = dict(payload)
+                payload.pop("completion_generation", None)
+                payload.pop("completion_id", None)
+                payload.pop("turn_kind", None)
+                payload = payload or None
+
+            normalized.append((event, sid, payload))
+
+        return normalized
+
     class _ImmediateThread:
         def __init__(self, target=None, daemon=None, **_kwargs):
             self._target = target
@@ -531,7 +546,7 @@ def test_prompt_submit_golden_transcript_matches_flag_off_and_on(monkeypatch):
         finally:
             server._sessions.pop("sid", None)
 
-    assert run_flag_on() == run_flag_off()
+    assert normalized_events(run_flag_on()) == normalized_events(run_flag_off())
 
 
 def test_session_context_explicit_cwd_for_ephemeral_task(monkeypatch, tmp_path):
@@ -2825,7 +2840,7 @@ def test_notification_poller_live_loop_requeues_foreign_completion_for_owner(
     monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **_kwargs: emitted.append(args))
 
-    def _deliver(_rid, sid, session, text):
+    def _deliver(_rid, sid, session, text, _turn_kind=""):
         delivered["a" if sid == "sid-a-live-handoff" else "b"].append(text)
         session["running"] = False
 
@@ -2934,7 +2949,7 @@ def test_notification_poller_live_loop_drops_addressed_orphan(
     monkeypatch.setattr(
         server,
         "_run_prompt_submit",
-        lambda _rid, _sid, _session, text: delivered.append(text),
+        lambda _rid, _sid, _session, text, _turn_kind="": delivered.append(text),
     )
     server._sessions["sid-live-orphan"] = session
     process_registry._completion_consumed.discard(event["session_id"])
@@ -2975,7 +2990,7 @@ def test_notification_poller_drops_orphaned_events(monkeypatch, routing):
     monkeypatch.setattr(
         server,
         "_run_prompt_submit",
-        lambda _rid, _sid, _session, text: delivered.append(text),
+        lambda _rid, _sid, _session, text, _turn_kind="": delivered.append(text),
     )
     monkeypatch.setattr(server, "_get_db", lambda: None)
 
@@ -3041,7 +3056,7 @@ def test_notification_poller_delivers_owned_events(
     monkeypatch.setattr(
         server,
         "_run_prompt_submit",
-        lambda _rid, _sid, _session, text: delivered.append(text),
+        lambda _rid, _sid, _session, text, _turn_kind="": delivered.append(text),
     )
     monkeypatch.setattr(server, "_get_db", lambda: _CompressionDB())
 
@@ -3126,6 +3141,50 @@ class _RecordingAgent:
     ):
         self._turns.append(prompt)
         return {"final_response": "", "messages": []}
+
+
+def test_run_prompt_submit_emits_stable_completion_identity(monkeypatch, tmp_path):
+    _configure_immediate_prompt_run(monkeypatch, tmp_path)
+    events = []
+    turns = []
+    session = _session(
+        session_key="session-completion-identity",
+        agent=_RecordingAgent(turns),
+        running=True,
+    )
+
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event_type, sid=None, payload=None: events.append(
+            (event_type, sid, payload)
+        ),
+    )
+    server._sessions["sid-completion-identity"] = session
+
+    try:
+        server._run_prompt_submit(
+            "rid-completion-identity",
+            "sid-completion-identity",
+            session,
+            "identity turn",
+            "async_delegation",
+        )
+
+        started = next(payload for kind, _, payload in events if kind == "message.start")
+        completed = next(
+            payload for kind, _, payload in events if kind == "message.complete"
+        )
+
+        assert started["completion_id"] == completed["completion_id"]
+        assert started["turn_kind"] == "async_delegation"
+        assert (
+            started["completion_generation"]
+            == completed["completion_generation"]
+        )
+        assert 0 < started["completion_generation"] <= 2**53 - 1
+    finally:
+        server._sessions.pop("sid-completion-identity", None)
 
 
 @pytest.mark.parametrize("exit_code", [0, 7])
@@ -9670,7 +9729,7 @@ def test_notification_poller_emits_distinct_watch_matches_once(monkeypatch):
     turns = []
     emitted = []
 
-    def _fake_run_prompt_submit(rid, sid, session, text):
+    def _fake_run_prompt_submit(rid, sid, session, text, _turn_kind=""):
         turns.append(text)
         with session["history_lock"]:
             session["running"] = False
@@ -10969,3 +11028,129 @@ def test_get_usage_clamps_post_compression_sentinel():
     usage = server._get_usage(agent)
     assert "context_used" not in usage
     assert "context_percent" not in usage
+
+
+def test_delegation_status_and_interrupt_are_profile_scoped(monkeypatch):
+    from tools import async_delegation as async_registry
+    from tools import delegate_tool
+
+    requested_profiles = []
+    monkeypatch.setattr(
+        delegate_tool,
+        "list_active_subagents",
+        lambda profile=None: (
+            requested_profiles.append(profile)
+            or [{"profile": profile, "status": "running", "subagent_id": "live-alpha"}]
+        ),
+    )
+    monkeypatch.setattr(
+        async_registry,
+        "list_pending_async_delivery_handoffs",
+        lambda: [
+            {
+                "dispatched_at": 1.0,
+                "parent_session_id": "owner-alpha",
+                "profile": "alpha",
+                "status": "completed",
+                "subagent_ids": ["pending-alpha"],
+            },
+            {
+                "parent_session_id": "owner-beta",
+                "profile": "beta",
+                "status": "completed",
+                "subagent_ids": ["pending-beta"],
+            },
+        ],
+    )
+
+    status = server._methods["delegation.status"]("status", {"profile": "alpha"})
+
+    assert requested_profiles == ["alpha"]
+    assert [item["subagent_id"] for item in status["result"]["active"]] == [
+        "live-alpha",
+        "pending-alpha",
+    ]
+    assert status["result"]["active"][1]["handoff"] is True
+
+    interrupted = []
+    monkeypatch.setattr(
+        delegate_tool,
+        "interrupt_subagent",
+        lambda subagent_id, profile=None: interrupted.append((subagent_id, profile)) or True,
+    )
+
+    result = server._methods["subagent.interrupt"](
+        "interrupt", {"profile": "alpha", "subagent_id": "pending-alpha"}
+    )
+
+    assert result["result"]["found"] is True
+    assert interrupted == [("pending-alpha", "alpha")]
+
+
+def test_subagent_progress_forwards_spawn_time_detached_provenance(monkeypatch):
+    emitted = []
+    monkeypatch.setattr(server, "_tool_progress_enabled", lambda _sid: True)
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event_type, sid, payload: emitted.append((event_type, sid, payload)),
+    )
+
+    server._on_tool_progress(
+        "parent",
+        "subagent.spawn_requested",
+        detached=True,
+        delegation_id="deleg-1",
+        goal="review",
+        subagent_id="child-1",
+    )
+
+    assert emitted == [
+        (
+            "subagent.spawn_requested",
+            "parent",
+            {
+                "delegation_id": "deleg-1",
+                "detached": True,
+                "goal": "review",
+                "subagent_id": "child-1",
+                "task_count": 1,
+                "task_index": 0,
+            },
+        )
+    ]
+
+
+def test_async_delivery_announcement_names_exact_children(monkeypatch):
+    from tools import async_delegation as async_registry
+
+    emitted = []
+    retired = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event_type, sid, payload: emitted.append((event_type, sid, payload)),
+    )
+    monkeypatch.setattr(
+        async_registry,
+        "mark_async_delegation_delivery_started",
+        lambda delegation_id: retired.append(delegation_id) or True,
+    )
+
+    server._announce_async_delegation_delivery(
+        "parent",
+        {
+            "delegation_id": "deleg-1",
+            "subagent_ids": ["child-a", "child-b"],
+            "type": "async_delegation",
+        },
+    )
+
+    assert emitted == [
+        (
+            "delegation.delivery",
+            "parent",
+            {"delegation_id": "deleg-1", "subagent_ids": ["child-a", "child-b"]},
+        )
+    ]
+    assert retired == ["deleg-1"]

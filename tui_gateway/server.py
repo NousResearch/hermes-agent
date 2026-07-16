@@ -4144,6 +4144,10 @@ def _on_tool_progress(
             payload["parent_id"] = str(_kwargs["parent_id"])
         if _kwargs.get("child_session_id"):
             payload["child_session_id"] = str(_kwargs["child_session_id"])
+        if _kwargs.get("detached") is not None:
+            payload["detached"] = bool(_kwargs["detached"])
+        if _kwargs.get("delegation_id"):
+            payload["delegation_id"] = str(_kwargs["delegation_id"])
         if _kwargs.get("depth") is not None:
             payload["depth"] = int(_kwargs["depth"])
         if _kwargs.get("model"):
@@ -5509,10 +5513,13 @@ def _inflight_text(value: Any) -> str:
     return _content_display_text(value).strip()
 
 
-def _start_inflight_turn(session: dict, text: Any) -> None:
+def _start_inflight_turn(session: dict, text: Any, turn_kind: str = "") -> None:
     now = time.time()
     session["inflight_turn"] = {
         "assistant": "",
+        "completion_generation": time.time_ns() // 1_000,
+        "completion_id": uuid.uuid4().hex,
+        "turn_kind": turn_kind,
         "started_at": now,
         "streaming": True,
         "updated_at": now,
@@ -5526,7 +5533,13 @@ def _append_inflight_delta(session: dict, delta: Any) -> None:
         return
     turn = session.get("inflight_turn")
     if not isinstance(turn, dict):
-        turn = {"assistant": "", "streaming": True, "user": ""}
+        turn = {
+            "assistant": "",
+            "completion_generation": time.time_ns() // 1_000,
+            "completion_id": uuid.uuid4().hex,
+            "streaming": True,
+            "user": "",
+        }
     turn["assistant"] = f"{turn.get('assistant') or ''}{text}"
     turn["streaming"] = True
     turn["updated_at"] = time.time()
@@ -9084,10 +9097,39 @@ def _(rid, params: dict) -> dict:
         _get_max_spawn_depth,
     )
 
+    requested_profile = params.get("profile")
+    profile = requested_profile if isinstance(requested_profile, str) else None
+    active = list_active_subagents(profile)
+
+    try:
+        from tools.async_delegation import list_pending_async_delivery_handoffs
+
+        for record in list_pending_async_delivery_handoffs():
+            record_profile = str(record.get("profile") or "default")
+            if profile is not None and record_profile != str(profile or "default"):
+                continue
+            for subagent_id in record.get("subagent_ids") or []:
+                if not subagent_id:
+                    continue
+                active.append(
+                    {
+                        "subagent_id": str(subagent_id),
+                        "owner_session_id": record.get("parent_session_id"),
+                        "profile": record_profile,
+                        "goal": record.get("goal", ""),
+                        "status": record.get("status", "completed"),
+                        "detached": True,
+                        "handoff": True,
+                        "started_at": record.get("dispatched_at"),
+                    }
+                )
+    except Exception as exc:
+        logger.debug("Failed to include pending async delegation handoffs: %s", exc)
+
     return _ok(
         rid,
         {
-            "active": list_active_subagents(),
+            "active": active,
             "paused": is_spawn_paused(),
             "max_spawn_depth": _get_max_spawn_depth(),
             "max_concurrent_children": _get_max_concurrent_children(),
@@ -9110,7 +9152,8 @@ def _(rid, params: dict) -> dict:
     subagent_id = str(params.get("subagent_id") or "").strip()
     if not subagent_id:
         return _err(rid, 4000, "subagent_id required")
-    ok = interrupt_subagent(subagent_id)
+    profile = params.get("profile")
+    ok = interrupt_subagent(subagent_id, profile if isinstance(profile, str) else None)
     return _ok(rid, {"found": ok, "subagent_id": subagent_id})
 
 
@@ -9618,6 +9661,24 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
     return (evt_sid, evt_type)
 
 
+def _announce_async_delegation_delivery(sid: str, evt: dict) -> None:
+    if evt.get("type") != "async_delegation":
+        return
+    delegation_id = str(evt.get("delegation_id") or "")
+    subagent_ids = [str(value) for value in (evt.get("subagent_ids") or []) if value]
+    _emit(
+        "delegation.delivery",
+        sid,
+        {"delegation_id": delegation_id, "subagent_ids": subagent_ids},
+    )
+    try:
+        from tools.async_delegation import mark_async_delegation_delivery_started
+
+        mark_async_delegation_delivery_started(delegation_id)
+    except Exception as exc:
+        logger.debug("Failed to retire async delegation handoff %s: %s", delegation_id, exc)
+
+
 def _notification_poller_loop(
     stop_event: threading.Event, sid: str, session: dict
 ) -> None:
@@ -9712,7 +9773,14 @@ def _notification_poller_loop(
             continue
         try:
             _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, text)
+            _run_prompt_submit(
+                rid,
+                sid,
+                session,
+                text,
+                "async_delegation" if evt.get("type") == "async_delegation" else "",
+            )
+            _announce_async_delegation_delivery(sid, evt)
             complete_event_delivery(evt, _claim)
         except Exception as exc:
             release_event_delivery(evt, _claim)
@@ -9780,7 +9848,14 @@ def _notification_poller_loop(
             continue
         try:
             _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, text)
+            _run_prompt_submit(
+                rid,
+                sid,
+                session,
+                text,
+                "async_delegation" if evt.get("type") == "async_delegation" else "",
+            )
+            _announce_async_delegation_delivery(sid, evt)
             complete_event_delivery(evt, _claim)
         except Exception as exc:
             release_event_delivery(evt, _claim)
@@ -9855,21 +9930,35 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     return stop
 
 
-def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
+def _run_prompt_submit(
+    rid, sid: str, session: dict, text: Any, turn_kind: str = ""
+) -> None:
     with session["history_lock"]:
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
         images = list(session.get("attached_images", []))
         session["attached_images"] = []
         if not isinstance(session.get("inflight_turn"), dict):
-            _start_inflight_turn(session, text)
+            _start_inflight_turn(session, text, turn_kind)
+        inflight_turn = session["inflight_turn"]
+        completion_id = str(inflight_turn["completion_id"])
+        completion_generation = int(inflight_turn["completion_generation"])
+        turn_kind = str(inflight_turn.get("turn_kind") or turn_kind)
     agent = session["agent"]
     if hasattr(agent, "clear_interrupt"):
         try:
             agent.clear_interrupt()
         except Exception:
             pass
-    _emit("message.start", sid)
+    _emit(
+        "message.start",
+        sid,
+        {
+            "completion_generation": completion_generation,
+            "completion_id": completion_id,
+            "turn_kind": turn_kind,
+        },
+    )
 
     def run():
         approval_token = None
@@ -10122,7 +10211,13 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 raw = str(result)
                 status = "complete"
 
-            payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+            payload = {
+                "completion_generation": completion_generation,
+                "completion_id": completion_id,
+                "text": raw,
+                "usage": _get_usage(agent),
+                "status": status,
+            }
             if last_reasoning:
                 payload["reasoning"] = last_reasoning
             if status_note:
@@ -10383,7 +10478,13 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     continue
                 try:
                     _emit("message.start", sid)
-                    _run_prompt_submit(rid, sid, session, synth)
+                    _run_prompt_submit(
+                        rid,
+                        sid,
+                        session,
+                        synth,
+                        "async_delegation" if _evt.get("type") == "async_delegation" else "",
+                    )
                     complete_event_delivery(_evt, _claim)
                 except Exception as _n_exc:
                     release_event_delivery(_evt, _claim)

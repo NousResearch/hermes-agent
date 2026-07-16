@@ -4,6 +4,7 @@ import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { resetSessionsLimit } from '@/store/layout'
 import {
   clearAllSessionUnread,
+  clearSessionLineageAliases,
   setActiveSessionId,
   setCronSessions,
   setFreshDraftReady,
@@ -50,6 +51,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // revisioned cross-window state, so reset it through its owning API.
   clearAllSessionStates()
   clearAllSessionUnread()
+  clearSessionLineageAliases()
   clearAllSubagents()
   setSessionsLoading(true)
   resetSessionsLimit()

@@ -8,6 +8,7 @@ import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/p
 import {
   $currentCwd,
   $sessions,
+  consumeRequestedSessionResumeProfile,
   sessionMatchesStoredId,
   setCurrentBranch,
   setCurrentCwd,
@@ -408,10 +409,15 @@ export function sessionShouldHaveTranscript(session: SessionInfo | undefined): b
 
 function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
   const lineage = session._lineage_root_id ?? session.id
+  const profile = normalizeProfileKey(session.profile)
 
   setSessions(prev => [
     session,
     ...prev.filter(existing => {
+      if (normalizeProfileKey(existing.profile) !== profile) {
+        return true
+      }
+
       if (sessionMatchesStoredId(existing, storedSessionId)) {
         return false
       }
@@ -422,7 +428,14 @@ function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
 }
 
 export async function resolveStoredSession(storedSessionId: string): Promise<SessionInfo | undefined> {
-  const cached = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+  const requestedProfile = consumeRequestedSessionResumeProfile(storedSessionId)
+  const activeKey = normalizeProfileKey(requestedProfile ?? $activeGatewayProfile.get())
+
+  const cached = $sessions
+    .get()
+    .find(
+      session => normalizeProfileKey(session.profile) === activeKey && sessionMatchesStoredId(session, storedSessionId)
+    )
 
   if (cached) {
     return cached
@@ -444,8 +457,6 @@ export async function resolveStoredSession(storedSessionId: string): Promise<Ses
   // Multi-profile only: probe each other profile by id (still one cheap lookup
   // each) rather than pulling every profile's recent sessions. The first hit
   // carries its owning `profile`, which routes the resume to the right backend.
-  const activeKey = normalizeProfileKey($activeGatewayProfile.get())
-
   const otherProfiles = $profiles
     .get()
     .map(profile => normalizeProfileKey(profile.name))

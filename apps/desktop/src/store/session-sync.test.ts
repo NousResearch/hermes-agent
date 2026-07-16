@@ -98,13 +98,54 @@ describe('cross-window unread session sync', () => {
     const first = await import('./session')
     vi.resetModules()
     const second = await import('./session')
+    const completion = first.createSessionCompletionToken('delayed-completion', 1)
 
     FakeBroadcastChannel.holdMessages = true
-    first.setSessionUnread('stored-session', true)
-    second.setSessionUnread('stored-session', false)
+    first.recordSessionCompletion('stored-session', completion, true)
+    second.acknowledgeSessionCompletion('stored-session', completion)
     FakeBroadcastChannel.flushReversed()
 
     expect(first.$unreadFinishedSessionIds.get()).toEqual([])
     expect(second.$unreadFinishedSessionIds.get()).toEqual([])
+  })
+
+  it('does not let an acknowledgement for one completion clear the next completion', async () => {
+    const session = await import('./session')
+    const first = session.createSessionCompletionToken('completion-1', 1)
+    const second = session.createSessionCompletionToken('completion-2', 2)
+
+    session.recordSessionCompletion('stored-session', first, true)
+    session.recordSessionCompletion('stored-session', second, true)
+    session.acknowledgeSessionCompletion('stored-session', first)
+
+    expect(session.$unreadFinishedSessionIds.get()).toEqual(['stored-session'])
+  })
+
+  it('keeps an exact acknowledgement monotonic across duplicate renderer events', async () => {
+    const first = await import('./session')
+    vi.resetModules()
+    const second = await import('./session')
+    const completion = first.createSessionCompletionToken('shared-completion', 1)
+
+    first.recordSessionCompletion('stored-session', completion, true)
+    second.acknowledgeSessionCompletion('stored-session', completion)
+    first.recordSessionCompletion('stored-session', completion, true)
+
+    expect(first.$unreadFinishedSessionIds.get()).toEqual([])
+    expect(second.$unreadFinishedSessionIds.get()).toEqual([])
+  })
+
+  it('rejects a delayed completion captured before a gateway reset', async () => {
+    const session = await import('./session')
+    const stale = session.createSessionCompletionToken('old-gateway-completion', 1)
+
+    session.clearAllSessionUnread()
+    session.recordSessionCompletion('old-backend-session', stale, true)
+
+    expect(session.$unreadFinishedSessionIds.get()).toEqual([])
+
+    const current = session.createSessionCompletionToken('new-gateway-completion', 2)
+    session.recordSessionCompletion('new-backend-session', current, true)
+    expect(session.$unreadFinishedSessionIds.get()).toEqual(['new-backend-session'])
   })
 })

@@ -12,12 +12,12 @@ import { setCronJobs } from '@/store/cron'
 import { $pinnedSessionIds, $sessionsLimit, bumpSessionsLimit, SIDEBAR_SESSIONS_PAGE_SIZE } from '@/store/layout'
 import { ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
 import {
-  $attentionSessionIds,
   $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
-  $unreadFinishedSessionIds,
   CRON_SECTION_LIMIT,
+  getAttentionSessionScopeKeys,
+  getUnreadSessionScopeKeys,
   mergeSessionPage,
   MESSAGING_SECTION_LIMIT,
   setCronSessions,
@@ -29,7 +29,7 @@ import {
   setSessionsLoading,
   setSessionsTotal
 } from '@/store/session'
-import { $sessionActivityIds } from '@/store/session-activity'
+import { $sessionActivityKeys, sessionIdFromActivityKey } from '@/store/session-activity'
 import { getRecentlySettledSessionIds } from '@/store/session-states'
 
 // The recents list is local-only: cron rows have their own section, and each
@@ -50,10 +50,15 @@ const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]
 // Pass `scope` to only keep the active row when it belongs to the profile being
 // paged.
 function sessionsToKeep(scope?: string): Set<string> {
+  const activityIds = $sessionActivityKeys
+    .get()
+    .filter(key => !scope || key.startsWith(`${scope}\u0000`))
+    .map(sessionIdFromActivityKey)
+
   const keep = new Set<string>([
-    ...$attentionSessionIds.get(),
-    ...$sessionActivityIds.get(),
-    ...$unreadFinishedSessionIds.get(),
+    ...getAttentionSessionScopeKeys(),
+    ...activityIds,
+    ...getUnreadSessionScopeKeys(),
     ...$pinnedSessionIds.get(),
     ...getRecentlySettledSessionIds()
   ])

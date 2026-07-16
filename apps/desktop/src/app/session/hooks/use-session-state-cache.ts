@@ -6,21 +6,27 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { setMutableRef } from '@/lib/mutable-ref'
+import { $desktopBoot } from '@/store/boot'
 import {
+  $activeSessionId,
   $busy,
   $messages,
+  acknowledgeSessionCompletion,
   sessionLineageIds,
+  setActiveSessionStoredId,
   setCurrentFastMode,
   setCurrentModel,
   setCurrentPersonality,
   setCurrentProvider,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
+  setSessionAttention,
+  setSessionWorking,
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
 import { publishSessionState, setWatchdogClearFn } from '@/store/session-states'
-import { $visibleTranscriptSessionIds, transcriptIsVisibleAtBottom } from '@/store/thread-scroll'
+import { $visibleTranscriptSessionIds, visibleRenderedTranscriptCompletions } from '@/store/thread-scroll'
 
 import type { ClientSessionState } from '../../types'
 
@@ -56,9 +62,10 @@ interface SessionStateCacheOptions {
   setMessages: (messages: ChatMessage[]) => void
 }
 
-function transcriptWindowIsVisible(currentView: AppView): boolean {
+function transcriptWindowIsVisible(currentView: AppView, bootFailureVisible: boolean): boolean {
   return (
     currentView === 'chat' &&
+    !bootFailureVisible &&
     typeof document !== 'undefined' &&
     !document.hidden &&
     typeof document.hasFocus === 'function' &&
@@ -86,6 +93,7 @@ export function useSessionStateCache({
   setMessages
 }: SessionStateCacheOptions) {
   const busy = useStore($busy)
+  const desktopBoot = useStore($desktopBoot)
   const visibleTranscriptSessionIds = useStore($visibleTranscriptSessionIds)
   const activeSessionIdRef = useRef<string | null>(null)
   const selectedStoredSessionIdRef = useRef<string | null>(null)
@@ -117,6 +125,7 @@ export function useSessionStateCache({
         // Stored id changed (e.g. auto-compression rotated it). Create a NEW
         // state object rather than mutating in place — updateSessionState needs
         // the PREVIOUS state to detect transitions (busy→idle, id rotation).
+        const previousStoredSessionId = existing.storedSessionId
         const updated = { ...existing, storedSessionId }
 
         sessionStateByRuntimeIdRef.current.set(sessionId, updated)
@@ -132,7 +141,26 @@ export function useSessionStateCache({
         }
 
         if (storedSessionId) {
-          runtimeIdByStoredSessionIdRef.current.set(storedSessionId, sessionId)
+          sessionLineageIds(storedSessionId, existing.profile).forEach(id =>
+            runtimeIdByStoredSessionIdRef.current.set(id, sessionId)
+          )
+
+          if (existing.busy) {
+            setSessionWorking(storedSessionId, true, existing.profile)
+          }
+        }
+
+        if (previousStoredSessionId && previousStoredSessionId !== storedSessionId) {
+          setSessionWorking(previousStoredSessionId, false, existing.profile)
+
+          // Auto-compression rotated the stored id on the active session. Signal
+          // the route-following effect in use-session-actions so the URL + selection
+          // re-anchor to the continuation id — otherwise the next send hits a stale
+          // stored→runtime mapping (getRuntimeIdForStoredSession returns null) and
+          // triggers a full thread reload via resumeStoredSession.
+          if (sessionId === $activeSessionId.get()) {
+            setActiveSessionStoredId(storedSessionId)
+          }
         }
       }
 
@@ -143,7 +171,9 @@ export function useSessionStateCache({
     sessionStateByRuntimeIdRef.current.set(sessionId, created)
 
     if (storedSessionId) {
-      runtimeIdByStoredSessionIdRef.current.set(storedSessionId, sessionId)
+      sessionLineageIds(storedSessionId, created.profile).forEach(id =>
+        runtimeIdByStoredSessionIdRef.current.set(id, sessionId)
+      )
     }
 
     return created
@@ -202,15 +232,7 @@ export function useSessionStateCache({
     // atom the statusbar timer reads. Keeps a backgrounded turn's elapsed
     // time intact on focus instead of zeroing it (the "timer restarts" bug).
     setTurnStartedAt(pending.state.turnStartedAt)
-
-    if (
-      pending.state.storedSessionId &&
-      transcriptWindowIsVisible(currentView) &&
-      sessionLineageIds(pending.state.storedSessionId).some(transcriptIsVisibleAtBottom)
-    ) {
-      setSessionUnread(pending.state.storedSessionId, false)
-    }
-  }, [busyRef, currentView, setAwaitingResponse, setBusy, setMessages])
+  }, [busyRef, setAwaitingResponse, setBusy, setMessages])
 
   const syncSessionStateToView = useCallback(
     (sessionId: string, state: ClientSessionState) => {
@@ -286,16 +308,15 @@ export function useSessionStateCache({
   // person actually returns even if no further gateway event repaints it.
   useEffect(() => {
     const clearViewedUnread = () => {
-      if (!transcriptWindowIsVisible(currentView)) {
+      if (!transcriptWindowIsVisible(currentView, Boolean(desktopBoot.error) && !desktopBoot.running)) {
         return
       }
 
       // Mounted pane content is the visibility boundary: inactive stacked tabs
       // are unmounted, while split tiles can expose several transcripts at once.
-      $visibleTranscriptSessionIds
-        .get()
-        .flatMap(sessionLineageIds)
-        .forEach(sessionId => setSessionUnread(sessionId, false))
+      for (const rendered of visibleRenderedTranscriptCompletions()) {
+        acknowledgeSessionCompletion(rendered.sessionId, rendered.completion, rendered.profile)
+      }
     }
 
     clearViewedUnread()
@@ -306,7 +327,7 @@ export function useSessionStateCache({
       window.removeEventListener('focus', clearViewedUnread)
       document.removeEventListener('visibilitychange', clearViewedUnread)
     }
-  }, [currentView, visibleTranscriptSessionIds])
+  }, [currentView, desktopBoot.error, desktopBoot.running, visibleTranscriptSessionIds])
 
   const updateSessionState = useCallback(
     (
@@ -321,6 +342,18 @@ export function useSessionStateCache({
       // (watchdog, settle grace, unread marker, compression id rotation) inside
       // publishSessionState — no manual transition call needed.
       publishSessionState(sessionId, next)
+
+      if (previous.storedSessionId !== next.storedSessionId || previous.profile !== next.profile || !next.busy) {
+        setSessionWorking(previous.storedSessionId, false, previous.profile)
+      }
+
+      if (previous.storedSessionId !== next.storedSessionId || !next.needsInput) {
+        setSessionAttention(previous.storedSessionId, false, previous.profile)
+      }
+
+      setSessionWorking(next.storedSessionId, next.busy, next.profile)
+      setSessionAttention(next.storedSessionId, next.needsInput, next.profile)
+
       syncSessionStateToView(sessionId, next)
 
       return next

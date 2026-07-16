@@ -133,7 +133,17 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
         owner_started_at = None
     task_payload = {
         key: record.get(key)
-        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch")
+        for key in (
+            "goal",
+            "goals",
+            "context",
+            "toolsets",
+            "role",
+            "model",
+            "is_batch",
+            "profile",
+            "subagent_ids",
+        )
         if key in record
     }
     with _DB_LOCK, _connect() as conn:
@@ -248,6 +258,8 @@ def recover_abandoned_delegations() -> int:
                 "goals": task.get("goals"), "context": task.get("context"),
                 "toolsets": task.get("toolsets"), "role": task.get("role"),
                 "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
+                "profile": task.get("profile", "default"),
+                "subagent_ids": task.get("subagent_ids") or [],
                 "status": "unknown", "summary": None,
                 "error": "Delegation owner exited before recording a terminal result; outcome unknown.",
                 "dispatched_at": dispatched_at, "completed_at": now,
@@ -655,6 +667,8 @@ def dispatch_async_delegation_batch(
     origin_ui_session_id: str = "",
     interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
+    profile: str = "",
+    subagent_ids: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """Dispatch a WHOLE fan-out batch as ONE background unit.
 
@@ -694,7 +708,10 @@ def dispatch_async_delegation_batch(
         "session_key": session_key,
         "origin_ui_session_id": origin_ui_session_id,
         "parent_session_id": parent_session_id,
+        "profile": profile or "default",
+        "subagent_ids": [str(value) for value in (subagent_ids or []) if value],
         "status": "running",
+        "delivery_pending": True,
         "dispatched_at": dispatched_at,
         "completed_at": None,
         "interrupt_fn": interrupt_fn,
@@ -794,6 +811,8 @@ def _finalize_batch(
         "session_key": event_record.get("session_key", ""),
         "origin_ui_session_id": event_record.get("origin_ui_session_id", ""),
         "parent_session_id": event_record.get("parent_session_id"),
+        "profile": event_record.get("profile", "default"),
+        "subagent_ids": event_record.get("subagent_ids") or [],
         "goal": event_record.get("goal", ""),
         "goals": event_record.get("goals"),
         "context": event_record.get("context"),
@@ -837,6 +856,38 @@ def list_async_delegations() -> List[Dict[str, Any]]:
             {k: v for k, v in r.items() if k != "interrupt_fn"}
             for r in _records.values()
         ]
+
+
+def list_pending_async_delivery_handoffs() -> List[Dict[str, Any]]:
+    """Return durable, unclaimed completions whose renderer handoff is pending."""
+    with _DB_LOCK, _connect() as conn:
+        rows = conn.execute(
+            """SELECT event_json FROM async_delegations
+               WHERE state NOT IN ('running','finalizing')
+                 AND delivery_state='pending' AND delivery_claim IS NULL
+                 AND event_json IS NOT NULL
+               ORDER BY completed_at, delegation_id"""
+        ).fetchall()
+
+    handoffs = []
+    for (payload,) in rows:
+        try:
+            event = json.loads(payload)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(event, dict) and event.get("subagent_ids"):
+            handoffs.append(event)
+    return handoffs
+
+
+def mark_async_delegation_delivery_started(delegation_id: str) -> bool:
+    """Retire reconnect handoff retention after its exact delivery turn starts."""
+    with _records_lock:
+        record = _records.get(str(delegation_id or ""))
+        if record is None:
+            return False
+        record["delivery_pending"] = False
+        return True
 
 
 def interrupt_all(reason: str = "shutdown") -> int:

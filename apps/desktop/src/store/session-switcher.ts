@@ -2,7 +2,12 @@ import { atom } from 'nanostores'
 
 import type { SessionInfo } from '@/types/hermes'
 
-import { $selectedStoredSessionId, $sessions } from './session'
+import {
+  $selectedStoredSessionId,
+  $sessions,
+  clearRequestedSessionResumeProfile,
+  requestSessionResumeProfile
+} from './session'
 
 // Mac-style session switcher (^Tab). Quick tap jumps on keydown; the HUD opens
 // only when Tab is held past REVEAL_MS or tapped again while Ctrl is down.
@@ -92,13 +97,29 @@ export function openOrAdvanceSwitcher(direction: 1 | -1): string | null {
   pendingBrowse = true
   scheduleReveal()
 
-  return sessions[nextIndex]?.id ?? null
+  const target = sessions[nextIndex]
+
+  if (target) {
+    requestSessionResumeProfile(target.id, target.profile)
+  }
+
+  return target?.id ?? null
 }
 
 export const highlightedSessionId = (): string | null => $switcherSessions.get()[$switcherIndex.get()]?.id ?? null
 
 export const slotSessionId = (slot: number): string | null =>
-  ($switcherOpen.get() || pendingBrowse ? $switcherSessions.get() : $sessions.get())[slot - 1]?.id ?? null
+  requestedSessionId(($switcherOpen.get() || pendingBrowse ? $switcherSessions.get() : $sessions.get())[slot - 1])
+
+function requestedSessionId(session: SessionInfo | undefined): string | null {
+  if (!session) {
+    return null
+  }
+
+  requestSessionResumeProfile(session.id, session.profile)
+
+  return session.id
+}
 
 export function closeSwitcher(): void {
   closedAt = Date.now()
@@ -106,6 +127,7 @@ export function closeSwitcher(): void {
   pendingBrowse = false
   tabHeld = false
   $switcherOpen.set(false)
+  clearRequestedSessionResumeProfile()
 }
 
 export function commitOnCtrlUp(): string | null {
@@ -116,10 +138,10 @@ export function commitOnCtrlUp(): string | null {
     return null
   }
 
-  const target = highlightedSessionId()
+  const target = $switcherSessions.get()[$switcherIndex.get()]
   closeSwitcher()
 
-  return target
+  return requestedSessionId(target)
 }
 
 export const switcherJustClosed = (): boolean => Date.now() - closedAt < 400

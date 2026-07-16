@@ -8233,39 +8233,35 @@ def _update_node_dependencies() -> None:
     # With a single workspace lockfile the root install would cover ALL
     # workspaces — but apps/desktop pulls in Electron as a devDependency,
     # and its postinstall downloads a ~200MB binary.  Most users don't
-    # need desktop during `hermes update`, so we install root-only first
-    # then add just the workspaces the CLI/TUI/web build actually requires.
-    # Desktop deps are installed on demand by the desktop launcher
+    # need desktop during `hermes update`, so we install the repo root plus
+    # just the workspaces the CLI/TUI/web build actually requires.  Desktop
+    # deps are installed on demand by the desktop launcher
     # (see _desktop_build_needed).
+    #
+    # This must be a SINGLE npm invocation (--include-workspace-root rather
+    # than a root-only pass followed by a workspace-scoped pass): the helper
+    # prefers `npm ci`, which deletes node_modules before reifying the
+    # requested tree, so a second scoped pass silently wipes the root-only
+    # deps (agent-browser, @streamdown) installed by the first while still
+    # exiting 0.  See #64354.
     print("→ Updating Node.js dependencies...")
     extra_args = ["--no-fund", "--no-audit", "--progress=false"]
 
     nixos_env = with_hermes_node_path(_nixos_build_env())
 
-    # Step 1: root install (no workspace recursion).
     # NOTE: capture_output=False here is deliberate (#18840) — optional
     # postinstall scripts (e.g. @askjo/camofox-browser's browser-binary fetch)
     # print download progress, and capturing it makes a long download look
     # hung. The chatty npm-deprecation noise during `hermes update` comes from
     # the *desktop* build, not this step; that one is captured to update.log.
-    root_args = [*extra_args, "--workspaces=false"]
-    root_result = _run_npm_install_deterministic(
-        npm,
-        PROJECT_ROOT,
-        extra_args=tuple(root_args),
-        capture_output=False,
-        env=nixos_env,
-    )
-    if root_result.returncode != 0:
-        print("  ⚠ npm install failed in repo root")
-        stderr = (root_result.stderr or "").strip() if root_result.stderr else ""
-        if stderr:
-            print(f"    {stderr.splitlines()[-1]}")
-        return
-
-    # Step 2: install only the workspaces update needs (ui-tui, web).
-    # --workspace selects specific workspaces; the rest (desktop) are skipped.
-    ws_args = [*extra_args, "--workspace", "ui-tui", "--workspace", "web"]
+    ws_args = [
+        *extra_args,
+        "--workspace",
+        "ui-tui",
+        "--workspace",
+        "web",
+        "--include-workspace-root",
+    ]
     ws_result = _run_npm_install_deterministic(
         npm,
         PROJECT_ROOT,

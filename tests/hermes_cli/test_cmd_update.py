@@ -465,29 +465,21 @@ class TestCmdUpdateBranchFallback:
         ]
 
         # cmd_update runs npm commands in these locations:
-        #   1. repo root  — root-only install (--workspaces=false)
-        #   2. repo root  — workspace install (--workspace ui-tui --workspace web)
-        #   3. web/       — npm ci --silent (if lockfile not at root)
+        #   1. repo root  — single install covering the root plus the
+        #                  ui-tui/web workspaces (--include-workspace-root)
+        #   2. web/       — npm ci --silent (if lockfile not at root)
         #                  via _build_web_ui (subprocess.run)
-        #   4. web/       — npm run build (_run_with_idle_timeout)
+        #   3. web/       — npm run build (_run_with_idle_timeout)
         #
-        # With a single workspace lockfile at the repo root, the root
-        # install covers all workspaces.  The web/ ci call runs from the
-        # workspace root too (parent of web_dir) when the root lockfile
-        # exists.
+        # Root + workspaces must be ONE npm ci invocation (#64354): npm ci
+        # deletes node_modules before reifying the requested tree, so a
+        # workspace-scoped second pass would wipe root-only deps such as
+        # agent-browser while still exiting 0.
         #
         # The root install omits `--silent` and runs without
         # `capture_output` so optional postinstall scripts (e.g.
         # `@askjo/camofox-browser`'s browser-binary fetch) print progress —
         # otherwise long downloads look like a hang (#18840).
-        root_flags = [
-            "/usr/bin/npm",
-            "ci",
-            "--no-fund",
-            "--no-audit",
-            "--progress=false",
-            "--workspaces=false",
-        ]
         ws_flags = [
             "/usr/bin/npm",
             "ci",
@@ -498,15 +490,15 @@ class TestCmdUpdateBranchFallback:
             "ui-tui",
             "--workspace",
             "web",
+            "--include-workspace-root",
         ]
-        assert npm_calls[:2] == [
-            (root_flags, PROJECT_ROOT),
+        assert npm_calls[:1] == [
             (ws_flags, PROJECT_ROOT),
         ]
-        if len(npm_calls) > 2:
+        if len(npm_calls) > 1:
             # The web/ install runs from the workspace root when the root
             # lockfile exists (npm workspaces hoist node_modules upward).
-            assert npm_calls[2:] == [
+            assert npm_calls[1:] == [
                 (["/usr/bin/npm", "ci", "--workspace", "web", "--silent"], PROJECT_ROOT),
             ]
 
@@ -529,7 +521,7 @@ class TestCmdUpdateBranchFallback:
             and call.kwargs.get("cwd") == PROJECT_ROOT
             and "--silent" not in call.args[0]
         ]
-        assert len(root_install_calls) == 2  # root-only + workspace install
+        assert len(root_install_calls) == 1  # single root+workspaces install
         for call in root_install_calls:
             assert call.kwargs.get("capture_output") is False, (
                 "repo-root npm install must stream output "

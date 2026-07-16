@@ -5122,6 +5122,7 @@ def specify_triage_task(
     body: Optional[str] = None,
     assignee: Optional[str] = None,
     author: Optional[str] = None,
+    auto_promote: bool = True,
 ) -> bool:
     """Flesh out a triage task and promote it to ``todo``.
 
@@ -5130,10 +5131,10 @@ def specify_triage_task(
     False when the task is missing or not in the ``triage`` column — callers
     should surface that as "nothing to specify" rather than an error.
 
-    ``todo`` (not ``ready``) is the correct landing column: ``recompute_ready``
-    promotes parent-free / parent-done todos to ``ready`` on the next
-    dispatcher tick, which keeps the normal parent-gating behaviour intact
-    for specified tasks that happen to have open parents.
+    ``todo`` (not ``ready``) is the correct landing column. By default,
+    ``recompute_ready`` promotes parent-free / parent-done todos to ``ready``
+    immediately. Callers that are only estimating or decomposing can pass
+    ``auto_promote=False`` to leave the task inert until explicit take.
 
     ``author`` is recorded on an audit comment only when at least one of
     ``title`` / ``body`` / ``assignee`` actually changed — avoids noisy
@@ -5197,11 +5198,9 @@ def specify_triage_task(
             {"changed_fields": changed_fields} if changed_fields else None,
         )
     # Outside the write_txn above, so we don't nest BEGIN IMMEDIATE — the
-    # ready-promotion pass opens its own IMMEDIATE txn. This runs the same
-    # logic the dispatcher would on its next tick, so a specified task
-    # with no open parents flips straight to 'ready' here instead of
-    # idling in 'todo' until the next sweep.
-    recompute_ready(conn)
+    # ready-promotion pass opens its own IMMEDIATE txn.
+    if auto_promote:
+        recompute_ready(conn)
     return True
 
 
@@ -5217,16 +5216,15 @@ def decompose_triage_task(
     """Fan a triage task out into child tasks and promote the root to ``todo``.
 
     The root task stays alive and becomes the parent of every child —
-    when all children reach ``done``, the root promotes to ``ready`` and
-    its assignee (typically the orchestrator profile) wakes back up to
-    judge completion or spawn more work.
+    when all children reach ``done``, the root promotes to ``ready``.
+    Decomposition does not choose an assignee; an explicit take action does.
 
     ``children`` is a list of dicts, each shaped like::
 
         {
             "title": "...",
             "body": "...",                     # optional
-            "assignee": "profile-name",        # optional, None -> default fallback
+            "assignee": "profile-name",        # optional; normally None until take
             "parents": [0, 2],                 # indices into this same children list
         }
 
@@ -5384,7 +5382,8 @@ def decompose_triage_task(
                 (cid, task_id),
             )
 
-        # Flip the root: triage -> todo, set assignee to the orchestrator.
+        # Flip the root: triage -> todo. Assignment, if requested by another
+        # caller, is intentionally explicit via root_assignee.
         sets = ["status = 'todo'"]
         params: list[Any] = []
         if root_assignee is not None:

@@ -10,7 +10,7 @@ import uuid
 from collections import defaultdict, deque
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from agent.beta.risk import RiskLevel, classify_risk
 from agent.beta.router import RoutingDecision
@@ -42,7 +42,6 @@ class ExecutionPlan(BaseModel):
     revision: int = 1
 
     def ordered_steps(self) -> tuple[PlanStep, ...]:
-        """Return a stable topological order and reject cyclic plans."""
         by_id = {step.id: step for step in self.steps}
         incoming = {step.id: len(step.dependencies) for step in self.steps}
         outgoing: dict[str, list[str]] = defaultdict(list)
@@ -79,7 +78,6 @@ def build_plan(
     *,
     durable_threshold: int = 3,
 ) -> ExecutionPlan:
-    """Build a capability-based plan from a routing decision."""
     if not decision.delegation_needed:
         return ExecutionPlan(
             id=f"plan-{uuid.uuid4().hex}",
@@ -134,12 +132,14 @@ def build_plan(
 
 
 def replan(plan: ExecutionPlan, failed_step_id: str, registry: SpecialistRegistry) -> ExecutionPlan:
-    """Replace one failed step with the next compatible available specialist."""
     failed = next((step for step in plan.steps if step.id == failed_step_id), None)
     if failed is None:
         raise ValueError(f"unknown failed step: {failed_step_id}")
-    candidates = registry.find_by_capability(failed.capability)
-    replacement = next((item for item in candidates if item.id != failed.specialist_id and item.enabled), None)
+    candidates = tuple(
+        specialist for specialist in registry
+        if specialist.enabled and failed.capability in specialist.capabilities
+    )
+    replacement = next((item for item in candidates if item.id != failed.specialist_id), None)
     if replacement is None:
         updated = tuple(
             step.model_copy(update={"status": "blocked"}) if step.id == failed_step_id else step

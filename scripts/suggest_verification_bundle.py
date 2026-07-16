@@ -34,6 +34,11 @@ _GIT_REPOSITORY_ENV_NAMES = {
     "GIT_NAMESPACE",
     "GIT_OBJECT_DIRECTORY",
     "GIT_PREFIX",
+    "GIT_QUARANTINE_PATH",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_SHALLOW_FILE",
+    "GIT_GRAFT_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
     "GIT_WORK_TREE",
 }
 
@@ -44,6 +49,7 @@ def _sanitized_git_environment() -> dict[str, str]:
         if name in _GIT_REPOSITORY_ENV_NAMES or name == "GIT_CONFIG" or name.startswith("GIT_CONFIG_"):
             env.pop(name, None)
     env["GIT_OPTIONAL_LOCKS"] = "0"
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
     return env
 
 
@@ -71,7 +77,7 @@ def _run_git_bytes(args: list[str], *, cwd: Path, env: dict[str, str]) -> bytes:
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("git command timed out while collecting changed paths") from exc
     except OSError as exc:
-        raise RuntimeError(f"unable to execute git while collecting changed paths: {exc}") from exc
+        raise RuntimeError("unable to execute git while collecting changed paths") from exc
     if proc.returncode != 0:
         raise RuntimeError(f"git command failed while collecting changed paths (exit {proc.returncode})")
     return proc.stdout
@@ -92,7 +98,9 @@ def _paths_from_git(base: str) -> list[str]:
     safe_base = _validate_base_ref(base)
     start_dir = Path.cwd().resolve()
     git_env = _sanitized_git_environment()
-    raw_top = _run_git_bytes(["git", "rev-parse", "--show-toplevel"], cwd=start_dir, env=git_env)
+    raw_top = _run_git_bytes(
+        ["git", "-c", "core.fsmonitor=false", "rev-parse", "--show-toplevel"], cwd=start_dir, env=git_env
+    )
     top_text = _decode_git_utf8(raw_top, "git repository root").strip()
     if not top_text:
         raise RuntimeError("git repository root was invalid")
@@ -104,6 +112,8 @@ def _paths_from_git(base: str) -> list[str]:
     raw_paths = _run_git_bytes(
         [
             "git",
+            "-c",
+            "core.fsmonitor=false",
             "diff",
             "--no-ext-diff",
             "--no-textconv",

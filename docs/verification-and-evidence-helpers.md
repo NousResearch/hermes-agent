@@ -32,9 +32,11 @@ discovery to the current repository root, while `--from-git` explicitly decodes
 Git path output as UTF-8 and ignores repository-selection environment overrides.
 Active Git filter attributes fail closed before any clean filter can execute, and
 every generated Git call has a bounded timeout. NUL-bearing path output and raw
-Git failure text are rejected behind stable sanitized errors. Run generated
-commands from the repository root. Executing the suggested scan is a separate
-explicit verification step.
+Git failure text are rejected behind stable sanitized errors. Assume-unchanged,
+skip-worktree, sparse, and other nonstandard tracked-index tags fail closed;
+fsmonitor and replace-object behavior are disabled for helper Git calls. Run
+generated commands from the repository root. Executing the suggested scan is a
+separate explicit verification step.
 
 ## ULW evidence ledger scaffold
 

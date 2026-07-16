@@ -894,6 +894,113 @@ def test_generated_security_scan_rejects_active_clean_filter_without_executing_i
     assert not (repo / "filter-ran.txt").exists()
 
 
+@pytest.mark.parametrize("index_flag", ["--assume-unchanged", "--skip-worktree"])
+def test_generated_security_scan_rejects_hidden_index_flags(tmp_path, index_flag):
+    mod = _load_bundle()
+    bash = _bash_or_skip()
+    command = mod._added_line_security_scan_command()
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    sample = repo / "sample.py"
+    sample.write_text("safe = True\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "--", sample.name],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "baseline"],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "update-index", index_flag, sample.name],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    term = "api" + "_key"
+    marker = f"hidden-index-{index_flag[2:]}-dummy-value"
+    sample.write_text(f'{term} = "{marker}"\n', encoding="utf-8")
+
+    scanned = subprocess.run(
+        [bash, "-lc", command],
+        cwd=repo,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+
+    assert scanned.returncode == 1
+    assert "redacted-hit" in scanned.stdout
+    assert marker not in scanned.stdout
+    assert marker not in scanned.stderr
+
+
+def test_generated_security_scan_disables_fsmonitor_hook(tmp_path):
+    mod = _load_bundle()
+    bash = _bash_or_skip()
+    command = mod._added_line_security_scan_command()
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    sample = repo / "sample.py"
+    sample.write_text("safe = True\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "--", sample.name],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "baseline"],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    (repo / "fsmonitor.sh").write_text("#!/bin/sh\nprintf ran > fsmonitor-ran.txt\nexit 0\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "config", "core.fsmonitor", "sh fsmonitor.sh"],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    term = "api" + "_key"
+    marker = "fsmonitor-dummy-value"
+    sample.write_text(f'{term} = "{marker}"\n', encoding="utf-8")
+
+    scanned = subprocess.run(
+        [bash, "-lc", command],
+        cwd=repo,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+
+    assert scanned.returncode == 1
+    assert "redacted-hit" in scanned.stdout
+    assert marker not in scanned.stdout
+    assert marker not in scanned.stderr
+    assert not (repo / "fsmonitor-ran.txt").exists()
+
+
 def test_generated_security_scan_converts_git_timeout_to_redacted_exit(monkeypatch, capsys):
     mod = _load_bundle()
     command = mod._added_line_security_scan_command()
@@ -1043,3 +1150,21 @@ def test_from_git_failure_does_not_expose_raw_git_output(monkeypatch, tmp_path):
         mod._run_git_bytes(["git", "status"], cwd=tmp_path, env={})
 
     assert marker not in str(exc_info.value)
+
+
+def test_from_git_oserror_does_not_expose_exception_text(monkeypatch, capsys):
+    mod = _load_cli()
+    marker = "sensitive-oserror-marker"
+
+    def fail(*_args, **_kwargs):
+        raise FileNotFoundError(marker)
+
+    monkeypatch.setattr(mod.subprocess, "run", fail)
+    exit_code = mod.main(["--from-git", "--base", "HEAD", "--format", "json"])
+    captured = capsys.readouterr()
+
+    assert exit_code == 2
+    assert captured.out == ""
+    assert "git" in captured.err.lower()
+    assert marker not in captured.err
+    assert "traceback" not in captured.err.lower()

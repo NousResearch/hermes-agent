@@ -45,9 +45,15 @@ def _snapshot_export_command(target: str) -> str:
     # the caller's ``mv {target}`` expands it to the outer shell PID — the temp
     # names diverge, the mv finds nothing, and the snapshot is never updated
     # (env stops persisting between commands).
+    # Capture PIPESTATUS immediately: a successful grep must not hide a failed
+    # ``export -p`` and allow a partial temp file to replace the live snapshot.
+    # grep status 1 only means that no lines matched and is a valid empty dump.
     return (
         "{ export -p | "
-        f"grep -Eiv {shlex.quote(_SNAPSHOT_SECRET_ENV_RE)}; }} "
+        f"grep -Eiv {shlex.quote(_SNAPSHOT_SECRET_ENV_RE)}; "
+        '__hermes_snapshot_status=("${PIPESTATUS[@]}"); '
+        "(( __hermes_snapshot_status[0] == 0 && "
+        "__hermes_snapshot_status[1] <= 1 )); } "
         f"> {target}"
     )
 
@@ -522,7 +528,7 @@ class BaseEnvironment(ABC):
         _snap_tmp = self._quote_shell_path(self._snapshot_path + ".tmp.") + "$BASHPID"
         bootstrap = (
             f"umask 077\n"
-            f"{_snapshot_export_command(_snap_tmp)}\n"
+            f"if {_snapshot_export_command(_snap_tmp)}; then\n"
             # Dump function definitions, filtering out private (``_``-prefixed)
             # helpers — mainly bash-completion internals (``_git``, ``_make``…)
             # — by NAME, not by line.  A naive ``declare -f | grep -vE '^_[^_]'``
@@ -544,7 +550,11 @@ class BaseEnvironment(ABC):
             f"echo 'set +u' >> {_snap_tmp}\n"
             # Publish atomically only if assembly succeeded; otherwise drop the
             # partial temp rather than leave it to be sourced or orphaned.
-            f"mv -f {_snap_tmp} {_quoted_snap} || rm -f {_snap_tmp}\n"
+            f"mv -f {_snap_tmp} {_quoted_snap} || {{ rm -f {_snap_tmp}; exit 1; }}\n"
+            f"else\n"
+            f"rm -f {_snap_tmp}\n"
+            f"exit 1\n"
+            f"fi\n"
             f"builtin cd -- {_quoted_cwd} 2>/dev/null || true\n"
             f"printf '\\n{self._cwd_marker}%s{self._cwd_marker}\\n' \"$(pwd -P)\"\n"
         )

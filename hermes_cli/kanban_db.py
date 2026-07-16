@@ -2516,7 +2516,7 @@ def create_task(
                 project_repo = str(project_obj.primary_path)
 
     parents = tuple(p for p in parents if p)
-    executor = str(executor or read_board_metadata(board if board else get_current_board()).get("executor") or "hermes-worker").strip().lower()
+    executor = str(executor or (project_obj.executor if project_obj else None) or read_board_metadata(board if board else get_current_board()).get("executor") or "hermes-worker").strip().lower()
     if executor not in {"hermes-worker", "claude-code", "codex"}:
         raise ValueError("executor must be hermes-worker, claude-code, or codex")
 
@@ -8411,6 +8411,7 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
     lines.append("")
     lines.append(f"Assignee: {task.assignee or '(unassigned)'}")
     lines.append(f"Status:   {task.status}")
+    lines.append(f"Executor: {task.executor}")
     if task.tenant:
         lines.append(f"Tenant:   {task.tenant}")
     lines.append(f"Workspace: {task.workspace_kind} @ {task.workspace_path or '(unresolved)'}")

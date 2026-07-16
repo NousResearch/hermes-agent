@@ -10918,6 +10918,7 @@ def _(rid, params, pdb, conn) -> dict:
         icon=params.get("icon"),
         color=params.get("color"),
         board_slug=params.get("board_slug"),
+        executor=params.get("executor"),
     )
     if params.get("use"):
         pdb.set_active(conn, pid)
@@ -10936,6 +10937,7 @@ def _(rid, params, pdb, conn) -> dict:
         icon=params.get("icon"),
         color=params.get("color"),
         board_slug=params.get("board_slug"),
+        executor=params.get("executor"),
     )
     return _ok(rid, {"project": pdb.get_project(conn, proj.id).to_dict()})
 

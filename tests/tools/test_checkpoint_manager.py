@@ -383,6 +383,27 @@ class TestCheckpointGcPolicy:
         assert any("another live Git GC owns the lock" in record.getMessage()
                    for record in caplog.records)
 
+    def test_canonical_gc_with_unrelated_stderr_remains_error(self, tmp_path, caplog):
+        work = tmp_path / "work"
+        work.mkdir()
+        args = ["gc", f"--prune={_GC_PRUNE_GRACE}", "--quiet"]
+        completed = subprocess.CompletedProcess(
+            args=["git", *args],
+            returncode=128,
+            stdout="",
+            stderr="fatal: bad object refs/hermes/deadbeef",
+        )
+        with patch("tools.checkpoint_manager.subprocess.run", return_value=completed):
+            with caplog.at_level(logging.DEBUG, logger="tools.checkpoint_manager"):
+                ok, _, _ = _run_git(args, tmp_path / "store", str(work))
+
+        assert ok is False
+        assert any(record.levelno == logging.ERROR for record in caplog.records)
+        assert not any(
+            "another live Git GC owns the lock" in record.getMessage()
+            for record in caplog.records
+        )
+
     @pytest.mark.parametrize(
         ("args", "returncode", "stderr"),
         [

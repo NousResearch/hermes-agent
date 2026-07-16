@@ -21,17 +21,31 @@ The two-hour grace period protects fresh objects written by another session whil
 
 ## Logs and normal success
 
-Checkpoint-manager messages use the standard Hermes logs under `~/.hermes/logs/`:
+Checkpoint-manager messages use the standard Hermes logs under the active profile's Hermes home, not always the default `~/.hermes` directory. Resolve it before inspecting logs or the checkpoint store:
+
+```bash
+python - <<'PY'
+from hermes_constants import get_hermes_home
+print(get_hermes_home())
+PY
+```
+
+Then inspect `<hermes-home>/logs/`:
 
 - `agent.log` for normal runtime and debug evidence;
 - `errors.log` for warning/error evidence;
 - `gateway.log` when the checkpoint operation came from the gateway.
 
-Use `hermes logs --level debug` for live diagnosis. A normal GC exits 0, removes its own `gc.pid`, and leaves no checkpoint GC error. Verify the store with:
+Use `hermes logs --level debug` for live diagnosis. A normal GC exits 0, removes its own `gc.pid`, and leaves no checkpoint GC error. Verify the active profile's store with:
 
 ```bash
 hermes checkpoints status
-git --git-dir="$HOME/.hermes/checkpoints/store" fsck --no-dangling
+HERMES_HOME_PATH=$(python - <<'PY'
+from hermes_constants import get_hermes_home
+print(get_hermes_home())
+PY
+)
+git --git-dir="$HERMES_HOME_PATH/checkpoints/store" fsck --no-dangling
 ```
 
 ## Concurrent, stale, and failed GC handling
@@ -62,7 +76,7 @@ The runtime maintainer reviews checkpoint GC errors after each reported incident
 Run the focused policy tests and inspect the diff:
 
 ```bash
-python -m pytest tests/tools/test_checkpoint_manager.py -k 'CheckpointGcPolicy or RealPruning'
+scripts/run_tests.sh tests/tools/test_checkpoint_manager.py -k 'CheckpointGcPolicy or RealPruning'
 git diff --check
 ```
 

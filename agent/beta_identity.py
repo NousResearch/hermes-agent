@@ -3,7 +3,6 @@
 BETA-001 keeps Hermes as the default behavior and activates the Beta
 orchestrator only when ``agent.mode: beta`` is present in config.yaml.
 """
-
 from __future__ import annotations
 
 import logging
@@ -23,27 +22,25 @@ Your role is orchestration, not specialist execution. Understand the Chief's rea
 Operating rules:
 - The Chief talks to you; specialist agents work behind the scenes.
 - For simple conversation and general guidance, answer directly.
-- For specialist work, call delegate_task once with the Chief's request as its goal; Beta mode routes and contracts the work automatically.
+- For specialist, diagnostic, planning, memory, audit, or execution work, call beta_orchestrate exactly once with the Chief's complete request. Do not call delegate_task directly when beta_orchestrate is available.
+- beta_orchestrate is the authoritative runtime path: it creates a dependency-aware plan, routes registered specialists, applies risk policy, requests exact approval, validates evidence, and consolidates results.
 - Do not impersonate a specialist when an appropriate specialist can be assigned.
 - Separate facts from hypotheses and never claim an action occurred without evidence from the executing agent or tool.
 - Read-only investigation is low risk. Any destructive, production-changing, security-sensitive, financial, or externally visible action requires explicit approval from the Chief before execution.
-- Give delegated tasks a clear objective, relevant context, constraints, risk level, and expected deliverable.
+- Approval applies only to the exact operation shown to the Chief and expires; never reuse it for another target or action.
 - When specialists disagree, request more evidence or use a reviewer; never guess.
-- Consolidate results, remove internal noise, explain the recommendation, risk, and next step.
-- Keep the Chief's preferences, goals, decisions, and operating rules in your memory. Detailed technical knowledge belongs to the relevant specialist.
+- Keep the Chief's preferences, goals, decisions, and operating rules in the Chief profile. Detailed technical knowledge belongs to the relevant specialist.
+- Present the result as one voice with understanding, activated agents, evidence, facts, hypotheses, confidence, risk, recommendation, authorization status, and next step.
 
 Your success is not doing everything yourself. Your success is making the Chief feel that a coordinated team is working through one trusted interface."""
 
 
 @dataclass(frozen=True)
 class ResolvedIdentity:
-    """Session-stable identity plus its SOUL.md compatibility policy."""
-
     mode: str
     prompt: str
 
     def compose(self, soul: str | None) -> str:
-        """Keep legacy Hermes SOUL replacement; append SOUL under Beta."""
         if not soul:
             return self.prompt
         if self.mode == HERMES_MODE:
@@ -52,7 +49,6 @@ class ResolvedIdentity:
 
 
 def normalize_agent_mode(value: Any) -> str:
-    """Return a supported mode, falling back safely to Hermes."""
     if not isinstance(value, str):
         return HERMES_MODE
     mode = value.strip().lower()
@@ -64,11 +60,9 @@ def normalize_agent_mode(value: Any) -> str:
 
 
 def resolve_agent_mode(config: Mapping[str, Any] | None = None) -> str:
-    """Resolve ``agent.mode`` from a config mapping or the active Hermes config."""
     if config is None:
         try:
             from hermes_cli.config import load_config
-
             loaded = load_config()
             config = loaded if isinstance(loaded, Mapping) else {}
         except Exception:
@@ -82,7 +76,6 @@ def resolve_agent_mode(config: Mapping[str, Any] | None = None) -> str:
 
 
 def identity_for_mode(default_identity: str, config: Mapping[str, Any] | None = None) -> str:
-    """Return the identity selected by ``agent.mode``."""
     return resolve_agent_identity(default_identity, config).prompt
 
 
@@ -90,7 +83,6 @@ def resolve_agent_identity(
     default_identity: str,
     config: Mapping[str, Any] | None = None,
 ) -> ResolvedIdentity:
-    """Resolve identity and SOUL policy once for an agent session."""
     mode = resolve_agent_mode(config)
     prompt = BETA_AGENT_IDENTITY if mode == BETA_MODE else default_identity
     return ResolvedIdentity(mode=mode, prompt=prompt)

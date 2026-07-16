@@ -398,3 +398,118 @@ class TestSegmentedDispatchIntegration:
         contents = [m["content"] for m in messages]
         hits = [c for c in contents if "focus on the tests" in c]
         assert len(hits) == 1
+
+
+class TestDanglingMutatingWorkerGuard:
+    """Regression tests for the timed-out mutating worker guard in
+    execute_tool_calls_segmented.
+
+    When a parallel segment contains a write_file or patch call that times out,
+    the worker thread is left running detached. A later segment that targets
+    the same file must be blocked to prevent the detached worker from
+    overwriting the later result.
+    """
+
+    def _make_agent(self):
+        from unittest.mock import MagicMock
+        agent = MagicMock()
+        agent._interrupt_requested = False
+        agent._tool_worker_threads_lock = __import__("threading").Lock()
+        agent._tool_worker_threads = []
+        agent.tool_delay = 0
+        agent.log_prefix = ""
+        return agent
+
+    def test_later_mutation_blocked_after_timeout(self):
+        """If write_file times out in segment 1, a later write_file in
+        segment 2 must be blocked with an error result, not executed."""
+        import json
+        from unittest.mock import patch, MagicMock
+        from types import SimpleNamespace
+        from agent.tool_executor import execute_tool_calls_segmented
+
+        # Simulate segment 1: write_file timed out (result contains "timed out")
+        # Simulate segment 2: another write_file
+        timeout_msg = {"role": "tool", "tool_call_id": "w1", "content": "Error executing tool 'write_file': timed out after 30.0s __concurrent_tool_timed_out__"}
+        tc1 = SimpleNamespace(function=SimpleNamespace(name="write_file", arguments='{"path":"a.py","content":"x"}'), id="w1")
+        tc2 = SimpleNamespace(function=SimpleNamespace(name="write_file", arguments='{"path":"a.py","content":"y"}'), id="w2")
+
+        segments = [
+            ("parallel", [tc1]),
+            ("sequential", [tc2]),
+        ]
+
+        messages = []
+        agent = self._make_agent()
+
+        def fake_concurrent(agent, msg, messages, *args, **kwargs):
+            # Simulate write_file timing out
+            messages.append(timeout_msg)
+
+        def fake_sequential(agent, msg, messages, *args, **kwargs):
+            # Should NOT be called for tc2 — it must be blocked
+            messages.append({"role": "tool", "tool_call_id": "w2", "content": '{"bytes_written": 10}'})
+
+        with patch("agent.tool_executor.execute_tool_calls_concurrent", side_effect=fake_concurrent), \
+             patch("agent.tool_executor.execute_tool_calls_sequential", side_effect=fake_sequential), \
+             patch("agent.tool_executor._plan_tool_batch_segments"), \
+             patch("agent.tool_executor.enforce_turn_budget"), \
+             patch("agent.tool_executor._budget_for_agent", return_value=None), \
+             patch("agent.tool_executor.get_active_env", return_value=None):
+            assistant_message = SimpleNamespace(tool_calls=[tc1, tc2])
+            execute_tool_calls_segmented(
+                agent, assistant_message, messages, "task-1", segments=segments
+            )
+
+        # w1 result: timeout
+        assert messages[0]["tool_call_id"] == "w1"
+        assert "timed out" in messages[0]["content"]
+
+        # w2 result: must be blocked, not the successful write result
+        assert messages[1]["tool_call_id"] == "w2"
+        result = json.loads(messages[1]["content"])
+        assert "error" in result
+        assert "blocked" in result["error"] or "dangling" in result["error"] or "timed-out" in result["error"]
+
+    def test_read_only_segment_not_blocked_after_timeout(self):
+        """If write_file times out in segment 1, a later read-only segment
+        must NOT be blocked — only file mutations are guarded."""
+        import json
+        from unittest.mock import patch, MagicMock
+        from types import SimpleNamespace
+        from agent.tool_executor import execute_tool_calls_segmented
+
+        timeout_msg = {"role": "tool", "tool_call_id": "w1", "content": "Error executing tool 'write_file': timed out after 30.0s __concurrent_tool_timed_out__"}
+        read_result = {"role": "tool", "tool_call_id": "r1", "content": '{"content": "hello"}'}
+
+        tc1 = SimpleNamespace(function=SimpleNamespace(name="write_file", arguments='{"path":"a.py","content":"x"}'), id="w1")
+        tc2 = SimpleNamespace(function=SimpleNamespace(name="read_file", arguments='{"path":"a.py"}'), id="r1")
+
+        segments = [
+            ("parallel", [tc1]),
+            ("sequential", [tc2]),
+        ]
+
+        messages = []
+        agent = self._make_agent()
+
+        def fake_concurrent(agent, msg, messages, *args, **kwargs):
+            messages.append(timeout_msg)
+
+        def fake_sequential(agent, msg, messages, *args, **kwargs):
+            messages.append(read_result)
+
+        with patch("agent.tool_executor.execute_tool_calls_concurrent", side_effect=fake_concurrent), \
+             patch("agent.tool_executor.execute_tool_calls_sequential", side_effect=fake_sequential), \
+             patch("agent.tool_executor._plan_tool_batch_segments"), \
+             patch("agent.tool_executor.enforce_turn_budget"), \
+             patch("agent.tool_executor._budget_for_agent", return_value=None), \
+             patch("agent.tool_executor.get_active_env", return_value=None):
+            assistant_message = SimpleNamespace(tool_calls=[tc1, tc2])
+            execute_tool_calls_segmented(
+                agent, assistant_message, messages, "task-1", segments=segments
+            )
+
+        # r1 must have executed normally, not been blocked
+        assert messages[1]["tool_call_id"] == "r1"
+        assert "content" in json.loads(messages[1]["content"])

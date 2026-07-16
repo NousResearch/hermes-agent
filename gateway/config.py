@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Any, Callable
 from enum import Enum
 
 from hermes_cli.config import get_hermes_home
+from hermes_cli.auth import get_secret
 from utils import env_int, is_truthy_value
 
 logger = logging.getLogger(__name__)
@@ -1709,8 +1710,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         })
 
     # Weixin (personal WeChat via iLink Bot API)
-    weixin_token = os.getenv("WEIXIN_TOKEN")
-    weixin_account_id = os.getenv("WEIXIN_ACCOUNT_ID")
+    weixin_token = get_secret("WEIXIN_TOKEN")
+    weixin_account_id = get_secret("WEIXIN_ACCOUNT_ID")
     if weixin_token or weixin_account_id:
         if Platform.WEIXIN not in config.platforms:
             config.platforms[Platform.WEIXIN] = PlatformConfig()

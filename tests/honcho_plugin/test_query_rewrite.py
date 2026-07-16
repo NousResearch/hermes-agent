@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from plugins.memory.honcho import HonchoMemoryProvider, register
-from plugins.memory.honcho.query_rewrite import (
+from plugins.memory.query_rewrite import (
     TASK_KEY,
     _bounded_user_message,
     _normalize_rewrite,

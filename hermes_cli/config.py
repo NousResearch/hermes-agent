@@ -1652,7 +1652,7 @@ DEFAULT_CONFIG = {
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
             "language": "",
         },
-        "honcho_query_rewrite": {
+        "memory_query_rewrite": {
             "provider": "auto",    # fast/cheap model recommended
             "model": "",
             "base_url": "",

@@ -109,6 +109,14 @@ import {
   SESSION_WINDOW_MIN_HEIGHT,
   SESSION_WINDOW_MIN_WIDTH
 } from './session-windows'
+import {
+  detectWslDistributions,
+  detectWslDistributionsAsync,
+  readTerminalMode,
+  resolveWindowsTerminalMode,
+  toWslPath,
+  writeTerminalMode
+} from './terminal-mode'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { readLiveUpdateMarker, writeUpdateMarker } from './update-marker'
@@ -8274,7 +8282,50 @@ function windowsShellSpec() {
 
 // Resolve the interactive shell for the embedded terminal: an explicit user
 // override wins, otherwise auto-detect the best one installed for the platform.
-function terminalShellCommand() {
+async function desktopTerminalModeInfo(cwd = '') {
+  const configuredMode = readTerminalMode(HERMES_HOME)
+  const wslDistributions = IS_WINDOWS ? await detectWslDistributionsAsync() : []
+
+  const resolution = resolveWindowsTerminalMode({
+    configuredMode,
+    cwd,
+    isWindows: IS_WINDOWS,
+    wslDistributions
+  })
+
+  return {
+    configuredMode,
+    distribution: resolution.distribution,
+    resolvedMode: resolution.mode,
+    supported: IS_WINDOWS,
+    wslDistributions
+  }
+}
+
+async function terminalShellCommand(cwd) {
+  const modeInfo = await desktopTerminalModeInfo(cwd)
+  const withMode = spec => ({ ...spec, ...modeInfo })
+
+  if (IS_WINDOWS && modeInfo.resolvedMode === 'wsl2') {
+    if (!modeInfo.distribution) {
+      throw new Error('WSL2 mode is selected, but no WSL2 distribution is installed.')
+    }
+
+    return withMode({
+      args: [
+        '--distribution',
+        modeInfo.distribution,
+        '--cd',
+        toWslPath(cwd, modeInfo.distribution),
+        '--exec',
+        'bash',
+        '-l'
+      ],
+      command: 'wsl.exe',
+      name: `wsl2:${modeInfo.distribution}`
+    })
+  }
+
   // HERMES_DESKTOP_SHELL is the cross-platform escape hatch (a path or a bare
   // name on PATH); $SHELL is honored on POSIX, where it's the user's canonical
   // choice, but ignored on Windows, where it's usually a stray MSYS/Git path
@@ -8285,17 +8336,17 @@ function terminalShellCommand() {
     const resolved = isExecutableFile(override) ? override : findOnPath(override)
 
     if (resolved) {
-      return shellSpecFor(resolved)
+      return withMode(shellSpecFor(resolved))
     }
   }
 
   if (IS_WINDOWS) {
-    return windowsShellSpec()
+    return withMode(windowsShellSpec())
   }
 
   const shellPath = ['/bin/zsh', '/bin/bash', '/bin/sh'].find(candidate => isExecutableFile(candidate))
 
-  return posixShellSpec(shellPath || '/bin/sh')
+  return withMode(posixShellSpec(shellPath || '/bin/sh'))
 }
 
 function safeTerminalCwd(cwd) {
@@ -8593,16 +8644,26 @@ ipcMain.handle('hermes:git:scanRepos', async (_event, roots, options) => {
   }
 })
 
+ipcMain.handle('hermes:terminal-mode:get', async (_event, cwd) => await desktopTerminalModeInfo(safeTerminalCwd(cwd)))
+ipcMain.handle('hermes:terminal-mode:set', async (_event, mode, cwd) => {
+  writeTerminalMode(HERMES_HOME, mode)
+
+  return await desktopTerminalModeInfo(safeTerminalCwd(cwd))
+})
+
 ipcMain.handle('hermes:terminal:start', async (event, payload = {}) => {
   const id = crypto.randomUUID()
-  const { args, command, name } = terminalShellCommand()
   const cwd = safeTerminalCwd(payload?.cwd)
+  const { args, command, configuredMode, distribution, name, resolvedMode } = await terminalShellCommand(cwd)
+  // wsl.exe receives the real Linux cwd through --cd. Keep CreateProcess/node-pty
+  // on a native host directory so WSL UNC projects do not fail before wsl.exe starts.
+  const ptyCwd = resolvedMode === 'wsl2' ? app.getPath('home') : cwd
   const cols = Math.max(2, Number.parseInt(String(payload?.cols || 80), 10) || 80)
   const rows = Math.max(2, Number.parseInt(String(payload?.rows || 24), 10) || 24)
 
   const ptyProcess = nodePty.spawn(command, args, {
     cols,
-    cwd,
+    cwd: ptyCwd,
     env: terminalShellEnv(),
     name: 'xterm-256color',
     rows
@@ -8625,7 +8686,7 @@ ipcMain.handle('hermes:terminal:start', async (event, payload = {}) => {
   })
   event.sender.once('destroyed', () => disposeTerminalSession(id))
 
-  return { cwd, id, shell: name }
+  return { configuredMode, cwd, distribution, id, mode: resolvedMode, shell: name }
 })
 
 ipcMain.handle('hermes:terminal:write', (_event, id, data) => {

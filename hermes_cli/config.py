@@ -1169,6 +1169,7 @@ DEFAULT_CONFIG = {
 
     "terminal": {
         "backend": "local",
+        "windows_execution_mode": "smart",
         "modal_mode": "auto",
         "cwd": ".",  # Use current directory
         "timeout": 180,

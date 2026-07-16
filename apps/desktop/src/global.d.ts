@@ -169,6 +169,10 @@ declare global {
         scanRepos: (roots: string[], options?: { maxDepth?: number }) => Promise<{ root: string; label: string }[]>
       }
       terminal: {
+        mode: {
+          get: (cwd?: string) => Promise<DesktopTerminalModeInfo>
+          set: (mode: DesktopTerminalMode, cwd?: string) => Promise<DesktopTerminalModeInfo>
+        }
         /** Best-effort current working directory of the live PTY child (POSIX
          *  only; null on Windows or when unavailable). Used to reopen a tab
          *  where the user last `cd`'d. */
@@ -224,6 +228,16 @@ declare global {
       }
     }
   }
+}
+
+export type DesktopTerminalMode = 'smart' | 'wsl2' | 'windows-native'
+
+export interface DesktopTerminalModeInfo {
+  configuredMode: DesktopTerminalMode
+  distribution: null | string
+  resolvedMode: 'windows-native' | 'wsl2'
+  supported: boolean
+  wslDistributions: string[]
 }
 
 export interface DesktopMarketplaceSearchItem {

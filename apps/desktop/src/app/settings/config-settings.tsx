@@ -469,7 +469,17 @@ export function ConfigSettings({
                     : enumOptionsFor(key, getNested(config, key), config)
                 }
                 onChange={value => updateConfig(setNested(config, key, value))}
-                optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
+                optionLabels={
+                  key === 'tts.elevenlabs.voice_id'
+                    ? elevenLabsVoiceLabels
+                    : key === 'terminal.windows_execution_mode'
+                      ? {
+                          smart: 'Smart (AI Choice)',
+                          wsl2: 'WSL2 (Bash)',
+                          'windows-native': 'Windows Native (PowerShell)'
+                        }
+                      : undefined
+                }
                 schema={field}
                 schemaKey={key}
                 value={getNested(config, key)}

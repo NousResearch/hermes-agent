@@ -20,6 +20,13 @@ on the real OS.
 
 import os
 from unittest.mock import patch
+import pytest
+from tools.environments.windows_execution_mode import WindowsExecutionMode
+
+@pytest.fixture(autouse=True)
+def mock_resolved_mode():
+    with patch("tools.environments.local.resolve_windows_execution_mode", return_value=WindowsExecutionMode("smart", "windows-bash")):
+        yield
 
 from tools.environments.base import BaseEnvironment
 from tools.environments import local as local_mod
@@ -507,3 +514,47 @@ class TestWrapCommandWindowsNativeCwd:
         script = captured["script"]
         assert "/c/Users/Alexander/AppData/Local/Temp/hermes-snap-deadbeef.sh" in script
         assert r"C:\Users\Alexander\AppData" not in script
+
+    def test_powershell_execution_args_and_wrapping(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+
+        from tools.environments.windows_execution_mode import WindowsExecutionMode
+        from unittest.mock import MagicMock
+        with patch("tools.environments.local.resolve_windows_execution_mode", return_value=WindowsExecutionMode("windows-native", "windows-native")):
+            with patch.object(LocalEnvironment, "__init__", lambda self, **kw: None):
+                env = LocalEnvironment.__new__(LocalEnvironment)
+                BaseEnvironment.__init__(
+                    env,
+                    cwd=r"C:\Users\Alexander\Documents",
+                    timeout=10,
+                )
+                env._snapshot_path = r"C:\Users\Alexander\AppData\Local\Temp\hermes-snap-deadbeef.ps1"
+                env._cwd_file = r"C:\Users\Alexander\AppData\Local\Temp\hermes-snap-deadbeef.cwd"
+                env.cwd = r"C:\Users\Alexander\Documents"
+                env._cwd_marker = "__HERMES_CWD__"
+
+                # Check path quoting
+                assert env._quote_cwd_for_cd(r"C:\Users\Alexander\Documents") == "'C:\\Users\\Alexander\\Documents'"
+                assert env._quote_shell_path(r"C:\Users\Alexander\Documents") == "'C:\\Users\\Alexander\\Documents'"
+
+                # Check wrap command
+                wrapped = env._wrap_command("echo hello", r"C:\Users\Alexander\Documents")
+                assert "Set-Location -LiteralPath 'C:\\Users\\Alexander\\Documents'" in wrapped
+                assert "echo hello" in wrapped
+                assert "Get-ChildItem env:" in wrapped
+
+                # Check run args
+                captured_args = []
+                def fake_popen(args, *args2, **kwargs):
+                    captured_args.append(args)
+                    mock_proc = MagicMock()
+                    mock_proc.pid = 1234
+                    return mock_proc
+
+                monkeypatch.setattr(local_mod.subprocess, "Popen", fake_popen)
+                env._run_bash("echo hello", login=False)
+
+                assert len(captured_args) == 1
+                cmd_args = captured_args[0]
+                assert any(p in cmd_args[0].lower() for p in ("powershell", "pwsh"))
+                assert "-EncodedCommand" in cmd_args

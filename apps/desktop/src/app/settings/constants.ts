@@ -243,6 +243,7 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   // tools/terminal_tool.py::_create_environment (local/docker/singularity/
   // modal/daytona/ssh). Remote backends need extra env (image, tokens, host).
   'terminal.backend': ['local', 'docker', 'singularity', 'modal', 'daytona', 'ssh'],
+  'terminal.windows_execution_mode': ['smart', 'wsl2', 'windows-native'],
   'stt.elevenlabs.model_id': ['scribe_v2', 'scribe_v1'],
   'stt.local.model': ['tiny', 'base', 'small', 'medium', 'large-v3'],
   // Speech-to-text backends — kept in sync with the stt block in
@@ -291,6 +292,7 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     toolUseEnforcement: 'Tool-Use Enforcement'
   },
   terminal: {
+    windowsExecutionMode: 'Agent Execution Environment',
     cwd: 'Working Directory',
     backend: 'Execution Backend',
     timeout: 'Command Timeout',
@@ -441,6 +443,7 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
     maxTurns: 'Upper bound for tool-calling turns before Hermes stops a run.'
   },
   terminal: {
+    windowsExecutionMode: 'Determines where the agent executes tools and commands (WSL2 Bash, Windows Native PowerShell, or Smart selection based on project directory).',
     cwd: 'Default project folder for tool and terminal work.',
     persistentShell: 'Keep shell state between commands when the backend supports it.',
     envPassthrough: 'Environment variables to pass into tool execution.',
@@ -524,6 +527,7 @@ export const SECTIONS: DesktopConfigSection[] = [
     icon: Monitor,
     keys: [
       'terminal.cwd',
+      'terminal.windows_execution_mode',
       'code_execution.mode',
       'terminal.persistent_shell',
       'terminal.env_passthrough',

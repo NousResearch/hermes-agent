@@ -936,6 +936,16 @@ _WINDOWS_BASH_SHELL_HINT = (
 )
 
 
+_WINDOWS_POWERSHELL_SHELL_HINT = (
+    "Shell: on this Windows host your `terminal` tool runs commands through "
+    "PowerShell, NOT bash or cmd.exe. Use PowerShell syntax (e.g. `Get-ChildItem`, "
+    "`$env:FOO`, `Select-String`, single-quoted or double-quoted strings appropriately) "
+    "inside terminal calls. Native Windows paths (like `C:\\Users\\<user>\\...`) work "
+    "normally. Bash/POSIX commands and syntax (`export VAR=val`, `ls`, `grep`, `&&` "
+    "unless using PowerShell 7+) will NOT work — use their PowerShell equivalents."
+)
+
+
 def _probe_remote_backend(env_type: str) -> str | None:
     """Run a tiny introspection command inside the active terminal backend.
 
@@ -1123,7 +1133,16 @@ def build_environment_hints() -> str:
         # Windows-local terminal runs bash, not PowerShell — the model must
         # know this or it will issue PowerShell syntax and fail.
         if sys.platform == "win32" and not is_wsl():
-            hints.append(_WINDOWS_BASH_SHELL_HINT)
+            from tools.environments.windows_execution_mode import resolve_windows_execution_mode
+            try:
+                mode_cwd = resolve_agent_cwd()
+            except OSError:
+                mode_cwd = ""
+            mode = resolve_windows_execution_mode(mode_cwd)
+            if mode.resolved == "windows-native":
+                hints.append(_WINDOWS_POWERSHELL_SHELL_HINT)
+            else:
+                hints.append(_WINDOWS_BASH_SHELL_HINT)
     else:
         # --- Remote backend block (host info suppressed) ---
         probe = _probe_remote_backend(backend)

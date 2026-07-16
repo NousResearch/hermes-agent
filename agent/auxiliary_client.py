@@ -478,8 +478,9 @@ def _get_aux_model_for_provider(provider_id: str) -> str:
         _p = get_provider_profile(provider_id)
         if _p and _p.default_aux_model:
             return _p.default_aux_model
-    except Exception:
-        pass
+        logger.debug("ProviderProfile for %r has no default_aux_model", provider_id)
+    except Exception as exc:
+        logger.debug("Failed to read ProviderProfile for %r, using fallback: %s", provider_id, exc)
     return _API_KEY_PROVIDER_AUX_MODELS_FALLBACK.get(provider_id, "")
 
 

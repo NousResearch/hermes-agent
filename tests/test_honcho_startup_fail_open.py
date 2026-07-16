@@ -174,6 +174,49 @@ def test_honcho_prefetch_returns_without_waiting_for_first_context_fetch():
     assert fetch_started.is_set()
 
 
+def test_first_turn_base_wait_is_shared_by_init_and_context_fetch():
+    """Session init and base retrieval share one configured turn-1 deadline."""
+    provider = HonchoMemoryProvider()
+    cfg = _configured_hybrid_config()
+    cfg.first_turn_base_wait = 0.5
+    cfg.timeout = None
+    release_context = threading.Event()
+
+    class SlowManager:
+        def get_prefetch_context(self, session_key, user_message=None):
+            release_context.wait(timeout=5)
+            return {"representation": "late"}
+
+        def set_context_result(self, session_key, result):
+            pass
+
+        def pop_context_result(self, session_key):
+            return {}
+
+    def finish_init():
+        time.sleep(0.3)
+        provider._manager = SlowManager()
+        provider._session_initialized = True
+
+    provider._config = cfg
+    provider._session_key = "test-session"
+    provider._recall_mode = "context"
+    provider._turn_count = 1
+    provider._last_dialectic_turn = 0
+    provider._FIRST_TURN_BASE_TIMEOUT = cfg.first_turn_base_wait
+    provider._init_thread = threading.Thread(target=finish_init, daemon=True)
+    provider._init_thread.start()
+
+    try:
+        started = time.perf_counter()
+        assert provider.prefetch("what do you know about me?") == ""
+        elapsed = time.perf_counter() - started
+        assert 0.4 <= elapsed < 0.65
+    finally:
+        release_context.set()
+        provider._init_thread.join(timeout=1)
+
+
 
 def test_honcho_sync_turn_does_not_start_network_write_before_session_init():
     """Session-end sync must not create a blocking writer before init finishes."""

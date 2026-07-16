@@ -248,9 +248,7 @@ class TestPeerLookupHelpers:
         assistant_peer.set_card.assert_called_once_with(["Role: user"], target=session.user_peer_id)
 
     def test_search_context_uses_peer_perspective_message_search(self):
-        """honcho_search must do cross-session message search scoped to the
-        target peer via the peer_perspective filter — not dump the
-        representation. Regression guard for the representation-dump bug."""
+        """Search spans the target peer's sessions instead of its representation."""
         mgr, session = self._make_cached_manager()
         honcho_client = MagicMock()
         honcho_client.search.return_value = [
@@ -291,6 +289,28 @@ class TestPeerLookupHelpers:
             assert mgr.search_context(session.key, "   ") == ""
 
         honcho_client.search.assert_not_called()
+
+    def test_search_context_honors_small_budget_for_first_result(self):
+        mgr, session = self._make_cached_manager()
+        honcho_client = MagicMock()
+        honcho_client.search.return_value = [
+            SimpleNamespace(
+                content="x" * 2_000,
+                peer_id="robert",
+                session_id="s-old",
+                id="m1",
+            ),
+        ]
+
+        with patch.object(
+            HonchoSessionManager,
+            "honcho",
+            new_callable=lambda: property(lambda s: honcho_client),
+        ):
+            result = mgr.search_context(session.key, "anything", max_tokens=50)
+
+        assert result
+        assert len(result) <= 200
 
     def test_search_context_falls_back_to_peer_search_on_filter_error(self):
         """If the workspace search with peer_perspective raises (older Honcho),
@@ -597,6 +617,24 @@ class TestConcludeToolDispatch:
         assert parsed == {"error": "Exactly one of conclusion, delete_id, or list must be provided."}
         provider._manager.create_conclusion.assert_not_called()
         provider._manager.delete_conclusion.assert_not_called()
+
+    def test_honcho_conclude_rejects_query_outside_list_mode(self):
+        import json
+
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+
+        result = provider.handle_tool_call(
+            "honcho_conclude",
+            {"conclusion": "User prefers dark mode", "query": "preferences"},
+        )
+
+        assert json.loads(result) == {
+            "error": "query is only valid when list is true."
+        }
+        provider._manager.create_conclusion.assert_not_called()
 
     def test_honcho_conclude_rejects_whitespace_only_conclusion(self):
         """Whitespace-only conclusion should be treated as empty."""
@@ -1012,9 +1050,7 @@ class TestDialecticInputGuard:
 
 
 class TestDialecticInjectionCap:
-    """dialecticMaxChars must bound the auto-injected supplement but must NOT
-    clip explicit honcho_reasoning tool results, which the model asked for in
-    full (they are already bounded server-side by Honcho's MAX_OUTPUT_TOKENS)."""
+    """dialecticMaxChars applies to injection, not explicit reasoning calls."""
 
     def _manager_with_long_answer(self, answer):
         from plugins.memory.honcho.client import HonchoClientConfig
@@ -1129,6 +1165,18 @@ class TestDialecticCadenceDefaults:
         provider = self._make_provider(cfg_extra={"context_cadence": 999})
         assert provider._context_cadence == 999
 
+    def test_first_turn_only_injection_disables_base_refresh(self):
+        provider = self._make_provider(
+            cfg_extra={"injection_frequency": "first-turn", "context_cadence": 1}
+        )
+        provider._turn_count = 2
+        provider._last_dialectic_turn = 2
+        provider._manager.prefetch_context.reset_mock()
+
+        provider.queue_prefetch("follow-up question")
+
+        provider._manager.prefetch_context.assert_not_called()
+
 
 class TestBaseContextSummary:
     """Base context injection should include session summary when available."""
@@ -1198,6 +1246,34 @@ class TestBaseContextSummary:
 
         provider._turn_count = 2
         assert "late user context" in provider.prefetch("follow-up question")
+
+    def test_later_turn_does_not_wait_for_in_flight_dialectic(self):
+        import threading
+        import time
+
+        release = threading.Event()
+        provider = HonchoMemoryProvider()
+        provider._manager = MagicMock()
+        provider._manager.pop_context_result.return_value = {}
+        provider._config = SimpleNamespace(timeout=10.0, context_tokens=0)
+        provider._session_key = "test"
+        provider._session_initialized = True
+        provider._base_context_cache = ""
+        provider._turn_count = 2
+        provider._last_dialectic_turn = 1
+        provider._prefetch_thread = threading.Thread(
+            target=lambda: release.wait(timeout=5), daemon=True
+        )
+        provider._prefetch_thread.start()
+        provider._prefetch_thread_started_at = time.monotonic()
+
+        try:
+            started = time.perf_counter()
+            assert provider.prefetch("follow-up question") == ""
+            assert time.perf_counter() - started < 0.2
+        finally:
+            release.set()
+            provider._prefetch_thread.join(timeout=1)
 
 
 class TestDialecticDepth:
@@ -1413,7 +1489,6 @@ class TestTrivialPromptHeuristic:
         provider._session_key = "test"
         provider._turn_count = 10
         provider._last_dialectic_turn = -999  # would otherwise fire
-        # initialize() pre-warms; clear call counts before the assertion.
         provider._manager.prefetch_context.reset_mock()
         provider._manager.dialectic_query.reset_mock()
 
@@ -1423,11 +1498,7 @@ class TestTrivialPromptHeuristic:
         assert provider._manager.dialectic_query.call_count == 0
 
     def test_trivial_prompt_injects_ready_pending_dialectic(self):
-        """Regression: a dialectic result fired at the end of the prior turn and
-        primed for THIS turn must still be injected when this turn's prompt is
-        trivial — not stranded by the trivial early-return and later silently
-        discarded as stale. Option A: trivial turns consume + inject a ready,
-        non-stale pending result (but spend no new work)."""
+        """A trivial turn consumes a ready result without starting new work."""
         provider = self._make_provider()
         provider._session_key = "test"
         provider._base_context_cache = ""  # isolate the supplement path
@@ -1584,6 +1655,23 @@ class TestSessionStartDialecticPrewarm:
         with p._prefetch_lock:
             assert p._prefetch_result == "prewarm synthesis"
         assert p._last_dialectic_turn == 0
+
+    def test_init_leaves_base_fetch_to_first_user_message(self):
+        p = self._make_provider()
+        if p._prefetch_thread:
+            p._prefetch_thread.join(timeout=3.0)
+
+        p._manager.prefetch_context.assert_not_called()
+        p._manager.get_prefetch_context.reset_mock()
+        p._session_key = "test-prewarm"
+        p._base_context_cache = None
+        p._turn_count = 1
+
+        p.prefetch("hello world")
+
+        p._manager.get_prefetch_context.assert_called_once_with(
+            "test-prewarm", "hello world"
+        )
 
     def test_turn1_consumes_prewarm_without_duplicate_dialectic(self):
         """With prewarm result already in _prefetch_result, turn 1 prefetch
@@ -1795,17 +1883,7 @@ class TestDialecticLifecycleSmoke:
             return provider, mock_manager, cfg
 
     def _await_thread(self, provider):
-        """Block until the in-flight prefetch/prewarm thread has fully finished.
-
-        The earlier version did a single ``join(timeout=3.0)`` and then
-        proceeded regardless of whether the thread had actually finished. On a
-        loaded CI runner (6 parallel test slices), the background dialectic
-        thread's completion can slip past that 3s window, so the join times out
-        silently and the test reads ``_prefetch_result`` before the worker wrote
-        it — a flaky ``session-start prewarm must land`` failure. We instead join
-        in a loop up to a generous ceiling and assert the thread is dead, so a
-        genuine hang surfaces as a clear, non-flaky failure instead of a race.
-        """
+        """Wait up to 30 seconds and fail clearly if background work hangs."""
         thread = provider._prefetch_thread
         if thread is None:
             return

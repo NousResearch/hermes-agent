@@ -4189,6 +4189,63 @@ class GatewaySlashCommandsMixin:
             logger.error("Insights command error: %s", e, exc_info=True)
             return t("gateway.insights.error", error=e)
 
+    async def _handle_mcp_command(self, event: MessageEvent) -> str:
+        """Handle /mcp — show configured MCP servers and connection status.
+
+        Read-only companion to ``/reload-mcp``: renders the same information
+        surfaced by ``hermes mcp list`` plus the runtime connection state
+        tracked in ``tools.mcp_tool`` (connected / connecting / failed /
+        disabled / configured). No side effects, no prompt-cache impact.
+        """
+        try:
+            from tools.mcp_tool import get_mcp_status
+        except Exception as exc:
+            logger.warning("MCP status unavailable: %s", exc)
+            return f"MCP subsystem unavailable: {exc}"
+
+        try:
+            statuses = get_mcp_status()
+        except Exception as exc:
+            logger.warning("get_mcp_status failed: %s", exc, exc_info=True)
+            return f"Failed to read MCP status: {exc}"
+
+        if not statuses:
+            return (
+                "No MCP servers configured.\n"
+                "Add one on the host with:\n"
+                "  `hermes mcp add <name> --url <endpoint>`\n"
+                "  `hermes mcp add <name> --command <cmd> --args <args...>`\n"
+                "Then run `/reload-mcp` to connect."
+            )
+
+        # Status glyphs mirror `hermes mcp list` conventions.
+        glyph = {
+            "connected":  "✓ connected",
+            "connecting": "… connecting",
+            "configured": "· configured",
+            "disabled":   "✗ disabled",
+            "failed":     "⚠ failed",
+        }
+
+        lines = [f"**MCP Servers** ({len(statuses)} configured):", ""]
+        for entry in statuses:
+            name = entry.get("name", "?")
+            transport = entry.get("transport", "?")
+            status = entry.get("status", "?")
+            label = glyph.get(status, status)
+            tools = entry.get("tools", 0)
+            row = f"• `{name}` — {label} · {transport} · {tools} tool(s)"
+            err = entry.get("error")
+            if err and status == "failed":
+                # Keep error compact — one line, first sentence.
+                err_str = str(err).splitlines()[0][:120]
+                row += f"\n    error: {err_str}"
+            lines.append(row)
+
+        lines.append("")
+        lines.append("Reload after config changes with `/reload-mcp`.")
+        return "\n".join(lines)
+
     async def _handle_reload_mcp_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /reload-mcp — reconnect MCP servers and rebuild the cached agent.
 

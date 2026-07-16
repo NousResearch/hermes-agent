@@ -320,7 +320,11 @@ emit_manifest() {
     if [ "$INCLUDE_DESKTOP" = true ]; then
         desktop_stage='{"name":"desktop","title":"Build desktop app","category":"runtime","needs_user_input":false},'
     fi
-    printf '%s' '{"protocol_version":1,"stages":[{"name":"prerequisites","title":"System prerequisites","category":"runtime","needs_user_input":false},{"name":"repository","title":"Download Hermes Agent","category":"runtime","needs_user_input":false},{"name":"venv","title":"Create Python virtual environment","category":"runtime","needs_user_input":false},{"name":"python-deps","title":"Install Python dependencies","category":"runtime","needs_user_input":false},{"name":"node-deps","title":"Install browser-tool dependencies","category":"runtime","needs_user_input":false},{"name":"path","title":"Install hermes command","category":"runtime","needs_user_input":false},{"name":"config","title":"Prepare config and skills","category":"configuration","needs_user_input":false},{"name":"setup","title":"Configure API keys and settings","category":"configuration","needs_user_input":true},{"name":"gateway","title":"Configure gateway service","category":"configuration","needs_user_input":true},'"$desktop_stage"'{"name":"complete","title":"Finish install","category":"runtime","needs_user_input":false}]}'
+    local interactive_stages=""
+    if ! has_existing_hermes_config; then
+        interactive_stages='{"name":"setup","title":"Configure API keys and settings","category":"configuration","needs_user_input":true},{"name":"gateway","title":"Configure gateway service","category":"configuration","needs_user_input":true},'
+    fi
+    printf '%s' '{"protocol_version":1,"stages":[{"name":"prerequisites","title":"System prerequisites","category":"runtime","needs_user_input":false},{"name":"repository","title":"Download Hermes Agent","category":"runtime","needs_user_input":false},{"name":"venv","title":"Create Python virtual environment","category":"runtime","needs_user_input":false},{"name":"python-deps","title":"Install Python dependencies","category":"runtime","needs_user_input":false},{"name":"node-deps","title":"Install browser-tool dependencies","category":"runtime","needs_user_input":false},{"name":"path","title":"Install hermes command","category":"runtime","needs_user_input":false},{"name":"config","title":"Prepare config and skills","category":"configuration","needs_user_input":false},'"$interactive_stages$desktop_stage"'{"name":"complete","title":"Finish install","category":"runtime","needs_user_input":false}]}'
     printf '\n'
 }
 
@@ -329,6 +333,17 @@ stage_needs_user_input() {
         setup|gateway) return 0 ;;
         *) return 1 ;;
     esac
+}
+
+has_existing_hermes_config() {
+    local env_file="$HERMES_HOME/.env"
+    local cfg_file="$HERMES_HOME/config.yaml"
+
+    [ -s "$cfg_file" ] || return 1
+    [ -s "$env_file" ] || return 1
+
+    grep -Eq '^[[:space:]]*[A-Z0-9_]*(API_KEY|TOKEN)[[:space:]]*=[[:space:]]*[^[:space:]#]+' "$env_file" 2>/dev/null || return 1
+    ! grep -Eq '^[[:space:]]*[A-Z0-9_]*(API_KEY|TOKEN)[[:space:]]*=[[:space:]]*(your-|changeme|placeholder|xxx)' "$env_file" 2>/dev/null
 }
 
 emit_stage_json() {
@@ -3053,9 +3068,13 @@ run_stage_protocol() {
     fi
 
     if [ "$NON_INTERACTIVE" = true ] && stage_needs_user_input "$stage"; then
-        log_info "Skipping $stage (non-interactive bootstrap)"
+        local skip_reason="non-interactive bootstrap"
+        if has_existing_hermes_config; then
+            skip_reason="existing Hermes config detected"
+        fi
+        log_info "Skipping $stage ($skip_reason)"
         if [ "$JSON_OUTPUT" = true ]; then
-            emit_stage_json "$stage" true true
+            emit_stage_json "$stage" true true "$skip_reason"
         fi
         return 0
     fi

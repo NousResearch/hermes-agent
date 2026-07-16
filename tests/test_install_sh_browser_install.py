@@ -5,6 +5,9 @@ half-installed just because Playwright's managed Chromium download hangs on an
 unsupported distribution.
 """
 
+import json
+import os
+import subprocess
 from pathlib import Path
 
 
@@ -83,6 +86,29 @@ def test_install_script_supports_skip_browser_flag() -> None:
     assert "SKIP_BROWSER=true" in text
     assert 'if [ "$SKIP_BROWSER" = true ]; then' in text
     assert "--skip-browser Skip Playwright/Chromium install" in text
+
+
+def test_manifest_omits_interactive_stages_for_existing_config(tmp_path) -> None:
+    """Desktop/bootstrap staged installs should be incremental when configured."""
+    hermes_home = tmp_path / "home"
+    hermes_home.mkdir()
+    (hermes_home / ".env").write_text("OPENAI_API_KEY=sk-real\n", encoding="utf-8")
+    (hermes_home / "config.yaml").write_text("model:\n  provider: openai\n", encoding="utf-8")
+
+    env = {**os.environ, "HERMES_HOME": str(hermes_home)}
+    result = subprocess.run(
+        ["bash", str(INSTALL_SH), "--manifest", "--include-desktop"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    manifest = json.loads(result.stdout)
+    stage_names = [stage["name"] for stage in manifest["stages"]]
+
+    assert "desktop" in stage_names
+    assert "setup" not in stage_names
+    assert "gateway" not in stage_names
 
 
 def test_install_script_skips_with_deps_when_no_sudo() -> None:
@@ -289,4 +315,3 @@ def test_override_retry_skipped_on_unsupported_arch() -> None:
     r = _run_install_fn("ubuntu", "26.04", native_fails=True, arch="riscv64")
     assert len(r["runs"]) == 1, r["runs"]
     assert r["final_rc"] == 1
-

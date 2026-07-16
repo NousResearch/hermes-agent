@@ -348,6 +348,27 @@ class TestCmdUpdateBranchFallback:
                 "(no capture_output) so postinstall progress is visible"
             )
 
+    @patch("shutil.which")
+    @patch("subprocess.run")
+    def test_update_refreshes_node_and_web_ui_when_browser_toolset_disabled(
+        self, mock_run, mock_which, mock_args
+    ):
+        from hermes_cli import main as hm
+
+        mock_which.side_effect = {"uv": "/usr/bin/uv", "npm": "/usr/bin/npm"}.get
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="1"
+        )
+
+        disabled_browser_config = {"platform_toolsets": {"cli": ["file", "terminal", "web"]}}
+        with patch("hermes_cli.config.load_config", return_value=disabled_browser_config), \
+             patch.object(hm, "_update_node_dependencies") as update_node, \
+             patch.object(hm, "_build_web_ui") as build_web:
+            cmd_update(mock_args)
+
+        update_node.assert_called_once_with()
+        build_web.assert_called_once_with(hm.PROJECT_ROOT / "web")
+
     def test_update_non_interactive_runs_safe_config_migrations(self, mock_args, capsys):
         """Dashboard/web updates apply non-interactive migrations before restart."""
         with patch("shutil.which", return_value=None), patch(

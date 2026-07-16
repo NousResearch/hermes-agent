@@ -171,7 +171,11 @@ def test_bisect_six_fixture_corpus_with_stability_and_dep_bump(tmp_path: Path) -
             # N=3 runs interleave so each SIDE sees a stable sequence (all-even /
             # all-odd) -> classified REGRESSION, flaking this test in CI. Keying
             # the counter by repo guarantees each side alternates P,F,P.
-            side_counter = counter.with_name(f"counter-{repo.name}.txt")
+            # repo.name is "repo" for BOTH sides (_repo appends a fixed subdir);
+            # key by the full resolved path hash so each side truly gets its own file.
+            import hashlib
+            side_key = hashlib.sha256(str(repo.resolve()).encode()).hexdigest()[:12]
+            side_counter = counter.with_name(f"counter-{side_key}.txt")
             with counter_lock:
                 current = int(side_counter.read_text(encoding="utf-8")) if side_counter.exists() else 0
                 side_counter.write_text(str(current + 1), encoding="utf-8")

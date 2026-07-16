@@ -140,13 +140,12 @@ class TestLeafReasoningEffortNormalization:
     @pytest.mark.parametrize(
         "raw,expected",
         [
-            (" none ", "none"),
-            ("MINIMAL", "minimal"),
             ("low", "low"),
             ("Medium", "medium"),
             ("HIGH", "high"),
             (" xhigh", "xhigh"),
             ("max ", "max"),
+            ("ULTRA", "ultra"),
         ],
     )
     def test_leaf_efforts_are_normalized(self, raw, expected):
@@ -158,7 +157,7 @@ class TestLeafReasoningEffortNormalization:
 
     @pytest.mark.parametrize(
         "raw",
-        [False, 1, [], {}, "garbage", "ultra"],
+        [False, 1, [], {}, "garbage", "none", "minimal"],
     )
     def test_invalid_effort_raises_value_error(self, raw):
         with pytest.raises(ValueError):

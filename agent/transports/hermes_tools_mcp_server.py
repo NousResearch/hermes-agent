@@ -148,6 +148,13 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "kanban_link",
 )
 
+_KANBAN_WORKER_TOOLS = frozenset({
+    "kanban_complete",
+    "kanban_block",
+    "kanban_comment",
+    "kanban_heartbeat",
+})
+
 
 def _build_server() -> Any:
     """Create the FastMCP server with Hermes tools attached. Lazy imports
@@ -188,8 +195,11 @@ def _build_server() -> Any:
     }
 
     exposed_count = 0
+    has_task_authority = bool(os.environ.get("HERMES_KANBAN_TASK", "").strip())
 
     for name in EXPOSED_TOOLS:
+        if name in _KANBAN_WORKER_TOOLS and not has_task_authority:
+            continue
         spec = all_defs.get(name)
         if spec is None:
             logger.debug(

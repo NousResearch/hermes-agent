@@ -61,14 +61,15 @@ _HERMES_TO_CODEX_PERMISSION_PROFILE = {
 }
 
 
+# Union currently advertised by Codex model/list. Individual models expose a
+# subset; app-server remains authoritative for model-specific validation.
 _LEAF_REASONING_EFFORTS = frozenset({
-    "none",
-    "minimal",
     "low",
     "medium",
     "high",
     "xhigh",
     "max",
+    "ultra",
 })
 
 

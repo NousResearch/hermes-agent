@@ -276,3 +276,20 @@ def test_build_server_registers_kanban_worker_tools(monkeypatch):
         "kanban_heartbeat",
     }
     assert required <= registered
+
+
+def test_build_server_omits_kanban_worker_tools_without_task_authority(monkeypatch):
+    import asyncio
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from agent.transports.hermes_tools_mcp_server import _build_server
+
+    server = _build_server()
+    registered = {tool.name for tool in asyncio.run(server.list_tools())}
+    worker_tools = {
+        "kanban_complete",
+        "kanban_block",
+        "kanban_comment",
+        "kanban_heartbeat",
+    }
+    assert worker_tools.isdisjoint(registered)

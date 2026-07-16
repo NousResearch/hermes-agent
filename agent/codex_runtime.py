@@ -697,7 +697,6 @@ def run_codex_app_server_turn(
         effort = (
             reasoning_config.get("effort")
             if isinstance(reasoning_config, dict)
-            and reasoning_config.get("enabled") is not False
             else None
         )
         try:

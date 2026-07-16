@@ -460,7 +460,7 @@ def create_delivery_attempt(
         message_kind=message_kind,
     )
 
-    latest = get_latest_delivery_attempt(
+    attempts = list_delivery_attempts(
         conn,
         board_id=board_id,
         root_task_id=root_task_id,
@@ -469,6 +469,13 @@ def create_delivery_attempt(
         destination_reference=normalized_destination,
         message_kind=message_kind,
     )
+    latest = attempts[-1] if attempts else None
+    if any(
+        attempt.attempt_number < attempt_number
+        and attempt.delivery_state in TERMINAL_DELIVERY_STATES
+        for attempt in attempts
+    ):
+        raise ValueError("cannot create a later attempt after terminal delivery")
     if latest is not None:
         if attempt_number < latest.attempt_number:
             raise ValueError("attempt_number must be monotonic")

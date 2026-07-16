@@ -199,6 +199,29 @@ def test_accepted_records_provider_message_id_and_is_idempotent(tmp_path):
             provider_message_id="prov-2",
         )
 
+    with pytest.raises(ValueError, match="terminal delivery"):
+        delivery.create_next_delivery_attempt(
+            conn,
+            board_id="board-a",
+            root_task_id="root-3",
+            generation=1,
+            platform="telegram",
+            destination_reference="chat:333",
+            thread_reference="thread-333",
+            message_kind="summary",
+        )
+
+    attempts = delivery.list_delivery_attempts(
+        conn,
+        board_id="board-a",
+        root_task_id="root-3",
+        generation=1,
+        platform="telegram",
+        destination_reference="chat:333",
+        message_kind="summary",
+    )
+    assert [attempt.attempt_number for attempt in attempts] == [1]
+
 
 def test_rejected_stores_redacted_error_only_and_ambiguous_needs_resolution(tmp_path):
     conn = _new_conn(tmp_path)
@@ -357,6 +380,30 @@ def test_deterministic_retry_schedule_and_permanent_failure_terminal(tmp_path):
             attempt_number=3,
             provider_message_id="prov-2",
         )
+
+    with pytest.raises(ValueError, match="terminal delivery"):
+        delivery.create_delivery_attempt(
+            conn,
+            board_id="board-a",
+            root_task_id="root-5",
+            generation=1,
+            platform="telegram",
+            destination_reference="chat:555",
+            thread_reference=None,
+            message_kind="summary",
+            attempt_number=4,
+        )
+
+    attempts = delivery.list_delivery_attempts(
+        conn,
+        board_id="board-a",
+        root_task_id="root-5",
+        generation=1,
+        platform="telegram",
+        destination_reference="chat:555",
+        message_kind="summary",
+    )
+    assert [attempt.attempt_number for attempt in attempts] == [1, 2, 3]
 
     assert delivery.MAX_DELIVERY_ATTEMPTS == 3
 

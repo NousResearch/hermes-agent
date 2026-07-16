@@ -6699,11 +6699,11 @@ OFFICIAL_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
 SKIP_UPSTREAM_PROMPT_FILE = ".skip_upstream_prompt"
 
 
-def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
-    """Get the URL of the origin remote, or None if not set."""
+def _get_remote_url(git_cmd: list[str], cwd: Path, remote: str) -> Optional[str]:
+    """Get the URL of a git remote, or None if it is not set."""
     try:
         result = subprocess.run(
-            git_cmd + ["remote", "get-url", "origin"],
+            git_cmd + ["remote", "get-url", remote],
             cwd=cwd,
             capture_output=True,
             text=True,
@@ -6713,6 +6713,11 @@ def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
     except Exception:
         pass
     return None
+
+
+def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
+    """Get the URL of the origin remote, or None if not set."""
+    return _get_remote_url(git_cmd, cwd, "origin")
 
 
 def _is_fork(origin_url: Optional[str]) -> bool:
@@ -9714,23 +9719,39 @@ def _cmd_update_impl(args, gateway_mode: bool):
         update_ref = f"origin/{branch}"
         if is_fork and branch == "main":
             # A fork's origin/main can be stale while the official upstream has
-            # new releases. Prefer upstream/main for both comparison and pull so
-            # updates are applied in the normal path (including dependency sync)
-            # instead of being hidden behind a false "Already up to date".
-            upstream_fetch = subprocess.run(
-                git_cmd + ["fetch", "upstream", branch],
-                cwd=PROJECT_ROOT,
-                capture_output=True,
-                text=True,
-            )
-            if upstream_fetch.returncode == 0:
-                update_remote = "upstream"
-                update_ref = f"upstream/{branch}"
-            else:
-                stderr = (upstream_fetch.stderr or "").strip()
-                print("  ⚠ Could not fetch upstream/main; falling back to origin/main.")
-                if stderr:
-                    print(f"    {stderr.splitlines()[0]}")
+            # new releases. Prefer upstream/main only when upstream is the
+            # official repository AND origin/main has no fork-only commits.
+            # Otherwise preserve the existing fork-divergence guard: applying
+            # upstream/main directly would make the later ff-only pull fail and
+            # the reset fallback could trample fork commits.
+            upstream_url = _get_remote_url(git_cmd, PROJECT_ROOT, "upstream")
+            if upstream_url and not _is_fork(upstream_url):
+                upstream_fetch = subprocess.run(
+                    git_cmd + ["fetch", "upstream", branch],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                )
+                if upstream_fetch.returncode == 0:
+                    origin_ahead = _count_commits_between(
+                        git_cmd, PROJECT_ROOT, f"upstream/{branch}", f"origin/{branch}"
+                    )
+                    if origin_ahead == 0:
+                        update_remote = "upstream"
+                        update_ref = f"upstream/{branch}"
+                    elif origin_ahead > 0:
+                        print(
+                            "  ℹ Fork has commits not on upstream/main; preserving origin/main update path."
+                        )
+                    else:
+                        print(
+                            "  ⚠ Could not compare origin/main with upstream/main; falling back to origin/main."
+                        )
+                else:
+                    stderr = (upstream_fetch.stderr or "").strip()
+                    print("  ⚠ Could not fetch upstream/main; falling back to origin/main.")
+                    if stderr:
+                        print(f"    {stderr.splitlines()[0]}")
 
         # Get current branch (returns literal "HEAD" when detached)
         result = subprocess.run(

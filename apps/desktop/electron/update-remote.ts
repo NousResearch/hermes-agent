@@ -82,6 +82,13 @@ function selectUpdateRemote({ originUrl, upstreamUrl }) {
   return { kind: 'origin', remote: 'origin', ref: null }
 }
 
+function selectBranchHealingRemote({ originUrl }) {
+  if (isOfficialSshRemote(originUrl)) {
+    return { kind: 'official-ssh', remote: OFFICIAL_REPO_HTTPS_URL }
+  }
+  return { kind: 'origin', remote: 'origin' }
+}
+
 export {
   canonicalGitHubRemote,
   isOfficialRemote,
@@ -89,5 +96,6 @@ export {
   isSshRemote,
   OFFICIAL_REPO_CANONICAL,
   OFFICIAL_REPO_HTTPS_URL,
+  selectBranchHealingRemote,
   selectUpdateRemote
 }

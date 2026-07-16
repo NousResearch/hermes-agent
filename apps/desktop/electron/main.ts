@@ -117,7 +117,7 @@ import {
   sandboxFallbackFromEnv,
   sandboxPreflight
 } from './update-relaunch'
-import { selectUpdateRemote } from './update-remote'
+import { selectBranchHealingRemote, selectUpdateRemote } from './update-remote'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import {
   computeWindowOptions,
@@ -2027,8 +2027,9 @@ async function resolveHealedBranch(updateRoot, branch) {
     return branch || 'main'
   }
 
-  const updateRemote = await getDesktopUpdateRemote(updateRoot)
-  const probe = await runGit(['ls-remote', '--exit-code', '--heads', updateRemote.remote, branch], { cwd: updateRoot })
+  const originUrl = await getOriginUrl(updateRoot)
+  const branchRemote = selectBranchHealingRemote({ originUrl })
+  const probe = await runGit(['ls-remote', '--exit-code', '--heads', branchRemote.remote, branch], { cwd: updateRoot })
   if (probe.code !== 2) {
     return branch
   }

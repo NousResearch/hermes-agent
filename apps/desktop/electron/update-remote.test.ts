@@ -26,6 +26,7 @@ import {
   isSshRemote,
   OFFICIAL_REPO_CANONICAL,
   OFFICIAL_REPO_HTTPS_URL,
+  selectBranchHealingRemote,
   selectUpdateRemote
 } from './update-remote'
 
@@ -121,5 +122,15 @@ test('selectUpdateRemote uses anonymous HTTPS for official SSH remotes', () => {
       upstreamUrl: 'git@github.com:NousResearch/hermes-agent.git'
     }),
     { kind: 'official-ssh', remote: OFFICIAL_REPO_HTTPS_URL, ref: 'FETCH_HEAD' }
+  )
+})
+
+
+test('selectBranchHealingRemote keeps fork-only configured branches on origin', () => {
+  assert.deepEqual(
+    selectBranchHealingRemote({
+      originUrl: 'https://github.com/matantsevs/hermes-agent.git'
+    }),
+    { kind: 'origin', remote: 'origin' }
   )
 })

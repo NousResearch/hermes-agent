@@ -158,6 +158,22 @@ def _is_official_ssh_remote(url: str | None) -> bool:
     return _is_ssh_remote(url) and _is_official_remote(url)
 
 
+def _resolve_local_git_compare_ref(repo_dir: Path, origin_url: str | None = None) -> tuple[str, str]:
+    """Return the remote/ref used for local git update comparisons."""
+    if origin_url is None:
+        origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
+    compare_remote = "origin"
+    compare_ref = "origin/main"
+    # Fork installs should check the official upstream remote when available;
+    # a stale fork origin is exactly the false "Up to date" failure mode.
+    if origin_url and not _is_official_remote(origin_url):
+        upstream_url = _git_stdout(["remote", "get-url", "upstream"], cwd=repo_dir)
+        if _is_official_remote(upstream_url):
+            compare_remote = "upstream"
+            compare_ref = "upstream/main"
+    return compare_remote, compare_ref
+
+
 def _git_stdout(args: list[str], *, cwd: Path, timeout: int = 5) -> Optional[str]:
     try:
         result = subprocess.run(
@@ -223,15 +239,7 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     shallow = _git_stdout(["rev-parse", "--is-shallow-repository"], cwd=repo_dir)
     is_shallow = shallow == "true"
 
-    compare_remote = "origin"
-    compare_ref = "origin/main"
-    # Fork installs should check the official upstream remote when available;
-    # a stale fork origin is exactly the false "Up to date" failure mode.
-    if origin_url and not _is_official_remote(origin_url):
-        upstream_url = _git_stdout(["remote", "get-url", "upstream"], cwd=repo_dir)
-        if _is_official_remote(upstream_url):
-            compare_remote = "upstream"
-            compare_ref = "upstream/main"
+    compare_remote, compare_ref = _resolve_local_git_compare_ref(repo_dir, origin_url)
 
     def _fetch(remote: str) -> bool:
         fetch_args = ["git", "fetch", remote]

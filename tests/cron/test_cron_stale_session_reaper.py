@@ -133,6 +133,31 @@ class TestReaperFailClosed:
         assert db.get_session(sid)["ended_at"] is None
         db.close()
 
+    def test_active_in_process_run_without_lease_is_preserved(self, hermes_env):
+        """An active run older than 45 minutes survives lease-write failure."""
+        import cron.scheduler as sched
+        from hermes_state import SessionDB
+
+        job_id = "live-without-lease"
+        sid = f"cron_{job_id}_20240101_120000"
+        db = SessionDB()
+        _make_old_cron_session(db, sid, age_seconds=7200)
+        db.close()
+
+        with sched._running_lock:
+            sched._running_job_ids.add(job_id)
+        try:
+            assert sched._reap_stale_cron_sessions() == 0
+        finally:
+            with sched._running_lock:
+                sched._running_job_ids.discard(job_id)
+
+        db = SessionDB()
+        try:
+            assert db.get_session(sid)["ended_at"] is None
+        finally:
+            db.close()
+
     def test_stale_dead_owner_reaped(self, hermes_env):
         """Stale heartbeat + owner PID does not exist → reaped."""
         from hermes_state import SessionDB

@@ -265,6 +265,22 @@ class TestPeerLookupHelpers:
             search_query="neuralancer",
         )
 
+    def test_search_context_applies_max_tokens_budget(self):
+        mgr, session = self._make_cached_manager()
+        assistant_peer = MagicMock()
+        assistant_peer.context.return_value = SimpleNamespace(
+            representation="important focused fact " * 20,
+            peer_card=["broad profile fact " * 20],
+        )
+        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
+
+        result = mgr.search_context(session.key, "focused", max_tokens=8)
+
+        # 8 tokens * 4 chars plus the ellipsis marker, with minor word-boundary slack.
+        assert len(result) <= 45
+        assert result.endswith(" ...")
+        assert "broad profile fact " * 3 not in result
+
     def test_search_context_unified_mode_uses_user_self_context(self):
         mgr, session = self._make_cached_manager()
         mgr._ai_observe_others = False
@@ -483,6 +499,27 @@ class TestConcludeToolDispatch:
             "assistant",
             max_tokens=800,
             peer="hermes",
+        )
+
+    def test_honcho_context_passes_query_to_manager(self):
+        provider = HonchoMemoryProvider()
+        provider._session_initialized = True
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._manager.get_session_context.return_value = {
+            "representation": "focused user context",
+        }
+
+        result = provider.handle_tool_call(
+            "honcho_context",
+            {"query": "focused memory", "peer": "user"},
+        )
+
+        assert "focused user context" in result
+        provider._manager.get_session_context.assert_called_once_with(
+            "telegram:123",
+            peer="user",
+            query="focused memory",
         )
 
     def test_honcho_reasoning_can_target_explicit_peer_id(self):
@@ -821,7 +858,7 @@ class TestTruncateToBudget:
         result = provider._truncate_to_budget(long_text)
 
         assert len(result) <= 50  # budget_chars + ellipsis + word boundary slack
-        assert result.endswith(" …")
+        assert result.endswith(" ...")
 
     def test_no_truncation_within_budget(self):
         """Text within budget passes through unchanged."""
@@ -1855,3 +1892,20 @@ class TestGetSessionContextFallback:
         peer_id, target = fetch_calls[0]
         assert peer_id == "ai-peer", f"expected ai-peer, got {peer_id}"
         assert target == "ai-peer"
+
+    def test_query_uses_focused_peer_context_even_when_session_context_is_cached(self):
+        """A focused query should use peer.context(search_query=...) instead of broad session context."""
+        mgr = self._make_manager_with_session()
+        mgr._sessions_cache["sid-missing-from-sessions-cache"] = MagicMock()
+        fetch_calls = []
+
+        def _fake_fetch(peer_id, search_query=None, *, target=None):
+            fetch_calls.append((peer_id, search_query, target))
+            return {"representation": "focused rep", "card": ["focused card"]}
+
+        mgr._fetch_peer_context = _fake_fetch
+
+        result = mgr.get_session_context("test", peer="user", query="needle")
+
+        assert result == {"representation": "focused rep", "card": "focused card"}
+        assert fetch_calls == [("ai-peer", "needle", "user-peer")]

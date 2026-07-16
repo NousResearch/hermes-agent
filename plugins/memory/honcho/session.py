@@ -991,15 +991,42 @@ class HonchoSessionManager:
 
         return {"representation": representation, "card": card}
 
-    def get_session_context(self, session_key: str, peer: str = "user") -> dict[str, Any]:
-        """Fetch full session context from Honcho including summary.
+    def get_session_context(
+        self,
+        session_key: str,
+        peer: str = "user",
+        query: str | None = None,
+    ) -> dict[str, Any]:
+        """Fetch full or query-focused session context from Honcho.
 
-        Uses the session-level context() API which returns summary,
-        peer_representation, peer_card, and messages.
+        Without a query, uses the session-level context() API which returns
+        summary, peer_representation, peer_card, and messages. With a query,
+        use peer-level focused context so the ``honcho_context(query=...)``
+        tool parameter does not silently fall back to broad session context.
         """
         session = self._cache.get(session_key)
         if not session:
             return {}
+
+        focused_query = (query or "").strip()
+        if focused_query:
+            try:
+                observer_peer_id, target = self._resolve_observer_target(session, peer)
+                focused = self._fetch_peer_context(
+                    observer_peer_id,
+                    search_query=focused_query,
+                    target=target,
+                )
+                result: dict[str, Any] = {}
+                if focused.get("representation"):
+                    result["representation"] = focused["representation"]
+                card = focused.get("card") or []
+                if card:
+                    result["card"] = "\n".join(card)
+                return result
+            except Exception as e:
+                logger.debug("Focused session context fetch failed: %s", e)
+                return {}
 
         honcho_session = self._sessions_cache.get(session.honcho_session_id)
         if not honcho_session:
@@ -1102,6 +1129,24 @@ class HonchoSessionManager:
             logger.debug("Failed to fetch peer card from Honcho: %s", e)
             return []
 
+    @staticmethod
+    def _truncate_to_token_budget(text: str, max_tokens: int | None) -> str:
+        """Bound tool output with a conservative token-to-character estimate."""
+        if not text or not max_tokens:
+            return text
+        try:
+            budget_chars = int(max_tokens) * 4
+        except (TypeError, ValueError):
+            return text
+        if budget_chars <= 0 or len(text) <= budget_chars:
+            return text
+
+        truncated = text[:budget_chars]
+        last_space = truncated.rfind(" ")
+        if last_space > budget_chars * 0.8:
+            truncated = truncated[:last_space]
+        return truncated.rstrip() + " ..."
+
     def search_context(
         self,
         session_key: str,
@@ -1143,7 +1188,7 @@ class HonchoSessionManager:
             card = ctx["card"] or []
             if card:
                 parts.append("\n".join(f"- {f}" for f in card))
-            return "\n\n".join(parts)
+            return self._truncate_to_token_budget("\n\n".join(parts), max_tokens)
         except Exception as e:
             logger.debug("Honcho search_context failed: %s", e)
             return ""

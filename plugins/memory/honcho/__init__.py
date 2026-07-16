@@ -789,7 +789,7 @@ class HonchoMemoryProvider(MemoryProvider):
         last_space = truncated.rfind(" ")
         if last_space > budget_chars * 0.8:
             truncated = truncated[:last_space]
-        return truncated + " …"
+        return truncated + " ..."
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         """Fire background prefetch threads for the upcoming turn.
@@ -1366,7 +1366,8 @@ class HonchoMemoryProvider(MemoryProvider):
 
             elif tool_name == "honcho_context":
                 peer = args.get("peer", "user")
-                ctx = self._manager.get_session_context(self._session_key, peer=peer)
+                query = (args.get("query") or "").strip() or None
+                ctx = self._manager.get_session_context(self._session_key, peer=peer, query=query)
                 if not ctx:
                     return json.dumps({"result": "No context available yet."})
                 parts = []

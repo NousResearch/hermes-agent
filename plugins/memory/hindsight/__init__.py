@@ -321,6 +321,16 @@ RECALL_SCHEMA = {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "What to search for."},
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional per-call tags used to restrict recall.",
+            },
+            "tags_match": {
+                "type": "string",
+                "enum": ["any", "all", "any_strict", "all_strict"],
+                "description": "How per-call tags must match.",
+            },
         },
         "required": ["query"],
     },
@@ -1735,9 +1745,10 @@ class HindsightMemoryProvider(MemoryProvider):
                     "bank_id": self._bank_id, "query": query, "budget": self._budget,
                     "max_tokens": self._recall_max_tokens,
                 }
-                if self._recall_tags:
-                    recall_kwargs["tags"] = self._recall_tags
-                    recall_kwargs["tags_match"] = self._recall_tags_match
+                recall_tags = args.get("tags") or self._recall_tags
+                if recall_tags:
+                    recall_kwargs["tags"] = recall_tags
+                    recall_kwargs["tags_match"] = args.get("tags_match") or self._recall_tags_match
                 if self._recall_types:
                     recall_kwargs["types"] = self._recall_types
                 logger.debug("Tool hindsight_recall: bank=%s, query_len=%d, budget=%s",

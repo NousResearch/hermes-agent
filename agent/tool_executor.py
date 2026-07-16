@@ -1784,17 +1784,14 @@ def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed
                 effective_task_id=ref.task_id, tool_call_id=ref.call_id,
                 duration_ms=int(tool_duration * 1000),
             )
-        # Mirror a committed built-in skill_manage write to external providers. All
+        # Mirror successful built-in skill_manage writes to external providers. All
         # gating lives behind the manager interface (MemoryManager.notify_skill_tool_write).
-        if ref.name == "skill_manage" and agent._memory_manager:
-            agent._memory_manager.notify_skill_tool_write(
-                function_result,
-                ref.args,
-                build_metadata=lambda: agent._build_memory_write_metadata(
-                    task_id=ref.task_id,
-                    tool_call_id=ref.call_id,
-                ),
-            )
+        from agent.agent_runtime_helpers import mirror_skill_write_to_memory_providers
+        mirror_skill_write_to_memory_providers(
+            agent, ref.name, function_result, ref.args,
+            task_id=ref.task_id,
+            tool_call_id=ref.call_id,
+        )
     # Classify the result the model will actually see, i.e. after any transform; the
     # registry and concurrent paths both classify post-transform.
     # Multimodal dict results (_multimodal=True) are not sliceable as strings.

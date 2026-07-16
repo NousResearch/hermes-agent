@@ -220,6 +220,8 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_blocked",
 }
 
+HOST_CONTRACT_VERSION = 1
+
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
 
 _NS_PARENT = "hermes_plugins"
@@ -350,6 +352,36 @@ class PluginContext:
         self._manager = manager
         # Lazy-built host-owned LLM facade — see ctx.llm property below.
         self._llm: Any = None
+
+    def get_host_capabilities(self) -> Dict[str, Any]:
+        """Return the versioned runtime surface currently available to a plugin.
+
+        This is an introspection API, not a model tool. Plugins can select a
+        supported adapter path without probing tools and parsing error text.
+        """
+        from tools.registry import registry
+
+        names = registry.get_all_tool_names()
+
+        def available(*candidates: str) -> bool:
+            return any(registry.get_definitions({name}) for name in candidates)
+
+        return {
+            "contract_version": HOST_CONTRACT_VERSION,
+            "scheduler": {
+                "scheduled_context": "cron_context" in VALID_HOOKS,
+                "delivery_receipts": "cron_delivery" in VALID_HOOKS,
+                "text_only": True,
+                "attach_to_session": True,
+            },
+            "tools": {
+                "names": sorted(names),
+                "web_search": available("web_search"),
+                "browser": available("browser_navigate"),
+                "image_generation": available("image_generate"),
+                "location": available("get_location", "location"),
+            },
+        }
 
     # -- host-owned LLM access ----------------------------------------------
 

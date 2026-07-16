@@ -1143,10 +1143,12 @@ def _collect_auto_append_media_tags(
         if msg.get("role") not in ("tool", "function"):
             continue
         call_id = str(msg.get("tool_call_id") or msg.get("call_id") or "")
-        if tool_name_by_call_id.get(call_id) not in _AUTO_APPEND_MEDIA_TOOL_NAMES:
+        tool_name = tool_name_by_call_id.get(call_id) or str(
+            msg.get("tool_name") or msg.get("name") or ""
+        )
+        if tool_name not in _AUTO_APPEND_MEDIA_TOOL_NAMES:
             continue
         content = str(msg.get("content") or "")
-        tool_name = tool_name_by_call_id.get(call_id)
         # JSON-payload tools (image_generate) return a local-file path in a
         # known field rather than a MEDIA: tag. Extract it so delivery is
         # deterministic even when the model omits the path from its reply.
@@ -5577,6 +5579,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return False
 
         running_agent = self._running_agents.get(session_key)
+
+        if event.message_type == MessageType.VOICE:
+            audio_paths = list(getattr(event, "media_urls", None) or [])
+            if audio_paths:
+                text, transcripts = await self._enrich_message_with_transcription(
+                    event.text or "", audio_paths,
+                )
+                if text is None:
+                    return True
+                event.text = text
+                if transcripts:
+                    event.media_urls = []
+                    event.media_types = []
+                    if self._should_echo_stt_transcripts():
+                        echo_meta = self._thread_metadata_for_source(
+                            event.source, self._reply_anchor_for_event(event)
+                        )
+                        for transcript in transcripts:
+                            await adapter.send(
+                                event.source.chat_id,
+                                f'🎙️ "{transcript}"',
+                                metadata=echo_meta,
+                            )
 
         effective_mode = self._busy_input_mode
         busy_text_mode = getattr(self, "_busy_text_mode", "interrupt")
@@ -10810,6 +10835,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 logger.debug(
                                     "Transcript echo failed (non-fatal): %s", _echo_exc,
                                 )
+                if message_text is None:
+                    return None
                 # NOTE: Previously, when transcription failed (e.g. no STT
                 # provider configured), the gateway also emitted a hardcoded
                 # English notice via `_stt_adapter.send()`. That bypassed the
@@ -13622,7 +13649,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "reply_to": reply_anchor,
                     "metadata": thread_meta,
                 }
-                await adapter.send_voice(**send_kwargs)
+                send_result = await adapter.send_voice(**send_kwargs)
+                if send_result is not None and not getattr(send_result, "success", True):
+                    logger.warning(
+                        "Auto voice reply delivery failed: %s",
+                        getattr(send_result, "error", "send returned success=False"),
+                    )
         except Exception as e:
             logger.warning("Auto voice reply failed: %s", e, exc_info=True)
         finally:
@@ -15698,7 +15730,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("Transcribing user voice: %s", path)
                 result = await asyncio.to_thread(transcribe_audio, path)
                 if result["success"]:
-                    transcript = result["transcript"]
+                    transcript = str(result.get("transcript") or "").strip()
+                    if not transcript:
+                        continue
                     successful_transcripts.append(transcript)
                     # Pass the transcript through as a plain quoted line. The
                     # earlier wording ("The user sent a voice message~ Here's
@@ -15733,7 +15767,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if user_text:
                 return f"{prefix}\n\n{user_text}", successful_transcripts
             return prefix, successful_transcripts
-        return user_text, successful_transcripts
+        return (user_text or None), successful_transcripts
 
     async def _dequeue_pending_with_transcription(
         self,

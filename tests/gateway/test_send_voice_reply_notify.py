@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
@@ -114,3 +114,18 @@ async def test_voice_reply_marks_existing_thread_metadata_without_mutation(monke
         event.source, runner._reply_anchor_for_event(event)
     )
     assert "notify" not in fresh
+
+
+@pytest.mark.asyncio
+async def test_voice_reply_logs_unsuccessful_send_result(monkeypatch, tmp_path, caplog):
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+    _fake_tts_call(monkeypatch)
+
+    send_voice = AsyncMock(return_value=SendResult(success=False, error="chat unavailable"))
+    runner = _runner_with_adapter(send_voice)
+
+    with caplog.at_level("WARNING"):
+        await runner._send_voice_reply(_make_event(), "Hello there.")
+
+    assert "Auto voice reply delivery failed" in caplog.text
+    assert "chat unavailable" in caplog.text

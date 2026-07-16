@@ -37,6 +37,33 @@ def _run_prompt(existing_key, choice, new_key="", provider_id="", pconfig_name="
         return m._prompt_api_key(pconfig, existing_key, provider_id=provider_id)
 
 
+def test_pool_only_key_does_not_offer_or_execute_clear(profile_env, monkeypatch, capsys):
+    from hermes_cli import main as m
+
+    pconfig = _pconfig("deepseek")
+    prompts = []
+
+    def choose_clear(prompt):
+        prompts.append(prompt)
+        return "c"
+
+    monkeypatch.setattr("builtins.input", choose_clear)
+    with patch("hermes_cli.config.save_env_value") as save_env:
+        key, abort = m._prompt_api_key(
+            pconfig,
+            "pool-secret",
+            provider_id="deepseek",
+            existing_source="credential_pool:deepseek",
+        )
+
+    assert key == "pool-secret"
+    assert abort is False
+    assert prompts and "[C]lear" not in prompts[0]
+    assert "[K]eep / [R]eplace" in prompts[0]
+    save_env.assert_not_called()
+    assert "API key cleared" not in capsys.readouterr().out
+
+
 # First-time entry ────────────────────────────────────────────────────────────
 
 def test_first_time_save_new_key(profile_env):

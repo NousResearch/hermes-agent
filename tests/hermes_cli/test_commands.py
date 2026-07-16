@@ -616,6 +616,131 @@ class TestSlashCommandCompleter:
         assert "Skill command" in completions[0].display_meta_text
 
 
+# ── Quick-command completion (config-backed exec / alias) ───────────────
+
+
+def _quick_cmd_config(tmp_path, commands: dict):
+    """Write a config.yaml with the given quick_commands and point HERMES_HOME at it."""
+    import yaml
+
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({"quick_commands": commands}))
+    return str(tmp_path)
+
+
+class TestQuickCommandCompletion:
+    """Quick commands from config.yaml appear in SlashCommandCompleter output."""
+
+    def test_exec_command_completed_with_description(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(
+            "HERMES_HOME",
+            _quick_cmd_config(tmp_path, {
+                "backup": {
+                    "type": "exec",
+                    "command": "tar czf /tmp/backup.tar.gz ~/.hermes",
+                    "description": "Backup Hermes data",
+                },
+            }),
+        )
+        completions = _completions(SlashCommandCompleter(), "/backup")
+        assert len(completions) == 1
+        assert completions[0].text == "backup "  # trailing space on exact match (same as builtins)
+        assert completions[0].display_text == "/backup"
+        assert "Backup Hermes data" in completions[0].display_meta_text
+
+    def test_exec_fallback_when_no_description(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(
+            "HERMES_HOME",
+            _quick_cmd_config(tmp_path, {
+                "disk": {
+                    "type": "exec",
+                    "command": "df -h /",
+                },
+            }),
+        )
+        completions = _completions(SlashCommandCompleter(), "/disk")
+        assert len(completions) == 1
+        meta = completions[0].display_meta_text
+        assert "df -h /" in meta
+
+    def test_alias_command_completed_with_target(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(
+            "HERMES_HOME",
+            _quick_cmd_config(tmp_path, {
+                "restart": {
+                    "type": "alias",
+                    "target": "/gateway restart",
+                },
+            }),
+        )
+        completions = _completions(SlashCommandCompleter(), "/restart")
+        assert len(completions) == 1
+        assert completions[0].text == "restart "  # trailing space on exact match
+        meta = completions[0].display_meta_text
+        assert "alias" in meta
+        assert "/gateway restart" in meta
+
+    def test_prefix_match_filters_other_commands(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(
+            "HERMES_HOME",
+            _quick_cmd_config(tmp_path, {
+                "status": {"type": "exec", "command": "systemctl status hermes"},
+                "stats": {"type": "exec", "command": "echo stats"},
+            }),
+        )
+        completions = _completions(SlashCommandCompleter(), "/sta")
+        texts = {c.text for c in completions}
+        assert "status" in texts
+        assert "stats" in texts
+
+    def test_no_quick_commands_section_yields_nothing(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("display:\n  tool_progress_command: true\n")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        completions = _completions(SlashCommandCompleter(), "/zzz")
+        assert completions == []
+
+    def test_malformed_entries_are_ignored(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(
+            "HERMES_HOME",
+            _quick_cmd_config(tmp_path, {
+                "good": {"type": "exec", "command": "echo hi"},
+                "bad-string": "not a dict",
+                "bad-null": None,
+                "bad-list": [1, 2, 3],
+            }),
+        )
+        completions = _completions(SlashCommandCompleter(), "/good")
+        assert len(completions) == 1
+        assert completions[0].text == "good "  # trailing space on exact match
+
+    def test_unknown_type_uses_type_as_fallback(self, tmp_path, monkeypatch):
+        monkeypatch.setenv(
+            "HERMES_HOME",
+            _quick_cmd_config(tmp_path, {
+                "weird": {"type": "custom-type", "description": "Custom thing"},
+            }),
+        )
+        completions = _completions(SlashCommandCompleter(), "/weird")
+        assert len(completions) == 1
+        assert "Custom thing" in completions[0].display_meta_text
+
+    def test_long_description_truncated(self, tmp_path, monkeypatch):
+        long_desc = "X" * 80
+        monkeypatch.setenv(
+            "HERMES_HOME",
+            _quick_cmd_config(tmp_path, {
+                "long": {"type": "exec", "command": "true", "description": long_desc},
+            }),
+        )
+        completions = _completions(SlashCommandCompleter(), "/long")
+        assert len(completions) == 1
+        meta = completions[0].display_meta_text
+        assert "..." in meta
+        assert len(meta) < len(long_desc) + 10  # ⚡ prefix + truncation
+
+
 # ── Stacked slash-skill completion ──────────────────────────────────────
 
 

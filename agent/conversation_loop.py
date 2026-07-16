@@ -4496,21 +4496,41 @@ def run_conversation(
                     # drifts per continuation even when the visible output
                     # is identical, so including it in the comparison defeats
                     # dedup and causes message storms (#52711).
+                    last_interim_visible = (
+                        agent._interim_assistant_visible_text(last_msg)
+                        if isinstance(last_msg, dict)
+                        else ""
+                    )
+                    current_interim_visible = agent._interim_assistant_visible_text(interim_msg)
+                    if last_interim_visible or current_interim_visible:
+                        same_visible_output = last_interim_visible == current_interim_visible
+                    else:
+                        # Preserve the existing reasoning-only behavior when
+                        # neither response has text eligible for interim delivery.
+                        same_visible_output = (
+                            (last_msg.get("content") or "") == (interim_msg.get("content") or "")
+                            and (last_msg.get("reasoning") or "") == (interim_msg.get("reasoning") or "")
+                        ) if isinstance(last_msg, dict) else False
                     visible_duplicate = (
                         isinstance(last_msg, dict)
                         and last_msg.get("role") == "assistant"
                         and last_msg.get("finish_reason") == "incomplete"
-                        and (last_msg.get("content") or "") == (interim_msg.get("content") or "")
-                        and (last_msg.get("reasoning") or "") == (interim_msg.get("reasoning") or "")
+                        and same_visible_output
                     )
                     if visible_duplicate:
-                        # Update opaque state in-place so the latest
-                        # provider payload is preserved without emitting
-                        # a duplicate visible message.
-                        for _key in ("codex_reasoning_items", "codex_message_items"):
-                            _new_val = interim_msg.get(_key)
-                            if _new_val is not None:
-                                last_msg[_key] = _new_val
+                        # Update replay state in-place so the latest provider
+                        # payload is preserved without re-emitting identical
+                        # user-visible commentary.
+                        for _key in (
+                            "content",
+                            "reasoning",
+                            "reasoning_content",
+                            "reasoning_details",
+                            "codex_reasoning_items",
+                            "codex_message_items",
+                        ):
+                            if _key in interim_msg:
+                                last_msg[_key] = interim_msg[_key]
                     else:
                         messages.append(interim_msg)
                         agent._emit_interim_assistant_message(interim_msg)
@@ -4844,8 +4864,23 @@ def run_conversation(
                 # a LATER tool round.
                 agent._post_tool_empty_retried = False
 
+                previous_msg = messages[-1] if messages else None
+                current_interim_visible = agent._interim_assistant_visible_text(assistant_msg)
+                previous_interim_visible = (
+                    agent._interim_assistant_visible_text(previous_msg)
+                    if isinstance(previous_msg, dict)
+                    else ""
+                )
+                duplicate_previous_interim = (
+                    bool(current_interim_visible)
+                    and isinstance(previous_msg, dict)
+                    and previous_msg.get("role") == "assistant"
+                    and previous_msg.get("finish_reason") == "incomplete"
+                    and previous_interim_visible == current_interim_visible
+                )
                 messages.append(assistant_msg)
-                agent._emit_interim_assistant_message(assistant_msg)
+                if not duplicate_previous_interim:
+                    agent._emit_interim_assistant_message(assistant_msg)
                 try:
                     # Persist the assistant tool-call turn before any tool
                     # side effects run. If a destructive tool restarts or

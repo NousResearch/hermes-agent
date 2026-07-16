@@ -58,6 +58,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     source TEXT NOT NULL,
     user_id TEXT,
+    session_key TEXT,
+    chat_id TEXT,
+    chat_type TEXT,
+    thread_id TEXT,
+    display_name TEXT,
+    origin_json TEXT,
+    expiry_finalized INTEGER DEFAULT 0,
     model TEXT,
     model_config TEXT,
     system_prompt TEXT,
@@ -73,6 +80,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     cache_write_tokens INTEGER DEFAULT 0,
     reasoning_tokens INTEGER DEFAULT 0,
     cwd TEXT,
+    git_branch TEXT,
+    git_repo_root TEXT,
     billing_provider TEXT,
     billing_base_url TEXT,
     billing_mode TEXT,
@@ -86,6 +95,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     handoff_state TEXT,
     handoff_platform TEXT,
     handoff_error TEXT,
+    compression_failure_cooldown_until DOUBLE PRECISION,
+    compression_failure_error TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
@@ -109,7 +120,8 @@ CREATE TABLE IF NOT EXISTS messages (
     codex_message_items TEXT,
     platform_message_id TEXT,
     observed INTEGER DEFAULT 0,
-    active INTEGER NOT NULL DEFAULT 1
+    active INTEGER NOT NULL DEFAULT 1,
+    compacted INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -136,6 +148,12 @@ CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_session_key
+    ON sessions(session_key, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_gateway_peer
+    ON sessions(source, user_id, chat_id, chat_type, thread_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_handoff_state
+    ON sessions(handoff_state, started_at);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
@@ -230,6 +248,38 @@ _PG_ONLY_MIGRATIONS: List[PostgresMigration] = [
             " ADD COLUMN IF NOT EXISTS fts_content tsvector;\n"
             "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_messages_fts_gin"
             "    ON messages USING GIN (fts_content)"
+        ),
+    ),
+    # v20 — Sync sessions + messages columns to upstream SCHEMA_VERSION=19.
+    # Sessions gained: session_key, chat_id, chat_type, thread_id,
+    #   display_name, origin_json, expiry_finalized, git_branch, git_repo_root,
+    #   compression_failure_cooldown_until, compression_failure_error.
+    # Messages gained: compacted.
+    # All ADD COLUMN IF NOT EXISTS — idempotent on fresh installs where
+    # SCHEMA_SQL_POSTGRES already has these columns. optional=True so a
+    # transient failure retries on the next connect without hard-failing boot.
+    PostgresMigration(
+        version=20,
+        optional=True,
+        sql=(
+            "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS session_key TEXT;\n"
+            "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS chat_id TEXT;\n"
+            "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS chat_type TEXT;\n"
+            "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS thread_id TEXT;\n"
+            "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS display_name TEXT;\n"
+            "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS origin_json TEXT;\n"
+            "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS expiry_finalized INTEGER DEFAULT 0;\n"
+            "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS git_branch TEXT;\n"
+            "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS git_repo_root TEXT;\n"
+            "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS compression_failure_cooldown_until DOUBLE PRECISION;\n"
+            "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS compression_failure_error TEXT;\n"
+            "ALTER TABLE messages ADD COLUMN IF NOT EXISTS compacted INTEGER NOT NULL DEFAULT 0;\n"
+            "CREATE INDEX IF NOT EXISTS idx_sessions_session_key"
+            "    ON sessions(session_key, started_at DESC);\n"
+            "CREATE INDEX IF NOT EXISTS idx_sessions_gateway_peer"
+            "    ON sessions(source, user_id, chat_id, chat_type, thread_id, started_at DESC);\n"
+            "CREATE INDEX IF NOT EXISTS idx_sessions_handoff_state"
+            "    ON sessions(handoff_state, started_at)"
         ),
     ),
 ]
@@ -665,6 +715,19 @@ class _PostgresCursor:
                 self.execute(statement)
         return self
 
+    def executemany(self, sql: str, seq_of_params):
+        """Execute *sql* once per row in *seq_of_params*.
+
+        Translates the same closed set of SQLite idioms as ``execute`` and
+        delegates to the underlying psycopg cursor's ``executemany``.
+        ``lastrowid`` is not set (matches sqlite3 behaviour for executemany).
+        """
+        translated = _translate_sql(sql)
+        params_list = list(seq_of_params)
+        if params_list:
+            self._cursor.executemany(translated, params_list)
+        return self
+
     def fetchone(self):
         row = self._cursor.fetchone()
         if row is None:
@@ -841,6 +904,9 @@ class _PostgresConnection:
 
     def execute(self, sql: str, params: Any = ()) -> _PostgresCursor:
         return self.cursor().execute(sql, params)
+
+    def executemany(self, sql: str, seq_of_params) -> _PostgresCursor:
+        return self.cursor().executemany(sql, seq_of_params)
 
     def executescript(self, sql_script: str) -> _PostgresCursor:
         return self.cursor().executescript(sql_script)

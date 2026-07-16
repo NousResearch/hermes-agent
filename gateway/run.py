@@ -1928,6 +1928,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
         "api_mode": runtime.get("api_mode"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
+        "acp_cwd": runtime.get("acp_cwd"),
         "credential_pool": runtime.get("credential_pool"),
         "max_tokens": max_tokens,
     }
@@ -1950,6 +1951,7 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
         "api_mode": runtime.get("api_mode"),
         "command": runtime.get("command"),
         "args": list(runtime.get("args") or []),
+        "acp_cwd": runtime.get("acp_cwd"),
         "credential_pool": runtime.get("credential_pool"),
     }
 
@@ -2014,6 +2016,7 @@ def _try_resolve_fallback_provider() -> dict | None:
                     "api_mode": runtime.get("api_mode"),
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
+                    "acp_cwd": runtime.get("acp_cwd"),
                     "credential_pool": runtime.get("credential_pool"),
                     "model": entry.get("model"),
                 }
@@ -3969,6 +3972,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "api_mode": runtime_kwargs.get("api_mode"),
             "command": runtime_kwargs.get("command"),
             "args": list(runtime_kwargs.get("args") or []),
+            "acp_cwd": runtime_kwargs.get("acp_cwd"),
             "credential_pool": runtime_kwargs.get("credential_pool"),
             "max_tokens": runtime_kwargs.get("max_tokens"),
         }
@@ -3982,6 +3986,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 runtime["api_mode"],
                 runtime["command"],
                 tuple(runtime["args"]),
+                runtime["acp_cwd"],
             ),
         }
 

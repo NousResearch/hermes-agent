@@ -3176,6 +3176,7 @@ def run_job(
             api_mode=runtime.get("api_mode"),
             acp_command=runtime.get("command"),
             acp_args=runtime.get("args"),
+            acp_cwd=runtime.get("acp_cwd"),
             max_iterations=max_iterations,
             reasoning_config=reasoning_config,
             prefill_messages=prefill_messages,

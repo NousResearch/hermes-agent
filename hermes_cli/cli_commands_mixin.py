@@ -1641,6 +1641,7 @@ class CLICommandsMixin:
                     api_mode=turn_route["runtime"].get("api_mode"),
                     acp_command=turn_route["runtime"].get("command"),
                     acp_args=turn_route["runtime"].get("args"),
+                    acp_cwd=turn_route["runtime"].get("acp_cwd"),
                     max_tokens=turn_route["runtime"].get("max_tokens"),
                     max_iterations=self.max_turns,
                     enabled_toolsets=self.enabled_toolsets,

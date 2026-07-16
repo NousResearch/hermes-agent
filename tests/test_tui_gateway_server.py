@@ -7637,6 +7637,7 @@ def _setup_make_agent_mocks(monkeypatch, cfg):
             "api_mode": None,
             "command": None,
             "args": None,
+            "acp_cwd": None,
             "credential_pool": None,
         },
     )
@@ -7709,6 +7710,7 @@ def test_make_agent_uses_session_runtime_overrides(monkeypatch):
             "api_mode": None,
             "command": None,
             "args": None,
+            "acp_cwd": "/remote/workspace",
             "credential_pool": None,
         }
 
@@ -7730,6 +7732,7 @@ def test_make_agent_uses_session_runtime_overrides(monkeypatch):
     assert resolved == {"requested": "openai-codex", "target_model": "gpt-5.4"}
     assert mock_agent.call_args.kwargs["model"] == "gpt-5.4"
     assert mock_agent.call_args.kwargs["provider"] == "openai-codex"
+    assert mock_agent.call_args.kwargs["acp_cwd"] == "/remote/workspace"
     assert mock_agent.call_args.kwargs["reasoning_config"] == {"enabled": True, "effort": "high"}
     assert mock_agent.call_args.kwargs["service_tier"] == "priority"
 

@@ -157,6 +157,19 @@ delegation:
 
 If omitted, subagents use the same model as the parent.
 
+For a subprocess-backed ACP provider, `delegation.acp_cwd` sets the working
+directory sent to the child and overrides an inherited `model.acp_cwd`:
+
+```yaml
+delegation:
+  model: "copilot-acp"
+  provider: "copilot-acp"
+  acp_cwd: "/remote/workspace"
+```
+
+This is useful when the ACP command launches through SSH and the parent's local
+working directory does not exist on the remote host.
+
 ## Toolset Selection Tips
 
 The `toolsets` parameter controls what tools the subagent has access to. Choose based on the task:
@@ -289,6 +302,7 @@ delegation:
   # orchestrator_enabled: true              # Disable to force all children to leaf role.
   model: "google/gemini-3-flash-preview"             # Optional provider/model override
   provider: "openrouter"                             # Optional built-in provider
+  # acp_cwd: "/remote/workspace"                     # Working directory for an ACP/SSH child
   api_mode: anthropic_messages                       # optional; auto-detected from base_url for anthropic_messages endpoints
 
 # Or use a direct custom endpoint instead of provider:

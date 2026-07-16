@@ -636,6 +636,7 @@ class SessionManager:
                     "api_key": runtime.get("api_key"),
                     "command": runtime.get("command"),
                     "args": list(runtime.get("args") or []),
+                    "acp_cwd": runtime.get("acp_cwd"),
                 }
             )
         except Exception:

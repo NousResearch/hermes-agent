@@ -181,6 +181,7 @@ def test_runtime_resolution_rebuilds_agent_on_routing_change(monkeypatch):
             "api_mode": "codex_responses",
             "base_url": "https://same-endpoint.example/v1",
             "api_key": "same-key",
+            "acp_cwd": "/remote/workspace",
             "source": "env/config",
         }
 
@@ -198,6 +199,7 @@ def test_runtime_resolution_rebuilds_agent_on_routing_change(monkeypatch):
     assert shell.agent is None
     assert shell.provider == "openai-codex"
     assert shell.api_mode == "codex_responses"
+    assert shell.acp_cwd == "/remote/workspace"
 
 
 def test_cli_turn_routing_uses_primary_when_disabled(monkeypatch):
@@ -207,11 +209,13 @@ def test_cli_turn_routing_uses_primary_when_disabled(monkeypatch):
     shell.api_mode = "chat_completions"
     shell.base_url = "https://openrouter.ai/api/v1"
     shell.api_key = "sk-primary"
+    shell.acp_cwd = "/remote/workspace"
 
     result = shell._resolve_turn_agent_config("what time is it in tokyo?")
 
     assert result["model"] == "gpt-5"
     assert result["runtime"]["provider"] == "openrouter"
+    assert result["runtime"]["acp_cwd"] == "/remote/workspace"
 
 
 def test_cli_prefers_config_provider_over_stale_env_override(monkeypatch):

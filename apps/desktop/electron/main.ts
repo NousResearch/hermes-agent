@@ -55,6 +55,7 @@ import {
   resolveTestWsUrl,
   tokenPreview
 } from './connection-config'
+import { fetchRemoteSessionListWithFallback } from './remote-session-compat'
 import { adoptServedDashboardToken } from './dashboard-token'
 import {
   buildPosixCleanupScript,
@@ -8075,12 +8076,24 @@ async function interceptSessionRequestForRemote(request) {
 
   if (method === 'GET' && pathname === '/api/profiles/sessions') {
     const remoteProfiles = configuredRemoteProfileNames()
+    const requested = (searchParams.get('profile') || 'all').trim() || 'all'
 
     if (remoteProfiles.length === 0) {
-      return undefined // no remote profiles → local fast path
-    }
+      if (!globalRemoteActive()) {
+        return undefined // no remote profiles → local fast path
+      }
 
-    const requested = (searchParams.get('profile') || 'all').trim() || 'all'
+      // Older remote backends expose the single-profile /api/sessions API but
+      // not Desktop's newer cross-profile aggregator. Try the aggregate path
+      // first and fall back only when that endpoint is explicitly missing.
+      const query = searchParams.toString()
+      return fetchRemoteSessionListWithFallback(
+        path => fetchJsonForProfile(null, path),
+        `${pathname}${query ? `?${query}` : ''}`,
+        `/api/sessions${query ? `?${query}` : ''}`,
+        requested
+      )
+    }
 
     if (requested !== 'all') {
       return profileHasRemoteOverride(requested) ? remoteSessionList(requested, searchParams) : undefined

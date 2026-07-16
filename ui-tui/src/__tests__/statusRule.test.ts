@@ -69,7 +69,8 @@ describe('statusBarSegments', () => {
       voice: true,
       bg: true,
       subagents: true,
-      cost: true
+      cost: true,
+      cronTicker: true,
     })
   })
 

@@ -691,7 +691,7 @@ class TestCronTickerStatusBar:
                 "completion_tokens": 2220,
                 "total_tokens": 12450,
                 "api_calls": 7,
-                "duration_label": "15m",
+                "duration": "15m",
                 "cron_ticker_state": "alive",
                 "cron_heartbeat_age": 45.0,
             }
@@ -713,7 +713,7 @@ class TestCronTickerStatusBar:
                 "completion_tokens": 2220,
                 "total_tokens": 12450,
                 "api_calls": 7,
-                "duration_label": "15m",
+                "duration": "15m",
                 "cron_ticker_state": "stale",
                 "cron_heartbeat_age": 350.0,
             }
@@ -736,7 +736,7 @@ class TestCronTickerStatusBar:
                 "completion_tokens": 2220,
                 "total_tokens": 12450,
                 "api_calls": 7,
-                "duration_label": "15m",
+                "duration": "15m",
                 "cron_ticker_state": None,
             }
             text = cli_obj._build_status_bar_text(width=120)
@@ -758,7 +758,7 @@ class TestCronTickerStatusBar:
                 "completion_tokens": 2220,
                 "total_tokens": 12450,
                 "api_calls": 7,
-                "duration_label": "15m",
+                "duration": "15m",
             }
             text = cli_obj._build_status_bar_text(width=120)
             assert "⏱ cron" not in text
@@ -779,7 +779,7 @@ class TestCronTickerStatusBar:
                 "completion_tokens": 2220,
                 "total_tokens": 12450,
                 "api_calls": 7,
-                "duration_label": "15m",
+                "duration": "15m",
                 "cron_ticker_state": "alive",
                 "cron_heartbeat_age": 30.0,
             }
@@ -836,7 +836,7 @@ class TestCronTickerStatusBar:
                 "completion_tokens": 2220,
                 "total_tokens": 12450,
                 "api_calls": 7,
-                "duration_label": "15m",
+                "duration": "15m",
                 "cron_ticker_state": "alive",
                 "cron_heartbeat_age": 30.0,
             }
@@ -871,7 +871,7 @@ class TestCronTickerStatusBar:
                 "completion_tokens": 2220,
                 "total_tokens": 12450,
                 "api_calls": 7,
-                "duration_label": "15m",
+                "duration": "15m",
                 "cron_ticker_state": "stale",
                 "cron_heartbeat_age": 350.0,
             }

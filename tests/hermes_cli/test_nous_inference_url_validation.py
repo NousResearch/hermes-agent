@@ -189,28 +189,58 @@ class TestEnvOverrideNotGated:
     """The documented dev/staging env-var override must keep working.
 
     ``NOUS_INFERENCE_BASE_URL`` is read by ``resolve_nous_runtime_credentials``
-    via ``os.getenv`` — that path doesn't pass through the validator
-    (env values are trusted because the user set them themselves).
-    Verify the env-var read site does NOT consult the validator, so a
-    user running against a non-allowlisted staging host via env is not
-    inadvertently broken by this fix.
+    through the profile-aware secret resolver. Profile values remain trusted
+    user configuration and do not pass through the network validator.
     """
 
-    def test_env_override_path_does_not_call_validator(self):
-        """In resolve_nous_runtime_credentials, the env override is
-        read via os.getenv directly, not via the validator. Grep the
-        source to confirm: the env line should NOT mention the
-        validator."""
+    def test_single_profile_env_override_is_not_gated(self, monkeypatch):
+        """A single-profile staging override remains supported."""
         import hermes_cli.auth as _auth_mod
-        from pathlib import Path
-        source = Path(_auth_mod.__file__).read_text(encoding="utf-8")
-        # Find the env-override read line.
-        for line in source.splitlines():
-            if "NOUS_INFERENCE_BASE_URL" in line and "os.getenv" in line:
-                assert "_validate_nous_inference_url_from_network" not in line, (
-                    "env override path must not gate through the network "
-                    "validator — it would break documented dev/staging use."
-                )
+
+        override = "https://staging-profile.example/v1/"
+        monkeypatch.setenv("NOUS_INFERENCE_BASE_URL", override)
+
+        assert _auth_mod._nous_inference_env_override() == override.rstrip("/")
+
+    def test_missing_profile_override_does_not_use_process_endpoint(
+        self, monkeypatch
+    ):
+        """A profile without an override must not inherit another profile's URL."""
+        import hermes_cli.auth as auth
+        from agent import secret_scope
+
+        monkeypatch.setenv(
+            "NOUS_INFERENCE_BASE_URL",
+            "https://foreign-profile.example/v1",
+        )
+        secret_scope.set_multiplex_active(True)
+        scope_token = secret_scope.set_secret_scope({})
+        try:
+            assert auth._nous_inference_env_override() is None
+        finally:
+            secret_scope.reset_secret_scope(scope_token)
+            secret_scope.set_multiplex_active(False)
+
+    def test_profile_override_wins_over_process_endpoint(self, monkeypatch):
+        """The active profile's endpoint remains a supported runtime override."""
+        import hermes_cli.auth as auth
+        from agent import secret_scope
+
+        monkeypatch.setenv(
+            "NOUS_INFERENCE_BASE_URL",
+            "https://foreign-profile.example/v1",
+        )
+        secret_scope.set_multiplex_active(True)
+        scope_token = secret_scope.set_secret_scope(
+            {"NOUS_INFERENCE_BASE_URL": "https://active-profile.example/v1"}
+        )
+        try:
+            assert auth._nous_inference_env_override() == (
+                "https://active-profile.example/v1"
+            )
+        finally:
+            secret_scope.reset_secret_scope(scope_token)
+            secret_scope.set_multiplex_active(False)
 
 
 class TestHealsPoisonedStoredValue:

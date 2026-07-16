@@ -5238,6 +5238,41 @@ def run_conversation(
                     final_response = None
                     continue
 
+                # ── Declarative Intent Guard ──────────────────────────
+                # Detects "Now I'll X" / "Let me X" text with zero tool calls.
+                # Same architectural pattern as verify_on_stop: intercepts
+                # text-only terminal turns and injects a synthetic nudge.
+                _intent_nudge = None
+                try:
+                    from agent.declarative_intent_guard import (
+                        build_declarative_intent_nudge,
+                        declarative_intent_guard_enabled,
+                    )
+                    if declarative_intent_guard_enabled():
+                        _intent_nudge = build_declarative_intent_nudge(
+                            response_text=final_response or "",
+                            turn_tool_count=_turn_tool_count,
+                            attempts=getattr(agent, "_declarative_intent_nudges", 0),
+                        )
+                except Exception:
+                    pass
+
+                if _intent_nudge:
+                    agent._declarative_intent_nudges = (
+                        getattr(agent, "_declarative_intent_nudges", 0) + 1
+                    )
+                    messages.append(final_msg)
+                    messages.append({
+                        "role": "user",
+                        "content": _intent_nudge,
+                        "_declarative_intent_synthetic": True,
+                    })
+                    agent._session_messages = messages
+                    logger.debug("declarative-intent nudge issued (attempt %d)",
+                                 agent._declarative_intent_nudges)
+                    final_response = None
+                    continue
+
                 # User verification-loop gate: when the agent edited code this
                 # turn, let a registered `pre_verify` hook (plugin/shell) keep it
                 # going one more turn. The shipped guidance is folded into the

@@ -929,7 +929,7 @@ export const ar: Translations = {
     bearerStoredHint:
       "يُخزَّن في ملف ‎.env الخاص بهذا الملف الشخصي؛ ولا يحتفظ config.yaml إلا بإشارة إلى متغيّر بيئة.",
     oauthHint:
-      "أضف الخادم ثم استخدم «مصادقة». يفتح هرمس متصفح OAuth على الجهاز الذي يشغّل خلفية اللوحة.",
+      "أضف الخادم ثم استخدم «مصادقة». يفتح هرمس متصفح OAuth على الجهاز الذي يشغّل خلفية لوحة التحكم.",
     authenticate: "مصادقة",
     authenticateWithOAuth: "المصادقة عبر OAuth",
     oauthComplete: "{name}: اكتملت مصادقة OAuth",

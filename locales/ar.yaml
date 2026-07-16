@@ -361,7 +361,7 @@ gateway:
     label_estimated_context:  "السياق التقديري: نحو {count} توكن"
     detailed_after_first:     "_(يتوفر الاستخدام التفصيلي بعد أول استجابة من الوكيل)_"
     no_data:                  "لا توجد بيانات استخدام متاحة لهذه الجلسة."
-    unknown_subcommand:       "أمر فرعي غير معروف لـ `/usage`: ‏`{args}`. جرّب `/usage` أو `/usage reset [--force]`."
+    unknown_subcommand:       "أمر فرعي غير معروف لـ `/usage`: `{args}`. جرّب `/usage` أو `/usage reset [--force]`."
     reset_wrong_provider:     "تصفير الاستخدام المُجمَّع متاح فقط على مزوّد openai-codex. بدّل المزوّد أولًا عبر `/model`."
 
   credits:

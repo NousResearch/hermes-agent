@@ -4119,7 +4119,7 @@ export const ar: Translations = {
       'هذه المحادثة ما تزال تعمل (أو تنتظر إدخالك). إغلاق التبويب يخفيها — تحتفظ الجلسة بتقدّمها ويمكن إعادة فتحها من الشريط الجانبي.',
     closeRunningConfirm: 'إغلاق التبويب',
     closeOthers: 'إغلاق البقية',
-    closeToRight: 'إغلاق ما إلى اليمين',
+    closeToRight: 'إغلاق ما على اليمين',
     closeAll: 'إغلاق الكل',
     split: dir => `تقسيم ${dir}`,
     move: dir => `نقل ${dir}`,
@@ -4148,7 +4148,8 @@ export const ar: Translations = {
     templatePriority: 'أولوية',
     zoneTag: index => `منطقة ${index}`,
     mergeZones: count => (count === 2 ? 'دمج منطقتين' : count <= 10 ? `دمج ${count} مناطق` : `دمج ${count} منطقة`),
-    customZoneName: count => `مخصّص من ${count} مناطق`,
+    customZoneName: count =>
+      count === 2 ? 'مخصّص من منطقتين' : count <= 10 ? `مخصّص من ${count} مناطق` : `مخصّص من ${count} منطقة`,
     layoutNamePlaceholder: fallback => `اسم التخطيط (${fallback})`,
     saveApply: 'حفظ وتطبيق',
     notExpressible: 'هذا الترتيب متشابك (كالمروحة) — لا يمكن تمثيله بتقسيمات متداخلة بعد',

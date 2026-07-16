@@ -6,14 +6,18 @@ Guards, in the order the tools apply them: ``_check_sensitive_path`` (hard
 deny), ``_check_binary_document_write``, ``_check_protected_instruction_write``
 (ALWAYS ask), ``_check_approval_required_write`` (normal gate),
 ``_check_cross_profile_path`` (sandbox-mirror lost-work), ``_is_internal_file_tool_content``.
+``_stale_overwrite_blocker`` (write_file only, under the per-path lock) refuses a
+whole-file overwrite of content this task never saw or that changed since.
 """
 
 import fnmatch
 import os
 from pathlib import Path
 
+from tools import file_state
 from tools.binary_extensions import has_opaque_document_extension, is_pdf_path
 from tools.file_tools_paths import _expand_tilde, _resolve_path_for_task
+from tools.file_tools_read_tracking import _check_file_staleness, _has_full_write_baseline
 
 # Prefixes matched after realpath. macOS: /private/var mirrors /var — block the
 # sensitive subtrees only; a blanket "/private/var/" refuses every temp-file
@@ -439,6 +443,53 @@ _READ_DEDUP_STATUS_MESSAGE = (
     "File unchanged since last read. The content from "
     "the earlier read_file result in this conversation is "
     "still current — refer to that instead of re-reading.")
+
+
+def _stale_overwrite_blocker(filepath: str, resolved: str | None, task_id: str) -> str | None:
+    """Reason write_file must NOT replace the existing file, else ``None``.
+
+    Refuses BEFORE any disk mutation (the pre-#65604 warning arrived after the
+    clobber): a sibling/external/partial-read staleness finding, or an existing
+    file with no full-content baseline for this task (never read in full, read
+    redacted, only patched, or evicted by compaction). Net-new files, files this
+    task fully read or wrote, unresolvable paths and the file-state kill switch
+    all let the write proceed.
+    """
+    if file_state.guard_disabled():
+        return None
+    stale = (file_state.check_stale(task_id, resolved) if resolved else None) or _check_file_staleness(filepath, task_id)
+    if stale:
+        return stale
+    if not resolved or _has_full_write_baseline(resolved, task_id):
+        return None
+    try:
+        exists = Path(resolved).exists()
+    except OSError:
+        return None
+    if not exists:
+        return None
+    return (
+        f"{resolved} exists but this task has not read it in full (or only saw a "
+        "redacted/partial view). Read the file before using write_file so a stale "
+        "conversation copy cannot overwrite the current disk content.")
+
+
+def _stale_write_refusal(filepath: str, reason: str, resolved: str | None = None) -> dict:
+    """Model-facing refusal payload for write_file; ``stale_write_blocked`` lets
+    callers tell it apart from I/O errors."""
+    result = {
+        "error": (
+            f"Refusing to overwrite {filepath}: {reason} "
+            "The file was NOT modified. Use read_file to reload the current "
+            "contents, merge the requested change, then call write_file again. "
+            "For small edits, prefer patch so existing unrelated changes are "
+            "preserved."),
+        "stale_write_blocked": True,
+        "path": filepath,
+    }
+    if resolved:
+        result["resolved_path"] = resolved
+    return result
 
 
 def _is_internal_file_status_text(content: str) -> bool:

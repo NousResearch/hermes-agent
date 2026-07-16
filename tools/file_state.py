@@ -32,6 +32,12 @@ def _disabled() -> bool:
     return os.environ.get("HERMES_DISABLE_FILE_STATE_GUARD", "").strip() == "1"
 
 
+def guard_disabled() -> bool:
+    """True when the user switched the read-before-write guard off; the file
+    tools then warn instead of refusing stale/unread write_file overwrites."""
+    return _disabled()
+
+
 def _mtime_or_none(resolved: str) -> Optional[float]:
     try:
         return os.path.getmtime(resolved)

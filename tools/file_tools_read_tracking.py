@@ -7,7 +7,10 @@ call), ``read_history`` (diagnostics), ``dedup`` (key -> mtime; survives context
 compression), ``dedup_generation_reads`` (keys whose full content was served since
 the last compaction boundary; cleared on compression so one recovery read returns
 full content), ``dedup_hits`` (stub-loop breaker), ``read_timestamps``
-(staleness warnings) and ``not_found`` (short-TTL negative cache). Every
+(staleness warnings), ``full_write_baselines`` (resolved paths whose whole-file
+content this task saw via a full unredacted read_file or wrote via write_file;
+required before write_file may overwrite an existing file — patch never
+qualifies) and ``not_found`` (short-TTL negative cache). Every
 container is hard-capped (``_cap_read_tracker_data``) so long sessions stay small.
 """
 
@@ -35,6 +38,7 @@ _PATCH_FAILURE_PATHS_CAP = 64
 _READ_HISTORY_CAP = 500
 _DEDUP_CAP = 1000
 _READ_TIMESTAMPS_CAP = 1000
+_FULL_WRITE_BASELINES_CAP = 1000
 _NOT_FOUND_CAP = 500
 _NOT_FOUND_TTL_SECONDS = 60.0  # a path that didn't exist may be created soon
 
@@ -46,7 +50,8 @@ def _task_data(task_id: str) -> dict:
         "last_key": None, "consecutive": 0, "read_history": set()})
     for key in ("dedup", "dedup_hits", "read_timestamps"):
         task_data.setdefault(key, {})
-    task_data.setdefault("dedup_generation_reads", set())
+    for key in ("dedup_generation_reads", "full_write_baselines"):
+        task_data.setdefault(key, set())
     return task_data
 
 
@@ -80,6 +85,7 @@ def _cap_read_tracker_data(task_data: dict) -> None:
         ("dedup_hits", _DEDUP_CAP),
         ("dedup_generation_reads", _DEDUP_CAP),
         ("read_timestamps", _READ_TIMESTAMPS_CAP),
+        ("full_write_baselines", _FULL_WRITE_BASELINES_CAP),
         ("not_found", _NOT_FOUND_CAP)):
         container = task_data.get(key)
         if container is not None and len(container) > cap:
@@ -160,6 +166,9 @@ def reset_file_dedup(task_id: str = None):
             if "dedup_hits" in task_data:
                 task_data["dedup_hits"].clear()
             task_data.setdefault("dedup_generation_reads", set()).clear()
+            # The summary may have dropped the exact bytes the baseline vouched
+            # for: a full overwrite needs a fresh read_file after compaction.
+            task_data.setdefault("full_write_baselines", set()).clear()
 
 
 def notify_other_tool_call(task_id: str = "default"):
@@ -217,6 +226,22 @@ def _update_read_timestamp(filepath: str, task_id: str) -> None:
         if task_data is not None:
             task_data.setdefault("read_timestamps", {})[resolved] = current_mtime
             _cap_read_tracker_data(task_data)
+
+
+def _mark_full_write_baseline(resolved: str, task_id: str) -> None:
+    """Record that *task_id* saw the whole current content of *resolved* (full
+    unredacted read_file, or its own successful write_file), so a later
+    write_file may replace the file. Acquires the lock itself."""
+    with _read_tracker_lock:
+        task_data = _task_data(task_id)
+        task_data["full_write_baselines"].add(str(resolved))
+        _cap_read_tracker_data(task_data)
+
+
+def _has_full_write_baseline(resolved: str, task_id: str) -> bool:
+    with _read_tracker_lock:
+        task_data = _read_tracker.get(task_id) or {}
+        return str(resolved) in task_data.get("full_write_baselines", set())
 
 
 def _check_file_staleness(filepath: str, task_id: str) -> str | None:

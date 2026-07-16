@@ -30,12 +30,12 @@ from tools.file_tools_paths import (
 from tools.file_tools_write_guards import (
     _READ_DEDUP_STATUS_MESSAGE, _check_approval_required_write, _check_binary_document_write,
     _check_cross_profile_path, _check_protected_instruction_write, _check_sensitive_path,
-    _is_internal_file_tool_content)
+    _is_internal_file_tool_content, _stale_overwrite_blocker, _stale_write_refusal)
 from tools.file_tools_read_tracking import (
     _bump_consecutive, _cap_read_tracker_data, _check_file_staleness, _check_not_found_cache,
-    _mark_verification_stale, _patch_failure_lock, _patch_failure_tracker, _read_tracker,
-    _read_tracker_lock, _record_not_found, _record_patch_failure, _reset_patch_failures,
-    _task_data, _update_read_timestamp)
+    _mark_full_write_baseline, _mark_verification_stale, _patch_failure_lock,
+    _patch_failure_tracker, _read_tracker, _read_tracker_lock, _record_not_found,
+    _record_patch_failure, _reset_patch_failures, _task_data, _update_read_timestamp)
 
 logger = logging.getLogger(__name__)
 
@@ -492,11 +492,15 @@ def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str) -> str:
 
 
 def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_str: str,
-                            offset: int, limit: int, dedup_key: tuple, *, partial: bool) -> int:
+                            offset: int, limit: int, dedup_key: tuple, *, partial: bool,
+                            redacted: bool = False) -> int:
     """Bookkeeping after a real (non-stub) read; returns the consecutive-read count.
 
     Per-task tracker under the lock (stub counter, history, consecutive count,
-    mtime for dedup + staleness). Then OUTSIDE our lock (no nested locking): the
+    mtime for dedup + staleness, and — for a full UNREDACTED read — the write_file
+    baseline: a redacted read returned a non-round-trippable ``«redacted:…»``
+    sentinel, so it must not bless an overwrite that would persist the sentinel
+    into a credential file). Then OUTSIDE our lock (no nested locking): the
     cross-agent registry, and the background-review read-mark (a FULL read of a
     skill file counts like skill_view so a follow-up skill_manage(patch) is accepted).
     """
@@ -511,6 +515,8 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
             task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
         except OSError:
             pass
+        if not partial and not redacted:
+            task_data.setdefault("full_write_baselines", set()).add(resolved_str)
         _cap_read_tracker_data(task_data)
 
     try:
@@ -620,8 +626,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
             result.content = _apply_char_budget(
                 result_dict, result.content or "", offset,
                 result_dict.get("total_lines", "unknown"), max_chars)
+        redacted = False
         if result.content:
-            result.content = redact_sensitive_text(result.content, file_read=True)
+            unredacted = result.content
+            result.content = redact_sensitive_text(unredacted, file_read=True)
+            redacted = result.content != unredacted
             result_dict["content"] = result.content
 
         if (file_size and file_size > _LARGE_FILE_HINT_BYTES
@@ -632,7 +641,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 "to keep context usage efficient."))
 
         count = _record_successful_read(task_data, task_id, path, resolved_str, offset, limit,
-                                        dedup_key, partial=(offset > 1) or bool(result_dict.get("truncated")))
+                                        dedup_key, partial=(offset > 1) or bool(result_dict.get("truncated")),
+                                        redacted=redacted)
         if count >= 4:
             return tool_error(
                 f"BLOCKED: You have read this exact file region {count} times in a row. "
@@ -783,6 +793,12 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                 # Per-path lock serializes read→modify→write across concurrent
                 # subagents; different paths stay fully parallel.
                 _lock.enter_context(file_state.lock_path(_resolved))
+            # A whole-file overwrite of content this task never saw, or that
+            # changed since, is refused HERE — before the write — instead of
+            # warning after the clobber (#65604). Nothing below runs.
+            blocker = _stale_overwrite_blocker(path, _resolved, task_id)
+            if blocker:
+                return json.dumps(_stale_write_refusal(path, blocker, _resolved), ensure_ascii=False)
             warnings = _edit_warnings([path], path_to_resolved, task_id)
             rewrite_hint = _whole_file_rewrite_hint(task_id, _resolved, content)
             result_dict = _get_file_ops(task_id).write_file(_resolved or path, content).to_dict()
@@ -799,6 +815,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             else:
                 if _resolved:
                     result_dict["files_modified"] = [_resolved]
+                    # Own write = current whole-file content: consecutive
+                    # same-task writes stay unblocked. patch never does this.
+                    _mark_full_write_baseline(_resolved, task_id)
                 _note_edited(task_id, [path], path_to_resolved, session_id)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
@@ -1037,7 +1056,7 @@ READ_FILE_SCHEMA = {
 
 WRITE_FILE_SCHEMA = {
     "name": "write_file",
-    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out). The result's verified:true means the on-disk content hash was confirmed — do NOT re-read the file to check the write landed.",
+    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. For an EXISTING file, call read_file first: write_file refuses (file untouched) when this task has no current full read/write of the file or the file changed on disk since; on refusal, read_file, merge, then retry. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out). The result's verified:true means the on-disk content hash was confirmed — do NOT re-read the file to check the write landed.",
     "parameters": {
         "type": "object",
         "properties": {

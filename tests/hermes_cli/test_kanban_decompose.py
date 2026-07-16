@@ -399,3 +399,174 @@ def test_decompose_allows_unknown_brand(kanban_home, monkeypatch):
     # mismatch. It may still stop later (e.g. no auxiliary client in tests);
     # the point is the gate did not fire on a null brand.
     assert "does not match active board" not in (outcome.reason or "")
+
+
+# ---------------------------------------------------------------------------
+# Acceptance addendum (definition-of-done propagation into child bodies)
+# ---------------------------------------------------------------------------
+
+_CHARTER_TEXT = """# REVIEW charter
+
+## 1. Quality bar
+- generic quality prose
+
+## 2. Always verify
+- re-run the implementer's stated verification steps
+
+## 3. Automatic FAIL
+- secrets in any artifact
+- unverifiable handoff
+
+## 5. Tone of review
+- strictness prose that must NOT reach workers
+"""
+
+
+def _write_default_charter(home: Path, text: str = _CHARTER_TEXT) -> Path:
+    path = home / "kanban" / "charters" / "DEFAULT-REVIEW.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+_FANOUT_PAYLOAD = jsonlib.dumps({
+    "fanout": True,
+    "rationale": "test split",
+    "tasks": [
+        {"title": "research", "body": "look it up", "assignee": "researcher", "parents": []},
+        {"title": "build", "body": "code it", "assignee": "engineer", "parents": [0]},
+    ],
+})
+
+
+def _run_decompose(tid, payload=_FANOUT_PAYLOAD):
+    patches = _patch_list_profiles(["orchestrator", "researcher", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(payload), _patch_extra_body():
+            return decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+
+def test_decompose_injects_acceptance_addendum_into_child_bodies(kanban_home):
+    _write_default_charter(kanban_home)
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="ship a feature", triage=True)
+    outcome = _run_decompose(tid)
+    assert outcome.ok, outcome.reason
+    with kb.connect() as conn:
+        bodies = [kb.get_task(conn, cid).body for cid in outcome.child_ids]
+    for body in bodies:
+        assert decomp._ACCEPTANCE_HEADER in body
+        assert "unverifiable handoff" in body
+        assert "re-run the implementer" in body
+        # Non-acceptance charter sections must not leak into worker bodies.
+        assert "strictness prose" not in body
+    # The original model-authored spec is preserved ahead of the addendum.
+    assert bodies[0].startswith("look it up")
+
+
+def test_decompose_acceptance_flag_off_leaves_bodies_untouched(kanban_home):
+    _write_default_charter(kanban_home)
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="ship a feature", triage=True)
+    with patch.object(
+        decomp, "_load_config",
+        return_value={"kanban": {"decompose_acceptance_addendum": False}},
+    ):
+        outcome = _run_decompose(tid)
+    assert outcome.ok, outcome.reason
+    with kb.connect() as conn:
+        bodies = [kb.get_task(conn, cid).body for cid in outcome.child_ids]
+    assert bodies == ["look it up", "code it"]
+
+
+def test_decompose_acceptance_missing_source_is_noop(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="ship a feature", triage=True)
+    outcome = _run_decompose(tid)
+    assert outcome.ok, outcome.reason
+    with kb.connect() as conn:
+        bodies = [kb.get_task(conn, cid).body for cid in outcome.child_ids]
+    assert bodies == ["look it up", "code it"]
+
+
+def test_decompose_acceptance_board_override_wins(kanban_home):
+    _write_default_charter(kanban_home)
+    board_dir = kb.boards_root() / kb.get_current_board()
+    board_dir.mkdir(parents=True, exist_ok=True)
+    (board_dir / "ACCEPTANCE.md").write_text(
+        "board-specific definition of done", encoding="utf-8",
+    )
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="ship a feature", triage=True)
+    outcome = _run_decompose(tid)
+    assert outcome.ok, outcome.reason
+    with kb.connect() as conn:
+        body = kb.get_task(conn, outcome.child_ids[0]).body
+    assert "board-specific definition of done" in body
+    assert "unverifiable handoff" not in body
+
+
+def test_decompose_fanout_false_injects_addendum(kanban_home):
+    _write_default_charter(kanban_home)
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="one unit", triage=True)
+    payload = jsonlib.dumps({
+        "fanout": False,
+        "rationale": "single",
+        "title": "tightened title",
+        "body": "tightened spec",
+        "assignee": "researcher",
+    })
+    outcome = _run_decompose(tid, payload)
+    assert outcome.ok, outcome.reason
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.body.startswith("tightened spec")
+    assert decomp._ACCEPTANCE_HEADER in task.body
+
+
+def test_append_addendum_is_idempotent():
+    addendum = f"{decomp._ACCEPTANCE_HEADER}\nrules here"
+    once = decomp._append_addendum("body", addendum)
+    twice = decomp._append_addendum(once, addendum)
+    assert once == twice
+    assert once.count(decomp._ACCEPTANCE_HEADER) == 1
+
+
+def test_extract_acceptance_sections_caps_length():
+    text = "## 3. Automatic FAIL\n" + "\n".join(f"- rule {i}" for i in range(1000))
+    out = decomp._extract_acceptance_sections(text)
+    assert len(out) <= decomp._ACCEPTANCE_MAX_CHARS + len("\n[truncated]")
+    assert out.endswith("[truncated]")
+
+
+def test_extract_acceptance_sections_unstructured_file_used_whole():
+    out = decomp._extract_acceptance_sections("just a plain definition of done")
+    assert out == "just a plain definition of done"
+
+
+def test_decompose_empty_child_body_stays_empty(kanban_home):
+    _write_default_charter(kanban_home)
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="ship a feature", triage=True)
+    payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "r",
+        "tasks": [
+            {"title": "bodyless", "body": "", "assignee": None, "parents": []},
+            {"title": "specced", "body": "do it", "assignee": None, "parents": []},
+        ],
+    })
+    outcome = _run_decompose(tid, payload)
+    assert outcome.ok, outcome.reason
+    with kb.connect() as conn:
+        bodies = [kb.get_task(conn, cid).body for cid in outcome.child_ids]
+    # No spec means no addendum — a pure definition-of-done body would
+    # flip "has a body?" checks while describing nothing.
+    assert (bodies[0] or "") == ""
+    assert decomp._ACCEPTANCE_HEADER in bodies[1]

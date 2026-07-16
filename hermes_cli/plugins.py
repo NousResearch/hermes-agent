@@ -374,10 +374,12 @@ class PluginContext:
         snapshots; they never receive a live agent or a private registry.
         """
         if self._subagent_lifecycle is None:
-            from agent.subagent_lifecycle import SubagentLifecycleService
+            from agent.subagent_lifecycle import (
+                SubagentLifecycleService,
+                get_active_subagent_parent,
+            )
             self._subagent_lifecycle = SubagentLifecycleService(
-                lambda: getattr(self._manager._cli_ref, "agent", None)
-                if self._manager._cli_ref is not None else None
+                get_active_subagent_parent
             )
         return self._subagent_lifecycle
 

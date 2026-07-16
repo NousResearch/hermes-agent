@@ -7,14 +7,17 @@ sessions; plugins must obtain it from ``PluginContext.subagent_lifecycle``.
 
 from __future__ import annotations
 
+import contextvars
 import dataclasses
 import enum
 import hashlib
 import hmac
 import json
+import math
 import secrets
 import threading
 import time
+from contextlib import contextmanager
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError
 from typing import Any, Callable, Mapping, Optional
 
@@ -155,6 +158,24 @@ class _Registry:
 _REGISTRY = _Registry()
 _EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="hermes-lifecycle")
 _SECRET = secrets.token_bytes(32)
+_ACTIVE_PARENT_AGENT: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "hermes_subagent_lifecycle_parent", default=None
+)
+
+
+@contextmanager
+def bind_subagent_parent(parent_agent: Any):
+    """Bind the host-owned parent for the current agent turn."""
+    token = _ACTIVE_PARENT_AGENT.set(parent_agent)
+    try:
+        yield
+    finally:
+        _ACTIVE_PARENT_AGENT.reset(token)
+
+
+def get_active_subagent_parent() -> Any:
+    """Return the parent bound to this execution context, if any."""
+    return _ACTIVE_PARENT_AGENT.get()
 
 
 class SubagentLifecycleService:
@@ -190,9 +211,12 @@ class SubagentLifecycleService:
 
         # Delegate construction remains internal so plugin code never imports
         # private delegation helpers or manipulates the active-child registry.
-        from tools.delegate_tool import _build_child_agent, DEFAULT_MAX_ITERATIONS
+        from tools.delegate_tool import (
+            _build_child_preserving_parent_tools,
+            DEFAULT_MAX_ITERATIONS,
+        )
 
-        child = _build_child_agent(
+        child = _build_child_preserving_parent_tools(
             task_index=0,
             goal=request.goal,
             context=request.context,
@@ -311,7 +335,29 @@ class SubagentLifecycleService:
     def _record(self, handle: SubagentHandle) -> Optional[_Record]:
         if (
             not isinstance(handle, SubagentHandle)
+            or type(handle.contract_version) is not int
             or handle.contract_version != PUBLIC_CONTRACT_VERSION
+        ):
+            return None
+        if (
+            not isinstance(handle.subagent_id, str)
+            or not handle.subagent_id
+            or (
+                handle.parent_session_id is not None
+                and not isinstance(handle.parent_session_id, str)
+            )
+            or (
+                handle.correlation_id is not None
+                and not isinstance(handle.correlation_id, str)
+            )
+            or isinstance(handle.created_at, bool)
+            or not isinstance(handle.created_at, (int, float))
+            or not math.isfinite(handle.created_at)
+            or (handle.provider is not None and not isinstance(handle.provider, str))
+            or (handle.model is not None and not isinstance(handle.model, str))
+            or not isinstance(handle.role, str)
+            or type(handle.depth) is not int
+            or not isinstance(handle.capability, str)
         ):
             return None
         if not hmac.compare_digest(
@@ -349,13 +395,14 @@ class SubagentLifecycleService:
 
     def _run(self, record: _Record, goal: str, parent: Any) -> None:
         with _REGISTRY.lock:
-            record.state = SubagentState.RUNNING
+            if record.state is not SubagentState.CANCEL_REQUESTED:
+                record.state = SubagentState.RUNNING
             record.started_at = time.time()
             record.updated_at = record.started_at
         try:
-            from tools.delegate_tool import _run_single_child
+            from tools.delegate_tool import _run_child_lifecycle
 
-            raw = _run_single_child(0, goal, record.agent, parent)
+            raw = _run_child_lifecycle(0, goal, record.agent, parent)
             status = (
                 str(raw.get("status", "error")) if isinstance(raw, dict) else "error"
             )

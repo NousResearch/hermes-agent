@@ -160,13 +160,40 @@ class OSSBackend(Mem0Backend):
         import os
         from mem0 import Memory
 
+        def _resolve_api_key_env(section: dict) -> dict:
+            """Translate ``api_key_env`` (name of an env var holding the key)
+            into the ``api_key`` field mem0's provider configs actually accept.
+
+            Keeps secrets in the environment/.env instead of mem0.json. An
+            unknown key would otherwise be passed through to mem0's config
+            classes, which reject unexpected kwargs at init time.
+            """
+            section = dict(section)
+            cfg = dict(section.get("config", {}))
+            env_name = cfg.pop("api_key_env", None)
+            if env_name:
+                value = os.environ.get(env_name, "")
+                if not value:
+                    raise ValueError(
+                        f"mem0 config references api_key_env={env_name!r} but "
+                        f"that environment variable is not set. Add it to "
+                        f"~/.hermes/.env or replace api_key_env with api_key "
+                        f"in mem0.json."
+                    )
+                cfg.setdefault("api_key", value)
+            section["config"] = cfg
+            return section
+
+        llm = _resolve_api_key_env(oss_config["llm"])
+        embedder = _resolve_api_key_env(oss_config["embedder"])
+
         vector_store = dict(oss_config["vector_store"])
         vs_config = dict(vector_store.get("config", {}))
 
         if "path" in vs_config:
             vs_config["path"] = os.path.expanduser(vs_config["path"])
 
-        embedder_config = oss_config.get("embedder", {}).get("config", {})
+        embedder_config = embedder.get("config", {})
         dims = embedder_config.get("embedding_dims")
         if not dims:
             from ._oss_providers import KNOWN_DIMS
@@ -182,8 +209,8 @@ class OSSBackend(Mem0Backend):
 
         config = {
             "vector_store": vector_store,
-            "llm": oss_config["llm"],
-            "embedder": oss_config["embedder"],
+            "llm": llm,
+            "embedder": embedder,
             "version": "v1.1",
         }
         self._memory = Memory.from_config(config)

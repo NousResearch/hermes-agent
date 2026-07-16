@@ -192,6 +192,70 @@ class TestOSSBackend:
         assert result == {"result": "Memory deleted.", "memory_id": "m1"}
 
 
+class TestOSSBackendApiKeyEnv:
+    """__init__ must translate api_key_env into api_key — mem0's provider
+    config classes reject unexpected kwargs, so passing api_key_env through
+    raises at init (the 'OpenAIConfig got unexpected keyword api_key_env' bug)."""
+
+    def _init_with(self, monkeypatch, oss_config):
+        import sys
+        import types
+
+        captured = {}
+
+        class _FakeMemory:
+            @classmethod
+            def from_config(cls, config):
+                captured["config"] = config
+                return FakeOSSMemory()
+
+        fake_mem0 = types.ModuleType("mem0")
+        fake_mem0.Memory = _FakeMemory
+        monkeypatch.setitem(sys.modules, "mem0", fake_mem0)
+        OSSBackend(oss_config)
+        return captured["config"]
+
+    def _oss_config(self):
+        return {
+            "llm": {
+                "provider": "openai",
+                "config": {"model": "m", "api_key_env": "FAKE_LLM_KEY"},
+            },
+            "embedder": {
+                "provider": "ollama",
+                "config": {"model": "e", "embedding_dims": 8},
+            },
+            "vector_store": {"provider": "pgvector", "config": {}},
+        }
+
+    def test_api_key_env_resolved_to_api_key(self, monkeypatch):
+        monkeypatch.setenv("FAKE_LLM_KEY", "sk-test-123")
+        config = self._init_with(monkeypatch, self._oss_config())
+        llm_cfg = config["llm"]["config"]
+        assert "api_key_env" not in llm_cfg
+        assert llm_cfg["api_key"] == "sk-test-123"
+
+    def test_explicit_api_key_wins_over_env(self, monkeypatch):
+        monkeypatch.setenv("FAKE_LLM_KEY", "sk-from-env")
+        oss = self._oss_config()
+        oss["llm"]["config"]["api_key"] = "sk-explicit"
+        config = self._init_with(monkeypatch, oss)
+        assert config["llm"]["config"]["api_key"] == "sk-explicit"
+        assert "api_key_env" not in config["llm"]["config"]
+
+    def test_missing_env_var_raises_actionable_error(self, monkeypatch):
+        monkeypatch.delenv("FAKE_LLM_KEY", raising=False)
+        with pytest.raises(ValueError, match="FAKE_LLM_KEY"):
+            self._init_with(monkeypatch, self._oss_config())
+
+    def test_original_config_not_mutated(self, monkeypatch):
+        monkeypatch.setenv("FAKE_LLM_KEY", "sk-test-123")
+        oss = self._oss_config()
+        self._init_with(monkeypatch, oss)
+        assert oss["llm"]["config"]["api_key_env"] == "FAKE_LLM_KEY"
+        assert "api_key" not in oss["llm"]["config"]
+
+
 httpx = pytest.importorskip("httpx")
 
 

@@ -24,13 +24,11 @@ import os
 import shutil
 import subprocess
 import sys
-from pathlib import Path
 
 from hermes_cli.colors import Colors, color
 
 from . import auth as photon_auth
-
-_SIDECAR_DIR = Path(__file__).parent / "sidecar"
+from .sidecar_runtime import ensure_runtime_sidecar_files, get_runtime_sidecar_dir
 
 
 # ---------------------------------------------------------------------------
@@ -310,9 +308,11 @@ def _cmd_status(_args: argparse.Namespace) -> int:
     # cli.py keeps zero taint flow according to CodeQL.
     photon_auth.print_credential_summary(print)
     node_bin = os.getenv("PHOTON_NODE_BIN") or shutil.which("node")
-    sidecar_installed = (_SIDECAR_DIR / "node_modules").exists()
+    runtime_dir = get_runtime_sidecar_dir()
+    sidecar_installed = (runtime_dir / "node_modules").exists()
     print(f"  node binary         : {node_bin or '✗ missing (install Node 18+)'}")
     print(f"  sidecar deps        : {'✓ installed' if sidecar_installed else '✗ run `hermes photon install-sidecar`'}")
+    print(f"  sidecar runtime dir : {runtime_dir}")
     print(f"  telemetry           : {'on' if _telemetry_enabled() else 'off'} (`hermes photon telemetry on|off`)")
     return 0
 
@@ -374,6 +374,7 @@ def _install_sidecar() -> int:
             file=sys.stderr,
         )
         return 1
+    runtime_dir = ensure_runtime_sidecar_files()
     # spectrum-ts is pinned exactly in package.json/package-lock.json because
     # the SDK ships breaking majors (v2 removed defineFusorPlatform; v3
     # reworked space construction; v5 split it into @spectrum-ts/* packages).
@@ -382,17 +383,17 @@ def _install_sidecar() -> int:
     # `npm ci` installs the committed lockfile verbatim; fall back to
     # `npm install` when the lockfile is missing or drifted (e.g. a dev
     # checkout mid-upgrade).
-    print(f"  $ cd {_SIDECAR_DIR} && {npm} ci")
+    print(f"  $ cd {runtime_dir} && {npm} ci")
     proc = subprocess.run(  # noqa: S603
         [npm, "ci"],
-        cwd=str(_SIDECAR_DIR),
+        cwd=str(runtime_dir),
         check=False,
     )
     if proc.returncode != 0:
         print(f"  npm ci failed — falling back to:  {npm} install")
         proc = subprocess.run(  # noqa: S603
             [npm, "install"],
-            cwd=str(_SIDECAR_DIR),
+            cwd=str(runtime_dir),
             check=False,
         )
     if proc.returncode != 0:

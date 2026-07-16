@@ -225,8 +225,8 @@ try {
 } catch (e) {
   console.error(
     "photon-sidecar: spectrum mixed attachment patch failed. " +
-      "Run `npm install` inside plugins/platforms/photon/sidecar/ or " +
-      "upgrade the Photon sidecar patch for the pinned spectrum-ts version. " +
+      "Run `hermes photon install-sidecar` or upgrade the Photon sidecar " +
+      "patch for the pinned spectrum-ts version. " +
       "Original error: " +
       (e && e.stack ? e.stack : String(e))
   );
@@ -251,8 +251,8 @@ try {
   ({ imessage } = await import("spectrum-ts/providers/imessage"));
 } catch (e) {
   console.error(
-    "photon-sidecar: spectrum-ts is not installed. Run `npm install` " +
-      "inside plugins/platforms/photon/sidecar/. Original error: " +
+    "photon-sidecar: spectrum-ts is not installed. Run `hermes photon " +
+      "install-sidecar`. Original error: " +
       (e && e.stack ? e.stack : String(e))
   );
   process.exit(3);

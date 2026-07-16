@@ -161,6 +161,25 @@ def _ra():
     return run_agent
 
 
+def _relay_available_reasoning(agent, assistant_content: str) -> None:
+    """Relay completed inline reasoning without truncating the live fallback."""
+    think_text = re.sub(
+        r'</?(?:REASONING_SCRATCHPAD|think|reasoning)>', '', assistant_content.strip()
+    ).strip()
+    first_line = think_text.split('\n')[0][:80] if think_text else ""
+
+    if first_line and getattr(agent, '_delegate_depth', 0) > 0:
+        try:
+            agent.tool_progress_callback("_thinking", first_line)
+        except Exception:
+            pass
+    elif think_text:
+        try:
+            agent.tool_progress_callback("reasoning.available", "_thinking", think_text, None)
+        except Exception:
+            pass
+
+
 def _nous_entitlement_message(capability: str) -> str:
     try:
         from hermes_cli.nous_account import (
@@ -4422,24 +4441,7 @@ def run_conversation(
             # Notify progress callback of model's thinking (used by subagent
             # delegation to relay the child's reasoning to the parent display).
             if (assistant_message.content and agent.tool_progress_callback):
-                _think_text = assistant_message.content.strip()
-                # Strip reasoning XML tags that shouldn't leak to parent display
-                _think_text = re.sub(
-                    r'</?(?:REASONING_SCRATCHPAD|think|reasoning)>', '', _think_text
-                ).strip()
-                # For subagents: relay first line to parent display (existing behaviour).
-                # For all agents with a structured callback: emit reasoning.available event.
-                first_line = _think_text.split('\n')[0][:80] if _think_text else ""
-                if first_line and getattr(agent, '_delegate_depth', 0) > 0:
-                    try:
-                        agent.tool_progress_callback("_thinking", first_line)
-                    except Exception:
-                        pass
-                elif _think_text:
-                    try:
-                        agent.tool_progress_callback("reasoning.available", "_thinking", _think_text[:500], None)
-                    except Exception:
-                        pass
+                _relay_available_reasoning(agent, assistant_message.content)
             
             # Check for incomplete <REASONING_SCRATCHPAD> (opened but never closed)
             # This means the model ran out of output tokens mid-reasoning — retry up to 2 times

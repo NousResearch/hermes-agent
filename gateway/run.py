@@ -8727,6 +8727,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         skills, and credentials. Same-platform credential collisions (two
         profiles polling the same bot token) are detected and refused here, the
         only point that sees every profile's resolved credentials together.
+
+        With ``gateway.multiplex_routing_only`` on, no secondary adapter is
+        created or connected — every served profile SHARES the active
+        profile's adapters (single set of platform credentials, routed
+        per-chat via ``gateway.profile_routes``). The profiles are still
+        registered: ``_profile_adapters[profile]`` points at the shared
+        adapter map and the loop below gives each its own PairingStore, so a
+        stamped ``source.profile`` resolves to a live adapter for
+        authorization and egress (``_authorization_adapter`` fails closed on
+        unregistered profiles) and pairing state stays profile-isolated.
         """
         if not getattr(self.config, "multiplex_profiles", False):
             return 0
@@ -8736,6 +8746,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             return 0
 
+        routing_only = bool(getattr(self.config, "multiplex_routing_only", False))
         active = get_active_profile_name() or "default"
         connected = 0
         # (platform, token-fingerprint) -> profile that claimed it. Detects two
@@ -8750,6 +8761,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         for profile_name, profile_home in profiles_to_serve(multiplex=True):
             if profile_name == active:
                 continue  # handled by the primary startup loop
+            if routing_only:
+                # Shared-adapter registration: nothing new is connected, but
+                # the registry entry makes authorization/egress for a stamped
+                # source resolve to the shared adapters instead of failing
+                # closed, and the loop below creates the profile's own
+                # PairingStore.
+                self._profile_adapters[profile_name] = dict(self.adapters)
+                logger.info(
+                    "Multiplex: routing-only — profile '%s' registered on the "
+                    "shared adapters (%s); no secondary connection started.",
+                    profile_name,
+                    ", ".join(sorted(p.value for p in self.adapters)) or "none",
+                )
+                continue
             try:
                 connected += await self._start_one_profile_adapters(
                     profile_name, profile_home, claimed

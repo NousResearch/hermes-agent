@@ -233,6 +233,48 @@ multiplexing off the routes are ignored. If a route names a profile that does
 not exist on disk, the gateway logs a warning naming the profile and source and
 falls back to the default home.
 
+### Routing-only: one connection, many personas
+
+`profile_routes` stamps the profile, but under plain multiplexing each served
+profile still tries to bring up its **own** adapters — and a secondary profile
+that shares the default profile's credential is refused (a single bot token
+cannot be polled twice), leaving its routed messages to fail closed in
+authorization. Some deployments want exactly that shape: **one** bot account
+whose personality depends on *where* it is talked to — e.g. a single Matrix
+account serving a different profile per room. For those, add
+`multiplex_routing_only` next to `multiplex_profiles`:
+
+```yaml
+gateway:
+  multiplex_profiles: true
+  multiplex_routing_only: true
+  profile_routes:
+    - name: standup-room
+      platform: matrix
+      chat_id: "!standup:example.org"
+      profile: coder
+    - name: bookclub-room
+      platform: matrix
+      chat_id: "!bookclub:example.org"
+      profile: writer
+```
+
+With routing-only on, the gateway starts **no** secondary-profile adapters —
+there is exactly one connection per platform, owned by the default profile, so
+nothing ever polls the same credential twice. Every served profile is still
+*registered*: it resolves to the shared adapters for authorization and
+replies, and it gets its **own pairing whitelist** (approving a user for
+`coder` does not approve them for `writer`). Inbound messages matching a route
+are stamped with that profile, so sessions, skills, memory, and model routing
+all resolve per-profile exactly as in full multiplexing; replies go out
+through the shared connection. Chats matching no route behave as the default
+profile.
+
+Routing-only is an all-or-nothing mode: with it on, **no** profile gets its
+own adapters, so use it only when every persona rides the shared credential.
+Mixed deployments (some profiles with their own bot tokens) should stay on
+plain multiplexing.
+
 ## Start, stop, or restart all gateways at once
 
 The CLI ships with single-profile lifecycle commands. To act across every

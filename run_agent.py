@@ -1438,6 +1438,16 @@ class AIAgent:
             # relay GPT-5 models without full Responses semantics, so only
             # direct OpenAI/xAI URL detection should auto-upgrade them.
             return False
+        # The Copilot ACP facade deliberately exposes the OpenAI-compatible
+        # chat.completions shape regardless of model family. It has no
+        # ``responses`` attribute, so GPT-5 fallback routing must not upgrade
+        # it to codex_responses.
+        if normalized_provider in {
+            "copilot-acp",
+            "github-copilot-acp",
+            "copilot-acp-agent",
+        }:
+            return False
         if normalized_provider == "copilot":
             try:
                 from hermes_cli.models import _should_use_copilot_responses_api

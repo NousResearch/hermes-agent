@@ -526,6 +526,27 @@ class TestAuth:
         assert result is not None
         assert result.status == 401
 
+    def test_non_ascii_bearer_token_returns_401_not_500(self):
+        """A non-ASCII byte in the bearer token must be rejected with 401, not
+        crash the handler: hmac.compare_digest raises TypeError on a str with
+        non-ASCII characters, and the token is raw client input."""
+        config = PlatformConfig(enabled=True, extra={"key": "sk-test123"})
+        adapter = APIServerAdapter(config)
+        mock_request = MagicMock()
+        mock_request.headers = {"Authorization": "Bearer ské-not-the-key"}
+        result = adapter._check_auth(mock_request)  # must not raise
+        assert result is not None
+        assert result.status == 401
+
+    def test_non_ascii_key_config_still_authenticates(self):
+        """A non-ASCII configured key must still match its exact value byte for
+        byte (bytes comparison keeps this working)."""
+        config = PlatformConfig(enabled=True, extra={"key": "sk-tést-kéy"})
+        adapter = APIServerAdapter(config)
+        mock_request = MagicMock()
+        mock_request.headers = {"Authorization": "Bearer sk-tést-kéy"}
+        assert adapter._check_auth(mock_request) is None
+
 
 # ---------------------------------------------------------------------------
 # Concurrency cap (gateway.api_server.max_concurrent_runs) — #7483

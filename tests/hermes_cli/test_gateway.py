@@ -1046,6 +1046,40 @@ def test_scan_gateway_pids_detects_windows_hermes_exe_case_variants(monkeypatch)
     assert gateway._scan_gateway_pids(set(), all_profiles=True) == [2468]
 
 
+def test_scan_gateway_pids_matches_only_explicit_default_profile(monkeypatch):
+    """Windows fallback scans must recognize their pinned root gateway."""
+    monkeypatch.setattr(gateway, "is_windows", lambda: True)
+    monkeypatch.setattr(gateway, "_get_ancestor_pids", lambda: set())
+    monkeypatch.setattr(gateway, "_profile_arg", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(
+        gateway.shutil,
+        "which",
+        lambda name: "wmic.exe" if name == "wmic" else None,
+    )
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:4] == ["wmic.exe", "process", "get", "ProcessId,CommandLine"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "CommandLine=hermes --profile default gateway run --replace\n"
+                    "ProcessId=2468\n\n"
+                    "CommandLine=hermes -p default gateway run --replace\n"
+                    "ProcessId=2469\n\n"
+                    'CommandLine=hermes --profile="default" gateway run --replace\n'
+                    "ProcessId=2471\n\n"
+                    "CommandLine=hermes --profile coder gateway run --replace\n"
+                    "ProcessId=2470\n\n"
+                ),
+                stderr="",
+            )
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+
+    assert gateway._scan_gateway_pids(set()) == [2468, 2469, 2471]
+
+
 # ---------------------------------------------------------------------------
 # _wait_for_gateway_exit
 # ---------------------------------------------------------------------------

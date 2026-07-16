@@ -353,6 +353,7 @@ def _scan_gateway_pids(
     from gateway.status import (
         looks_like_gateway_command_line,
         looks_like_gateway_runtime_command_line,
+        profile_selectors_from_command_line,
     )
     current_home = str(get_hermes_home().resolve())
     current_home_lc = current_home.lower()
@@ -364,19 +365,20 @@ def _scan_gateway_pids(
 
     def _matches_current_profile(command: str) -> bool:
         command_lc = command.lower()
+        selectors = profile_selectors_from_command_line(command)
         if current_profile_name:
-            return (
-                f"--profile {current_profile_name_lc}" in command_lc
-                or f"-p {current_profile_name_lc}" in command_lc
-                or f"hermes_home={current_home_lc}" in command_lc
-            )
+            if selectors:
+                return all(
+                    selector == current_profile_name_lc for selector in selectors
+                )
+            return f"hermes_home={current_home_lc}" in command_lc
 
-        # Default-profile case: no profile flag in argv. Accept as long as
-        # the command doesn't advertise *some other* profile. HERMES_HOME
-        # may be passed via env (not visible in wmic/CIM command line) so
-        # its absence is NOT disqualifying — only a non-matching explicit
-        # HERMES_HOME= in argv is.
-        if "--profile " in command_lc or " -p " in command_lc:
+        # Default-profile case: accept legacy bare gateways and managed
+        # services pinned with --profile default/-p default. Reject any other
+        # (or malformed) selector. HERMES_HOME may be passed via env (not
+        # visible in wmic/CIM command line), so only a conflicting explicit
+        # HERMES_HOME= in argv is disqualifying.
+        if any(selector != "default" for selector in selectors):
             return False
         if (
             "hermes_home=" in command_lc
@@ -3821,11 +3823,12 @@ def _launchd_unsupported_marker_exists() -> bool:
 def _gateway_run_command() -> list[str]:
     """Build the `python -m hermes_cli.main [--profile X] gateway run --replace` argv.
 
-    Profile-aware: honors the active HERMES_HOME via `_profile_arg()` so the
-    detached fallback launches into the same profile as the CLI invocation.
+    The detached fallback is a long-lived service replacement, so pin its
+    profile identity just like the managed launchd/systemd definitions. This
+    prevents a sticky active profile from retargeting the default fallback.
     """
     cmd = [get_python_path(), "-m", "hermes_cli.main"]
-    profile_arg = _profile_arg()
+    profile_arg = _service_profile_arg()
     if profile_arg:
         cmd.extend(profile_arg.split())
     cmd.extend(["gateway", "run", "--replace"])

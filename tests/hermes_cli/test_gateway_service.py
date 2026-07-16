@@ -1195,6 +1195,27 @@ class TestLaunchdServiceRecovery:
         # Marker is still written so status knows launchd is unavailable
         assert gateway_cli._launchd_unsupported_marker_exists()
 
+    def test_launchd_detached_fallback_pins_default_profile(
+        self, tmp_path, monkeypatch
+    ):
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(default_home))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: default_home)
+        monkeypatch.setattr(gateway_cli, "get_python_path", lambda: "/python")
+
+        assert gateway_cli._gateway_run_command() == [
+            "/python",
+            "-m",
+            "hermes_cli.main",
+            "--profile",
+            "default",
+            "gateway",
+            "run",
+            "--replace",
+        ]
+
     # ── PID parsing ──────────────────────────────────────────────────────
 
     def test_parse_launchd_pid_from_list_output_with_pid(self):

@@ -574,6 +574,24 @@ def test_unreceipted_existing_destination_is_rebuilt_and_compared(
         wheel_path.write_bytes(wheel_payload)
         wheel_path.chmod(0o600)
 
+    def destination_exists(
+        source: str,
+        destination: str,
+        *,
+        exists_code: str,
+        failed_code: str,
+    ) -> None:
+        assert Path(source).is_dir()
+        assert destination == str(root)
+        assert failed_code == "trusted_owner_support_publish_failed"
+        raise launcher.OwnerLauncherError(exists_code)
+
+    monkeypatch.setattr(
+        launcher,
+        "_darwin_rename_no_replace",
+        destination_exists,
+    )
+
     with pytest.raises(
         launcher.OwnerLauncherError,
         match="trusted_owner_support_destination_mismatch",
@@ -588,6 +606,10 @@ def test_unreceipted_existing_destination_is_rebuilt_and_compared(
     assert calls == ["source", "wheel"]
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="requires Darwin renamex_np publication semantics",
+)
 def test_fresh_darwin_publication_reseals_the_destination_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -638,6 +660,10 @@ def test_fresh_darwin_publication_reseals_the_destination_root(
     )
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="requires Darwin renamex_np publication semantics",
+)
 def test_retry_recovers_exact_interrupted_post_rename_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

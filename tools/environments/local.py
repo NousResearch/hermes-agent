@@ -26,6 +26,121 @@ _WINDOWS_BASH_NUL_REDIRECTION_RE = re.compile(
 )
 
 
+def _mask_windows_bash_non_executable_text(command: str) -> tuple[str, bool]:
+    """Mask shell text that cannot contain an executable redirection.
+
+    Single-quoted text, literal double-quoted text, escaped characters, and
+    comments are data.  Command substitutions inside backticks or ``$(...)``
+    remain executable even when nested in double quotes, so their shell syntax
+    stays visible to the redirect matcher.
+
+    Heredocs require parsing delimiters and payload boundaries.  Report their
+    presence so the caller can conservatively leave the whole command alone
+    instead of rewriting redirect-looking payload data.
+    """
+    executable = [False] * len(command)
+    has_heredoc = False
+
+    def scan_double_quote(index: int) -> int:
+        index += 1
+        while index < len(command):
+            ch = command[index]
+            if ch == "\\":
+                index += 2
+                continue
+            if ch == '"':
+                return index + 1
+            if ch == "`":
+                index = scan_code(index + 1, closing="`")
+                if index < len(command) and command[index] == "`":
+                    index += 1
+                continue
+            if command.startswith("$(", index):
+                index = scan_code(index + 2, closing=")", paren_depth=1)
+                if index < len(command) and command[index] == ")":
+                    index += 1
+                continue
+            index += 1
+        return index
+
+    def scan_code(
+        index: int,
+        *,
+        closing: str | None = None,
+        paren_depth: int = 0,
+    ) -> int:
+        nonlocal has_heredoc
+
+        while index < len(command):
+            ch = command[index]
+
+            if closing == "`" and ch == "`":
+                return index
+            if closing == ")" and ch == ")":
+                paren_depth -= 1
+                if paren_depth == 0:
+                    return index
+                executable[index] = True
+                index += 1
+                continue
+            if closing == ")" and ch == "(":
+                paren_depth += 1
+                executable[index] = True
+                index += 1
+                continue
+
+            if ch == "'":
+                index += 1
+                while index < len(command) and command[index] != "'":
+                    index += 1
+                if index < len(command):
+                    index += 1
+                continue
+            if ch == '"':
+                index = scan_double_quote(index)
+                continue
+            if ch == "\\":
+                index += 2
+                continue
+            if ch == "#" and (
+                index == 0
+                or command[index - 1].isspace()
+                or command[index - 1] in ";|&(){}"
+            ):
+                while index < len(command) and command[index] != "\n":
+                    index += 1
+                continue
+            if (
+                command.startswith("<<", index)
+                and (index == 0 or command[index - 1] != "<")
+                and not command.startswith("<<<", index)
+            ):
+                has_heredoc = True
+                return len(command)
+            if ch == "`":
+                index = scan_code(index + 1, closing="`")
+                if index < len(command) and command[index] == "`":
+                    index += 1
+                continue
+            if command.startswith("$(", index):
+                index = scan_code(index + 2, closing=")", paren_depth=1)
+                if index < len(command) and command[index] == ")":
+                    index += 1
+                continue
+
+            executable[index] = True
+            index += 1
+
+        return index
+
+    scan_code(0)
+    masked = "".join(
+        ch if executable[index] else ("\n" if ch == "\n" else " ")
+        for index, ch in enumerate(command)
+    )
+    return masked, has_heredoc
+
+
 def _rewrite_windows_bash_nul_redirections(command: str) -> str:
     """Translate CMD-style ``NUL`` redirects for Windows Git Bash.
 
@@ -35,54 +150,19 @@ def _rewrite_windows_bash_nul_redirections(command: str) -> str:
     leave a Windows-reserved file in the working tree.  Rewrite the common
     CMD spellings to Bash's real null device before the command is wrapped.
 
-    Quoted strings, escaped characters, and shell comments are masked before
-    matching so examples such as ``echo '2>NUL'`` and nested
-    ``cmd.exe /c \"... 2>NUL\"`` commands keep their original text.
+    Non-executable strings, escaped characters, and shell comments are masked
+    before matching. Executable command substitutions remain visible. Commands
+    containing heredocs are left unchanged so payload data is never rewritten.
     """
     if not command or ">" not in command or "nul" not in command.lower():
         return command
 
-    masked = list(command)
-    quote: str | None = None
-    i = 0
-    while i < len(command):
-        ch = command[i]
-
-        if quote is not None:
-            masked[i] = "\n" if ch == "\n" else " "
-            if quote != "'" and ch == "\\" and i + 1 < len(command):
-                i += 1
-                masked[i] = "\n" if command[i] == "\n" else " "
-            elif ch == quote:
-                quote = None
-            i += 1
-            continue
-
-        if ch in {"'", '"', "`"}:
-            quote = ch
-            masked[i] = " "
-            i += 1
-            continue
-
-        if ch == "\\" and i + 1 < len(command):
-            masked[i] = " "
-            i += 1
-            masked[i] = "\n" if command[i] == "\n" else " "
-            i += 1
-            continue
-
-        if ch == "#" and (
-            i == 0 or command[i - 1].isspace() or command[i - 1] in ";|&(){}"
-        ):
-            while i < len(command) and command[i] != "\n":
-                masked[i] = " "
-                i += 1
-            continue
-
-        i += 1
+    masked, has_heredoc = _mask_windows_bash_non_executable_text(command)
+    if has_heredoc:
+        return command
 
     rewritten = command
-    matches = list(_WINDOWS_BASH_NUL_REDIRECTION_RE.finditer("".join(masked)))
+    matches = list(_WINDOWS_BASH_NUL_REDIRECTION_RE.finditer(masked))
     for match in reversed(matches):
         start, end = match.span("target")
         rewritten = rewritten[:start] + "/dev/null" + rewritten[end:]

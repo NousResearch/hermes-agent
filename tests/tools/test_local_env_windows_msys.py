@@ -72,6 +72,43 @@ class TestWindowsBashNulRedirections:
         for command in commands:
             assert _rewrite_windows_bash_nul_redirections(command) == command
 
+    def test_rewrites_executable_command_substitutions(self):
+        cases = {
+            "echo `git show missing 2>NUL || true`": (
+                "echo `git show missing 2>/dev/null || true`"
+            ),
+            'echo "`git show missing 2>NUL || true`"': (
+                'echo "`git show missing 2>/dev/null || true`"'
+            ),
+            "echo $(git show missing 2>NUL || true)": (
+                "echo $(git show missing 2>/dev/null || true)"
+            ),
+            'echo "$(git show missing 2>NUL || true)"': (
+                'echo "$(git show missing 2>/dev/null || true)"'
+            ),
+        }
+
+        for command, expected in cases.items():
+            assert _rewrite_windows_bash_nul_redirections(command) == expected
+
+    def test_preserves_quoted_and_unquoted_heredoc_payloads(self):
+        commands = (
+            "cat <<EOF\n2>NUL\nEOF",
+            "cat <<'EOF'\n2>NUL\nEOF",
+            'cat <<"EOF"\n2>NUL\nEOF',
+            "cat <<-EOF\n\t2>NUL\n\tEOF",
+        )
+
+        for command in commands:
+            assert _rewrite_windows_bash_nul_redirections(command) == command
+
+    def test_does_not_mistake_a_here_string_for_a_heredoc(self):
+        command = "cat <<< payload 2>NUL"
+        assert (
+            _rewrite_windows_bash_nul_redirections(command)
+            == "cat <<< payload 2>/dev/null"
+        )
+
     def test_preserves_non_redirect_nul_words(self):
         commands = (
             "echo NUL",

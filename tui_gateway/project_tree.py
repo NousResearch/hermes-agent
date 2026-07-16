@@ -520,6 +520,55 @@ def build_tree(
 
     result: list[dict] = []
 
+    # Add "No project" bucket for unowned sessions that can't be auto-grouped
+    no_project_sessions: list[dict] = []
+    for session in unowned:
+        root = _session_repo_root(session, resolve)
+        if root and _junk(root):
+            # Junk git repo (home, hermes_home), don't create auto project
+            no_project_sessions.append(session)
+            continue
+        if root:
+            # Valid repo, will be handled by auto-project tier
+            continue
+        cwd = (session.get("cwd") or "").strip()
+        if not cwd or _junk_cwd(cwd):
+            # Empty cwd or junk cwd (home/hermes_home root), no project
+            no_project_sessions.append(session)
+            continue
+        placement = _place(cwd, (session.get("git_branch") or "").strip(), resolve, (session.get("git_repo_root") or "").strip())
+        if not placement:
+            # No valid placement, add to no project
+            no_project_sessions.append(session)
+    
+    if no_project_sessions:
+        scoped_ids.extend(s["id"] for s in no_project_sessions if s.get("id"))
+        result.append(
+            _project_node(
+                pid="__no_project__",
+                label="No project",
+                path=None,
+                repos=[{
+                    "id": "__no_project__",
+                    "label": "No project",
+                    "path": None,
+                    "groups": [{
+                        "id": "__no_project__",
+                        "label": "",
+                        "path": None,
+                        "sessions": [] if not hydrate else sorted(no_project_sessions, key=_session_time, reverse=True),
+                        "sessionCount": len(no_project_sessions),
+                        "isHome": False,
+                        "isKanban": False,
+                    }],
+                    "sessionCount": len(no_project_sessions),
+                }],
+                session_count=len(no_project_sessions),
+                last_active=_last_active(no_project_sessions),
+                preview_sessions=_previews(no_project_sessions),
+            )
+        )
+
     # Tier 1: explicit, user-created projects (always shown, even with 0 sessions).
     for project in active_projects:
         psessions = by_project.get(project["id"], [])

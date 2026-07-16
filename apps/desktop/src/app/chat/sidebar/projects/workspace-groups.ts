@@ -582,10 +582,7 @@ export function overlayLivePreviews(
   const out: Record<string, SessionInfo[]> = {}
 
   for (const node of projects) {
-    if (!node.path) {
-      continue
-    }
-
+    const key = node.path ?? node.id
     const liveRows = byProject.get(node.id) ?? []
     const base = (node.previewSessions ?? []).filter(session => !removed.has(session.id))
 
@@ -602,7 +599,7 @@ export function overlayLivePreviews(
       }
     }
 
-    out[node.path] = [...map.values()].sort((a, b) => sessionRecency(b) - sessionRecency(a)).slice(0, limit)
+    out[key] = [...map.values()].sort((a, b) => sessionRecency(b) - sessionRecency(a)).slice(0, limit)
   }
 
   return out

@@ -1869,8 +1869,17 @@ def _fallback_chain_exhausted(agent, reason: "FailoverReason | None") -> bool:
     context across every provider again."""
     from agent.fallback_cooldown import _RATE_LIMIT_FAILOVER_REASONS
     if agent._fallback_chain and reason not in _RATE_LIMIT_FAILOVER_REASONS:
-        agent._rate_limited_until = max(
-            getattr(agent, "_rate_limited_until", 0) or 0, time.monotonic() + _FALLBACK_EXHAUSTED_COOLDOWN_S)
+        _existing_cooldown = getattr(agent, "_rate_limited_until", 0) or 0
+        _now = time.monotonic()
+        # Only arm a fresh exhaustion cooldown when the existing window has
+        # already expired (first exhaustion or expired cooldown). This prevents
+        # repeated calls on an already-exhausted chain from re-arming the gate
+        # every sub-window turn and locking out the primary restore permanently.
+        # Keeps the bounded-replay guarantee from #24996 (at most one full chain
+        # walk per cooldown window) while allowing the throttle to naturally
+        # expire so the chain resets for unrelated later failures (#57582).
+        if _now >= _existing_cooldown:
+            agent._rate_limited_until = _now + _FALLBACK_EXHAUSTED_COOLDOWN_S
     return False
 
 

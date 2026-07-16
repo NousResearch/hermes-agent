@@ -179,6 +179,55 @@ def test_codex_profile_exhausted_copy_heals_from_matching_global(profile_env):
     assert [entry.get("last_status") for entry in entries] == [None, None]
 
 
+def test_codex_profile_load_pool_select_heals_via_production_path(profile_env):
+    """``load_pool(...).select()`` is the actual production selection path
+    (agent/credential_pool.py's ``CredentialPool``), separate from the raw
+    ``read_credential_pool()`` dict-slice tested above. Cover it explicitly
+    so healing is verified where request routing really consumes it, not
+    just at the lower-level read.
+    """
+    from agent.credential_pool import load_pool
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [
+            {
+                "id": "personal",
+                "label": "personal",
+                "auth_type": "oauth",
+                "priority": 0,
+                "source": "manual:device_code",
+                "access_token": "global-personal-access",
+                "refresh_token": "global-personal-refresh",
+            },
+        ],
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "openai-codex": [
+            {
+                "id": "personal",
+                "label": "personal",
+                "auth_type": "oauth",
+                "priority": 0,
+                "source": "manual:device_code",
+                "access_token": "stale-personal-access",
+                "refresh_token": "stale-personal-refresh",
+                "last_status": "exhausted",
+                "last_status_at": 1,
+                "last_error_code": 429,
+                "last_error_reason": "usage_limit_reached",
+                "last_error_message": "The usage limit has been reached",
+                "last_error_reset_at": 9999999999.0,
+            },
+        ],
+    }))
+
+    pool = load_pool("openai-codex")
+    selected = pool.select()
+    assert selected is not None
+    assert selected.access_token == "global-personal-access"
+    assert selected.last_status is None
+
+
 def test_per_provider_shadowing_is_independent(profile_env):
     """Profile can override one provider while inheriting another from global."""
     from hermes_cli.auth import read_credential_pool

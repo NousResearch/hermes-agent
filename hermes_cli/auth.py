@@ -1201,7 +1201,20 @@ _PROFILE_GLOBAL_HEALABLE_SOURCES = frozenset({
 
 
 def _credential_pool_entry_available(entry: Any) -> bool:
-    """Return True when a raw credential-pool entry can be tried now."""
+    """Return True when a raw credential-pool entry can be tried now.
+
+    Mirrors ``agent.credential_pool._exhausted_until`` exactly (deferred
+    import to avoid the circular dependency: credential_pool.py imports
+    from this module at load time), rather than re-deriving similar-looking
+    but different fallback semantics. The previous fallback here treated a
+    missing/unparseable ``last_error_reset_at`` as "available whenever
+    ``last_status_at`` is unset" -- but the real pool runtime instead falls
+    back to ``last_status_at + _exhausted_ttl(last_error_code)`` (a 401/429/
+    default TTL keyed off the error code), which is a materially different
+    cooldown window. An entry could therefore read as available here while
+    still being excluded from rotation by the actual selection path, or vice
+    versa, silently defeating the healing this function exists to perform.
+    """
     if not isinstance(entry, dict):
         return False
     if not str(entry.get("access_token") or "").strip():
@@ -1209,13 +1222,28 @@ def _credential_pool_entry_available(entry: Any) -> bool:
     status = str(entry.get("last_status") or "").strip().lower()
     if not status or status == "ok":
         return True
-    if status == "exhausted":
+    if status != "exhausted":
+        return False
+    try:
+        from agent.credential_pool import _exhausted_until
+        from agent.credential_pool import PooledCredential as _PooledCredential
+    except ImportError:
+        # Defensive fallback only reachable if credential_pool.py itself
+        # cannot be imported (e.g. partial install) -- keep prior behavior
+        # rather than hard-failing pool reads.
         reset_at = entry.get("last_error_reset_at")
         try:
             return bool(reset_at and float(reset_at) <= time.time())
         except (TypeError, ValueError):
             return bool(entry.get("last_status_at") is None)
-    return False
+    pooled = _PooledCredential.from_dict("openai-codex", entry)
+    exhausted_until = _exhausted_until(pooled)
+    if exhausted_until is None:
+        # No reset timestamp and no last_status_at to compute a TTL from --
+        # matches the real pool's own "can't determine, so don't block"
+        # behavior for this edge case.
+        return True
+    return exhausted_until <= time.time()
 
 
 def _merge_profile_entries_with_global_health(

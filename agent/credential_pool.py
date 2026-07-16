@@ -588,13 +588,32 @@ class CredentialPool:
         fails with "no available entries (all exhausted or empty)".
 
         Mirrors the Nous/Anthropic resync paths above.  Only applies to
-        device-code-sourced entries; env/API-key-sourced entries have no
+        ``device_code``-sourced entries; env/API-key-sourced entries have no
         auth.json shadow to sync from.
+
+        Deliberately does NOT extend to ``manual:device_code`` entries. This
+        singleton auth-store sync adopts ``providers.openai-codex.tokens``
+        unconditionally once token bytes differ, with no check for whether
+        the existing entry was actually seeded from that singleton. That is
+        safe for ``device_code`` (which by construction always mirrors the
+        singleton), but a ``manual:device_code`` entry can be either a
+        legacy singleton-alias OR an independent account added via
+        ``hermes auth add openai-codex`` -- the two are indistinguishable by
+        source string alone. ``hermes_cli/auth.py::_save_codex_tokens``
+        already solves this correctly by additionally checking whether the
+        entry's *existing* access_token matches the *previous* singleton
+        token before treating it as an alias (regression guard for #39236,
+        enforced by tests/hermes_cli/test_auth_codex_provider.py). Reusing
+        that same unconditional-adopt logic here for manual entries would
+        reintroduce that exact regression: a re-auth targeting one account
+        could silently clobber a different, independent account's live
+        tokens. Profile-local ``manual:device_code`` healing is instead
+        handled by ``_merge_profile_entries_with_global_health`` in
+        ``hermes_cli/auth.py``, which matches by pool-entry ``id`` rather
+        than by singleton-token equality and therefore can't cross-wire
+        distinct accounts.
         """
-        if (
-            self.provider != "openai-codex"
-            or entry.source not in {"device_code", "manual:device_code"}
-        ):
+        if self.provider != "openai-codex" or entry.source != "device_code":
             return entry
         try:
             with _auth_store_lock():

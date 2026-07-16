@@ -31,6 +31,7 @@ import json
 import re
 import concurrent.futures
 import base64
+import hashlib
 import atexit
 import errno
 import tempfile
@@ -4105,6 +4106,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         # Status bar visibility (toggled via /statusbar)
         self._status_bar_visible = True
+        # The Codex usage endpoint is network-backed. Status rendering reads
+        # this cache only; a rate-limited daemon refreshes it in the background.
+        self._codex_usage_snapshot = None
+        self._codex_usage_last_attempt = 0.0
+        self._codex_usage_refreshing = False
+        self._codex_usage_lock = threading.Lock()
+        self._codex_usage_scope = None
         # When True, the input separator rules and the dynamic status bar are
         # hidden until the next user input. Set by _recover_after_resize() so a
         # SIGWINCH cannot stamp a freshly-drawn status bar on top of one that
@@ -4527,6 +4535,154 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         idle = max(0.0, time.time() - last_finished_at)
         return f"✓ {format_duration_compact(idle)}"
 
+    @staticmethod
+    def _format_codex_session_limit(
+        snapshot: Any,
+        *,
+        now: Optional[datetime] = None,
+    ) -> Optional[tuple[str, int]]:
+        """Format the cached Codex session window as remaining quota."""
+        for window in getattr(snapshot, "windows", ()) or ():
+            if str(getattr(window, "label", "") or "").strip().lower() != "session":
+                continue
+            try:
+                remaining = round(100 - float(window.used_percent))
+            except (AttributeError, OverflowError, TypeError, ValueError):
+                return None
+            remaining = max(0, min(100, remaining))
+            label = f"Codex {remaining}%"
+            reset_at = getattr(window, "reset_at", None)
+            if isinstance(reset_at, datetime):
+                current = now
+                if current is None:
+                    current = datetime.now(reset_at.tzinfo) if reset_at.tzinfo else datetime.now()
+                try:
+                    seconds = max(0.0, (reset_at - current).total_seconds())
+                except (TypeError, ValueError):
+                    seconds = 0.0
+                label += f" reset {format_duration_compact(seconds)}"
+            return label, remaining
+        return None
+
+    @staticmethod
+    def _codex_session_limit_style(remaining: Optional[int]) -> str:
+        """Style Codex session-limit pressure by remaining percentage."""
+        if remaining is None:
+            return "class:status-bar-dim"
+        if remaining <= 5:
+            return "class:status-bar-critical"
+        if remaining <= 15:
+            return "class:status-bar-bad"
+        if remaining <= 35:
+            return "class:status-bar-warn"
+        return "class:status-bar-good"
+
+    def _current_provider_name(self) -> str:
+        """Return the active provider, preferring runtime fallback state."""
+        agent = getattr(self, "agent", None)
+        for value in (
+            getattr(agent, "provider", None),
+            getattr(self, "provider", None),
+            getattr(self, "requested_provider", None),
+        ):
+            provider = str(value or "").strip().lower()
+            if provider:
+                return provider
+        return ""
+
+    def _capture_codex_usage_credentials(self) -> Optional[tuple[Any, Any, tuple[str, str]]]:
+        """Capture a coherent Codex client credential snapshot."""
+        agent = getattr(self, "agent", None)
+        if agent is None:
+            return None
+
+        provider_before = str(getattr(agent, "provider", "") or "").strip().lower()
+        client = getattr(agent, "client", None)
+        provider_after = str(getattr(agent, "provider", "") or "").strip().lower()
+        if provider_before != "openai-codex" or provider_after != "openai-codex" or client is None:
+            return None
+
+        # The OpenAI client is replaced as one object after credential rotation
+        # or provider fallback. Reading from that captured object avoids pairing
+        # a base URL and API key from different runtime generations.
+        base_url = str(getattr(client, "base_url", "") or "").strip()
+        api_key = getattr(client, "api_key", None)
+        if not base_url_host_matches(base_url, "chatgpt.com") or not api_key:
+            return None
+
+        key_text = str(api_key)
+        key_fingerprint = hashlib.sha256(key_text.encode("utf-8")).hexdigest()
+        scope = (base_url, key_fingerprint)
+        return base_url, api_key, scope
+
+    def _codex_usage_scope_for_active_credentials(self) -> Optional[tuple[str, str]]:
+        """Return a non-secret identity for the active Codex credentials."""
+        captured = self._capture_codex_usage_credentials()
+        return captured[2] if captured is not None else None
+
+    def _maybe_refresh_codex_usage_snapshot(self, *, min_interval: float = 300.0) -> None:
+        """Start one nonblocking Codex usage refresh when the cache is stale."""
+        captured = self._capture_codex_usage_credentials()
+        lock = getattr(self, "_codex_usage_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._codex_usage_lock = lock
+        if captured is None:
+            with lock:
+                self._codex_usage_scope = None
+                self._codex_usage_snapshot = None
+                self._codex_usage_last_attempt = 0.0
+            return
+
+        now = time.monotonic()
+        base_url, api_key, refresh_scope = captured
+
+        with lock:
+            if getattr(self, "_codex_usage_scope", None) != refresh_scope:
+                self._codex_usage_scope = refresh_scope
+                self._codex_usage_snapshot = None
+                self._codex_usage_last_attempt = 0.0
+            if getattr(self, "_codex_usage_refreshing", False):
+                return
+            last_attempt = getattr(self, "_codex_usage_last_attempt", 0.0) or 0.0
+            if last_attempt and (now - last_attempt) < min_interval:
+                return
+            self._codex_usage_refreshing = True
+            self._codex_usage_last_attempt = now
+
+        def _refresh() -> None:
+            refreshed = None
+            try:
+                from agent.account_usage import fetch_account_usage
+
+                refreshed = fetch_account_usage(
+                    "openai-codex",
+                    base_url=base_url,
+                    api_key=api_key,
+                )
+            except Exception:
+                logger.debug("Codex status-bar usage refresh failed", exc_info=True)
+            finally:
+                with lock:
+                    if refreshed is not None and self._codex_usage_scope == refresh_scope:
+                        self._codex_usage_snapshot = refreshed
+                    self._codex_usage_refreshing = False
+                self._invalidate(min_interval=0.0)
+
+        thread = threading.Thread(
+            target=_refresh,
+            name="codex-usage-status-refresh",
+            daemon=True,
+        )
+        try:
+            thread.start()
+        except Exception:
+            with lock:
+                self._codex_usage_refreshing = False
+                if self._codex_usage_scope == refresh_scope:
+                    self._codex_usage_last_attempt = 0.0
+            logger.debug("Could not start Codex status-bar refresh thread", exc_info=True)
+
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         # Prefer the agent's model name — it updates on fallback.
         # self.model reflects the originally configured model and never
@@ -4569,7 +4725,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             "active_background_tasks": 0,
             "active_background_processes": 0,
             "active_background_subagents": 0,
+            "codex_session_limit": None,
+            "codex_session_remaining_percent": None,
         }
+
+        if self._current_provider_name() == "openai-codex":
+            self._maybe_refresh_codex_usage_snapshot()
+            formatted_limit = self._format_codex_session_limit(
+                getattr(self, "_codex_usage_snapshot", None)
+            )
+            if formatted_limit is not None:
+                snapshot["codex_session_limit"], snapshot["codex_session_remaining_percent"] = formatted_limit
 
         # Count live /background tasks. The dict entry is removed in the
         # task thread's finally block, so len() reflects truly-running tasks.
@@ -5085,6 +5251,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             compressions = snapshot.get("compressions", 0)
             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            codex_limit = snapshot.get("codex_session_limit")
+            if codex_limit:
+                parts.append(codex_limit)
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -5191,6 +5360,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         ("class:status-bar-dim", " "),
                         (bar_style, percent_label),
                     ]
+                    codex_limit = snapshot.get("codex_session_limit")
+                    if codex_limit:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(
+                            (
+                                self._codex_session_limit_style(
+                                    snapshot.get("codex_session_remaining_percent")
+                                ),
+                                codex_limit,
+                            )
+                        )
                     if compressions:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))

@@ -1,3 +1,4 @@
+import threading
 import time
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -10,10 +11,52 @@ from cli import HermesCLI
 def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
     cli_obj = HermesCLI.__new__(HermesCLI)
     cli_obj.model = model
+    cli_obj.provider = "anthropic"
+    cli_obj.requested_provider = "anthropic"
     cli_obj.session_start = datetime.now() - timedelta(minutes=14, seconds=32)
     cli_obj.conversation_history = [{"role": "user", "content": "hi"}]
     cli_obj.agent = None
+    cli_obj._codex_usage_snapshot = None
+    cli_obj._codex_usage_last_attempt = 0.0
+    cli_obj._codex_usage_refreshing = False
+    cli_obj._codex_usage_lock = threading.Lock()
+    cli_obj._codex_usage_scope = None
     return cli_obj
+
+
+def _codex_usage_snapshot(
+    used_percent: object,
+    *,
+    reset_at: datetime | None = None,
+    label: str = "Session",
+):
+    return SimpleNamespace(
+        windows=(SimpleNamespace(label=label, used_percent=used_percent, reset_at=reset_at),)
+    )
+
+
+def _attach_codex_runtime(
+    cli_obj,
+    *,
+    api_key: str = "codex-test-token",
+    base_url: str = "https://chatgpt.com/backend-api/codex",
+) -> None:
+    cli_obj.provider = "openai-codex"
+    cli_obj.requested_provider = "openai-codex"
+    cli_obj.agent = SimpleNamespace(
+        model=cli_obj.model,
+        provider="openai-codex",
+        api_key=api_key,
+        base_url=base_url,
+        client=SimpleNamespace(api_key=api_key, base_url=base_url),
+    )
+
+
+def _seed_codex_usage(cli_obj, used_percent: object, *, reset_at: datetime | None = None) -> None:
+    _attach_codex_runtime(cli_obj)
+    cli_obj._codex_usage_snapshot = _codex_usage_snapshot(used_percent, reset_at=reset_at)
+    cli_obj._codex_usage_scope = cli_obj._codex_usage_scope_for_active_credentials()
+    cli_obj._codex_usage_last_attempt = time.monotonic()
 
 
 def _attach_agent(
@@ -62,6 +105,364 @@ class TestCLIStatusBar:
         assert cli_obj._status_bar_context_style(50) == "class:status-bar-warn"
         assert cli_obj._status_bar_context_style(81) == "class:status-bar-bad"
         assert cli_obj._status_bar_context_style(95) == "class:status-bar-critical"
+
+    def test_codex_session_limit_formats_remaining_percent(self):
+        result = HermesCLI._format_codex_session_limit(_codex_usage_snapshot(23.4))
+
+        assert result == ("Codex 77%", 77)
+
+    def test_codex_session_limit_formats_reset_countdown_from_injected_time(self):
+        now = datetime(2026, 7, 15, 12, 0, 0)
+        reset_at = now + timedelta(hours=2, minutes=10, seconds=30)
+
+        result = HermesCLI._format_codex_session_limit(
+            _codex_usage_snapshot(23.4, reset_at=reset_at),
+            now=now,
+        )
+
+        assert result == ("Codex 77% reset 2h 10m", 77)
+
+    def test_codex_session_limit_rejects_missing_or_invalid_session_data(self):
+        assert HermesCLI._format_codex_session_limit(None) is None
+        assert HermesCLI._format_codex_session_limit(_codex_usage_snapshot(20, label="Weekly")) is None
+        assert HermesCLI._format_codex_session_limit(_codex_usage_snapshot("unknown")) is None
+        assert HermesCLI._format_codex_session_limit(_codex_usage_snapshot(float("nan"))) is None
+        assert HermesCLI._format_codex_session_limit(_codex_usage_snapshot(float("inf"))) is None
+        assert HermesCLI._format_codex_session_limit(_codex_usage_snapshot(float("-inf"))) is None
+
+    def test_codex_session_limit_clamps_remaining_percent(self):
+        assert HermesCLI._format_codex_session_limit(_codex_usage_snapshot(-10)) == ("Codex 100%", 100)
+        assert HermesCLI._format_codex_session_limit(_codex_usage_snapshot(125)) == ("Codex 0%", 0)
+
+    def test_codex_session_limit_style_thresholds(self):
+        cli_obj = _make_cli()
+
+        assert cli_obj._codex_session_limit_style(None) == "class:status-bar-dim"
+        assert cli_obj._codex_session_limit_style(40) == "class:status-bar-good"
+        assert cli_obj._codex_session_limit_style(35) == "class:status-bar-warn"
+        assert cli_obj._codex_session_limit_style(15) == "class:status-bar-bad"
+        assert cli_obj._codex_session_limit_style(5) == "class:status-bar-critical"
+
+    def test_snapshot_includes_cached_codex_limit_for_active_codex_provider(self):
+        cli_obj = _make_cli("openai/gpt-5.4")
+        _seed_codex_usage(cli_obj, 12)
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+
+        assert snapshot["codex_session_limit"] == "Codex 88%"
+        assert snapshot["codex_session_remaining_percent"] == 88
+
+    def test_snapshot_hides_cached_codex_limit_after_provider_switch(self):
+        cli_obj = _make_cli()
+        cli_obj._codex_usage_snapshot = _codex_usage_snapshot(12)
+        cli_obj._codex_usage_last_attempt = time.monotonic()
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+
+        assert snapshot["codex_session_limit"] is None
+        assert snapshot["codex_session_remaining_percent"] is None
+
+    def test_active_agent_provider_overrides_stale_cli_provider(self):
+        cli_obj = _make_cli("openai/gpt-5.4")
+        _seed_codex_usage(cli_obj, 12)
+        cli_obj.agent = SimpleNamespace(model="anthropic/claude-opus-4.6", provider="anthropic")
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+
+        assert snapshot["codex_session_limit"] is None
+
+    def test_codex_limit_shows_only_in_wide_plain_text_status(self):
+        cli_obj = _make_cli("openai/gpt-5.4")
+        _seed_codex_usage(cli_obj, 66)
+
+        assert "Codex 34%" in cli_obj._build_status_bar_text(width=120)
+        assert "Codex" not in cli_obj._build_status_bar_text(width=75)
+        assert "Codex" not in cli_obj._build_status_bar_text(width=51)
+
+    def test_wide_fragments_style_cached_codex_limit(self):
+        cli_obj = _make_cli("openai/gpt-5.4")
+        _seed_codex_usage(cli_obj, 94)
+        cli_obj._status_bar_visible = True
+        cli_obj._get_tui_terminal_width = lambda: 120
+
+        fragments = cli_obj._get_status_bar_fragments()
+
+        assert ("class:status-bar-bad", "Codex 6%") in fragments
+
+    def test_codex_refresh_is_skipped_for_other_providers(self):
+        cli_obj = _make_cli()
+
+        with patch("cli.threading.Thread") as thread_cls:
+            cli_obj._maybe_refresh_codex_usage_snapshot()
+
+        thread_cls.assert_not_called()
+
+    def test_codex_refresh_rejects_mixed_provider_or_non_codex_client(self):
+        cli_obj = _make_cli("openai/gpt-5.4")
+        cli_obj.provider = "openai-codex"
+
+        class SwitchingProviderAgent:
+            model = "openai/gpt-5.4"
+            client = SimpleNamespace(
+                api_key="anthropic-token",
+                base_url="https://api.anthropic.com",
+            )
+
+            def __init__(self):
+                self._reads = 0
+
+            @property
+            def provider(self):
+                self._reads += 1
+                return "openai-codex" if self._reads == 1 else "anthropic"
+
+        cli_obj.agent = SwitchingProviderAgent()
+        cli_obj._codex_usage_snapshot = _codex_usage_snapshot(20)
+
+        with patch("cli.threading.Thread") as thread_cls:
+            cli_obj._maybe_refresh_codex_usage_snapshot()
+
+        thread_cls.assert_not_called()
+        assert cli_obj._codex_usage_snapshot is None
+        assert cli_obj._codex_usage_scope is None
+
+    def test_codex_refresh_is_skipped_while_cache_interval_is_fresh(self):
+        cli_obj = _make_cli("openai/gpt-5.4")
+        _attach_codex_runtime(cli_obj)
+        cli_obj._codex_usage_scope = cli_obj._codex_usage_scope_for_active_credentials()
+        cli_obj._codex_usage_last_attempt = 900.0
+
+        with patch("cli.time.monotonic", return_value=1000.0), patch("cli.threading.Thread") as thread_cls:
+            cli_obj._maybe_refresh_codex_usage_snapshot(min_interval=300.0)
+
+        thread_cls.assert_not_called()
+
+    def test_codex_refresh_is_single_flight(self):
+        cli_obj = _make_cli("openai/gpt-5.4")
+        _attach_codex_runtime(cli_obj)
+        deferred_targets = []
+        thread_options = []
+
+        class DeferredThread:
+            def __init__(self, *, target, **kwargs):
+                deferred_targets.append(target)
+                thread_options.append(kwargs)
+
+            def start(self):
+                return None
+
+        with patch("cli.time.monotonic", return_value=1000.0), patch(
+            "cli.threading.Thread", DeferredThread
+        ):
+            cli_obj._maybe_refresh_codex_usage_snapshot()
+            cli_obj._maybe_refresh_codex_usage_snapshot()
+
+        assert len(deferred_targets) == 1
+        assert thread_options == [{"name": "codex-usage-status-refresh", "daemon": True}]
+        assert cli_obj._codex_usage_refreshing is True
+
+    def test_codex_refresh_discards_in_flight_result_after_credential_failover(self):
+        cli_obj = _make_cli("openai/gpt-5.4")
+        cli_obj.provider = "openai-codex"
+        cli_obj.agent = SimpleNamespace(
+            model="openai/gpt-5.4",
+            provider="openai-codex",
+            api_key="pooled-token-a",
+            base_url="https://chatgpt.com/backend-api/codex",
+            client=SimpleNamespace(
+                api_key="pooled-token-a",
+                base_url="https://chatgpt.com/backend-api/codex",
+            ),
+        )
+        cli_obj._invalidate = MagicMock()
+        deferred_targets = []
+        account_a_snapshot = _codex_usage_snapshot(80)
+
+        class DeferredThread:
+            def __init__(self, *, target, **_kwargs):
+                deferred_targets.append(target)
+
+            def start(self):
+                return None
+
+        with patch("cli.time.monotonic", return_value=1000.0), patch(
+            "cli.threading.Thread", DeferredThread
+        ), patch("agent.account_usage.fetch_account_usage", return_value=account_a_snapshot):
+            cli_obj._maybe_refresh_codex_usage_snapshot()
+            cli_obj.agent.api_key = "pooled-token-b"
+            cli_obj.agent.client = SimpleNamespace(
+                api_key="pooled-token-b",
+                base_url="https://chatgpt.com/backend-api/codex",
+            )
+            cli_obj._maybe_refresh_codex_usage_snapshot()
+            deferred_targets[0]()
+
+        assert cli_obj._codex_usage_snapshot is None
+        assert cli_obj._codex_usage_refreshing is False
+
+    def test_codex_credential_failover_clears_cache_and_bypasses_rate_limit(self):
+        cli_obj = _make_cli("openai/gpt-5.4")
+        cli_obj.provider = "openai-codex"
+        cli_obj.agent = SimpleNamespace(
+            model="openai/gpt-5.4",
+            provider="openai-codex",
+            api_key="pooled-token-a",
+            base_url="https://chatgpt.com/backend-api/codex",
+            client=SimpleNamespace(
+                api_key="pooled-token-a",
+                base_url="https://chatgpt.com/backend-api/codex",
+            ),
+        )
+        cli_obj._codex_usage_snapshot = _codex_usage_snapshot(80)
+        cli_obj._codex_usage_scope = cli_obj._codex_usage_scope_for_active_credentials()
+        cli_obj._codex_usage_last_attempt = 900.0
+        cli_obj._invalidate = MagicMock()
+        account_b_snapshot = _codex_usage_snapshot(20)
+
+        class ImmediateThread:
+            def __init__(self, *, target, **_kwargs):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        cli_obj.agent.api_key = "pooled-token-b"
+        cli_obj.agent.client = SimpleNamespace(
+            api_key="pooled-token-b",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
+        with patch("cli.time.monotonic", return_value=1000.0), patch(
+            "cli.threading.Thread", ImmediateThread
+        ), patch("agent.account_usage.fetch_account_usage", return_value=account_b_snapshot) as fetch:
+            cli_obj._maybe_refresh_codex_usage_snapshot()
+
+        fetch.assert_called_once()
+        assert cli_obj._codex_usage_snapshot is account_b_snapshot
+        assert cli_obj._codex_usage_last_attempt == 1000.0
+
+    def test_codex_refresh_uses_same_credential_capture_for_scope_and_fetch(self):
+        cli_obj = _make_cli("openai/gpt-5.4")
+        cli_obj.provider = "openai-codex"
+        cli_obj._invalidate = MagicMock()
+        account_a_snapshot = _codex_usage_snapshot(30)
+        codex_url = "https://chatgpt.com/backend-api/codex"
+
+        class RotatingAgent:
+            model = "openai/gpt-5.4"
+            provider = "openai-codex"
+
+            def __init__(self):
+                self.api_key = "account-a-token"
+                self.client = SimpleNamespace(api_key="account-a-token", base_url=codex_url)
+
+            @property
+            def base_url(self):
+                # Reproduce rotation between separate live-field reads. The
+                # already-captured client object remains an immutable A snapshot.
+                self.api_key = "account-b-token"
+                return codex_url
+
+        cli_obj.agent = RotatingAgent()
+
+        class ImmediateThread:
+            def __init__(self, *, target, **_kwargs):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        with patch("cli.time.monotonic", return_value=1000.0), patch(
+            "cli.threading.Thread", ImmediateThread
+        ), patch("agent.account_usage.fetch_account_usage", return_value=account_a_snapshot) as fetch:
+            cli_obj._maybe_refresh_codex_usage_snapshot()
+
+        fetch.assert_called_once_with(
+            "openai-codex",
+            base_url=codex_url,
+            api_key="account-a-token",
+        )
+        assert cli_obj._codex_usage_snapshot is account_a_snapshot
+
+    def test_codex_refresh_uses_active_agent_credentials_and_repaints(self):
+        cli_obj = _make_cli("openai/gpt-5.4")
+        cli_obj.provider = "openai-codex"
+        cli_obj.api_key = "stale-cli-token"
+        cli_obj.base_url = "https://stale.example"
+        cli_obj.agent = SimpleNamespace(
+            model="openai/gpt-5.4",
+            provider="openai-codex",
+            api_key="active-agent-token",
+            base_url="https://chatgpt.com/backend-api/codex",
+            client=SimpleNamespace(
+                api_key="active-agent-token",
+                base_url="https://chatgpt.com/backend-api/codex",
+            ),
+        )
+        cli_obj._invalidate = MagicMock()
+        refreshed = _codex_usage_snapshot(42)
+
+        class ImmediateThread:
+            def __init__(self, *, target, **_kwargs):
+                self.target = target
+
+            def start(self):
+                self.target()
+
+        with patch("cli.time.monotonic", return_value=1000.0), patch(
+            "cli.threading.Thread", ImmediateThread
+        ), patch("agent.account_usage.fetch_account_usage", return_value=refreshed) as fetch:
+            cli_obj._maybe_refresh_codex_usage_snapshot()
+
+        fetch.assert_called_once_with(
+            "openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_key="active-agent-token",
+        )
+        assert cli_obj._codex_usage_snapshot is refreshed
+        assert cli_obj._codex_usage_refreshing is False
+        cli_obj._invalidate.assert_called_once_with(min_interval=0.0)
+
+    def test_codex_refresh_failure_keeps_stale_cache_and_is_rate_limited(self):
+        cli_obj = _make_cli("openai/gpt-5.4")
+        _attach_codex_runtime(cli_obj)
+        stale = _codex_usage_snapshot(73)
+        cli_obj._codex_usage_snapshot = stale
+        cli_obj._codex_usage_scope = cli_obj._codex_usage_scope_for_active_credentials()
+        cli_obj._invalidate = MagicMock()
+        starts = []
+
+        class ImmediateThread:
+            def __init__(self, *, target, **_kwargs):
+                self.target = target
+
+            def start(self):
+                starts.append(1)
+                self.target()
+
+        with patch("cli.threading.Thread", ImmediateThread), patch(
+            "agent.account_usage.fetch_account_usage", side_effect=RuntimeError("temporary failure")
+        ):
+            with patch("cli.time.monotonic", return_value=1000.0):
+                cli_obj._maybe_refresh_codex_usage_snapshot()
+            with patch("cli.time.monotonic", return_value=1100.0):
+                cli_obj._maybe_refresh_codex_usage_snapshot()
+
+        assert len(starts) == 1
+        assert cli_obj._codex_usage_snapshot is stale
+        assert cli_obj._codex_usage_refreshing is False
+
+    def test_codex_refresh_thread_start_failure_allows_immediate_retry(self):
+        cli_obj = _make_cli("openai/gpt-5.4")
+        _attach_codex_runtime(cli_obj)
+
+        with patch("cli.time.monotonic", return_value=1000.0), patch(
+            "cli.threading.Thread"
+        ) as thread_cls:
+            thread_cls.return_value.start.side_effect = RuntimeError("thread unavailable")
+            cli_obj._maybe_refresh_codex_usage_snapshot()
+
+        assert cli_obj._codex_usage_refreshing is False
+        assert cli_obj._codex_usage_last_attempt == 0.0
 
     def test_build_status_bar_text_for_wide_terminal(self):
         cli_obj = _attach_agent(

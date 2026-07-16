@@ -106,12 +106,24 @@ def fzf_history_picker(items):
     -------
     str or None
         The selected text, or None if cancelled / fzf unavailable.
+
+    Each entry is assigned an opaque integer ID that is written as the
+    first tab-delimited field in fzf's input.  ``--with-nth=2..`` hides
+    the ID from the display while ``--nth=2..`` restricts the search to
+    the visible text.  fzf's stdout always returns the **full** original
+    line, so we split on the first tab to recover the ID and map it
+    directly back to the entry — no prefix/heuristic matching, which
+    avoids collisions between distinct inputs that share a long common
+    prefix or differ only in whitespace collapsing.
     """
     if not items:
         return None
 
     if not shutil.which("fzf"):
         return None
+
+    # Build an opaque-ID → original-text lookup table.
+    id_to_text = {}
 
     # Write items to a temp file — fzf reads from this via stdin.
     # stdout/stderr are NOT redirected so fzf can access /dev/tty
@@ -121,11 +133,14 @@ def fzf_history_picker(items):
 
     try:
         with open(input_path, "w", encoding="utf-8") as f:
-            for ts, text in items:
+            for idx, (ts, text) in enumerate(items):
+                id_to_text[idx] = text
                 display = " ".join(text.split())
                 if len(display) > 200:
                     display = display[:197] + "..."
-                f.write(f"{_format_ts(ts)}  {display}\n")
+                # First field is the opaque ID; fzf hides it via --with-nth
+                # but still echoes the full line (including the ID) on stdout.
+                f.write(f"{idx}\t{_format_ts(ts)}  {display}\n")
 
         fzf_cmd = [
             "fzf",
@@ -137,6 +152,9 @@ def fzf_history_picker(items):
             "--header=Enter insert | Esc cancel",
             "--exact",
             "--tiebreak=begin,length",
+            "--delimiter=\\t",
+            "--with-nth=2..",
+            "--nth=2..",
         ]
 
         # fzf uses stderr for its interactive TUI (/dev/tty),
@@ -166,21 +184,28 @@ def fzf_history_picker(items):
             )
             return None
 
-        # Strip the "MM-DD HH:MM  " prefix (11 chars) to get the display text
-        display_text = selected[11:].strip() if len(selected) > 11 else selected
+        # The first tab-delimited field is the opaque ID; everything
+        # after it is display-only.  Parse the ID and look up the
+        # original text directly — no prefix matching involved.
+        id_str, _, _rest = selected.partition("\t")
+        try:
+            entry_id = int(id_str)
+        except ValueError:
+            import logging
+            logging.getLogger("hermes.fzf").debug(
+                "fzf_history_picker: could not parse ID from %r", id_str[:50]
+            )
+            return None
 
-        # Find the original full-text entry by prefix match
-        for ts, text in items:
-            collapsed = " ".join(text.split())
-            if collapsed[:197] == display_text[:197]:
-                return text
+        if entry_id in id_to_text:
+            return id_to_text[entry_id]
 
         import logging
         logging.getLogger("hermes.fzf").debug(
-            "fzf_history_picker: no prefix match for display_text=%r (selected=%r)",
-            display_text[:100], selected[:100]
+            "fzf_history_picker: ID %d not in lookup table (size=%d)",
+            entry_id, len(id_to_text)
         )
-        return display_text
+        return None
 
     except Exception as e:
         import logging

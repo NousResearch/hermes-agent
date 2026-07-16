@@ -211,7 +211,109 @@ def test_fzf_picker_returns_none_when_fzf_exits_nonzero(tmp_path):
         with patch("subprocess.run") as mock_run:
             import subprocess
             mock_run.return_value = subprocess.CompletedProcess(
-                args=["fzf"], returncode=1, stdout=b"", stderr=b""
+                args=["fzf"], returncode=1, stdout="", stderr=""
+            )
+            result = fzf_history_picker([("2026-01-01 00:00:00", "test")])
+            assert result is None
+
+
+def test_fzf_picker_successful_selection():
+    """When fzf returns rc=0 with a selected line, the correct original
+    text is recovered via the opaque-ID lookup (no prefix matching)."""
+    from tools.history_fzf import fzf_history_picker
+
+    items = [
+        ("2026-04-10 19:41:03.572755", "hello world"),
+        ("2026-04-09 10:00:00.000000", "another input"),
+    ]
+
+    # fzf echoes the full input line (including the tab-delimited ID) on
+    # stdout.  Simulate selecting the FIRST entry (ID=0).
+    fake_stdout = "0\t04-10 19:41  hello world\n"
+
+    with patch("shutil.which", return_value="/usr/bin/fzf"):
+        with patch("subprocess.run") as mock_run:
+            import subprocess
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=["fzf"], returncode=0, stdout=fake_stdout, stderr=""
+            )
+            result = fzf_history_picker(items)
+            assert result == "hello world"
+
+
+def test_fzf_picker_collision_different_entries_same_prefix():
+    """Regression test: two entries whose collapsed display shares the
+    first 197 characters but differ afterwards must be disambiguated by
+    the opaque ID, not by prefix matching.
+
+    With the old prefix-match logic, selecting entry #1 would wrongly
+    return entry #0 because both collapsed displays start with the same
+    197-character prefix.  The opaque-ID lookup makes the mapping exact.
+    """
+    from tools.history_fzf import fzf_history_picker
+
+    # Build two texts that share the first 197 chars after whitespace
+    # collapsing but differ at position 197.
+    prefix = "a" * 200  # 200 chars — exceeds the 197-char display limit
+    text_a = prefix + "TAIL_A"
+    text_b = prefix + "TAIL_B"
+
+    items = [
+        ("2026-04-10 19:41:03.572755", text_a),
+        ("2026-04-09 10:00:00.000000", text_b),
+    ]
+
+    # fzf echoes the full line for entry #1 (ID=1).  Both entries display
+    # as the same truncated prefix, so only the ID distinguishes them.
+    fake_stdout = "1\t04-09 10:00  " + prefix[:197] + "...\n"
+
+    with patch("shutil.which", return_value="/usr/bin/fzf"):
+        with patch("subprocess.run") as mock_run:
+            import subprocess
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=["fzf"], returncode=0, stdout=fake_stdout, stderr=""
+            )
+            result = fzf_history_picker(items)
+            # Must return text_b (entry #1), NOT text_a (entry #0).
+            assert result == text_b
+            assert result != text_a
+
+
+def test_fzf_picker_collision_whitespace_only_difference():
+    """Regression test: two entries that differ only in whitespace
+    collapsing (e.g. 'a  b' vs 'a b') must still be disambiguated by
+    the opaque ID."""
+    from tools.history_fzf import fzf_history_picker
+
+    items = [
+        ("2026-04-10 19:41:03.572755", "a  b"),   # double space
+        ("2026-04-09 10:00:00.000000", "a b"),    # single space
+    ]
+
+    # Both collapse to "a b" for display.  Select entry #1 (ID=1).
+    fake_stdout = "1\t04-09 10:00  a b\n"
+
+    with patch("shutil.which", return_value="/usr/bin/fzf"):
+        with patch("subprocess.run") as mock_run:
+            import subprocess
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=["fzf"], returncode=0, stdout=fake_stdout, stderr=""
+            )
+            result = fzf_history_picker(items)
+            # Must return "a b" (single-space, entry #1), not "a  b".
+            assert result == "a b"
+
+
+def test_fzf_picker_unparseable_id_returns_none():
+    """When fzf stdout has no tab delimiter (malformed), return None."""
+    from tools.history_fzf import fzf_history_picker
+
+    with patch("shutil.which", return_value="/usr/bin/fzf"):
+        with patch("subprocess.run") as mock_run:
+            import subprocess
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=["fzf"], returncode=0,
+                stdout="garbage no tab here\n", stderr=""
             )
             result = fzf_history_picker([("2026-01-01 00:00:00", "test")])
             assert result is None

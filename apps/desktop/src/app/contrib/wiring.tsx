@@ -227,7 +227,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   })
 
   const { refreshCurrentModel, selectModel, updateModelOptionsCache } = useModelControls({
-    activeSessionId,
     queryClient,
     requestGateway
   })

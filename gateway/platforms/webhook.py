@@ -125,6 +125,20 @@ def _is_loopback_host(host: Optional[str]) -> bool:
     return host.strip().lower() in _LOOPBACK_HOSTS
 
 
+def _hmac_str_equal(provided: str, expected: str) -> bool:
+    """Timing-safe equality for two ``str`` values, tolerant of non-ASCII input.
+
+    ``hmac.compare_digest`` raises ``TypeError`` when given a ``str`` that
+    contains non-ASCII characters. The ``provided`` value here is an
+    attacker-controlled signature/token header on a public, unauthenticated
+    webhook endpoint, so a single non-ASCII byte would otherwise raise out of
+    the request handler and return a 500 instead of rejecting the request.
+    Comparing as UTF-8 bytes keeps the constant-time guarantee while making a
+    hostile header fail closed with a clean rejection.
+    """
+    return hmac.compare_digest(provided.encode(), expected.encode())
+
+
 def check_webhook_requirements() -> bool:
     """Check if webhook adapter dependencies are available."""
     return AIOHTTP_AVAILABLE
@@ -969,12 +983,12 @@ class WebhookAdapter(BasePlatformAdapter):
             expected = "sha256=" + hmac.new(
                 secret.encode(), body, hashlib.sha256
             ).hexdigest()
-            return hmac.compare_digest(gh_sig, expected)
+            return _hmac_str_equal(gh_sig, expected)
 
         # GitLab: X-Gitlab-Token = <plain secret>
         gl_token = request.headers.get("X-Gitlab-Token", "")
         if gl_token:
-            return hmac.compare_digest(gl_token, secret)
+            return _hmac_str_equal(gl_token, secret)
 
         # Generic V2: X-Webhook-Signature-V2 = <hex HMAC-SHA256 of "<timestamp>.<body>">
         #             X-Webhook-Timestamp = <unix seconds> (required for V2)
@@ -1017,7 +1031,7 @@ class WebhookAdapter(BasePlatformAdapter):
             expected_v2 = hmac.new(
                 secret.encode(), signed_content, hashlib.sha256
             ).hexdigest()
-            return hmac.compare_digest(v2_sig, expected_v2)
+            return _hmac_str_equal(v2_sig, expected_v2)
 
         # Generic V1 (legacy): X-Webhook-Signature = <hex HMAC-SHA256 of body>
         # (deprecated — no replay protection, since the signature only
@@ -1041,7 +1055,7 @@ class WebhookAdapter(BasePlatformAdapter):
                     "'<timestamp>.<body>').",
                     route_name,
                 )
-            return hmac.compare_digest(generic_sig, expected)
+            return _hmac_str_equal(generic_sig, expected)
 
         # No recognised signature header but secret is configured → reject
         logger.debug(
@@ -1095,7 +1109,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 version, signature = part.split(",", 1)
             except ValueError:
                 continue
-            if version == "v1" and hmac.compare_digest(signature, expected):
+            if version == "v1" and _hmac_str_equal(signature, expected):
                 return True
         return False
 

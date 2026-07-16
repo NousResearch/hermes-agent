@@ -167,15 +167,20 @@ function documentBlocks(payload: JsonObject): CanvasBlock[] {
           })
       }
       if (kind === 'divider') blocks.push({ type: 'divider', id: `${sectionIndex}-${index}` })
-      const directChartType = ['bar', 'line', 'area', 'pie', 'donut', 'stackedBar'].includes(kind) ? kind : ''
+      const directChartType = ['bar', 'line', 'area', 'pie', 'donut', 'doughnut', 'stackedBar'].includes(kind)
+        ? kind
+        : ''
       if (kind === 'chart' || directChartType) {
         const labels = Array.isArray(item?.labels) ? item.labels.map(value => String(value)) : []
         const series = Array.isArray(item?.series) ? object(item.series[0]) : null
         const values = Array.isArray(series?.data) ? series.data : []
         const chartData = labels.map((label, valueIndex) => ({ label, value: number(values[valueIndex]) }))
-        const chartType = string(item?.chartType, string(item?.variant, directChartType))
+        // Canvas writers commonly use `kind: "chart", type: "line"` rather
+        // than `chartType`. Accept both forms (and the Chart.js spelling
+        // `doughnut`) so valid graphs never disappear or degrade unexpectedly.
+        const chartType = string(item?.chartType, string(item?.variant, string(item?.type, directChartType)))
         const blockType =
-          chartType === 'pie' || chartType === 'donut'
+          chartType === 'pie' || chartType === 'donut' || chartType === 'doughnut'
             ? 'pie-chart'
             : chartType === 'line'
               ? 'line-chart'

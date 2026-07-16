@@ -82,6 +82,28 @@ describe('parseCanvasManifest', () => {
     expect(manifest.blocks.map(block => block.type)).toEqual(['line-chart', 'area-chart'])
   })
 
+  it('accepts Hermes kind/type chart syntax and the doughnut alias', () => {
+    const manifest = parseCanvasManifest(
+      JSON.stringify({
+        schema: 'hermes.canvas/v1',
+        id: 'writer-shape',
+        title: 'Writer shape',
+        source: {},
+        document: [
+          {
+            children: [
+              { kind: 'chart', labels: ['Mon', 'Tue'], series: [{ data: [4, 7] }], type: 'line' },
+              { kind: 'chart', labels: ['Direct', 'Search'], series: [{ data: [2, 8] }], type: 'doughnut' }
+            ]
+          }
+        ]
+      }),
+      'default'
+    )
+
+    expect(manifest.blocks.map(block => block.type)).toEqual(['line-chart', 'pie-chart'])
+  })
+
   it('renders flat document sections produced by Hermes', () => {
     const manifest = parseCanvasManifest(
       JSON.stringify({

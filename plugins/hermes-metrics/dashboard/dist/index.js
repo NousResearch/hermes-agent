@@ -206,6 +206,44 @@
     );
   }
 
+  // ── personal account /usage windows (rate-limit meters) ───────────────
+  const WINDOW_LABELS = {
+    five_hour: "Current session (5h)",
+    seven_day: "Current week",
+    seven_day_opus: "Opus week",
+    seven_day_sonnet: "Sonnet week",
+  };
+
+  function AccountLimits({ account, routing }) {
+    const windows = (account && account.windows) || {};
+    const keys = Object.keys(WINDOW_LABELS).filter(function (k) { return windows[k]; });
+    let routingDesc = "unknown";
+    if (routing && routing.mode === "split") {
+      const s = Math.round((routing.personal_share || 0) * 100);
+      routingDesc = "split " + s + "/" + (100 - s) + " account/api-key";
+    } else if (routing && routing.mode) {
+      routingDesc = routing.mode.replace(/_/g, "-");
+    }
+    return h("div", { className: "hm-card hm-grow" },
+      h("div", { className: "hm-label" }, "Personal account /usage · routing: " + routingDesc),
+      keys.length === 0
+        ? h("div", { className: "hm-empty" }, "Account /usage unavailable (no OAuth snapshot yet — next poll).")
+        : h("div", { className: "hm-hbars" }, keys.map(function (k) {
+            const pct = windows[k].pct || 0;
+            let status = "good", statusText = "ok";
+            if (pct >= 80) { status = "critical"; statusText = "hot — api-key failover"; }
+            else if (pct >= 60) { status = "warning"; statusText = "elevated"; }
+            return h("div", { key: k, className: "hm-hbar-row" },
+              h("span", { className: "hm-hbar-label" }, WINDOW_LABELS[k]),
+              h("div", { className: "hm-hbar-track" },
+                h("div", { className: "hm-hbar-fill hm-fill-" + status, style: { width: Math.min(100, pct) + "%" } })
+              ),
+              h("span", { className: "hm-hbar-value hm-status-" + status }, pct.toFixed(0) + "% · " + statusText)
+            );
+          }))
+    );
+  }
+
   // ── tables ────────────────────────────────────────────────────────────
   const OUTCOME_COLS = ["completed", "blocked", "crashed", "timed_out", "gave_up", "reclaimed"];
 
@@ -321,6 +359,7 @@
           h("p", { className: "hm-hint" },
             "Spend day " + (spend.date || "—") +
             (spend.throttle && spend.throttle.enabled ? " · throttle ARMED" : " · throttle in measurement mode") +
+            (spend.routing && spend.routing.mode ? " · billing " + spend.routing.mode.replace(/_/g, "-") : "") +
             (updatedAt ? " · updated " + updatedAt.toLocaleTimeString() : ""))
         )
       ),
@@ -344,6 +383,7 @@
         )
       ),
       h("div", { className: "hm-row" },
+        h(AccountLimits, { account: spend.account_usage, routing: spend.routing }),
         h("div", { className: "hm-card hm-grow" },
           h("div", { className: "hm-label" }, "Top profiles today (estimated USD)"),
           topProfiles.length ? h(HBarList, { rows: topProfiles }) : h("div", { className: "hm-empty" }, "No spend recorded today yet.")

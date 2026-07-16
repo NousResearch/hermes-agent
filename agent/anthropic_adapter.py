@@ -1271,20 +1271,47 @@ def _resolve_anthropic_pool_token() -> Optional[str]:
     return None
 
 
-def _spend_guard_api_key_swap_active() -> bool:
-    """True when the spend guard has failed api-key billing over to OAuth.
+# Per-process billing choice under "split" routing. Decided once per process
+# (first resolution) so a worker never changes accounts mid-session; workers
+# are short-lived subprocesses, so the population converges on the share.
+_billing_split_choice: Optional[bool] = None
 
-    The spend poller writes ``swapped: {api_key: {to: personal_oauth}}`` into
-    ``~/.hermes/data/spend_throttle.json`` when the shared API key exhausts
-    its daily budget. While active, the resolver demotes API-key-shaped
-    tokens below the OAuth sources so freshly spawned sessions bill the
-    personal account instead. Fully fault-isolated: any failure here means
-    "no swap" — billing behavior must never break on spend-guard problems.
+
+def _spend_guard_prefers_personal_billing() -> bool:
+    """True when this process should bill the personal account (OAuth).
+
+    The spend poller writes a routing directive into
+    ``~/.hermes/data/spend_throttle.json``:
+
+      - ``personal_only``  → True (api-key daily budget exhausted — the swap)
+      - ``api_key_only``   → False (account /usage windows hot)
+      - ``split``          → per-process coin with p = personal_share
+                             (account-first policy: most work rides the
+                             subscription, the API key takes the rest)
+      - missing/legacy     → the pre-routing ``swapped`` flag
+
+    While True, the resolver demotes API-key-shaped tokens below the OAuth
+    sources. Fully fault-isolated: any failure here means "no preference" —
+    billing behavior must never break on spend-guard problems.
     """
+    global _billing_split_choice
     try:
         from agent import spend_meter
 
         state = spend_meter.read_throttle()
+        mode = (state.routing or {}).get("mode")
+        if mode == "personal_only":
+            return True
+        if mode == "api_key_only":
+            return False
+        if mode == "split":
+            share = float(state.routing.get("personal_share") or 0.0)
+            if _billing_split_choice is None:
+                import random
+
+                _billing_split_choice = random.random() < share
+            return _billing_split_choice
+        # Legacy file written before routing existed.
         return "api_key" in (state.swapped_lanes or {})
     except Exception:
         return False
@@ -1301,23 +1328,24 @@ def resolve_anthropic_token() -> Optional[str]:
       4. Anthropic credential_pool OAuth entry (~/.hermes/auth.json)
       5. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
 
-    Spend-guard billing swap: while the spend guard reports the api_key lane
-    swapped (daily budget exhausted), API-key-shaped tokens from steps 1/5
-    are demoted to a last-resort fallback so the OAuth sources (2-4) win —
-    the session then bills the personal account. If no OAuth source
-    resolves, the held API key is still returned: the swap must degrade to
-    normal billing, never to a broken worker.
+    Spend-guard billing routing: while the spend guard prefers personal
+    billing for this process (personal_only mode, or this process's coin
+    under split mode), API-key-shaped tokens from steps 1/5 are demoted to
+    a last-resort fallback so the OAuth sources (2-4) win — the session
+    then bills the personal account. If no OAuth source resolves, the held
+    API key is still returned: routing must degrade to normal billing,
+    never to a broken worker.
 
     Returns the token string or None.
     """
     creds = read_claude_code_credentials()
-    swap_active = _spend_guard_api_key_swap_active()
+    prefer_personal = _spend_guard_prefers_personal_billing()
     demoted_api_key: Optional[str] = None
 
     # 1. Hermes-managed OAuth/setup token env var
     token = os.getenv("ANTHROPIC_TOKEN", "").strip()
     if token:
-        if swap_active and not _is_oauth_token(token):
+        if prefer_personal and not _is_oauth_token(token):
             demoted_api_key = token
         else:
             preferred = _prefer_refreshable_claude_code_token(token, creds)
@@ -1345,16 +1373,16 @@ def resolve_anthropic_token() -> Optional[str]:
 
     # 5. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
     # This remains as a compatibility fallback for pre-migration Hermes configs.
-    # Under an active billing swap, API-key-shaped values are demoted here
+    # Under personal-billing routing, API-key-shaped values are demoted here
     # too (worker .envs carry the same shared key in ANTHROPIC_API_KEY as a
     # fallback); an OAuth-shaped legacy value still wins.
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     if api_key:
-        if _is_oauth_token(api_key) or not swap_active:
+        if _is_oauth_token(api_key) or not prefer_personal:
             return api_key
         demoted_api_key = demoted_api_key or api_key
 
-    # Billing-swap fallback: no OAuth source resolved, so return the demoted
+    # Routing fallback: no OAuth source resolved, so return the demoted
     # API key rather than failing auth entirely.
     if demoted_api_key:
         return demoted_api_key

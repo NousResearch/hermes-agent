@@ -68,6 +68,15 @@ class SpendConfig:
     slack_channel: str = ""
     thresholds: List[float] = field(default_factory=lambda: [0.5, 0.8, 1.0])
     throttle_enabled: bool = False
+    # Billing routing (account-first policy): in normal operation
+    # ``personal_share`` of api_key-lane workers bill the personal account
+    # (subscription) and the rest bill the API key. The poller watches the
+    # account's /usage windows and fails everything over to the API key at
+    # ``account_limit_threshold`` utilization, returning to the split below
+    # ``resume_threshold`` (hysteresis).
+    personal_share: float = 0.8
+    account_limit_threshold: float = 0.80
+    resume_threshold: float = 0.60
 
     def lane_cap(self, lane: str) -> Optional[Decimal]:
         cap = (self.lanes.get(lane) or {}).get("daily_cap_usd")
@@ -147,6 +156,13 @@ def _parse_spend_section(spend: dict) -> SpendConfig:
         out.thresholds = sorted(float(t) for t in thresholds)
     throttle = spend.get("throttle") or {}
     out.throttle_enabled = bool(throttle.get("enabled", False))
+    routing = spend.get("routing") or {}
+    if routing.get("personal_share") is not None:
+        out.personal_share = min(1.0, max(0.0, float(routing["personal_share"])))
+    if routing.get("account_limit_threshold") is not None:
+        out.account_limit_threshold = float(routing["account_limit_threshold"])
+    if routing.get("resume_threshold") is not None:
+        out.resume_threshold = float(routing["resume_threshold"])
     return out
 
 
@@ -289,6 +305,64 @@ def cumulative_cost(row: dict) -> Tuple[Decimal, str]:
     return amount, "estimated"
 
 
+# ─── Personal account /usage windows ─────────────────────────────────────────
+
+
+def fetch_personal_account_usage() -> Optional[dict]:
+    """Query the Anthropic OAuth /usage API for the personal account's
+    rate-limit windows (the same data Claude Code's /usage shows).
+
+    Resolves the keychain OAuth token directly (never the API key — the
+    windows belong to the subscription). Returns
+    ``{"windows": {five_hour: {"pct": .., "resets_at": ..}, ...},
+    "max_pct": .., "fetched_at": ..}`` or None on any failure.
+    """
+    try:
+        import httpx
+
+        from agent.anthropic_adapter import (
+            _resolve_claude_code_token_from_credentials,
+            read_claude_code_credentials,
+        )
+
+        token = _resolve_claude_code_token_from_credentials(
+            read_claude_code_credentials()
+        )
+        if not token:
+            return None
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "anthropic-beta": "oauth-2025-04-20",
+            "User-Agent": "claude-code/2.1.0",
+        }
+        with httpx.Client(timeout=15.0) as client:
+            response = client.get(
+                "https://api.anthropic.com/api/oauth/usage", headers=headers
+            )
+            response.raise_for_status()
+        payload = response.json() or {}
+        windows: Dict[str, dict] = {}
+        max_pct = 0.0
+        for key in ("five_hour", "seven_day", "seven_day_opus", "seven_day_sonnet"):
+            window = payload.get(key) or {}
+            util = window.get("utilization")
+            if util is None:
+                continue
+            pct = float(util) * 100 if float(util) <= 1 else float(util)
+            windows[key] = {"pct": round(pct, 1), "resets_at": window.get("resets_at")}
+            # Opus week doesn't gate sonnet workers; exclude it from the
+            # failover signal (rule-engineer is personal-lane regardless).
+            if key != "seven_day_opus":
+                max_pct = max(max_pct, pct)
+        if not windows:
+            return None
+        return {"windows": windows, "max_pct": round(max_pct, 1), "fetched_at": time.time()}
+    except Exception:
+        return None
+
+
 # ─── Ledger ──────────────────────────────────────────────────────────────────
 
 
@@ -363,19 +437,31 @@ def accrue(
     profiles: Dict[str, dict] = ledger.setdefault("profiles", {})
     gaps = set(ledger.get("pricing_gaps") or [])
     query_floor = window_start - WATERMARK_RETENTION_SECONDS
-    # Billing-swap attribution: deltas observed while a lane is swapped were
-    # (approximately) billed through the failover lane, so accrue them there.
-    # read_throttle() here reflects the PREVIOUS poll's decision, which is
-    # exactly the regime the newly observed tokens ran under.
-    active_swaps = {
-        lane: info.get("to")
-        for lane, info in read_throttle(throttle_path).swapped_lanes.items()
-        if info.get("to")
-    }
+    # Billing attribution: read_throttle() here reflects the PREVIOUS poll's
+    # routing decision — exactly the regime the newly observed tokens ran
+    # under. api_key-lane deltas split across lanes by the active mode
+    # (expected-value attribution: statistically right for daily
+    # aggregates, which is what the caps compare against).
+    prev_routing = read_throttle(throttle_path).routing
+    mode = prev_routing.get("mode") or "api_key_only"
+    share = float(prev_routing.get("personal_share") or 0.0)
+    if mode == "personal_only":
+        api_key_splits = [("personal_oauth", Decimal("1"))]
+    elif mode == "split" and share > 0:
+        api_key_splits = [
+            ("personal_oauth", Decimal(str(share))),
+            ("api_key", Decimal("1") - Decimal(str(share))),
+        ]
+    else:
+        api_key_splits = [("api_key", Decimal("1"))]
+
+    def _lane_shares(env_lane: str) -> List[Tuple[str, Decimal]]:
+        if env_lane == "api_key":
+            return api_key_splits
+        return [(env_lane, Decimal("1"))]
 
     for profile, db_path in dbs if dbs is not None else iter_session_dbs():
-        lane = resolve_profile_lane(profile, cfg)
-        lane = active_swaps.get(lane) or lane
+        env_lane = resolve_profile_lane(profile, cfg)
         try:
             conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
             conn.row_factory = sqlite3.Row
@@ -409,11 +495,15 @@ def accrue(
                 "seen_at": now,
             }
             if delta > 0:
-                lane_entry = lanes.setdefault(lane, {"usd": 0.0})
-                lane_entry["usd"] = float(Decimal(str(lane_entry["usd"])) + delta)
-                prof_entry = profiles.setdefault(profile, {"usd": 0.0, "lane": lane})
+                for share_lane, fraction in _lane_shares(env_lane):
+                    part = delta * fraction
+                    if part <= 0:
+                        continue
+                    lane_entry = lanes.setdefault(share_lane, {"usd": 0.0})
+                    lane_entry["usd"] = float(Decimal(str(lane_entry["usd"])) + part)
+                prof_entry = profiles.setdefault(profile, {"usd": 0.0, "lane": env_lane})
                 prof_entry["usd"] = float(Decimal(str(prof_entry["usd"])) + delta)
-                prof_entry["lane"] = lane
+                prof_entry["lane"] = env_lane
 
     for key, mark in list(watermarks.items()):
         ended = mark.get("ended_at")
@@ -477,6 +567,10 @@ class ThrottleState:
     swapped_lanes: Dict[str, dict] = field(default_factory=dict)
     """Lanes billing through their ``swap_to`` target (over cap, target has
     headroom). Entry: ``{"to": lane, "usd": .., "cap": .., "since": ..}``."""
+    routing: Dict[str, Any] = field(default_factory=dict)
+    """Billing routing directive for the auth resolver:
+    ``{"mode": "split"|"api_key_only"|"personal_only", "personal_share": ..,
+    "reason": .., "since": ..}``. Missing/empty → resolver default (API key)."""
 
 
 def _load_throttle_raw(path: Path) -> dict:
@@ -508,11 +602,26 @@ def compute_and_write_throttle(
     cfg: SpendConfig,
     path: Optional[Path] = None,
     now: Optional[float] = None,
+    account: Optional[dict] = None,
 ) -> ThrottleState:
-    """Derive pause flags from the ledger and persist them (preserving overrides)."""
+    """Derive pause flags + billing routing from the ledger and persist them.
+
+    ``account`` is the latest :func:`fetch_personal_account_usage` snapshot
+    (or None when unavailable). The routing ladder, account-first:
+
+      normal              → ``split``: personal_share of workers bill the
+                             account, the rest the API key
+      account windows hot → ``api_key_only`` (protect the subscription;
+                             hysteresis via resume_threshold)
+      api_key lane capped → ``personal_only`` (the pre-existing swap)
+      both exhausted      → api_key lane pauses dispatch
+
+    Overrides are preserved; a manual pause pops swaps as before.
+    """
     path = path or default_throttle_path()
     now = now if now is not None else time.time()
     raw = _load_throttle_raw(path)
+    prev_routing = raw.get("routing") or {}
     overrides = {
         target: entry
         for target, entry in (raw.get("overrides") or {}).items()
@@ -521,6 +630,12 @@ def compute_and_write_throttle(
     paused: Dict[str, dict] = {}
     paused_profiles: Dict[str, dict] = {}
     swapped: Dict[str, dict] = {}
+    routing: Dict[str, Any] = {
+        "mode": "split",
+        "personal_share": cfg.personal_share,
+        "reason": f"normal split {int(cfg.personal_share * 100)}/"
+        f"{int(round((1 - cfg.personal_share) * 100))} account/api-key",
+    }
     if cfg.enabled and cfg.throttle_enabled:
 
         def _lane_over_cap(lane: str) -> Optional[Tuple[Decimal, Decimal]]:
@@ -530,24 +645,55 @@ def compute_and_write_throttle(
                 return usd, cap
             return None
 
-        for lane in cfg.lanes:
-            over = _lane_over_cap(lane)
-            if not over or _override_active(overrides, lane, "resume", now):
-                continue
-            usd, cap = over
-            target = cfg.lane_swap_target(lane)
-            # Swap only while the failover lane still has headroom;
-            # otherwise fall back to pausing dispatch (the escalation
-            # ladder: cap → swap billing → target cap → pause).
-            if target and not _lane_over_cap(target):
-                swapped[lane] = {
-                    "to": target,
-                    "usd": float(usd),
-                    "cap": float(cap),
-                    "since": now,
-                }
-            else:
-                paused[lane] = {"usd": float(usd), "cap": float(cap), "since": now}
+        # Account exhaustion signal: /usage window utilization with
+        # hysteresis (enter at account_limit_threshold, leave below
+        # resume_threshold), or the personal lane's est-equivalent cap.
+        max_pct = float((account or {}).get("max_pct") or 0.0)
+        enter = cfg.account_limit_threshold * 100
+        resume = cfg.resume_threshold * 100
+        was_limited = prev_routing.get("mode") == "api_key_only"
+        account_hot = max_pct >= enter or (was_limited and max_pct >= resume)
+        personal_over = _lane_over_cap("personal_oauth")
+        account_exhausted = account_hot or bool(personal_over)
+        api_over = _lane_over_cap("api_key")
+
+        if account_exhausted and api_over and not _override_active(
+            overrides, "api_key", "resume", now
+        ):
+            usd, cap = api_over
+            paused["api_key"] = {"usd": float(usd), "cap": float(cap), "since": now}
+        if account_exhausted:
+            reason = (
+                f"personal account at {max_pct:.0f}% of a /usage window"
+                if account_hot
+                else "personal lane over its daily est-equivalent cap"
+            )
+            routing = {"mode": "api_key_only", "personal_share": 0.0, "reason": reason}
+        elif api_over:
+            usd, cap = api_over
+            if not _override_active(overrides, "api_key", "resume", now):
+                target = cfg.lane_swap_target("api_key")
+                if target:
+                    swapped["api_key"] = {
+                        "to": target,
+                        "usd": float(usd),
+                        "cap": float(cap),
+                        "since": now,
+                    }
+                    routing = {
+                        "mode": "personal_only",
+                        "personal_share": 1.0,
+                        "reason": f"api-key lane over daily cap (${float(usd):.2f}/${float(cap):.2f})",
+                    }
+                else:
+                    paused["api_key"] = {"usd": float(usd), "cap": float(cap), "since": now}
+        if account_exhausted and personal_over and not _override_active(
+            overrides, "personal_oauth", "resume", now
+        ):
+            usd, cap = personal_over
+            paused.setdefault(
+                "personal_oauth", {"usd": float(usd), "cap": float(cap), "since": now}
+            )
         for profile, cap in cfg.profile_caps.items():
             entry = (ledger.get("profiles") or {}).get(profile) or {}
             usd = Decimal(str(entry.get("usd", 0)))
@@ -562,16 +708,22 @@ def compute_and_write_throttle(
             bucket = paused if target in cfg.lanes else paused_profiles
             bucket.setdefault(target, {"since": now, "manual": True})
             swapped.pop(target, None)
+    routing["since"] = (
+        prev_routing.get("since", now)
+        if prev_routing.get("mode") == routing["mode"]
+        else now
+    )
     _save_throttle_raw(
         {
             "paused": paused,
             "paused_profiles": paused_profiles,
             "overrides": overrides,
             "swapped": swapped,
+            "routing": routing,
         },
         path,
     )
-    return ThrottleState(paused, paused_profiles, overrides, swapped)
+    return ThrottleState(paused, paused_profiles, overrides, swapped, routing)
 
 
 _throttle_cache: Dict[str, Tuple[float, ThrottleState]] = {}
@@ -593,6 +745,7 @@ def read_throttle(path: Optional[Path] = None) -> ThrottleState:
         paused_profiles=raw.get("paused_profiles") or {},
         overrides=raw.get("overrides") or {},
         swapped_lanes=raw.get("swapped") or {},
+        routing=raw.get("routing") or {},
     )
     _throttle_cache[str(path)] = (mtime, state)
     return state
@@ -740,6 +893,26 @@ def format_status(ledger: dict, cfg: SpendConfig, throttle: Optional[ThrottleSta
         lines.append("  Profiles: " + " | ".join(
             f"{name} ${Decimal(str(info.get('usd', 0))):.2f}" for name, info in profiles
         ))
+    account = ledger.get("account_usage") or {}
+    if account.get("windows"):
+        parts = []
+        labels = {
+            "five_hour": "5h",
+            "seven_day": "week",
+            "seven_day_opus": "opus wk",
+            "seven_day_sonnet": "sonnet wk",
+        }
+        for key, info in account["windows"].items():
+            parts.append(f"{labels.get(key, key)} {info.get('pct', 0):.0f}%")
+        lines.append("  Account /usage: " + " | ".join(parts))
+    if throttle and throttle.routing:
+        mode = throttle.routing.get("mode", "?")
+        share = throttle.routing.get("personal_share")
+        if mode == "split" and share is not None:
+            desc = f"split {int(float(share) * 100)}/{int(round((1 - float(share)) * 100))} account/api-key"
+        else:
+            desc = mode.replace("_", "-")
+        lines.append(f"  Billing routing: {desc}")
     if ledger.get("pricing_gaps"):
         lines.append(f"  Pricing gaps (unpriced models): {', '.join(ledger['pricing_gaps'])}")
     if throttle and throttle.swapped_lanes:
@@ -749,6 +922,37 @@ def format_status(ledger: dict, cfg: SpendConfig, throttle: Optional[ThrottleSta
         paused = list(throttle.paused_lanes) + list(throttle.paused_profiles)
         lines.append(f"  THROTTLED: {', '.join(paused)}")
     return "\n".join(lines)
+
+
+def format_routing_transition(
+    old_mode: Optional[str], routing: dict, account: Optional[dict]
+) -> str:
+    """One-line Slack notification for a billing-routing switch."""
+    mode = routing.get("mode", "?")
+    share = float(routing.get("personal_share") or 0.0)
+    if mode == "split":
+        headline = (
+            f"Billing routing → split {int(share * 100)}/{int(round((1 - share) * 100))}"
+            " (account/api-key)"
+        )
+    elif mode == "api_key_only":
+        headline = "Billing routing → API KEY ONLY (protecting the personal account)"
+    elif mode == "personal_only":
+        headline = "Billing routing → PERSONAL ACCOUNT ONLY (api-key budget exhausted)"
+    else:
+        headline = f"Billing routing → {mode}"
+    reason = routing.get("reason")
+    parts = [headline + (f" — {reason}" if reason else "")]
+    windows = (account or {}).get("windows") or {}
+    if windows:
+        labels = {"five_hour": "5h", "seven_day": "week", "seven_day_sonnet": "sonnet wk"}
+        util = " | ".join(
+            f"{labels[k]} {v.get('pct', 0):.0f}%" for k, v in windows.items() if k in labels
+        )
+        parts.append(f"Account /usage: {util}")
+    if old_mode:
+        parts.append(f"(was: {old_mode.replace('_', '-')})")
+    return "\n".join(parts)
 
 
 def format_digest(ledger: dict, cfg: SpendConfig) -> str:

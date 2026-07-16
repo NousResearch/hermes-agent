@@ -364,13 +364,19 @@ def test_swap_accrual_attributes_to_target_lane(tmp_path):
     dbs = [("workerA", db)]
     throttle_path = tmp_path / "throttle.json"
     spend_meter._save_throttle_raw(
-        {"swapped": {"api_key": {"to": "personal_oauth"}}, "paused": {}, "overrides": {}},
+        {
+            "swapped": {"api_key": {"to": "personal_oauth"}},
+            "routing": {"mode": "personal_only", "personal_share": 1.0},
+            "paused": {},
+            "overrides": {},
+        },
         throttle_path,
     )
     ledger = accrue(None, NOON, cfg, dbs=dbs, throttle_path=throttle_path)
     assert "api_key" not in ledger["lanes"]
     assert ledger["lanes"]["personal_oauth"]["usd"] == pytest.approx(2.0)
-    assert ledger["profiles"]["workerA"]["lane"] == "personal_oauth"
+    # Profile keeps its .env lane for display; the USD went to the target lane.
+    assert ledger["profiles"]["workerA"]["lane"] == "api_key"
 
 
 def test_resume_override_clears_swap(tmp_path):
@@ -385,3 +391,85 @@ def test_resume_override_clears_swap(tmp_path):
     assert "api_key" not in read_throttle(path).swapped_lanes
     state = compute_and_write_throttle(ledger, cfg, path=path, now=NOON + 60)
     assert state.swapped_lanes == {}  # override honored on recompute
+
+
+# ─── Account-first routing ladder ────────────────────────────────────────────
+
+
+def test_routing_default_split(tmp_path):
+    cfg = swap_cfg()
+    ledger = spend_meter.empty_ledger("2026-07-16", TZ)
+    path = tmp_path / "throttle.json"
+    state = compute_and_write_throttle(ledger, cfg, path=path, now=NOON,
+                                       account={"max_pct": 12.0})
+    assert state.routing["mode"] == "split"
+    assert state.routing["personal_share"] == pytest.approx(0.8)
+
+
+def test_routing_account_hot_switches_to_api_key_only_with_hysteresis(tmp_path):
+    cfg = swap_cfg()
+    ledger = spend_meter.empty_ledger("2026-07-16", TZ)
+    path = tmp_path / "throttle.json"
+    state = compute_and_write_throttle(ledger, cfg, path=path, now=NOON,
+                                       account={"max_pct": 85.0})
+    assert state.routing["mode"] == "api_key_only"
+    # Hysteresis: 70% is below the 80% entry but above the 60% resume → stay.
+    state = compute_and_write_throttle(ledger, cfg, path=path, now=NOON + 300,
+                                       account={"max_pct": 70.0})
+    assert state.routing["mode"] == "api_key_only"
+    # Below resume threshold → back to split.
+    state = compute_and_write_throttle(ledger, cfg, path=path, now=NOON + 600,
+                                       account={"max_pct": 45.0})
+    assert state.routing["mode"] == "split"
+
+
+def test_routing_api_key_capped_goes_personal_only(tmp_path):
+    cfg = swap_cfg()
+    cfg.lanes["api_key"]["daily_cap_usd"] = 1.0
+    ledger = spend_meter.empty_ledger("2026-07-16", TZ)
+    ledger["lanes"] = {"api_key": {"usd": 1.5}}
+    path = tmp_path / "throttle.json"
+    state = compute_and_write_throttle(ledger, cfg, path=path, now=NOON,
+                                       account={"max_pct": 30.0})
+    assert state.routing["mode"] == "personal_only"
+    assert state.swapped_lanes["api_key"]["to"] == "personal_oauth"
+    assert state.paused_lanes == {}
+
+
+def test_routing_both_exhausted_pauses_dispatch(tmp_path):
+    cfg = swap_cfg()
+    cfg.lanes["api_key"]["daily_cap_usd"] = 1.0
+    ledger = spend_meter.empty_ledger("2026-07-16", TZ)
+    ledger["lanes"] = {"api_key": {"usd": 1.5}}
+    path = tmp_path / "throttle.json"
+    state = compute_and_write_throttle(ledger, cfg, path=path, now=NOON,
+                                       account={"max_pct": 90.0})
+    assert state.routing["mode"] == "api_key_only"
+    assert "api_key" in state.paused_lanes
+    assert is_profile_paused("workerA", read_throttle(path), cfg, now=NOON) is not None
+
+
+def test_split_accrual_attributes_fractionally(tmp_path):
+    cfg = swap_cfg()
+    window_start, _, _ = day_window(NOON, TZ)
+    db = make_db(
+        tmp_path / "a.db",
+        [
+            {
+                "id": "s1",
+                "model": "claude-sonnet-5",
+                "input_tokens": 1_000_000,
+                "output_tokens": 0,
+                "started_at": window_start + 60,
+            }
+        ],
+    )
+    dbs = [("workerA", db)]
+    throttle_path = tmp_path / "throttle.json"
+    spend_meter._save_throttle_raw(
+        {"routing": {"mode": "split", "personal_share": 0.8}}, throttle_path
+    )
+    ledger = accrue(None, NOON, cfg, dbs=dbs, throttle_path=throttle_path)
+    assert ledger["lanes"]["personal_oauth"]["usd"] == pytest.approx(1.6)
+    assert ledger["lanes"]["api_key"]["usd"] == pytest.approx(0.4)
+    assert ledger["profiles"]["workerA"]["usd"] == pytest.approx(2.0)

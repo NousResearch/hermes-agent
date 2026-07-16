@@ -154,6 +154,8 @@ def compute_spend() -> Dict[str, Any]:
         "labels": labels,
         "history": history,
         "pricing_gaps": ledger.get("pricing_gaps") or [],
+        "account_usage": ledger.get("account_usage") or {},
+        "routing": throttle.get("routing") or {},
         "throttle": {
             "enabled": throttle_enabled,
             "paused_lanes": throttle.get("paused") or {},

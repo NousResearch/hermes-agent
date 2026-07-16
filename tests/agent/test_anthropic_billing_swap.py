@@ -1,17 +1,20 @@
-"""Tests for the spend-guard billing swap in resolve_anthropic_token.
+"""Tests for spend-guard billing routing in resolve_anthropic_token.
 
-While the spend guard reports the api_key lane swapped (daily cap
-exhausted), API-key-shaped tokens are demoted below the OAuth sources so a
-freshly spawned worker bills the personal account; if no OAuth source
-resolves, the API key is still returned (degrade to normal billing, never
-to a broken worker).
+The spend poller writes a routing directive (split / api_key_only /
+personal_only). When a process prefers personal billing, API-key-shaped
+tokens are demoted below the OAuth sources so it bills the personal
+account; if no OAuth source resolves, the API key is still returned
+(degrade to normal billing, never to a broken worker).
 """
 from __future__ import annotations
 
 import pytest
 
-from agent import anthropic_adapter
-from agent.anthropic_adapter import resolve_anthropic_token
+from agent import anthropic_adapter, spend_meter
+from agent.anthropic_adapter import (
+    _spend_guard_prefers_personal_billing,
+    resolve_anthropic_token,
+)
 
 API_KEY = "sk-ant-api03-shared-key"
 OAUTH_TOKEN = "sk-ant-oat01-personal"
@@ -27,22 +30,32 @@ def clean_sources(monkeypatch):
         anthropic_adapter, "_resolve_claude_code_token_from_credentials", lambda creds: None
     )
     monkeypatch.setattr(anthropic_adapter, "_resolve_anthropic_pool_token", lambda: None)
+    monkeypatch.setattr(anthropic_adapter, "_billing_split_choice", None)
 
 
-def _set_swap(monkeypatch, active: bool):
+def _set_personal(monkeypatch, active: bool):
     monkeypatch.setattr(
-        anthropic_adapter, "_spend_guard_api_key_swap_active", lambda: active
+        anthropic_adapter, "_spend_guard_prefers_personal_billing", lambda: active
     )
 
 
-def test_no_swap_pinned_api_key_wins(monkeypatch):
-    _set_swap(monkeypatch, False)
+def _set_routing(monkeypatch, routing: dict):
+    monkeypatch.setattr(
+        spend_meter, "read_throttle", lambda path=None: spend_meter.ThrottleState(routing=routing)
+    )
+
+
+# ─── Resolver behavior given a billing preference ────────────────────────────
+
+
+def test_no_preference_pinned_api_key_wins(monkeypatch):
+    _set_personal(monkeypatch, False)
     monkeypatch.setenv("ANTHROPIC_TOKEN", API_KEY)
     assert resolve_anthropic_token() == API_KEY
 
 
-def test_swap_prefers_keychain_oauth_over_pinned_api_key(monkeypatch):
-    _set_swap(monkeypatch, True)
+def test_personal_prefers_keychain_oauth_over_pinned_api_key(monkeypatch):
+    _set_personal(monkeypatch, True)
     monkeypatch.setenv("ANTHROPIC_TOKEN", API_KEY)
     monkeypatch.setattr(
         anthropic_adapter,
@@ -52,16 +65,16 @@ def test_swap_prefers_keychain_oauth_over_pinned_api_key(monkeypatch):
     assert resolve_anthropic_token() == OAUTH_TOKEN
 
 
-def test_swap_falls_back_to_api_key_when_no_oauth(monkeypatch):
-    _set_swap(monkeypatch, True)
+def test_personal_falls_back_to_api_key_when_no_oauth(monkeypatch):
+    _set_personal(monkeypatch, True)
     monkeypatch.setenv("ANTHROPIC_TOKEN", API_KEY)
     assert resolve_anthropic_token() == API_KEY
 
 
-def test_swap_demotes_anthropic_api_key_env_too(monkeypatch):
+def test_personal_demotes_anthropic_api_key_env_too(monkeypatch):
     """Worker .envs carry the shared key in ANTHROPIC_API_KEY as fallback —
-    under swap it must not shadow the keychain OAuth source."""
-    _set_swap(monkeypatch, True)
+    under personal routing it must not shadow the keychain OAuth source."""
+    _set_personal(monkeypatch, True)
     monkeypatch.setenv("ANTHROPIC_API_KEY", API_KEY)
     monkeypatch.setattr(
         anthropic_adapter,
@@ -69,7 +82,6 @@ def test_swap_demotes_anthropic_api_key_env_too(monkeypatch):
         lambda creds: OAUTH_TOKEN,
     )
     assert resolve_anthropic_token() == OAUTH_TOKEN
-    # ...but with no OAuth source it is still the fallback.
     monkeypatch.setattr(
         anthropic_adapter,
         "_resolve_claude_code_token_from_credentials",
@@ -78,22 +90,53 @@ def test_swap_demotes_anthropic_api_key_env_too(monkeypatch):
     assert resolve_anthropic_token() == API_KEY
 
 
-def test_swap_does_not_demote_oauth_shaped_token(monkeypatch):
-    _set_swap(monkeypatch, True)
+def test_personal_does_not_demote_oauth_shaped_token(monkeypatch):
+    _set_personal(monkeypatch, True)
     monkeypatch.setenv("ANTHROPIC_TOKEN", OAUTH_TOKEN)
     assert resolve_anthropic_token() == OAUTH_TOKEN
 
 
-def test_swap_check_failure_means_no_swap(monkeypatch):
-    monkeypatch.setenv("ANTHROPIC_TOKEN", API_KEY)
+# ─── Directive: routing mode → preference ────────────────────────────────────
 
-    def boom():
+
+def test_directive_personal_only(monkeypatch):
+    _set_routing(monkeypatch, {"mode": "personal_only", "personal_share": 1.0})
+    assert _spend_guard_prefers_personal_billing() is True
+
+
+def test_directive_api_key_only(monkeypatch):
+    _set_routing(monkeypatch, {"mode": "api_key_only", "personal_share": 0.0})
+    assert _spend_guard_prefers_personal_billing() is False
+
+
+@pytest.mark.parametrize("coin,expected", [(0.5, True), (0.95, False)])
+def test_directive_split_uses_per_process_coin(monkeypatch, coin, expected):
+    _set_routing(monkeypatch, {"mode": "split", "personal_share": 0.8})
+    import random
+
+    monkeypatch.setattr(random, "random", lambda: coin)
+    assert _spend_guard_prefers_personal_billing() is expected
+    # Stable within the process: a different coin later must not flip it.
+    monkeypatch.setattr(random, "random", lambda: 1.0 - coin)
+    assert _spend_guard_prefers_personal_billing() is expected
+
+
+def test_directive_legacy_swapped_flag(monkeypatch):
+    monkeypatch.setattr(
+        spend_meter,
+        "read_throttle",
+        lambda path=None: spend_meter.ThrottleState(
+            swapped_lanes={"api_key": {"to": "personal_oauth"}}
+        ),
+    )
+    assert _spend_guard_prefers_personal_billing() is True
+
+
+def test_directive_failure_means_no_preference(monkeypatch):
+    def boom(path=None):
         raise RuntimeError("spend_meter broken")
 
-    # The real guard swallows exceptions; simulate via the real function with
-    # a broken spend_meter import path.
-    monkeypatch.setattr(anthropic_adapter, "_spend_guard_api_key_swap_active",
-                        anthropic_adapter._spend_guard_api_key_swap_active)
-    import agent.spend_meter as sm
-    monkeypatch.setattr(sm, "read_throttle", boom)
+    monkeypatch.setattr(spend_meter, "read_throttle", boom)
+    monkeypatch.setenv("ANTHROPIC_TOKEN", API_KEY)
+    assert _spend_guard_prefers_personal_billing() is False
     assert resolve_anthropic_token() == API_KEY

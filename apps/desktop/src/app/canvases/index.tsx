@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { getProfiles } from '@/hermes'
-import { copyTextToClipboard, readDesktopDir, readDesktopFileText } from '@/lib/desktop-fs'
+import { deleteDesktopFile, readDesktopDir, readDesktopFileText } from '@/lib/desktop-fs'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 
@@ -16,6 +16,7 @@ import { canvasRefreshPrompt } from './canvas-policy'
 import type { CanvasDefinition } from './types'
 
 interface CanvasesViewProps extends React.ComponentProps<'section'> {
+  onRequestRefresh?: (prompt: string) => void
   setStatusbarItemGroup?: SetStatusbarItemGroup
 }
 
@@ -39,6 +40,7 @@ function canvasLabel(path: string): string {
 
 export function CanvasesView({
   className,
+  onRequestRefresh,
   setStatusbarItemGroup: _setStatusbarItemGroup,
   ...props
 }: CanvasesViewProps) {
@@ -47,7 +49,8 @@ export function CanvasesView({
   const [canvas, setCanvas] = useState<CanvasDefinition | null>(null)
   const [canvasSourceId, setCanvasSourceId] = useState<string | null>(null)
   const [isRefreshing, setIsRefreshing] = useState(false)
-  const [refreshPromptCopied, setRefreshPromptCopied] = useState(false)
+  const [refreshRequested, setRefreshRequested] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
 
   const refreshCanvases = useCallback(async () => {
@@ -97,6 +100,16 @@ export function CanvasesView({
   }, [refreshCanvases])
 
   const selectedCanvas = canvases?.find(canvas => canvas.id === selectedId) || null
+  const deleteSelectedCanvas = useCallback(async () => {
+    if (!selectedCanvas || isDeleting || !window.confirm(`¿Eliminar definitivamente “${selectedCanvas.label}”?`)) return
+    setIsDeleting(true)
+    try {
+      await deleteDesktopFile(selectedCanvas.path, selectedCanvas.profile)
+      setCanvases(items => items?.filter(item => item.id !== selectedCanvas.id) || [])
+      setSelectedId(null)
+      setCanvas(null)
+    } catch (error) { notifyError(error, 'No se pudo eliminar el canvas') } finally { setIsDeleting(false) }
+  }, [isDeleting, selectedCanvas])
 
   useEffect(() => {
     let cancelled = false
@@ -149,7 +162,7 @@ export function CanvasesView({
             onClick={() => void refreshCanvases()}
             type="button"
           >
-            {isRefreshing ? 'Actualizando…' : 'Actualizar'}
+            {isRefreshing ? 'Refreshing…' : 'Refresh'}
           </button>
         </div>
         <div className="border-t border-(--ui-stroke-tertiary) px-2 py-2">
@@ -209,14 +222,14 @@ export function CanvasesView({
                   {selectedCanvas.label}
                 </h1>
               </div>
-              <button
+              <div className="flex gap-1"><button
                 className="rounded-md px-2 py-1 text-xs text-(--ui-text-secondary) hover:bg-(--ui-control-hover-background) disabled:cursor-wait disabled:opacity-70"
                 disabled={isRefreshing}
                 onClick={() => void refreshCanvases()}
                 type="button"
               >
-                {isRefreshing ? 'Actualizando…' : 'Actualizar'}
-              </button>
+                  {isRefreshing ? 'Refreshing…' : 'Refresh'}
+              </button><button className="rounded-md px-2 py-1 text-xs text-(--ui-text-secondary) hover:bg-(--ui-control-hover-background) disabled:opacity-70" disabled={isDeleting} onClick={() => void deleteSelectedCanvas()} type="button">{isDeleting ? 'Deleting…' : 'Delete'}</button></div>
             </div>
             {loadError ? (
               <div className="rounded-lg border border-(--ui-stroke-tertiary) p-4 text-sm text-(--ui-text-secondary)">
@@ -229,14 +242,12 @@ export function CanvasesView({
                 <button
                   className="mb-4 rounded-md bg-(--ui-row-active-background) px-3 py-2 text-xs font-medium text-(--ui-text-primary) hover:bg-(--ui-control-hover-background)"
                   onClick={() => {
-                    void copyTextToClipboard(canvasRefreshPrompt(canvas, selectedCanvas.path)).then(() => {
-                      setRefreshPromptCopied(true)
-                      window.setTimeout(() => setRefreshPromptCopied(false), 2_500)
-                    })
+                    onRequestRefresh?.(canvasRefreshPrompt(canvas, selectedCanvas.path))
+                    setRefreshRequested(true)
                   }}
                   type="button"
                 >
-                  {refreshPromptCopied ? 'Instrucción copiada' : 'Actualizar con Hermes'}
+                  {refreshRequested ? 'Update sent to Hermes' : 'Update with Hermes'}
                 </button>
                 <p className="mb-6 max-w-3xl text-sm leading-6 text-(--ui-text-secondary)">{canvas.summary}</p>
                 <CanvasRenderer blocks={canvas.blocks} />

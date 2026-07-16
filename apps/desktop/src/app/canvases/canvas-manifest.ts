@@ -26,7 +26,40 @@ function data(value: unknown, labelKey: string, valueKey: string): CanvasDatum[]
     : []
 }
 
+function documentBlocks(payload: JsonObject): CanvasBlock[] {
+  const document = Array.isArray(payload.document) ? payload.document : []
+  const blocks: CanvasBlock[] = []
+  document.forEach((section, sectionIndex) => {
+    const group = object(section)
+    const title = string(group?.title, `Section ${sectionIndex + 1}`)
+    const children = Array.isArray(group?.children) ? group.children : []
+    const kpis = children.flatMap(child => {
+      const item = object(child)
+      return string(item?.kind) === 'kpi'
+        ? [{ label: string(item?.label), value: `${number(item?.value)}${string(item?.unit)}`, change: string(item?.deltaPct) }]
+        : []
+    })
+    if (kpis.length) blocks.push({ type: 'kpis', items: kpis })
+    children.forEach((child, index) => {
+      const item = object(child)
+      const kind = string(item?.kind)
+      if (kind === 'text' || kind === 'callout') blocks.push({ type: 'insight', id: `${sectionIndex}-${index}`, title: string(item?.title, title), body: string(item?.text) })
+      if (kind === 'table') blocks.push({ type: 'table', id: `${sectionIndex}-${index}`, title, columns: Array.isArray(item?.columns) ? item.columns.map(value => String(value)) : [], rows: Array.isArray(item?.rows) ? item.rows.map(row => Array.isArray(row) ? row.map(value => String(value)) : []) : [] })
+      if (kind === 'chart') {
+        const labels = Array.isArray(item?.labels) ? item.labels.map(value => String(value)) : []
+        const series = Array.isArray(item?.series) ? object(item.series[0]) : null
+        const values = Array.isArray(series?.data) ? series.data : []
+        const chartData = labels.map((label, valueIndex) => ({ label, value: number(values[valueIndex]) }))
+        if (chartData.length) blocks.push({ type: string(item?.type) === 'pie' || string(item?.type) === 'donut' ? 'pie-chart' : 'bar-chart', id: `${sectionIndex}-${index}`, title: string(series?.name, title), data: chartData })
+      }
+    })
+  })
+  return blocks
+}
+
 function generatedBlocks(payload: JsonObject): CanvasBlock[] {
+  const declared = documentBlocks(payload)
+  if (declared.length) return declared
   const reportData = object(payload.data) || {}
   const kpis = object(reportData.kpis) || {}
   const trend = data(reportData.trend, 'date', 'sessions').map(item => ({
@@ -34,6 +67,15 @@ function generatedBlocks(payload: JsonObject): CanvasBlock[] {
     label: item.label.slice(5)
   }))
   const traffic = data(reportData.trafficSources, 'name', 'sessions')
+  const topPages = Array.isArray(reportData.topPages)
+    ? reportData.topPages.flatMap(item => {
+        const row = object(item)
+        const path = string(row?.path)
+        return path
+          ? [[String(number(row?.rank) || 0), path, String(number(row?.pageViews)), String(number(row?.sessions))]]
+          : []
+      })
+    : []
   const ranking = Array.isArray(reportData.advisorRanking)
     ? reportData.advisorRanking.flatMap(item => {
         const row = object(item)
@@ -62,6 +104,14 @@ function generatedBlocks(payload: JsonObject): CanvasBlock[] {
       title: 'Asesores con más sesiones',
       columns: ['Asesor', 'Sesiones'],
       rows: ranking
+    })
+  if (topPages.length > 0)
+    blocks.push({
+      type: 'table',
+      id: 'top-pages',
+      title: 'Top pages',
+      columns: ['#', 'Page', 'Views', 'Sessions'],
+      rows: topPages
     })
   if (string(reportData.scopeNote))
     blocks.push({ type: 'insight', id: 'scope', title: 'Contexto', body: string(reportData.scopeNote) })

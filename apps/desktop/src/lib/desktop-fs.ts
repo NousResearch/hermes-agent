@@ -52,8 +52,8 @@ function bridge() {
   return desktop
 }
 
-function remoteFsApi<T>(path: string, body?: Record<string, unknown>, profile = desktopFsProfile()): Promise<T> {
-  return bridge().api<T>(body ? { body, method: 'POST', path, profile } : { path, profile })
+function remoteFsApi<T>(path: string, body?: Record<string, unknown>, profile = desktopFsProfile(), method: 'DELETE' | 'GET' | 'POST' = body ? 'POST' : 'GET'): Promise<T> {
+  return bridge().api<T>(body ? { body, method, path, profile } : { method, path, profile })
 }
 
 export async function readDesktopDir(path: string, profile?: string): Promise<HermesReadDirResult> {
@@ -94,6 +94,11 @@ export async function writeDesktopFileText(path: string, content: string): Promi
   const result = await remoteFsApi<{ ok?: boolean; path?: string }>('/api/fs/write-text', { content, path })
 
   return { path: result.path || path }
+}
+
+export async function deleteDesktopFile(path: string, profile?: string): Promise<void> {
+  if (!isDesktopFsRemoteMode() && !profile) return trashDesktopPath(path)
+  await remoteFsApi<{ ok: boolean }>('/api/files', { path }, profile, 'DELETE')
 }
 
 export async function readDesktopFileDataUrl(path: string): Promise<string> {

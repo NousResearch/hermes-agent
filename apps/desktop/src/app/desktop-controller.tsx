@@ -78,7 +78,7 @@ import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store
 import { isSecondaryWindow } from '../store/windows'
 
 import { ChatView } from './chat'
-import { requestComposerFocus, requestComposerInsert } from './chat/composer/focus'
+import { requestComposerFocus, requestComposerInsert, requestComposerSubmit } from './chat/composer/focus'
 import { useComposerActions } from './chat/hooks/use-composer-actions'
 import {
   ChatPreviewRail,
@@ -213,6 +213,14 @@ export function DesktopController() {
   const routeTokenRef = useRef(routeToken)
   routeTokenRef.current = routeToken
   const getRouteToken = useCallback(() => routeTokenRef.current, [])
+  const submitCanvasRefresh = useCallback(
+    (prompt: string) => {
+      const target = selectedStoredSessionId ? sessionRoute(selectedStoredSessionId) : NEW_CHAT_ROUTE
+      navigate(target)
+      window.setTimeout(() => requestComposerSubmit(prompt, { target: 'main' }), 100)
+    },
+    [navigate, selectedStoredSessionId]
+  )
 
   const {
     agentsOpen,
@@ -1341,7 +1349,7 @@ export function DesktopController() {
           <Route
             element={
               <Suspense fallback={null}>
-                <CanvasesView setStatusbarItemGroup={setStatusbarItemGroup} />
+                <CanvasesView onRequestRefresh={submitCanvasRefresh} setStatusbarItemGroup={setStatusbarItemGroup} />
               </Suspense>
             }
             path="canvases"

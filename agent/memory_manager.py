@@ -30,6 +30,7 @@ import logging
 import re
 import inspect
 import threading
+from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional
 
@@ -44,6 +45,8 @@ logger = logging.getLogger(__name__)
 # teardown indefinitely — the worker threads are daemon, so anything still
 # running past this window dies with the interpreter.
 _SYNC_DRAIN_TIMEOUT_S = 5.0
+_MAX_PENDING_SYNCS = 32
+_MAX_PENDING_PREFETCH_SESSIONS = 32
 
 
 def normalize_tool_schema(schema: Any) -> Optional[Dict[str, Any]]:
@@ -368,6 +371,10 @@ class MemoryManager:
         # _submit_background() and the sync_all/queue_prefetch_all rationale.
         self._sync_executor: Optional[ThreadPoolExecutor] = None
         self._sync_executor_lock = threading.Lock()
+        self._background_lock = threading.Lock()
+        self._pending_syncs = deque()
+        self._pending_prefetches = OrderedDict()
+        self._background_drain_scheduled = False
 
     # -- Registration --------------------------------------------------------
 
@@ -539,7 +546,7 @@ class MemoryManager:
                         provider.name, e,
                     )
 
-        self._submit_background(_run)
+        self._submit_background(_run, prefetch_session=session_id)
 
     # -- Sync ----------------------------------------------------------------
 
@@ -615,7 +622,7 @@ class MemoryManager:
 
     # -- Background dispatch -------------------------------------------------
 
-    def _submit_background(self, fn) -> None:
+    def _submit_background(self, fn, *, prefetch_session: Optional[str] = None) -> None:
         """Run ``fn`` on the manager's background worker.
 
         The executor is created lazily and shared across calls. If the
@@ -625,24 +632,54 @@ class MemoryManager:
         per-provider error handling; this wrapper only guards executor
         plumbing.
         """
+        should_schedule = False
+        with self._background_lock:
+            if prefetch_session is not None:
+                key = prefetch_session or "__default__"
+                self._pending_prefetches[key] = fn
+                self._pending_prefetches.move_to_end(key)
+                while len(self._pending_prefetches) > _MAX_PENDING_PREFETCH_SESSIONS:
+                    dropped, _ = self._pending_prefetches.popitem(last=False)
+                    logger.warning("Dropped stale memory prefetch for session %s", dropped)
+            elif len(self._pending_syncs) >= _MAX_PENDING_SYNCS:
+                logger.warning(
+                    "Dropped memory sync because the bounded queue is full "
+                    "(pending=%d)",
+                    len(self._pending_syncs),
+                )
+                return
+            else:
+                self._pending_syncs.append(fn)
+            if not self._background_drain_scheduled:
+                self._background_drain_scheduled = True
+                should_schedule = True
+        if not should_schedule:
+            return
+
         executor = self._get_sync_executor()
         if executor is None:
-            # Executor unavailable (shut down / creation failed) — run
-            # inline rather than drop the work. Slow, but correct.
-            try:
-                fn()
-            except Exception as e:  # pragma: no cover - fn guards internally
-                logger.debug("Inline memory background task failed: %s", e)
+            self._drain_background()
             return
         try:
-            executor.submit(fn)
+            executor.submit(self._drain_background)
         except RuntimeError:
-            # Executor was shut down between the get and the submit
-            # (teardown race). Fall back to inline.
+            self._drain_background()
+
+    def _drain_background(self) -> None:
+        """Drain bounded sync work in order, then newest per-session prefetches."""
+        while True:
+            with self._background_lock:
+                if self._pending_syncs:
+                    fn = self._pending_syncs.popleft()
+                elif self._pending_prefetches:
+                    _, fn = self._pending_prefetches.popitem(last=False)
+                else:
+                    self._background_drain_scheduled = False
+                    return
             try:
                 fn()
-            except Exception as e:  # pragma: no cover - fn guards internally
-                logger.debug("Inline memory background task failed: %s", e)
+            except Exception as exc:  # pragma: no cover - closures guard providers
+                logger.debug("Memory background task failed: %s", exc)
 
     def _get_sync_executor(self) -> Optional[ThreadPoolExecutor]:
         """Lazily create the single-worker background executor."""

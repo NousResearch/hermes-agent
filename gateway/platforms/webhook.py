@@ -805,6 +805,11 @@ class WebhookAdapter(BasePlatformAdapter):
                 route_config.get("deliver_extra", {}), payload
             ),
         }
+        # Stamp the profile name so reply delivery honours strict profile
+        # isolation — the profile's own adapter and home channel are used,
+        # never another profile's.  Leave unprefixed webhooks unchanged.
+        if profile and isinstance(profile, str):
+            deliver_config["_profile"] = profile
         self._delivery_info[session_chat_id] = deliver_config
         self._delivery_info_created[session_chat_id] = now
         self._delivery_info_order.append((now, session_chat_id))
@@ -1288,6 +1293,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 error="No gateway runner for cross-platform delivery",
             )
 
+        profile_name = delivery.get("_profile")
         try:
             target_platform = Platform(platform_name)
         except ValueError:
@@ -1295,6 +1301,58 @@ class WebhookAdapter(BasePlatformAdapter):
                 success=False, error=f"Unknown platform: {platform_name}"
             )
 
+        # ── Profiled webhook: strict profile isolation ─────────────
+        # Use ONLY the profile's own adapter and home channel.  Fail
+        # with a clear error if that adapter is unavailable — never
+        # fall through to another profile's adapter or the default.
+        if profile_name:
+            profile_map = (
+                getattr(self.gateway_runner, "_profile_adapters", None) or {}
+            ).get(profile_name, {})
+            adapter = profile_map.get(target_platform)
+            if not adapter:
+                return SendResult(
+                    success=False,
+                    error=(
+                        f"Platform {platform_name} not available for "
+                        f"profile '{profile_name}' — the adapter is "
+                        f"not connected under that profile"
+                    ),
+                )
+            # Resolve home channel from the profile's own config.
+            extra = delivery.get("deliver_extra", {})
+            chat_id = extra.get("chat_id", "")
+            if not chat_id:
+                try:
+                    from hermes_cli.profiles import get_profile_dir
+                    from gateway.config import load_gateway_config
+                    from gateway.run import _profile_runtime_scope
+
+                    profile_home = get_profile_dir(profile_name)
+
+                    with _profile_runtime_scope(profile_home):
+                        profile_cfg = load_gateway_config()
+                    home = profile_cfg.get_home_channel(target_platform)
+                    if home:
+                        chat_id = home.chat_id
+                except Exception:
+                    pass
+            if not chat_id:
+                return SendResult(
+                    success=False,
+                    error=(
+                        f"No chat_id or home channel for {platform_name} "
+                        f"under profile '{profile_name}'"
+                    ),
+                )
+            # Pass thread_id from deliver_extra so Telegram forum topics work
+            metadata = None
+            thread_id = extra.get("message_thread_id") or extra.get("thread_id")
+            if thread_id:
+                metadata = {"thread_id": thread_id}
+            return await adapter.send(chat_id, content, metadata=metadata)
+
+        # ── Unprefixed webhook: current behaviour (unchanged) ─────
         # Default adapters first; multiplex may park Slack/etc. only on a
         # secondary profile (self._profile_adapters). Fall back so webhook
         # deliver:slack still works when default has slack disabled.

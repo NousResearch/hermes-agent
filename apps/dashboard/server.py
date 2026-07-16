@@ -942,6 +942,89 @@ def sample_scores(league: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Socials hub — read-only, no-account feeds (Hacker News, Lobsters, Reddit)
+# ---------------------------------------------------------------------------
+SOCIAL_TTL = 5 * 60
+
+
+def _social_item(title, url, author, source, score, comments, meta=""):
+    return {"title": strip_html(title or "", 160), "url": (url or "").strip(),
+            "author": author or "", "source": source, "score": score,
+            "comments": comments, "meta": meta}
+
+
+def live_social_hn() -> dict:
+    ids = json.loads(fetch_url("https://hacker-news.firebaseio.com/v0/topstories.json"))[:20]
+
+    def one(item_id):
+        return json.loads(fetch_url(f"https://hacker-news.firebaseio.com/v0/item/{item_id}.json"))
+
+    items = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+        for story in pool.map(one, ids):
+            if not story or story.get("type") != "story":
+                continue
+            items.append(_social_item(
+                story.get("title"),
+                story.get("url") or f"https://news.ycombinator.com/item?id={story.get('id')}",
+                story.get("by"), "Hacker News", story.get("score"), story.get("descendants", 0),
+                "news.ycombinator.com"))
+    if not items:
+        raise RuntimeError("no HN stories")
+    return {"source": "live", "network": "hn", "items": items}
+
+
+def live_social_lobsters() -> dict:
+    raw = json.loads(fetch_url("https://lobste.rs/hottest.json"))
+    items = []
+    for s in raw[:25]:
+        items.append(_social_item(
+            s.get("title"), s.get("url") or s.get("comments_url"),
+            (s.get("submitter_user") or {}).get("username") if isinstance(s.get("submitter_user"), dict) else s.get("submitter_user"),
+            "Lobsters", s.get("score"), s.get("comment_count", 0),
+            " ".join(s.get("tags", [])[:3])))
+    if not items:
+        raise RuntimeError("no lobsters posts")
+    return {"source": "live", "network": "lobsters", "items": items}
+
+
+def live_social_reddit(sub: str) -> dict:
+    raw = json.loads(fetch_url(f"https://www.reddit.com/r/{sub}/hot.json?limit=25&raw_json=1"))
+    items = []
+    for child in raw.get("data", {}).get("children", []):
+        d = child.get("data", {})
+        if d.get("stickied"):
+            continue
+        permalink = "https://www.reddit.com" + d.get("permalink", "")
+        items.append(_social_item(
+            d.get("title"), d.get("url_overridden_by_dest") or permalink,
+            d.get("author"), "Reddit", d.get("score"), d.get("num_comments", 0),
+            f"r/{d.get('subreddit', sub)}"))
+    if not items:
+        raise RuntimeError("no reddit posts")
+    return {"source": "live", "network": "reddit", "items": items}
+
+
+def sample_social(network: str, sub: str = "") -> dict:
+    base = {
+        "hn": [("Show HN: I built a dependency-free dashboard in a weekend", "ycombinator", 412, 137),
+               ("The hidden cost of microservices nobody talks about", "dhh_fan", 288, 201),
+               ("Ask HN: What are you self-hosting in 2026?", "homelabber", 176, 342)],
+        "lobsters": [("A pure-Python implementation of P-256 for fun", "cryptonerd", 64, 28),
+                     ("Why I moved my side project back to SQLite", "pragmatic", 51, 40),
+                     ("Understanding the event loop, from scratch", "async_a", 47, 19)],
+        "reddit": [("Finally finished my custom mechanical keyboard build", "kbd_lover", 5400, 213),
+                   ("TIL a fascinating fact about deep-sea creatures", "ocean_facts", 12800, 640),
+                   ("My homelab rack after two years of tinkering", "rackmount", 3100, 158)],
+    }
+    src = {"hn": "Hacker News", "lobsters": "Lobsters", "reddit": "Reddit"}[network]
+    meta = {"hn": "news.ycombinator.com", "lobsters": "rust web", "reddit": f"r/{sub or 'popular'}"}[network]
+    items = [_social_item(t, f"https://example.com/sample/{network}-{i}", a, src, s, c, meta)
+             for i, (t, a, s, c) in enumerate(base[network])]
+    return {"source": "sample", "network": network, "items": items}
+
+
+# ---------------------------------------------------------------------------
 # Live upstream calls (normalized to the same shapes as the samples)
 # ---------------------------------------------------------------------------
 def live_news(topic: str, limit: int, sources: list[dict]) -> dict:
@@ -1485,6 +1568,21 @@ class Api:
             lambda: sample_coin_chart(coin_id, days),
         )
 
+    def social(self, params: dict) -> dict:
+        network = params.get("network", ["hn"])[0].lower()
+        if network == "hn":
+            return self._cached("social:hn", SOCIAL_TTL, live_social_hn,
+                                lambda: sample_social("hn"))
+        if network == "lobsters":
+            return self._cached("social:lobsters", SOCIAL_TTL, live_social_lobsters,
+                                lambda: sample_social("lobsters"))
+        if network == "reddit":
+            sub = re.sub(r"[^A-Za-z0-9_]", "", params.get("sub", ["popular"])[0])[:40] or "popular"
+            return self._cached(f"social:reddit:{sub.lower()}", SOCIAL_TTL,
+                                lambda: live_social_reddit(sub),
+                                lambda: sample_social("reddit", sub))
+        raise ApiError(400, "network must be hn, lobsters or reddit")
+
     def scores(self, params: dict) -> dict:
         league = params.get("league", ["nba"])[0].lower()
         if league not in SPORT_LEAGUES:
@@ -1916,6 +2014,7 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/crypto/global": "crypto_global",
         "/api/crypto/trending": "crypto_trending",
         "/api/scores": "scores",
+        "/api/social": "social",
         "/api/worldstate": "worldstate",
         "/api/reader": "reader",
         "/api/health": "health",

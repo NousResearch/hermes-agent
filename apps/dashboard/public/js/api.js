@@ -135,6 +135,7 @@ export const api = {
   cryptoGlobal: () => getJSON("/api/crypto/global"),
   cryptoTrending: () => getJSON("/api/crypto/trending"),
   scores: (league) => getJSON("/api/scores", { league }),
+  social: (network, sub) => getJSON("/api/social", sub ? { network, sub } : { network }),
   backupNow: () => postJSON("/api/backup", {}),
   backupGet: (name) => getJSON("/api/backup/get", { name }),
   backupImport: (snapshot) => postJSON("/api/backup/import", { snapshot }),

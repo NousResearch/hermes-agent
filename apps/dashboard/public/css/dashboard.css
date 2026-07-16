@@ -841,6 +841,26 @@ a { color: inherit; }
 .evolve-rollback { padding: 3px 9px; font-size: 11px; color: var(--muted); }
 .evolve-rollback:hover { color: var(--status-warning); border-color: color-mix(in srgb, var(--status-warning) 45%, transparent); }
 
+/* ---------- socials hub ---------- */
+.social-head { display: flex; align-items: center; gap: 8px; }
+.social-sub { margin-left: auto; font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+.social-list { display: flex; flex-direction: column; margin-top: 8px; max-height: 360px; overflow-y: auto; }
+.social-item {
+  display: flex; gap: 10px; align-items: flex-start; width: 100%; text-align: left;
+  background: none; border: none; border-bottom: 1px solid var(--hairline);
+  color: inherit; font: inherit; padding: 9px 4px; cursor: pointer;
+}
+.social-item:last-child { border-bottom: none; }
+.social-item:hover { background: var(--surface-2); }
+.social-badge {
+  flex: 0 0 auto; font-family: ui-monospace, Menlo, monospace; font-size: 9px;
+  letter-spacing: 0.06em; color: var(--accent); border: 1px solid var(--hairline-2);
+  border-radius: 2px; padding: 2px 4px; margin-top: 2px;
+}
+.social-main { min-width: 0; flex: 1; }
+.social-title { line-height: 1.35; }
+.social-meta { margin-top: 3px; }
+
 /* ---------- sports scores ---------- */
 .score-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; max-height: 360px; overflow-y: auto; }
 .score-game {

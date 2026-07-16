@@ -116,7 +116,7 @@ check("topbar brand", await page.locator(".brand-name").innerText() === "HERMES/
 check("dark theme default", await page.evaluate(() => document.documentElement.dataset.theme) === "dark");
 
 // ---- widgets render --------------------------------------------------------
-for (const type of ["clock", "worldstate", "agent", "weather", "launcher", "news", "reading", "tasks", "markets", "scores", "calendar", "notes", "focus", "system"]) {
+for (const type of ["clock", "worldstate", "agent", "weather", "launcher", "news", "reading", "tasks", "markets", "scores", "socials", "calendar", "notes", "focus", "system"]) {
   await page.waitForSelector(`.widget-${type}`, { timeout: 10000 });
   check(`widget ${type} present`, true);
 }
@@ -490,6 +490,16 @@ await page.evaluate(async (base) => {
 }, BASE);
 await page.waitForSelector(".cal-event-ext", { state: "detached", timeout: 10000 });
 check("unsubscribe clears external events", true);
+
+// ---- socials hub -----------------------------------------------------------------
+await page.waitForSelector(".widget-socials .social-item");
+check("socials feed renders items", (await page.locator(".widget-socials .social-item").count()) >= 1);
+await page.locator(".widget-socials .tab", { hasText: "Reddit" }).click();
+await page.waitForFunction(() =>
+  document.querySelector('.widget-socials .tab[aria-selected="true"]')?.textContent === "Reddit",
+  null, { timeout: 5000 });
+await page.waitForSelector(".widget-socials .social-item");
+check("socials network switch works", (await page.locator(".widget-socials .social-badge").first().innerText()) === "RE");
 
 // ---- sports scores ---------------------------------------------------------------
 await page.waitForSelector(".widget-scores .score-game");

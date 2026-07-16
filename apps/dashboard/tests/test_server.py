@@ -485,6 +485,37 @@ class MarketsWatchlistTests(unittest.TestCase):
         with self.assertRaises(server.ApiError):
             self.api.scores({"league": ["quidditch"]})
 
+    def test_social_sample_shapes(self):
+        for net in ("hn", "lobsters", "reddit"):
+            d = self.api.social({"network": [net]})
+            self.assertEqual(d["network"], net)
+            self.assertTrue(d["items"])
+            i = d["items"][0]
+            for key in ("title", "url", "source", "score", "comments"):
+                self.assertIn(key, i)
+
+    def test_social_reddit_sub_sanitized(self):
+        d = self.api.social({"network": ["reddit"], "sub": ["home lab/../etc"]})
+        self.assertTrue(d["items"])  # sanitized, no crash
+
+    def test_social_unknown_network_rejected(self):
+        with self.assertRaises(server.ApiError):
+            self.api.social({"network": ["myspace"]})
+
+    def test_social_reddit_normalizer_from_fixture(self):
+        raw = {"data": {"children": [
+            {"data": {"title": "Cool build", "author": "bob", "subreddit": "diy",
+                      "score": 42, "num_comments": 7, "permalink": "/r/diy/x",
+                      "url_overridden_by_dest": "https://example.com/x"}},
+            {"data": {"title": "pinned", "stickied": True, "permalink": "/r/diy/y"}},
+        ]}}
+        import unittest.mock as mock
+        with mock.patch.object(server, "fetch_url", return_value=json.dumps(raw).encode()):
+            out = server.live_social_reddit("diy")
+        self.assertEqual(len(out["items"]), 1)  # stickied dropped
+        self.assertEqual(out["items"][0]["author"], "bob")
+        self.assertEqual(out["items"][0]["score"], 42)
+
     def test_scores_normalizer_from_espn_fixture(self):
         raw = {
             "events": [{

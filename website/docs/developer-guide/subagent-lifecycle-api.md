@@ -7,11 +7,15 @@ sidebar_label: Subagent lifecycle API
 
 Plugins can launch and supervise fresh Hermes child sessions without importing
 `tools.delegate_tool`, gateway internals, TUI state, or `AIAgent` fields.
+The service resolves its parent from the current agent turn, so it works in
+CLI, gateway, non-interactive, and kanban-worker sessions. Launching outside an
+active agent turn fails closed with `No active Hermes parent session`.
 
 ```python
 from agent.subagent_lifecycle import SubagentLaunchRequest
 
-def register(ctx):
+def launch_review(ctx):
+    # Call from a plugin tool or hook while an agent turn is active.
     service = ctx.subagent_lifecycle
     handle = service.launch(SubagentLaunchRequest(
         goal="Review this change for regressions.",
@@ -39,7 +43,10 @@ claims completion until `wait` or `result` observes a terminal state. Terminal
 results are immutable, idempotent, bounded to 32k characters, omit transcripts
 and hidden reasoning, and include a stable result hash.
 
-This API is lifecycle-managed asynchronous execution. It does not change the
+This API is lifecycle-managed asynchronous execution. Child construction and
+completion use the same host-owned path as `delegate_task`, including parent
+tool-resolution restoration, memory notification, serialized `subagent_stop`
+hooks, resource cleanup, and child-cost rollup. It does not change the
 synchronous `delegate_task` tool, batch delegation, or its gateway/TUI display.
 The initial implementation retains metadata and terminal results in-process for
 one hour.

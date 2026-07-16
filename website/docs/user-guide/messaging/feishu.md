@@ -40,9 +40,7 @@ feishu:
 ```
 
 Messages received inside an existing topic always stay in that topic,
-regardless of this setting. Feishu requires a message reply anchor to enter a
-topic; asynchronous or resumed deliveries that no longer have one fall back to
-the parent chat instead of failing delivery.
+regardless of this setting.
 
 ## Step 1: Create a Feishu / Lark App
 

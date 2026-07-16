@@ -4614,6 +4614,9 @@ class FeishuAdapter(BasePlatformAdapter):
         effective_reply_to = reply_to
         if not effective_reply_to and metadata and metadata.get("thread_id"):
             effective_reply_to = metadata.get("reply_to_message_id")
+        # Existing topics must always stay threaded. The config flag only changes
+        # top-level replies: enabled starts a topic; disabled preserves the
+        # historical flat-reply behavior.
         reply_in_thread = bool((metadata or {}).get("thread_id")) or _to_boolean(
             self.config.extra.get("reply_in_thread", False)
         )

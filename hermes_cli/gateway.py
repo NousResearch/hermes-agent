@@ -2715,6 +2715,10 @@ def _configured_runtime_code_root() -> Path | None:
         return None
     if not isinstance(raw, str):
         raise ValueError("runtime.code_root must be an absolute path string")
+    if any(char in raw for char in ("\x00", "\n", "\r")):
+        raise ValueError(
+            "runtime.code_root contains control characters unsupported by service managers"
+        )
 
     path = Path(raw).expanduser()
     if not path.is_absolute():
@@ -2758,7 +2762,7 @@ def _service_definition_runtime_status(currentness_check):
         return None, False, str(exc)
 
     if runtime_info["configured"] is not None and not runtime_info["matches"]:
-        return runtime_info, False, None
+        return runtime_info, None, None
 
     try:
         return runtime_info, currentness_check(), None
@@ -2836,6 +2840,19 @@ def _systemd_watchdog_service_fields(
     if seconds <= 0:
         return "simple", ""
     return "notify", f"NotifyAccess=main\nWatchdogSec={seconds}s\n"
+
+
+def _systemd_quote_unit_value(value: str) -> str:
+    """Quote a systemd unit value while preserving literal path characters."""
+    if any(char in value for char in ("\x00", "\n", "\r")):
+        raise ValueError("systemd unit values cannot contain NUL or newlines")
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("%", "%%")
+        .replace("\t", "\\t")
+    )
+    return f'"{escaped}"'
 
 
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
@@ -2916,7 +2933,7 @@ Type={systemd_type}
 {systemd_watchdog_directives}User={username}
 Group={group_name}
 ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
-WorkingDirectory={working_dir}
+WorkingDirectory={_systemd_quote_unit_value(working_dir) if configured_runtime_root is not None else working_dir}
 Environment="HOME={home_dir}"
 Environment="USER={username}"
 Environment="LOGNAME={username}"
@@ -2957,7 +2974,7 @@ StartLimitIntervalSec=0
 [Service]
 Type={systemd_type}
 {systemd_watchdog_directives}ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
-WorkingDirectory={working_dir}
+WorkingDirectory={_systemd_quote_unit_value(working_dir) if configured_runtime_root is not None else working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
@@ -3580,7 +3597,7 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
         )
     )
 
-    if not definition_current:
+    if definition_current is False:
         print("⚠ Installed gateway service definition is outdated")
         if runtime_config_error:
             print(f"  Invalid runtime deployment contract: {runtime_config_error}")
@@ -4635,9 +4652,9 @@ def launchd_status(deep: bool = False):
         _service_definition_runtime_status(launchd_plist_is_current)
     )
 
-    if definition_current:
+    if definition_current is True:
         print("✓ Service definition matches the current Hermes install")
-    else:
+    elif definition_current is False:
         print("⚠ Service definition is stale relative to the current Hermes install")
         if runtime_config_error:
             print(f"  Invalid runtime deployment contract: {runtime_config_error}")
@@ -4653,6 +4670,12 @@ def launchd_status(deep: bool = False):
             print("✗ Running Hermes code does not match runtime.code_root")
             print("  Hold restart/promotion until the interpreter is bound to the configured runtime")
 
+    runtime_mismatch = bool(
+        runtime_info
+        and runtime_info["configured"] is not None
+        and not runtime_info["matches"]
+    )
+
     if service_listed:
         if launchd_pid is not None:
             print(f"✓ Gateway is supervised by launchd (PID {launchd_pid})")
@@ -4667,7 +4690,8 @@ def launchd_status(deep: bool = False):
                 print("  Cron jobs will fire. Stop with: hermes gateway stop")
             else:
                 print("✗ No fallback process is running")
-                print("  Run: hermes gateway start")
+                if not runtime_mismatch:
+                    print("  Run: hermes gateway start")
             print("  ⚠ Auto-start at login and auto-restart on crash are NOT available.")
         else:
             print("✓ Gateway service is registered with launchd")
@@ -4677,7 +4701,8 @@ def launchd_status(deep: bool = False):
     else:
         print("✗ Gateway service is not loaded")
         print("  Service definition exists locally but launchd has not loaded it.")
-        print("  Run: hermes gateway start")
+        if not runtime_mismatch:
+            print("  Run: hermes gateway start")
         if fallback_pid:
             print(f"  Note: a detached gateway process is running (PID {fallback_pid})")
 

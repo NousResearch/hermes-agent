@@ -16,6 +16,7 @@ call time (run.py fully loaded by then), avoiding an import cycle.
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 import dataclasses
 import hashlib
 import inspect
@@ -88,6 +89,7 @@ class GatewaySlashCommandsMixin:
     """In-session slash-command handlers for GatewayRunner."""
 
     async_session_store: AsyncSessionStore
+    _GATEWAY_SESSION_CHOICES_MAX = 512
 
     def _remember_gateway_session_choices(
         self,
@@ -106,10 +108,14 @@ class GatewaySlashCommandsMixin:
             if row.get("id")
         ]
         latest = getattr(self, "_latest_gateway_session_choices", None)
-        if not isinstance(latest, dict):
-            latest = {}
+        if not isinstance(latest, OrderedDict):
+            latest = OrderedDict(latest if isinstance(latest, dict) else ())
             self._latest_gateway_session_choices = latest
         latest[session_key] = choices
+        latest.move_to_end(session_key)
+        max_size = self._GATEWAY_SESSION_CHOICES_MAX
+        while len(latest) > max_size:
+            latest.popitem(last=False)
 
     def _latest_gateway_session_choice(
         self,
@@ -121,6 +127,8 @@ class GatewaySlashCommandsMixin:
         if not isinstance(latest, dict) or session_key not in latest:
             return None, False
         choices = latest.get(session_key) or []
+        if isinstance(latest, OrderedDict):
+            latest.move_to_end(session_key)
         if index < 1 or index > len(choices):
             return None, True
         return choices[index - 1], True
@@ -3603,6 +3611,7 @@ class GatewaySlashCommandsMixin:
                     if await self._resume_row_visible(source, s, allow_all)
                 ]
                 if not titled:
+                    self._remember_gateway_session_choices(session_key, [])
                     if source.platform == Platform.MATRIX and not allow_all:
                         return t("gateway.resume.matrix_no_named_sessions")
                     return t("gateway.resume.no_named_sessions")

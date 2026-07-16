@@ -611,6 +611,60 @@ class TestHandleSessionsCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_empty_resume_list_clears_previous_search_choices(self, tmp_path):
+        """A bare empty `/resume` disarms a previous search result list."""
+        from hermes_state import SessionDB
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("match_old", "telegram", user_id="12345", chat_id="67890")
+        db.set_session_title("match_old", "AN-94 older match")
+        db.create_session("current_session_001", "telegram", user_id="12345", chat_id="67890")
+
+        search_event = _make_event(text="/sessions search an94")
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=search_event,
+        )
+        assert "AN-94 older match" in await runner._handle_sessions_command(search_event)
+
+        assert db._conn is not None
+        db._conn.execute("UPDATE sessions SET title = NULL")
+        db._conn.commit()
+        assert "No named sessions" in await runner._handle_resume_command(
+            _make_event(text="/resume")
+        )
+
+        result = await runner._handle_resume_command(_make_event(text="/resume 1"))
+        assert "out of range" in result.lower()
+        mock_store = runner.session_store
+        assert isinstance(mock_store, MagicMock)
+        mock_store.switch_session.assert_not_called()
+        db.close()
+
+    def test_numbered_session_choice_cache_evicts_lru_entries(self):
+        runner = _make_runner()
+
+        for index in range(runner._GATEWAY_SESSION_CHOICES_MAX):
+            runner._remember_gateway_session_choices(
+                f"session-{index}",
+                [{"id": str(index), "title": f"Session {index}"}],
+            )
+        first_choice, armed = runner._latest_gateway_session_choice("session-0", 1)
+        assert armed is True
+        assert first_choice is not None
+        assert first_choice["id"] == "0"
+
+        runner._remember_gateway_session_choices(
+            "new-session",
+            [{"id": "new", "title": "New session"}],
+        )
+
+        assert len(runner._latest_gateway_session_choices) == 512
+        assert "session-0" in runner._latest_gateway_session_choices
+        assert "session-1" not in runner._latest_gateway_session_choices
+        assert "new-session" in runner._latest_gateway_session_choices
+
+    @pytest.mark.asyncio
     async def test_resume_number_search_choices_are_scoped_by_session_key(
         self, tmp_path
     ):

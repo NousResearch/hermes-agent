@@ -2088,11 +2088,18 @@ def _build_media_placeholder(event) -> str:
     return "\n".join(parts)
 
 
-def _build_document_context_note(display_name: str, agent_path: str, mtype: str) -> str:
+def _build_document_context_note(
+    display_name: str,
+    agent_path: str,
+    mtype: str,
+    *,
+    filename_requires_path_only: bool = False,
+) -> str:
     """Context note prepended to a user turn when they attach a document.
 
-    Text documents (``text/*``) have their content inlined upstream by the
-    platform adapter, so the note just confirms that and records the path.
+    Ordinary text documents (``text/*``) have their content inlined upstream
+    by the platform adapter. Discord credential-like filenames are explicitly
+    marked path-only, so their note must not claim that a body is present.
 
     Binary documents (PDF, DOCX, XLSX, …) cannot be inlined as text. The note
     must tell the agent to *extract* the text itself before answering — earlier
@@ -2100,6 +2107,14 @@ def _build_document_context_note(display_name: str, agent_path: str, mtype: str)
     model into punting back to the user, which is why attached PDFs/DOCX looked
     "unreadable" to the agent even though it has the tools to read them.
     """
+    if filename_requires_path_only:
+        return (
+            f"[The user sent a file attachment: '{display_name}'. "
+            f"It is saved at: {agent_path}. Its content was not automatically "
+            f"inlined because the filename indicates it may contain credentials "
+            f"or a private key. Read the saved file only if the user's request "
+            f"requires it.]"
+        )
     if mtype.startswith("text/"):
         return (
             f"[The user sent a text document: '{display_name}'. "
@@ -10710,6 +10725,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from tools.credential_files import to_agent_visible_cache_path
 
             _TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
+            _path_only_attachment_paths = set(
+                (getattr(event, "metadata", None) or {}).get(
+                    "discord_path_only_attachment_paths", []
+                )
+            )
             for i, path in enumerate(event.media_urls):
                 # Per-attachment document handling. Skip anything already routed
                 # as image / audio / video by the buckets above — only genuine
@@ -10749,7 +10769,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # cache directories are auto-mounted at /root/.hermes/cache/* by get_cache_directory_mounts().
                 agent_path = to_agent_visible_cache_path(path)
 
-                context_note = _build_document_context_note(display_name, agent_path, mtype)
+                context_note = _build_document_context_note(
+                    display_name,
+                    agent_path,
+                    mtype,
+                    filename_requires_path_only=(path in _path_only_attachment_paths),
+                )
                 message_text = f"{context_note}\n\n{message_text}"
 
         # Discord: surface the triggering message id per-turn on the user

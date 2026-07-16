@@ -151,6 +151,7 @@ def auto_title_session(
     # ``conversation=`` Portal tag as the turn it titles. Root-of-lineage for
     # consistency with the agent loop (a no-op on first exchange, where
     # titling happens, but correct if this ever runs on a continuation).
+    from agent.aux_accounting import set_accounting_context
     from agent.portal_tags import set_conversation_context
 
     conversation_id = session_id
@@ -159,6 +160,9 @@ def auto_title_session(
     except Exception:
         pass
     set_conversation_context(conversation_id)
+    # Same for the accounting context, so the title call's token usage is
+    # recorded against this session (task='title_generation', #23270).
+    set_accounting_context(session_db, session_id)
 
     title = generate_title(
         user_message, assistant_response, failure_callback=failure_callback, main_runtime=main_runtime

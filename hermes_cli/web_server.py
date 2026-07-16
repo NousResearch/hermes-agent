@@ -14297,6 +14297,115 @@ async def update_config_raw(body: RawConfigUpdate, profile: Optional[str] = None
 # ---------------------------------------------------------------------------
 
 
+def _aux_usage_rows(db, cutoff: float) -> List[Dict[str, Any]]:
+    """Per-(model, task) auxiliary usage within the window (issue #23270).
+
+    Reads the task-dimension rows (task != '') that record_auxiliary_usage
+    writes into session_model_usage. Returns [] when the table predates the
+    task column (older DB opened read-only by newer code).
+    """
+    try:
+        cur = db._conn.execute("""
+            SELECT u.model,
+                   u.task,
+                   u.billing_provider,
+                   SUM(u.input_tokens) as input_tokens,
+                   SUM(u.output_tokens) as output_tokens,
+                   SUM(u.cache_read_tokens) as cache_read_tokens,
+                   SUM(u.reasoning_tokens) as reasoning_tokens,
+                   COALESCE(SUM(u.estimated_cost_usd), 0) as estimated_cost,
+                   COUNT(DISTINCT u.session_id) as sessions,
+                   SUM(COALESCE(u.api_call_count, 0)) as api_calls,
+                   MAX(u.last_seen) as last_used_at
+            FROM session_model_usage u
+            JOIN sessions s ON s.id = u.session_id
+            WHERE s.started_at > ? AND u.task != ''
+            GROUP BY u.model, u.task, u.billing_provider
+            ORDER BY SUM(u.input_tokens) + SUM(u.output_tokens) DESC
+        """, (cutoff,))
+        return [dict(r) for r in cur.fetchall()]
+    except Exception:
+        # Table predates the task column (older DB opened by newer code) —
+        # aux breakdown is simply unavailable.
+        return []
+
+
+def _merge_aux_into_by_model(
+    by_model: List[Dict[str, Any]], aux_rows: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Fold aux usage rows into the sessions-derived per-model list.
+
+    Aux usage lives only in session_model_usage (never in the sessions
+    counters), so adding it here cannot double-count. Models that ONLY
+    appear via aux calls (e.g. a dedicated vision model) get their own
+    entry — previously they were entirely invisible.
+    """
+    if not aux_rows:
+        return by_model
+    merged: Dict[str, Dict[str, Any]] = {}
+    for row in by_model:
+        merged[row.get("model") or "unknown"] = row
+    for aux in aux_rows:
+        model = aux.get("model") or "unknown"
+        target = merged.get(model)
+        if target is None:
+            target = {
+                "model": model,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "estimated_cost": 0,
+                "sessions": 0,
+                "api_calls": 0,
+            }
+            merged[model] = target
+        target["input_tokens"] = (target.get("input_tokens") or 0) + (aux.get("input_tokens") or 0)
+        target["output_tokens"] = (target.get("output_tokens") or 0) + (aux.get("output_tokens") or 0)
+        target["estimated_cost"] = (target.get("estimated_cost") or 0) + (aux.get("estimated_cost") or 0)
+        target["api_calls"] = (target.get("api_calls") or 0) + (aux.get("api_calls") or 0)
+        tasks = target.setdefault("aux_tasks", [])
+        tasks.append({
+            "task": aux.get("task") or "",
+            "input_tokens": aux.get("input_tokens") or 0,
+            "output_tokens": aux.get("output_tokens") or 0,
+            "estimated_cost": aux.get("estimated_cost") or 0,
+            "api_calls": aux.get("api_calls") or 0,
+        })
+    result = list(merged.values())
+    result.sort(
+        key=lambda r: (r.get("input_tokens") or 0) + (r.get("output_tokens") or 0),
+        reverse=True,
+    )
+    return result
+
+
+def _aux_task_summary(aux_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Aggregate aux usage rows across models into a per-task summary."""
+    by_task: Dict[str, Dict[str, Any]] = {}
+    for aux in aux_rows:
+        task = aux.get("task") or ""
+        d = by_task.setdefault(task, {
+            "task": task,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "estimated_cost": 0,
+            "api_calls": 0,
+            "models": [],
+        })
+        d["input_tokens"] += aux.get("input_tokens") or 0
+        d["output_tokens"] += aux.get("output_tokens") or 0
+        d["estimated_cost"] += aux.get("estimated_cost") or 0
+        d["api_calls"] += aux.get("api_calls") or 0
+        model = aux.get("model") or "unknown"
+        if model not in d["models"]:
+            d["models"].append(model)
+    result = list(by_task.values())
+    result.sort(
+        key=lambda r: (r.get("input_tokens") or 0) + (r.get("output_tokens") or 0),
+        reverse=True,
+    )
+    return result
+
+
 @app.get("/api/analytics/usage")
 async def get_usage_analytics(days: int = 30, profile: Optional[str] = None):
     from agent.insights import InsightsEngine
@@ -14331,6 +14440,14 @@ async def get_usage_analytics(days: int = 30, profile: Optional[str] = None):
         """, (cutoff,))
         by_model = [dict(r) for r in cur2.fetchall()]
 
+        # Fold in auxiliary usage (vision, compression, title_generation, ...)
+        # recorded per (model, task) in session_model_usage. Aux calls never
+        # touch the sessions counters, so this is add-only — no double count.
+        # Without it the models list shows only the main agent model even when
+        # aux models are actively burning tokens (issue #23270).
+        aux_rows = _aux_usage_rows(db, cutoff)
+        by_model = _merge_aux_into_by_model(by_model, aux_rows)
+
         cur3 = db._conn.execute("""
             SELECT SUM(input_tokens) as total_input,
                    SUM(output_tokens) as total_output,
@@ -14357,6 +14474,9 @@ async def get_usage_analytics(days: int = 30, profile: Optional[str] = None):
         return {
             "daily": daily,
             "by_model": by_model,
+            # Aux-task summary across models (vision, compression, ...). Lets
+            # the dashboard answer "what is compression costing me" directly.
+            "by_task": _aux_task_summary(aux_rows),
             "totals": totals,
             "period_days": days,
             "skills": skills,
@@ -14398,6 +14518,28 @@ async def get_models_analytics(days: int = 30, profile: Optional[str] = None):
             ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
         """, (cutoff,))
         raw_rows = [dict(r) for r in cur.fetchall()]
+
+        # Add auxiliary usage as (model, provider) rows so aux-only models
+        # (dedicated vision/compression models) appear on the Models page
+        # instead of being invisible (issue #23270). Keyed by
+        # model+billing_provider to match the GROUP BY above.
+        for aux in _aux_usage_rows(db, cutoff):
+            raw_rows.append({
+                "model": aux.get("model") or "unknown",
+                "billing_provider": aux.get("billing_provider") or "",
+                "input_tokens": aux.get("input_tokens") or 0,
+                "output_tokens": aux.get("output_tokens") or 0,
+                "cache_read_tokens": aux.get("cache_read_tokens") or 0,
+                "reasoning_tokens": aux.get("reasoning_tokens") or 0,
+                "estimated_cost": aux.get("estimated_cost") or 0,
+                "actual_cost": 0,
+                "sessions": aux.get("sessions") or 0,
+                "api_calls": aux.get("api_calls") or 0,
+                "tool_calls": 0,
+                "last_used_at": aux.get("last_used_at"),
+                "avg_tokens_per_session": 0,
+                "aux_task": aux.get("task") or "",
+            })
 
         # Session rows can be created before the first billable provider call
         # finishes. If that early row records only the model name, and a later

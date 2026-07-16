@@ -5920,6 +5920,10 @@ class AIAgent:
         moa_config: Optional[dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
+        from agent.aux_accounting import (
+            reset_accounting_context,
+            set_accounting_context,
+        )
         from agent.conversation_loop import run_conversation
         from agent.portal_tags import (
             reset_conversation_context,
@@ -5931,6 +5935,13 @@ class AIAgent:
         # (which copy this Context into their thread) — inherits the
         # ``conversation=<root>`` tag with zero per-call-site plumbing.
         token = set_conversation_context(self._conversation_root_id())
+        # Publish the session accounting handles the same way so auxiliary
+        # calls record their token usage into session_model_usage (task
+        # dimension) — the fix for aux spend being invisible in analytics
+        # (issue #23270).
+        acct_token = set_accounting_context(
+            getattr(self, "_session_db", None), getattr(self, "session_id", None)
+        )
         try:
             return run_conversation(
                 self,
@@ -5944,6 +5955,7 @@ class AIAgent:
                 moa_config=moa_config,
             )
         finally:
+            reset_accounting_context(acct_token)
             reset_conversation_context(token)
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:

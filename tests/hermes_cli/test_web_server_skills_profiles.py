@@ -63,6 +63,28 @@ def _load_cfg(home):
 
 
 class TestProfileScopedSkills:
+    def test_skills_list_does_not_expose_private_search_metadata(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        from tools import skills_tool
+
+        original = skills_tool._find_all_skills
+
+        def with_private_metadata(*args, **kwargs):
+            skills = original(*args, **kwargs)
+            for skill in skills:
+                skill["_routing_terms"] = ("private trigger",)
+                skill["_search_text"] = ("private",)
+                skill["_search_tokens"] = (("private",),)
+            return skills
+
+        monkeypatch.setattr(skills_tool, "_find_all_skills", with_private_metadata)
+        resp = client.get("/api/skills")
+
+        assert resp.status_code == 200
+        for skill in resp.json():
+            assert not any(key.startswith("_") for key in skill)
+
     def test_skills_list_scopes_to_requested_profile(self, client, isolated_profiles):
         resp = client.get("/api/skills", params={"profile": "worker_alpha"})
         assert resp.status_code == 200

@@ -1718,8 +1718,15 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
 
         try:
-            from tools.skills_tool import _find_all_skills, _sort_skills
-            skills = _sort_skills(_find_all_skills(skip_disabled=False))
+            from tools.skills_tool import (
+                _find_all_skills,
+                _public_skill_metadata,
+                _sort_skills,
+            )
+            skills = [
+                _public_skill_metadata(skill)
+                for skill in _sort_skills(_find_all_skills(skip_disabled=False))
+            ]
         except Exception:
             logger.exception("GET /v1/skills failed")
             return web.json_response(

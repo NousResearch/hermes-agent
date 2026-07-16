@@ -422,8 +422,31 @@ def _run_agent(
     agent.stream_delta_callback = None
     agent.tool_gen_callback = None
 
-    result = agent.run_conversation(prompt)
-    return (result.get("final_response") or "", result)
+    try:
+        result = agent.run_conversation(prompt)
+        return (result.get("final_response") or "", result)
+    finally:
+        # Top-level ``hermes -z`` deliberately bypasses ``cli.py``, including
+        # its normal ``_run_cleanup`` path. Close the agent here so its owned
+        # SQLite session is finalized and per-session resources are released
+        # even when the provider/tool turn raises. Then stop process-global MCP
+        # transports before closing the database handle. Every step is
+        # best-effort so cleanup can never mask the actual model result/error.
+        try:
+            agent.close()
+        except Exception:
+            pass
+        try:
+            from tools.mcp_tool import shutdown_mcp_servers
+
+            shutdown_mcp_servers()
+        except BaseException:
+            pass
+        try:
+            if session_db is not None:
+                session_db.close()
+        except Exception:
+            pass
 
 
 def _oneshot_clarify_callback(question: str, choices=None) -> str:

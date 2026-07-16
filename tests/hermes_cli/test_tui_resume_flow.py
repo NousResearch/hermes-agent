@@ -886,6 +886,161 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
     assert captured["prompt"] == "recall this"
 
 
+def test_oneshot_closes_agent_and_session_db_after_success(monkeypatch):
+    """Top-level ``hermes -z`` owns and must finalize its agent lifecycle."""
+    from hermes_cli.oneshot import _run_agent
+
+    events = []
+
+    class FakeSessionDB:
+        def close(self):
+            events.append("db.close")
+
+    session_db = FakeSessionDB()
+
+    class FakeAgent:
+        def __init__(self, **_kwargs):
+            self.suppress_status_output = False
+            self.stream_delta_callback = object()
+            self.tool_gen_callback = object()
+
+        def run_conversation(self, _prompt):
+            events.append("run")
+            return {"final_response": "ok", "failed": False, "partial": False}
+
+        def close(self):
+            events.append("agent.close")
+
+    def mod(name, **attrs):
+        module = types.ModuleType(name)
+        for key, value in attrs.items():
+            setattr(module, key, value)
+        return module
+
+    monkeypatch.setattr(
+        "hermes_cli.oneshot._create_session_db_for_oneshot", lambda: session_db
+    )
+    monkeypatch.setitem(sys.modules, "run_agent", mod("run_agent", AIAgent=FakeAgent))
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        mod("hermes_cli.config", load_config=lambda: {"model": {"default": "m"}}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.models",
+        mod("hermes_cli.models", detect_provider_for_model=lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.runtime_provider",
+        mod(
+            "hermes_cli.runtime_provider",
+            resolve_runtime_provider=lambda **_kwargs: {
+                "api_key": "k",
+                "base_url": "u",
+                "provider": "p",
+                "api_mode": "chat_completions",
+                "credential_pool": None,
+            },
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.tools_config",
+        mod("hermes_cli.tools_config", _get_platform_tools=lambda *_args, **_kwargs: set()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        mod(
+            "tools.mcp_tool",
+            shutdown_mcp_servers=lambda: events.append("mcp.shutdown"),
+        ),
+    )
+
+    text, result = _run_agent("hello")
+
+    assert text == "ok"
+    assert not result.get("failed")
+    assert events == ["run", "agent.close", "mcp.shutdown", "db.close"]
+
+
+def test_oneshot_closes_agent_and_session_db_after_failure(monkeypatch):
+    """Cleanup also runs when the one-shot provider/tool turn raises."""
+    import pytest
+
+    import hermes_cli.oneshot as oneshot_mod
+
+    events = []
+
+    class FakeSessionDB:
+        def close(self):
+            events.append("db.close")
+
+    class FakeAgent:
+        def __init__(self, **_kwargs):
+            self.suppress_status_output = False
+            self.stream_delta_callback = object()
+            self.tool_gen_callback = object()
+
+        def run_conversation(self, _prompt):
+            events.append("run")
+            raise RuntimeError("boom")
+
+        def close(self):
+            events.append("agent.close")
+
+    monkeypatch.setattr(oneshot_mod, "_create_session_db_for_oneshot", FakeSessionDB)
+    monkeypatch.setattr(oneshot_mod, "_normalize_toolsets", lambda _value=None: [])
+    monkeypatch.setattr(oneshot_mod, "get_fallback_chain", lambda _cfg: [])
+    monkeypatch.setitem(
+        sys.modules,
+        "run_agent",
+        types.SimpleNamespace(AIAgent=FakeAgent),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(load_config=lambda: {"model": {"default": "m"}}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.models",
+        types.SimpleNamespace(detect_provider_for_model=lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.runtime_provider",
+        types.SimpleNamespace(
+            resolve_runtime_provider=lambda **_kwargs: {
+                "api_key": "k",
+                "base_url": "u",
+                "provider": "p",
+                "api_mode": "chat_completions",
+                "credential_pool": None,
+            }
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.tools_config",
+        types.SimpleNamespace(_get_platform_tools=lambda *_args, **_kwargs: set()),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(
+            shutdown_mcp_servers=lambda: events.append("mcp.shutdown")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        oneshot_mod._run_agent("hello")
+
+    assert events == ["run", "agent.close", "mcp.shutdown", "db.close"]
+
+
 def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     captured = {}
     active_path_during_call = None

@@ -8,7 +8,9 @@ tests/agent/test_direct_provider_url_detection.py.
 
 from __future__ import annotations
 
-from utils import base_url_hostname, base_url_host_matches
+import pytest
+
+from utils import base_url_hostname, base_url_host_matches, url_path_has_version_segment
 
 
 # ─── base_url_hostname ────────────────────────────────────────────────────
@@ -158,3 +160,43 @@ class TestOllamaUrlHostCheck:
         assert base_url_host_matches(
             "https://api.ollama.com/v1", "ollama.com"
         ) is True
+
+
+# ─── url_path_has_version_segment ─────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.com/v1",
+        "https://example.com/v1/",
+        "https://example.com/api/v2",
+        "https://example.com/v1beta",
+        "https://example.com/v2023-01-01",
+        "http://127.0.0.1:8000/openai/V1",
+        "api.openai.com/v1",  # scheme-less: host must not be parsed as path
+    ],
+)
+def test_versioned_paths_detected(url):
+    assert url_path_has_version_segment(url) is True
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "",
+        None,
+        "https://example.com",
+        "https://example.com/",
+        "https://api.minimax.io/anthropic",  # 'v' segment needs a digit after it
+        "https://proxy.example.com/vendor/api",
+        "https://example.com/a/b/c",
+    ],
+)
+def test_unversioned_paths_not_detected(url):
+    assert url_path_has_version_segment(url) is False
+
+
+def test_versioned_hostname_alone_does_not_count():
+    # Only the PATH is inspected — a version-looking hostname is not a path.
+    assert url_path_has_version_segment("https://v1.example.com") is False

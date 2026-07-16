@@ -551,8 +551,14 @@ export function validateProviderCredential(
   key: string,
   value: string,
   apiKey?: string
-): Promise<{ ok: boolean; reachable: boolean; message: string; models?: string[] }> {
-  return window.hermesDesktop.api<{ ok: boolean; reachable: boolean; message: string; models?: string[] }>({
+): Promise<{ ok: boolean; reachable: boolean; message: string; models?: string[]; resolved_base_url?: string }> {
+  return window.hermesDesktop.api<{
+    ok: boolean
+    reachable: boolean
+    message: string
+    models?: string[]
+    resolved_base_url?: string
+  }>({
     ...profileScoped(),
     path: '/api/providers/validate',
     method: 'POST',

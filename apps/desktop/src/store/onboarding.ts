@@ -810,6 +810,10 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
   // the endpoint is up; an unreachable probe hard-blocks because we can't
   // resolve a model to route to.
   let model = ''
+  // The probe tries the URL as entered and its "/v1" variant; persist the one
+  // that answered — chat POSTs {base_url}/chat/completions verbatim, so the
+  // bare root would 404 even though detection looked green.
+  let resolvedUrl = url
 
   try {
     const probe = await validateProviderCredential('OPENAI_BASE_URL', url, key)
@@ -823,6 +827,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
     }
 
     model = (probe.models?.[0] ?? '').trim()
+    resolvedUrl = probe.resolved_base_url?.trim() || url
   } catch {
     return { ok: false, message: `Could not reach ${url}.` }
   }
@@ -835,7 +840,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
   }
 
   try {
-    await setModelAssignment({ scope: 'main', provider: 'custom', model, base_url: url, api_key: key })
+    await setModelAssignment({ scope: 'main', provider: 'custom', model, base_url: resolvedUrl, api_key: key })
     await ctx.requestGateway('reload.env').catch(() => undefined)
 
     const runtime = await checkRuntime(ctx)
@@ -843,7 +848,7 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
     if (!runtime.ready) {
       const detail = (runtime.reason ?? '').trim()
 
-      return { ok: false, message: detail || `Saved, but Hermes still cannot reach ${url}.` }
+      return { ok: false, message: detail || `Saved, but Hermes still cannot reach ${resolvedUrl}.` }
     }
 
     notifyReady('Local / custom endpoint')

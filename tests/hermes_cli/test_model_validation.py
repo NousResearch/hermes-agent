@@ -305,6 +305,22 @@ class TestFetchApiModels:
         assert probe["resolved_base_url"] == "http://localhost:8000/v1"
         assert probe["used_fallback"] is True
 
+    def test_probe_api_models_versioned_path_gets_no_v1_alternate(self):
+        """An already-versioned base (/v1beta, /api/v2, …) is probed as-is —
+        a {base}/v1 alternate could never be right."""
+        calls = []
+
+        def _fake_urlopen(req, timeout=5.0):
+            calls.append(req.full_url)
+            raise Exception("404")
+
+        with patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=_fake_urlopen):
+            probe = probe_api_models("key", "http://localhost:8000/v1beta")
+
+        assert calls == ["http://localhost:8000/v1beta/models"]
+        assert probe["models"] is None
+        assert not probe["suggested_base_url"]
+
     def test_probe_api_models_uses_copilot_catalog(self):
         class _Resp:
             def __enter__(self):

@@ -3479,6 +3479,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Docker, so users commonly need a dedicated export mount such as
         `host-dir:/output`.
         """
+        try:
+            from hermes_cli.config import apply_terminal_config_to_env
+
+            apply_terminal_config_to_env()
+        except Exception:
+            logger.debug(
+                "Could not refresh terminal config before Docker media mount check",
+                exc_info=True,
+            )
+
         if os.getenv("TERMINAL_ENV", "").strip().lower() != "docker":
             return
 

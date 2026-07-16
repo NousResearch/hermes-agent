@@ -568,3 +568,30 @@ def test_runner_warns_when_docker_gateway_lacks_explicit_output_mount(monkeypatc
         "host-visible output mount" in record.message
         for record in caplog.records
     )
+
+
+def test_runner_prefers_config_output_mount_over_stale_env(monkeypatch, tmp_path, caplog):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_DOCKER_VOLUMES", '["/etc/localtime:/etc/localtime:ro"]')
+    (tmp_path / "config.yaml").write_text(
+        "terminal:\n"
+        "  backend: docker\n"
+        "  docker_volumes:\n"
+        "    - /tmp/hermes-documents:/output\n",
+        encoding="utf-8",
+    )
+    config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+
+    with caplog.at_level("WARNING"):
+        GatewayRunner(config)
+
+    assert not any(
+        "host-visible output mount" in record.message
+        for record in caplog.records
+    )

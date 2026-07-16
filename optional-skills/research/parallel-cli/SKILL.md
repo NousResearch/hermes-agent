@@ -1,7 +1,7 @@
 ---
 name: parallel-cli
 description: Optional vendor skill for Parallel CLI — agent-native web search, extraction, deep research, enrichment, FindAll, and monitoring. Prefer JSON output and non-interactive flows.
-version: 1.1.0
+version: 1.1.1
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -26,7 +26,7 @@ Important expectations:
 - JSON output via `--json`
 - Non-interactive command execution
 - Async long-running jobs with `--no-wait`, `status`, and `poll`
-- Context chaining with `--previous-interaction-id`
+- Research and enrichment context chaining with `--previous-interaction-id`
 - Search, extract, research, enrichment, entity discovery, and monitoring in one CLI
 
 ## When to use it
@@ -74,6 +74,10 @@ pipx install "parallel-web-tools[cli]"
 pipx ensurepath
 ```
 
+The commands below are verified against `parallel-cli` 0.7.1. If a command or option is missing, upgrade through the same installation method used above before retrying.
+
+Standalone, Homebrew, and npm installs support direct enrichment arguments, but not YAML configs, `enrich plan`, or deployment commands. Those features require the appropriate Python extras.
+
 ## Authentication
 
 Interactive login:
@@ -85,7 +89,7 @@ parallel-cli login
 Headless / SSH / CI:
 
 ```bash
-parallel-cli login --device
+parallel-cli login --no-browser --json
 ```
 
 API key environment variable:
@@ -99,8 +103,6 @@ Verify current auth status:
 ```bash
 parallel-cli auth
 ```
-
-If auth requires browser interaction, run with `pty=true`.
 
 ## Core rule set
 
@@ -122,9 +124,9 @@ parallel-cli
 ├── search
 ├── extract / fetch
 ├── research run|status|poll|processors
-├── enrich run|status|poll|plan|suggest|deploy
-├── findall run|ingest|status|poll|result|enrich|extend|schema|cancel
-└── monitor create|list|get|update|delete|events|event-group|simulate
+├── enrich run|status|poll|suggest (+ plan/deploy with Python extras)
+├── findall run|entity-search|ingest|status|poll|result|enrich|extend|schema|cancel
+└── monitor create|list|get|update|cancel|events|trigger
 ```
 
 ## Common flags and patterns
@@ -132,9 +134,9 @@ parallel-cli
 Commonly useful flags:
 - `--json` for structured output
 - `--no-wait` for async jobs
-- `--previous-interaction-id <id>` for follow-up tasks that reuse earlier context
+- `--previous-interaction-id <id>` for research or enrichment follow-ups that reuse earlier context
 - `--max-results <n>` for search result count
-- `--mode one-shot|agentic` for search behavior
+- `--mode turbo|basic|advanced` for search behavior
 - `--include-domains domain1.com,domain2.com`
 - `--exclude-domains domain1.com,domain2.com`
 - `--after-date YYYY-MM-DD`
@@ -154,9 +156,11 @@ Use for current web lookups with structured results.
 parallel-cli search "What is Anthropic's latest AI model?" --json
 parallel-cli search "SEC filings for Apple" --include-domains sec.gov --json
 parallel-cli search "bitcoin price" --after-date 2026-01-01 --max-results 10 --json
-parallel-cli search "latest browser benchmarks" --mode one-shot --json
-parallel-cli search "AI coding agent enterprise reviews" --mode agentic --json
+parallel-cli search "latest browser benchmarks" --mode turbo --json
+parallel-cli search "AI coding agent enterprise reviews" --mode advanced --json
 ```
+
+Use `turbo` for the fastest pass, `basic` for the default balance, and `advanced` for deeper searches.
 
 Useful constraints:
 - `--include-domains` to narrow trusted sources
@@ -250,6 +254,8 @@ parallel-cli enrich suggest "Find the CEO and annual revenue" --json
 
 ### Plan a config
 
+`enrich plan` and YAML config files require a Python install with the `cli` extra. Check `parallel-cli enrich --help`; if `plan` is absent, use direct `enrich run` arguments instead.
+
 ```bash
 parallel-cli enrich plan -o config.yaml
 ```
@@ -259,6 +265,7 @@ parallel-cli enrich plan -o config.yaml
 ```bash
 parallel-cli enrich run \
   --data '[{"company": "Anthropic"}, {"company": "Mistral"}]' \
+  --target enriched.csv \
   --intent "Find headquarters and employee count" \
   --json
 ```
@@ -295,6 +302,7 @@ Validate the output file before reporting success.
 Use for web-scale entity discovery when the user wants a discovered dataset rather than a short answer.
 
 ```bash
+parallel-cli findall entity-search "AI startups in healthcare" --entity-type companies -n 25 --json
 parallel-cli findall run "Find AI coding agent startups with enterprise offerings" --json
 parallel-cli findall run "AI startups in healthcare" -n 25 --json
 parallel-cli findall status <run_id> --json
@@ -303,26 +311,30 @@ parallel-cli findall result <run_id> --json
 parallel-cli findall schema <run_id> --json
 ```
 
-This is a better fit than ordinary search when the user wants a discovered set of entities that can be reviewed, filtered, or enriched later.
+Use `entity-search` for a synchronous, best-effort ranked list. Use `run` for comprehensive discovery with match evaluation, polling, and enrichment.
 
 ## Monitor
 
 Use for ongoing change detection over time.
 
 ```bash
-parallel-cli monitor list --json
+parallel-cli monitor create "Track Tesla SEC filings" --frequency 1d --json
+parallel-cli monitor list -n 10 --json
 parallel-cli monitor get <monitor_id> --json
 parallel-cli monitor events <monitor_id> --json
-parallel-cli monitor delete <monitor_id> --json
+parallel-cli monitor events <monitor_id> --event-group-id <event_group_id> --json
+parallel-cli monitor update <monitor_id> --frequency 1w --json
+parallel-cli monitor trigger <monitor_id> --json
+parallel-cli monitor cancel <monitor_id> --json
 ```
 
-Creation is usually the sensitive part because cadence and delivery matter:
+Frequency uses `<n><unit>` with `h`, `d`, or `w` (for example `1h`, `1d`, or `1w`). Confirm the query, frequency, and webhook before creating a monitor.
 
-```bash
-parallel-cli monitor create --help
-```
+`list` returns active monitors by default; add `--status active --status cancelled` when cancelled monitors are also needed. Event responses are newest-first and may include `next_cursor`; pass it back with `--cursor` for the next page.
 
-Use this when the user wants recurring tracking of a page or source rather than a one-time fetch.
+Monitor queries and snapshot task-run IDs are immutable. Create a new monitor to change them. `trigger` starts a real off-schedule run without changing the regular schedule and only emits an event when it detects a material change.
+
+Always confirm before `cancel`; cancellation is irreversible.
 
 ## Recommended Hermes usage patterns
 
@@ -360,7 +372,7 @@ The CLI documents these exit codes:
 
 If you hit auth errors:
 1. check `parallel-cli auth`
-2. confirm `PARALLEL_API_KEY` or run `parallel-cli login` / `parallel-cli login --device`
+2. confirm `PARALLEL_API_KEY` or run `parallel-cli login` / `parallel-cli login --no-browser --json`
 3. verify `parallel-cli` is on `PATH`
 
 ## Maintenance
@@ -372,19 +384,28 @@ parallel-cli auth
 parallel-cli --help
 ```
 
-Update commands:
+Upgrade through the original installation method:
 
 ```bash
+# Shell installer
 parallel-cli update
-pip install --upgrade parallel-web-tools
-parallel-cli config auto-update-check off
+
+# Homebrew
+brew upgrade parallel-cli
+
+# npm
+npm update -g parallel-web-cli
+
+# pip / pipx
+pip install --upgrade "parallel-web-tools[cli]"
+pipx upgrade parallel-web-tools
 ```
 
 ## Pitfalls
 
 - Do not omit `--json` unless the user explicitly wants human-formatted output.
 - Do not cite sources not present in the CLI output.
-- `login` may require PTY/browser interaction.
+- For headless authentication, use `login --no-browser --json` and follow the returned device-authorization URL and code.
 - Prefer foreground execution for short tasks; do not overuse background processes.
 - For large result sets, save JSON to `/tmp/*.json` instead of stuffing everything into context.
 - Do not silently choose Parallel when Hermes native tools are already sufficient.

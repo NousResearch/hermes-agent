@@ -322,6 +322,15 @@ TOOL_CATEGORIES = {
                 "tts_provider": "piper",
                 "post_setup": "piper",
             },
+            {
+                "name": "DeepInfra TTS",
+                "badge": "paid",
+                "tag": "Chatterbox, Qwen3-TTS, … — live catalog from api.deepinfra.com",
+                "env_vars": [
+                    {"key": "DEEPINFRA_API_KEY", "prompt": "DeepInfra API key", "url": "https://deepinfra.com/dash/api_keys"},
+                ],
+                "tts_provider": "deepinfra",
+            },
         ],
     },
     "web": {

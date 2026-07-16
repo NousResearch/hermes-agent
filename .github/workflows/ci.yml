@@ -43,6 +43,7 @@ jobs:
       deps: ${{ steps.classify.outputs.deps }}
       docker_meta: ${{ steps.classify.outputs.docker_meta }}
       mcp_catalog: ${{ steps.classify.outputs.mcp_catalog }}
+      ci_review: ${{ steps.classify.outputs.ci_review }}
       event_name: ${{ github.event_name }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -65,16 +66,17 @@ jobs:
   lint:
     name: Python lints
     needs: detect
-    if: needs.detect.outputs.python == 'true'
+    if: needs.detect.outputs.python == 'true' || needs.detect.outputs.ci_review == 'true'
     uses: ./.github/workflows/lint.yml
     with:
       event_name: ${{ needs.detect.outputs.event_name }}
+      ci_review: ${{ needs.detect.outputs.ci_review == 'true' }}
 
-  typecheck:
-    name: TypeScript
+  js-tests:
+    name: JS & TS checks
     needs: detect
     if: needs.detect.outputs.frontend == 'true'
-    uses: ./.github/workflows/typecheck.yml
+    uses: ./.github/workflows/js-tests.yml
 
   docs-site:
     name: Docs Site
@@ -139,7 +141,7 @@ jobs:
     needs:
       - tests
       - lint
-      - typecheck
+      - js-tests
       - docs-site
       - history-check
       - contributor-check
@@ -154,14 +156,18 @@ jobs:
     steps:
       - name: Evaluate job results
         env:
-          RESULTS: ${{ toJSON(needs.*.result) }}
+          NEEDS: ${{ toJSON(needs) }}
         run: |
-          echo "$RESULTS" | python3 -c "
+          echo "$NEEDS" | python3 -c "
           import json, sys
-          results = json.load(sys.stdin)
-          failed = [r for r in results if r == 'failure']
+          needs = json.load(sys.stdin)
+          failed = [name for name, info in needs.items() if info['result'] == 'failure']
+          for name, info in sorted(needs.items()):
+              result = info['result']
+              icon = '✅' if result in ('success', 'skipped') else '❌'
+              print(f'{icon} {name}: {result}')
           if failed:
-              print(f'::error::{len(failed)} job(s) failed')
+              print(f'::error::{len(failed)} job(s) failed: {\", \".join(failed)}')
               sys.exit(1)
           print('All checks passed (or were skipped)')
           "

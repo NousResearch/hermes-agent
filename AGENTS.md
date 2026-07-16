@@ -1278,6 +1278,7 @@ def profile_env(tmp_path, monkeypatch):
 
 ## Testing
 
+### Python
 **ALWAYS use `scripts/run_tests.sh`** — do not call `pytest` directly. The script enforces
 hermetic environment parity with CI (unset credential vars, TZ=UTC, LANG=C.UTF-8,
 `-n auto` xdist workers, in-tree subprocess-isolation plugin). Direct `pytest`
@@ -1291,12 +1292,12 @@ scripts/run_tests.sh tests/agent/test_foo.py::test_x  # one test
 scripts/run_tests.sh -v --tb=long                     # pass-through pytest flags
 ```
 
-### Subprocess-per-test-file isolation
+#### Subprocess-per-test-file isolation
 
 Every test file runs in a freshly-spawned Python subprocess via `run_tests_parallel.py`. This means module-level dicts/sets and
 ContextVars from one test file cannot leak into the next.
 
-### Why the wrapper
+#### Why the wrapper
 
 |                     | Without wrapper                             | With wrapper                              |
 | ------------------- | ------------------------------------------- | ----------------------------------------- |
@@ -1305,6 +1306,17 @@ ContextVars from one test file cannot leak into the next.
 | Timezone            | Local TZ (PDT etc.)                         | UTC                                       |
 | Locale              | Whatever is set                             | C.UTF-8                                   |
 
+### Where to place what tests
+
+The CI change classifier (`scripts/ci/classify_changes.py`) runs specific jobs based on what files changed. A Python test that asserts
+about the contents of `package.json`, `package-lock.json`, `.ts`/`.tsx`
+source, or any other JS-side artifact will not run on a PR that only touches
+those files. This means a regression can go green on a PR and red on `main` (where the
+classifier fails open and runs everything).
+
+Any test that reads or asserts about `package.json`,
+`package-lock.json`, `tsconfig.json`, `.ts`/`.tsx`/`.js`/`.mjs`/`.cjs`
+source files configuration belongs in the JS (vitest) test suite, not in `tests/*.py`.
 
 ### Don't write change-detector tests
 
@@ -1354,3 +1366,58 @@ not the specific names.
 
 Reviewers should reject new change-detector tests; authors should convert
 them into invariants before re-requesting review.
+
+### Never read source code in tests
+
+A test that reads a source file's text is testing *the shape of the
+source code*, not its behavior. This is a hard antipattern, banned outright.
+Any test that reads a .py, .ts, .tsx, etc., file is suspect.
+
+**Why it's actively harmful, not just weak:**
+
+- It passes when the implementation is subtly broken (the regex matches a
+  call site that exists but is wired wrong) and fails when a correct
+  refactor changes formatting, variable names, or control flow with
+  identical runtime behavior. Both directions of failure are wrong.
+- It can't be run against a built/bundled/minified artifact, so it silently
+  stops testing anything the moment code moves, gets renamed, or a
+  dependency reformats it.
+- It actively blocks refactors: reviewers see "keeps a pattern intact" tests
+  fail during pure structural cleanup with no behavior change, and either
+  hand-wave the failure (dangerous) or waste time updating regexes that add
+  nothing (waste).
+- It gives false confidence. a green suite full of source-regex tests
+  looks like coverage but has never once executed the code path it claims
+  to guard.
+
+**Do not write:**
+
+```ts
+const source = fs.readFileSync(path.join(__dirname, 'main.ts'), 'utf8')
+
+test('backend spawn hides the Windows console', () => {
+  assert.match(source, /spawn\(\s*backend\.command,\s*backend\.args[\s\S]{0,300}hiddenWindowsChildOptions/)
+})
+```
+
+**Do write — extract the logic into a small pure/DI-testable function and
+call it for real:**
+
+```ts
+// backend-spawn.ts
+export function hiddenWindowsChildOptions(options: SpawnOptionsLike = {}, isWindows = process.platform === 'win32') {
+  if (!isWindows || 'windowsHide' in options) return options
+  return { ...options, windowsHide: true }
+}
+
+// backend-spawn.test.ts
+test('windowsHide defaults to true on Windows, is left alone elsewhere', () => {
+  assert.equal(hiddenWindowsChildOptions({}, true).windowsHide, true)
+  assert.equal(hiddenWindowsChildOptions({}, false).windowsHide, undefined)
+  assert.equal(hiddenWindowsChildOptions({ windowsHide: false }, true).windowsHide, false)
+})
+```
+
+If the logic lives inline in a god-file (`main.ts`, `cli.py`,
+`gateway/run.py`) and extracting it feels disruptive: that's the actual
+signal to do the extraction, not to regex around it.

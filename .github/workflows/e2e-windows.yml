@@ -1,0 +1,395 @@
+name: E2E Windows Desktop
+
+on:
+  push:
+    branches: [ethie/e2e]
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # this is separated so we don't have node.js and stuff polluting the system
+  build-installer:
+    if: false # NOTE: build-installer is disabled for now, since we don't ship updates to the installer. when we do, re-enable it.
+    name: Build Hermes-Setup.exe
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: checkout cache inputs
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            package-lock.json
+            apps/bootstrap-installer
+          sparse-checkout-cone-mode: true
+
+      # The cache key is the exact installer build fingerprint. A hit means
+      # this package-lock + bootstrap-installer source combo was already built,
+      # so we can skip the entire Node/Rust/toolchain dance and just upload it.
+      - name: Restore installer build cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        id: installer-cache
+        with:
+          path: Hermes-Setup.exe
+          key: hermes-installer-built-cache-${{ runner.os }}-${{ hashFiles('package-lock.json', 'apps/bootstrap-installer/**', '!apps/bootstrap-installer/src-tauri/target/**') }}
+
+      - name: Setup Node.js
+        if: steps.installer-cache.outputs.cache-hit != 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        if: steps.installer-cache.outputs.cache-hit != 'true'
+        uses: dtolnay/rust-toolchain@1.96.0 # stable
+      - name: checkout full tree on cache miss
+        if: steps.installer-cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+
+      - name: Install npm dependencies
+        if: steps.installer-cache.outputs.cache-hit != 'true'
+        run: npm ci
+
+      - name: Build dev installer for this branch
+        if: steps.installer-cache.outputs.cache-hit != 'true'
+        run: npm run tauri:build
+        working-directory: apps/bootstrap-installer
+        timeout-minutes: 10
+
+      # Only runs on cache miss. Pick the exe the Tauri build produced and
+      # normalize its name so downstream jobs always know what to download.
+      - name: Normalize installer artifact name
+        if: steps.installer-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $candidates = @(
+            'apps/bootstrap-installer/src-tauri/target/release/bundle/app/Hermes.exe',
+            'apps/bootstrap-installer/src-tauri/target/release/bundle/app/Hermes_0.0.1_x64.exe',
+            'apps/bootstrap-installer/src-tauri/target/release/bundle/app/Hermes_0.0.1_x64-setup.exe',
+            'apps/bootstrap-installer/src-tauri/target/release/Hermes.exe'
+          )
+          $installer = $null
+          foreach ($c in $candidates) {
+            if (Test-Path $c) {
+              $installer = Resolve-Path $c
+              break
+            }
+          }
+          if (-not $installer) {
+            $installer = Get-ChildItem -Path 'apps/bootstrap-installer/src-tauri/target/release' `
+              -Recurse -Filter '*.exe' | Where-Object { $_.Name -notlike '*setup*' -or $true } | Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $installer) {
+            throw 'Could not find built Hermes-Setup.exe'
+          }
+          Copy-Item -Path $installer -Destination 'Hermes-Setup.exe' -Force
+          Write-Host "Normalized installer: Hermes-Setup.exe (from $installer)"
+
+  e2e:
+    name: Install this commit as latest main
+    # needs: build-installer
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    env:
+      # Isolated install directory so the real install flow doesn't touch the
+      # runner's user profile. Kept under the workspace for easy cleanup.
+      HERMES_HOME: ${{ github.workspace }}\.e2e-hermes-home
+      INSTALL_DIR: ${{ github.workspace }}\.e2e-hermes-home\hermes-agent
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: source
+
+      - name: Restore installer from build cache
+        if: false # build-installer is since we don't update the installer right now. instead, we download the latest installer from the website
+        id: installer-cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: Hermes-Setup.exe
+          key: hermes-installer-built-cache-${{ runner.os }}-${{ hashFiles('source/package-lock.json', 'source/apps/bootstrap-installer/**', '!source/apps/bootstrap-installer/src-tauri/target/**') }}
+
+      - name: Download latest production installer
+        id: download-installer
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://hermes-assets.nousresearch.com/Hermes-Setup.exe -OutFile Hermes-Setup.exe
+
+      - name: Restore cached test tools
+        id: test-tools-cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: test-bins
+          key: test-bins-${{ runner.os }}-v1
+
+      - name: Install AutoHotkey v2 and ffmpeg
+        if: steps.test-tools-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          # Install fresh when the cache missed.
+
+          New-Item -ItemType Directory -Path test-bins\autohotkey, test-bins\ffmpeg -Force | Out-Null
+
+          # AutoHotkey: copy its whole v2 directory so helper exes/dlls come along.
+          winget install -e --id AutoHotkey.AutoHotkey --silent --accept-source-agreements --accept-package-agreements --disable-interactivity
+          $ahkDir = "$env:ProgramW6432\AutoHotkey\v2"
+          if (-not (Test-Path $ahkDir)) {
+            throw "AutoHotkey install directory not found: $ahkDir"
+          }
+          Copy-Item -Path "$ahkDir\*" -Destination test-bins\autohotkey -Recurse -Force
+
+          # ffmpeg : just install into dir
+          winget install -e --id Gyan.FFmpeg --silent --accept-source-agreements --accept-package-agreements --disable-interactivity --location ffmpeg_dir
+          Copy-Item -Path "ffmpeg_dir\*\*" -Destination test-bins\ffmpeg -Recurse -Force
+
+      - name: Add test-bins to PATH
+        shell: pwsh
+        run: |
+          ls "$PWD\test-bins\ffmpeg"
+          Add-Content -Path $env:GITHUB_PATH -Value "$PWD\test-bins\autohotkey"
+          Add-Content -Path $env:GITHUB_PATH -Value "$PWD\test-bins\ffmpeg\bin"
+
+      # ── Prepare an isolated HERMES_HOME and copy checked-out repo ──────
+      # actions/checkout already has the right commit; just mirror it into the
+      # isolated home so the installer doesn't need to reach GitHub.
+      - name: Move checked-out workspace into isolated HERMES_HOME
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path $env:INSTALL_DIR -Force
+          Get-ChildItem -Path ${{ github.workspace }}\source -Force | Move-Item -Destination $env:INSTALL_DIR -Force
+          Write-Host "Isolated install dir ready: $env:INSTALL_DIR"
+
+      # ── Run the headed installer + AHK helper ───────────────────────
+      - name: Launch Hermes-Setup.exe and install it
+        shell: pwsh
+        timeout-minutes: 10
+        env:
+          HERMES_SETUP_DEV_REPO_ROOT: ${{ env.INSTALL_DIR }}
+        run: |
+          $installer = "Hermes-Setup.exe"
+
+          # ── Start screen recording (live stdin pipe) ──────────────────
+          # ffmpeg must be started, fed, and stopped from the SAME step: the
+          # graceful-stop signal is the character 'q' written to ffmpeg's live
+          # stdin. A separate teardown step can't do this because the process
+          # that owns the writable stdin pipe dies when this step ends.
+          #
+          # Start-Process / -RedirectStandardInput <file> does NOT work: it
+          # hands ffmpeg a file handle opened once at EOF, so appending 'q' to
+          # the file on disk never reaches the running process. We need a real
+          # writable pipe, which only System.Diagnostics.Process exposes.
+          #
+          # -pix_fmt yuv420p keeps
+          # the output broadly playable.
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = "ffmpeg"
+          $psi.Arguments = "-y -f gdigrab -framerate 15 -i desktop " +
+                           "-hide_banner -loglevel error " +
+                           "-c:v libx264 -preset ultrafast -pix_fmt yuv420p recording.mkv"
+          $psi.RedirectStandardInput = $true
+          $psi.UseShellExecute = $false
+          $ffmpeg = [System.Diagnostics.Process]::Start($psi)
+          $ffmpeg.Id | Out-File ffmpeg.pid
+          # Note: stderr is intentionally left attached to the console so it is
+          # captured in the step log. Do NOT redirect a stream we don't drain --
+          # ffmpeg's progress output would fill the pipe buffer and block.
+          Write-Host "ffmpeg recording started (pid $($ffmpeg.Id ))"
+
+          $e2eDir = "$env:RUNNER_TEMP\e2e-windows"
+
+          Copy-Item -Path "$env:INSTALL_DIR\e2e\windows"  -Destination $e2eDir -Force -Recurse
+
+          $installerSuccess = $false
+          try {
+            # Launch the real installer
+            $proc = Start-Process -FilePath $installer -PassThru -NoNewWindow
+            $proc.Id | Out-File installer.pid
+
+            $ahkProc = Start-Process -FilePath ".\test-bins\autohotkey\AutoHotkey64.exe" `
+              -ArgumentList "$e2eDir\install-hermes-desktop.ahk", "$PWD\ahk.log" -PassThru -NoNewWindow
+
+            # Wait for AHK helper to finish, and tail logs.
+
+            $logReader  = $null
+            $logStream  = $null
+            $logPath    = Join-Path $env:HERMES_HOME "logs\bootstrap-installer.log"
+            # can take a long time for installer!
+            $deadline   = (Get-Date).AddSeconds(60 * 8)
+
+            try {
+              while ((Get-Date) -lt $deadline -and -not $ahkProc.HasExited) {
+                if (-not $logReader) {
+                  if (Test-Path $logPath) {
+                    Write-Host "Found bootstrap-installer.log; tailing..."
+                    # FileShare.ReadWrite is required: the installer almost
+                    # certainly still has the file open for writing, and a
+                    # plain Get-Content/File.Open would throw or lock it out.
+                    $logStream = [System.IO.File]::Open(
+                      $logPath, 'Open', 'Read', 'ReadWrite')
+                    $logReader = New-Object System.IO.StreamReader($logStream)
+                  }
+                } else {
+                  $line = $logReader.ReadLine()
+                  while ($null -ne $line) {
+                    Write-Host "[bootstrap] $line"
+                    $line = $logReader.ReadLine()
+                  }
+                }
+                Start-Sleep -Milliseconds 500
+              }
+
+              # Drain anything written in the final tick before exit/timeout.
+              if ($logReader) {
+                $line = $logReader.ReadLine()
+                while ($null -ne $line) {
+                  Write-Host "[bootstrap] $line"
+                  $line = $logReader.ReadLine()
+                }
+              }
+            }
+            finally {
+              if ($logReader) { $logReader.Dispose() }
+              if ($logStream) { $logStream.Dispose() }
+            }
+
+            if (-not $ahkProc.HasExited) {
+              Write-Host "AHK helper is still running; stopping it"
+              Stop-Process -Id $ahkProc.Id -Force -ErrorAction SilentlyContinue
+            } else {
+              Write-Host "autohotkey helper exited"
+            }
+          }
+
+          finally {
+            # Gracefully stop ffmpeg by writing 'q' to its LIVE stdin pipe, so
+            # the container header/index are finalized and the mkv is playable.
+            # This runs in the same step that owns the pipe, even on failure.
+            if ($ffmpeg -and -not $ffmpeg.HasExited) {
+              Write-Host "Stopping ffmpeg gracefully (q on stdin)"
+              try {
+                $ffmpeg.StandardInput.Write("q")
+                $ffmpeg.StandardInput.Close()
+              } catch {
+                Write-Host "Failed to write q to ffmpeg stdin: $_"
+              }
+              if (-not $ffmpeg.WaitForExit(15000)) {
+                Write-Host "ffmpeg did not exit after 15s; killing"
+                $ffmpeg.Kill()
+              }
+            }
+            Write-Host "ffmpeg stopped"
+
+            # Installer should have exited
+            if ($proc.HasExited) {
+              # TODO check exit code once we add exit code in installer
+              $installerSuccess = $true
+            } else {
+              Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+              throw "Installer is still running. Install did not succeed."
+            }
+            if (-not $installerSuccess) {
+              throw "Installer did not exit after autohotkey script finished. Check installer logs!"
+            }
+          }
+
+      # ── Run Playwright against the installed binary ─────────────────
+      # (placeholder: will be enabled once installer completes successfully.)
+      - name: Launch installed app and run e2e
+        if: false
+        working-directory: source/apps/desktop
+        run: npm exec playwright test e2e/ --reporter=list
+        env:
+          # Point the e2e spec at the desktop binary that the installer built.
+          HERMES_E2E_INSTALL_ROOT: ${{ env.HERMES_HOME }}\hermes-agent
+
+      # ── Teardown & artifacts ────────────────────────────────────────
+      # ffmpeg is normally started AND gracefully stopped inside the launch
+      # step (so 'q' reaches its live stdin pipe). This step is only a
+      # safety net: if the launch step timed out or crashed before its
+      # finally block ran, force-kill any orphaned ffmpeg so the runner can
+      # release recording.mkv for upload. The mkv container survives a hard
+      # kill (only the trailing seek index is lost), so the artifact is still
+      # usable for coordinate discovery even on this fallback path.
+      - name: Stop orphaned screen recording (safety net)
+        if: always()
+        shell: pwsh
+        run: |
+          $ffmpegpid = Get-Content ffmpeg.pid -ErrorAction SilentlyContinue
+          if ($ffmpegpid) {
+            $proc = Get-Process -Id $ffmpegpid -ErrorAction SilentlyContinue
+            if ($proc) {
+              Write-Host "Orphaned ffmpeg (pid $ffmpegpid) still running; force-stopping"
+              Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+              Start-Sleep -Seconds 2
+            } else {
+              Write-Host "ffmpeg already exited cleanly; nothing to do"
+            }
+          }
+
+      - name: Burn debug overlay into recording
+        if: always()
+        shell: pwsh
+        run: |
+          $logPath = Join-Path $PWD 'ahk.log'
+          $x = $y = $w = $h = $null
+          if (Test-Path $logPath) {
+            $line = Get-Content $logPath -Raw | Select-String -Pattern 'Window found at x=(\d+) y=(\d+) w=(\d+) h=(\d+)' -AllMatches | Select-Object -Last 1
+            if ($line) {
+              $x = [int]$line.Matches[0].Groups[1].Value
+              $y = [int]$line.Matches[0].Groups[2].Value
+              $w = [int]$line.Matches[0].Groups[3].Value
+              $h = [int]$line.Matches[0].Groups[4].Value
+              Write-Host "Parsed window rect: x=$x y=$y w=$w h=$h"
+            } else {
+              Write-Host "no window rect found in ahk.log; only timestamp will be burned"
+            }
+          } else {
+            Write-Host "ahk.log not found; only timestamp will be burned"
+          }
+
+          # Build the timestamp overlay
+          $vf = "drawtext=text='%{pts\:hms}':fontfile='C\:\\Windows\\Fonts\\arial.ttf':fontsize=20:fontcolor=white:box=1:boxcolor=black@0.5:x=8:y=8"
+
+          if ($x -ne $null -and $y -ne $null -and $w -ne $null -and $h -ne $null) {
+            # Window border + 16px grid only over the window + axis labels
+            $grid = "drawbox=x=$x`:y=$y`:w=$w`:hf=$h`:color=red@0.9:t=2,split=2[box][win];[win]crop=$w`:$h`:$x`:$y`:$y"
+          }
+
+          Write-Host "Overlay filter: $vf"
+
+          ffmpeg -y -i recording.mkv -vf "$vf" -c:v libx264 -preset veryfast -pix_fmt yuv420p recording-overlay.mkv
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "ffmpeg overlay failed"
+          }
+
+          Move-Item -Path recording-overlay.mkv -Destination recording.mkv -Force
+          Write-Host "Overlayed recording saved as recording.mkv"
+
+      - name: Upload screen recording
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        id: upload-recording
+        if: always()
+        with:
+          name: screen-recording-${{ github.sha }}
+          path: recording.mkv
+          retention-days: 1
+          archive: false
+          overwrite: true
+
+      - name: Bootstrap Installer log
+        if: always()
+        shell: pwsh
+        run: |
+          Get-Content "$env:HERMES_HOME\logs\bootstrap-installer.log"
+
+      - name: Autohotkey log
+        if: always()
+        shell: pwsh
+        run: |
+          Get-Content ahk.log

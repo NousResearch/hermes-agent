@@ -133,6 +133,34 @@ class TestGatewayPinningFailsClosed:
         assert resolved == "sess_child"
         db.get_compression_tip.assert_awaited_once_with("sess_parent")
 
+    def test_compression_grandparent_resolves_to_final_live_tip(self, tmp_path):
+        """A completion survives every compression hop before the worker exits."""
+        from gateway.run import GatewayRunner
+        from hermes_state import AsyncSessionDB, SessionDB
+
+        state = SessionDB(tmp_path / "state.db")
+        state.create_session("parent", "telegram")
+        state.end_session("parent", "compression")
+        state.create_session(
+            "child", "telegram", parent_session_id="parent",
+        )
+        state.end_session("child", "compression")
+        state.create_session(
+            "live_tip", "telegram", parent_session_id="child",
+        )
+
+        runner, _ = self._make_runner(None)
+        runner._session_db = AsyncSessionDB(state)
+
+        try:
+            resolved = asyncio.run(
+                GatewayRunner._resolve_async_completion_session(runner, "parent")
+            )
+        finally:
+            state.close()
+
+        assert resolved == "live_tip"
+
 
 class TestResetHandlerInterruptsDelegations:
     def test_reset_command_calls_interrupt_for_session(self):

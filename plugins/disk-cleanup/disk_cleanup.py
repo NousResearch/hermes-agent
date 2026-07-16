@@ -7,23 +7,30 @@ tracking and cleanup happen automatically — the agent never needs to
 call a tool or remember a skill.
 
 Rules:
-  - test files    → delete immediately at task end (age >= 0)
+  - disposable test files outside Git-protected paths → delete at task end
   - temp files    → delete after 7 days
   - cron-output   → delete after 14 days
-  - empty dirs    → always delete (under HERMES_HOME)
+  - unprotected empty dirs → always delete (under HERMES_HOME)
   - research      → keep 10 newest, prompt for older (deep only)
   - chrome-profile→ prompt after 14 days (deep only)
   - >500 MB files → prompt always (deep only)
 
 Scope: strictly HERMES_HOME and /tmp/hermes-*
-Never touches: ~/.hermes/logs/ or any system directory.
+Automatic cleanup never touches Git worktree/source paths, ~/.hermes/logs/,
+or system directories. Explicit manual tracking may override protection for the
+selected path, but recursive deletion still refuses nested or bare Git repositories.
+Resolved scope checks and parent-directory descriptors prevent symlink escapes
+or non-canonical path components from redirecting destructive operations.
+Durable Hermes state and filesystem mount boundaries always fail closed.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -39,6 +46,23 @@ except Exception:  # pragma: no cover — plugin may load before constants resol
 
 
 logger = logging.getLogger(__name__)
+
+# Keep the capability-tested primitives stable even when tests or host
+# instrumentation wrap functions on the shared ``os`` module.
+_OS_OPEN = os.open
+_OS_STAT = os.stat
+_OS_UNLINK = os.unlink
+_OS_RMDIR = os.rmdir
+_SHUTIL_RMTREE = shutil.rmtree
+_RMTREE_SYMLINK_SAFE = getattr(_SHUTIL_RMTREE, "avoids_symlink_attacks", False)
+_DIR_FD_DELETE_SUPPORTED = (
+    {_OS_OPEN, _OS_STAT, _OS_UNLINK}.issubset(os.supports_dir_fd)
+    and _OS_STAT in os.supports_follow_symlinks
+    and hasattr(os, "O_DIRECTORY")
+)
+_DIR_FD_RMDIR_SUPPORTED = (
+    _DIR_FD_DELETE_SUPPORTED and _OS_RMDIR in os.supports_dir_fd
+)
 
 
 # ---------------------------------------------------------------------------
@@ -64,21 +88,405 @@ def get_log_file() -> Path:
 # ---------------------------------------------------------------------------
 
 def is_safe_path(path: Path) -> bool:
-    """Accept only paths under HERMES_HOME or ``/tmp/hermes-*``.
+    """Accept only resolved paths under HERMES_HOME or ``/tmp/hermes-*``.
 
-    Rejects Windows mounts (``/mnt/c`` etc.) and any system directory.
+    Rejects Windows mounts (``/mnt/c`` etc.), symlink escapes, and system
+    directories.
     """
-    hermes_home = get_hermes_home()
+    raw_path = Path(path).expanduser()
+    raw_parts = raw_path.parts
+    if (
+        len(raw_parts) >= 3
+        and raw_parts[1] == "mnt"
+        and len(raw_parts[2]) == 1
+    ):
+        return False
+
     try:
-        path.resolve().relative_to(hermes_home)
+        resolved = raw_path.resolve()
+        hermes_home = get_hermes_home().resolve()
+    except OSError:
+        return False
+
+    try:
+        resolved.relative_to(hermes_home)
         return True
-    except (ValueError, OSError):
+    except ValueError:
         pass
-    # Allow /tmp/hermes-* explicitly
-    parts = path.parts
-    if len(parts) >= 3 and parts[1] == "tmp" and parts[2].startswith("hermes-"):
+
+    # Resolve both sides before applying the /tmp/hermes-* allowance.  A
+    # lexical prefix is insufficient because an interior symlink can escape
+    # the cleanup root (for example /tmp/hermes-x/outside -> /etc).
+    try:
+        tmp_relative = resolved.relative_to(Path("/tmp").resolve())
+    except (ValueError, OSError):
+        return False
+    return bool(
+        tmp_relative.parts and tmp_relative.parts[0].startswith("hermes-")
+    )
+
+
+def _is_canonical_candidate_path(path: Path) -> bool:
+    """Reject relative, special-component, symlinked, or unresolved paths."""
+    if not path.is_absolute() or path.name in {"", ".", ".."}:
+        return False
+    try:
+        return path == path.resolve(strict=True)
+    except OSError:
+        return False
+
+
+def _is_same_cleanup_device(path: Path) -> bool:
+    """Reject nested mounts so cleanup cannot cross filesystem boundaries."""
+    try:
+        resolved = path.resolve(strict=True)
+        hermes_home = get_hermes_home().resolve(strict=True)
+        try:
+            resolved.relative_to(hermes_home)
+            scope_root = hermes_home
+        except ValueError:
+            tmp_root = Path("/tmp").resolve(strict=True)
+            relative = resolved.relative_to(tmp_root)
+            if not relative.parts or not relative.parts[0].startswith("hermes-"):
+                return False
+            scope_root = tmp_root / relative.parts[0]
+        return resolved.stat().st_dev == scope_root.stat().st_dev
+    except (OSError, ValueError):
+        return False
+
+
+def _looks_like_bare_git_repo(path: Path) -> bool:
+    """Return True when *path* has the structural markers of a bare repo."""
+    return (
+        (path / "HEAD").is_file()
+        and (path / "objects").is_dir()
+        and (path / "refs").is_dir()
+    )
+
+
+def _find_git_root(path: Path) -> Optional[Path]:
+    """Return the nearest normal, linked-worktree, or bare Git root.
+
+    Filesystem inspection errors propagate so callers can fail closed rather
+    than treating an unreadable repository marker as proof of no repository.
+    """
+    try:
+        resolved = path.resolve()
+        probe = resolved if resolved.is_dir() else resolved.parent
+    except OSError as exc:
+        raise OSError(f"cannot resolve Git probe path: {exc}") from exc
+    for candidate in (probe, *probe.parents):
+        try:
+            marker = candidate / ".git"
+            if marker.is_dir() or marker.is_file():
+                return candidate
+            if _looks_like_bare_git_repo(candidate):
+                return candidate
+        except OSError as exc:
+            raise OSError(f"cannot inspect Git marker at {candidate}: {exc}") from exc
+    return None
+
+
+def _is_git_protected_path(path: Path) -> bool:
+    """Return True when automatic cleanup must preserve *path*.
+
+    Dedicated/nested Git worktrees are entirely protected.  ``HERMES_HOME``
+    may itself be a Git repository, so paths in that root are protected when
+    tracked or non-ignored; declared cache/cron-output roots and explicitly
+    ignored ephemeral paths remain eligible for cleanup.  Git command errors
+    fail closed and preserve the path.
+    """
+    try:
+        resolved = path.resolve()
+        hermes_home = get_hermes_home().resolve()
+    except OSError:
         return True
+
+    for dirname in ("worktrees", ".worktrees"):
+        try:
+            resolved.relative_to(hermes_home / dirname)
+            return True
+        except ValueError:
+            pass
+
+    try:
+        git_root = _find_git_root(path)
+    except OSError:
+        return True
+    if git_root is None:
+        return False
+    if git_root.resolve() != hermes_home:
+        return True
+
+    try:
+        relative = resolved.relative_to(git_root.resolve())
+    except ValueError:
+        return True
+
+    try:
+        tracked = subprocess.run(
+            [
+                "git", "-C", str(git_root), "ls-files",
+                "--error-unmatch", "--", str(relative),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    if tracked.returncode == 0:
+        return True
+    if tracked.returncode != 1:
+        return True
+
+    parts = relative.parts
+    if parts and parts[0] == "cache":
+        return False
+    if (
+        len(parts) >= 2
+        and parts[0] in {"cron", "cronjobs"}
+        and parts[1] == "output"
+    ):
+        return False
+
+    try:
+        ignored = subprocess.run(
+            ["git", "-C", str(git_root), "check-ignore", "-q", "--", str(relative)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+
+    if ignored.returncode == 0:
+        return False
+    if ignored.returncode == 1:
+        return True
+    return True
+
+
+def _directory_contains_git_marker(path: Path) -> bool:
+    """Return True for nested Git repositories or filesystem boundaries.
+
+    Recursive tracked-directory deletion is never allowed to cross a nested
+    repository or mount boundary.  Inspection errors fail closed because an
+    unreadable subtree cannot be proven disposable.
+    """
+    try:
+        root_device = path.lstat().st_dev
+    except OSError:
+        return True
+    stack = [path]
+    while stack:
+        current = stack.pop()
+        try:
+            if os.path.ismount(current) or current.lstat().st_dev != root_device:
+                return True
+            # Bare repositories have no enclosing .git marker.
+            if _looks_like_bare_git_repo(current):
+                return True
+        except OSError:
+            return True
+        try:
+            children = list(current.iterdir())
+        except OSError:
+            return True
+        for child in children:
+            if child.name.casefold() == ".git":
+                return True
+            try:
+                if child.is_dir() and not child.is_symlink():
+                    stack.append(child)
+            except OSError:
+                return True
     return False
+
+
+def _open_bound_parent(path: Path) -> Tuple[Optional[int], str]:
+    """Open and identity-bind *path*'s parent directory.
+
+    Destructive operations use the returned descriptor plus the candidate's
+    basename, so replacing an ancestor with a symlink cannot redirect unlink
+    or recursive deletion to a different tree.
+    """
+    if not _DIR_FD_DELETE_SUPPORTED:
+        return None, "platform lacks required dir_fd safety"
+
+    try:
+        parent = path.parent.resolve(strict=True)
+        parent_before = parent.stat()
+        flags = os.O_RDONLY | os.O_DIRECTORY
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        parent_fd = _OS_OPEN(parent, flags)
+    except OSError as exc:
+        raise OSError(f"cannot bind candidate parent: {exc}") from exc
+
+    try:
+        parent_bound = os.fstat(parent_fd)
+        if (
+            parent_before.st_dev,
+            parent_before.st_ino,
+        ) != (
+            parent_bound.st_dev,
+            parent_bound.st_ino,
+        ):
+            os.close(parent_fd)
+            return None, "parent identity changed during validation"
+    except OSError as exc:
+        os.close(parent_fd)
+        raise OSError(f"cannot validate candidate parent: {exc}") from exc
+    return parent_fd, ""
+
+
+def _bound_candidate_stat(parent_fd: int, path: Path):
+    """Stat *path* without following its final symlink via a bound parent."""
+    return _OS_STAT(path.name, dir_fd=parent_fd, follow_symlinks=False)
+
+
+def _same_identity(left, right) -> bool:
+    return (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
+
+
+def _delete_candidate(path: Path, *, explicit: bool) -> Tuple[bool, str]:
+    """Revalidate and delete one tracked path at the destructive boundary.
+
+    Explicit manual tracking may override protection for the selected file or
+    directory itself, but recursive deletion still refuses directories that
+    contain nested Git repositories/worktrees.
+    """
+    if not _is_canonical_candidate_path(path):
+        return False, "non-canonical candidate path"
+    if _is_durable_protected_path(path):
+        return False, "durable Hermes state is protected"
+    if not _is_same_cleanup_device(path) or os.path.ismount(path):
+        return False, "filesystem mount boundary is protected"
+    if not path.exists() and not path.is_symlink():
+        return False, "missing"
+    if not is_safe_path(path):
+        return False, "outside allowed cleanup scope"
+    if _is_git_protected_path(path) and not explicit:
+        return False, "Git-protected"
+
+    try:
+        before = path.lstat()
+    except OSError as exc:
+        raise OSError(f"cannot inspect candidate: {exc}") from exc
+
+    is_directory = path.is_dir() and not path.is_symlink()
+    if is_directory and _directory_contains_git_marker(path):
+        return False, "contains nested Git repository/worktree"
+
+    # Detect pathname replacement during validation.  shutil.rmtree also uses
+    # fd-based symlink-attack resistance where the platform supports it.
+    try:
+        after = path.lstat()
+    except OSError as exc:
+        raise OSError(f"candidate changed during validation: {exc}") from exc
+    if not _same_identity(before, after):
+        return False, "candidate identity changed during validation"
+
+    if not is_safe_path(path):
+        return False, "outside allowed cleanup scope at delete boundary"
+    if _is_git_protected_path(path) and not explicit:
+        return False, "became Git-protected at delete boundary"
+
+    if path.is_symlink() or path.is_file():
+        parent_fd, reason = _open_bound_parent(path)
+        if parent_fd is None:
+            return False, reason
+        try:
+            # Re-check pathname policy after binding the parent.  If an
+            # ancestor changed while the descriptor was opened, either scope
+            # validation or the bound inode comparison below fails closed.
+            if not is_safe_path(path):
+                return False, "outside allowed scope after parent bind"
+            if not _is_same_cleanup_device(path) or os.path.ismount(path):
+                return False, "filesystem boundary changed after parent bind"
+            if _is_git_protected_path(path) and not explicit:
+                return False, "became Git-protected after parent bind"
+            bound = _bound_candidate_stat(parent_fd, path)
+            if not _same_identity(before, bound):
+                return False, "candidate identity changed after parent bind"
+            _OS_UNLINK(path.name, dir_fd=parent_fd)
+        finally:
+            os.close(parent_fd)
+    elif path.is_dir():
+        if not _RMTREE_SYMLINK_SAFE:
+            return False, "platform lacks symlink-safe recursive deletion"
+        # Re-scan immediately before recursive deletion so a repository added
+        # during the earlier checks is still preserved.
+        if _directory_contains_git_marker(path):
+            return False, "contains nested Git repository/worktree at delete boundary"
+        if not is_safe_path(path):
+            return False, "outside allowed cleanup scope after directory scan"
+        if _is_git_protected_path(path) and not explicit:
+            return False, "became Git-protected after directory scan"
+        try:
+            final = path.lstat()
+        except OSError as exc:
+            raise OSError(f"candidate changed before recursive delete: {exc}") from exc
+        if not _same_identity(before, final):
+            return False, "candidate identity changed before recursive delete"
+
+        parent_fd, reason = _open_bound_parent(path)
+        if parent_fd is None:
+            return False, reason
+        try:
+            if not is_safe_path(path):
+                return False, "outside allowed scope after directory parent bind"
+            if not _is_same_cleanup_device(path) or os.path.ismount(path):
+                return False, "filesystem boundary changed after directory parent bind"
+            if _is_git_protected_path(path) and not explicit:
+                return False, "became Git-protected after directory parent bind"
+            bound = _bound_candidate_stat(parent_fd, path)
+            if not _same_identity(before, bound):
+                return False, "directory identity changed after parent bind"
+            _SHUTIL_RMTREE(path.name, dir_fd=parent_fd)
+        finally:
+            os.close(parent_fd)
+    else:
+        return False, "unsupported filesystem object"
+    return True, ""
+
+
+def _remove_empty_directory(path: Path) -> bool:
+    """Remove one empty directory through a validated parent descriptor."""
+    if not _DIR_FD_RMDIR_SUPPORTED:
+        return False
+    if not _is_canonical_candidate_path(path):
+        return False
+    if _is_durable_protected_path(path):
+        return False
+    if not _is_same_cleanup_device(path) or os.path.ismount(path):
+        return False
+    if not is_safe_path(path) or _is_git_protected_path(path):
+        return False
+    try:
+        before = path.lstat()
+        if path.is_symlink() or not path.is_dir():
+            return False
+        parent_fd, _reason = _open_bound_parent(path)
+        if parent_fd is None:
+            return False
+        try:
+            if not is_safe_path(path) or _is_git_protected_path(path):
+                return False
+            if not _is_same_cleanup_device(path) or os.path.ismount(path):
+                return False
+            bound = _bound_candidate_stat(parent_fd, path)
+            if not _same_identity(before, bound):
+                return False
+            _OS_RMDIR(path.name, dir_fd=parent_fd)
+            return True
+        finally:
+            os.close(parent_fd)
+    except OSError:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -147,7 +555,13 @@ ALLOWED_CATEGORIES = {
 _EMPTY_DIR_PROTECTED_TOP_LEVEL = frozenset({
     "logs", "memories", "sessions", "cron", "cronjobs",
     "cache", "skills", "plugins", "disk-cleanup", "optional-skills",
-    "hermes-agent", "backups", "profiles", ".worktrees",
+    "hermes-agent", "backups", "profiles", ".worktrees", "worktrees",
+})
+
+_DURABLE_PROTECTED_TOP_LEVEL = frozenset({
+    "logs", "memories", "sessions", "skills", "plugins", "disk-cleanup",
+    "optional-skills", "backups", "profiles", "config.yaml", "config.yml",
+    ".env", "USER.md", "MEMORY.md", "SOUL.md", "auth.json",
 })
 
 _EMPTY_DIR_SWEEP_PRUNE_DIRS = frozenset({
@@ -158,8 +572,34 @@ _EMPTY_DIR_SWEEP_PRUNE_DIRS = frozenset({
 
 # Paths under $HERMES_HOME that must NEVER be deleted by quick(),
 # regardless of what the stored category says.  This is a defense-in-depth
-# guard against stale tracked.json entries from before #34840.
+# guard against stale or corrupted tracked.json entries.
 _PROTECTED_CRON_PATHS: set[str] = set()
+
+
+def _is_durable_protected_path(p: Path) -> bool:
+    """Protect Hermes control-plane and durable user state from all cleanup.
+
+    Manual provenance may override Git protection for one selected path, but
+    it never overrides these durable-state boundaries.  ``cron/output`` is
+    intentionally excluded because it is the cron tree's disposable subtree.
+    """
+    try:
+        resolved = p.resolve()
+        hermes_home = get_hermes_home().resolve()
+    except OSError:
+        return True
+    try:
+        relative = resolved.relative_to(hermes_home)
+    except ValueError:
+        return False
+    if not relative.parts:
+        return True
+    top = relative.parts[0]
+    if top in _DURABLE_PROTECTED_TOP_LEVEL:
+        return True
+    if top in {"cron", "cronjobs"}:
+        return not (len(relative.parts) >= 2 and relative.parts[1] == "output")
+    return False
 
 
 def _is_protected_cron_path(p: Path) -> bool:
@@ -200,8 +640,18 @@ def fmt_size(n: float) -> str:
 # Track / forget
 # ---------------------------------------------------------------------------
 
-def track(path_str: str, category: str, silent: bool = False) -> bool:
-    """Register a file for tracking. Returns True if newly tracked."""
+def track(
+    path_str: str,
+    category: str,
+    silent: bool = False,
+    explicit: bool = True,
+) -> bool:
+    """Register a file for tracking. Returns True if newly tracked or upgraded.
+
+    ``explicit`` records whether the user deliberately invoked ``track``.
+    Automatic hooks pass ``False``; legacy entries without the field are
+    therefore treated as non-explicit and fail closed around Git source paths.
+    """
     if category not in ALLOWED_CATEGORIES:
         _log(f"WARN: unknown category '{category}', using 'other'")
         category = "other"
@@ -216,11 +666,32 @@ def track(path_str: str, category: str, silent: bool = False) -> bool:
         _log(f"REJECT: {path} (outside HERMES_HOME)")
         return False
 
+    if _is_durable_protected_path(path):
+        _log(f"REJECT: {path} (durable Hermes state)")
+        return False
+
+    if not _is_same_cleanup_device(path) or os.path.ismount(path):
+        _log(f"REJECT: {path} (filesystem mount boundary)")
+        return False
+
     size = path.stat().st_size if path.is_file() else 0
     tracked = load_tracked()
 
-    # Deduplicate
-    if any(item["path"] == str(path) for item in tracked):
+    # Deduplicate. An explicit manual command may safely upgrade a legacy or
+    # auto-hook entry so the user's deliberate cleanup request still works.
+    for item in tracked:
+        if item["path"] != str(path):
+            continue
+        if explicit and not item.get("explicit", False):
+            item.update({
+                "explicit": True,
+                "category": category,
+                "size": size,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            })
+            save_tracked(tracked)
+            _log(f"TRACKED explicit upgrade: {path} ({category})")
+            return True
         return False
 
     tracked.append({
@@ -228,6 +699,7 @@ def track(path_str: str, category: str, silent: bool = False) -> bool:
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "category": category,
         "size": size,
+        "explicit": explicit,
     })
     save_tracked(tracked)
     _log(f"TRACKED: {path} ({category}, {fmt_size(size)})")
@@ -263,14 +735,28 @@ def dry_run() -> Tuple[List[Dict], List[Dict]]:
 
     for item in tracked:
         p = Path(item["path"])
+        if not _is_canonical_candidate_path(p):
+            continue
+        if _is_durable_protected_path(p):
+            continue
         if not p.exists():
+            continue
+        if not is_safe_path(p):
+            continue
+        if _is_git_protected_path(p) and not item.get("explicit", False):
+            continue
+        if (
+            p.is_dir()
+            and not p.is_symlink()
+            and _directory_contains_git_marker(p)
+        ):
             continue
         age = (now - datetime.fromisoformat(item["timestamp"])).days
         cat = item["category"]
         size = item["size"]
 
         # Re-validate stale "cron-output" entries (fixes #37721).
-        if cat == "cron-output":
+        if cat == "cron-output" and not item.get("explicit", False):
             re_cat = guess_category(p)
             if re_cat != "cron-output":
                 # Stale entry — would be skipped by quick(); omit from
@@ -314,8 +800,22 @@ def quick() -> Dict[str, Any]:
         p = Path(item["path"])
         cat = item["category"]
 
+        if not _is_canonical_candidate_path(p):
+            _log(f"SKIP non-canonical stale path: {p} (removed from tracking)")
+            continue
+        if _is_durable_protected_path(p):
+            _log(f"SKIP durable stale path: {p} (removed from tracking)")
+            continue
         if not p.exists():
             _log(f"STALE: {p} (removed from tracking)")
+            continue
+
+        if not is_safe_path(p):
+            _log(f"SKIP unsafe stale path: {p} (removed from tracking)")
+            continue
+
+        if _is_git_protected_path(p) and not item.get("explicit", False):
+            _log(f"SKIP Git-protected path: {p} (removed from tracking)")
             continue
 
         age = (now - datetime.fromisoformat(item["timestamp"])).days
@@ -326,7 +826,7 @@ def quick() -> Dict[str, Any]:
         # guess_category() was fixed in #34840, but existing entries are
         # never re-validated.  Re-classify here so stale entries for cron
         # control-plane state are not deleted.
-        if cat == "cron-output":
+        if cat == "cron-output" and not item.get("explicit", False):
             re_cat = guess_category(p)
             if re_cat != "cron-output":
                 _log(
@@ -350,13 +850,17 @@ def quick() -> Dict[str, Any]:
 
         if should_delete:
             try:
-                if p.is_file():
-                    p.unlink()
-                elif p.is_dir():
-                    shutil.rmtree(p)
-                freed += item["size"]
-                deleted += 1
-                _log(f"DELETED: {p} ({cat}, {fmt_size(item['size'])})")
+                removed, reason = _delete_candidate(
+                    p, explicit=item.get("explicit", False)
+                )
+                if removed:
+                    freed += item["size"]
+                    deleted += 1
+                    _log(f"DELETED: {p} ({cat}, {fmt_size(item['size'])})")
+                else:
+                    _log(f"SKIP delete-boundary check: {p} ({reason})")
+                    if item.get("explicit", False):
+                        new_tracked.append(item)
             except OSError as e:
                 _log(f"ERROR deleting {p}: {e}")
                 errors.append(f"{p}: {e}")
@@ -376,6 +880,9 @@ def quick() -> Dict[str, Any]:
             if (
                 top.is_dir()
                 and not top.is_symlink()
+                and not os.path.ismount(top)
+                and _is_same_cleanup_device(top)
+                and not _is_git_protected_path(top)
                 and top.name not in _EMPTY_DIR_PROTECTED_TOP_LEVEL
                 and top.name not in _EMPTY_DIR_SWEEP_PRUNE_DIRS
             ):
@@ -387,8 +894,7 @@ def quick() -> Dict[str, Any]:
         dirpath, visited = sweep_stack.pop()
         if visited:
             try:
-                if not any(dirpath.iterdir()):
-                    dirpath.rmdir()
+                if not any(dirpath.iterdir()) and _remove_empty_directory(dirpath):
                     empty_removed += 1
                     _log(f"DELETED: {dirpath} (empty dir)")
             except OSError:
@@ -401,6 +907,9 @@ def quick() -> Dict[str, Any]:
                 if (
                     child.is_dir()
                     and not child.is_symlink()
+                    and not os.path.ismount(child)
+                    and _is_same_cleanup_device(child)
+                    and not _is_git_protected_path(child)
                     and child.name not in _EMPTY_DIR_SWEEP_PRUNE_DIRS
                 ):
                     sweep_stack.append((child, False))
@@ -447,7 +956,15 @@ def deep(
 
     for item in tracked:
         p = Path(item["path"])
+        if not _is_canonical_candidate_path(p):
+            continue
+        if _is_durable_protected_path(p):
+            continue
         if not p.exists():
+            continue
+        if not is_safe_path(p):
+            continue
+        if _is_git_protected_path(p) and not item.get("explicit", False):
             continue
         age = (now - datetime.fromisoformat(item["timestamp"])).days
         cat = item["category"]
@@ -470,10 +987,12 @@ def deep(
             if confirm(item):
                 try:
                     p = Path(item["path"])
-                    if p.is_file():
-                        p.unlink()
-                    elif p.is_dir():
-                        shutil.rmtree(p)
+                    removed, reason = _delete_candidate(
+                        p, explicit=item.get("explicit", False)
+                    )
+                    if not removed:
+                        _log(f"SKIP delete-boundary check: {p} ({reason})")
+                        continue
                     to_remove.append(item)
                     freed += item["size"]
                     count += 1
@@ -552,6 +1071,10 @@ def guess_category(path: Path) -> Optional[str]:
     Used by the ``post_tool_call`` hook to auto-track ephemeral files.
     """
     if not is_safe_path(path):
+        return None
+    if _is_durable_protected_path(path):
+        return None
+    if _is_git_protected_path(path):
         return None
 
     # Skip the state dir itself, logs, memory files, sessions, config.

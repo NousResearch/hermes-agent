@@ -10292,3 +10292,37 @@ def test_get_usage_clamps_post_compression_sentinel():
     usage = server._get_usage(agent)
     assert "context_used" not in usage
     assert "context_percent" not in usage
+
+
+def test_shutdown_sessions_drains_observer_deliveries(monkeypatch):
+    """The TUI gateway runs live AIAgent turns, so its atexit session
+    shutdown must give accepted final-result observations a bounded chance to
+    deliver before process exit kills the daemon workers (mirrors cli.py's
+    atexit cleanup and the messaging gateway's graceful-exit drain)."""
+    import threading
+    import time
+
+    import hermes_cli.plugins as plugins_module
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+    manager = PluginManager()
+    received: list[dict] = []
+    done = threading.Event()
+
+    def _slow_listener(*, event):
+        time.sleep(0.2)
+        received.append(event)
+        done.set()
+
+    context = PluginContext(PluginManifest(name="tui-shutdown-observer"), manager)
+    context.register_hook("post_agent_result", _slow_listener)
+    monkeypatch.setattr(plugins_module, "_plugin_manager", manager)
+
+    assert manager.emit_observer_hook(
+        "post_agent_result", {"event": "agent.result", "sequence": 7}
+    )
+    server._shutdown_sessions()
+
+    assert done.is_set()
+    assert received and received[0]["sequence"] == 7
+    assert manager.has_active_observer_hook("post_agent_result") is False

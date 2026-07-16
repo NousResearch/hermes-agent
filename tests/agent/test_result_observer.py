@@ -444,6 +444,37 @@ def test_returned_terminal_failure_flags_are_observed(monkeypatch, flag, error):
     assert event["error"] == error
 
 
+def test_plain_non_mapping_result_is_returned_and_observed_once(monkeypatch):
+    captured: queue.Queue = queue.Queue()
+    manager = _register_observer(monkeypatch, lambda *, event: captured.put(event))
+    agent = _bare_agent()
+    sentinel = object()
+
+    with patch(
+        "agent.conversation_loop.run_conversation",
+        side_effect=_returning_stub(sentinel),
+    ):
+        returned = agent.run_conversation("request", task_id="sentinel-task")
+
+    assert returned is sentinel
+    assert manager.drain_observer_hooks(timeout=2)
+    event = captured.get_nowait()
+    assert set(event) == EXPECTED_EVENT_KEYS
+    assert event["result_kind"] == "returned"
+    assert event["output_type"] == "none"
+    assert event["output"] == ""
+    assert event["output_chars"] == 0
+    assert event["output_truncated"] is False
+    assert event["completed"] is False
+    assert event["failed"] is False
+    assert event["partial"] is False
+    assert event["interrupted"] is False
+    assert event["response_transformed"] is False
+    assert event["error"] == ""
+    with pytest.raises(queue.Empty):
+        captured.get_nowait()
+
+
 def test_raised_error_is_observed_then_reraised_unchanged(monkeypatch):
     captured: queue.Queue = queue.Queue()
     _register_observer(monkeypatch, lambda *, event: captured.put(event))
@@ -742,6 +773,50 @@ def test_retirement_race_purges_late_enqueue_and_records_drop(monkeypatch):
     health = manager.observer_health()
     assert health["degraded"] is True
     assert health["drop_observed"] is True
+
+
+def test_shutdown_drains_released_callback_and_is_idempotent():
+    manager = PluginManager()
+    callback_started = threading.Event()
+    callback_release = threading.Event()
+    callback_finished = threading.Event()
+    shutdown_started = threading.Event()
+    shutdown_results = []
+
+    def _callback(*, event):
+        callback_started.set()
+        assert callback_release.wait(timeout=2)
+        callback_finished.set()
+
+    context = PluginContext(PluginManifest(name="shutdown-drain-test"), manager)
+    context.register_hook(POST_AGENT_RESULT_HOOK, _callback)
+    assert manager.emit_observer_hook(POST_AGENT_RESULT_HOOK, {"sequence": 1})
+    assert callback_started.wait(timeout=2)
+
+    def _shutdown():
+        shutdown_started.set()
+        shutdown_results.append(
+            manager.shutdown_observer_hooks(timeout=2, drain=True)
+        )
+
+    shutdown_thread = threading.Thread(target=_shutdown, daemon=True)
+    shutdown_thread.start()
+    assert shutdown_started.wait(timeout=2)
+    deadline = time.monotonic() + 2
+    while manager.has_active_observer_hook(POST_AGENT_RESULT_HOOK):
+        assert time.monotonic() < deadline
+        time.sleep(0.001)
+
+    callback_release.set()
+    shutdown_thread.join(timeout=2)
+
+    assert shutdown_thread.is_alive() is False
+    assert shutdown_results == [True]
+    assert callback_finished.is_set()
+    assert manager.has_active_observer_hook(POST_AGENT_RESULT_HOOK) is False
+    assert manager.shutdown_observer_hooks(timeout=0.2, drain=True)
+    assert manager.has_active_observer_hook(POST_AGENT_RESULT_HOOK) is False
+    assert manager.observer_health()["listeners"] == {}
 
 
 def test_force_reload_retires_generation_and_purges_queued_callbacks(monkeypatch):

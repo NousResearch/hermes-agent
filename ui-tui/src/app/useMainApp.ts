@@ -1,14 +1,23 @@
-import { type ScrollBoxHandle, useApp, useHasSelection, useSelection, useStdout, useTerminalTitle } from '@hermes/ink'
+import {
+  forceRedraw,
+  type ScrollBoxHandle,
+  useApp,
+  useHasSelection,
+  useSelection,
+  useStdout,
+  useTerminalTitle
+} from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { STARTUP_RESUME_ID } from '../config/env.js'
+import { DASHBOARD_TUI_MODE, STARTUP_RESUME_ID } from '../config/env.js'
 import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { RESIZE_COALESCE_MS } from '../config/timing.js'
 import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
 import { composeTabTitle, fmtCwdBranch, shortCwd } from '../domain/paths.js'
+import { sessionScopedModelArg } from '../domain/slash.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type {
   ClarifyRespondResponse,
@@ -116,7 +125,7 @@ export async function startPromptLiveSession({
     return null
   }
 
-  const requestedModel = modelArg?.trim()
+  const requestedModel = modelArg ? sessionScopedModelArg(modelArg) : ''
 
   if (requestedModel) {
     const result = await rpc<ConfigSetResponse>('config.set', { key: 'model', session_id: sid, value: requestedModel })
@@ -183,6 +192,7 @@ export function useMainApp(gw: GatewayClient) {
   const [voiceProcessing, setVoiceProcessing] = useState(false)
   const [voiceRecordKey, setVoiceRecordKey] = useState<ParsedVoiceRecordKey>(DEFAULT_VOICE_RECORD_KEY)
   const [sessionStartedAt, setSessionStartedAt] = useState(() => Date.now())
+  const [dashboardFreshSessionId, setDashboardFreshSessionId] = useState<null | string>(null)
   const [turnStartedAt, setTurnStartedAt] = useState<null | number>(null)
   const [lastTurnEndedAt, setLastTurnEndedAt] = useState<null | number>(null)
   // Bumped by the gateway `reaction` event (core-detected affection).
@@ -495,6 +505,7 @@ export function useMainApp(gw: GatewayClient) {
     colsRef,
     composerActions,
     gw,
+    onFreshSessionStarted: DASHBOARD_TUI_MODE ? setDashboardFreshSessionId : undefined,
     panel,
     rpc,
     scrollRef,
@@ -506,6 +517,12 @@ export function useMainApp(gw: GatewayClient) {
     setVoiceRecording,
     sys
   })
+
+  useEffect(() => {
+    if (dashboardFreshSessionId) {
+      forceRedraw(stdout ?? process.stdout)
+    }
+  }, [dashboardFreshSessionId, stdout])
 
   useEffect(() => {
     if (ui.busy) {
@@ -910,7 +927,13 @@ export function useMainApp(gw: GatewayClient) {
         return
       }
 
-      return respondWith('sudo.respond', { password: pw, request_id: overlay.sudo.requestId }, () => {
+      const requestId = overlay.sudo.requestId
+
+      if (!pw) {
+        patchOverlayState({ sudo: null })
+      }
+
+      return respondWith('sudo.respond', { password: pw, request_id: requestId }, () => {
         patchOverlayState({ sudo: null })
         patchUiState({ status: 'running…' })
       })
@@ -924,7 +947,13 @@ export function useMainApp(gw: GatewayClient) {
         return
       }
 
-      return respondWith('secret.respond', { request_id: overlay.secret.requestId, value }, () => {
+      const requestId = overlay.secret.requestId
+
+      if (!value) {
+        patchOverlayState({ secret: null })
+      }
+
+      return respondWith('secret.respond', { request_id: requestId, value }, () => {
         patchOverlayState({ secret: null })
         patchUiState({ status: 'running…' })
       })

@@ -4084,8 +4084,27 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_model(interaction: discord.Interaction, name: str = ""):
             await self._run_simple_slash(interaction, f"/model {name}".strip())
 
-        @tree.command(name="reasoning", description="Show or change reasoning effort")
-        @discord.app_commands.describe(effort="Reasoning effort: none, minimal, low, medium, high, or xhigh.")
+        @tree.command(name="reasoning", description="Show/change reasoning effort, or toggle showing it")
+        @discord.app_commands.describe(effort="Pick a level, reset the override, or show/hide reasoning. Leave empty to see current.")
+        @discord.app_commands.choices(effort=[
+            # Effort levels and the reset/show/hide subcommands all arrive on the
+            # gateway's single `/reasoning <arg>` handler. Discord's native UI has
+            # no subcommand affordance for a free-text field (it just funnels the
+            # user into the `effort` box), so expose every accepted value as an
+            # explicit choice. --global persistence stays reachable by typing the
+            # command as plain text.
+            discord.app_commands.Choice(name="none — disable reasoning", value="none"),
+            discord.app_commands.Choice(name="minimal", value="minimal"),
+            discord.app_commands.Choice(name="low", value="low"),
+            discord.app_commands.Choice(name="medium", value="medium"),
+            discord.app_commands.Choice(name="high", value="high"),
+            discord.app_commands.Choice(name="xhigh", value="xhigh"),
+            discord.app_commands.Choice(name="max", value="max"),
+            discord.app_commands.Choice(name="ultra — maximum reasoning", value="ultra"),
+            discord.app_commands.Choice(name="reset — clear this session's override", value="reset"),
+            discord.app_commands.Choice(name="show — reveal reasoning in replies", value="show"),
+            discord.app_commands.Choice(name="hide — hide reasoning from replies", value="hide"),
+        ])
         async def slash_reasoning(interaction: discord.Interaction, effort: str = ""):
             await self._run_simple_slash(interaction, f"/reasoning {effort}".strip())
 
@@ -5571,6 +5590,8 @@ class DiscordAdapter(BasePlatformAdapter):
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
         metadata: Optional[dict] = None,
+        allow_permanent: bool = True,
+        smart_denied: bool = False,
     ) -> SendResult:
         """
         Send a button-based exec approval prompt for a dangerous command.
@@ -5606,6 +5627,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 "Do you want Hermes to run this command?\n\n"
                 "**Requested command:**\n```bash\n"
             )
+            if smart_denied:
+                prompt_prefix += "**Smart DENY:** owner override applies to this one operation only.\n\n"
             mention_content = self._approval_mention_content()
             if mention_content:
                 prompt_prefix = f"{mention_content}\n{prompt_prefix}"
@@ -5642,6 +5665,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 allowed_role_ids=self._allowed_role_ids,
                 require_admin=require_admin,
                 admin_user_ids=admin_user_ids,
+                allow_permanent=allow_permanent,
+                smart_denied=smart_denied,
             )
 
             send_kwargs: Dict[str, Any] = {"content": content, "embed": embed, "view": view}
@@ -6606,12 +6631,20 @@ class DiscordAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     def _text_batch_key(self, event: MessageEvent) -> str:
-        """Session-scoped key for text message batching."""
+        """Session-scoped key for text message batching.
+
+        Passes ``event.source.profile`` through so routed messages batch
+        under the same namespace the agent run will use (e.g.
+        ``agent:crypto-trader`` instead of ``agent:main``). Without this,
+        the batch key would always land in ``agent:main`` even when the
+        routed profile differs.
+        """
         from gateway.session import build_session_key
         return build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            profile=event.source.profile,
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
@@ -6836,6 +6869,8 @@ def _define_discord_view_classes() -> None:
             allowed_role_ids: Optional[set] = None,
             require_admin: bool = False,
             admin_user_ids: Optional[set] = None,
+            allow_permanent: bool = True,
+            smart_denied: bool = False,
         ):
             super().__init__(timeout=_read_discord_prompt_timeout())
             self.session_key = session_key
@@ -6849,6 +6884,11 @@ def _define_discord_view_classes() -> None:
                 str(a).strip() for a in (admin_user_ids or set()) if str(a).strip()
             }
             self.resolved = False
+            if smart_denied:
+                self.remove_item(self.allow_session)
+                self.remove_item(self.allow_always)
+            elif not allow_permanent:
+                self.remove_item(self.allow_always)
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             """Verify the user clicking is authorized.

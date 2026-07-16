@@ -357,6 +357,48 @@ def sanitize_tool_call_arguments(
     return repaired
 
 
+def note_turn_start(agent, turn_id: str):
+    """Tripwire: detect a turn starting while the previous turn of the SAME
+    agent/session has not completed its turn-end persist.
+
+    Two turns interleaving on one session corrupt the durable transcript:
+    their flushes race (user rows can persist out of arrival order), a row
+    can be swallowed by the identity-marker dedup over shared history dicts,
+    and the second turn runs on a history base that never saw the first
+    turn's exchange. This helper does NOT prevent any of that — it names the
+    occurrence, with both turn ids, so the dispatch route that let the
+    second turn through the busy guard can be identified from logs.
+
+    Returns the previous in-flight turn_id when an overlap is detected,
+    else None. Takes ownership of the in-flight slot either way, so a turn
+    that crashed before its persist produces at most one warning."""
+    prev = getattr(agent, "_inflight_turn_id", None)
+    prev_started = getattr(agent, "_inflight_turn_started", 0.0)
+    agent._inflight_turn_id = turn_id
+    agent._inflight_turn_started = time.time()
+    if prev and prev != turn_id:
+        logger.warning(
+            "turn %s starting while turn %s (started %.0fs ago) has not "
+            "completed its turn-end persist (session=%s) — concurrent turns "
+            "on one session; transcript writes may interleave",
+            turn_id,
+            prev,
+            time.time() - prev_started if prev_started else -1.0,
+            getattr(agent, "session_id", None) or "-",
+        )
+        return prev
+    return None
+
+
+def note_turn_persisted(agent):
+    """Clear the in-flight marker at turn-end persist (see note_turn_start).
+
+    Called from the single persist funnel; unconditional by design — when two
+    turns genuinely overlap, the first persist clears the second turn's slot
+    and the tripwire under-reports instead of double-reporting. A diagnostic
+    must never be noisier than the defect it hunts."""
+    agent._inflight_turn_id = None
+
 
 def repair_message_sequence(agent, messages: List[Dict]) -> int:
     """Collapse malformed role-alternation left in the live history.
@@ -1208,7 +1250,42 @@ def restore_primary_runtime(agent) -> bool:
             api_mode=rt.get("compressor_api_mode", ""),
         )
 
-        # ── Re-select from the credential pool if one is available ──
+        # ── Rebind and re-select the primary credential pool ──
+        # A cross-provider fallback attaches the fallback provider's pool. The
+        # runtime fields above restore the primary, but leaving that pool in
+        # place makes the next primary 401/429 hit the provider-mismatch guard
+        # and disables credential rotation. Reload the primary pool first; if
+        # auth storage is temporarily unreadable, clear the mismatched pool.
+        primary_provider = str(rt.get("provider") or "").strip().lower()
+        pool = getattr(agent, "_credential_pool", None)
+        pool_provider = str(getattr(pool, "provider", "") or "").strip().lower()
+        pool_matches_primary = pool_provider == primary_provider
+        if (
+            primary_provider == "custom"
+            and pool_provider.startswith("custom:")
+        ):
+            try:
+                from agent.credential_pool import get_custom_provider_pool_key
+
+                primary_key = (
+                    get_custom_provider_pool_key(str(rt.get("base_url") or "")) or ""
+                ).strip().lower()
+                pool_matches_primary = bool(primary_key) and primary_key == pool_provider
+            except Exception:
+                pool_matches_primary = False
+        if pool is not None and pool_provider and not pool_matches_primary:
+            agent._credential_pool = None
+            try:
+                from agent.credential_pool import load_pool
+
+                agent._credential_pool = load_pool(primary_provider)
+            except Exception as exc:
+                logger.warning(
+                    "Restore could not reload primary credential pool for %s: %s",
+                    primary_provider,
+                    exc,
+                )
+
         # The snapshot's api_key was captured at construction time.  Across
         # turns the pool may have rotated (token revocation, billing/rate-limit
         # exhaustion, cooldown), leaving the snapshot key stale.  Restoring it
@@ -1222,7 +1299,6 @@ def restore_primary_runtime(agent) -> bool:
             entry = pool.select()
             if entry is not None:
                 entry_provider = str(getattr(entry, "provider", "") or "").strip().lower()
-                primary_provider = str(rt.get("provider") or "").strip().lower()
                 entry_matches_primary = entry_provider == primary_provider
                 # Custom endpoints all carry the generic ``custom`` provider on
                 # the agent while the pool entry is keyed ``custom:<name>`` (see
@@ -1270,6 +1346,13 @@ def restore_primary_runtime(agent) -> bool:
                         entry_provider or "?",
                         primary_provider or "?",
                     )
+
+        # ── Restore reasoning_config if it was saved ──
+        # switch_model saves reasoning_config in _primary_runtime. If the
+        # snapshot predates that (older sessions), keep the current value.
+        saved_reasoning = rt.get("reasoning_config")
+        if saved_reasoning is not None:
+            agent.reasoning_config = dict(saved_reasoning)
 
         # ── Reset fallback chain for the new turn ──
         agent._fallback_activated = False
@@ -1858,6 +1941,9 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         old_norm = (old_provider or "").strip().lower()
         new_norm = (new_provider or "").strip().lower()
         if old_norm != new_norm or getattr(agent, "_credential_pool", None) is None:
+            # A pool bound to the old provider is worse than no pool: the
+            # recovery guard rejects it and every later 401/429 skips rotation.
+            agent._credential_pool = None
             try:
                 from agent.credential_pool import load_pool
                 agent._credential_pool = load_pool(new_provider)
@@ -2028,6 +2114,24 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             api_mode=agent.api_mode,
         )
 
+    # ── Re-resolve reasoning_config from per-model override ──
+    # The new model may have a different reasoning_effort override. Re-read
+    # config so the override takes effect immediately on /model switch —
+    # resolved through the shared chokepoint (per-model > global; YAML
+    # boolean False = disabled).
+    try:
+        from hermes_constants import resolve_reasoning_config
+        from hermes_cli.config import load_config as _sm_load_config
+
+        _reasoning_cfg = _sm_load_config() or {}
+        agent.reasoning_config = resolve_reasoning_config(_reasoning_cfg, agent.model)
+        logger.info(
+            "switch_model: reasoning_config resolved for %s: %s",
+            agent.model, agent.reasoning_config,
+        )
+    except Exception as _reasoning_err:
+        logger.debug("switch_model: could not re-resolve reasoning_config: %s", _reasoning_err)
+
     # ── Invalidate cached system prompt so it rebuilds next turn ──
     agent._cached_system_prompt = None
 
@@ -2050,6 +2154,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
+        "reasoning_config": dict(agent.reasoning_config) if getattr(agent, "reasoning_config", None) else None,
         "compressor_model": getattr(_cc, "model", agent.model) if _cc else agent.model,
         "compressor_base_url": getattr(_cc, "base_url", agent.base_url) if _cc else agent.base_url,
         "compressor_api_key": getattr(_cc, "api_key", "") if _cc else "",

@@ -1670,6 +1670,7 @@ class AIAgent:
         execution_context: Optional[str] = None,
         task_id: Optional[str] = None,
         tool_call_id: Optional[str] = None,
+        tool_name: str = "memory",
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.background_review.build_memory_write_metadata``."""
         from agent.background_review import build_memory_write_metadata
@@ -1679,6 +1680,7 @@ class AIAgent:
             execution_context=execution_context,
             task_id=task_id,
             tool_call_id=tool_call_id,
+            tool_name=tool_name,
         )
 
     def _apply_persist_user_message_override(self, messages: List[Dict]) -> None:

@@ -1560,15 +1560,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             # Mirror successful built-in skill_manage writes to external
             # providers. All gating lives behind the manager interface
             # (MemoryManager.notify_skill_tool_write).
-            if function_name == "skill_manage" and agent._memory_manager:
-                agent._memory_manager.notify_skill_tool_write(
-                    function_result,
-                    function_args,
-                    build_metadata=lambda: agent._build_memory_write_metadata(
-                        task_id=effective_task_id,
-                        tool_call_id=getattr(tool_call, "id", None),
-                    ),
-                )
+            from agent.agent_runtime_helpers import mirror_skill_write_to_memory_providers
+            mirror_skill_write_to_memory_providers(
+                agent, function_name, function_result, function_args,
+                task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", None),
+            )
 
         if isinstance(function_result, str):
             result_preview = function_result if agent.verbose_logging else (

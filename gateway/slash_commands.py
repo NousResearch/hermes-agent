@@ -2913,8 +2913,23 @@ class GatewaySlashCommandsMixin:
             # New setting must take effect next message → drop cached agent.
             self._evict_cached_agent(session_key)
 
+        # Thread the cached agent's memory manager (when this session has a
+        # live agent) so approved skill writes are mirrored to external memory
+        # providers — the staged write bypassed the agent-loop bridge, and the
+        # approval replay is where the write actually commits. Best-effort: a
+        # session without a cached agent simply skips the mirror.
+        _memory_manager = None
+        _cache_lock = getattr(self, "_agent_cache_lock", None)
+        if _cache_lock is not None:
+            with _cache_lock:
+                _cached = self._agent_cache.get(session_key)
+            _cached_agent = _cached[0] if isinstance(_cached, tuple) else _cached
+            _memory_manager = getattr(_cached_agent, "_memory_manager", None)
+
         out = handle_pending_subcommand(
-            wa.SKILLS, args, set_mode_fn=_set_approval,
+            wa.SKILLS, args,
+            memory_manager=_memory_manager,
+            set_mode_fn=_set_approval,
         )
         if out is None:
             return ("Unknown /skills subcommand on this platform. Use: pending, "

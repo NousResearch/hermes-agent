@@ -81,7 +81,32 @@ class MyMemoryProvider(MemoryProvider):
 | `on_session_end(messages)` | Conversation ends | Final extraction/flush |
 | `on_pre_compress(messages)` | Before context compression | Save insights before discard |
 | `on_memory_write(action, target, content)` | Built-in memory writes | Mirror to your backend |
+| `on_skill_write(action, name, content)` | Built-in skill_manage writes | Mirror to your backend |
 | `shutdown()` | Process exit | Clean up connections |
+
+#### Mirroring skill writes: `on_skill_write`
+
+`on_skill_write(action, name, content, metadata=None)` fires when the built-in
+`skill_manage` tool commits a write. `action` is one of `create`, `edit`,
+`patch`, `delete`, `write_file`, `remove_file`; `name` is the skill name.
+
+`content` is mapped from the action's own payload field:
+
+| Action | `content` carries | Extra `metadata` keys |
+|--------|-------------------|-----------------------|
+| `create`, `edit` | full SKILL.md text (`content`) | — |
+| `patch` | replacement text (`new_string`) | `old_string`; `file_path` when patching a supporting file |
+| `write_file` | supporting file body (`file_content`) | `file_path` (relative, e.g. `references/api.md`) |
+| `delete`, `remove_file` | empty string | `file_path` for `remove_file` |
+
+`metadata` also carries write provenance: `write_origin`, `execution_context`,
+`session_id`, `parent_session_id`, `platform`, and `tool_name`
+(`"skill_manage"`).
+
+Only **committed** writes are mirrored. Failed writes and writes staged by the
+`skills.write_approval` gate never reach the hook; when the user later approves
+a staged write, the hook fires from the approval-replay path with
+`execution_context: "approval_replay"`.
 
 ## Config Schema
 

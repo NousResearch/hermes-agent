@@ -490,3 +490,177 @@ class TestSkillGist:
         assert wa.skill_gist("remove_file", "demo", file_path="a.py") == "remove a.py from 'demo'"
         assert wa.skill_gist("delete", "demo") == "delete skill 'demo'"
         assert wa.skill_gist("unknown", "demo") == "unknown 'demo'"
+
+
+# ---------------------------------------------------------------------------
+# Approval replay → external memory-provider mirror
+# ---------------------------------------------------------------------------
+
+def _recording_manager():
+    """Real MemoryManager wired to a minimal recording external provider."""
+    from agent.memory_manager import MemoryManager
+    from agent.memory_provider import MemoryProvider
+
+    class _Recording(MemoryProvider):
+        def __init__(self):
+            self.calls = []
+
+        @property
+        def name(self):
+            return "recording"
+
+        def is_available(self):
+            return True
+
+        def initialize(self, session_id, **kwargs):
+            pass
+
+        def get_tool_schemas(self):
+            return []
+
+        def on_skill_write(self, action, name, content, metadata=None):
+            self.calls.append({
+                "action": action, "name": name, "content": content,
+                "metadata": dict(metadata or {}),
+            })
+
+    mgr = MemoryManager()
+    provider = _Recording()
+    mgr.add_provider(provider)
+    return mgr, provider
+
+
+def test_skill_approve_mirrors_to_external_provider(hermes_home):
+    # A staged skill write bypasses the agent-loop bridge (correctly — it has
+    # not committed). Approving it replays via apply_skill_pending, and THAT
+    # is where external providers must be notified.
+    import importlib
+    import tools.skill_manager_tool as smt
+    importlib.reload(smt)
+    from tools import write_approval as wa
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+
+    mgr, provider = _recording_manager()
+    _set_approval("skills", True)
+    r = json.loads(smt.skill_manage("create", "mirrored-skill", content=_SKILL))
+    assert r.get("staged") is True
+    assert provider.calls == []  # staged ≠ committed: nothing mirrored yet
+
+    out = handle_pending_subcommand(
+        wa.SKILLS, ["approve", r["pending_id"]], memory_manager=mgr,
+    )
+    assert "Approved 1" in out
+    assert smt._find_skill("mirrored-skill") is not None
+    assert len(provider.calls) == 1
+    call = provider.calls[0]
+    assert call["action"] == "create"
+    assert call["name"] == "mirrored-skill"
+    assert call["content"] == _SKILL
+    assert call["metadata"]["execution_context"] == "approval_replay"
+    assert call["metadata"]["tool_name"] == "skill_manage"
+    assert call["metadata"]["write_origin"] == "foreground"
+
+
+def test_skill_approve_replay_maps_patch_arguments(hermes_home):
+    # The staged payload preserves skill_manage's argument shape (patch uses
+    # new_string, not content) — the replay notification must map it the same
+    # way the live bridge does.
+    import importlib
+    import tools.skill_manager_tool as smt
+    importlib.reload(smt)
+    from tools import write_approval as wa
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+
+    # Create the skill with the gate off, then stage a patch with it on.
+    r = json.loads(smt.skill_manage("create", "patched-skill", content=_SKILL))
+    assert r["success"] is True
+    _set_approval("skills", True)
+    r = json.loads(smt.skill_manage(
+        "patch", "patched-skill", old_string="body", new_string="patched body"))
+    assert r.get("staged") is True
+
+    mgr, provider = _recording_manager()
+    out = handle_pending_subcommand(
+        wa.SKILLS, ["approve", r["pending_id"]], memory_manager=mgr,
+    )
+    assert "Approved 1" in out
+    assert len(provider.calls) == 1
+    call = provider.calls[0]
+    assert call["action"] == "patch"
+    assert call["content"] == "patched body"
+    assert call["metadata"]["old_string"] == "body"
+
+
+def test_skill_approve_failed_replay_does_not_notify(hermes_home):
+    # A replay that fails (skill vanished between staging and approval) must
+    # not notify providers — nothing was committed.
+    from tools import write_approval as wa
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+
+    rec = wa.stage_write(
+        "skills",
+        {"action": "edit", "name": "ghost-skill-does-not-exist", "content": _SKILL},
+        summary="edit ghost", origin="foreground",
+    )
+    mgr, provider = _recording_manager()
+    out = handle_pending_subcommand(
+        wa.SKILLS, ["approve", rec["id"]], memory_manager=mgr,
+    )
+    assert "Failed" in out
+    assert provider.calls == []
+
+
+def test_skill_approve_without_manager_still_applies(hermes_home):
+    # No live memory manager (e.g. gateway session with no cached agent) —
+    # the approval itself must still work exactly as before.
+    import importlib
+    import tools.skill_manager_tool as smt
+    importlib.reload(smt)
+    from tools import write_approval as wa
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+
+    _set_approval("skills", True)
+    r = json.loads(smt.skill_manage("create", "unmirrored-skill", content=_SKILL))
+    out = handle_pending_subcommand(wa.SKILLS, ["approve", r["pending_id"]])
+    assert "Approved 1" in out
+    assert smt._find_skill("unmirrored-skill") is not None
+
+
+def test_skill_approve_provider_failure_does_not_fail_approval(hermes_home):
+    # Mirroring is best-effort: an exploding provider must never break the
+    # user's approval.
+    import importlib
+    import tools.skill_manager_tool as smt
+    importlib.reload(smt)
+    from tools import write_approval as wa
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from agent.memory_manager import MemoryManager
+    from agent.memory_provider import MemoryProvider
+
+    class _Exploding(MemoryProvider):
+        @property
+        def name(self):
+            return "exploding"
+
+        def is_available(self):
+            return True
+
+        def initialize(self, session_id, **kwargs):
+            pass
+
+        def get_tool_schemas(self):
+            return []
+
+        def on_skill_write(self, action, name, content, metadata=None):
+            raise RuntimeError("backend down")
+
+    mgr = MemoryManager()
+    mgr.add_provider(_Exploding())
+
+    _set_approval("skills", True)
+    r = json.loads(smt.skill_manage("create", "resilient-skill", content=_SKILL))
+    out = handle_pending_subcommand(
+        wa.SKILLS, ["approve", r["pending_id"]], memory_manager=mgr,
+    )
+    assert "Approved 1" in out
+    assert smt._find_skill("resilient-skill") is not None

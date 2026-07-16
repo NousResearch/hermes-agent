@@ -1082,10 +1082,19 @@ class MemoryManager:
 
         * gate on a committed (non-staged, successful) write,
         * keep only mutating actions (create/edit/patch/delete/write_file/remove_file),
+        * map the action to its content field (create/edit → ``content``,
+          patch → ``new_string``, write_file → ``file_content``),
+        * preserve supporting-file identity (``file_path``) and the replaced
+          patch text (``old_string``) as metadata,
         * build provenance metadata.
 
         ``build_metadata`` is an optional agent-side callable (the loop knows
         session/task/tool-call provenance the manager does not).
+
+        Staged writes (``staged: true`` results) are skipped here; when the
+        user approves one, the approval-replay path
+        (``hermes_cli.write_approval_commands._apply_one``) calls this method
+        again with the replay result, so approved writes are still mirrored.
         """
         if not self._memory_tool_result_succeeded(tool_result):
             return
@@ -1095,9 +1104,33 @@ class MemoryManager:
             return
 
         name = str(tool_args.get("name") or "")
-        content = str(tool_args.get("content") or "")
+        # skill_manage carries its write payload in action-specific fields:
+        # create/edit send the full SKILL.md as ``content``, patch sends the
+        # replacement text as ``new_string``, write_file sends the supporting
+        # file body as ``file_content``. delete/remove_file carry no content.
+        if action in {"create", "edit"}:
+            content = str(tool_args.get("content") or "")
+        elif action == "patch":
+            content = str(tool_args.get("new_string") or "")
+        elif action == "write_file":
+            content = str(tool_args.get("file_content") or "")
+        else:  # delete / remove_file
+            content = ""
         try:
             metadata = dict(build_metadata() if build_metadata else {})
+            # Preserve supporting-file identity: patch (with a file target),
+            # write_file, and remove_file mutate a file inside the skill dir —
+            # without this the provider only sees the skill name.
+            file_path = tool_args.get("file_path")
+            if file_path:
+                metadata["file_path"] = str(file_path)
+            # Parity with on_memory_write's ``old_text``: forward the replaced
+            # text for patch so providers can mirror the edit, not just the
+            # replacement.
+            if action == "patch":
+                old_string = tool_args.get("old_string")
+                if old_string:
+                    metadata["old_string"] = str(old_string)
             self.on_skill_write(action, name, content, metadata=metadata)
         except Exception as e:
             logger.debug("notify_skill_tool_write failed for action %s: %s", action, e)

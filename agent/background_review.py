@@ -594,8 +594,14 @@ def build_memory_write_metadata(
     execution_context: Optional[str] = None,
     task_id: Optional[str] = None,
     tool_call_id: Optional[str] = None,
+    tool_name: str = "memory",
 ) -> Dict[str, Any]:
-    """Build provenance metadata for external memory-provider mirrors."""
+    """Build provenance metadata for external memory-provider mirrors.
+
+    ``tool_name`` identifies the built-in tool that produced the write —
+    ``memory`` for MEMORY.md/USER.md writes, ``skill_manage`` for skill
+    writes mirrored via ``on_skill_write``.
+    """
     metadata: Dict[str, Any] = {
         "write_origin": write_origin or getattr(agent, "_memory_write_origin", "assistant_tool"),
         "execution_context": (
@@ -605,7 +611,7 @@ def build_memory_write_metadata(
         "session_id": agent.session_id or "",
         "parent_session_id": agent._parent_session_id or "",
         "platform": agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
-        "tool_name": "memory",
+        "tool_name": tool_name,
     }
     if task_id:
         metadata["task_id"] = task_id

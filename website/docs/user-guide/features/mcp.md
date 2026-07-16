@@ -316,6 +316,7 @@ Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 | `max_lifetime_seconds` | number | Recycle a stdio server after this total age (`0` = never, default). Restarts transparently on next use. |
 | `enabled` | bool | If `false`, Hermes skips the server entirely |
 | `supports_parallel_tool_calls` | bool | If `true`, tools from this server may run concurrently |
+| `forward_session_context` | bool | If `true`, forward host-authored session metadata to this server's tool calls (default: `false`) |
 | `tools` | mapping | Per-server tool filtering and utility policy |
 
 ### Minimal stdio example
@@ -677,6 +678,47 @@ When `supports_parallel_tool_calls` is `true`, Hermes may execute multiple tools
 :::caution
 Only enable parallel calls for MCP servers whose tools are safe to run at the same time. If tools read and write shared state, files, databases, or external resources, review the read/write race conditions before enabling this setting.
 :::
+
+## Forwarding Session Context
+
+MCP servers do not receive chat, user, or session identifiers from Hermes by
+default. A trusted server that needs to correlate a tool call with its
+originating Hermes session can opt in explicitly:
+
+```yaml
+mcp_servers:
+  trusted_workflow:
+    url: "https://mcp.internal.example.com/mcp"
+    forward_session_context: true
+```
+
+For a `tools/call` request with a complete bound session context, Hermes adds
+host-authored request `_meta` under the reverse-DNS prefix
+`com.nousresearch.hermes/`. The fields are `platform`, `session_id`,
+`session_key`, `chat_id`, `thread_id`, `user_id`, and `message_id`. The model
+does not author this metadata.
+
+If no complete session context is bound, Hermes omits the entire
+session-context meta block instead of sending empty values. The setting covers
+only `tools/call`; MCP resource and prompt operations carry no session
+identity.
+
+When `privacy.redact_pii` is enabled on a platform eligible for PII redaction,
+`chat_id`, `thread_id`, and `user_id` use the same deterministic pseudonyms as
+the gateway, and `session_key` becomes a stable `session_<hash>` pseudonym so
+the original key cannot expose an embedded identifier. This is
+pseudonymization, not anonymity. On other platforms, or when redaction is off,
+the raw-value policy is unchanged.
+
+:::caution
+Enable this only for a server you trust with the resulting identifiers or
+pseudonyms. The default is `false`.
+:::
+
+This MCP setting is separate from subprocess environment propagation. Once a
+gateway session ID is bound, the existing environment bridge makes
+`HERMES_SESSION_ID` visible to gateway-spawned subprocesses whether or not any
+MCP server has `forward_session_context` enabled.
 
 ## MCP Sampling Support
 

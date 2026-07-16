@@ -34,6 +34,7 @@ mcp_servers:
     timeout: 120
     connect_timeout: 60
     supports_parallel_tool_calls: false
+    forward_session_context: false
     tools:
       include: []
       exclude: []
@@ -57,10 +58,49 @@ mcp_servers:
 | `timeout` | number | both | Tool call timeout in seconds (default: `300`) |
 | `connect_timeout` | number | both | Initial connection timeout in seconds (default: `60`) |
 | `supports_parallel_tool_calls` | bool | both | Allow tools from this server to run concurrently |
+| `forward_session_context` | bool | both | Forward host-authored session metadata to this server's tool calls (default: `false`) |
 | `skip_preflight` | bool | HTTP | Bypass the fail-fast content-type probe for valid Streamable HTTP endpoints whose HEAD/GET answers a non-MCP content type (default: `false`) |
 | `tools` | mapping | both | Filtering and utility-tool policy |
 | `auth` | string | HTTP | Authentication method. Set to `oauth` to enable OAuth 2.1 with PKCE |
 | `sampling` | mapping | both | Server-initiated LLM request policy (see MCP guide) |
+
+## Session context forwarding
+
+`forward_session_context` is `false` by default. Third-party servers do not
+receive chat, user, or session identifiers through this channel unless you
+explicitly enable it for that server.
+
+When enabled and a complete session context is bound, Hermes attaches
+host-authored request `_meta` to MCP `tools/call` requests using these
+reverse-DNS keys:
+
+- `com.nousresearch.hermes/platform`
+- `com.nousresearch.hermes/session_id`
+- `com.nousresearch.hermes/session_key`
+- `com.nousresearch.hermes/chat_id`
+- `com.nousresearch.hermes/thread_id`
+- `com.nousresearch.hermes/user_id`
+- `com.nousresearch.hermes/message_id`
+
+If no complete session context is bound, the entire session-context meta block
+is omitted. Resource and prompt operations do not carry this identity; the
+setting applies only to `tools/call`.
+
+On platforms eligible for PII redaction, enabling `privacy.redact_pii`
+replaces `chat_id`, `thread_id`, and `user_id` with the gateway's existing
+deterministic pseudonyms. `session_key` becomes a stable `session_<hash>`
+pseudonym so it cannot reveal an identifier embedded in the original key.
+This is pseudonymization, not anonymity. With redaction disabled, or on other
+platforms, the raw-value policy is unchanged.
+
+:::caution
+Enable session context forwarding only for a server you trust with the
+resulting identifiers or pseudonyms.
+:::
+
+Separately, binding a gateway session ID makes `HERMES_SESSION_ID` visible to
+gateway-spawned subprocesses through the existing environment bridge. That
+subprocess behavior is independent of the per-server MCP opt-in.
 
 ## `tools` policy keys
 

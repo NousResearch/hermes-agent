@@ -33,6 +33,7 @@ Example config::
         env:
           GITHUB_PERSONAL_ACCESS_TOKEN: "ghp_..."
         supports_parallel_tool_calls: true  # tools from this server may run concurrently
+        forward_session_context: false  # opt in only for a trusted server
       remote_api:
         url: "https://my-mcp-server.example.com/mcp"
         headers:
@@ -71,6 +72,18 @@ Features:
       sampling/createMessage (text and tool-use responses)
     - Parallel tool call opt-in: per-server ``supports_parallel_tool_calls``
       flag allows concurrent execution of tools from the same server
+    - Session context forwarding: per-server ``forward_session_context``
+      defaults to false. When enabled for a trusted server, complete bound
+      session context is attached only to ``tools/call`` request ``_meta``
+      under ``com.nousresearch.hermes/*``; otherwise the entire meta block is
+      omitted. Resource and prompt operations carry no session identity.
+      On PII-redaction-eligible platforms, ``privacy.redact_pii`` uses the
+      existing deterministic pseudonyms for chat/thread/user IDs and a stable
+      ``session_<hash>`` pseudonym for the session key. This is
+      pseudonymization, not anonymity; other platforms and the raw-value policy
+      are unchanged. Independently of this MCP opt-in, binding a gateway
+      session ID exposes ``HERMES_SESSION_ID`` to gateway-spawned subprocesses
+      through the existing environment bridge.
 
 Architecture:
     A dedicated background event loop (_mcp_loop) runs in a daemon thread.

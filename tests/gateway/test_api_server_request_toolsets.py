@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import model_tools
 from gateway.platforms import api_server
 
 
@@ -149,6 +150,7 @@ def _minimal_adapter(monkeypatch):
     # the cap so _concurrency_limited_response() short-circuits to None.
     adapter._max_concurrent_runs = 0
     adapter._inflight_agent_runs = 0
+    adapter._pending_agent_requests = 0
     adapter._run_streams = {}
     adapter._model_routes = None
     adapter._get_platform_enabled_toolsets = lambda: ["web", "terminal"]
@@ -274,6 +276,33 @@ def test_session_chat_rejects_toolset_schema_change_before_history_load(monkeypa
     asyncio.run(run_case())
 
 
+def test_session_chat_accepts_repeated_equal_toolset_schema(monkeypatch):
+    async def run_case():
+        captured = []
+        adapter = _minimal_adapter(monkeypatch)
+        adapter._get_existing_session_or_404 = lambda session_id: ({"id": session_id}, None)
+        adapter._conversation_history_for_session = lambda session_id: []
+
+        async def fake_run_agent(**kwargs):
+            captured.append(kwargs["enabled_toolsets_override"])
+            return {"final_response": "ok", "completed": True, "session_id": "sid"}, {}
+
+        adapter._run_agent = fake_run_agent
+        body = {"message": "probe", "enabled_toolsets": ["terminal", "web"]}
+
+        first_response = await adapter._handle_session_chat(
+            FakeRequest(body, match_info={"session_id": "sid"})
+        )
+        second_response = await adapter._handle_session_chat(
+            FakeRequest(body, match_info={"session_id": "sid"})
+        )
+
+        assert [first_response.status, second_response.status] == [200, 200]
+        assert captured == [None, None]
+
+    asyncio.run(run_case())
+
+
 def test_runs_handler_rejects_disable_all_before_agent_creation(monkeypatch):
     async def run_case():
         captured = {}
@@ -365,3 +394,30 @@ def test_create_agent_defaults_to_platform_toolsets_when_no_override(monkeypatch
     adapter._create_agent()
 
     assert captured["enabled_toolsets"] == ["web", "terminal"]
+
+
+def test_request_subset_preserves_non_empty_real_model_schema_path():
+    platform_toolsets = ["file", "terminal"]
+    override, error = api_server._resolve_request_toolset_override(
+        {"enabled_toolsets": ["file"]},
+        platform_enabled_toolsets=platform_toolsets,
+    )
+
+    assert error is None
+    assert override == ["file"]
+
+    default_definitions = model_tools.get_tool_definitions(
+        enabled_toolsets=platform_toolsets,
+        quiet_mode=True,
+        skip_tool_search_assembly=True,
+    )
+    restricted_definitions = model_tools.get_tool_definitions(
+        enabled_toolsets=override,
+        quiet_mode=True,
+        skip_tool_search_assembly=True,
+    )
+    default_names = {item["function"]["name"] for item in default_definitions}
+    restricted_names = {item["function"]["name"] for item in restricted_definitions}
+
+    assert restricted_names
+    assert restricted_names < default_names

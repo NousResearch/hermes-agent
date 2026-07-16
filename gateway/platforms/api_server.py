@@ -1316,13 +1316,16 @@ class APIServerAdapter(BasePlatformAdapter):
         *,
         allow_override: bool = True,
     ) -> tuple[Optional[List[str]], Optional[Any]]:
+        platform_enabled_toolsets = self._get_platform_enabled_toolsets()
         override, error = _resolve_request_toolset_override(
             body,
-            self._get_platform_enabled_toolsets(),
+            platform_enabled_toolsets,
         )
         if error:
             return None, web.json_response(_openai_error(error, code="invalid_toolsets"), status=400)
         if override is not None and not allow_override:
+            if set(override) == set(platform_enabled_toolsets):
+                return None, None
             return None, web.json_response(
                 _openai_error(
                     "Toolsets cannot change during a persistent session",

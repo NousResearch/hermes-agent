@@ -36,9 +36,14 @@ from toolsets import TOOLSETS
 # not natively known (named custom providers, third-party aggregators, etc.).
 # Must match hermes_cli.runtime_provider.RUNTIME_PROVIDER_TYPE_CUSTOM.
 _RUNTIME_PROVIDER_CUSTOM = "custom"
+from hermes_constants import VALID_REASONING_EFFORTS
 from tools import file_state
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import base_url_hostname, is_truthy_value
+
+# Schema enum for per-delegation reasoning effort: every level
+# parse_reasoning_effort() accepts, plus 'none' to disable thinking.
+_REASONING_EFFORT_ENUM = ["none", *VALID_REASONING_EFFORTS]
 
 
 # Tools that children must never have access to
@@ -1041,6 +1046,50 @@ def _inherit_parent_base_url(parent_agent, fallback_base_url: Optional[str]) -> 
     return fallback_base_url or None
 
 
+def _resolve_child_reasoning(
+    parent_agent,
+    delegation_cfg: Dict[str, Any],
+    reasoning_effort: Optional[str] = None,
+):
+    """Resolve the reasoning config a child agent should run with.
+
+    Priority: per-call ``reasoning_effort`` (model-supplied, per task) >
+    ``delegation.reasoning_effort`` config > inherit the parent's config.
+    Invalid values at either level warn and fall through to the next one,
+    never fail the delegation.
+    """
+    from hermes_constants import parse_reasoning_effort
+
+    child_reasoning = getattr(parent_agent, "reasoning_config", None)
+    try:
+        # Keep the raw value — ``str(x or "")`` would coerce a YAML boolean
+        # False (``reasoning_effort: false``) to "" and inherit the parent
+        # instead of disabling thinking for children.
+        delegation_effort = delegation_cfg.get("reasoning_effort")
+        if delegation_effort or delegation_effort is False:
+            parsed = parse_reasoning_effort(delegation_effort)
+            if parsed is not None:
+                child_reasoning = parsed
+            else:
+                logger.warning(
+                    "Unknown delegation.reasoning_effort '%s', inheriting parent level",
+                    delegation_effort,
+                )
+    except Exception as exc:
+        logger.debug("Could not load delegation reasoning_effort: %s", exc)
+
+    if reasoning_effort is not None and str(reasoning_effort).strip():
+        parsed = parse_reasoning_effort(reasoning_effort)
+        if parsed is not None:
+            child_reasoning = parsed
+        else:
+            logger.warning(
+                "Unknown per-task reasoning_effort '%s', using fallback level",
+                reasoning_effort,
+            )
+    return child_reasoning
+
+
 def _build_child_agent(
     task_index: int,
     goal: str,
@@ -1064,6 +1113,9 @@ def _build_child_agent(
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
+    # Per-call reasoning effort for this child. Beats the global
+    # delegation.reasoning_effort config; empty/None inherits as before.
+    reasoning_effort: Optional[str] = None,
 ):
     """
     Build a child AIAgent on the main thread (thread-safe construction).
@@ -1251,27 +1303,10 @@ def _build_child_agent(
         effective_provider = "copilot-acp"
         effective_api_mode = "chat_completions"
 
-    # Resolve reasoning config: delegation override > parent inherit
-    parent_reasoning = getattr(parent_agent, "reasoning_config", None)
-    child_reasoning = parent_reasoning
-    try:
-        # Keep the raw value — ``str(x or "")`` would coerce a YAML boolean
-        # False (``reasoning_effort: false``) to "" and inherit the parent
-        # instead of disabling thinking for children.
-        delegation_effort = delegation_cfg.get("reasoning_effort")
-        if delegation_effort or delegation_effort is False:
-            from hermes_constants import parse_reasoning_effort
-
-            parsed = parse_reasoning_effort(delegation_effort)
-            if parsed is not None:
-                child_reasoning = parsed
-            else:
-                logger.warning(
-                    "Unknown delegation.reasoning_effort '%s', inheriting parent level",
-                    delegation_effort,
-                )
-    except Exception as exc:
-        logger.debug("Could not load delegation reasoning_effort: %s", exc)
+    # Resolve reasoning config: per-call override > delegation config > parent
+    child_reasoning = _resolve_child_reasoning(
+        parent_agent, delegation_cfg, reasoning_effort
+    )
 
     # Inherit the parent's fallback provider chain so subagents can recover
     # from rate-limits and credential exhaustion exactly like the top-level
@@ -2385,6 +2420,7 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     role: Optional[str] = None,
     background: Optional[bool] = None,
+    reasoning_effort: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -2398,6 +2434,11 @@ def delegate_task(
     'leaf' (default) cannot; 'orchestrator' retains the delegation
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
+
+    'reasoning_effort' sets the child's thinking depth per delegation
+    (valid levels in hermes_constants.VALID_REASONING_EFFORTS, plus
+    'none' to disable thinking). Per-task values beat the top-level one;
+    both beat delegation.reasoning_effort from config; unset inherits.
 
     Returns JSON with results array, one entry per task.
     """
@@ -2492,7 +2533,11 @@ def delegate_task(
     if not task_list:
         return tool_error("No tasks provided.")
 
-    # Validate each task has a goal
+    # Validate each task has a goal, and reject unknown effort levels up
+    # front so the model gets a corrective error instead of a silently
+    # inherited level.
+    from hermes_constants import VALID_REASONING_EFFORTS, parse_reasoning_effort
+
     for i, task in enumerate(task_list):
         if not isinstance(task, dict):
             return tool_error(
@@ -2500,6 +2545,17 @@ def delegate_task(
             )
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+        task_effort = task.get("reasoning_effort", reasoning_effort)
+        if (
+            task_effort is not None
+            and str(task_effort).strip()
+            and parse_reasoning_effort(task_effort) is None
+        ):
+            return tool_error(
+                f"Task {i} has unknown reasoning_effort '{task_effort}'. "
+                f"Valid levels: {', '.join(VALID_REASONING_EFFORTS)}, "
+                "or 'none' to disable thinking. Omit to inherit."
+            )
 
     overall_start = time.monotonic()
     results = []
@@ -2524,6 +2580,8 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            # Per-task effort beats top-level; both validated above.
+            task_effort = t.get("reasoning_effort", reasoning_effort)
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
@@ -2544,6 +2602,7 @@ def delegate_task(
                 override_acp_command=creds.get("command"),
                 override_acp_args=creds.get("args"),
                 role=effective_role,
+                reasoning_effort=task_effort,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -3448,6 +3507,14 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "reasoning_effort": {
+                            "type": "string",
+                            "enum": _REASONING_EFFORT_ENUM,
+                            "description": (
+                                "Per-task reasoning effort override. See "
+                                "top-level 'reasoning_effort' for semantics."
+                            ),
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -3460,6 +3527,19 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
+            },
+            "reasoning_effort": {
+                "type": "string",
+                "enum": _REASONING_EFFORT_ENUM,
+                "description": (
+                    "Thinking depth for the subagent(s). Match it to the "
+                    "task: 'low' for mechanical work (rename, reformat, "
+                    "summarize), 'medium' for routine coding from a clear "
+                    "spec, 'high' for research/review/analysis, 'max' only "
+                    "for subtle debugging, security review, or high-stakes "
+                    "logic. Omit to inherit the parent's level. Per-task "
+                    "values in 'tasks' override this."
+                ),
             },
             "background": {
                 "type": "boolean",
@@ -3532,6 +3612,7 @@ registry.register(
         max_iterations=args.get("max_iterations"),
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
+        reasoning_effort=args.get("reasoning_effort"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

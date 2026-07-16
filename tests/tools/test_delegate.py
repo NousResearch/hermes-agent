@@ -2283,6 +2283,140 @@ class TestDelegationReasoningEffort(unittest.TestCase):
         self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "medium"})
 
 
+class TestPerTaskReasoningEffort(unittest.TestCase):
+    """Tests for the model-facing per-delegation reasoning_effort override."""
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("run_agent.AIAgent")
+    def test_per_call_effort_beats_config_override(self, MockAgent, mock_cfg):
+        """Explicit per-call effort wins over delegation.reasoning_effort."""
+        mock_cfg.return_value = {"max_iterations": 50, "reasoning_effort": "low"}
+        MockAgent.return_value = MagicMock()
+        parent = _make_mock_parent()
+        parent.reasoning_config = {"enabled": True, "effort": "high"}
+
+        _build_child_agent(
+            task_index=0, goal="test", context=None, toolsets=None,
+            model=None, max_iterations=50, parent_agent=parent,
+            task_count=1, reasoning_effort="max",
+        )
+        call_kwargs = MockAgent.call_args[1]
+        self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "max"})
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("run_agent.AIAgent")
+    def test_per_call_effort_beats_parent_inherit(self, MockAgent, mock_cfg):
+        """With no config override, per-call effort still beats the parent's."""
+        mock_cfg.return_value = {"max_iterations": 50}
+        MockAgent.return_value = MagicMock()
+        parent = _make_mock_parent()
+        parent.reasoning_config = {"enabled": True, "effort": "high"}
+
+        _build_child_agent(
+            task_index=0, goal="test", context=None, toolsets=None,
+            model=None, max_iterations=50, parent_agent=parent,
+            task_count=1, reasoning_effort="low",
+        )
+        call_kwargs = MockAgent.call_args[1]
+        self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "low"})
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("run_agent.AIAgent")
+    def test_per_call_none_disables_thinking(self, MockAgent, mock_cfg):
+        """Per-call 'none' disables thinking for that child only."""
+        mock_cfg.return_value = {"max_iterations": 50}
+        MockAgent.return_value = MagicMock()
+        parent = _make_mock_parent()
+        parent.reasoning_config = {"enabled": True, "effort": "high"}
+
+        _build_child_agent(
+            task_index=0, goal="test", context=None, toolsets=None,
+            model=None, max_iterations=50, parent_agent=parent,
+            task_count=1, reasoning_effort="none",
+        )
+        call_kwargs = MockAgent.call_args[1]
+        self.assertEqual(call_kwargs["reasoning_config"], {"enabled": False})
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("run_agent.AIAgent")
+    def test_invalid_per_call_effort_falls_back_to_config(self, MockAgent, mock_cfg):
+        """An unparseable per-call value falls through to the config level."""
+        mock_cfg.return_value = {"max_iterations": 50, "reasoning_effort": "low"}
+        MockAgent.return_value = MagicMock()
+        parent = _make_mock_parent()
+        parent.reasoning_config = {"enabled": True, "effort": "high"}
+
+        _build_child_agent(
+            task_index=0, goal="test", context=None, toolsets=None,
+            model=None, max_iterations=50, parent_agent=parent,
+            task_count=1, reasoning_effort="banana",
+        )
+        call_kwargs = MockAgent.call_args[1]
+        self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "low"})
+
+    def test_schema_exposes_reasoning_effort(self):
+        """reasoning_effort is model-facing at top level and per task."""
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        self.assertIn("reasoning_effort", props)
+        enum = props["reasoning_effort"]["enum"]
+        for level in ("none", "low", "medium", "high", "max"):
+            self.assertIn(level, enum)
+        task_props = props["tasks"]["items"]["properties"]
+        self.assertIn("reasoning_effort", task_props)
+        self.assertEqual(task_props["reasoning_effort"]["enum"], enum)
+
+    def test_dispatch_forwards_reasoning_effort(self):
+        """The live model dispatch path forwards reasoning_effort."""
+        import run_agent
+
+        captured = {}
+
+        def fake_delegate_task(**kwargs):
+            captured.update(kwargs)
+            return "{}"
+
+        parent = _make_mock_parent(depth=0)
+        with patch("tools.delegate_tool.delegate_task", fake_delegate_task):
+            run_agent.AIAgent._dispatch_delegate_task(
+                parent,
+                {"goal": "test", "reasoning_effort": "low"},
+            )
+        self.assertEqual(captured["reasoning_effort"], "low")
+
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._load_config")
+    def test_delegate_task_rejects_unknown_effort(self, mock_cfg, mock_build):
+        """Unknown top-level effort errors out before any child is built."""
+        mock_cfg.return_value = {"max_iterations": 50}
+        parent = _make_mock_parent(depth=0)
+
+        result = delegate_task(
+            goal="test", reasoning_effort="banana", parent_agent=parent
+        )
+
+        payload = json.loads(result)
+        self.assertIn("reasoning_effort 'banana'", payload["error"])
+        self.assertIn("low", payload["error"])  # lists valid levels
+        mock_build.assert_not_called()
+
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._load_config")
+    def test_delegate_task_rejects_unknown_effort_in_batch(self, mock_cfg, mock_build):
+        """Top-level effort applies to batch tasks and is validated there too."""
+        mock_cfg.return_value = {"max_iterations": 50}
+        parent = _make_mock_parent(depth=0)
+
+        result = delegate_task(
+            tasks=[{"goal": "a"}, {"goal": "b", "reasoning_effort": "bogus"}],
+            parent_agent=parent,
+        )
+
+        payload = json.loads(result)
+        self.assertIn("Task 1", payload["error"])
+        self.assertIn("reasoning_effort 'bogus'", payload["error"])
+        mock_build.assert_not_called()
+
+
 # =========================================================================
 # Dispatch helper, progress events, concurrency
 # =========================================================================

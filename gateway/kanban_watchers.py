@@ -1202,10 +1202,17 @@ class GatewayKanbanWatchersMixin:
                                 slug, tid, outcome.reason,
                             )
                 finally:
-                    if prev_env is None:
-                        os.environ.pop("HERMES_KANBAN_BOARD", None)
-                    else:
+                    if prev_env is not None:
                         os.environ["HERMES_KANBAN_BOARD"] = prev_env
+                    # When prev_env was None we intentionally do NOT pop
+                    # the key. Popping is not atomic with respect to
+                    # dotenv's env.update(os.environ) — if another thread's
+                    # load_dotenv(override=True) snapshots the key list
+                    # while the key is being removed, os.__getitem__ raises
+                    # KeyError: 'HERMES_KANBAN_BOARD' on the fetch step
+                    # (#65225).  A stale leftover value is harmless (the
+                    # next tick replaces it), and the key never disappears,
+                    # closing the race window entirely.
             return successes
 
         logger.info(

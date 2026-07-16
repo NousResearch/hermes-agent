@@ -805,6 +805,69 @@ class TestSendDocument:
         assert result.message_id == "fallback"
 
     @pytest.mark.asyncio
+    async def test_send_document_retries_on_flood_control(self, connected_adapter, tmp_path):
+        """RetryAfter (flood control) is retried with backoff, not an immediate fallback.
+
+        Regression for the bug where send_document gave up on the first
+        RetryAfter and silently degraded to a text-only "couldn't deliver
+        the file attachment" apology instead of delivering the file once
+        Telegram's flood-control window passed.
+        """
+        test_file = tmp_path / "report.pdf"
+        test_file.write_bytes(b"%PDF-1.4 fake content")
+
+        class _RetryAfter(Exception):
+            def __init__(self, retry_after):
+                super().__init__(f"Flood control exceeded. Retry in {retry_after} seconds")
+                self.retry_after = retry_after
+
+        mock_msg = MagicMock()
+        mock_msg.message_id = 104
+        connected_adapter._bot.send_document = AsyncMock(
+            side_effect=[_RetryAfter(1), mock_msg]
+        )
+
+        with patch("plugins.platforms.telegram.adapter.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+            result = await connected_adapter.send_document(
+                chat_id="12345",
+                file_path=str(test_file),
+                caption="Here's the report",
+            )
+
+        assert result.success is True
+        assert result.message_id == "104"
+        assert connected_adapter._bot.send_document.await_count == 2
+        sleep_mock.assert_awaited_once_with(1.0)
+
+    @pytest.mark.asyncio
+    async def test_send_document_falls_back_after_flood_control_exhausted(self, connected_adapter, tmp_path):
+        """After 3 flood-controlled attempts, still falls back to the text notice."""
+        test_file = tmp_path / "report.pdf"
+        test_file.write_bytes(b"%PDF-1.4 fake content")
+
+        class _RetryAfter(Exception):
+            def __init__(self, retry_after):
+                super().__init__(f"Flood control exceeded. Retry in {retry_after} seconds")
+                self.retry_after = retry_after
+
+        connected_adapter._bot.send_document = AsyncMock(
+            side_effect=[_RetryAfter(1), _RetryAfter(1), _RetryAfter(1)]
+        )
+        connected_adapter.send = AsyncMock(
+            return_value=SendResult(success=True, message_id="fallback")
+        )
+
+        with patch("plugins.platforms.telegram.adapter.asyncio.sleep", new=AsyncMock()):
+            result = await connected_adapter.send_document(
+                chat_id="12345",
+                file_path=str(test_file),
+            )
+
+        assert connected_adapter._bot.send_document.await_count == 3
+        assert result.success is True
+        assert result.message_id == "fallback"
+
+    @pytest.mark.asyncio
     async def test_send_document_reply_to(self, connected_adapter, tmp_path):
         """reply_to parameter is forwarded as reply_to_message_id."""
         test_file = tmp_path / "spec.md"

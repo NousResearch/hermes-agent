@@ -9,6 +9,7 @@ Exposes an HTTP server with endpoints:
 - GET  /v1/models                  — lists hermes-agent and any configured model_routes aliases
 - GET  /v1/capabilities            — machine-readable API capabilities for external UIs
 - GET  /api/sessions               — list client-visible Hermes sessions
+- POST /api/sessions/search        — search an explicit allowlist of session transcripts
 - POST /api/sessions               — create an empty Hermes session
 - GET/PATCH/DELETE /api/sessions/{session_id} — read/update/delete a session
 - GET  /api/sessions/{session_id}/messages — read session message history
@@ -2134,6 +2135,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_chat": True,
                 "session_chat_streaming": True,
                 "session_fork": True,
+                "session_search": True,
                 "admin_config_rw": False,
                 "jobs_admin": False,
                 "memory_write_api": False,
@@ -2158,6 +2160,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "skills": {"method": "GET", "path": "/v1/skills"},
                 "toolsets": {"method": "GET", "path": "/v1/toolsets"},
                 "sessions": {"method": "GET", "path": "/api/sessions"},
+                "session_search": {"method": "POST", "path": "/api/sessions/search"},
                 "session_create": {"method": "POST", "path": "/api/sessions"},
                 "session": {"method": "GET", "path": "/api/sessions/{session_id}"},
                 "session_update": {"method": "PATCH", "path": "/api/sessions/{session_id}"},
@@ -2289,17 +2292,6 @@ class APIServerAdapter(BasePlatformAdapter):
         return payload
 
     @staticmethod
-    def _session_search_response(session: Dict[str, Any]) -> Dict[str, Any]:
-        """Return only fields needed to identify a transcript-search match."""
-        return {
-            "id": session.get("id"),
-            "title": session.get("title"),
-            "started_at": session.get("started_at"),
-            "last_active": session.get("last_active"),
-            "message_count": session.get("message_count"),
-        }
-
-    @staticmethod
     def _message_response(message: Dict[str, Any]) -> Dict[str, Any]:
         safe_keys = (
             "id", "session_id", "role", "content", "tool_call_id", "tool_calls",
@@ -2370,6 +2362,14 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        if request.content_type != "application/json":
+            return web.json_response(
+                _openai_error(
+                    "Content-Type must be application/json",
+                    code="unsupported_media_type",
+                ),
+                status=415,
+            )
         body, err = await self._read_json_body(request)
         if err:
             return err
@@ -2394,10 +2394,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
         raw_session_ids = body.get("session_ids")
-        if not isinstance(raw_session_ids, list) or len(raw_session_ids) > 5_000:
+        if not isinstance(raw_session_ids, list) or len(raw_session_ids) > 20_000:
             return web.json_response(
                 _openai_error(
-                    "session_ids must be an array with at most 5000 entries",
+                    "session_ids must be an array with at most 20000 entries",
                     code="invalid_session_ids",
                 ),
                 status=400,
@@ -2419,9 +2419,9 @@ class APIServerAdapter(BasePlatformAdapter):
             if raw_session_id not in session_ids:
                 session_ids.append(raw_session_id)
         raw_limit = body.get("limit", 100)
-        if isinstance(raw_limit, bool) or not isinstance(raw_limit, int) or not 1 <= raw_limit <= 100:
+        if isinstance(raw_limit, bool) or not isinstance(raw_limit, int) or not 1 <= raw_limit <= 500:
             return web.json_response(
-                _openai_error("limit must be an integer between 1 and 100", code="invalid_search_limit"),
+                _openai_error("limit must be an integer between 1 and 500", code="invalid_search_limit"),
                 status=400,
             )
         if not session_ids:
@@ -2440,47 +2440,51 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         def search() -> tuple[List[Dict[str, Any]], bool]:
-            search_to_public: Dict[str, str] = {}
-            for public_id in session_ids:
-                for search_id in db.get_forward_compression_lineage(public_id):
-                    search_to_public.setdefault(search_id, public_id)
-                    if len(search_to_public) > 5_000:
-                        raise ValueError("expanded session search scope exceeds 5000 entries")
-
+            allowed = set(session_ids)
             matches = db.search_messages(
                 query,
                 role_filter=["user", "assistant"],
-                limit=len(search_to_public),
+                limit=raw_limit + 1,
                 include_inactive=False,
-                session_id_filter=list(search_to_public),
+                session_id_filter=session_ids,
                 include_context=False,
                 distinct_sessions=True,
+                raise_fts_errors=True,
+                max_vm_steps=2_000_000,
             )
             found: List[Dict[str, Any]] = []
             seen: set[str] = set()
             truncated = False
             for match in matches:
                 matched_id = str(match.get("session_id") or "")
-                public_id = search_to_public.get(matched_id)
-                if not public_id or public_id in seen:
+                if matched_id not in allowed or matched_id in seen:
                     continue
                 if len(found) >= raw_limit:
                     truncated = True
                     break
-                session = db.get_session(public_id)
-                if not session:
-                    continue
-                seen.add(public_id)
-                found.append(self._session_search_response(session))
+                seen.add(matched_id)
+                found.append({
+                    "id": matched_id,
+                    "title": match.get("session_title") or "Untitled",
+                    "started_at": match.get("session_started"),
+                })
             return found, truncated
 
         try:
             async with self._session_search_semaphore:
                 sessions, truncated = await asyncio.to_thread(search)
-        except ValueError as exc:
+        except TimeoutError:
             return web.json_response(
-                _openai_error(str(exc), code="session_search_scope_too_large"),
-                status=400,
+                _openai_error(
+                    "Session search is too broad; refine the query",
+                    code="session_search_too_broad",
+                ),
+                status=422,
+            )
+        except sqlite3.DatabaseError:
+            return web.json_response(
+                _openai_error("Session search unavailable", code="session_search_unavailable"),
+                status=503,
             )
         return web.json_response({"object": "list", "data": sessions, "truncated": truncated})
 

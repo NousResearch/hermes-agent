@@ -5509,6 +5509,8 @@ class SessionDB:
         session_id_filter: List[str] = None,
         include_context: bool = True,
         distinct_sessions: bool = False,
+        raise_fts_errors: bool = False,
+        max_vm_steps: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
         Full-text search across session messages using FTS5.
@@ -5557,6 +5559,35 @@ class SessionDB:
         query = self._sanitize_fts5_query(query)
         if not query:
             return []
+
+        def execute_search(sql: str, sql_params: list) -> List[sqlite3.Row]:
+            interval = 0
+            if max_vm_steps is not None:
+                budget = max(1, int(max_vm_steps))
+                interval = min(1_000, budget)
+                completed_steps = 0
+
+                def check_budget() -> int:
+                    nonlocal completed_steps
+                    completed_steps += interval
+                    return 1 if completed_steps > budget else 0
+
+                self._conn.set_progress_handler(check_budget, interval)
+            try:
+                return self._conn.execute(sql, sql_params).fetchall()
+            except sqlite3.OperationalError as exc:
+                if (
+                    max_vm_steps is not None
+                    and completed_steps > budget
+                ) or (
+                    "interrupted" in str(exc).casefold()
+                    and max_vm_steps is not None
+                ):
+                    raise TimeoutError("Session search budget exceeded") from exc
+                raise
+            finally:
+                if interval:
+                    self._conn.set_progress_handler(None, 0)
 
         # Normalise sort. Anything not in the allowed set falls back to None
         # (FTS5 rank-only) so callers can pass through user input without
@@ -5623,7 +5654,7 @@ class SessionDB:
                     SELECT
                         m.id, m.session_id, m.role, NULL AS snippet, NULL AS content,
                         m.timestamp, m.tool_name, s.source, s.model,
-                        s.started_at AS session_started,
+                        s.title AS session_title, s.started_at AS session_started,
                         bm25(messages_fts) AS search_rank
                     FROM messages_fts
                     JOIN messages m ON m.id = messages_fts.rowid
@@ -5636,7 +5667,7 @@ class SessionDB:
                     FROM hits
                 )
                 SELECT id, session_id, role, snippet, content, timestamp,
-                       tool_name, source, model, session_started
+                       tool_name, source, model, session_title, session_started
                 FROM ranked
                 WHERE session_row = 1
                 ORDER BY {distinct_order}
@@ -5724,7 +5755,7 @@ class SessionDB:
                             SELECT
                                 m.id, m.session_id, m.role, NULL AS snippet, NULL AS content,
                                 m.timestamp, m.tool_name, s.source, s.model,
-                                s.started_at AS session_started,
+                                s.title AS session_title, s.started_at AS session_started,
                                 bm25(messages_fts_trigram) AS search_rank
                             FROM messages_fts_trigram
                             JOIN messages m ON m.id = messages_fts_trigram.rowid
@@ -5737,7 +5768,7 @@ class SessionDB:
                             FROM hits
                         )
                         SELECT id, session_id, role, snippet, content, timestamp,
-                               tool_name, source, model, session_started
+                               tool_name, source, model, session_title, session_started
                         FROM ranked
                         WHERE session_row = 1
                         ORDER BY {distinct_order}
@@ -5766,12 +5797,14 @@ class SessionDB:
                 tri_params.extend([limit, offset])
                 with self._lock:
                     try:
-                        tri_cursor = self._conn.execute(tri_sql, tri_params)
+                        tri_rows = execute_search(tri_sql, tri_params)
                     except sqlite3.OperationalError:
+                        if raise_fts_errors:
+                            raise
                         # Trigram query failed at runtime — fall through to LIKE.
                         pass
                     else:
-                        matches = [dict(row) for row in tri_cursor.fetchall()]
+                        matches = [dict(row) for row in tri_rows]
                         _trigram_succeeded = True
             if not _trigram_succeeded:
                 # Short / mixed CJK query, trigram unavailable, or trigram
@@ -5792,6 +5825,8 @@ class SessionDB:
                     )
                     like_params += [f"%{esc}%", f"%{esc}%", f"%{esc}%"]
                 like_where = [f"({' OR '.join(token_clauses)})"]
+                if not include_inactive:
+                    like_where.append("(m.active = 1 OR m.compacted = 1)")
                 if session_filter_json is not None:
                     like_where.append("m.session_id IN (SELECT value FROM json_each(?))")
                     like_params.append(session_filter_json)
@@ -5810,7 +5845,7 @@ class SessionDB:
                             SELECT
                                 m.id, m.session_id, m.role, NULL AS snippet, NULL AS content,
                                 m.timestamp, m.tool_name, s.source, s.model,
-                                s.started_at AS session_started, 0.0 AS search_rank
+                                s.title AS session_title, s.started_at AS session_started, 0.0 AS search_rank
                             FROM messages m
                             JOIN sessions s ON s.id = m.session_id
                             WHERE {' AND '.join(like_where)}
@@ -5821,7 +5856,7 @@ class SessionDB:
                             FROM hits
                         )
                         SELECT id, session_id, role, snippet, content, timestamp,
-                               tool_name, source, model, session_started
+                               tool_name, source, model, session_title, session_started
                         FROM ranked
                         WHERE session_row = 1
                         ORDER BY {distinct_order}
@@ -5846,17 +5881,19 @@ class SessionDB:
                     # instr() for snippet uses first search token
                     like_params = [non_op_tokens[0]] + like_params
                 with self._lock:
-                    like_cursor = self._conn.execute(like_sql, like_params)
-                    matches = [dict(row) for row in like_cursor.fetchall()]
+                    like_rows = execute_search(like_sql, like_params)
+                    matches = [dict(row) for row in like_rows]
         else:
             with self._lock:
                 try:
-                    cursor = self._conn.execute(sql, params)
+                    rows = execute_search(sql, params)
                 except sqlite3.OperationalError:
+                    if raise_fts_errors:
+                        raise
                     # FTS5 query syntax error despite sanitization — return empty
                     return []
                 else:
-                    matches = [dict(row) for row in cursor.fetchall()]
+                    matches = [dict(row) for row in rows]
 
         if not include_context:
             for match in matches:

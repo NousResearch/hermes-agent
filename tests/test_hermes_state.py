@@ -1577,6 +1577,41 @@ class TestFTS5Search:
 
         assert {result["session_id"] for result in results} == {"allowed-cjk"}
 
+    def test_short_cjk_fallback_excludes_rewound_messages(self, db):
+        db.create_session(session_id="rewound", source="api_server")
+        message_id = db.append_message("rewound", "user", "广西 private")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE messages SET active = 0, compacted = 0 WHERE id = ?",
+                (message_id,),
+            )
+            db._conn.commit()
+
+        results = db.search_messages(
+            "广西",
+            session_id_filter=["rewound"],
+            include_context=False,
+        )
+
+        assert results == []
+
+    def test_search_vm_budget_aborts_broad_distinct_query(self, db):
+        db.create_session(session_id="broad", source="api_server")
+        for index in range(100):
+            db.append_message("broad", "user", f"needle {index}")
+
+        with pytest.raises(TimeoutError, match="search budget"):
+            db.search_messages(
+                "needle",
+                session_id_filter=["broad"],
+                role_filter=["user", "assistant"],
+                limit=2,
+                include_context=False,
+                distinct_sessions=True,
+                raise_fts_errors=True,
+                max_vm_steps=1,
+            )
+
     def test_search_distinct_sessions_cannot_be_starved_by_many_matches(self, db):
         db.create_session(session_id="noisy", source="api_server")
         db.create_session(session_id="quiet", source="api_server")

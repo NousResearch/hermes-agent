@@ -1,6 +1,9 @@
 """Focused tests for API server session-control endpoints."""
 
-from unittest.mock import AsyncMock, patch
+import asyncio
+import json
+import sqlite3
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -65,11 +68,16 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert features["session_chat"] is True
     assert features["session_chat_streaming"] is True
     assert features["session_fork"] is True
+    assert features["session_search"] is True
     assert features["admin_config_rw"] is False
     assert features["memory_write_api"] is False
     assert features["skills_api"] is True
     assert features["realtime_voice"] is False
     assert data["endpoints"]["sessions"] == {"method": "GET", "path": "/api/sessions"}
+    assert data["endpoints"]["session_search"] == {
+        "method": "POST",
+        "path": "/api/sessions/search",
+    }
     assert data["endpoints"]["session_chat_stream"] == {
         "method": "POST",
         "path": "/api/sessions/{session_id}/chat/stream",
@@ -147,8 +155,6 @@ async def test_session_search_is_scoped_and_returns_only_safe_summaries(adapter,
         "id",
         "title",
         "started_at",
-        "last_active",
-        "message_count",
     }
     assert "content" not in json.dumps(payload)
     assert "snippet" not in json.dumps(payload)
@@ -195,7 +201,7 @@ async def test_session_search_distinct_results_cannot_be_starved(adapter, sessio
 
 
 @pytest.mark.asyncio
-async def test_session_search_owned_root_covers_only_forward_compression_chain(adapter, session_db):
+async def test_session_search_never_expands_beyond_explicit_compression_chain_ids(adapter, session_db):
     session_db.create_session("root", "api_server")
     session_db.end_session("root", "compression")
     session_db.create_session("child", "api_server", parent_session_id="root")
@@ -212,7 +218,7 @@ async def test_session_search_owned_root_covers_only_forward_compression_chain(a
     async with TestClient(TestServer(app)) as cli:
         forward = await cli.post(
             "/api/sessions/search",
-            json={"query": "needle", "session_ids": ["root"], "limit": 10},
+            json={"query": "needle", "session_ids": ["root", "child"], "limit": 10},
         )
         forward_payload = await forward.json()
         branch = await cli.post(
@@ -222,7 +228,7 @@ async def test_session_search_owned_root_covers_only_forward_compression_chain(a
         branch_payload = await branch.json()
 
     assert forward.status == 200
-    assert [item["id"] for item in forward_payload["data"]] == ["root"]
+    assert [item["id"] for item in forward_payload["data"]] == ["child"]
     assert branch.status == 200
     assert branch_payload["data"] == []
 
@@ -247,6 +253,160 @@ async def test_session_search_owned_tip_does_not_authorize_ancestors(adapter, se
 
 
 @pytest.mark.asyncio
+async def test_session_search_uses_one_bounded_database_query(adapter, session_db):
+    session_ids = [f"owned-{index}" for index in range(3)]
+    for session_id in session_ids:
+        session_db.create_session(session_id, "api_server")
+        session_db.append_message(session_id, "user", "needle")
+    statements = []
+    session_db._conn.set_trace_callback(statements.append)
+    adapter._session_db = session_db
+    app = _create_session_app(adapter)
+    try:
+        async with TestClient(TestServer(app)) as cli:
+            response = await cli.post(
+                "/api/sessions/search",
+                json={"query": "needle", "session_ids": session_ids, "limit": 10},
+            )
+    finally:
+        session_db._conn.set_trace_callback(None)
+
+    search_statements = [
+        statement for statement in statements
+        if statement.lstrip().upper().startswith(("SELECT", "WITH"))
+    ]
+    assert response.status == 200
+    assert len(search_statements) == 1
+
+
+@pytest.mark.asyncio
+async def test_session_search_reports_runtime_fts_failure(adapter, session_db):
+    session_db.create_session("owned", "api_server")
+    session_db.append_message("owned", "user", "needle")
+    with session_db._lock:
+        session_db._conn.execute("DROP TABLE messages_fts")
+        session_db._conn.commit()
+    adapter._session_db = session_db
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/sessions/search",
+            json={"query": "needle", "session_ids": ["owned"], "limit": 10},
+        )
+        payload = await response.json()
+
+    assert response.status == 503
+    assert payload["error"]["code"] == "session_search_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_session_search_reports_trigram_fts_failure(adapter, session_db):
+    session_db.create_session("owned", "api_server")
+    session_db.append_message("owned", "user", "大别山项目")
+    with session_db._lock:
+        session_db._conn.execute("DROP TABLE messages_fts_trigram")
+        session_db._conn.commit()
+    adapter._session_db = session_db
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/sessions/search",
+            json={"query": "大别山项目", "session_ids": ["owned"], "limit": 10},
+        )
+        payload = await response.json()
+
+    assert response.status == 503
+    assert payload["error"]["code"] == "session_search_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_session_search_reports_general_database_failure(adapter, session_db, monkeypatch):
+    session_db.create_session("owned", "api_server")
+    adapter._session_db = session_db
+
+    def broken_search(*args, **kwargs):
+        raise sqlite3.DatabaseError("database disk image is malformed")
+
+    monkeypatch.setattr(session_db, "search_messages", broken_search)
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/sessions/search",
+            json={"query": "needle", "session_ids": ["owned"], "limit": 10},
+        )
+        payload = await response.json()
+
+    assert response.status == 503
+    assert payload["error"]["code"] == "session_search_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_session_search_reports_query_budget_exhaustion(adapter, session_db, monkeypatch):
+    session_db.create_session("owned", "api_server")
+    adapter._session_db = session_db
+
+    def exhausted_search(*args, **kwargs):
+        raise TimeoutError("Session search budget exceeded")
+
+    monkeypatch.setattr(session_db, "search_messages", exhausted_search)
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/sessions/search",
+            json={"query": "needle", "session_ids": ["owned"], "limit": 10},
+        )
+        payload = await response.json()
+
+    assert response.status == 422
+    assert payload["error"]["code"] == "session_search_too_broad"
+
+
+@pytest.mark.asyncio
+async def test_session_search_rejects_non_json_media_type(adapter):
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/sessions/search",
+            data=json.dumps({"query": "needle", "session_ids": []}),
+            headers={"Content-Type": "text/plain"},
+        )
+        payload = await response.json()
+
+    assert response.status == 415
+    assert payload["error"]["code"] == "unsupported_media_type"
+
+
+@pytest.mark.asyncio
+async def test_session_search_accepts_webui_maximum_scope(adapter, session_db):
+    session_ids = [f"owned-{index}" for index in range(20_000)]
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/sessions/search",
+            json={"query": "needle", "session_ids": session_ids, "limit": 1},
+        )
+
+    assert response.status == 200
+
+
+@pytest.mark.asyncio
+async def test_session_search_rejects_scope_above_webui_maximum(adapter, session_db):
+    session_ids = [f"owned-{index}" for index in range(20_001)]
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/sessions/search",
+            json={"query": "needle", "session_ids": session_ids, "limit": 1},
+        )
+        payload = await response.json()
+
+    assert response.status == 400
+    assert "at most 20000" in payload["error"]["message"]
+
+
+@pytest.mark.asyncio
 async def test_session_search_requires_bearer_auth(auth_adapter, session_db):
     session_db.create_session("owned", "api_server")
     session_db.append_message("owned", "user", "needle")
@@ -267,6 +427,18 @@ async def test_session_search_requires_bearer_auth(auth_adapter, session_db):
 
 
 @pytest.mark.asyncio
+async def test_session_search_accepts_bounded_500_result_limit(adapter):
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/sessions/search",
+            json={"query": "needle", "session_ids": [], "limit": 500},
+        )
+
+    assert response.status == 200
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("body", "code"),
     [
@@ -274,6 +446,7 @@ async def test_session_search_requires_bearer_auth(auth_adapter, session_db):
         ({"query": "x" * 201, "session_ids": []}, "invalid_search_query"),
         ({"query": "x", "session_ids": ["../foreign"]}, "invalid_session_ids"),
         ({"query": "x", "session_ids": [], "limit": True}, "invalid_search_limit"),
+        ({"query": "x", "session_ids": [], "limit": 501}, "invalid_search_limit"),
         ({"query": "x", "session_ids": [], "extra": 1}, "unsupported_search_field"),
     ],
 )

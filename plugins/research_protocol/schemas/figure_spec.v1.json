@@ -1,0 +1,146 @@
+{
+  "$comment": "JSON Schema validation is necessary but insufficient; artifact bytes must be validated with load_artifact_from_json_bytes and Pydantic model_validate_json.",
+  "$defs": {
+    "FigureKind": {
+      "enum": [
+        "table",
+        "bar",
+        "line",
+        "scatter"
+      ],
+      "title": "FigureKind",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "data_artifact_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "title": "Data Artifact Id",
+      "type": "string"
+    },
+    "data_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Data Sha256",
+      "type": "string"
+    },
+    "figure_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "title": "Figure Id",
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/FigureKind"
+    },
+    "labels": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[A-Za-z0-9][A-Za-z0-9._-]*$": {
+          "minLength": 1,
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
+          "type": "string"
+        }
+      },
+      "propertyNames": {
+        "maxLength": 128,
+        "minLength": 1
+      },
+      "title": "Labels",
+      "type": "object"
+    },
+    "palette": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Palette",
+      "type": "array"
+    },
+    "producer_version": {
+      "minLength": 1,
+      "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
+      "title": "Producer Version",
+      "type": "string"
+    },
+    "run_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "figure_spec.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "title": {
+      "minLength": 1,
+      "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
+      "title": "Title",
+      "type": "string"
+    },
+    "units": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[A-Za-z0-9][A-Za-z0-9._-]*$": {
+          "minLength": 1,
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
+          "type": "string"
+        }
+      },
+      "propertyNames": {
+        "maxLength": 128,
+        "minLength": 1
+      },
+      "title": "Units",
+      "type": "object"
+    },
+    "x_field": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "title": "X Field",
+      "type": "string"
+    },
+    "y_fields": {
+      "items": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Y Fields",
+      "type": "array"
+    }
+  },
+  "required": [
+    "producer_version",
+    "run_id",
+    "created_at",
+    "schema_version",
+    "figure_id",
+    "title",
+    "kind",
+    "data_artifact_id",
+    "data_sha256",
+    "x_field",
+    "y_fields",
+    "units",
+    "labels",
+    "palette"
+  ],
+  "title": "FigureSpec",
+  "type": "object"
+}

@@ -7,6 +7,8 @@ graft locales
 # built from the sdist (e.g. Homebrew, downstream packagers). package-data
 # below covers the wheel; this covers the sdist. See #34034 / #28149.
 recursive-include plugins plugin.yaml plugin.yml
+# Research Protocol versioned contracts, policies, migrations, and docs.
+recursive-include plugins/research_protocol *.json *.yaml *.sql *.md
 # Gateway assets include images plus YAML catalogs such as status_phrases.yaml.
 recursive-include gateway/assets *
 global-exclude __pycache__

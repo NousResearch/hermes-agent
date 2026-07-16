@@ -1,0 +1,82 @@
+{
+  "$comment": "JSON Schema validation is necessary but insufficient; artifact bytes must be validated with load_artifact_from_json_bytes and Pydantic model_validate_json.",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "content_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "evidence_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "title": "Evidence Id",
+      "type": "string"
+    },
+    "extract": {
+      "minLength": 1,
+      "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
+      "title": "Extract",
+      "type": "string"
+    },
+    "locator": {
+      "minLength": 1,
+      "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
+      "title": "Locator",
+      "type": "string"
+    },
+    "producer_version": {
+      "minLength": 1,
+      "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
+      "title": "Producer Version",
+      "type": "string"
+    },
+    "provenance_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "title": "Provenance Id",
+      "type": "string"
+    },
+    "run_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "evidence_snapshot.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "title": "Source Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "producer_version",
+    "run_id",
+    "created_at",
+    "schema_version",
+    "evidence_id",
+    "source_id",
+    "locator",
+    "content_sha256",
+    "extract",
+    "provenance_id"
+  ],
+  "title": "EvidenceSnapshot",
+  "type": "object"
+}

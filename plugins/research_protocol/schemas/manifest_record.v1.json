@@ -1,0 +1,103 @@
+{
+  "$comment": "JSON Schema validation is necessary but insufficient; artifact bytes must be validated with load_artifact_from_json_bytes and Pydantic model_validate_json.",
+  "$defs": {
+    "ArtifactStatus": {
+      "enum": [
+        "pending",
+        "success",
+        "failed",
+        "partial",
+        "quarantined"
+      ],
+      "title": "ArtifactStatus",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "artifact_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "title": "Artifact Id",
+      "type": "string"
+    },
+    "artifact_type": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "title": "Artifact Type",
+      "type": "string"
+    },
+    "byte_length": {
+      "minimum": 0,
+      "title": "Byte Length",
+      "type": "integer"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "path_relative": {
+      "$comment": "Pydantic validation is required to enforce exact, normalized POSIX path semantics without coercion in addition to this JSON Schema pattern.",
+      "maxLength": 8192,
+      "minLength": 1,
+      "pattern": "^(?!\\s)(?!.*\\s$)(?!/)(?!.*:)(?!.*\\\\)(?!.*\\x00)(?!.*//)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*\\/$).+$",
+      "title": "Path Relative",
+      "type": "string"
+    },
+    "producer_version": {
+      "minLength": 1,
+      "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
+      "title": "Producer Version",
+      "type": "string"
+    },
+    "provenance_ids": {
+      "items": {
+        "maxLength": 128,
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+        "type": "string"
+      },
+      "title": "Provenance Ids",
+      "type": "array"
+    },
+    "run_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "manifest_record.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Sha256",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/ArtifactStatus"
+    }
+  },
+  "required": [
+    "producer_version",
+    "run_id",
+    "created_at",
+    "schema_version",
+    "artifact_id",
+    "artifact_type",
+    "path_relative",
+    "sha256",
+    "byte_length",
+    "status",
+    "provenance_ids"
+  ],
+  "title": "ManifestRecord",
+  "type": "object"
+}

@@ -1,0 +1,13 @@
+name: research-protocol
+version: 0.2.0
+description: Opt-in bounded research protocol planner tools
+kind: standalone
+entry: __init__.py
+provides_tools:
+  - plan_context_read
+  - plan_artifact_write
+  - plan_approval_request
+provides_hooks: []
+requires_env: []
+toolsets:
+  - planner

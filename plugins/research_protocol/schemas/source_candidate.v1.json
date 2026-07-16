@@ -1,0 +1,147 @@
+{
+  "$comment": "JSON Schema validation is necessary but insufficient; artifact bytes must be validated with load_artifact_from_json_bytes and Pydantic model_validate_json.",
+  "$defs": {
+    "SourceIdentifier": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+          "title": "Kind",
+          "type": "string"
+        },
+        "value": {
+          "minLength": 1,
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "value"
+      ],
+      "title": "SourceIdentifier",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "adapter_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "title": "Adapter Id",
+      "type": "string"
+    },
+    "authors": {
+      "items": {
+        "minLength": 1,
+        "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
+        "type": "string"
+      },
+      "title": "Authors",
+      "type": "array"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "identifiers": {
+      "items": {
+        "$ref": "#/$defs/SourceIdentifier"
+      },
+      "title": "Identifiers",
+      "type": "array"
+    },
+    "license": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "License"
+    },
+    "locator": {
+      "minLength": 1,
+      "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
+      "title": "Locator",
+      "type": "string"
+    },
+    "producer_version": {
+      "minLength": 1,
+      "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
+      "title": "Producer Version",
+      "type": "string"
+    },
+    "provenance_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "title": "Provenance Id",
+      "type": "string"
+    },
+    "published_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Published At"
+    },
+    "run_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "source_candidate.v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+      "title": "Source Id",
+      "type": "string"
+    },
+    "title": {
+      "minLength": 1,
+      "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
+      "title": "Title",
+      "type": "string"
+    }
+  },
+  "required": [
+    "producer_version",
+    "run_id",
+    "created_at",
+    "schema_version",
+    "source_id",
+    "adapter_id",
+    "locator",
+    "title",
+    "identifiers",
+    "authors",
+    "provenance_id"
+  ],
+  "title": "SourceCandidate",
+  "type": "object"
+}

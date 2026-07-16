@@ -1,0 +1,9 @@
+schema_version: source_quality_policy.v1
+dimensions:
+  authority: 0.25
+  methodology: 0.25
+  recency: 0.20
+  traceability: 0.30
+thresholds:
+  accept: 0.70
+  review: 0.45

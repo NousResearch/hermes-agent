@@ -1,0 +1,4 @@
+schema_version: contradiction_policy.v1
+minimum_confidence: 0.70
+temporal_window_days: 365
+require_unit_match: true

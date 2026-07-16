@@ -1,0 +1,4 @@
+schema_version: dedup_policy.v1
+exact_hash_enabled: true
+semantic_enabled: false
+semantic_threshold: 0.95

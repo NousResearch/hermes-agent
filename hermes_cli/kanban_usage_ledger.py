@@ -627,12 +627,166 @@ def query_usage(
             SELECT *
             FROM run_usage
             WHERE {where_sql}
-            ORDER BY board, task_id, run_id, api_call_index
+            ORDER BY board, task_id, run_id, call_kind, api_call_index
         """
 
     cursor = conn.execute(query, params)
     columns = [desc[0] for desc in cursor.description]
     return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+
+def _normalize_project_task_ids(task_ids: Any) -> tuple[str, ...]:
+    """Normalize a supplied project task set without consulting Kanban state."""
+    if isinstance(task_ids, str):
+        task_ids = (task_ids,)
+    try:
+        normalized = {task_id for task_id in task_ids if isinstance(task_id, str) and task_id}
+    except TypeError as exc:
+        raise TypeError("task_ids must be an iterable of non-empty strings") from exc
+    if not normalized:
+        raise ValueError("task_ids must contain at least one task id")
+    return tuple(sorted(normalized))
+
+
+def query_project_usage(
+    conn: sqlite3.Connection,
+    *,
+    board: str,
+    task_ids: Any = None,
+    project_task_ids: Any = None,
+) -> list[dict[str, Any]]:
+    """Return each distinct usage event for the exact supplied project set.
+
+    The query deliberately does not join ``run_usage_parents``.  Parent rows
+    are reachability metadata and never additional usage events.  A Python
+    identity guard also protects callers using a legacy table without the
+    composite primary key.
+    """
+    if task_ids is not None and project_task_ids is not None:
+        raise ValueError("provide only one of task_ids or project_task_ids")
+    normalized = _normalize_project_task_ids(
+        task_ids if task_ids is not None else project_task_ids
+    )
+    placeholders = ", ".join("?" for _ in normalized)
+    cursor = conn.execute(
+        f"""
+        SELECT *
+        FROM run_usage
+        WHERE board = ? AND task_id IN ({placeholders})
+        ORDER BY board, task_id, run_id, call_kind, api_call_index
+        """,
+        (board, *normalized),
+    )
+    columns = [desc[0] for desc in cursor.description]
+    result: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for row in cursor.fetchall():
+        item = dict(zip(columns, row))
+        identity = (
+            item.get("board"), item.get("task_id"), item.get("run_id"),
+            item.get("call_kind"), item.get("api_call_index"),
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        result.append(item)
+    return result
+
+
+def aggregate_project_usage(
+    conn: sqlite3.Connection,
+    *,
+    board: str,
+    task_ids: Any = None,
+    project_task_ids: Any = None,
+    task_roles: Optional[dict[str, str]] = None,
+    role_by_task_id: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
+    """Aggregate exact project usage, grouped by role and model dimensions.
+
+    ``task_roles`` is supplied by the immutable project snapshot.  No task,
+    parent, event, or conversation table is read here.  Missing dimensions
+    are rendered as ``"unknown"`` and missing usage remains explicitly
+    unknown rather than being estimated.
+    """
+    rows = query_project_usage(
+        conn, board=board, task_ids=task_ids, project_task_ids=project_task_ids
+    )
+    if task_roles is not None and role_by_task_id is not None:
+        raise ValueError("provide only one of task_roles or role_by_task_id")
+    roles = task_roles or role_by_task_id or {}
+    total_fields = (
+        "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
+        "reasoning_tokens", "aux_input_tokens", "aux_output_tokens",
+        "aux_cache_read_tokens", "aux_cache_write_tokens", "accepted_result_tokens",
+    )
+    if not rows:
+        return {
+            "usage_status": "unknown",
+            "unknown": ["no usage events for supplied project task set"],
+            "record_count": 0,
+            "total_api_calls": 0,
+            **{f"total_{field}": None for field in total_fields},
+            "total_cost_usd": None,
+            "groups": [],
+        }
+
+    totals = {field: 0 for field in total_fields}
+    groups: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+    total_cost = 0.0
+    unknown_fields: set[str] = set()
+    for row in rows:
+        role = roles.get(row.get("task_id"), "unknown") or "unknown"
+        profile = row.get("profile") or "unknown"
+        provider = row.get("provider") or "unknown"
+        model = row.get("model") or "unknown"
+        call_kind = row.get("call_kind") or "unknown"
+        key = (str(role), str(profile), str(provider), str(model), str(call_kind))
+        token_source = row.get("token_source")
+        if token_source in {"unknown", "incomplete", None, ""}:
+            unknown_fields.update(f"total_{field}" for field in total_fields)
+        group = groups.setdefault(
+            key,
+            {
+                "role": key[0], "profile": key[1], "provider": key[2],
+                "model": key[3], "call_kind": key[4], "record_count": 0,
+                "api_calls": 0, **{field: 0 for field in total_fields},
+            },
+        )
+        group["record_count"] += 1
+        group["api_calls"] += 1
+        for field in total_fields:
+            value = row.get(field)
+            if value is not None:
+                numeric = int(value)
+                totals[field] += numeric
+                group[field] += numeric
+        cost = row.get("cost_usd")
+        if cost is None:
+            costs_complete = False
+            unknown_fields.add("total_cost_usd")
+        else:
+            total_cost += float(cost)
+
+    ordered_groups = [groups[key] for key in sorted(groups)]
+    result = {
+        "usage_status": "known" if not unknown_fields else "partial",
+        "record_count": len(rows),
+        "total_api_calls": len(rows),
+        **{f"total_{field}": value for field, value in totals.items()},
+        "total_cost_usd": total_cost if "total_cost_usd" not in unknown_fields else None,
+        "groups": ordered_groups,
+    }
+    if unknown_fields:
+        result["unknown"] = sorted(unknown_fields)
+        for field in unknown_fields:
+            if field in result:
+                result[field] = None
+    return result
+
+
+aggregate_usage_for_project = aggregate_project_usage
+query_usage_for_project = query_project_usage
 
 
 # Per-run auxiliary call counter: keyed by (board, task_id, run_id),

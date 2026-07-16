@@ -2125,6 +2125,13 @@ def get_model_context_length(
         except Exception:
             pass  # fall through to probing
 
+    if not str(model or "").strip():
+        logger.info(
+            "No model id provided for context length resolution — defaulting to %s tokens.",
+            f"{DEFAULT_FALLBACK_CONTEXT:,}",
+        )
+        return DEFAULT_FALLBACK_CONTEXT
+
     # Normalise provider-prefixed model names (e.g. "local:model-name" →
     # "model-name") so cache lookups and server queries use the bare ID that
     # local servers actually know about.  Ollama "model:tag" colons are preserved.

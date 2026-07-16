@@ -422,17 +422,23 @@ print(f"Found {len(results.get('results', []))} results")
         self.assertIn("Found 1 results", result["output"])
 
     def test_json_parse_helper(self):
-        """json_parse handles control characters that json.loads(strict=True) rejects."""
+        """json_parse handles control characters and a leading UTF-8 BOM."""
         code = r"""
 from hermes_tools import json_parse
 # This JSON has a literal tab character which strict mode rejects
 text = '{"body": "line1\tline2\nline3"}'
 result = json_parse(text)
 print(result["body"])
+# A leading UTF-8 BOM (e.g. from Windows CLI output) must also parse (#57870)
+bom_text = "\ufeff" + '{"body": "bom-ok"}'
+bom_result = json_parse(bom_text)
+assert bom_result == {"body": "bom-ok"}, bom_result
+print("bom:" + bom_result["body"])
 """
         result = self._run(code)
         self.assertEqual(result["status"], "success")
         self.assertIn("line1", result["output"])
+        self.assertIn("bom:bom-ok", result["output"])
 
     def test_shell_quote_helper(self):
         """shell_quote properly escapes dangerous characters."""

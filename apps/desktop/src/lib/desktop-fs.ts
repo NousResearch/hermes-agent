@@ -52,26 +52,28 @@ function bridge() {
   return desktop
 }
 
-function remoteFsApi<T>(path: string, body?: Record<string, unknown>): Promise<T> {
-  return bridge().api<T>(
-    body ? { body, method: 'POST', path, profile: desktopFsProfile() } : { path, profile: desktopFsProfile() }
-  )
+function remoteFsApi<T>(path: string, body?: Record<string, unknown>, profile = desktopFsProfile()): Promise<T> {
+  return bridge().api<T>(body ? { body, method: 'POST', path, profile } : { path, profile })
 }
 
-export async function readDesktopDir(path: string): Promise<HermesReadDirResult> {
-  if (!isDesktopFsRemoteMode()) {
+export async function readDesktopDir(path: string, profile?: string): Promise<HermesReadDirResult> {
+  // A named profile is served by the Electron backend pool. Even when the
+  // active connection itself is local, that profile can point to a remote
+  // gateway, so bypassing the API bridge would incorrectly try to read the
+  // gateway path from this Mac.
+  if (!isDesktopFsRemoteMode() && !profile) {
     return bridge().readDir(path)
   }
 
-  return remoteFsApi<HermesReadDirResult>(fsPath('list', path))
+  return remoteFsApi<HermesReadDirResult>(fsPath('list', path), undefined, profile)
 }
 
-export async function readDesktopFileText(path: string): Promise<HermesReadFileTextResult> {
-  if (!isDesktopFsRemoteMode()) {
+export async function readDesktopFileText(path: string, profile?: string): Promise<HermesReadFileTextResult> {
+  if (!isDesktopFsRemoteMode() && !profile) {
     return bridge().readFileText(path)
   }
 
-  return remoteFsApi<HermesReadFileTextResult>(fsPath('read-text', path))
+  return remoteFsApi<HermesReadFileTextResult>(fsPath('read-text', path), undefined, profile)
 }
 
 // Save UTF-8 text back to a file. Local writes go through the hardened Electron

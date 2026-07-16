@@ -12,6 +12,7 @@ export interface ArtifactRecord {
   value: string
   href: string
   label: string
+  profile?: string
   sessionId: string
   sessionTitle: string
   timestamp: number
@@ -22,7 +23,8 @@ const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)/g
 const URL_RE = /https?:\/\/[^\s<>"')]+/g
 const PATH_RE = /(^|[\s("'`])((?:\/|~\/|\.\.?\/)[^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)/gi
 const IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp)(?:\?.*)?$/i
-const FILE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp|pdf|txt|json|md|csv|zip|tar|gz|mp3|wav|mp4|mov)(?:\?.*)?$/i
+const FILE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp|pdf|txt|json|md|csv|zip|tar|gz)(?:\?.*)?$/i
+const CANVAS_HTML_RE = /\.canvas\.html?(?:\?.*)?$/i
 const KEY_HINT_RE = /(path|file|url|image|artifact|output|download|result|target)/i
 
 function artifactSessionTitle(session: SessionInfo): string {
@@ -63,7 +65,16 @@ function looksLikeArtifact(value: string): boolean {
     return true
   }
 
-  if (looksLikePathOrUrl(value) && (IMAGE_EXT_RE.test(value) || FILE_EXT_RE.test(value))) {
+  // A report becomes a Canvas only through its explicit filename contract.
+  // Do not turn every incidental HTML file mentioned by an agent into a UI item.
+  if (looksLikePathOrUrl(value) && /\.html?(?:\?.*)?$/i.test(value)) {
+    return CANVAS_HTML_RE.test(value)
+  }
+
+  if (
+    looksLikePathOrUrl(value) &&
+    (IMAGE_EXT_RE.test(value) || FILE_EXT_RE.test(value) || CANVAS_HTML_RE.test(value))
+  ) {
     return true
   }
 
@@ -271,6 +282,7 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
         value,
         href: artifactHref(value),
         label: artifactLabel(value),
+        profile: session.profile,
         sessionId: session.id,
         sessionTitle: title,
         timestamp: message.timestamp || session.last_active || session.started_at || Date.now()

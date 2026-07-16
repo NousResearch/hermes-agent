@@ -3762,12 +3762,15 @@ def _ensure_mcp_loop():
 
 
 def _wrap_with_home_override(coro: "Coroutine") -> "Coroutine":
-    """Carry the caller's context-local HERMES_HOME override into ``coro``.
+    """Explicitly carry the caller's HERMES_HOME override into ``coro``.
 
     Returns ``coro`` unchanged when no override is active. Otherwise wraps
     it so the override is set inside the coroutine's own (task-local)
     context on the MCP loop and reset when it completes — concurrent calls
-    carrying different scopes don't interfere.
+    carrying different scopes don't interfere. CPython's scheduler already
+    propagates ordinary ContextVars here; this wrapper deliberately keeps
+    the selected profile home as part of ``_run_on_mcp_loop``'s contract
+    because it controls profile-scoped storage and credential paths.
     """
     try:
         from hermes_constants import (
@@ -3815,16 +3818,13 @@ def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
 
     coro = coro_or_factory() if callable(coro_or_factory) else coro_or_factory
 
-    # Propagate the context-local HERMES_HOME override onto the MCP loop.
-    # Tasks scheduled via run_coroutine_threadsafe are created INSIDE the
-    # loop thread, so they copy the loop thread's context — not the
-    # scheduling thread's. A per-request profile scope (the dashboard's
-    # ?profile= endpoints, e.g. the MCP "Test server" probe) would silently
-    # vanish here: OAuth token stores and any other get_hermes_home()
-    # resolution inside the coroutine would read the process home instead
-    # of the selected profile's. Re-establish the override inside the
-    # task's own context (task-local — concurrent calls carrying different
-    # scopes don't interfere). No-op when no override is active.
+    # run_coroutine_threadsafe reaches call_soon_threadsafe, whose Handle
+    # snapshots the scheduling thread's context; ordinary ContextVars thus
+    # propagate into the Task CPython creates on the MCP loop. Keep the
+    # HERMES_HOME wrapper anyway as an explicit profile-storage boundary:
+    # OAuth token paths and other get_hermes_home() resolution must follow
+    # the selected profile as part of this function's contract, independent
+    # of generic scheduler propagation details. No-op without an override.
     coro = _wrap_with_home_override(coro)
 
     future = safe_schedule_threadsafe(

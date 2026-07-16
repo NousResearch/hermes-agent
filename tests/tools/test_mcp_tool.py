@@ -1,6 +1,7 @@
 """Tests for the MCP (Model Context Protocol) client support.
 
-All tests use mocks -- no real MCP servers or subprocesses are started.
+Tests use in-process fakes and mocks; one context-propagation regression uses
+the real background event loop. No external MCP servers or subprocesses start.
 """
 
 import asyncio
@@ -45,6 +46,23 @@ def _make_mock_server(name, session=None, tools=None):
     server.session = session
     server._tools = tools or []
     return server
+
+
+def _wait_for_real_mcp_loop(mcp_tool, timeout=5):
+    """Wait until the real MCP loop has processed a threadsafe callback."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with mcp_tool._lock:
+            loop = mcp_tool._mcp_loop
+            loop_thread = mcp_tool._mcp_thread
+        if loop is not None and loop_thread is not None and loop.is_running():
+            ready = threading.Event()
+            loop.call_soon_threadsafe(ready.set)
+            if ready.wait(max(0, deadline - time.monotonic())):
+                return loop_thread
+            break
+        time.sleep(0.01)
+    pytest.fail("real MCP loop did not process a readiness callback")
 
 
 class TestFilterMCPChildren:
@@ -741,6 +759,7 @@ class TestToolHandler:
     def test_forward_session_context_opt_in_adds_meta(self):
         from gateway.session_context import clear_session_vars, set_session_vars
         from tools.mcp_tool import (
+            _lock,
             _make_tool_handler,
             _servers,
             _session_context_forwarding_servers,
@@ -752,8 +771,10 @@ class TestToolHandler:
             return_value=_make_call_result("hello world", is_error=False)
         )
         server = _make_mock_server("crm_srv", session=mock_session)
-        _servers["crm_srv"] = server
-        _session_context_forwarding_servers.add(sanitize_mcp_name_component("crm_srv"))
+        safe_server_name = sanitize_mcp_name_component("crm_srv")
+        with _lock:
+            _servers["crm_srv"] = server
+            _session_context_forwarding_servers.add(safe_server_name)
         tokens = set_session_vars(
             platform="discord",
             chat_id="channel-123",
@@ -784,10 +805,92 @@ class TestToolHandler:
             )
         finally:
             clear_session_vars(tokens)
-            _servers.pop("crm_srv", None)
-            _session_context_forwarding_servers.discard(
-                sanitize_mcp_name_component("crm_srv")
+            with _lock:
+                _servers.pop("crm_srv", None)
+                _session_context_forwarding_servers.discard(safe_server_name)
+
+    def test_forward_session_context_crosses_real_mcp_loop_boundary(self):
+        """Caller ContextVars reach tools/call ``_meta`` on the real MCP loop."""
+        from gateway.session_context import clear_session_vars, set_session_vars
+        import tools.mcp_tool as mcp
+
+        server_name = "context_bridge"
+        safe_server_name = mcp.sanitize_mcp_name_component(server_name)
+        caller_thread_ident = threading.get_ident()
+        observed = {}
+
+        async def call_tool(tool_name, **kwargs):
+            observed["thread_ident"] = threading.get_ident()
+            observed["tool_name"] = tool_name
+            observed["kwargs"] = kwargs
+            return _make_call_result("boundary ok", is_error=False)
+
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(side_effect=call_tool)
+        server = _make_mock_server(server_name, session=mock_session)
+
+        with mcp._lock:
+            saved_servers = dict(mcp._servers)
+            saved_forwarding = set(mcp._session_context_forwarding_servers)
+            mcp._servers.clear()
+            mcp._servers[server_name] = server
+            mcp._session_context_forwarding_servers.clear()
+            mcp._session_context_forwarding_servers.add(safe_server_name)
+
+        tokens = None
+        loop_thread = None
+        loop_thread_alive_after_stop = None
+        try:
+            tokens = set_session_vars(
+                platform="discord",
+                chat_id="channel-123",
+                thread_id="thread-456",
+                user_id="user-789",
+                session_key="agent:main:discord:thread:thread-456:thread-456",
+                session_id="20260705_191621_abcd",
+                message_id="message-999",
             )
+            mcp._ensure_mcp_loop()
+            loop_thread = _wait_for_real_mcp_loop(mcp)
+
+            handler = mcp._make_tool_handler(server_name, "lookup_records", 10)
+            result = json.loads(handler({"task": "boundary"}))
+
+            assert result["result"] == "boundary ok"
+            assert observed == {
+                "thread_ident": loop_thread.ident,
+                "tool_name": "lookup_records",
+                "kwargs": {
+                    "arguments": {"task": "boundary"},
+                    "meta": {
+                        "com.nousresearch.hermes/platform": "discord",
+                        "com.nousresearch.hermes/session_id": "20260705_191621_abcd",
+                        "com.nousresearch.hermes/session_key": "agent:main:discord:thread:thread-456:thread-456",
+                        "com.nousresearch.hermes/chat_id": "channel-123",
+                        "com.nousresearch.hermes/thread_id": "thread-456",
+                        "com.nousresearch.hermes/user_id": "user-789",
+                        "com.nousresearch.hermes/message_id": "message-999",
+                    },
+                },
+            }
+            assert observed["thread_ident"] != caller_thread_ident
+        finally:
+            try:
+                if tokens is not None:
+                    clear_session_vars(tokens)
+            finally:
+                try:
+                    mcp._stop_mcp_loop()
+                finally:
+                    if loop_thread is not None:
+                        loop_thread_alive_after_stop = loop_thread.is_alive()
+                    with mcp._lock:
+                        mcp._servers.clear()
+                        mcp._servers.update(saved_servers)
+                        mcp._session_context_forwarding_servers.clear()
+                        mcp._session_context_forwarding_servers.update(saved_forwarding)
+
+        assert loop_thread_alive_after_stop is False
 
     def test_forward_session_context_omits_meta_when_context_unbound(
         self, monkeypatch
@@ -795,6 +898,7 @@ class TestToolHandler:
         import contextvars
 
         from tools.mcp_tool import (
+            _lock,
             _make_tool_handler,
             _servers,
             _session_context_forwarding_servers,
@@ -807,8 +911,10 @@ class TestToolHandler:
             return_value=_make_call_result("hello world", is_error=False)
         )
         server = _make_mock_server("crm_srv", session=mock_session)
-        _servers["crm_srv"] = server
-        _session_context_forwarding_servers.add(sanitize_mcp_name_component("crm_srv"))
+        safe_server_name = sanitize_mcp_name_component("crm_srv")
+        with _lock:
+            _servers["crm_srv"] = server
+            _session_context_forwarding_servers.add(safe_server_name)
 
         try:
             handler = _make_tool_handler("crm_srv", "lookup_records", 120)
@@ -820,10 +926,9 @@ class TestToolHandler:
                 arguments={"query": "recent"},
             )
         finally:
-            _servers.pop("crm_srv", None)
-            _session_context_forwarding_servers.discard(
-                sanitize_mcp_name_component("crm_srv")
-            )
+            with _lock:
+                _servers.pop("crm_srv", None)
+                _session_context_forwarding_servers.discard(safe_server_name)
 
     def test_forward_session_context_omits_all_empty_bound_context(
         self, monkeypatch
@@ -4584,58 +4689,72 @@ class TestRegisterMcpServers:
             assert mcp._session_context_forwarding_servers == set()
 
     def test_connects_new_servers(self):
-        from tools.mcp_tool import register_mcp_servers, _servers, _ensure_mcp_loop
+        import tools.mcp_tool as mcp
 
         fake_config = {"my_server": {"command": "npx", "args": ["test"]}}
 
         async def fake_register(name, cfg):
             server = _make_mock_server(name)
             server._registered_tool_names = ["mcp__my_server__tool1"]
-            _servers[name] = server
+            with mcp._lock:
+                mcp._servers[name] = server
             return ["mcp__my_server__tool1"]
 
-        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_tool._discover_and_register_server", side_effect=fake_register), \
-             patch("tools.mcp_tool._existing_tool_names", return_value=["mcp__my_server__tool1"]):
-            _ensure_mcp_loop()
-            result = register_mcp_servers(fake_config)
+        try:
+            with patch.object(mcp, "_MCP_AVAILABLE", True), \
+                 patch.object(mcp, "_discover_and_register_server", side_effect=fake_register), \
+                 patch.object(mcp, "_existing_tool_names", return_value=["mcp__my_server__tool1"]):
+                mcp._ensure_mcp_loop()
+                _wait_for_real_mcp_loop(mcp)
+                result = mcp.register_mcp_servers(fake_config)
 
-        assert "mcp__my_server__tool1" in result
-        _servers.pop("my_server", None)
+            assert "mcp__my_server__tool1" in result
+        finally:
+            with mcp._lock:
+                mcp._servers.pop("my_server", None)
+                mcp._server_connecting.discard("my_server")
+            mcp._stop_mcp_loop()
 
     def test_logs_summary_on_success(self):
-        from tools.mcp_tool import register_mcp_servers, _servers, _ensure_mcp_loop
+        import tools.mcp_tool as mcp
 
         fake_config = {"srv": {"command": "npx", "args": ["test"]}}
 
         async def fake_register(name, cfg):
             server = _make_mock_server(name)
             server._registered_tool_names = ["mcp__srv__t1", "mcp__srv__t2"]
-            _servers[name] = server
+            with mcp._lock:
+                mcp._servers[name] = server
             return ["mcp__srv__t1", "mcp__srv__t2"]
 
-        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_tool._discover_and_register_server", side_effect=fake_register), \
-             patch("tools.mcp_tool._existing_tool_names", return_value=["mcp__srv__t1", "mcp__srv__t2"]):
-            _ensure_mcp_loop()
+        try:
+            with patch.object(mcp, "_MCP_AVAILABLE", True), \
+                 patch.object(mcp, "_discover_and_register_server", side_effect=fake_register), \
+                 patch.object(mcp, "_existing_tool_names", return_value=["mcp__srv__t1", "mcp__srv__t2"]):
+                mcp._ensure_mcp_loop()
+                _wait_for_real_mcp_loop(mcp)
 
-            with patch("tools.mcp_tool.logger") as mock_logger:
-                register_mcp_servers(fake_config)
+                with patch.object(mcp, "logger") as mock_logger:
+                    mcp.register_mcp_servers(fake_config)
 
-                info_calls = [str(c) for c in mock_logger.info.call_args_list]
-                assert any("2 tool(s)" in c and "1 server(s)" in c for c in info_calls), (
-                    f"Summary should report 2 tools from 1 server, got: {info_calls}"
-                )
-
-        _servers.pop("srv", None)
+                    info_calls = [str(c) for c in mock_logger.info.call_args_list]
+                    assert any("2 tool(s)" in c and "1 server(s)" in c for c in info_calls), (
+                        f"Summary should report 2 tools from 1 server, got: {info_calls}"
+                    )
+        finally:
+            with mcp._lock:
+                mcp._servers.pop("srv", None)
+                mcp._server_connecting.discard("srv")
+            mcp._stop_mcp_loop()
 
 
 # ---------------------------------------------------------------------------
-# Tests for parallel tool call support (port from openai/codex#17667)
+# Per-server MCP capability opt-ins
 # ---------------------------------------------------------------------------
+
 
 class TestMcpParallelToolCalls:
-    """Tests for the supports_parallel_tool_calls config option."""
+    """Tests for per-server MCP capability configuration."""
 
     def test_is_mcp_tool_parallel_safe_non_mcp_tool(self):
         """Non-MCP tool names always return False."""
@@ -4767,7 +4886,7 @@ class TestMcpParallelToolCalls:
     def test_register_mcp_servers_tracks_parallel_flag(self):
         """register_mcp_servers populates _parallel_safe_servers from config."""
         from tools.mcp_tool import (
-            register_mcp_servers, _parallel_safe_servers, _lock,
+            register_mcp_servers, _parallel_safe_servers, _server_connecting, _lock,
             sanitize_mcp_name_component,
         )
         fake_config = {
@@ -4784,29 +4903,34 @@ class TestMcpParallelToolCalls:
                 # no supports_parallel_tool_calls key
             },
         }
-        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_tool._ensure_mcp_loop"), \
-             patch("tools.mcp_tool._run_on_mcp_loop"), \
-             patch("tools.mcp_tool._existing_tool_names", return_value=[]):
-            register_mcp_servers(fake_config)
+        try:
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._ensure_mcp_loop"), \
+                 patch("tools.mcp_tool._run_on_mcp_loop"), \
+                 patch("tools.mcp_tool._existing_tool_names", return_value=[]):
+                register_mcp_servers(fake_config)
 
-        with _lock:
-            assert sanitize_mcp_name_component("parallel_srv") in _parallel_safe_servers
-            assert sanitize_mcp_name_component("serial_srv") not in _parallel_safe_servers
-            assert sanitize_mcp_name_component("default_srv") not in _parallel_safe_servers
-            # Cleanup
-            _parallel_safe_servers.discard(sanitize_mcp_name_component("parallel_srv"))
+            with _lock:
+                assert sanitize_mcp_name_component("parallel_srv") in _parallel_safe_servers
+                assert sanitize_mcp_name_component("serial_srv") not in _parallel_safe_servers
+                assert sanitize_mcp_name_component("default_srv") not in _parallel_safe_servers
+        finally:
+            with _lock:
+                _parallel_safe_servers.discard(sanitize_mcp_name_component("parallel_srv"))
+                for server_name in fake_config:
+                    _server_connecting.discard(server_name)
 
     def test_register_mcp_servers_tracks_forward_session_context_flag(self):
         """register_mcp_servers populates session-context forwarding opt-ins."""
         from tools.mcp_tool import (
             register_mcp_servers,
+            _server_connecting,
             _session_context_forwarding_servers,
             _lock,
             sanitize_mcp_name_component,
         )
         fake_config = {
-            "mandate-edge": {
+            "context-bridge": {
                 "command": "echo",
                 "forward_session_context": True,
             },
@@ -4814,29 +4938,30 @@ class TestMcpParallelToolCalls:
                 "command": "echo",
             },
         }
-        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_tool._ensure_mcp_loop"), \
-             patch("tools.mcp_tool._run_on_mcp_loop"), \
-             patch("tools.mcp_tool._existing_tool_names", return_value=[]):
-            register_mcp_servers(fake_config)
+        safe_server_name = sanitize_mcp_name_component("context-bridge")
+        try:
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._ensure_mcp_loop"), \
+                 patch("tools.mcp_tool._run_on_mcp_loop"), \
+                 patch("tools.mcp_tool._existing_tool_names", return_value=[]):
+                register_mcp_servers(fake_config)
 
-        with _lock:
-            assert (
-                sanitize_mcp_name_component("mandate-edge")
-                in _session_context_forwarding_servers
-            )
-            assert (
-                sanitize_mcp_name_component("default_srv")
-                not in _session_context_forwarding_servers
-            )
-            _session_context_forwarding_servers.discard(
-                sanitize_mcp_name_component("mandate-edge")
-            )
+            with _lock:
+                assert safe_server_name in _session_context_forwarding_servers
+                assert (
+                    sanitize_mcp_name_component("default_srv")
+                    not in _session_context_forwarding_servers
+                )
+        finally:
+            with _lock:
+                _session_context_forwarding_servers.discard(safe_server_name)
+                for server_name in fake_config:
+                    _server_connecting.discard(server_name)
 
     def test_register_mcp_servers_removes_parallel_flag_on_toggle(self):
         """Toggling supports_parallel_tool_calls to false removes server from the set."""
         from tools.mcp_tool import (
-            register_mcp_servers, _parallel_safe_servers, _lock,
+            register_mcp_servers, _parallel_safe_servers, _server_connecting, _lock,
             sanitize_mcp_name_component,
         )
 
@@ -4847,25 +4972,30 @@ class TestMcpParallelToolCalls:
                 "supports_parallel_tool_calls": True,
             },
         }
-        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_tool._ensure_mcp_loop"), \
-             patch("tools.mcp_tool._run_on_mcp_loop"), \
-             patch("tools.mcp_tool._existing_tool_names", return_value=[]):
-            register_mcp_servers(config_on)
-        with _lock:
-            assert sanitize_mcp_name_component("toggle_srv") in _parallel_safe_servers
+        try:
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._ensure_mcp_loop"), \
+                 patch("tools.mcp_tool._run_on_mcp_loop"), \
+                 patch("tools.mcp_tool._existing_tool_names", return_value=[]):
+                register_mcp_servers(config_on)
+            with _lock:
+                assert sanitize_mcp_name_component("toggle_srv") in _parallel_safe_servers
 
-        # Second registration: parallel disabled
-        config_off = {
-            "toggle_srv": {
-                "command": "echo",
-                "supports_parallel_tool_calls": False,
-            },
-        }
-        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
-             patch("tools.mcp_tool._ensure_mcp_loop"), \
-             patch("tools.mcp_tool._run_on_mcp_loop"), \
-             patch("tools.mcp_tool._existing_tool_names", return_value=[]):
-            register_mcp_servers(config_off)
-        with _lock:
-            assert sanitize_mcp_name_component("toggle_srv") not in _parallel_safe_servers
+            # Second registration: parallel disabled
+            config_off = {
+                "toggle_srv": {
+                    "command": "echo",
+                    "supports_parallel_tool_calls": False,
+                },
+            }
+            with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._ensure_mcp_loop"), \
+                 patch("tools.mcp_tool._run_on_mcp_loop"), \
+                 patch("tools.mcp_tool._existing_tool_names", return_value=[]):
+                register_mcp_servers(config_off)
+            with _lock:
+                assert sanitize_mcp_name_component("toggle_srv") not in _parallel_safe_servers
+        finally:
+            with _lock:
+                _parallel_safe_servers.discard(sanitize_mcp_name_component("toggle_srv"))
+                _server_connecting.discard("toggle_srv")

@@ -3599,13 +3599,16 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # gateway/run.py (_profile_runtime_scope).
         from agent.secret_scope import (
             build_profile_secret_scope,
+            is_multiplex_active,
             reset_secret_scope,
             set_secret_scope,
         )
 
-        _scope_token = set_secret_scope(
-            build_profile_secret_scope(_get_hermes_home())
-        )
+        _scope_token = None
+        if is_multiplex_active():
+            _scope_token = set_secret_scope(
+                build_profile_secret_scope(_get_hermes_home())
+            )
         # Defer the cron agent's async-resource teardown until AFTER delivery.
         # run_job normally closes the agent (and reaps stale async clients) in
         # its finally block; doing that before _deliver_result runs means the
@@ -3628,7 +3631,8 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
                 _teardown_cron_agent(_deferred_agent, job["id"])
             raise
         finally:
-            reset_secret_scope(_scope_token)
+            if _scope_token is not None:
+                reset_secret_scope(_scope_token)
 
         # Everything from here through delivery runs with the agent still live
         # (deferred teardown). Wrap it ALL in a try/finally so that if any step

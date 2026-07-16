@@ -162,6 +162,37 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
     assert ss.current_secret_scope() is None
 
 
+def test_run_one_job_preserves_env_credentials_without_multiplex(monkeypatch, tmp_path):
+    """Single-profile cron must retain process-environment credentials."""
+    from agent import secret_scope as ss
+
+    monkeypatch.setattr(s, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setenv("DEEPINFRA_API_KEY", "test-env-credential")
+    observed = {}
+
+    def fake_run_job(job, *, defer_agent_teardown=None):
+        observed["scope"] = ss.current_secret_scope()
+        observed["credential"] = ss.get_secret("DEEPINFRA_API_KEY")
+        return (True, "out", "final", None)
+
+    monkeypatch.setattr(s, "run_job", fake_run_job)
+    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
+    monkeypatch.setattr(s, "_deliver_result", lambda *a, **k: None)
+    monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: None)
+
+    prior_multiplex = ss.is_multiplex_active()
+    ss.set_multiplex_active(False)
+    try:
+        ok = s.run_one_job({"id": "j-env", "name": "t"})
+    finally:
+        ss.set_multiplex_active(prior_multiplex)
+
+    assert ok is True
+    assert observed["scope"] is None
+    assert observed["credential"] == "test-env-credential"
+    assert ss.current_secret_scope() is None
+
+
 def test_run_one_job_delivers_before_agent_teardown(monkeypatch):
     """Regression for #58720: the cron agent's async-resource teardown
     (agent.close + cleanup_stale_async_clients) MUST run AFTER delivery, not

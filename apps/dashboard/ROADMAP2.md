@@ -16,6 +16,17 @@ Same rules as always:
 
 Effort key: **S** < ½ day · **M** ~1 day · **L** multi-day.
 
+### Build status (updated as items ship)
+- ✅ **§0.1 chart helper** · ✅ **§0.2 detail/expand framework** — shipped.
+- ✅ **§1.1 coin detail drawer** · ✅ **§1.2 indicators** · ✅ **§1.3 portfolio**
+  · ✅ **§1.4 global bar + Fear & Greed** · ✅ **§1.5 trending** — shipped.
+- ✅ **§2.1 live sports scores** — shipped (NBA/NFL/MLB/NHL/EPL/MLS).
+- ✅ **§3.5 gaming news topic** — shipped.
+- ⬜ Pending: §0.3 registry, §0.4 dashboard pages, §1.6 smarter alerts,
+  §1.7 converter, §2.2 standings, §2.3 follow teams, §3.1 Google News queries,
+  §3.2 richer reader, §3.3 topic detail, §3.4 podcasts, §3.6 tech-ranked,
+  §3.7 socials hub, §3.5 game-data widget, §4 stocks/FX + hero, §5 intel/utility.
+
 ---
 
 ## 0. Shared infrastructure (build these first — everything leans on them)

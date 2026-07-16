@@ -4549,33 +4549,50 @@ class FeishuAdapter(BasePlatformAdapter):
         interior = stripped[1:-1].strip()
         return bool(re.match(r"^[-|: ]+$", interior))
 
-    def _split_content_at_tables(self, content: str) -> List[str]:
-        """Split content at pipe-table boundaries into alternating segments.
+    def _split_content_at_tables(self, content: str) -> List[tuple[str, str]]:
+        """Split content at pipe-table boundaries into tagged segments.
 
         Pipe tables need to be sent as text type because Feishu post-type 'md'
         elements don't render them. By splitting at table boundaries, we can
         send each table as text and surrounding markdown content as post.
-        Returns [content] unchanged when no tables are found.
+
+        Returns [(type_tag, content), ...] where type_tag is "table" or
+        "markdown". Returns [("markdown", content)] when no tables are found.
+
+        Fenced code blocks are preserved — any pipe-table pattern inside
+        triple-backtick fences is ignored (tables there are code, not markup).
         """
         if not _MARKDOWN_TABLE_RE.search(content):
-            return [content]
+            return [("markdown", content)]
 
         lines = content.split("\n")
-        segments: List[str] = []
+        segments: List[tuple[str, str]] = []
         current: List[str] = []
         i = 0
+        in_fence = False
 
         while i < len(lines):
             line = lines[i]
+
+            # Track fenced code blocks — table patterns inside fences are code
+            stripped = line.strip()
+            if stripped.startswith("```"):
+                current.append(line)
+                in_fence = not in_fence
+                i += 1
+                continue
+
             # Detect table start: pipe line followed by separator line
+            # (skip when inside a fenced code block)
             if (
-                self._is_table_line(line)
+                not in_fence
+                and self._is_table_line(line)
                 and i + 1 < len(lines)
                 and self._is_table_separator(lines[i + 1])
             ):
                 # Flush any accumulated non-table content
                 if current:
-                    segments.append("\n".join(current))
+                    segments.append(("markdown", "\n".join(current)))
                     current = []
 
                 # Collect the entire table block (all consecutive pipe lines)
@@ -4586,22 +4603,25 @@ class FeishuAdapter(BasePlatformAdapter):
 
                 joined = "\n".join(table_lines)
                 if joined.strip():
-                    segments.append(joined)
+                    segments.append(("table", joined))
             else:
                 current.append(line)
                 i += 1
 
         if current:
-            segments.append("\n".join(current))
+            segments.append(("markdown", "\n".join(current)))
 
         return segments
 
     def _build_outbound_payloads(self, content: str) -> List[tuple[str, str, str]]:
         """Build outbound payloads, splitting content at table boundaries.
 
-        Each segment's type is decided independently by its markdown content.
-        Table segments are NOT forced to text type — Feishu's current API
-        handles markdown tables in post-type messages correctly.
+        Uses tagged segments from _split_content_at_tables so that table
+        segments are always sent as text (preserving grid rendering) and
+        markdown segments go through the post/md pipeline for rich formatting.
+        A table whose cells happen to contain **bold** or `` `code` `` is
+        still sent as text — the markup renders as literal characters inside
+        the grid cells, which is the correct trade-off.
 
         Returns list of (msg_type, original_segment_text, payload_json) tuples
         so callers can fall back gracefully when the API rejects a post payload.
@@ -4609,28 +4629,31 @@ class FeishuAdapter(BasePlatformAdapter):
         segments = self._split_content_at_tables(content)
         results: List[tuple[str, str, str]] = []
 
-        for seg in segments:
-            seg_stripped = seg.strip()
-            if not seg_stripped:
+        for seg_type, seg_text in segments:
+            seg_text = seg_text.strip()
+            if not seg_text:
                 continue
-            if _MARKDOWN_HINT_RE.search(seg):
-                results.append((
-                    "post",
-                    seg_stripped,
-                    _build_markdown_post_payload(seg_stripped),
-                ))
-            else:
-                text_payload = {"text": seg_stripped}
+            if seg_type == "table":
+                # Table segments always go as text to preserve grid cell rendering
+                text_payload = {"text": seg_text}
                 results.append((
                     "text",
-                    seg_stripped,
+                    seg_text,
                     json.dumps(text_payload, ensure_ascii=False),
                 ))
-
-        # Fallback: if splitting produced nothing, use original single-payload logic
-        if not results:
-            msg_type, payload = self._build_outbound_payload(content)
-            return [(msg_type, content.strip(), payload)]
+            elif _MARKDOWN_HINT_RE.search(seg_text):
+                results.append((
+                    "post",
+                    seg_text,
+                    _build_markdown_post_payload(seg_text),
+                ))
+            else:
+                text_payload = {"text": seg_text}
+                results.append((
+                    "text",
+                    seg_text,
+                    json.dumps(text_payload, ensure_ascii=False),
+                ))
 
         return results
 

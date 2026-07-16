@@ -362,9 +362,11 @@ export function useSessionActions({
         createdThisRun.add(stored)
         // Seed the sidebar + per-runtime cache, but DON'T steal the primary
         // selection — this session lives in the tile. Prime it with the create
-        // runtime so the tile skips a redundant resume.
+        // runtime so the tile skips a redundant resume. Runtime metadata is
+        // cached only; applying it to the shared view would make this
+        // background session overwrite the primary chat's selected model.
         upsertOptimisticSession(created, stored, null, null)
-        const runtimeInfo = applyRuntimeInfo(created.info)
+        const runtimeInfo = applyRuntimeInfo(created.info, { syncView: false })
         updateSessionState(created.session_id, state => (runtimeInfo ? { ...state, ...runtimeInfo } : state), stored)
 
         openSessionTile(stored, dir)

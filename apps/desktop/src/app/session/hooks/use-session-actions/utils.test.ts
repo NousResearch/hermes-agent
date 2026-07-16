@@ -1,8 +1,9 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
 import { $activeGatewayProfile } from '@/store/profile'
+import { $currentModel, $currentProvider, setCurrentModel, setCurrentProvider } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import {
@@ -31,6 +32,26 @@ describe('applyRuntimeInfo approval mode', () => {
 
     expect(approvalModeForProfile('work')).toBe('smart')
     expect(approvalModeForProfile('default')).toBe('smart')
+  })
+})
+
+describe('applyRuntimeInfo view syncing', () => {
+  beforeEach(() => {
+    setCurrentModel('anthropic/claude-opus-4.8')
+    setCurrentProvider('anthropic')
+  })
+
+  afterEach(() => {
+    setCurrentModel('')
+    setCurrentProvider('')
+  })
+
+  it('can cache background runtime metadata without clobbering the focused model', () => {
+    const state = applyRuntimeInfo({ model: 'gpt-5.6-sol', provider: 'openai-codex' }, { syncView: false })
+
+    expect(state).toMatchObject({ model: 'gpt-5.6-sol', provider: 'openai-codex' })
+    expect($currentModel.get()).toBe('anthropic/claude-opus-4.8')
+    expect($currentProvider.get()).toBe('anthropic')
   })
 })
 

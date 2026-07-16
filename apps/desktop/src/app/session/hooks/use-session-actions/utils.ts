@@ -259,12 +259,26 @@ type SessionRuntimeStatePatch = Partial<
   >
 >
 
-export function applyRuntimeInfo(info: SessionRuntimeInfo | undefined): SessionRuntimeStatePatch | null {
+export interface ApplyRuntimeInfoOptions {
+  /** Keep a background session out of the shared foreground-view atoms. */
+  syncView?: boolean
+}
+
+export function applyRuntimeInfo(
+  info: SessionRuntimeInfo | undefined,
+  { syncView = true }: ApplyRuntimeInfoOptions = {}
+): SessionRuntimeStatePatch | null {
   if (!info) {
     return null
   }
 
   const sessionState: SessionRuntimeStatePatch = {}
+
+  const setView = <T>(setter: (value: T) => void, value: T) => {
+    if (syncView) {
+      setter(value)
+    }
+  }
 
   reportBackendContract(info.desktop_contract)
 
@@ -279,52 +293,52 @@ export function applyRuntimeInfo(info: SessionRuntimeInfo | undefined): SessionR
   reportInstallMethodWarning(info.install_warning)
 
   if (typeof info.model === 'string') {
-    setCurrentModel(info.model)
+    setView(setCurrentModel, info.model)
     sessionState.model = info.model
   }
 
   if (typeof info.provider === 'string') {
-    setCurrentProvider(info.provider)
+    setView(setCurrentProvider, info.provider)
     sessionState.provider = info.provider
   }
 
   if (info.cwd) {
-    setCurrentCwd(info.cwd)
+    setView(setCurrentCwd, info.cwd)
     sessionState.cwd = info.cwd
   }
 
   if (info.branch !== undefined) {
-    setCurrentBranch(info.branch || '')
+    setView(setCurrentBranch, info.branch || '')
     sessionState.branch = info.branch || ''
   }
 
   if (typeof info.personality === 'string') {
     const personality = normalizePersonalityValue(info.personality)
-    setCurrentPersonality(personality)
+    setView(setCurrentPersonality, personality)
     sessionState.personality = personality
   }
 
   if (typeof info.reasoning_effort === 'string') {
-    setCurrentReasoningEffort(info.reasoning_effort)
+    setView(setCurrentReasoningEffort, info.reasoning_effort)
     sessionState.reasoningEffort = info.reasoning_effort
   }
 
   if (typeof info.service_tier === 'string') {
-    setCurrentServiceTier(info.service_tier)
+    setView(setCurrentServiceTier, info.service_tier)
     sessionState.serviceTier = info.service_tier
   }
 
   if (typeof info.fast === 'boolean') {
-    setCurrentFastMode(info.fast)
+    setView(setCurrentFastMode, info.fast)
     sessionState.fast = info.fast
   }
 
   if (typeof info.yolo === 'boolean') {
-    setYoloActive(info.yolo)
+    setView(setYoloActive, info.yolo)
     sessionState.yolo = info.yolo
   }
 
-  if (info.usage) {
+  if (syncView && info.usage) {
     setCurrentUsage(current => ({ ...current, ...info.usage }))
   }
 

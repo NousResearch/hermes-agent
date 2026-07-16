@@ -1297,10 +1297,12 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         minutes; we download immediately and never persist the URL.
 
         ``media_kind`` (``image``/``video``/``audio``/``document``/``sticker``)
-        selects the size cap from ``_MEDIA_SIZE_LIMITS``; oversized media is
-        refused from the step-1 ``file_size`` before the bytes are fetched, so
-        a webhook-triggered download can't buffer up to Meta's 100 MB document
-        limit into memory. Falls back to the document cap when unknown.
+        selects the size cap from ``_MEDIA_SIZE_LIMITS`` (document cap when
+        unknown). Oversized media is refused from the step-1 ``file_size``
+        before any bytes are fetched; the bytes are then streamed with a
+        rolling cap (plus a Content-Length preflight) so a missing or
+        understated ``file_size`` can't buffer up to Meta's 100 MB document
+        limit into memory either.
         """
         if self._http_client is None:
             return None, None
@@ -1363,32 +1365,54 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             )
             return None, None
 
-        # Step 2 — bytes (auth required even though URL is signed; Meta
-        # documents this explicitly — the URL alone is not enough).
+        # Step 2 — stream the bytes with a rolling cap so a missing or
+        # understated ``file_size`` can't buffer an oversized body into memory:
+        # reject an oversized Content-Length up front, then re-check the running
+        # total as chunks arrive and abort mid-stream once the cap is crossed
+        # (mirrors gateway/platforms/base.py::_read_httpx_body_with_limit). Auth
+        # is required even though the URL is signed — Meta documents this; the
+        # signed URL alone is not enough.
+        chunks: list[bytes] = []
+        total = 0
         try:
-            blob_resp = await self._http_client.get(temp_url, headers=headers)
+            async with self._http_client.stream(
+                "GET", temp_url, headers=headers,
+            ) as blob_resp:
+                if blob_resp.status_code != 200:
+                    logger.warning(
+                        "[whatsapp_cloud] media bytes fetch failed (id=%s, status=%d)",
+                        media_id, blob_resp.status_code,
+                    )
+                    return None, None
+                clen = blob_resp.headers.get("content-length")
+                if clen:
+                    try:
+                        clen_int = int(clen)
+                    except ValueError:
+                        clen_int = 0
+                    if clen_int > size_cap:
+                        logger.warning(
+                            "[whatsapp_cloud] refusing oversized inbound media "
+                            "(id=%s, kind=%s, content_length=%d > cap=%d)",
+                            media_id, media_kind or "document", clen_int, size_cap,
+                        )
+                        return None, None
+                async for chunk in blob_resp.aiter_bytes():
+                    total += len(chunk)
+                    if total > size_cap:
+                        logger.warning(
+                            "[whatsapp_cloud] refusing oversized inbound media "
+                            "mid-stream (id=%s, kind=%s, bytes>cap=%d)",
+                            media_id, media_kind or "document", size_cap,
+                        )
+                        return None, None
+                    chunks.append(chunk)
         except Exception:
             logger.exception(
                 "[whatsapp_cloud] media bytes fetch raised (id=%s)", media_id
             )
             return None, None
-        if blob_resp.status_code != 200:
-            logger.warning(
-                "[whatsapp_cloud] media bytes fetch failed (id=%s, status=%d)",
-                media_id, blob_resp.status_code,
-            )
-            return None, None
-
-        # Backstop: some responses omit or understate ``file_size``, so cap the
-        # actual payload too before writing it to the cache.
-        blob = blob_resp.content
-        if len(blob) > size_cap:
-            logger.warning(
-                "[whatsapp_cloud] refusing oversized inbound media after fetch "
-                "(id=%s, kind=%s, bytes=%d > cap=%d)",
-                media_id, media_kind or "document", len(blob), size_cap,
-            )
-            return None, None
+        blob = b"".join(chunks)
 
         # Decide the extension. Prefer the override map so audio/ogg
         # produces .ogg (not the technically-correct-but-broken .oga

@@ -617,10 +617,11 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 and getattr(agent, "_codex_stream_last_event_ts", None) is None
             ):
                 _deadline = min(_deadline, _ttfb_timeout)
+            _deadline_str = f"{int(_deadline)}s" if _deadline != float("inf") else "never"
             agent._emit_wait_notice(
                 f"⏳ waiting on {api_kwargs.get('model', 'the provider')} — "
                 f"{int(_elapsed)}s with no response yet (provider may be slow "
-                f"or overloaded; auto-reconnect at {int(_deadline)}s)"
+                f"or overloaded; auto-reconnect at {_deadline_str})"
             )
 
         _elapsed = time.time() - _call_start
@@ -675,15 +676,16 @@ def interruptible_api_call(agent, api_kwargs: dict):
             # Wait briefly for the worker to notice the closed connection.
             t.join(timeout=2.0)
             if result["error"] is None and result["response"] is None:
+                _ttfb_threshold_str = f"{int(_ttfb_timeout)}s" if _ttfb_timeout != float("inf") else "inf"
                 if _silent_hint:
                     result["error"] = TimeoutError(
                         f"Codex stream produced no bytes within {int(_elapsed)}s "
-                        f"(TTFB threshold: {int(_ttfb_timeout)}s). {_silent_hint}"
+                        f"(TTFB threshold: {_ttfb_threshold_str}). {_silent_hint}"
                     )
                 else:
                     result["error"] = TimeoutError(
                         f"Codex stream produced no bytes within {int(_elapsed)}s "
-                        f"(TTFB threshold: {int(_ttfb_timeout)}s)"
+                        f"(TTFB threshold: {_ttfb_threshold_str})"
                     )
             break
 
@@ -720,9 +722,10 @@ def interruptible_api_call(agent, api_kwargs: dict):
             )
             t.join(timeout=2.0)
             if result["error"] is None and result["response"] is None:
+                _codex_idle_threshold_str = f"{int(_codex_idle_timeout)}s" if _codex_idle_timeout != float("inf") else "inf"
                 result["error"] = TimeoutError(
                     f"Codex stream produced no SSE events for {int(_event_stale_elapsed)}s "
-                    f"after first byte (threshold: {int(_codex_idle_timeout)}s)"
+                    f"after first byte (threshold: {_codex_idle_threshold_str})"
                 )
             break
 
@@ -772,16 +775,17 @@ def interruptible_api_call(agent, api_kwargs: dict):
             # Wait briefly for the thread to notice the closed connection.
             t.join(timeout=2.0)
             if result["error"] is None and result["response"] is None:
+                _stale_threshold_str = f"{int(_stale_timeout)}s" if _stale_timeout != float("inf") else "inf"
                 if _silent_hint:
                     result["error"] = TimeoutError(
                         f"Non-streaming API call timed out after {int(_elapsed)}s "
-                        f"with no response (threshold: {int(_stale_timeout)}s). "
+                        f"with no response (threshold: {_stale_threshold_str}). "
                         f"{_silent_hint}"
                     )
                 else:
                     result["error"] = TimeoutError(
                         f"Non-streaming API call timed out after {int(_elapsed)}s "
-                        f"with no response (threshold: {int(_stale_timeout)}s)"
+                        f"with no response (threshold: {_stale_threshold_str})"
                     )
             break
 

@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import signal
 import shutil
 import subprocess
 import sys
@@ -2012,7 +2013,81 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
-def _run_job_script(script_path: str) -> tuple[bool, str]:
+def _get_job_script_timeout(job: dict) -> int | None:
+    """Return a validated per-job timeout override, or no override."""
+    value = job.get("script_timeout_seconds")
+    if value is None:
+        return None
+    try:
+        timeout = int(value)
+    except (TypeError, ValueError):
+        timeout = 0
+    if 1 <= timeout <= 86_400:
+        return timeout
+    logger.warning(
+        "Job '%s': invalid script_timeout_seconds=%r; using global timeout",
+        job.get("id"),
+        value,
+    )
+    return None
+
+
+def _terminate_script_process(process: subprocess.Popen, *, grace_seconds: float = 5.0) -> None:
+    """Terminate a timed-out cron script and every descendant in its group."""
+    if process.poll() is not None:
+        return
+
+    if sys.platform != "win32":
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        except OSError:
+            process.terminate()
+    else:
+        process.terminate()
+
+    if sys.platform != "win32":
+        # The wrapper may exit promptly while a descendant ignores SIGTERM.
+        # Waiting only on the wrapper would mistake that for full cleanup, so
+        # wait on process-group existence before deciding whether to escalate.
+        deadline = time.monotonic() + grace_seconds
+        while time.monotonic() < deadline:
+            try:
+                os.killpg(process.pid, 0)
+            except ProcessLookupError:
+                process.wait(timeout=grace_seconds)
+                return
+            except OSError:
+                break
+            time.sleep(0.05)
+    else:
+        try:
+            process.wait(timeout=grace_seconds)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+
+    if sys.platform != "win32":
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        except OSError:
+            process.kill()
+    else:
+        process.kill()
+    try:
+        process.wait(timeout=grace_seconds)
+    except subprocess.TimeoutExpired:
+        logger.error("Timed-out cron script process did not exit: pid=%s", process.pid)
+
+
+def _run_job_script(
+    script_path: str,
+    *,
+    timeout_seconds: int | None = None,
+) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
     Scripts must reside within HERMES_HOME/scripts/.  Both relative and
@@ -2038,6 +2113,8 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         script_path: Path to the script.  Relative paths are resolved
             against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
             are also validated to ensure they stay within the scripts dir.
+        timeout_seconds: Optional validated per-job override. The global
+            env/config/default timeout remains authoritative when omitted.
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
@@ -2068,7 +2145,11 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     if not path.is_file():
         return False, f"Script path is not a file: {path}"
 
-    script_timeout = _get_script_timeout()
+    script_timeout = (
+        int(timeout_seconds)
+        if timeout_seconds is not None and 1 <= int(timeout_seconds) <= 86_400
+        else _get_script_timeout()
+    )
 
     # Pick an interpreter by extension.  Bash for .sh/.bash, Python for
     # everything else.  We deliberately do NOT honour the file's own
@@ -2097,18 +2178,28 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     try:
         from tools.environments.local import _sanitize_subprocess_env
 
-        popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
-        result = subprocess.run(
+        popen_kwargs = (
+            {"creationflags": windows_hide_flags()}
+            if sys.platform == "win32"
+            else {"start_new_session": True}
+        )
+        process = subprocess.Popen(
             argv,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=script_timeout,
             cwd=str(path.parent),
             env=_sanitize_subprocess_env(os.environ.copy()),
             **popen_kwargs,
         )
-        stdout = (result.stdout or "").strip()
-        stderr = (result.stderr or "").strip()
+        try:
+            raw_stdout, raw_stderr = process.communicate(timeout=script_timeout)
+        except subprocess.TimeoutExpired:
+            _terminate_script_process(process)
+            return False, f"Script timed out after {script_timeout}s: {path}"
+
+        stdout = (raw_stdout or "").strip()
+        stderr = (raw_stderr or "").strip()
 
         # Redact secrets from both stdout and stderr before any return path.
         try:
@@ -2120,8 +2211,8 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             stdout = "[REDACTED - redaction failed]"
             stderr = "[REDACTED - redaction failed]"
 
-        if result.returncode != 0:
-            parts = [f"Script exited with code {result.returncode}"]
+        if process.returncode != 0:
+            parts = [f"Script exited with code {process.returncode}"]
             if stderr:
                 parts.append(f"stderr:\n{stderr}")
             if stdout:
@@ -2130,8 +2221,6 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
         return True, stdout
 
-    except subprocess.TimeoutExpired:
-        return False, f"Script timed out after {script_timeout}s: {path}"
     except Exception as exc:
         return False, f"Script execution failed: {exc}"
 
@@ -2151,6 +2240,13 @@ def _run_job_script_with_claim_heartbeat(
     storage.  ``heartbeat_run_claim`` compares that stable owner before every
     refresh, so a stale runner cannot extend a replacement owner's claim.
     """
+    timeout_override = _get_job_script_timeout(job)
+
+    def _run() -> tuple[bool, str]:
+        if timeout_override is None:
+            return _run_job_script(script_path)
+        return _run_job_script(script_path, timeout_seconds=timeout_override)
+
     schedule = job.get("schedule")
     claim = job.get("run_claim")
     owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
@@ -2159,7 +2255,7 @@ def _run_job_script_with_claim_heartbeat(
         and schedule.get("kind") == "once"
         and owner
     ):
-        return _run_job_script(script_path)
+        return _run()
 
     job_id = str(job.get("id") or "")
     stop = threading.Event()
@@ -2190,10 +2286,10 @@ def _run_job_script_with_claim_heartbeat(
             job_id,
             exc_info=True,
         )
-        return _run_job_script(script_path)
+        return _run()
 
     try:
-        return _run_job_script(script_path)
+        return _run()
     finally:
         stop.set()
         # Event.wait() wakes immediately.  Keep completion bounded if the
@@ -2254,7 +2350,14 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
         if prerun_script is not None:
             success, script_output = prerun_script
         else:
-            success, script_output = _run_job_script(script_path)
+            timeout_override = _get_job_script_timeout(job)
+            if timeout_override is None:
+                success, script_output = _run_job_script(script_path)
+            else:
+                success, script_output = _run_job_script(
+                    script_path,
+                    timeout_seconds=timeout_override,
+                )
         if success:
             if script_output:
                 prompt = (
@@ -3518,6 +3621,90 @@ def _teardown_cron_agent(agent, job_id: str) -> None:
         logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
+def _log_cron_output_to_honcho(
+    job: dict,
+    content: str,
+    *,
+    success: bool,
+    output_file: str | Path,
+    error: str | None = None,
+) -> bool:
+    """Best-effort persistence of a cron result in an isolated Honcho session.
+
+    This path is deliberately opt-in because cron output can be high volume.
+    Failures never change the job result or block normal delivery.
+    """
+    try:
+        cfg = load_config() or {}
+        memory_cfg = cfg.get("memory") if isinstance(cfg, dict) else {}
+        cron_cfg = cfg.get("cron") if isinstance(cfg, dict) else {}
+        if not isinstance(memory_cfg, dict) or not isinstance(cron_cfg, dict):
+            return False
+        if not (
+            memory_cfg.get("memory_enabled")
+            and memory_cfg.get("provider") == "honcho"
+            and cron_cfg.get("honcho_output_logging") is True
+        ):
+            return False
+
+        from agent.redact import redact_sensitive_text
+        from plugins.memory.honcho.client import HonchoClientConfig
+        from plugins.memory.honcho.session import HonchoSessionManager
+
+        honcho_cfg = HonchoClientConfig.from_global_config()
+        if not getattr(honcho_cfg, "enabled", False) or not getattr(
+            honcho_cfg, "save_messages", True
+        ):
+            return False
+
+        redacted = redact_sensitive_text(str(content or ""))
+        # The shared redactor intentionally leaves short lowercase assignments
+        # alone in prose. Honcho is durable storage, so apply a stricter final
+        # pass to credential-like assignments before persisting cron output.
+        redacted = re.sub(
+            r"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|token|secret|password)\s*=\s*[^\s;,]+",
+            lambda match: f"{match.group(1)}=[REDACTED]",
+            redacted,
+        )
+        max_chars = max(1, int(getattr(honcho_cfg, "message_max_chars", 25_000)))
+        redacted = redacted[:max_chars]
+        redacted = redacted.replace("</cron_output>", "&lt;/cron_output&gt;")
+
+        job_id = str(job.get("id") or "unknown")
+        job_name = str(job.get("name") or job_id)
+        payload = (
+            "<cron_output>\n"
+            f"Job: {job_name}\n"
+            f"Job ID: {job_id}\n"
+            f"Success: {str(bool(success)).lower()}\n"
+            f"Output file: {output_file}\n"
+            f"Error: {redact_sensitive_text(str(error)) if error else 'none'}\n"
+            "Final output:\n"
+            f"{redacted}\n"
+            "</cron_output>"
+        )
+
+        manager = HonchoSessionManager(
+            config=honcho_cfg,
+            runtime_user_peer_name="cron",
+        )
+        try:
+            session = manager.get_or_create(f"cron:{job_id}")
+            session.add_message("assistant", payload)
+            manager.save(session)
+            manager.flush_all()
+        finally:
+            manager.shutdown()
+        return True
+    except Exception as exc:
+        logger.warning(
+            "Job '%s': failed to persist cron output to Honcho: %s",
+            job.get("id"),
+            exc,
+        )
+        return False
+
+
 def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -> bool:
     """Run ONE due job end-to-end: execute → save output → deliver → mark.
 
@@ -3618,6 +3805,13 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             # If the agent responded with [SILENT], skip delivery (but
             # output is already saved above).  Failed jobs always deliver.
             deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
+            _log_cron_output_to_honcho(
+                job,
+                deliver_content,
+                success=success,
+                output_file=output_file,
+                error=error,
+            )
             # Treat whitespace-only final responses the same as empty
             # responses: do not deliver a blank message, and let the
             # empty-response guard below mark the run as a soft failure.

@@ -9,8 +9,10 @@ Tests cover:
 
 import json
 import os
+import signal
 import sys
 import textwrap
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -194,6 +196,51 @@ class TestRunJobScript:
         success, output = _run_job_script(str(script))
         assert success is False
         assert "timed out" in output.lower()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
+    @pytest.mark.live_system_guard_bypass
+    def test_script_timeout_terminates_descendant_processes(self, cron_env, monkeypatch):
+        """A timed-out wrapper must not leave its background worker orphaned."""
+        from cron import scheduler as sched_mod
+        from cron.scheduler import _run_job_script
+
+        monkeypatch.setattr(sched_mod, "_SCRIPT_TIMEOUT", 1)
+        child_pid_path = cron_env / "scripts" / "child.pid"
+        script = cron_env / "scripts" / "spawns-child.sh"
+        script.write_text(
+            textwrap.dedent(
+                f"""\
+                #!/usr/bin/env bash
+                /bin/bash -c 'trap "" TERM; sleep 30' >/dev/null 2>&1 &
+                child=$!
+                printf '%s\\n' "$child" > {str(child_pid_path)!r}
+                wait "$child"
+                """
+            )
+        )
+
+        child_pid = None
+        try:
+            success, output = _run_job_script(str(script))
+            assert success is False
+            assert "timed out" in output.lower()
+            child_pid = int(child_pid_path.read_text(encoding="utf-8").strip())
+
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(child_pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.05)
+            else:
+                pytest.fail(f"timed-out script descendant survived: pid={child_pid}")
+        finally:
+            if child_pid is not None:
+                try:
+                    os.kill(child_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
 
     def test_script_json_output(self, cron_env):
         """Scripts can output structured JSON for the LLM to parse."""

@@ -99,6 +99,34 @@ def test_t_explicit_polish_lang():
     assert i18n.t("approval.denied", lang="pl").endswith("Odrzucono")
 
 
+def test_polish_catalog_has_no_known_literal_translation_regressions():
+    """Keep machine-translation artifacts out of user-visible Polish copy."""
+    import re
+
+    text = "\n".join(str(value) for value in _flatten(_load_raw("pl")).values())
+    forbidden = [
+        r"modelk",
+        r"Bliźnięt",
+        r"\bBieganie\b",
+        r"\bBiegnij\b",
+        r"\bWłaz\b",
+        r"\bTarło\b",
+        r"Zremis",
+        r"\boddział",
+        r"żeton",
+        r"kompozytor",
+        r"zaplecz",
+        r"Pulpit Hermes",
+        r"Centrum dowodzenia",
+        r"\bbramk",
+        r"\bmonit(?:u|em|ach|ami|y|ów|owi|cie|owanie|owania)?\b",
+        r"zachęt",
+        r"narzędzi\(a\)|serwera\(ów\)|umiejętność\(i\)",
+    ]
+    for pattern in forbidden:
+        assert not re.search(pattern, text, flags=re.IGNORECASE), pattern
+
+
 def test_t_missing_key_in_non_english_falls_back_to_english(tmp_path, monkeypatch):
     """If a key exists in English but not in the target locale, fall back."""
     # Stand up a fake incomplete locale under a temp locales dir.

@@ -169,6 +169,54 @@ def test_background_review_finished_fires_once_on_failure(monkeypatch):
     assert "boom" in (finished[0]["error"] or "")
 
 
+def test_background_review_finished_not_re_emitted_when_post_success_output_raises(monkeypatch):
+    """A crash in the post-'finished' summary/output code must NOT emit a second
+    terminal event. background_review_finished is structurally exactly-once, so
+    the plugin's counters stay consistent (fork_started == finished + failed).
+    """
+    import agent.background_review as bg
+
+    recorder = _HookRecorder()
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            self._session_messages = [
+                {"role": "assistant", "content": "did a thing"}
+            ]
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    _install(monkeypatch, recorder, FakeReviewAgent)
+    # Non-empty actions => the post-'finished' output block runs...
+    monkeypatch.setattr(bg, "summarize_background_review_actions",
+                        lambda *_a, **_k: ["created a memory"])
+
+    agent = _bare_agent()
+    # ...and _safe_print (unguarded) raises there, landing in the outer except.
+    def _boom_print(*_a, **_k):
+        raise RuntimeError("print exploded after finished")
+    agent._safe_print = _boom_print
+    agent._emit_auxiliary_failure = lambda *_a, **_k: None
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    finished = recorder.of("background_review_finished")
+    assert len(finished) == 1, "terminal event must fire exactly once"
+    assert finished[0]["status"] == "finished"
+    assert finished[0]["error"] is None
+
+
 def test_background_review_started_prompt_suffix_appended(monkeypatch):
     recorder = _HookRecorder(started_returns=[{"prompt_suffix": "EXTRA-INSTRUCTION"}])
 

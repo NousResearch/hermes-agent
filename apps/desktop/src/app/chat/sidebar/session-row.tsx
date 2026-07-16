@@ -313,10 +313,11 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
     role: 'status'
   },
   // Pulsing gray — a terminal(background=true) process is alive while the LLM
-  // is idle. Gray (not accent) reads as "something chugging along".
+  // is idle. Gray (not accent) reads as "something chugging along". Brighter
+  // than muted-foreground so it's visible against the sidebar surface.
   background: {
     ariaLabel: r => r.backgroundRunning,
-    className: `${DOT_BASE} bg-muted-foreground/50 ${PING} before:bg-muted-foreground/50 before:opacity-50`,
+    className: `${DOT_BASE} bg-muted-foreground/80 ${PING} before:bg-muted-foreground/80 before:opacity-60`,
     role: 'status',
     title: r => r.backgroundRunning
   },

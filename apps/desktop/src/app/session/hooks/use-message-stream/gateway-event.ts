@@ -218,17 +218,30 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         if (sessionId && hasStatePatch) {
-          updateSessionState(sessionId, state => ({
-            ...state,
-            ...statePatch,
-            branch: statePatch.branch ?? state.branch,
-            cwd: statePatch.cwd ?? state.cwd
-          }))
+          updateSessionState(
+            sessionId,
+            state => ({
+              ...state,
+              ...statePatch,
+              branch: statePatch.branch ?? state.branch,
+              cwd: statePatch.cwd ?? state.cwd
+            }),
+            payload?.stored_session_id || undefined
+          )
         }
 
-        if (apply) {
-          if (runningChanged && sessionId) {
-            updateSessionState(sessionId, state => {
+        // The running→busy transition must reach EVERY session, not just the
+        // active one. The `apply` gate above correctly scopes view-only side
+        // effects (setCurrentModel, setCurrentCwd, etc.) to the focused chat,
+        // but the per-session busy state is what drives the sidebar working
+        // indicator — a background session's turn start/finish must update
+        // its dot without the user opening it. updateSessionState only
+        // mutates the per-runtime cache entry, and syncSessionStateToView
+        // guards the view publish to the active session, so this is safe.
+        if (runningChanged && sessionId) {
+          updateSessionState(
+            sessionId,
+            state => {
               const busy = Boolean(payload!.running)
 
               if (state.busy === busy && (busy || !state.awaitingResponse)) {
@@ -255,8 +268,9 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
                 streamId: null,
                 turnStartedAt: null
               }
-            })
-          }
+            },
+            payload?.stored_session_id || undefined
+          )
         }
 
         if (payload?.usage && (!explicitSid || isActiveEvent)) {

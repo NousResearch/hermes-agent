@@ -130,10 +130,11 @@ def _make_agent_with_compressor(
     agent.client = MagicMock()
     agent.quiet_mode = True
 
-    # Store the initial config_context_length override used at agent construction.
+    # Store session-static config used by model switches.
     agent._config_context_length = config_context_length
+    agent._compression_global_threshold = global_threshold
+    agent._codex_gpt55_autoraise = True
 
-    # Context compressor with primary model values
     compressor = ContextCompressor(
         model="primary-model",
         threshold_percent=global_threshold,
@@ -144,10 +145,49 @@ def _make_agent_with_compressor(
         config_context_length=config_context_length,
     )
     agent.context_compressor = compressor
-
-    # For switch_model
     agent._primary_runtime = {}
+    return agent
 
+
+def _make_initialized_agent(
+    *,
+    model: str,
+    provider: str,
+    api_mode: str,
+    context_length: int,
+    threshold: float | None,
+    autoraise: bool = True,
+) -> AIAgent:
+    compression = {
+        "enabled": True,
+        "codex_gpt55_autoraise": autoraise,
+    }
+    if threshold is not None:
+        compression["threshold"] = threshold
+    config = {"agent": {}, "compression": compression}
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=config),
+        patch(
+            "agent.context_compressor.get_model_context_length",
+            return_value=context_length,
+        ),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            model=model,
+            provider=provider,
+            api_mode=api_mode,
+            api_key="test-key-1234567890",
+            base_url="https://example.invalid/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    agent._create_openai_client = MagicMock(return_value=MagicMock())
     return agent
 
 
@@ -1024,15 +1064,79 @@ def test_direct_start_runtime_first_provider_names_require_explicit_custom_prefi
         assert custom_agent.context_compressor.config_context_length == 1_048_576
 
 
+@pytest.mark.parametrize(
+    ("configured_threshold", "expected_baseline"),
+    [(0.42, 0.42), (None, 0.50)],
+)
+@patch("agent.model_metadata.get_model_context_length", return_value=1_050_000)
+def test_initialized_codex_switch_restores_preserved_baseline(
+    mock_ctx_len, configured_threshold, expected_baseline,
+):
+    agent = _make_initialized_agent(
+        model="gpt-5.6-sol",
+        provider="openai-codex",
+        api_mode="codex_responses",
+        context_length=372_000,
+        threshold=configured_threshold,
+    )
+
+    assert agent._compression_global_threshold == expected_baseline
+    assert agent.context_compressor._configured_threshold_percent == 0.85
+    assert agent.context_compressor.threshold_percent == 0.85
+
+    agent.switch_model(
+        "glm-5.2-heavy",
+        "custom",
+        api_key="test-key-1234567890",
+        base_url="https://example.invalid/v1",
+        api_mode="chat_completions",
+    )
+
+    assert agent._compression_global_threshold == expected_baseline
+    assert (
+        agent.context_compressor._configured_threshold_percent
+        == expected_baseline
+    )
+    assert agent.context_compressor.threshold_percent == expected_baseline
+    assert agent.context_compressor.threshold_tokens == int(
+        1_050_000 * expected_baseline
+    )
+    mock_ctx_len.assert_called_once()
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=372_000)
+def test_initialized_agent_switch_honors_codex_autoraise_opt_out(mock_ctx_len):
+    agent = _make_initialized_agent(
+        model="glm-5.2-heavy",
+        provider="custom",
+        api_mode="chat_completions",
+        context_length=1_050_000,
+        threshold=0.42,
+        autoraise=False,
+    )
+
+    agent.switch_model(
+        "gpt-5.6-sol",
+        "custom",
+        api_key="test-key-1234567890",
+        base_url="https://example.invalid/v1",
+        api_mode="codex_responses",
+    )
+
+    assert agent._compression_global_threshold == 0.42
+    assert agent.context_compressor._configured_threshold_percent == 0.42
+    assert agent.context_compressor.threshold_percent == 0.75
+    assert agent.context_compressor.threshold_tokens == int(372_000 * 0.75)
+    mock_ctx_len.assert_called_once()
+
+
 @pytest.mark.parametrize("codex_context_length", [272_000, 372_000])
 @patch("agent.model_metadata.get_model_context_length")
 def test_switch_model_threshold_round_trip(mock_ctx_len, codex_context_length):
-    """A known bounded custom Codex route raises, then GLM restores global."""
-    mock_ctx_len.side_effect = [codex_context_length, 340_000]
-    # Deliberately omit the new agent attributes: direct callers that construct
-    # a bare agent must capture the compressor's configured 0.75 on first use.
+    """A bounded custom Codex route raises, then restores the 0.42 baseline."""
+    mock_ctx_len.side_effect = [codex_context_length, 1_050_000]
     agent = _make_agent_with_compressor(
-        config_context_length=None, global_threshold=0.75,
+        config_context_length=None, global_threshold=0.42,
     )
 
     agent.switch_model(
@@ -1043,7 +1147,7 @@ def test_switch_model_threshold_round_trip(mock_ctx_len, codex_context_length):
         api_mode="codex_responses",
     )
 
-    assert agent._compression_global_threshold == 0.75
+    assert agent._compression_global_threshold == 0.42
     assert agent.context_compressor._configured_threshold_percent == 0.85
     assert agent.context_compressor.threshold_percent == 0.85
     assert agent.context_compressor.threshold_tokens == int(codex_context_length * 0.85)
@@ -1056,10 +1160,10 @@ def test_switch_model_threshold_round_trip(mock_ctx_len, codex_context_length):
         api_mode="chat_completions",
     )
 
-    assert agent.context_compressor.context_length == 340_000
-    assert agent.context_compressor._configured_threshold_percent == 0.75
-    assert agent.context_compressor.threshold_percent == 0.75
-    assert agent.context_compressor.threshold_tokens == int(340_000 * 0.75)
+    assert agent.context_compressor.context_length == 1_050_000
+    assert agent.context_compressor._configured_threshold_percent == 0.42
+    assert agent.context_compressor.threshold_percent == 0.42
+    assert agent.context_compressor.threshold_tokens == int(1_050_000 * 0.42)
     assert mock_ctx_len.call_count == 2
 
 

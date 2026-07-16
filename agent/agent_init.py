@@ -259,6 +259,45 @@ def _resolve_compression_threshold(
     return model_cthresh, None
 
 
+def _resolve_model_compression_threshold(
+    configured_threshold: float,
+    *,
+    model: Optional[str],
+    provider: Optional[str],
+    allow_codex_gpt55_autoraise: bool,
+    api_mode: Optional[str],
+    context_length: Optional[int],
+) -> tuple[float, Optional[Dict[str, Any]]]:
+    """Resolve one model's threshold from the preserved global baseline."""
+    from agent.auxiliary_client import (
+        _compression_threshold_for_model,
+        _is_codex_gpt54_or_gpt55,
+        _is_codex_spark,
+    )
+
+    model_threshold = _compression_threshold_for_model(
+        model,
+        provider,
+        allow_codex_gpt55_autoraise=allow_codex_gpt55_autoraise,
+        api_mode=api_mode,
+        context_length=context_length,
+    )
+    return _resolve_compression_threshold(
+        configured_threshold,
+        model_threshold,
+        model=model,
+        is_codex_autoraise=(
+            _is_codex_gpt54_or_gpt55(
+                model,
+                provider,
+                api_mode=api_mode,
+                context_length=context_length,
+            )
+            or _is_codex_spark(model, provider)
+        ),
+    )
+
+
 def _codex_gpt55_autoraise_notice_marker():
     """Path to the per-profile marker recording that the autoraise notice ran.
 
@@ -531,6 +570,21 @@ def init_agent(
             remain skipped.
     """
     _install_safe_stdio()
+    # Capture the merged user/default compression baseline before any model or
+    # route normalization. Model-specific thresholds are derived values; they
+    # must never replace the baseline used by later live model switches.
+    try:
+        from hermes_cli.config import load_config as _load_agent_config
+
+        _agent_cfg = _load_agent_config()
+    except Exception:
+        _agent_cfg = {}
+    _compression_cfg = _agent_cfg.get("compression", {})
+    if not isinstance(_compression_cfg, dict):
+        _compression_cfg = {}
+    agent._compression_global_threshold = float(
+        _compression_cfg.get("threshold", 0.50)
+    )
 
     agent.model = model
     agent.max_iterations = max_iterations
@@ -1752,14 +1806,7 @@ def init_agent(
     # Initialize context compressor for automatic context management
     # Compresses conversation when approaching model's context limit
     # Configuration via config.yaml (compression section)
-    _compression_cfg = _agent_cfg.get("compression", {})
-    if not isinstance(_compression_cfg, dict):
-        _compression_cfg = {}
-    compression_threshold = float(_compression_cfg.get("threshold", 0.50))
-    # Preserve the user's raw global setting before any route-specific
-    # autoraise. Live model switches must always derive from this value rather
-    # than from the compressor's current (possibly raised or floored) value.
-    agent._compression_global_threshold = compression_threshold
+    compression_threshold = agent._compression_global_threshold
     # Per-model/route compaction-threshold override. Codex gpt-5.4 / gpt-5.5
     # raise to 85% (the Codex backend caps both families at 272K, so the
     # default 50% would compact at ~136K — half the usable context). Gated by
@@ -2167,35 +2214,14 @@ def init_agent(
     # capabilities have been loaded. ``codex_responses`` is a wire protocol,
     # not proof that a custom endpoint has the 272K Codex cap.
     try:
-        from agent.auxiliary_client import (
-            _compression_threshold_for_model as _cthresh_fn,
-            _is_codex_gpt54_or_gpt55 as _is_codex_gpt54_or_gpt55_fn,
-            _is_codex_spark as _is_codex_spark_fn,
-        )
-        _model_cthresh = _cthresh_fn(
-            agent.model,
-            agent.provider,
-            allow_codex_gpt55_autoraise=agent._codex_gpt55_autoraise,
-            api_mode=getattr(agent, "api_mode", None),
-            context_length=_config_context_length,
-        )
-        # The Codex autoraises apply only when they RAISE (never lower a
-        # user's higher global threshold). Arcee Trinity keeps its long-standing
-        # unconditional behaviour.
         compression_threshold, agent._compression_threshold_autoraised = (
-            _resolve_compression_threshold(
+            _resolve_model_compression_threshold(
                 agent._compression_global_threshold,
-                _model_cthresh,
                 model=agent.model,
-                is_codex_autoraise=(
-                    _is_codex_gpt54_or_gpt55_fn(
-                        agent.model,
-                        agent.provider,
-                        api_mode=getattr(agent, "api_mode", None),
-                        context_length=_config_context_length,
-                    )
-                    or _is_codex_spark_fn(agent.model, agent.provider)
-                ),
+                provider=agent.provider,
+                allow_codex_gpt55_autoraise=agent._codex_gpt55_autoraise,
+                api_mode=getattr(agent, "api_mode", None),
+                context_length=_config_context_length,
             )
         )
     except Exception:

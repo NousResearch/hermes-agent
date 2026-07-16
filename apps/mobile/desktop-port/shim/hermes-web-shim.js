@@ -131,13 +131,39 @@
     return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : DEFAULT_FETCH_TIMEOUT_MS
   }
 
+  // ── Single-profile constraint ────────────────────────────────────────────
+  // This client binds to ONE remote gateway, which is the primary ("default")
+  // profile. The desktop's multi-profile model spawns a separate local backend
+  // per HERMES_HOME from the Electron pool and routes profile-scoped requests
+  // to it (store/profile.ts:206-263; requests carry `profile` via desktop-fs.ts
+  // / desktop-git.ts). None of that maps onto a single remote gateway, so profile
+  // switching is DISABLED here: rather than silently issuing a named profile's
+  // request against the one unscoped backend (the mismatch #64962's review
+  // flagged), any non-primary profile throws. Mirrors normalizeProfileKey
+  // (store/profile.ts:21): trimmed, empty/null → 'default'.
+  function normalizeProfileKey(name) {
+    return String(name == null ? '' : name).trim() || 'default'
+  }
+  function isPrimaryProfile(profile) {
+    return normalizeProfileKey(profile) === 'default'
+  }
+  function assertPrimaryProfile(profile) {
+    if (!isPrimaryProfile(profile)) {
+      throw new Error(
+        'This iOS client is bound to a single remote gateway (the default profile). ' +
+          'Profile switching is not available in this build; change the gateway in Settings instead.',
+      )
+    }
+  }
+
   // ── api(request) ───────────────────────────────────────────────────────
   // Mirrors the Electron `hermes:api` handler (main.cjs:6555-6596) + fetchJson
   // (main.cjs:3285-3352). Returns PARSED JSON directly (the generic <T>), NOT an
   // { ok, status, body } envelope. Contract:
   //   - request: { path (incl. query string), method?, body?, timeoutMs?, profile? }
-  //     No separate `query` field (hermes.ts:204-208). `profile` is ignored
-  //     here: one remote backend.
+  //     No separate `query` field (hermes.ts:204-208). A non-primary `profile`
+  //     throws (single-profile client — see assertPrimaryProfile above); the
+  //     primary/absent profile resolves to the one remote backend.
   //   - headers: Content-Type + X-Hermes-Session-Token ALWAYS sent.
   //   - success: empty body → null; HTML body → throw diagnostic; else JSON.parse.
   //   - failure (status >= 400): throw Error(`${status}: ${body}`).
@@ -145,6 +171,7 @@
   // window.location.origin + scraped token). A 401 is NO LONGER auto-recovered —
   // it surfaces as `${status}: ${body}` so the renderer's recovery UI takes over.
   async function api(request) {
+    assertPrimaryProfile(request && request.profile)
     const conn = requireConnection()
     const path = String((request && request.path) || '')
     const method = (request && request.method) || 'GET'
@@ -204,7 +231,8 @@
   // (apps/shared/src/websocket-url.ts:38). NO stored config → throw
   // NO_CONFIG_MESSAGE, which boot() catches → failDesktopBoot() → BootFailureOverlay
   // (use-gateway-boot.ts:336,400-407; §6).
-  async function getConnection(_profile) {
+  async function getConnection(profile) {
+    assertPrimaryProfile(profile)
     const conn = requireConnection()
     return {
       baseUrl: conn.url,
@@ -216,7 +244,11 @@
       token: conn.token,
       wsUrl: buildWsUrl(conn.url, conn.token),
       logs: [],
-      windowButtonPosition: null
+      windowButtonPosition: null,
+      // Primary profile: this client is bound to one remote gateway, so the
+      // connection descriptor is never scoped to a named profile. Keeps
+      // desktopFsProfile()/request routing on 'default'.
+      profile: null
     }
   }
 
@@ -375,7 +407,8 @@
     getConnection,
     // resolveGatewayWsUrl (websocket-url.ts:34-64) mints via this in token mode
     // and falls back to conn.wsUrl; both resolve to the same token WS URL here.
-    getGatewayWsUrl: async () => {
+    getGatewayWsUrl: async profile => {
+      assertPrimaryProfile(profile)
       const conn = requireConnection()
       return buildWsUrl(conn.url, conn.token)
     },
@@ -385,8 +418,12 @@
       const raw = readStoredRaw()
       return { ok: Boolean(raw && raw.url && raw.token), rebuilt: false }
     },
-    // Idle-reaper keepalive (global.d.ts:26). No pool here → always ok.
-    touchBackend: async () => ({ ok: true }),
+    // Idle-reaper keepalive (global.d.ts:26). No pool here → always ok for the
+    // primary profile; a named profile throws (single-profile client).
+    touchBackend: async profile => {
+      assertPrimaryProfile(profile)
+      return { ok: true }
+    },
 
     // ── Gateway settings (gateway-settings.tsx + boot-failure-overlay.tsx) ──
     getConnectionConfig: async profile => sanitizeConfig(profile),
@@ -486,13 +523,18 @@
 
     // ── Profile ─────────────────────────────────────────────────────────
     // profile.get → DesktopActiveProfile { profile: string | null }
-    // (global.d.ts:386-390). null preference → boot defaults to 'default'
-    // (use-gateway-boot.ts:365). profile.set echoes the request as a no-op
-    // (store/profile.ts:140 calls it unguarded); no profile switching against a
-    // single remote backend.
+    // (global.d.ts:386-390). null → the primary profile; boot defaults to
+    // 'default' (use-gateway-boot.ts:365). profile.set formerly echoed the name
+    // as a silent no-op (store/profile.ts:140 calls it unguarded), which let the
+    // UI believe it had switched while requests still hit the one backend. It now
+    // accepts only the primary profile and throws otherwise, so switchProfile()
+    // fails loudly instead of desyncing UI state from the backend.
     profile: {
       get: async () => ({ profile: null }),
-      set: async name => ({ profile: name ?? null })
+      set: async name => {
+        assertPrimaryProfile(name)
+        return { profile: null }
+      }
     },
 
     // ── Version ─────────────────────────────────────────────────────────

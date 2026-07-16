@@ -21,6 +21,27 @@ sys.modules.setdefault("fal_client", types.SimpleNamespace())
 from run_agent import AIAgent
 
 
+def _host_has_anthropic_aux_credentials() -> bool:
+    """True when the host environment would resolve a real Anthropic auxiliary
+    client (env var, Keychain, auth.json, or a credential pool). Used to xfail
+    a 'no provider available' test that a fully-configured dev box cannot
+    satisfy; CI has none of these and runs the test normally."""
+    try:
+        from agent.anthropic_adapter import resolve_anthropic_token
+        if resolve_anthropic_token():
+            return True
+    except Exception:
+        pass
+    try:
+        from agent.auxiliary_client import _select_pool_entry
+        present, entry = _select_pool_entry("anthropic")
+        if present and entry is not None:
+            return True
+    except Exception:
+        pass
+    return False
+
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def _tool_defs(*names):
@@ -1058,6 +1079,16 @@ class TestAuxiliaryClientProviderPriority:
             client, model = get_text_auxiliary_client()
         assert mock.call_args.kwargs["base_url"] == "http://localhost:1234/v1"
 
+    @pytest.mark.xfail(
+        _host_has_anthropic_aux_credentials(),
+        reason="On a fully-configured host the real model.provider=anthropic "
+        "config + credentials resolve an Anthropic auxiliary client through the "
+        "auto chain (via import-time-cached config the per-test env redirect "
+        "cannot defeat), so the 'nothing available -> None' precondition can't be "
+        "established here. Passes in CI, where no anthropic credential is "
+        "configured. strict=False so a clean host still passes.",
+        strict=False,
+    )
     def test_codex_not_in_auto_fallback(self, monkeypatch):
         """Codex is deliberately NOT part of the auto fallback chain.
 

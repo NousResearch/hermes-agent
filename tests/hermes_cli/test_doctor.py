@@ -789,7 +789,16 @@ def test_run_doctor_dashscope_retries_china_endpoint_after_intl_unauthorized(mon
     out = buf.getvalue()
 
     assert "Alibaba/DashScope" in out
-    assert "invalid API key" not in out
+    # Scope the "no invalid API key" check to the DashScope line specifically.
+    # run_doctor probes every configured provider, so on a dev box with real
+    # (unreachable-in-test) relay providers the global output legitimately
+    # contains "invalid API key" for those unrelated rows -- the assertion is
+    # about DashScope succeeding via the China-endpoint retry, not about the
+    # whole fleet's provider health.
+    dashscope_line = next(
+        (ln for ln in out.splitlines() if "Alibaba/DashScope" in ln), ""
+    )
+    assert "invalid API key" not in dashscope_line
     assert any(
         url == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models"
         for url, _, _ in calls

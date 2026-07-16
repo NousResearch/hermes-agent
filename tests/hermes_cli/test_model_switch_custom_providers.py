@@ -663,6 +663,7 @@ def test_list_authenticated_providers_groups_same_endpoint(monkeypatch):
             {"name": "Ollama — Qwen3-coder", "base_url": "http://localhost:11434/v1",
              "api_key": "ollama", "model": "qwen3-coder"},
         ],
+        probe_custom_providers=False,
         max_models=50,
     )
 
@@ -747,6 +748,7 @@ def test_list_authenticated_providers_distinct_endpoints_stay_separate(monkeypat
             {"name": "Ollama — Qwen3-coder", "base_url": "http://localhost:11434/v1",
              "api_key": "ollama", "model": "qwen3-coder"},
         ],
+        probe_custom_providers=False,
         max_models=50,
     )
 
@@ -840,6 +842,7 @@ def test_list_authenticated_providers_total_models_reflects_grouped_count(monkey
     providers = list_authenticated_providers(
         user_providers={},
         custom_providers=entries,
+        probe_custom_providers=False,
         max_models=4,
     )
 

@@ -259,6 +259,10 @@ def test_passthrough_kwargs_to_base(monkeypatch):
 
 def test_current_custom_endpoint_passthrough_marks_current_row(monkeypatch):
     """Interactive picker should preserve current custom endpoint semantics."""
+    # Prevent the live custom-endpoint /models probe from hitting a real local
+    # service (e.g. an Ollama at localhost:11434 on a dev box), which would
+    # replace the declared models with whatever that server actually serves.
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *a, **k: [])
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr("agent.models_dev.PROVIDER_TO_MODELS_DEV", {})
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})

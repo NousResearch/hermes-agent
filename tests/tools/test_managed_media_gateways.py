@@ -347,6 +347,33 @@ def test_transcription_uses_model_specific_response_formats(monkeypatch, tmp_pat
     assert json_capture["close_calls"] == 1
 
 
+@pytest.mark.parametrize(
+    ("transcription", "expected"),
+    [
+        ("language English<asr_text>Hello from Qwen.", "Hello from Qwen."),
+        (
+            types.SimpleNamespace(text="language Chinese<asr_text>Object response."),
+            "Object response.",
+        ),
+        (
+            {"text": "language English<asr_text>Dictionary response."},
+            "Dictionary response.",
+        ),
+    ],
+)
+def test_extract_transcript_text_strips_qwen3_asr_prefix(
+    transcription,
+    expected,
+):
+    _install_fake_tools_package()
+    transcription_tools = _load_tool_module(
+        "tools.transcription_tools",
+        "transcription_tools.py",
+    )
+
+    assert transcription_tools._extract_transcript_text(transcription) == expected
+
+
 PLUGINS_DIR = Path(__file__).resolve().parents[2] / "plugins"
 
 

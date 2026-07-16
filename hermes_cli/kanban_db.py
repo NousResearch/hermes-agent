@@ -2424,6 +2424,189 @@ class VerifierAuthorization:
     reason: str
 
 
+VERIFIER_RESULT_CONTRACT_ID = "protected-merge:v1"
+VERIFIER_RESULT_MAX_BYTES = 16 * 1024
+VERIFIER_RESULT_DEADLINE_SECONDS = 20 * 60
+_VERIFIER_RESULT_ALLOWED_FIELDS = frozenset({
+    "version",
+    "task_id",
+    "run_id",
+    "claim_lock",
+    "contract_id",
+    "pr_url",
+    "nonce",
+    "action",
+    "summary",
+    "reason",
+})
+_VERIFIER_RESULT_REQUIRED_FIELDS = frozenset({
+    "version",
+    "task_id",
+    "run_id",
+    "claim_lock",
+    "contract_id",
+    "pr_url",
+    "nonce",
+    "action",
+})
+_VERIFIER_RESULT_STRING_FIELDS = frozenset({
+    "task_id",
+    "claim_lock",
+    "contract_id",
+    "pr_url",
+    "nonce",
+    "action",
+})
+_VERIFIER_RESULT_ACTIONS = frozenset({"complete", "re-block"})
+
+
+@dataclass(frozen=True)
+class VerifierResultFrame:
+    valid: bool
+    reason: str
+    payload: Optional[dict[str, Any]] = None
+
+
+@dataclass(frozen=True)
+class VerifierSupervisorResult:
+    ok: bool
+    action: Optional[str]
+    reason: str
+
+
+def make_verifier_result_binding(
+    task: Task,
+    contract: dict,
+    *,
+    nonce: str,
+) -> dict[str, Any]:
+    if task.current_run_id is None:
+        raise ValueError("verifier result binding requires a current run id")
+    if not task.claim_lock:
+        raise ValueError("verifier result binding requires a claim lock")
+    pr_url = contract.get("pr_url") if isinstance(contract, dict) else None
+    if not isinstance(pr_url, str) or not pr_url:
+        raise ValueError("verifier result binding requires contract pr_url")
+    return {
+        "task_id": task.id,
+        "run_id": int(task.current_run_id),
+        "claim_lock": task.claim_lock,
+        "contract_id": VERIFIER_RESULT_CONTRACT_ID,
+        "pr_url": pr_url,
+        "nonce": nonce,
+    }
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    seen: set[str] = set()
+    out: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in seen:
+            raise ValueError(f"duplicate_key:{key}")
+        seen.add(key)
+        out[key] = value
+    return out
+
+
+def parse_verifier_result_frame(
+    raw_frame: bytes,
+    *,
+    max_bytes: int = VERIFIER_RESULT_MAX_BYTES,
+) -> VerifierResultFrame:
+    if len(raw_frame) > int(max_bytes):
+        return VerifierResultFrame(False, "oversized")
+    if not raw_frame:
+        return VerifierResultFrame(False, "no_frame")
+    if not raw_frame.endswith(b"\n"):
+        return VerifierResultFrame(False, "partial_frame")
+    if raw_frame.count(b"\n") != 1:
+        return VerifierResultFrame(False, "multiple_frames")
+    try:
+        text = raw_frame.decode("utf-8")
+    except UnicodeDecodeError:
+        return VerifierResultFrame(False, "invalid_utf8")
+    try:
+        payload = json.loads(text, object_pairs_hook=_reject_duplicate_json_keys)
+    except ValueError as exc:
+        msg = str(exc)
+        if msg.startswith("duplicate_key:"):
+            return VerifierResultFrame(False, msg)
+        return VerifierResultFrame(False, "invalid_json")
+    if not isinstance(payload, dict):
+        return VerifierResultFrame(False, "not_object")
+    for field in payload:
+        if field not in _VERIFIER_RESULT_ALLOWED_FIELDS:
+            return VerifierResultFrame(False, f"unknown_field:{field}")
+    for field in _VERIFIER_RESULT_REQUIRED_FIELDS:
+        if field not in payload:
+            return VerifierResultFrame(False, f"missing_field:{field}")
+    if payload["version"] != 1:
+        return VerifierResultFrame(False, "invalid_version")
+    if not isinstance(payload["run_id"], int):
+        return VerifierResultFrame(False, "invalid_type:run_id")
+    for field in _VERIFIER_RESULT_STRING_FIELDS:
+        if not isinstance(payload[field], str) or not payload[field]:
+            return VerifierResultFrame(False, f"invalid_type:{field}")
+    if payload["action"] not in _VERIFIER_RESULT_ACTIONS:
+        return VerifierResultFrame(False, "invalid_action")
+    for field in ("summary", "reason"):
+        if field in payload and not isinstance(payload[field], str):
+            return VerifierResultFrame(False, f"invalid_type:{field}")
+        if field in payload and len(payload[field].encode("utf-8")) > _CTX_MAX_FIELD_BYTES:
+            return VerifierResultFrame(False, f"field_too_large:{field}")
+    return VerifierResultFrame(True, "ok", payload)
+
+
+def apply_verifier_supervisor_result(
+    conn: sqlite3.Connection,
+    *,
+    authorization_id: int,
+    binding: dict[str, Any],
+    raw_frame: bytes,
+) -> VerifierSupervisorResult:
+    parsed = parse_verifier_result_frame(raw_frame)
+    if not parsed.valid or parsed.payload is None:
+        return VerifierSupervisorResult(False, None, parsed.reason)
+    payload = parsed.payload
+    for field in ("task_id", "run_id", "claim_lock", "contract_id", "pr_url", "nonce"):
+        if payload.get(field) != binding.get(field):
+            return VerifierSupervisorResult(False, None, f"binding_mismatch:{field}")
+    consumed = consume_verifier_result(
+        conn, authorization_id=authorization_id, **binding
+    )
+    if consumed.state != "consumed":
+        return VerifierSupervisorResult(False, None, consumed.reason)
+    action = payload["action"]
+    summary = payload.get("summary") or ""
+    if action == "complete":
+        if not complete_task(
+            conn,
+            str(binding["task_id"]),
+            result=summary or None,
+            summary=summary or None,
+            expected_run_id=int(binding["run_id"]),
+        ):
+            return VerifierSupervisorResult(False, action, "apply_failed")
+    elif action == "re-block":
+        reason = payload.get("reason") or summary or "verifier requested re-block"
+        if not block_task(
+            conn,
+            str(binding["task_id"]),
+            reason=reason,
+            kind="needs_input",
+            expected_run_id=int(binding["run_id"]),
+        ):
+            return VerifierSupervisorResult(False, action, "apply_failed")
+    else:  # defensive; parser already rejects this
+        return VerifierSupervisorResult(False, None, "invalid_action")
+    applied = apply_verifier_result(
+        conn, authorization_id=authorization_id, **binding
+    )
+    if applied.state != "applied":
+        return VerifierSupervisorResult(False, action, applied.reason)
+    return VerifierSupervisorResult(True, action, "applied")
+
+
 def _nonce_digest(nonce: str) -> str:
     return hashlib.sha256(nonce.encode("utf-8")).hexdigest()
 
@@ -2462,6 +2645,30 @@ def _authorization_binding_reason(
     ).fetchone()
     if task is None or task["current_run_id"] != run_id or task["claim_lock"] != claim_lock:
         return "stale_claim"
+    return None
+
+
+def _authorization_static_binding_reason(
+    row: sqlite3.Row,
+    *,
+    task_id: str,
+    run_id: int,
+    claim_lock: str,
+    contract_id: str,
+    pr_url: str,
+    nonce: str,
+) -> Optional[str]:
+    expected = {
+        "task_id": task_id,
+        "run_id": run_id,
+        "claim_lock": claim_lock,
+        "contract_id": contract_id,
+        "pr_url": pr_url,
+        "nonce_digest": _nonce_digest(nonce),
+    }
+    for field, value in expected.items():
+        if row[field] != value:
+            return f"binding_mismatch:{field.removesuffix('_digest')}"
     return None
 
 
@@ -2532,16 +2739,22 @@ def _transition_verifier_result(
         ).fetchone()
         if row is None:
             return VerifierAuthorization(authorization_id, "missing", "authorization_not_found")
-        mismatch = _authorization_binding_reason(
-            conn, row, task_id=task_id, run_id=run_id, claim_lock=claim_lock,
-            contract_id=contract_id, pr_url=pr_url, nonce=nonce,
-        )
+        if row["state"] in {"applied", "failed", "reconciled"}:
+            return _authorization_result(row, f"already_{row['state']}")
+        if action == "apply":
+            mismatch = _authorization_static_binding_reason(
+                row, task_id=task_id, run_id=run_id, claim_lock=claim_lock,
+                contract_id=contract_id, pr_url=pr_url, nonce=nonce,
+            )
+        else:
+            mismatch = _authorization_binding_reason(
+                conn, row, task_id=task_id, run_id=run_id, claim_lock=claim_lock,
+                contract_id=contract_id, pr_url=pr_url, nonce=nonce,
+            )
         if mismatch is not None:
             return _authorization_result(row, mismatch)
         if row["state"] == next_state:
             return _authorization_result(row, "idempotent_retry")
-        if row["state"] in {"applied", "failed", "reconciled"}:
-            return _authorization_result(row, f"already_{row['state']}")
         if row["state"] != expected_state:
             return _authorization_result(row, f"invalid_transition:{row['state']}->{next_state}")
         cursor = conn.execute(
@@ -9007,6 +9220,349 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         return None
 
 
+def _read_verifier_result_pipe(
+    read_fd: int,
+    *,
+    deadline_seconds: int = VERIFIER_RESULT_DEADLINE_SECONDS,
+    max_bytes: int = VERIFIER_RESULT_MAX_BYTES,
+) -> bytes:
+    deadline = time.monotonic() + max(1, int(deadline_seconds))
+    chunks: list[bytes] = []
+    total = 0
+    try:
+        while time.monotonic() < deadline:
+            timeout = max(0.0, min(0.1, deadline - time.monotonic()))
+            if not _IS_WINDOWS:
+                import select
+                readable, _, _ = select.select([read_fd], [], [], timeout)
+                if not readable:
+                    continue
+            chunk = os.read(read_fd, min(4096, max(1, int(max_bytes) + 1 - total)))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > max_bytes:
+                return b"x" * (int(max_bytes) + 1)
+            if b"\n" in chunk:
+                break
+        return b"".join(chunks)
+    finally:
+        try:
+            os.close(read_fd)
+        except OSError:
+            pass
+
+
+def _verifier_failure_reblock(
+    *,
+    db_path: Path,
+    task_id: str,
+    run_id: int,
+    reason: str,
+) -> None:
+    try:
+        with connect(db_path=db_path) as conn:
+            block_task(
+                conn,
+                task_id,
+                reason=f"verifier result channel failed: {reason}",
+                kind="needs_input",
+                expected_run_id=run_id,
+            )
+    except Exception:
+        _log.warning(
+            "kanban verifier supervisor failed to re-block task %s after %s",
+            task_id,
+            reason,
+            exc_info=True,
+        )
+
+
+def _close_fd_quietly(fd: int) -> None:
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
+def _start_verifier_supervisor_waiter(
+    *,
+    read_fd: int,
+    proc: Any,
+    db_path: Path,
+    authorization_id: int,
+    binding: dict[str, Any],
+) -> None:
+    def _waiter() -> None:
+        rc = None
+        if _IS_WINDOWS:
+            try:
+                rc = proc.wait(timeout=VERIFIER_RESULT_DEADLINE_SECONDS)
+            except AttributeError:
+                rc = None
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                rc = "timeout"
+            if rc not in (None, 0):
+                _close_fd_quietly(read_fd)
+                _verifier_failure_reblock(
+                    db_path=db_path,
+                    task_id=str(binding["task_id"]),
+                    run_id=int(binding["run_id"]),
+                    reason="timeout" if rc == "timeout" else f"exit:{rc}",
+                )
+                return
+            raw = _read_verifier_result_pipe(read_fd)
+        else:
+            raw = _read_verifier_result_pipe(read_fd)
+            try:
+                rc = proc.wait(timeout=5)
+            except AttributeError:
+                rc = None
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                rc = "timeout"
+        if rc not in (None, 0):
+            _verifier_failure_reblock(
+                db_path=db_path,
+                task_id=str(binding["task_id"]),
+                run_id=int(binding["run_id"]),
+                reason="timeout" if rc == "timeout" else f"exit:{rc}",
+            )
+            return
+        try:
+            with connect(db_path=db_path) as conn:
+                applied = apply_verifier_supervisor_result(
+                    conn,
+                    authorization_id=authorization_id,
+                    binding=binding,
+                    raw_frame=raw,
+                )
+        except Exception as exc:
+            _log.warning(
+                "kanban verifier supervisor crashed applying result for %s: %s",
+                binding.get("task_id"),
+                exc,
+                exc_info=True,
+            )
+            return
+        if not applied.ok:
+            _verifier_failure_reblock(
+                db_path=db_path,
+                task_id=str(binding["task_id"]),
+                run_id=int(binding["run_id"]),
+                reason=applied.reason,
+            )
+
+    thread = threading.Thread(
+        target=_waiter,
+        name=f"kanban-verifier-supervisor-{binding.get('task_id')}",
+        daemon=True,
+    )
+    thread.start()
+
+
+def _build_verifier_child_env(
+    *,
+    base_env: dict[str, str],
+    workspace: str,
+    contract: dict,
+    binding: dict[str, Any],
+    writer_fd: int,
+    result_endpoint: Optional[int] = None,
+) -> dict[str, str]:
+    keep_names = {
+        "PATH",
+        "HOME",
+        "USER",
+        "USERNAME",
+        "TMPDIR",
+        "TEMP",
+        "TMP",
+        "LANG",
+        "LC_ALL",
+        "SSL_CERT_FILE",
+        "REQUESTS_CA_BUNDLE",
+        "HERMES_BIN",
+    }
+    env = {
+        key: value
+        for key, value in base_env.items()
+        if key in keep_names or key.startswith(("OPENAI_", "ANTHROPIC_", "GITHUB_"))
+    }
+    env["HERMES_IGNORE_USER_CONFIG"] = "1"
+    if workspace and os.path.isabs(workspace) and os.path.isdir(workspace):
+        env["TERMINAL_CWD"] = workspace
+    env["HERMES_KANBAN_VERIFY_ONLY"] = "1"
+    env["HERMES_KANBAN_VERIFY_CONTRACT"] = json.dumps(
+        {
+            "contract_id": binding["contract_id"],
+            "task_id": binding["task_id"],
+            "run_id": binding["run_id"],
+            "pr_url": binding["pr_url"],
+            "approved_head": str(contract.get("approved_head") or ""),
+            "approved_base": str(contract.get("approved_base") or ""),
+            "nonce": binding["nonce"],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if _IS_WINDOWS:
+        env["HERMES_KANBAN_VERIFY_RESULT_HANDLE"] = str(
+            writer_fd if result_endpoint is None else int(result_endpoint)
+        )
+    else:
+        env["HERMES_KANBAN_VERIFY_RESULT_FD"] = str(writer_fd)
+    return env
+
+
+def _windows_os_handle(fd: int) -> int:
+    import msvcrt
+
+    handle = int(msvcrt.get_osfhandle(fd))
+    set_handle_inheritable = getattr(os, "set_handle_inheritable", None)
+    if set_handle_inheritable is not None:
+        set_handle_inheritable(handle, True)
+    return handle
+
+
+def _spawn_verifier_supervisor(
+    task: Task,
+    workspace: str,
+    *,
+    board: Optional[str],
+    base_cmd: list[str],
+) -> Optional[int]:
+    import subprocess
+
+    if not isinstance(task.verification_contract, dict):
+        raise ValueError("verification supervisor requires a contract")
+    nonce = secrets.token_urlsafe(24)
+    binding = make_verifier_result_binding(
+        task,
+        task.verification_contract,
+        nonce=nonce,
+    )
+    db_path = kanban_db_path(board=board)
+    with connect(db_path=db_path) as conn:
+        auth = authorize_verifier_result(conn, **binding)
+        if auth.state not in {"authorized", "reserved", "started"} or auth.id <= 0:
+            raise RuntimeError(f"verifier authorization denied: {auth.reason}")
+        if auth.state == "authorized":
+            reserved = reserve_verifier_result(conn, authorization_id=auth.id, **binding)
+            if reserved.state != "reserved":
+                raise RuntimeError(f"verifier authorization reserve failed: {reserved.reason}")
+        started = start_verifier_result(conn, authorization_id=auth.id, **binding)
+        if started.state != "started":
+            raise RuntimeError(f"verifier authorization start failed: {started.reason}")
+        authorization_id = auth.id
+
+    read_fd, writer_fd = os.pipe()
+    os.set_inheritable(read_fd, False)
+    os.set_inheritable(writer_fd, True)
+    result_endpoint = _windows_os_handle(writer_fd) if _IS_WINDOWS else writer_fd
+    env = _build_verifier_child_env(
+        base_env=dict(os.environ),
+        workspace=workspace,
+        contract=task.verification_contract,
+        binding=binding,
+        writer_fd=writer_fd,
+        result_endpoint=result_endpoint,
+    )
+    contract_json = env["HERMES_KANBAN_VERIFY_CONTRACT"]
+    endpoint = (
+        f"file descriptor {writer_fd}" if not _IS_WINDOWS else f"handle {result_endpoint}"
+    )
+    prompt = (
+        "Verification-only protected-merge run. Inspect the workspace and the "
+        f"approved PR contract, then write exactly one newline-delimited JSON "
+        f"result envelope to inherited {endpoint}. Contract: {contract_json}. "
+        "Allowed actions are complete and re-block. Do not use Kanban tools."
+    )
+    cmd = [
+        *base_cmd,
+        "--toolsets", "terminal,file",
+        "chat",
+        "-q", prompt,
+        "-Q",
+    ]
+    log_dir = worker_logs_dir(board=board)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{task.id}.log"
+    rotate_bytes, backup_count = worker_log_rotation_config()
+    _rotate_worker_log(log_path, rotate_bytes, backup_count)
+    log_f = open(log_path, "ab")
+    popen_kwargs: dict[str, Any] = {
+        "cwd": workspace if os.path.isdir(workspace) else None,
+        "stdin": subprocess.DEVNULL,
+        "stdout": log_f,
+        "stderr": subprocess.STDOUT,
+        "env": env,
+        "start_new_session": not _IS_WINDOWS,
+        "creationflags": subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+        "close_fds": True,
+    }
+    if _IS_WINDOWS:
+        startupinfo_factory = getattr(subprocess, "STARTUPINFO", None)
+        if startupinfo_factory is not None:
+            startupinfo = startupinfo_factory()
+            if not hasattr(startupinfo, "lpAttributeList") or startupinfo.lpAttributeList is None:
+                startupinfo.lpAttributeList = {}
+            startupinfo.lpAttributeList["handle_list"] = [int(result_endpoint)]
+            popen_kwargs["startupinfo"] = startupinfo
+    else:
+        popen_kwargs["pass_fds"] = (writer_fd,)
+    try:
+        proc = subprocess.Popen(cmd, **popen_kwargs)  # noqa: S603
+    except FileNotFoundError:
+        log_f.close()
+        try:
+            os.close(read_fd)
+        except OSError:
+            pass
+        try:
+            os.close(writer_fd)
+        except OSError:
+            pass
+        raise RuntimeError(
+            "`hermes` executable not found on PATH. "
+            "Install Hermes Agent or activate its venv before running the kanban dispatcher."
+        )
+    except Exception:
+        log_f.close()
+        try:
+            os.close(read_fd)
+        except OSError:
+            pass
+        try:
+            os.close(writer_fd)
+        except OSError:
+            pass
+        raise
+    else:
+        log_f.close()
+    finally:
+        try:
+            os.close(writer_fd)
+        except OSError:
+            pass
+    _start_verifier_supervisor_waiter(
+        read_fd=read_fd,
+        proc=proc,
+        db_path=db_path,
+        authorization_id=authorization_id,
+        binding=binding,
+    )
+    return proc.pid
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -9117,31 +9673,17 @@ def _default_spawn(
     env["HERMES_PROFILE"] = profile_arg
 
     if task.verification_contract is not None:
-        # Verification-only worker: run against FRESH temporary kanban-DB
-        # isolation, never the real board pins set above. Fail closed —
-        # if the isolation root cannot be created, refuse to spawn a
-        # worker wired to the real board.
-        import tempfile
-        contract = task.verification_contract
-        try:
-            iso_home = tempfile.mkdtemp(prefix=f"hermes-kanban-verify-{task.id}-")
-        except OSError as exc:
-            raise RuntimeError(
-                "cannot establish fresh kanban-DB isolation for "
-                f"verification-only worker of task {task.id}: {exc}"
-            )
-        env["HERMES_KANBAN_HOME"] = iso_home
-        env["HERMES_KANBAN_DB"] = str(Path(iso_home) / "kanban.db")
-        env["HERMES_KANBAN_WORKSPACES_ROOT"] = str(Path(iso_home) / "workspaces")
-        env["HERMES_KANBAN_VERIFY_ONLY"] = "1"
-        env["HERMES_KANBAN_VERIFY_PR_URL"] = str(contract.get("pr_url") or "")
-        env["HERMES_KANBAN_VERIFY_HEAD"] = str(contract.get("approved_head") or "")
-        env["HERMES_KANBAN_VERIFY_BASE"] = str(contract.get("approved_base") or "")
-        prompt = (
-            f"verification-only run for kanban task {task.id}: verify PR "
-            f"{contract.get('pr_url')} at approved head "
-            f"{contract.get('approved_head')} against base "
-            f"{contract.get('approved_base')}. Do not perform any other work."
+        base_cmd = [
+            *_resolve_hermes_argv(),
+            "--cli",
+        ]
+        if task.model_override:
+            base_cmd.extend(["-m", task.model_override])
+        return _spawn_verifier_supervisor(
+            task,
+            workspace,
+            board=board,
+            base_cmd=base_cmd,
         )
 
     # A worker must NEVER boot the interactive TUI: an inherited HERMES_TUI=1

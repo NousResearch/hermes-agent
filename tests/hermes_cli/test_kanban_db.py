@@ -5808,9 +5808,10 @@ def test_dispatch_ordinary_ready_task_takes_normal_path_only(
 
 # ---------------------------------------------------------------------------
 # _default_spawn — the supported direct/ad-hoc subprocess boundary. A
-# verification-only worker must run against FRESH temporary kanban-DB
-# isolation (never the real board pins), and the boundary must fail closed
-# when that isolation cannot be established.
+# verification-only worker is no longer a direct worker with a temporary
+# kanban DB. Stage 2 routes it through a dispatcher-owned supervisor and an
+# inherited one-shot pipe, so an ad-hoc/unclaimed verifier task must fail
+# before any child process starts.
 # ---------------------------------------------------------------------------
 
 
@@ -5842,64 +5843,23 @@ def _verification_task(**overrides) -> "kb.Task":
     return kb.Task(**fields)
 
 
-def test_default_spawn_verification_only_uses_fresh_isolated_db_env(
+def test_default_spawn_verification_requires_live_bound_claim(
     kanban_home, monkeypatch,
 ):
-    captured = {}
+    """Verifier-only dispatch is only valid for a dispatcher-claimed run.
 
-    class FakeProc:
-        pid = 4242
-
-    def fake_popen(cmd, *args, **kwargs):
-        captured["cmd"] = cmd
-        captured["env"] = kwargs.get("env", {})
-        return FakeProc()
-
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    task = _verification_task()
-
-    kb._default_spawn(task, str(kanban_home / "ws"))
-
-    env = captured["env"]
-    assert env["HERMES_KANBAN_VERIFY_ONLY"] == "1"
-    assert env["HERMES_KANBAN_VERIFY_PR_URL"] == PR_URL
-    assert env["HERMES_KANBAN_VERIFY_HEAD"] == HEAD_SHA
-    assert env["HERMES_KANBAN_VERIFY_BASE"] == BASE_BRANCH
-    # Fresh temporary DB isolation: the worker's kanban pins must point at
-    # a freshly created directory, NOT the real board's DB/home.
-    iso_home = env["HERMES_KANBAN_HOME"]
-    assert Path(iso_home).is_dir()
-    assert Path(iso_home).resolve() != Path(str(kanban_home)).resolve()
-    assert env["HERMES_KANBAN_DB"] != str(kb.kanban_db_path())
-    assert Path(env["HERMES_KANBAN_DB"]).parent == Path(iso_home)
-    assert Path(env["HERMES_KANBAN_WORKSPACES_ROOT"]).parent == Path(iso_home)
-    # Verification-only prompt — not the unrestricted "work" prompt.
-    prompt = captured["cmd"][captured["cmd"].index("-q") + 1]
-    assert "work kanban task" not in prompt
-    assert PR_URL in prompt
-    assert HEAD_SHA in prompt
-    assert "verification-only" in prompt
-
-
-def test_default_spawn_verification_isolation_fail_closed(
-    kanban_home, monkeypatch,
-):
-    """If the fresh temporary DB isolation cannot be established, the
-    boundary must raise — never spawn a worker wired to the real board."""
+    A hand-built task carrying a verification_contract but no live run/claim
+    cannot mint the Stage 1 authorization and must never reach Popen.
+    """
     popen_calls = []
 
     def fake_popen(cmd, *args, **kwargs):
         popen_calls.append(cmd)
-        raise AssertionError("must not spawn without isolation")
+        raise AssertionError("must not spawn without a live verifier binding")
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
 
-    def broken_mkdtemp(*args, **kwargs):
-        raise OSError("no tmp space")
-
-    monkeypatch.setattr("tempfile.mkdtemp", broken_mkdtemp)
-
-    with pytest.raises(RuntimeError, match="isolation"):
+    with pytest.raises(ValueError, match="current run id"):
         kb._default_spawn(_verification_task(), str(kanban_home / "ws"))
     assert popen_calls == []
 

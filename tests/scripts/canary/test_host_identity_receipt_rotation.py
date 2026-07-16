@@ -367,6 +367,16 @@ def test_owner_cli_rotation_is_isolated_from_live_secret_boundaries(
     )
     monkeypatch.setattr(
         owner_launcher,
+        "activate_trusted_owner_support",
+        lambda _runtime, *, release_sha: None,
+    )
+    monkeypatch.setattr(
+        owner_launcher,
+        "require_trusted_owner_support_activation",
+        lambda _runtime, *, release_sha: None,
+    )
+    monkeypatch.setattr(
+        owner_launcher,
         "require_local_launcher_provenance",
         lambda _release: events.append("provenance") or "a" * 64,
     )

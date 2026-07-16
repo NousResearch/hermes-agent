@@ -5,7 +5,9 @@ import inspect
 import hashlib
 import json
 import os
+import signal
 import subprocess
+import sys
 import urllib.parse
 from collections.abc import Mapping
 
@@ -21,6 +23,65 @@ RELEASE_SHA = "a" * 40
 OWNER_SHA = hashlib.sha256(b"owner@example.com").hexdigest()
 NOW = 1_000
 TOKEN = b"isolated-discord-token"
+
+
+def test_owner_launch_signal_preserves_the_received_signal_number():
+    fence = launcher._OwnerSignalFence()
+
+    with pytest.raises(launcher._OwnerLaunchSignal) as caught:
+        fence._handle(signal.SIGTERM, None)
+
+    assert caught.value.signum == signal.SIGTERM
+
+
+def test_schema_reconciliation_owner_wire_loads_under_exact_isolation_flags():
+    probe = f"""
+import runpy
+
+namespace = runpy.run_path({launcher.__file__!r})
+OwnerLauncherError = namespace["OwnerLauncherError"]
+
+def stop_before_cloud(_release_sha):
+    raise OwnerLauncherError("isolated_probe_stop")
+
+try:
+    namespace["reconcile_legacy_canary_schema"](
+        release_sha={RELEASE_SHA!r},
+        transport=object(),
+        cloud_sql_client=object(),
+        owner_identity=object(),
+        provenance_guard=stop_before_cloud,
+    )
+except OwnerLauncherError as error:
+    if error.code != "isolated_probe_stop":
+        raise
+else:
+    raise RuntimeError("isolated reconciliation probe unexpectedly continued")
+print("isolated_probe_stop")
+"""
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            "-B",
+            "-X",
+            "pycache_prefix=/var/empty/muncho-canary",
+            "-c",
+            probe,
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stderr.decode(
+        "utf-8", errors="replace"
+    )
+    assert completed.stdout == b"isolated_probe_stop\n"
 
 
 def test_stopped_release_activation_inventory_matches_writer_release_contract():
@@ -1018,6 +1079,20 @@ def test_schema_reconciliation_cli_dispatches_exact_owner_boundaries(monkeypatch
     )
     monkeypatch.setattr(
         launcher,
+        "activate_trusted_owner_support",
+        lambda runtime, *, release_sha: calls.append(
+            ("support_activate", runtime, release_sha)
+        ),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "require_trusted_owner_support_activation",
+        lambda runtime, *, release_sha: calls.append(
+            ("support_revalidate", runtime, release_sha)
+        ),
+    )
+    monkeypatch.setattr(
+        launcher,
         "require_local_launcher_provenance",
         lambda release: calls.append(("provenance", release)) or "f" * 64,
     )
@@ -1074,6 +1149,8 @@ def test_schema_reconciliation_cli_dispatches_exact_owner_boundaries(monkeypatch
     assert reconcile_call[1]["transport"] is transport
     assert reconcile_call[1]["cloud_sql_client"] is database_client
     assert reconcile_call[1]["owner_identity"] is owner_identity
+    assert ("support_activate", executable, RELEASE_SHA) in calls
+    assert ("support_revalidate", executable, RELEASE_SHA) in calls
     assert not any(
         item[0] in {"writer_preflight", "phase_b"}
         for item in calls

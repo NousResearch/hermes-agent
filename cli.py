@@ -5305,7 +5305,76 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         # 1. Strip provider prefix ("openai/gpt-5.4" → "gpt-5.4")
         if "/" in current_model:
-            slug = current_model.split("/", 1)[1]
+            prefix, slug = current_model.split("/", 1)
+
+            # Distinguish a benign vendor namespace ("anthropic/…", "openai/…",
+            # "meta-llama/…") from a *provider*-qualified model whose provider
+            # did not resolve for this profile ("claude-apr/claude-fable-5").
+            # The latter means the user asked for a specific provider (often a
+            # plugins/model-providers/<name>/ plugin) that is NOT registered
+            # here — silently stripping the prefix and sending the bare model to
+            # openai-codex substitutes BOTH model and provider, which is a
+            # correctness and cost bug and surfaces only as a confusing
+            # downstream 400. Fail loudly instead. See the claude-apr incident.
+            _prefix = (prefix or "").strip().lower()
+            _is_vendor = False
+            try:
+                from hermes_cli.model_normalize import is_known_vendor_namespace
+
+                _is_vendor = is_known_vendor_namespace(_prefix)
+            except Exception:
+                # If the predicate is unavailable for any reason, fall back to
+                # the historical strip behaviour rather than blocking startup.
+                _is_vendor = True
+
+            if not _is_vendor and _prefix and _prefix != "openai-codex":
+                _provider_resolves = False
+                _resolver_error: Exception | None = None
+                try:
+                    from hermes_cli.auth import AuthError, resolve_provider
+
+                    try:
+                        resolve_provider(_prefix)
+                        _provider_resolves = True
+                    except AuthError:
+                        _provider_resolves = False
+                    except Exception as exc:  # noqa: BLE001
+                        # A registered provider whose plugin crashed internally
+                        # is a different failure from "provider not found".
+                        # Still err toward the loud error (never silently swap
+                        # providers), but surface the root cause so the two
+                        # cases are distinguishable.
+                        _provider_resolves = False
+                        _resolver_error = exc
+                except Exception as exc:  # noqa: BLE001
+                    # Resolver import failure — treat as unresolved so we err
+                    # toward the loud, informative error over a silent swap.
+                    _provider_resolves = False
+                    _resolver_error = exc
+
+                if not _provider_resolves:
+                    _cause = (
+                        f" (provider resolution raised "
+                        f"{type(_resolver_error).__name__}: {_resolver_error} — "
+                        f"this may be a crashing plugin rather than a missing "
+                        f"one)"
+                        if _resolver_error is not None
+                        else ""
+                    )
+                    raise ValueError(
+                        f"Model '{current_model}' names provider '{prefix}', "
+                        f"which does not resolve for this profile{_cause} — "
+                        f"refusing to "
+                        f"strip the prefix and run '{slug}' on the default "
+                        f"provider '{resolved_provider}' (that would silently "
+                        f"substitute both the model and the provider). If "
+                        f"'{prefix}' is a model-providers plugin, make sure the "
+                        f"profile can see it (e.g. the plugins/model-providers "
+                        f"symlink or its credential_pool entry). Otherwise pass "
+                        f"a model whose vendor prefix is recognized, or select "
+                        f"the intended provider explicitly with --provider."
+                    )
+
             if not self._model_is_default:
                 self._console_print(
                     f"[yellow]⚠️  Stripped provider prefix from '{current_model}'; "

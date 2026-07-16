@@ -558,6 +558,12 @@ memory:
   # User profile: preferences, communication style, expectations
   user_profile_enabled: true
   
+  # Namespace boundary: identity (profile-global, backwards-compatible),
+  # user, conversation, or session. External providers must explicitly
+  # support the selected non-identity mode or they are disabled fail-closed.
+  # Changing this does not migrate existing memories; migration is explicit.
+  scope: identity
+
   # Character limits (~2.75 chars per token, model-independent)
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens

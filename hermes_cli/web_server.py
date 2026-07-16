@@ -706,6 +706,11 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Context management engine",
         "options": ["default", "custom"],
     },
+    "memory.scope": {
+        "type": "select",
+        "description": "Built-in/provider memory namespace boundary",
+        "options": ["identity", "user", "conversation", "session"],
+    },
     "human_delay.mode": {
         "type": "select",
         "description": "Simulated typing delay mode",
@@ -12029,6 +12034,8 @@ class MemoryProviderSelect(BaseModel):
 class MemoryReset(BaseModel):
     # "all" | "memory" | "user"
     target: str = "all"
+    # Scoped namespaces are never deleted unless explicitly requested.
+    all_scopes: bool = False
 
 
 @app.get("/api/memory")
@@ -12039,17 +12046,19 @@ async def get_memory_status():
     if isinstance(mem, dict):
         active = _normalize_memory_provider_name(mem.get("provider"))
 
-    # Built-in memory file sizes (so the UI can show what a reset would erase).
-    mem_dir = get_hermes_home() / "memories"
-    files = {}
-    for fname, key in (("MEMORY.md", "memory"), ("USER.md", "user")):
-        path = mem_dir / fname
-        files[key] = path.stat().st_size if path.exists() else 0
+    from tools.memory_tool import builtin_memory_inventory
+
+    inventory = builtin_memory_inventory()
 
     return {
         "active": active,
         "providers": _discover_memory_provider_statuses(),
-        "builtin_files": files,
+        "scope": str((mem or {}).get("scope", "identity")).strip().lower()
+        if isinstance(mem, dict)
+        else "identity",
+        # Backwards-compatible identity-only field used by older dashboards.
+        "builtin_files": inventory["identity"],
+        "builtin_scopes": inventory["scoped"],
     }
 
 
@@ -12073,21 +12082,16 @@ async def reset_memory(body: MemoryReset):
     if target not in {"all", "memory", "user"}:
         raise HTTPException(status_code=400, detail="target must be all, memory, or user")
 
+    from tools.memory_tool import reset_builtin_memory
+
+    try:
+        deleted_paths = reset_builtin_memory(
+            target=target, include_scopes=bool(body.all_scopes)
+        )
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not delete memory: {exc}")
     mem_dir = get_hermes_home() / "memories"
-    deleted = []
-    targets = []
-    if target in {"all", "memory"}:
-        targets.append("MEMORY.md")
-    if target in {"all", "user"}:
-        targets.append("USER.md")
-    for fname in targets:
-        path = mem_dir / fname
-        if path.exists():
-            try:
-                path.unlink()
-                deleted.append(fname)
-            except OSError as exc:
-                raise HTTPException(status_code=500, detail=f"Could not delete {fname}: {exc}")
+    deleted = [str(path.relative_to(mem_dir)) for path in deleted_paths]
     return {"ok": True, "deleted": deleted}
 
 

@@ -515,6 +515,7 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._config = _default_config()
         self._api_key = ""
         self._client: Optional[_SupermemoryClient] = None
+        self._base_container_tag = _DEFAULT_CONTAINER_TAG
         self._container_tag = _DEFAULT_CONTAINER_TAG
         self._session_id = ""
         self._turn_count = 0
@@ -540,6 +541,10 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._custom_container_instructions = ""
         self._allowed_containers: List[str] = []
         self._session_turns: List[Dict[str, str]] = []
+
+    @property
+    def supported_memory_scopes(self) -> frozenset[str]:
+        return frozenset({"identity", "user", "conversation", "session"})
 
     @property
     def name(self) -> str:
@@ -635,7 +640,8 @@ class SupermemoryMemoryProvider(MemoryProvider):
         env_tag = os.environ.get("SUPERMEMORY_CONTAINER_TAG", "").strip()
         raw_tag = env_tag or self._config["container_tag"]
         identity = kwargs.get("agent_identity", "default")
-        self._container_tag = _sanitize_tag(raw_tag.replace("{identity}", identity))
+        self._base_container_tag = _sanitize_tag(raw_tag.replace("{identity}", identity))
+        self._container_tag = self._base_container_tag
 
         self._auto_recall = self._config["auto_recall"]
         self._auto_capture = self._config["auto_capture"]
@@ -648,6 +654,15 @@ class SupermemoryMemoryProvider(MemoryProvider):
         self._enable_custom_containers = self._config["enable_custom_container_tags"]
         self._custom_containers = self._config["custom_containers"]
         self._custom_container_instructions = self._config["custom_container_instructions"]
+
+        # Apply raw memory scope key if provided by agent_init.
+        # Providers own their namespace prefix, so only the hash is appended:
+        # hermes_default + <hash> -> hermes_default_<hash>.
+        # Done after config load so _custom_containers is populated.
+        scope_key = kwargs.get("memory_scope_key")
+        if scope_key:
+            self._container_tag = _sanitize_tag(f"{self._container_tag}_{scope_key}")
+
         self._allowed_containers = [self._container_tag] + list(self._custom_containers)
 
         self._session_turns = []
@@ -789,6 +804,23 @@ class SupermemoryMemoryProvider(MemoryProvider):
                 )
             except Exception:
                 logger.debug("Supermemory session-switch ingest failed", exc_info=True)
+
+        # Rotate the provider namespace only after the old-session buffer has
+        # been flushed to its original container. ``memory_scope_key`` is
+        # supplied by MemoryManager for the exact durable session id.
+        if "memory_scope_key" in kwargs:
+            scope_key = kwargs.get("memory_scope_key")
+            if scope_key:
+                self._container_tag = _sanitize_tag(
+                    f"{self._base_container_tag}_{scope_key}"
+                )
+            else:
+                self._container_tag = self._base_container_tag
+            self._allowed_containers = [self._container_tag] + list(
+                self._custom_containers
+            )
+            if self._client is not None:
+                self._client._container_tag = self._container_tag
 
         # Reset for new session
         self._session_id = str(new_session_id or "").strip() or old_session_id

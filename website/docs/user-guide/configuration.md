@@ -615,10 +615,20 @@ When on, skill writes are staged under `~/.hermes/pending/skills/` and reviewed 
 memory:
   memory_enabled: true
   user_profile_enabled: true
+  scope: identity           # identity | user | conversation | session
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
   write_approval: false     # true = require approval before any memory write
 ```
+
+With `memory.scope`, choose the namespace boundary for built-in `MEMORY.md` / `USER.md` and external providers that support scoped namespaces:
+
+- `identity` (default): one namespace for the active Hermes profile; this preserves existing behavior.
+- `user`: one namespace per platform user. Local CLI/Desktop sessions without a platform user fall back to `identity`.
+- `conversation`: one namespace per gateway DM/group/channel/topic/thread and stable across gateway `/new`; local CLI/Desktop conversations use their durable session ID.
+- `session`: one namespace per durable Hermes session and therefore changes on `/new`, resume/branch targets, and rotating compression boundaries.
+
+Existing unscoped memory is not migrated automatically when you opt into a narrower scope.
 
 With `memory.write_approval: true`, memory writes need your approval before they land: interactive CLI turns prompt inline; messaging sessions and the background self-improvement review stage the write for `/memory pending` → `/memory approve <id>` / `/memory reject <id>` review. Toggle at runtime with `/memory approval on|off`. See [Controlling memory writes](/user-guide/features/memory#controlling-memory-writes-write_approval).
 

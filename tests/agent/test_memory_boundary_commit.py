@@ -122,3 +122,38 @@ def test_boundary_commit_noop_without_providers():
     # Must not create the executor or raise.
     mm.commit_session_boundary_async([{"role": "user", "content": "x"}], new_session_id="s")
     assert mm._sync_executor is None
+
+
+class _ScopedRecordingProvider(_RecordingProvider):
+    def __init__(self, end_delay: float = 0.0):
+        super().__init__(end_delay=end_delay)
+        self.scope_switches = []
+        self.active_scope_key = "old-key"
+
+    def on_session_switch(self, new_session_id: str, **kwargs) -> None:
+        super().on_session_switch(new_session_id, **kwargs)
+        self.scope_switches.append((new_session_id, kwargs.get("memory_scope_key")))
+        if "memory_scope_key" in kwargs:
+            self.active_scope_key = kwargs["memory_scope_key"]
+
+    def prefetch(self, query: str, **kwargs) -> str:
+        return str(self.active_scope_key)
+
+
+def test_queued_boundaries_consume_scope_key_for_exact_session():
+    provider = _ScopedRecordingProvider(end_delay=0.05)
+    mm = _make_manager(provider)
+    mm.bind_session_scope("two", "key-two")
+    mm.bind_session_scope("three", "key-three")
+    mm.commit_session_boundary_async([], new_session_id="two")
+    mm.commit_session_boundary_async([], new_session_id="three")
+    assert mm.flush_pending(timeout=5)
+    assert provider.scope_switches == [("two", "key-two"), ("three", "key-three")]
+
+
+def test_prefetch_waits_for_pending_scope_rotation():
+    provider = _ScopedRecordingProvider(end_delay=0.1)
+    mm = _make_manager(provider)
+    mm.bind_session_scope("new", "new-key")
+    mm.commit_session_boundary_async([], new_session_id="new")
+    assert mm.prefetch_all("first turn", session_id="new") == "new-key"

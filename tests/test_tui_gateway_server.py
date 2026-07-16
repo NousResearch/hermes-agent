@@ -69,6 +69,7 @@ def test_session_context_uses_session_cwd(monkeypatch, tmp_path):
     even when the sidebar/session cwd is a real project.
     """
     from agent.runtime_cwd import resolve_agent_cwd
+    from gateway.session_context import get_session_env
 
     sid = "cwd-sid"
     session_key = "cwd-key"
@@ -84,6 +85,7 @@ def test_session_context_uses_session_cwd(monkeypatch, tmp_path):
     tokens = server._set_session_context(session_key)
     try:
         assert resolve_agent_cwd() == project
+        assert get_session_env("HERMES_SESSION_ID") == session_key
     finally:
         server._clear_session_context(tokens)
         server._sessions.pop(sid, None)

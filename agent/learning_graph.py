@@ -196,7 +196,9 @@ def _memory_cards() -> list[dict[str, Any]]:
     ``MEMORY.md`` / ``USER.md`` are prose split on bare ``§`` separators; each
     chunk becomes one card. Every chunk is surfaced — the graph shows everything.
     """
-    base = get_hermes_home() / "memories"
+    # Honour active memory scope (see agent/memory_scope.py + learning_mutations)
+    from agent.learning_mutations import _memories_dir as _scoped_memories_dir
+    base = _scoped_memories_dir()
     cards: list[dict[str, Any]] = []
     for fname, source in (("MEMORY.md", "memory"), ("USER.md", "profile")):
         path = base / fname

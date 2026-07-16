@@ -604,7 +604,10 @@ def build_turn_context(
     if agent._memory_manager:
         try:
             _query = original_user_message if isinstance(original_user_message, str) else ""
-            ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
+            ext_prefetch_cache = agent._memory_manager.prefetch_all(
+                _query,
+                session_id=getattr(agent, "session_id", "") or "",
+            ) or ""
         except Exception:
             pass
 

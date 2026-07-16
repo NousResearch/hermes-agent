@@ -276,6 +276,24 @@ class TestCreateProfile:
         assert not (profile_dir / "gateway_state.json").exists()
         assert not (profile_dir / "processes.json").exists()
 
+
+    def test_clone_config_does_not_implicitly_copy_scoped_memory(self, profile_env):
+        default_home = profile_env / ".hermes"
+        scoped = default_home / "memories" / "scopes" / "abc123"
+        scoped.mkdir(parents=True)
+        (scoped / "MEMORY.md").write_text("user-specific")
+        (default_home / "config.yaml").write_text("memory:\n  scope: user\n")
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+        assert not (profile_dir / "memories" / "scopes").exists()
+
+    def test_clone_all_keeps_hash_only_scoped_memory_portable(self, profile_env):
+        default_home = profile_env / ".hermes"
+        scoped = default_home / "memories" / "scopes" / "abc123"
+        scoped.mkdir(parents=True)
+        (scoped / "MEMORY.md").write_text("portable")
+        profile_dir = create_profile("coder", clone_all=True, no_alias=True)
+        assert (profile_dir / "memories" / "scopes" / "abc123" / "MEMORY.md").read_text() == "portable"
+
     def test_clone_all_excludes_sibling_profiles_tree(self, profile_env):
         """--clone-all from default ~/.hermes must not copy profiles/* (nested explosion)."""
         tmp_path = profile_env

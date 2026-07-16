@@ -126,3 +126,22 @@ def test_memory_writes_match_memory_tool_format(home):
 
     assert entries == ["alpha rewritten", "beta note"]
     assert path.read_text(encoding="utf-8") == ENTRY_DELIMITER.join(entries)
+
+
+def test_learning_mutation_honors_active_session_scope(home, monkeypatch):
+    from agent.memory_scope import resolve_scope_key
+    from gateway.session_context import clear_session_vars, set_session_vars
+    session_id = "scoped-session"
+    scope_key = resolve_scope_key("session", session_id=session_id)
+    scoped_dir = home / "memories" / "scopes" / scope_key
+    scoped_dir.mkdir(parents=True)
+    (scoped_dir / "MEMORY.md").write_text("scoped note", encoding="utf-8")
+    (scoped_dir / "USER.md").write_text("scoped user", encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"memory": {"scope": "session"}})
+    tokens = set_session_vars(session_id=session_id)
+    try:
+        assert lm.edit_node("memory:memory:0", "scoped rewritten")["ok"]
+    finally:
+        clear_session_vars(tokens)
+    assert scoped_dir.joinpath("MEMORY.md").read_text() == "scoped rewritten"
+    assert "alpha note" in (home / "memories" / "MEMORY.md").read_text()

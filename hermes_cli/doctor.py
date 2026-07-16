@@ -1205,22 +1205,38 @@ def run_doctor(args):
             check_ok(f"Created {_DHH}/SOUL.md with basic template")
             fixed_count += 1
     
-    # Check memory directory
+    # Check memory directory and distinguish legacy identity files from scoped data.
     memories_dir = hermes_home / "memories"
     if memories_dir.exists():
         check_ok(f"{_DHH}/memories/ directory exists")
-        memory_file = memories_dir / "MEMORY.md"
-        user_file = memories_dir / "USER.md"
-        if memory_file.exists():
-            size = len(memory_file.read_text(encoding="utf-8").strip())
-            check_ok(f"MEMORY.md exists ({size} chars)")
+        from tools.memory_tool import builtin_memory_inventory
+
+        inventory = builtin_memory_inventory()
+        try:
+            configured_scope = str(
+                ((load_config() or {}).get("memory", {}) or {}).get("scope", "identity")
+            ).strip().lower()
+        except Exception:
+            configured_scope = "identity"
+        check_info(f"Configured memory scope: {configured_scope}")
+        identity = inventory["identity"]
+        scoped = inventory["scoped"]
+        if identity["memory"] or identity["user"]:
+            check_ok(
+                "Identity memory exists "
+                f"(MEMORY.md {identity['memory']} bytes, USER.md {identity['user']} bytes)"
+            )
         else:
-            check_info("MEMORY.md not created yet (will be created when the agent first writes a memory)")
-        if user_file.exists():
-            size = len(user_file.read_text(encoding="utf-8").strip())
-            check_ok(f"USER.md exists ({size} chars)")
-        else:
-            check_info("USER.md not created yet (will be created when the agent first writes a memory)")
+            check_info("Identity memory files not created yet")
+        if scoped["namespaces"]:
+            check_ok(
+                f"Scoped memory: {scoped['namespaces']} namespaces "
+                f"({scoped['memory'] + scoped['user']} bytes total)"
+            )
+        elif configured_scope != "identity":
+            check_info(
+                "No scoped memory created yet (the configured scope will create it on first write)"
+            )
     else:
         check_warn(f"{_DHH}/memories/ not found", "(will be created on first use)")
         if should_fix:

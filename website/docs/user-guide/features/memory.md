@@ -213,10 +213,26 @@ See [Session Search Tool](/user-guide/sessions#session-search-tool) for the thre
 memory:
   memory_enabled: true
   user_profile_enabled: true
+  scope: identity           # identity | user | conversation | session
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
   write_approval: false     # false = write freely (default) | true = require approval
 ```
+
+### Memory namespace scope
+
+`memory.scope` controls which conversations share built-in memory and external-provider memory when that provider supports scoped namespaces:
+
+| Scope | Boundary | Session transitions |
+|-------|----------|---------------------|
+| `identity` (default) | Active Hermes profile | Existing profile-global behavior |
+| `user` | Platform + user identity | Stable across that user's chats; local CLI/Desktop falls back to `identity` |
+| `conversation` | Gateway DM/group/channel/topic/thread | Stable across gateway `/new`; local CLI/Desktop uses the durable session ID |
+| `session` | Durable Hermes session ID | Rebinds on `/new`, resume/branch targets, and rotating compression boundaries |
+
+Scoped built-in files live under `memories/scopes/<hash>/`. Each profile already has a separate `HERMES_HOME`, so local paths do not repeat the profile name. Scope keys use versioned, domain-separated SHA-256-derived pseudonymous hashes. Raw platform, chat, thread, and user identifiers are not written into paths or provider namespaces, but low-entropy identifiers should not be treated as anonymized solely because they are hashed. Existing unscoped memory is left untouched and is not attributed to a narrower scope automatically.
+
+Provider support is explicit. Built-in `MEMORY.md` / `USER.md` always honours this setting; Supermemory also scopes its primary container. External providers that do not declare the selected mode are disabled with an actionable error rather than silently accessing shared memory.
 
 ## Controlling memory writes (`write_approval`)
 

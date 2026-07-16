@@ -56,6 +56,77 @@ def get_memory_dir() -> Path:
     """Return the profile-scoped memories directory."""
     return get_hermes_home() / "memories"
 
+
+def iter_builtin_memory_files(*, include_scopes: bool = True):
+    """Yield ``(namespace, target, path)`` for safe built-in memory files.
+
+    ``namespace`` is ``identity`` for legacy/profile-global files or the raw
+    hashed directory name for scoped files. Symlinked namespace directories and
+    files are ignored so inventory/reset operations cannot escape ``memories``.
+    """
+    memory_dir = get_memory_dir()
+    for filename, target in (("MEMORY.md", "memory"), ("USER.md", "user")):
+        path = memory_dir / filename
+        if path.is_file() and not path.is_symlink():
+            yield "identity", target, path
+
+    if not include_scopes:
+        return
+    scopes_dir = memory_dir / "scopes"
+    if not scopes_dir.is_dir() or scopes_dir.is_symlink():
+        return
+    try:
+        namespaces = list(scopes_dir.iterdir())
+    except OSError:
+        return
+    for namespace_dir in namespaces:
+        if namespace_dir.is_symlink() or not namespace_dir.is_dir():
+            continue
+        for filename, target in (("MEMORY.md", "memory"), ("USER.md", "user")):
+            path = namespace_dir / filename
+            if path.is_file() and not path.is_symlink():
+                yield namespace_dir.name, target, path
+
+
+def builtin_memory_inventory() -> Dict[str, Any]:
+    """Return identity and aggregate scoped-memory sizes for admin UIs."""
+    identity = {"memory": 0, "user": 0}
+    scoped = {"memory": 0, "user": 0}
+    namespaces = set()
+    for namespace, target, path in iter_builtin_memory_files(include_scopes=True):
+        try:
+            size = path.stat().st_size
+        except OSError:
+            continue
+        if namespace == "identity":
+            identity[target] += size
+        else:
+            scoped[target] += size
+            namespaces.add(namespace)
+    return {
+        "identity": identity,
+        "scoped": {**scoped, "namespaces": len(namespaces)},
+    }
+
+
+def reset_builtin_memory(
+    *, target: str = "all", include_scopes: bool = False
+) -> List[Path]:
+    """Delete selected built-in files; scoped deletion is always explicit."""
+    if target not in {"all", "memory", "user"}:
+        raise ValueError("target must be all, memory, or user")
+    deleted = []
+    for namespace, file_target, path in list(
+        iter_builtin_memory_files(include_scopes=include_scopes)
+    ):
+        if namespace != "identity" and not include_scopes:
+            continue
+        if target != "all" and file_target != target:
+            continue
+        path.unlink()
+        deleted.append(path)
+    return deleted
+
 ENTRY_DELIMITER = "\n§\n"
 
 
@@ -127,11 +198,27 @@ class MemoryStore:
     # turn to budget exhaustion and suppress the user's reply (issue #42405).
     _MAX_CONSOLIDATION_FAILURES_PER_TURN = 3
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(
+        self,
+        memory_char_limit: int = 2200,
+        user_char_limit: int = 1375,
+        scope_suffix: Optional[str] = None,
+    ):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        # Optional scope suffix for per-chat/per-user memory isolation.
+        # When set, memory files are stored in a scoped subdirectory instead
+        # of the default memories/ directory. None = identity scope (default).
+        # Sanitize to prevent path traversal — only allow alphanumerics,
+        # underscores, and hyphens (scope suffixes are SHA256 hashes from
+        # agent_init, but defensive guarding here is still correct).
+        if scope_suffix:
+            scope_suffix = "".join(
+                ch for ch in scope_suffix if ch.isalnum() or ch in ("_", "-")
+            ) or None
+        self._scope_suffix = scope_suffix
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
         # Per-turn counter of failed at-capacity consolidation attempts; reset
@@ -182,7 +269,7 @@ class MemoryStore:
         Scanning is deterministic from disk bytes, so the snapshot remains
         stable for the entire session (prefix-cache invariant holds).
         """
-        mem_dir = get_memory_dir()
+        mem_dir = self._get_mem_dir()
         mem_dir.mkdir(parents=True, exist_ok=True)
 
         self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
@@ -277,9 +364,23 @@ class MemoryStore:
                     pass
             fd.close()
 
+    def _get_mem_dir(self) -> Path:
+        """Return the memory directory, honouring scope suffix if set."""
+        base = get_memory_dir()
+        if self._scope_suffix:
+            return base / "scopes" / self._scope_suffix
+        return base
+
     @staticmethod
     def _path_for(target: str) -> Path:
         mem_dir = get_memory_dir()
+        if target == "user":
+            return mem_dir / "USER.md"
+        return mem_dir / "MEMORY.md"
+
+    def _scoped_path_for(self, target: str) -> Path:
+        """Return the path for a target file, honouring scope suffix."""
+        mem_dir = self._get_mem_dir()
         if target == "user":
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"
@@ -299,7 +400,7 @@ class MemoryStore:
         bypassed.  Used by the ``add`` action which appends without
         rewriting, so existing content is never clobbered.
         """
-        path = self._path_for(target)
+        path = self._scoped_path_for(target)
         bak = None if skip_drift else self._detect_external_drift(target)
         fresh = self._read_file(path)
         fresh = list(dict.fromkeys(fresh))  # deduplicate
@@ -308,8 +409,9 @@ class MemoryStore:
 
     def save_to_disk(self, target: str):
         """Persist entries to the appropriate file. Called after every mutation."""
-        get_memory_dir().mkdir(parents=True, exist_ok=True)
-        self._write_file(self._path_for(target), self._entries_for(target))
+        mem_dir = self._get_mem_dir()
+        mem_dir.mkdir(parents=True, exist_ok=True)
+        self._write_file(self._scoped_path_for(target), self._entries_for(target))
 
     def _entries_for(self, target: str) -> List[str]:
         if target == "user":
@@ -344,7 +446,7 @@ class MemoryStore:
         if scan_error:
             return {"success": False, "error": scan_error}
 
-        with self._file_lock(self._path_for(target)):
+        with self._file_lock(self._scoped_path_for(target)):
             # Re-read from disk under lock to pick up writes from other sessions.
             # For add (append-only), we skip the drift guard — appending never
             # clobbers existing content, so round-trip mismatches from prior
@@ -399,10 +501,10 @@ class MemoryStore:
         if scan_error:
             return {"success": False, "error": scan_error}
 
-        with self._file_lock(self._path_for(target)):
+        with self._file_lock(self._scoped_path_for(target)):
             bak = self._reload_target(target)
             if bak:
-                return _drift_error(self._path_for(target), bak)
+                return _drift_error(self._scoped_path_for(target), bak)
 
             entries = self._entries_for(target)
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
@@ -460,10 +562,10 @@ class MemoryStore:
         if not old_text:
             return {"success": False, "error": "old_text cannot be empty."}
 
-        with self._file_lock(self._path_for(target)):
+        with self._file_lock(self._scoped_path_for(target)):
             bak = self._reload_target(target)
             if bak:
-                return _drift_error(self._path_for(target), bak)
+                return _drift_error(self._scoped_path_for(target), bak)
 
             entries = self._entries_for(target)
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
@@ -520,10 +622,10 @@ class MemoryStore:
                 if scan_error:
                     return {"success": False, "error": f"Operation {i + 1}: {scan_error}"}
 
-        with self._file_lock(self._path_for(target)):
+        with self._file_lock(self._scoped_path_for(target)):
             bak = self._reload_target(target)
             if bak:
-                return _drift_error(self._path_for(target), bak)
+                return _drift_error(self._scoped_path_for(target), bak)
 
             # Work on a copy; only commit if the whole batch validates.
             working: List[str] = list(self._entries_for(target))
@@ -725,7 +827,7 @@ class MemoryStore:
         Note: this is an INSTANCE method (not static) because we need the
         per-target char_limit for signal #2.
         """
-        path = self._path_for(target)
+        path = self._scoped_path_for(target)
         if not path.exists():
             return None
         try:
@@ -812,9 +914,18 @@ def load_on_disk_store() -> "MemoryStore":
     except Exception:
         pass  # config optional — fall back to defaults rather than break /memory
 
+    # Resolve scope suffix from session context (concurrency-safe)
+    scope_suffix = None
+    try:
+        from agent.memory_scope import resolve_active_scope_key
+        scope_suffix = resolve_active_scope_key()
+    except Exception:
+        pass
+
     store = MemoryStore(
         memory_char_limit=memory_char_limit,
         user_char_limit=user_char_limit,
+        scope_suffix=scope_suffix,
     )
     store.load_from_disk()
     return store

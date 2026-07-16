@@ -50,4 +50,9 @@ def build_memory_parser(subparsers, *, cmd_memory: Callable) -> None:
         default="all",
         help="Which store to reset: 'all' (default), 'memory', or 'user'",
     )
+    _reset_parser.add_argument(
+        "--all-scopes",
+        action="store_true",
+        help="Also erase every scoped user/conversation/session namespace",
+    )
     memory_parser.set_defaults(func=cmd_memory)

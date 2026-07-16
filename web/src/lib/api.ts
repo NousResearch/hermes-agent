@@ -1131,11 +1131,11 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ provider }),
     }),
-  resetMemory: (target: "all" | "memory" | "user") =>
+  resetMemory: (target: "all" | "memory" | "user", allScopes = false) =>
     fetchJSON<{ ok: boolean; deleted: string[] }>("/api/memory/reset", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ target }),
+      body: JSON.stringify({ target, all_scopes: allScopes }),
     }),
 
   // ── Admin: Gateway lifecycle ────────────────────────────────────────
@@ -1605,8 +1605,10 @@ export interface MemoryProviderInfo {
 
 export interface MemoryStatus {
   active: string;
+  scope: "identity" | "user" | "conversation" | "session";
   providers: MemoryProviderInfo[];
   builtin_files: { memory: number; user: number };
+  builtin_scopes: { memory: number; user: number; namespaces: number };
 }
 
 export interface MemoryProviderExternalDependency {

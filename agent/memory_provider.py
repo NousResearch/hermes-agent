@@ -44,6 +44,16 @@ class MemoryProvider(ABC):
     """Abstract base class for memory providers."""
 
     @property
+    def supported_memory_scopes(self) -> frozenset[str]:
+        """Memory namespace modes this provider enforces.
+
+        External providers are identity-global unless they explicitly opt in.
+        Agent initialization fails closed for non-identity modes so a provider
+        cannot silently bypass the built-in privacy boundary.
+        """
+        return frozenset({"identity"})
+
+    @property
     @abstractmethod
     def name(self) -> str:
         """Short identifier for this provider (e.g. 'builtin', 'honcho', 'hindsight')."""

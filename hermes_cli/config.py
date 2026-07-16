@@ -2240,6 +2240,9 @@ DEFAULT_CONFIG = {
     "memory": {
         "memory_enabled": True,
         "user_profile_enabled": True,
+        # Namespace boundary for built-in memory and providers that support it:
+        # identity (default, profile-global), user, conversation, or session.
+        "scope": "identity",
         # Approval gate for memory writes (add/replace/remove), applied to BOTH
         # foreground agent turns and the background self-improvement review fork
         # (the source of unprompted "wrong assumption" saves users reported).
@@ -5591,6 +5594,24 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                 "warning",
                 f"Root-level key '{key}' looks misplaced — should it be under 'model:' or inside a 'custom_providers' entry?",
                 f"Move '{key}' under the appropriate section",
+            ))
+
+    # ── memory.scope must be an explicit supported namespace mode ───────
+    memory_cfg = config.get("memory")
+    if memory_cfg is not None and not isinstance(memory_cfg, dict):
+        issues.append(ConfigIssue(
+            "error",
+            "memory must be a mapping",
+            "Use a section such as: memory:\n  scope: identity",
+        ))
+    elif isinstance(memory_cfg, dict) and "scope" in memory_cfg:
+        memory_scope = str(memory_cfg.get("scope") or "").strip().lower()
+        valid_memory_scopes = {"identity", "user", "conversation", "session"}
+        if memory_scope not in valid_memory_scopes:
+            issues.append(ConfigIssue(
+                "error",
+                f"memory.scope has invalid value '{memory_cfg.get('scope')}'",
+                "Use one of: identity, user, conversation, session",
             ))
 
     return issues

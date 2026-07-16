@@ -4,6 +4,19 @@
 from hermes_cli.config import validate_config_structure, ConfigIssue
 
 
+class TestMemoryScopeValidation:
+    def test_supported_scopes_are_valid(self):
+        for scope in ("identity", "user", "conversation", "session", "Conversation"):
+            assert not [i for i in validate_config_structure({"memory": {"scope": scope}}) if i.severity == "error"]
+
+    def test_invalid_scope_is_an_error(self):
+        issues = validate_config_structure({"memory": {"scope": "chat"}})
+        assert any(i.severity == "error" and "memory.scope" in i.message for i in issues)
+
+    def test_memory_section_must_be_mapping(self):
+        issues = validate_config_structure({"memory": "user"})
+        assert any(i.severity == "error" and "memory must be a mapping" in i.message for i in issues)
+
 class TestCustomProvidersValidation:
     """custom_providers must be a YAML list, not a dict."""
 

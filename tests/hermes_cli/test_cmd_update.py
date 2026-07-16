@@ -1,13 +1,1060 @@
 """Tests for cmd_update — branch fallback when remote branch doesn't exist."""
 
 import hashlib
+import plistlib
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 from hermes_cli.main import cmd_update, PROJECT_ROOT
+
+
+def _launchd_domain_inventory(*labels: str) -> str:
+    services = [
+        f"\t\t   {1000 + index}      - \t{label}"
+        for index, label in enumerate(labels)
+    ]
+    return "\n".join(
+        [
+            "gui/501 = {",
+            "\tservices = {",
+            *services,
+            "\t}",
+            "}",
+        ]
+    )
+
+
+REAL_LAUNCHD_DOMAIN_INVENTORY = """gui/501 = {
+\tservices = {
+\t\t   45254    -15 \tai.hermes.gateway
+\t\t       0      - \tai.hermes.gateway-stopped
+\t\t   21130   (pe) \tcom.apple.syncdefaultsd
+\t\t       0   (jt) \tcom.apple.knowledgeconstructiond
+\t\t    5392      0 \tai.hermes.gateway-coder
+\t\t     402      1 \tcom.apple.trustd.agent
+\t\t       0      - \tcom.example.ai.hermes.gateway-nested
+\t\t       0      - \t/tmp/ai.hermes.gateway-path
+\t}
+\tservice count = 8
+\tnested metadata = {
+\t\tpath = /tmp/ai.hermes.gateway-path
+\t\tlabel = ai.hermes.gateway-nested
+\t}
+}
+"""
+
+
+class TestMacOSMultiProfileGatewayRestart:
+    """Successful shared-source updates restart every running launchd gateway."""
+
+    def test_parses_real_launchd_services_table_rows_only(self):
+        from hermes_cli import gateway as gateway_cli
+
+        labels, parsed = gateway_cli._parse_launchd_domain_gateway_labels(
+            REAL_LAUNCHD_DOMAIN_INVENTORY
+        )
+
+        assert parsed is True
+        assert labels == {
+            "ai.hermes.gateway",
+            "ai.hermes.gateway-stopped",
+            "ai.hermes.gateway-coder",
+        }
+
+    def test_parses_unambiguous_dictionary_services_fixture(self):
+        from hermes_cli import gateway as gateway_cli
+
+        output = """gui/501 = {
+\tservices = {
+\t\t\"ai.hermes.gateway-coder\" => {
+\t\t\tpath = /tmp/ai.hermes.gateway-path
+\t\t\tnested label = ai.hermes.gateway-nested
+\t\t}
+\t\tcom.apple.unrelated => {
+\t\t\tlabel = ai.hermes.gateway-not-an-entry
+\t\t}
+\t}
+}
+"""
+
+        labels, parsed = gateway_cli._parse_launchd_domain_gateway_labels(output)
+
+        assert parsed is True
+        assert labels == {"ai.hermes.gateway-coder"}
+
+    def test_ignores_nested_services_blocks(self):
+        from hermes_cli import gateway as gateway_cli
+
+        output = """gui/501 = {
+\tmetadata = {
+\t\tservices = {
+\t\t\t 45254 -15 ai.hermes.gateway-nested
+\t\t}
+\t}
+\tservices = {
+\t\t 402 - com.apple.trustd.agent
+\t}
+}
+"""
+
+        labels, parsed = gateway_cli._parse_launchd_domain_gateway_labels(output)
+
+        assert parsed is True
+        assert labels == set()
+
+    @pytest.mark.parametrize(
+        "output",
+        [
+            "gui/501 = {\n}\n",
+            "gui/501 = {\n\tservices = {\n\t\t 45254 -15 ai.hermes.gateway\n",
+            "gui/501 = {\n\tservices = {\n\t\t 45254 running ai.hermes.gateway\n\t}\n}\n",
+            (
+                "gui/501 = {\n\tservices = {\n"
+                "\t\t 45254 -15 ai.hermes.gateway\n"
+                "\t\tcom.apple.mixed => {\n\t\t}\n\t}\n}\n"
+            ),
+            "gui/501 = {\n\tservices = {\n\t\t 45254 -15 ai.hermes.gateway\n\t};\n}\n",
+        ],
+    )
+    def test_rejects_malformed_or_truncated_service_inventories(self, output):
+        from hermes_cli import gateway as gateway_cli
+
+        labels, parsed = gateway_cli._parse_launchd_domain_gateway_labels(output)
+
+        assert parsed is False
+        assert labels == set()
+
+    @staticmethod
+    def _write_plist(
+        launch_agents: Path,
+        label: str,
+        hermes_home: Path,
+        *,
+        command: list[str] | None = None,
+        include_hermes_home: bool = True,
+    ) -> Path:
+        launch_agents.mkdir(parents=True, exist_ok=True)
+        path = launch_agents / f"{label}.plist"
+        payload = {
+            "Label": label,
+            "ProgramArguments": command
+            or [
+                "/usr/bin/python3",
+                "-m",
+                "hermes_cli.main",
+                "gateway",
+                "run",
+                "--replace",
+            ],
+        }
+        if include_hermes_home:
+            payload["EnvironmentVariables"] = {"HERMES_HOME": str(hermes_home)}
+        with path.open("wb") as handle:
+            plistlib.dump(payload, handle)
+        return path
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_defers_invoking_gateway_until_after_manual_sweeps(
+        self, mock_run, _mock_which, mock_args, monkeypatch
+    ):
+        from hermes_cli import gateway as gateway_cli
+        from hermes_cli import main as hm
+
+        mock_run.side_effect = _make_run_side_effect(commit_count="1")
+        events = []
+        current = gateway_cli.LaunchdGatewayJob(
+            "gui/501", "ai.hermes.gateway-coder", 303, Path("/profiles/coder")
+        )
+        restart_result = gateway_cli.LaunchdGatewayRestartResult(
+            ["ai.hermes.gateway"], {101, 111, 303}, [current]
+        )
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "restart_running_launchd_gateways",
+            lambda timeout: events.append(("services", timeout)) or restart_result,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "restart_deferred_current_launchd_gateways",
+            lambda result: events.append(("deferred", result))
+            or ["ai.hermes.gateway-coder"],
+        )
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda **_kwargs: {111})
+        monkeypatch.setattr(
+            gateway_cli,
+            "find_gateway_pids",
+            lambda **kwargs: events.append(("manual-sweep", kwargs["exclude_pids"])) or [],
+        )
+        monkeypatch.setattr(
+            gateway_cli, "find_profile_gateway_processes", lambda **kwargs: []
+        )
+        monkeypatch.setattr(hm._time, "sleep", lambda _seconds: None)
+
+        cmd_update(mock_args)
+
+        assert events[0][0] == "services"
+        assert events[0][1] >= 45.0
+        assert [event[0] for event in events].count("manual-sweep") == 2
+        assert events[-1] == ("deferred", restart_result)
+        for event in events:
+            if event[0] == "manual-sweep":
+                assert event[1] >= {101, 111, 303}
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_incomplete_launchd_discovery_skips_both_manual_sweeps(
+        self, mock_run, _mock_which, mock_args, monkeypatch, capsys
+    ):
+        from hermes_cli import gateway as gateway_cli
+        from hermes_cli import main as hm
+
+        mock_run.side_effect = _make_run_side_effect(commit_count="1")
+        result = gateway_cli.LaunchdGatewayRestartResult(
+            [], set(), [], False, ("gui/501/ai.hermes.gateway: timed out",)
+        )
+        signals = []
+        watchers = []
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli, "restart_running_launchd_gateways", lambda _timeout: result
+        )
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda **_kwargs: set())
+        monkeypatch.setattr(
+            gateway_cli,
+            "find_gateway_pids",
+            lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("manual sweep must not run")
+            ),
+        )
+        monkeypatch.setattr(
+            gateway_cli, "find_profile_gateway_processes", lambda **_kwargs: []
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "launch_detached_profile_gateway_restart",
+            lambda *args: watchers.append(args) or True,
+        )
+        monkeypatch.setattr(gateway_cli.os, "kill", lambda *args: signals.append(args))
+        monkeypatch.setattr(hm._time, "sleep", lambda _seconds: None)
+
+        cmd_update(mock_args)
+
+        assert signals == []
+        assert watchers == []
+        assert "Skipping manual gateway sweeps" in capsys.readouterr().out
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_deferred_finalizer_runs_after_manual_discovery_exception(
+        self, mock_run, _mock_which, mock_args, monkeypatch
+    ):
+        from hermes_cli import gateway as gateway_cli
+
+        mock_run.side_effect = _make_run_side_effect(commit_count="1")
+        current = gateway_cli.LaunchdGatewayJob(
+            "gui/501", "ai.hermes.gateway", 303, Path("/.hermes")
+        )
+        result = gateway_cli.LaunchdGatewayRestartResult([], {303}, [current])
+        finalized = []
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli, "restart_running_launchd_gateways", lambda _timeout: result
+        )
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda **_kwargs: {303})
+        monkeypatch.setattr(
+            gateway_cli,
+            "find_gateway_pids",
+            lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("injected sweep failure")),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "restart_deferred_current_launchd_gateways",
+            lambda value: finalized.append(value) or ["ai.hermes.gateway"],
+        )
+
+        cmd_update(mock_args)
+
+        assert finalized == [result]
+
+    def test_discovers_gui_and_user_jobs_from_installed_plists_only(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli import gateway as gateway_cli
+
+        launch_agents = tmp_path / "Library" / "LaunchAgents"
+        self._write_plist(launch_agents, "ai.hermes.gateway", tmp_path / ".hermes")
+        self._write_plist(
+            launch_agents,
+            "ai.hermes.gateway-coder",
+            tmp_path / ".hermes/profiles/coder",
+            command=[
+                "/usr/bin/python3",
+                "-m",
+                "hermes_cli.main",
+                "--profile",
+                "coder",
+                "gateway",
+                "run",
+            ],
+        )
+        custom_home = tmp_path / "custom-hermes-home"
+        custom_suffix = hashlib.sha256(str(custom_home.resolve()).encode()).hexdigest()[:8]
+        custom_label = f"ai.hermes.gateway-{custom_suffix}"
+        self._write_plist(
+            launch_agents,
+            custom_label,
+            custom_home,
+            command=[
+                "/usr/bin/python3",
+                "-m",
+                "hermes_cli.main",
+                "gateway",
+                "run",
+            ],
+        )
+        self._write_plist(
+            launch_agents,
+            "ai.hermes.gateway-stopped",
+            tmp_path / ".hermes/profiles/stopped",
+            command=[
+                "/usr/bin/python3",
+                "-m",
+                "hermes_cli.main",
+                "--profile",
+                "stopped",
+                "gateway",
+                "run",
+                "--replace",
+            ],
+        )
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            if command == ["launchctl", "print", "gui/501"]:
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout=_launchd_domain_inventory(
+                        "ai.hermes.gateway", custom_label, "ai.hermes.gateway-stopped"
+                    ),
+                    stderr="",
+                )
+            if command == ["launchctl", "print", "user/501"]:
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout=_launchd_domain_inventory("ai.hermes.gateway-coder"),
+                    stderr="",
+                )
+            target = command[-1]
+            outputs = {
+                "gui/501/ai.hermes.gateway": "pid = 101\n",
+                "user/501/ai.hermes.gateway-coder": "pid = 202\n",
+                f"gui/501/{custom_label}": "pid = 303\n",
+                "gui/501/ai.hermes.gateway-stopped": "state = not running\n",
+            }
+            if target in outputs:
+                return subprocess.CompletedProcess(
+                    command, 0, stdout=outputs[target], stderr=""
+                )
+            return subprocess.CompletedProcess(command, 113, stdout="", stderr="not found")
+
+        monkeypatch.setattr(gateway_cli, "_launchd_user_home", lambda: tmp_path)
+        monkeypatch.setattr(gateway_cli.os, "getuid", lambda: 501)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        discovery = gateway_cli._discover_running_launchd_gateways()
+
+        assert discovery.complete is True
+        assert {(job.domain, job.label, job.pid) for job in discovery.jobs} == {
+            ("gui/501", "ai.hermes.gateway", 101),
+            ("user/501", "ai.hermes.gateway-coder", 202),
+            ("gui/501", custom_label, 303),
+        }
+        assert all(command[:2] == ["launchctl", "print"] for command in calls)
+        assert calls[:2] == [
+            ["launchctl", "print", "gui/501"],
+            ["launchctl", "print", "user/501"],
+        ]
+
+    @pytest.mark.parametrize("domain", ["gui/501", "user/501"])
+    def test_loaded_job_with_deleted_plist_fails_closed(
+        self, tmp_path, monkeypatch, domain
+    ):
+        from hermes_cli import gateway as gateway_cli
+
+        calls = []
+
+        def fake_run(command, **_kwargs):
+            calls.append(command)
+            assert command in (
+                ["launchctl", "print", "gui/501"],
+                ["launchctl", "print", "user/501"],
+            )
+            labels = ("ai.hermes.gateway-coder",) if command[-1] == domain else ()
+            return subprocess.CompletedProcess(
+                command, 0, stdout=_launchd_domain_inventory(*labels), stderr=""
+            )
+
+        monkeypatch.setattr(gateway_cli, "_launchd_user_home", lambda: tmp_path)
+        monkeypatch.setattr(gateway_cli.os, "getuid", lambda: 501)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_request_gateway_self_restart",
+            lambda _pid: pytest.fail("detached loaded job must not be signalled"),
+        )
+
+        discovery = gateway_cli._discover_running_launchd_gateways(warn=False)
+        restart = gateway_cli.restart_running_launchd_gateways(45.0)
+
+        assert discovery.complete is False
+        assert discovery.jobs == ()
+        assert "no valid installed plist" in discovery.errors[0]
+        assert restart.discovery_complete is False
+        assert restart.restarted_labels == []
+        assert calls == [
+            ["launchctl", "print", "gui/501"],
+            ["launchctl", "print", "user/501"],
+        ] * 2
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            subprocess.TimeoutExpired(["launchctl", "print", "gui/501"], 5),
+            OSError("launchctl unavailable"),
+            subprocess.CompletedProcess([], 5, stdout="", stderr="I/O error"),
+        ],
+    )
+    def test_domain_inventory_failure_prevents_per_label_probes(
+        self, tmp_path, monkeypatch, failure
+    ):
+        from hermes_cli import gateway as gateway_cli
+
+        launch_agents = tmp_path / "Library" / "LaunchAgents"
+        self._write_plist(launch_agents, "ai.hermes.gateway", tmp_path / ".hermes")
+        calls = []
+
+        def fake_run(command, **_kwargs):
+            calls.append(command)
+            assert len(command) == 3, "per-label launchctl print must not run"
+            if command[-1] == "gui/501":
+                if isinstance(failure, BaseException):
+                    raise failure
+                return failure
+            return subprocess.CompletedProcess(
+                command, 0, stdout=_launchd_domain_inventory(), stderr=""
+            )
+
+        monkeypatch.setattr(gateway_cli, "_launchd_user_home", lambda: tmp_path)
+        monkeypatch.setattr(gateway_cli.os, "getuid", lambda: 501)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        discovery = gateway_cli._discover_running_launchd_gateways(warn=False)
+
+        assert discovery.complete is False
+        assert discovery.jobs == ()
+        assert len(discovery.errors) == 1
+        assert calls == [
+            ["launchctl", "print", "gui/501"],
+            ["launchctl", "print", "user/501"],
+        ]
+
+    def test_valid_installed_unloaded_and_stopped_jobs_are_complete(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli import gateway as gateway_cli
+
+        launch_agents = tmp_path / "Library" / "LaunchAgents"
+        self._write_plist(launch_agents, "ai.hermes.gateway", tmp_path / ".hermes")
+        self._write_plist(
+            launch_agents,
+            "ai.hermes.gateway-coder",
+            tmp_path / ".hermes/profiles/coder",
+            command=[
+                "/usr/bin/python3",
+                "-m",
+                "hermes_cli.main",
+                "--profile",
+                "coder",
+                "gateway",
+                "run",
+                "--replace",
+            ],
+        )
+
+        def fake_run(command, **_kwargs):
+            if command == ["launchctl", "print", "gui/501"]:
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout=_launchd_domain_inventory("ai.hermes.gateway-coder"),
+                    stderr="",
+                )
+            if command == ["launchctl", "print", "user/501"]:
+                return subprocess.CompletedProcess(
+                    command, 0, stdout=_launchd_domain_inventory(), stderr=""
+                )
+            if command[-1] == "gui/501/ai.hermes.gateway-coder":
+                return subprocess.CompletedProcess(
+                    command, 0, stdout="state = stopped\n", stderr=""
+                )
+            return subprocess.CompletedProcess(command, 113, stdout="", stderr="not found")
+
+        monkeypatch.setattr(gateway_cli, "_launchd_user_home", lambda: tmp_path)
+        monkeypatch.setattr(gateway_cli.os, "getuid", lambda: 501)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        discovery = gateway_cli._discover_running_launchd_gateways(warn=False)
+
+        assert discovery.complete is True
+        assert discovery.jobs == ()
+        assert discovery.errors == ()
+
+    @pytest.mark.parametrize(
+        ("payload", "expected_error"),
+        [
+            ({"Label": "ai.hermes.gateway-other"}, "Label does not match"),
+            (
+                {
+                    "Label": "ai.hermes.gateway-coder",
+                    "ProgramArguments": [
+                        "/usr/bin/python3",
+                        "-m",
+                        "hermes_cli.main",
+                        "--profile",
+                        "coder",
+                        "gateway",
+                        "run",
+                    ],
+                },
+                "missing HERMES_HOME",
+            ),
+            (
+                {
+                    "Label": "ai.hermes.gateway-coder",
+                    "EnvironmentVariables": {"HERMES_HOME": "/profiles/coder"},
+                    "ProgramArguments": ["/usr/bin/python3", "unrelated.py"],
+                },
+                "invalid Hermes gateway ProgramArguments",
+            ),
+            (
+                {
+                    "Label": "ai.hermes.gateway-coder",
+                    "EnvironmentVariables": {"HERMES_HOME": "/wrong/home"},
+                    "ProgramArguments": [
+                        "/usr/bin/python3",
+                        "-m",
+                        "hermes_cli.main",
+                        "--profile",
+                        "coder",
+                        "gateway",
+                        "run",
+                        "--replace",
+                    ],
+                },
+                "HERMES_HOME/command does not match",
+            ),
+        ],
+    )
+    def test_reserved_label_imposters_fail_closed_without_per_label_probe(
+        self, tmp_path, monkeypatch, payload, expected_error
+    ):
+        from hermes_cli import gateway as gateway_cli
+
+        launch_agents = tmp_path / "Library" / "LaunchAgents"
+        launch_agents.mkdir(parents=True)
+        path = launch_agents / "ai.hermes.gateway-coder.plist"
+        with path.open("wb") as handle:
+            plistlib.dump(payload, handle)
+        launchctl_calls = []
+        monkeypatch.setattr(gateway_cli, "_launchd_user_home", lambda: tmp_path)
+        monkeypatch.setattr(gateway_cli.os, "getuid", lambda: 501)
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda command, **_kwargs: launchctl_calls.append(command)
+            or subprocess.CompletedProcess(
+                command, 0, stdout=_launchd_domain_inventory(), stderr=""
+            ),
+        )
+
+        discovery = gateway_cli._discover_running_launchd_gateways(warn=False)
+        restart = gateway_cli.restart_running_launchd_gateways(45.0)
+
+        assert discovery.complete is False
+        assert expected_error in discovery.errors[0]
+        assert discovery.jobs == ()
+        assert restart.discovery_complete is False
+        assert restart.restarted_labels == []
+        assert launchctl_calls == [
+            ["launchctl", "print", "gui/501"],
+            ["launchctl", "print", "user/501"],
+        ] * 2
+
+    def test_invalid_non_hermes_filenames_are_ignored(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli import gateway as gateway_cli
+
+        launch_agents = tmp_path / "Library" / "LaunchAgents"
+        launch_agents.mkdir(parents=True)
+        (launch_agents / "com.example.valid.plist").write_bytes(b"not a plist")
+        # Matches the broad glob, but uppercase is outside generated label syntax.
+        (launch_agents / "ai.hermes.gateway-Bad.plist").write_bytes(b"not a plist")
+        monkeypatch.setattr(gateway_cli, "_launchd_user_home", lambda: tmp_path)
+
+        installed = gateway_cli._installed_launchd_gateway_plists()
+
+        assert installed.complete is True
+        assert installed.plists == ()
+        assert installed.errors == ()
+
+    @pytest.mark.parametrize("failure", ["malformed", "unreadable"])
+    def test_invalid_reserved_plist_makes_update_skip_all_gateway_actions(
+        self,
+        tmp_path,
+        mock_args,
+        monkeypatch,
+        capsys,
+        failure,
+    ):
+        from hermes_cli import gateway as gateway_cli
+        from hermes_cli import main as hm
+
+        launch_agents = tmp_path / "Library" / "LaunchAgents"
+        launch_agents.mkdir(parents=True)
+        plist_path = launch_agents / "ai.hermes.gateway-coder.plist"
+        plist_path.write_bytes(b"not a plist")
+        real_path_open = Path.open
+        if failure == "unreadable":
+            def fake_path_open(path, *args, **kwargs):
+                if path == plist_path:
+                    raise PermissionError("injected unreadable plist")
+                return real_path_open(path, *args, **kwargs)
+
+            monkeypatch.setattr(Path, "open", fake_path_open)
+
+        commands = []
+        git_side_effect = _make_run_side_effect(commit_count="1")
+
+        def fake_run(command, **kwargs):
+            commands.append(command)
+            if command and command[0] == "launchctl":
+                assert command in (
+                    ["launchctl", "print", "gui/501"],
+                    ["launchctl", "print", "user/501"],
+                )
+                return subprocess.CompletedProcess(
+                    command, 0, stdout=_launchd_domain_inventory(), stderr=""
+                )
+            return git_side_effect(command, **kwargs)
+
+        signals = []
+        watchers = []
+        monkeypatch.setattr(gateway_cli, "_launchd_user_home", lambda: tmp_path)
+        monkeypatch.setattr(gateway_cli.os, "getuid", lambda: 501)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(
+            gateway_cli,
+            "find_gateway_pids",
+            lambda **_kwargs: (_ for _ in ()).throw(
+                AssertionError("manual sweep must not run")
+            ),
+        )
+        monkeypatch.setattr(
+            gateway_cli, "find_profile_gateway_processes", lambda **_kwargs: []
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "launch_detached_profile_gateway_restart",
+            lambda *args: watchers.append(args) or True,
+        )
+        monkeypatch.setattr(gateway_cli.os, "kill", lambda *args: signals.append(args))
+        monkeypatch.setattr(hm._time, "sleep", lambda _seconds: None)
+
+        cmd_update(mock_args)
+
+        assert [
+            command for command in commands if command and command[0] == "launchctl"
+        ] == [
+            ["launchctl", "print", "gui/501"],
+            ["launchctl", "print", "user/501"],
+        ] * 2
+        assert signals == []
+        assert watchers == []
+        assert "Skipping manual gateway sweeps" in capsys.readouterr().out
+
+    @pytest.mark.parametrize(
+        ("gui_result", "expected_complete"),
+        [
+            (
+                subprocess.CompletedProcess(
+                    [],
+                    0,
+                    stdout="pid = 0\nstate = not running\n",
+                    stderr="",
+                ),
+                True,
+            ),
+            (subprocess.CompletedProcess([], 113, stdout="", stderr="not found"), True),
+            (subprocess.CompletedProcess([], 0, stdout="pid = garbage\n", stderr=""), False),
+            (subprocess.CompletedProcess([], 5, stdout="", stderr="I/O error"), False),
+            (subprocess.TimeoutExpired(["launchctl"], 5), False),
+            (OSError("launchctl unavailable"), False),
+        ],
+    )
+    def test_launchd_discovery_reports_completeness(
+        self, tmp_path, monkeypatch, gui_result, expected_complete
+    ):
+        from hermes_cli import gateway as gateway_cli
+
+        launch_agents = tmp_path / "Library" / "LaunchAgents"
+        self._write_plist(launch_agents, "ai.hermes.gateway", tmp_path / ".hermes")
+
+        def fake_run(command, **_kwargs):
+            if command == ["launchctl", "print", "gui/501"]:
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    stdout=_launchd_domain_inventory("ai.hermes.gateway"),
+                    stderr="",
+                )
+            if command == ["launchctl", "print", "user/501"]:
+                return subprocess.CompletedProcess(
+                    command, 0, stdout=_launchd_domain_inventory(), stderr=""
+                )
+            if command[-1].startswith("gui/"):
+                if isinstance(gui_result, BaseException):
+                    raise gui_result
+                return gui_result
+            return subprocess.CompletedProcess(command, 113, stdout="", stderr="not found")
+
+        monkeypatch.setattr(gateway_cli, "_launchd_user_home", lambda: tmp_path)
+        monkeypatch.setattr(gateway_cli.os, "getuid", lambda: 501)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        discovery = gateway_cli._discover_running_launchd_gateways(warn=False)
+
+        assert discovery.complete is expected_complete
+        assert bool(discovery.errors) is (not expected_complete)
+
+    def test_legacy_default_plist_without_hermes_home_uses_real_default(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli import gateway as gateway_cli
+
+        launch_agents = tmp_path / "Library" / "LaunchAgents"
+        self._write_plist(
+            launch_agents,
+            "ai.hermes.gateway",
+            tmp_path / ".hermes",
+            include_hermes_home=False,
+        )
+        self._write_plist(
+            launch_agents,
+            "ai.hermes.gateway-coder",
+            tmp_path / ".hermes/profiles/coder",
+            command=[
+                "/usr/bin/python3",
+                "-m",
+                "hermes_cli.main",
+                "--profile",
+                "coder",
+                "gateway",
+                "run",
+            ],
+            include_hermes_home=False,
+        )
+        monkeypatch.setattr(gateway_cli, "_launchd_user_home", lambda: tmp_path)
+
+        installed = gateway_cli._installed_launchd_gateway_plists()
+
+        assert installed.complete is False
+        assert [(label, home) for label, _path, home in installed.plists] == [
+            ("ai.hermes.gateway", tmp_path / ".hermes")
+        ]
+        assert "missing HERMES_HOME" in installed.errors[0]
+
+    def test_graceful_restart_requires_and_retains_replacement_pid(self, monkeypatch):
+        from hermes_cli import gateway as gateway_cli
+
+        job = gateway_cli.LaunchdGatewayJob(
+            "user/501", "ai.hermes.gateway-coder", 101, Path("/profiles/coder")
+        )
+        monkeypatch.setattr(gateway_cli, "_discover_running_launchd_gateways", lambda: gateway_cli.LaunchdGatewayDiscovery((job,), True))
+        monkeypatch.setattr(gateway_cli, "_launchd_gateway_drain_budget", lambda *_: 90.0)
+        monkeypatch.setattr(gateway_cli, "_is_pid_ancestor_of_current_process", lambda _: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_graceful_restart_via_sigusr1",
+            lambda pid, drain_timeout: (pid, drain_timeout) == (101, 90.0),
+        )
+        wait_calls = []
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_launchd_gateway_relaunch",
+            lambda domain, label, pid: wait_calls.append((domain, label, pid)) or 202,
+        )
+
+        result = gateway_cli.restart_running_launchd_gateways(drain_timeout=45.0)
+
+        assert result.restarted_labels == ["ai.hermes.gateway-coder"]
+        assert result.service_pids == {101, 202}
+        assert wait_calls == [("user/501", "ai.hermes.gateway-coder", 101)]
+
+    @pytest.mark.parametrize("replacement, expected_labels", [(202, ["ai.hermes.gateway"]), (None, [])])
+    def test_kickstart_success_is_verified_by_replacement_pid(
+        self, monkeypatch, capsys, replacement, expected_labels
+    ):
+        from hermes_cli import gateway as gateway_cli
+
+        job = gateway_cli.LaunchdGatewayJob(
+            "gui/501", "ai.hermes.gateway", 101, Path("/.hermes")
+        )
+        calls = []
+        monkeypatch.setattr(gateway_cli, "_discover_running_launchd_gateways", lambda: gateway_cli.LaunchdGatewayDiscovery((job,), True))
+        monkeypatch.setattr(gateway_cli, "_launchd_gateway_drain_budget", lambda *_: 45.0)
+        monkeypatch.setattr(gateway_cli, "_is_pid_ancestor_of_current_process", lambda _: False)
+        monkeypatch.setattr(
+            gateway_cli, "_graceful_restart_via_sigusr1", lambda *args, **kwargs: False
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_launchd_gateway_relaunch",
+            lambda *args: replacement,
+        )
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        result = gateway_cli.restart_running_launchd_gateways(drain_timeout=45.0)
+
+        assert result.restarted_labels == expected_labels
+        assert result.service_pids == ({101, 202} if replacement else {101})
+        assert calls == [[
+            "launchctl",
+            "kickstart",
+            "-k",
+            "gui/501/ai.hermes.gateway",
+        ]]
+        if replacement is None:
+            assert "no replacement PID appeared" in capsys.readouterr().out
+
+    def test_per_label_failure_continues_in_original_domain(self, monkeypatch, capsys):
+        from hermes_cli import gateway as gateway_cli
+
+        jobs = [
+            gateway_cli.LaunchdGatewayJob(
+                "gui/501", "ai.hermes.gateway", 101, Path("/.hermes")
+            ),
+            gateway_cli.LaunchdGatewayJob(
+                "user/501", "ai.hermes.gateway-coder", 202, Path("/profiles/coder")
+            ),
+        ]
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            if command[-1] == "gui/501/ai.hermes.gateway":
+                raise subprocess.CalledProcessError(5, command, stderr="I/O error")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli, "_discover_running_launchd_gateways", lambda: gateway_cli.LaunchdGatewayDiscovery(tuple(jobs), True))
+        monkeypatch.setattr(gateway_cli, "_launchd_gateway_drain_budget", lambda *_: 45.0)
+        monkeypatch.setattr(gateway_cli, "_is_pid_ancestor_of_current_process", lambda _: False)
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(
+            gateway_cli, "_graceful_restart_via_sigusr1", lambda *args, **kwargs: False
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_launchd_gateway_relaunch",
+            lambda domain, _label, _pid: 303 if domain == "user/501" else None,
+        )
+
+        result = gateway_cli.restart_running_launchd_gateways(drain_timeout=45.0)
+
+        assert result.restarted_labels == ["ai.hermes.gateway-coder"]
+        assert calls[-1] == [
+            "launchctl",
+            "kickstart",
+            "-k",
+            "user/501/ai.hermes.gateway-coder",
+        ]
+        assert "ai.hermes.gateway" in capsys.readouterr().out
+
+    def test_deferred_current_restart_is_only_requested_by_finalizer(self, monkeypatch):
+        from hermes_cli import gateway as gateway_cli
+
+        current = gateway_cli.LaunchdGatewayJob(
+            "gui/501", "ai.hermes.gateway-coder", 303, Path("/profiles/coder")
+        )
+        monkeypatch.setattr(gateway_cli, "_discover_running_launchd_gateways", lambda: gateway_cli.LaunchdGatewayDiscovery((current,), True))
+        monkeypatch.setattr(
+            gateway_cli, "_is_pid_ancestor_of_current_process", lambda pid: pid == 303
+        )
+        signals = []
+        monkeypatch.setattr(
+            gateway_cli,
+            "_request_gateway_self_restart",
+            lambda pid: signals.append(pid) or True,
+        )
+
+        result = gateway_cli.restart_running_launchd_gateways(drain_timeout=45.0)
+        assert signals == []
+        assert result.deferred_current == [current]
+        assert result.service_pids == {303}
+        assert gateway_cli.restart_deferred_current_launchd_gateways(result) == [
+            "ai.hermes.gateway-coder"
+        ]
+        assert signals == [303]
+
+    def test_service_pid_discovery_uses_cross_domain_jobs(self, monkeypatch):
+        from hermes_cli import gateway as gateway_cli
+
+        jobs = [
+            gateway_cli.LaunchdGatewayJob(
+                "gui/501", "ai.hermes.gateway", 101, Path("/.hermes")
+            ),
+            gateway_cli.LaunchdGatewayJob(
+                "user/501", "ai.hermes.gateway-coder", 202, Path("/profiles/coder")
+            ),
+        ]
+        discovery = gateway_cli.LaunchdGatewayDiscovery(tuple(jobs), True)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setenv("HERMES_HOME", "/.hermes")
+        monkeypatch.setattr(
+            gateway_cli,
+            "_discover_running_launchd_gateways",
+            lambda **kwargs: discovery,
+        )
+
+        assert gateway_cli._get_service_pids() == {101}
+        assert gateway_cli._get_service_pids(all_profiles=True) == {101, 202}
+
+    def test_find_gateway_pids_revalidates_replacement_service_pid(self, monkeypatch):
+        from hermes_cli import gateway as gateway_cli
+
+        snapshots = iter(
+            [
+                gateway_cli.ServicePidDiscovery(frozenset({202}), True),
+                gateway_cli.ServicePidDiscovery(frozenset({303}), True),
+            ]
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_get_service_pid_discovery",
+            lambda **_kwargs: next(snapshots),
+        )
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_scan_gateway_pids",
+            lambda exclude, **_kwargs: [pid for pid in (202, 303, 404) if pid not in exclude],
+        )
+
+        assert gateway_cli.find_gateway_pids(
+            exclude_pids={101},
+            all_profiles=True,
+            exclude_service_pids=True,
+        ) == [404]
+
+    def test_exclude_pids_does_not_implicitly_exclude_services(self, monkeypatch):
+        from hermes_cli import gateway as gateway_cli
+
+        # The default path intentionally preserves the historical no-argument
+        # helper call so existing callers and mocks remain compatible.
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: {202})
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_scan_gateway_pids",
+            lambda exclude, **_kwargs: [pid for pid in (202, 303) if pid not in exclude],
+        )
+
+        assert gateway_cli.find_gateway_pids(exclude_pids={101}) == [202, 303]
+
+    def test_find_gateway_pids_requests_all_service_profiles_explicitly(self, monkeypatch):
+        from hermes_cli import gateway as gateway_cli
+
+        calls = []
+        monkeypatch.setattr(
+            gateway_cli,
+            "_get_service_pids",
+            lambda **kwargs: calls.append(kwargs) or set(),
+        )
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "_scan_gateway_pids", lambda *_args, **_kwargs: [])
+
+        assert gateway_cli.find_gateway_pids(all_profiles=True) == []
+        assert calls == [{"all_profiles": True}]
+
+    def test_sibling_profile_drain_budget_reads_only_its_config(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli import gateway as gateway_cli
+
+        profile_home = tmp_path / ".hermes" / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+        (profile_home / "config.yaml").write_text(
+            "agent:\n  restart_drain_timeout: 240\n", encoding="utf-8"
+        )
+        job = gateway_cli.LaunchdGatewayJob(
+            "user/501", "ai.hermes.gateway-coder", 202, profile_home
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+        assert gateway_cli._launchd_gateway_drain_budget(job, 45.0) == 255.0
+
+    @pytest.mark.parametrize("configured", [".nan", ".inf", "-.inf"])
+    def test_non_finite_sibling_drain_budget_falls_back(
+        self, tmp_path, monkeypatch, configured
+    ):
+        from hermes_cli import gateway as gateway_cli
+
+        profile_home = tmp_path / ".hermes" / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+        (profile_home / "config.yaml").write_text(
+            f"agent:\n  restart_drain_timeout: {configured}\n", encoding="utf-8"
+        )
+        job = gateway_cli.LaunchdGatewayJob(
+            "user/501", "ai.hermes.gateway-coder", 202, profile_home
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+        assert gateway_cli._launchd_gateway_drain_budget(job, 45.0) == 45.0
+
+    @pytest.mark.parametrize("fallback", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_fallback_drain_budget_is_sanitized(
+        self, tmp_path, fallback
+    ):
+        from hermes_cli import gateway as gateway_cli
+
+        job = gateway_cli.LaunchdGatewayJob(
+            "user/501", "ai.hermes.gateway-coder", 202, tmp_path
+        )
+
+        budget = gateway_cli._launchd_gateway_drain_budget(job, fallback)
+
+        assert budget > 0
+        assert budget != float("inf")
 
 
 def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):

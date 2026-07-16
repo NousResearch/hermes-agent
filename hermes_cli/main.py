@@ -272,6 +272,7 @@ if _try_termux_ultrafast_version():
 import argparse
 import hashlib
 import json
+import math
 import shlex
 import shutil
 import stat
@@ -10462,6 +10463,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Auto-restart ALL gateways after update.
         # The code update (git pull) is shared across all profiles, so every
         # running gateway needs restarting to pick up the new code.
+        launchd_restart_result = None
+        restarted_services = []
         try:
             from hermes_cli.gateway import (
                 is_macos,
@@ -10473,6 +10476,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _get_service_pids,
                 _graceful_restart_via_sigusr1,
                 _wait_for_gateway_exit,
+                IncompleteServiceDiscoveryError,
             )
             import signal as _signal
 
@@ -10644,13 +10648,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 )
             except (TypeError, ValueError):
                 _drain_budget = float(_DEFAULT_DRAIN)
+            if not math.isfinite(_drain_budget):
+                _drain_budget = float(_DEFAULT_DRAIN)
+            if not math.isfinite(_drain_budget):
+                _drain_budget = 60.0
             # Add a 15s margin so the drain loop + final exit finish before
             # we escalate to ``systemctl restart`` / SIGTERM.
             _drain_budget = max(_drain_budget, 30.0) + 15.0
 
-            restarted_services = []
             killed_pids = set()
             relaunched_profiles = []
+            manual_sweeps_safe = True
 
             # --- Systemd services (Linux) ---
             # Discover all hermes-gateway* units (default + profiles)
@@ -10944,38 +10952,50 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # --- Launchd services (macOS) ---
             if is_macos():
                 try:
-                    from hermes_cli.gateway import (
-                        launchd_restart,
-                        get_launchd_label,
-                        get_launchd_plist_path,
-                    )
+                    from hermes_cli.gateway import restart_running_launchd_gateways
 
-                    plist_path = get_launchd_plist_path()
-                    if plist_path.exists():
-                        check = subprocess.run(
-                            ["launchctl", "list", get_launchd_label()],
-                            capture_output=True,
-                            text=True,
-                            timeout=5,
+                    launchd_restart_result = restart_running_launchd_gateways(
+                        _drain_budget
+                    )
+                    restarted_services.extend(
+                        launchd_restart_result.restarted_labels
+                    )
+                    if not launchd_restart_result.discovery_complete:
+                        manual_sweeps_safe = False
+                        detail = "; ".join(launchd_restart_result.discovery_errors)
+                        suffix = f": {detail}" if detail else ""
+                        print(
+                            "  ⚠ Skipping manual gateway sweeps because launchd "
+                            f"ownership discovery was incomplete{suffix}."
                         )
-                        if check.returncode == 0:
-                            try:
-                                launchd_restart()
-                                restarted_services.append(get_launchd_label())
-                            except subprocess.CalledProcessError as e:
-                                stderr = (getattr(e, "stderr", "") or "").strip()
-                                print(f"  ⚠ Gateway restart failed: {stderr}")
-                except (FileNotFoundError, subprocess.TimeoutExpired, ImportError):
-                    pass
+                        print("    No possibly launchd-supervised process will be signalled.")
+                except ImportError as exc:
+                    print(f"  ⚠ Could not load macOS gateway restart support: {exc}")
 
             # --- Manual (non-service) gateways ---
             # Kill any remaining gateway processes not managed by a service.
             # Exclude PIDs that belong to just-restarted services so we don't
             # immediately kill the process that systemd/launchd just spawned.
-            service_pids = _get_service_pids()
-            manual_pids = find_gateway_pids(
-                exclude_pids=service_pids, all_profiles=True
-            )
+            service_pids = _get_service_pids(all_profiles=True)
+            if launchd_restart_result is not None:
+                # Retain both old/current and verified replacement ownership
+                # across the next discovery inside find_gateway_pids().
+                service_pids.update(launchd_restart_result.service_pids)
+            manual_pids = []
+            if manual_sweeps_safe:
+                try:
+                    manual_pids = find_gateway_pids(
+                        exclude_pids=service_pids,
+                        all_profiles=True,
+                        exclude_service_pids=True,
+                    )
+                except IncompleteServiceDiscoveryError as discovery_exc:
+                    manual_sweeps_safe = False
+                    print(
+                        "  ⚠ Skipping manual gateway sweeps because service ownership "
+                        f"discovery was incomplete: {discovery_exc}"
+                    )
+                    print("    No possibly supervised process will be signalled.")
             profile_processes = {
                 proc.pid: proc
                 for proc in find_profile_gateway_processes(exclude_pids=service_pids)
@@ -11063,11 +11083,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # any remaining pre-update PIDs so the watcher / service
             # manager can relaunch with fresh code.
             try:
+                if not manual_sweeps_safe:
+                    raise IncompleteServiceDiscoveryError(
+                        "initial ownership discovery was incomplete"
+                    )
                 _time.sleep(3.0)
-                _service_pids_after = _get_service_pids()
+                _service_pids_after = _get_service_pids(all_profiles=True)
+                if launchd_restart_result is not None:
+                    _service_pids_after.update(launchd_restart_result.service_pids)
                 _surviving = find_gateway_pids(
                     exclude_pids=_service_pids_after,
                     all_profiles=True,
+                    exclude_service_pids=True,
                 )
                 # Scope to PIDs we already tried to kill during this
                 # update (killed_pids).  Anything new is a gateway that
@@ -11097,6 +11124,24 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         except Exception as e:
             logger.debug("Gateway restart during update failed: %s", e)
+        finally:
+            # The invoking launchd gateway must be the final restart action, even
+            # when discovery, watcher launch, or either manual sweep raises.
+            if launchd_restart_result is not None:
+                try:
+                    from hermes_cli.gateway import (
+                        restart_deferred_current_launchd_gateways,
+                    )
+
+                    deferred_restarted = restart_deferred_current_launchd_gateways(
+                        launchd_restart_result
+                    )
+                    restarted_services.extend(deferred_restarted)
+                    for svc in deferred_restarted:
+                        print(f"  ✓ Restart requested for {svc}")
+                except Exception as exc:
+                    logger.debug("Deferred launchd gateway restart failed: %s", exc)
+                    print(f"  ⚠ Could not request deferred gateway restart: {exc}")
 
         _resume_windows_gateways_after_update(_windows_gateway_resume)
 

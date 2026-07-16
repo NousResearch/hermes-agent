@@ -5,9 +5,13 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 """
 
 import asyncio
+import hashlib
 import json
 import logging
+import math
 import os
+import plistlib
+import re
 import shlex
 import shutil
 import signal
@@ -90,15 +94,71 @@ class ProfileGatewayProcess:
     pid: int
 
 
-def _get_service_pids() -> set:
-    """Return PIDs currently managed by systemd or launchd gateway services.
+@dataclass(frozen=True)
+class LaunchdGatewayJob:
+    """A running installed Hermes gateway and its owning bootstrap domain."""
+
+    domain: str
+    label: str
+    pid: int
+    hermes_home: Path
+
+
+@dataclass(frozen=True)
+class InstalledLaunchdGatewayPlistDiscovery:
+    """Validated installed plists plus whether every reserved label was valid."""
+
+    plists: tuple[tuple[str, Path, Path], ...]
+    complete: bool
+    errors: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class LaunchdGatewayDiscovery:
+    """Running launchd jobs plus whether every installed job was inspected."""
+
+    jobs: tuple[LaunchdGatewayJob, ...]
+    complete: bool
+    errors: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ServicePidDiscovery:
+    """Service-owned PIDs and confidence that ownership discovery is complete."""
+
+    pids: frozenset[int]
+    complete: bool
+    errors: tuple[str, ...] = ()
+
+
+class IncompleteServiceDiscoveryError(RuntimeError):
+    """Raised when a destructive manual sweep cannot prove service ownership."""
+
+
+@dataclass
+class LaunchdGatewayRestartResult:
+    """State retained across the service restart and manual-process sweeps."""
+
+    restarted_labels: list[str]
+    service_pids: set[int]
+    deferred_current: list[LaunchdGatewayJob]
+    discovery_complete: bool = True
+    discovery_errors: tuple[str, ...] = ()
+
+
+def _get_service_pid_discovery(*, all_profiles: bool = False) -> ServicePidDiscovery:
+    """Return PIDs currently managed by gateway services.
 
     Used to avoid killing freshly-restarted service processes when sweeping
     for stale manual gateway processes after a service restart.  Relies on the
-    service manager having committed the new PID before the restart command
-    returns (true for both systemd and launchd in practice).
+    service manager having committed the new PID before this snapshot. Restart
+    helpers must establish that readiness before allowing a manual-process sweep.
+    ``all_profiles`` broadens launchd discovery only; existing systemd unit
+    discovery remains unchanged and includes every matching loaded unit.
     """
-    pids: set = set()
+    pids: set[int] = set()
+    complete = True
+    errors: list[str] = []
 
     # --- systemd (Linux): user and system scopes ---
     if supports_systemd_services():
@@ -139,35 +199,23 @@ def _get_service_pids() -> set:
 
     # --- launchd (macOS) ---
     if is_macos():
-        try:
-            label = get_launchd_label()
-            result = subprocess.run(
-                ["launchctl", "list", label],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode == 0:
-                # Try plist format first (macOS 26+): "PID" = <N>;
-                pid = _parse_launchd_pid_from_list_output(result.stdout)
-                if pid is not None and pid > 0:
-                    pids.add(pid)
-                else:
-                    # Fall back to legacy tab-separated format:
-                    # "PID\tStatus\tLabel"
-                    for line in result.stdout.strip().splitlines():
-                        parts = line.split()
-                        if len(parts) >= 3 and parts[2] == label:
-                            try:
-                                pid = int(parts[0])
-                                if pid > 0:
-                                    pids.add(pid)
-                            except ValueError:
-                                pass
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
+        discovery = _discover_running_launchd_gateways(warn=False)
+        current_home = get_hermes_home().expanduser().resolve()
+        pids.update(
+            job.pid
+            for job in discovery.jobs
+            if all_profiles or job.hermes_home.expanduser().resolve() == current_home
+        )
+        complete = discovery.complete
+        errors.extend(discovery.errors)
 
-    return pids
+    return ServicePidDiscovery(frozenset(pids), complete, tuple(errors))
+
+
+def _get_service_pids(*, all_profiles: bool = False) -> set[int]:
+    """Return service-owned PIDs; launchd is profile-scoped unless requested."""
+
+    return set(_get_service_pid_discovery(all_profiles=all_profiles).pids)
 
 
 def _get_parent_pid(pid: int) -> int | None:
@@ -584,7 +632,10 @@ def _filter_venv_launcher_stubs(pids: list[int]) -> list[int]:
 
 
 def find_gateway_pids(
-    exclude_pids: set | None = None, all_profiles: bool = False
+    exclude_pids: set | None = None,
+    all_profiles: bool = False,
+    *,
+    exclude_service_pids: bool = False,
 ) -> list:
     """Find PIDs of running gateway processes.
 
@@ -596,6 +647,12 @@ def find_gateway_pids(
             needs this because a code update affects every profile.
             When ``False`` (default), only PIDs belonging to the current
             Hermes profile are returned.
+        exclude_service_pids: Explicitly return only manually managed gateways.
+            Service ownership is checked both before and after the process-table
+            scan. Incomplete launchd discovery raises
+            :class:`IncompleteServiceDiscoveryError` so destructive callers fail
+            closed. ``exclude_pids`` itself retains its historical exact-PID
+            meaning.
     """
     _exclude = set(exclude_pids or set())
     pids: list[int] = []
@@ -606,18 +663,41 @@ def find_gateway_pids(
             _append_unique_pid(pids, get_running_pid(), _exclude)
         except Exception:
             pass
-    for pid in _get_service_pids():
-        _append_unique_pid(pids, pid, _exclude)
+    if exclude_service_pids:
+        ownership_before = _get_service_pid_discovery(all_profiles=all_profiles)
+        if not ownership_before.complete:
+            detail = "; ".join(ownership_before.errors) or "unknown launchd discovery failure"
+            raise IncompleteServiceDiscoveryError(detail)
+        service_pids = set(ownership_before.pids)
+        scan_exclude = _exclude | service_pids
+    else:
+        if all_profiles:
+            service_pids = _get_service_pids(all_profiles=True)
+        else:
+            service_pids = _get_service_pids()
+        scan_exclude = _exclude
+        for pid in service_pids:
+            _append_unique_pid(pids, pid, _exclude)
     try:
         include_restart_managers = not supports_systemd_services()
     except Exception:
         include_restart_managers = False
     for pid in _scan_gateway_pids(
-        _exclude,
+        scan_exclude,
         all_profiles=all_profiles,
         include_restart_managers=include_restart_managers,
     ):
         _append_unique_pid(pids, pid, _exclude)
+    if exclude_service_pids:
+        # launchd registers ownership before the replacement process becomes
+        # visible. A second authoritative snapshot therefore closes the
+        # replacement-generation race between the first snapshot and the scan.
+        ownership_after = _get_service_pid_discovery(all_profiles=all_profiles)
+        if not ownership_after.complete:
+            detail = "; ".join(ownership_after.errors) or "unknown launchd discovery failure"
+            raise IncompleteServiceDiscoveryError(detail)
+        owned = service_pids | set(ownership_after.pids)
+        pids = [pid for pid in pids if pid not in owned]
     return pids
 
 
@@ -3514,6 +3594,452 @@ def get_launchd_label() -> str:
     """Return the launchd service label, scoped per profile."""
     suffix = _profile_suffix()
     return f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
+
+
+def _is_launchd_gateway_label(label: str) -> bool:
+    """Return whether *label* is a Hermes gateway label we generate."""
+    prefix = "ai.hermes.gateway-"
+    if label == "ai.hermes.gateway":
+        return True
+    if not label.startswith(prefix):
+        return False
+    suffix = label[len(prefix) :]
+    allowed = "abcdefghijklmnopqrstuvwxyz0123456789_-"
+    return (
+        1 <= len(suffix) <= 64
+        and suffix[0] not in "_-"
+        and all(char in allowed for char in suffix)
+    )
+
+
+def _installed_launchd_gateway_plists() -> InstalledLaunchdGatewayPlistDiscovery:
+    """Validate Hermes-label gateway plists from the account home.
+
+    The filename, Label, and command must have the shape generated by
+    :func:`generate_launchd_plist`. Named/custom labels also require a matching
+    HERMES_HOME. Historical default-label plists predate HERMES_HOME and
+    unambiguously map to the real account's ``~/.hermes``. Invalid unrelated
+    filenames are ignored. A reserved Hermes-label filename that cannot be
+    validated makes discovery incomplete and is never queried or restarted.
+    """
+    launch_agents = _launchd_user_home() / "Library" / "LaunchAgents"
+    try:
+        candidates = sorted(launch_agents.glob("ai.hermes.gateway*.plist"))
+    except OSError as exc:
+        detail = f"{launch_agents}: could not enumerate launchd gateway plists: {exc}"
+        return InstalledLaunchdGatewayPlistDiscovery((), False, (detail,))
+
+    installed: list[tuple[str, Path, Path]] = []
+    errors: list[str] = []
+    for path in candidates:
+        label = path.name.removesuffix(".plist")
+        if not _is_launchd_gateway_label(label):
+            continue
+        try:
+            with path.open("rb") as handle:
+                data = plistlib.load(handle)
+        except (OSError, plistlib.InvalidFileException, ValueError, TypeError) as exc:
+            errors.append(f"{path}: could not read a valid plist: {exc}")
+            continue
+        if not isinstance(data, dict):
+            errors.append(f"{path}: plist root is not a dictionary")
+            continue
+        if data.get("Label") != label:
+            errors.append(f"{path}: Label does not match reserved filename {label!r}")
+            continue
+        environment = data.get("EnvironmentVariables")
+        hermes_home = environment.get("HERMES_HOME") if isinstance(environment, dict) else None
+        if not isinstance(hermes_home, str) or not hermes_home.strip():
+            if label != "ai.hermes.gateway":
+                errors.append(f"{path}: named/custom gateway is missing HERMES_HOME")
+                continue
+            hermes_home = str(_launchd_user_home() / ".hermes")
+        args = data.get("ProgramArguments")
+        if not (
+            isinstance(args, list)
+            and all(isinstance(arg, str) for arg in args)
+            and len(args) >= 5
+            and args[1:3] == ["-m", "hermes_cli.main"]
+        ):
+            errors.append(f"{path}: invalid Hermes gateway ProgramArguments")
+            continue
+        if args[-3:] == ["gateway", "run", "--replace"]:
+            command_profile_args = args[3:-3]
+        elif args[-2:] == ["gateway", "run"]:
+            command_profile_args = args[3:-2]
+        else:
+            errors.append(f"{path}: invalid Hermes gateway command suffix")
+            continue
+        resolved_home = Path(hermes_home).expanduser().resolve()
+        default_home = (_launchd_user_home() / ".hermes").resolve()
+        expected_label = "ai.hermes.gateway"
+        expected_profile_args: list[str] = []
+        if resolved_home != default_home:
+            try:
+                relative = resolved_home.relative_to((default_home / "profiles").resolve())
+                parts = relative.parts
+            except ValueError:
+                parts = ()
+            if (
+                len(parts) == 1
+                and _is_launchd_gateway_label(f"ai.hermes.gateway-{parts[0]}")
+            ):
+                expected_label = f"ai.hermes.gateway-{parts[0]}"
+                expected_profile_args = ["--profile", parts[0]]
+            else:
+                custom_suffix = hashlib.sha256(str(resolved_home).encode()).hexdigest()[:8]
+                expected_label = f"ai.hermes.gateway-{custom_suffix}"
+        if label != expected_label or command_profile_args != expected_profile_args:
+            errors.append(
+                f"{path}: HERMES_HOME/command does not match reserved label"
+            )
+            continue
+        installed.append((label, path, Path(hermes_home).expanduser()))
+    return InstalledLaunchdGatewayPlistDiscovery(
+        tuple(installed), not errors, tuple(errors)
+    )
+
+
+def _parse_launchd_print_pid(output: str) -> int | None:
+    """Safely parse the top-level positive ``pid`` field from launchctl print."""
+    for line in output.splitlines():
+        stripped = line.strip()
+        parts = stripped.split("=", 1)
+        if len(parts) != 2 or parts[0].strip().strip('"').lower() != "pid":
+            continue
+        raw_pid = parts[1].strip().rstrip(";").strip()
+        if not raw_pid.isascii() or not raw_pid.isdecimal():
+            return None
+        pid = int(raw_pid)
+        return pid if pid > 0 else None
+    return None
+
+
+def _launchd_print_state(output: str) -> tuple[str, int | None]:
+    """Classify launchctl output as running, expected stopped, or invalid."""
+    saw_pid = False
+    for line in output.splitlines():
+        parts = line.strip().split("=", 1)
+        if len(parts) == 2 and parts[0].strip().strip('"').lower() == "pid":
+            saw_pid = True
+            break
+    pid = _parse_launchd_print_pid(output)
+    if pid is not None:
+        return "running", pid
+    lowered = output.lower()
+    if any(
+        marker in lowered
+        for marker in ("state = not running", "state = stopped", "state = exited")
+    ):
+        return "stopped", None
+    if saw_pid:
+        return "invalid", None
+    return "invalid", None
+
+
+def _parse_launchd_domain_gateway_labels(output: str) -> tuple[set[str], bool]:
+    """Return reserved labels from a launchd domain's top-level service table.
+
+    Domain output contains labels in several nested sections. Only direct
+    entries in ``services = { ... }`` establish that a job is loaded. Refuse
+    structurally unexpected output rather than accidentally treating a nested
+    mention (or a truncated inventory) as a complete empty service table.
+    """
+    service_start = re.compile(r"^\s*services\s*=\s*\{\s*$")
+    table_entry = re.compile(
+        r"^\s*[0-9]+\s+(?:-?[0-9]+|-|\((?:pe|jt)\))\s+"
+        r"(?P<label>[^\s{}]+)\s*$"
+    )
+    dictionary_entry = re.compile(
+        r'^\s*(?:"(?P<quoted>[^"\r\n]+)"|(?P<bare>[^\s"{}]+))\s*=>\s*\{\s*$'
+    )
+    block_end = re.compile(r"^\s*}\s*$")
+    lines = output.splitlines()
+    start_index = None
+    domain_depth = 0
+    for index, line in enumerate(lines):
+        if service_start.fullmatch(line) and domain_depth == 1:
+            start_index = index
+            break
+        domain_depth += line.count("{") - line.count("}")
+        if domain_depth < 0:
+            return set(), False
+    if start_index is None:
+        return set(), False
+
+    labels: set[str] = set()
+    entry_format: str | None = None
+    depth = 1
+    for line in lines[start_index + 1 :]:
+        if depth == 1:
+            if block_end.fullmatch(line):
+                return labels, True
+            if not line.strip():
+                continue
+
+            table_match = table_entry.fullmatch(line)
+            dictionary_match = dictionary_entry.fullmatch(line)
+            if table_match:
+                if entry_format == "dictionary":
+                    return set(), False
+                entry_format = "table"
+                label = table_match.group("label")
+                if _is_launchd_gateway_label(label):
+                    labels.add(label)
+                continue
+            if dictionary_match:
+                if entry_format == "table":
+                    return set(), False
+                entry_format = "dictionary"
+                label = dictionary_match.group("quoted") or dictionary_match.group("bare")
+                if _is_launchd_gateway_label(label):
+                    labels.add(label)
+            else:
+                # An unknown direct entry means ownership cannot be safely
+                # ruled in or out. Dictionary values are ignored below only
+                # after an unambiguous ``label => {`` entry begins.
+                return set(), False
+
+        depth += line.count("{") - line.count("}")
+        if depth < 0:
+            return set(), False
+    return set(), False
+
+
+def _discover_running_launchd_gateways(*, warn: bool = True) -> LaunchdGatewayDiscovery:
+    """Discover jobs and report whether every launchd ownership probe was reliable."""
+    installed = _installed_launchd_gateway_plists()
+    uid = os.getuid()  # windows-footgun: ok — POSIX launchd (macOS) helper, called only from macOS paths
+    domains = (f"gui/{uid}", f"user/{uid}")
+    jobs: list[LaunchdGatewayJob] = []
+    errors: list[str] = list(installed.errors)
+
+    # A launchd job remains registered after its source plist is deleted.
+    # Inventory both possible bootstrap domains before probing any installed
+    # label so a detached loaded job cannot be mistaken for a manual process.
+    loaded_by_domain: dict[str, set[str]] = {}
+    for domain in domains:
+        try:
+            result = subprocess.run(
+                ["launchctl", "print", domain],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            errors.append(f"{domain}: could not inventory launchd services: {exc}")
+            continue
+        if result.returncode != 0:
+            reason = (result.stderr or "").strip() or f"launchctl exited {result.returncode}"
+            errors.append(f"{domain}: could not inventory launchd services: {reason}")
+            continue
+        labels, parsed = _parse_launchd_domain_gateway_labels(result.stdout or "")
+        if not parsed:
+            errors.append(f"{domain}: launchctl returned an unparseable service inventory")
+            continue
+        loaded_by_domain[domain] = labels
+
+    installed_labels = {label for label, _path, _home in installed.plists}
+    detached_labels = {
+        label
+        for labels in loaded_by_domain.values()
+        for label in labels
+        if label not in installed_labels
+    }
+    for label in sorted(detached_labels):
+        owners = ", ".join(
+            domain for domain, labels in loaded_by_domain.items() if label in labels
+        )
+        errors.append(
+            f"{owners}/{label}: loaded reserved gateway label has no valid installed plist"
+        )
+
+    if errors:
+        if warn:
+            for detail in errors:
+                print(f"  ⚠ Could not inspect launchd gateway ownership: {detail}")
+        # Do not query or act on any individual label when domain-wide
+        # ownership cannot be proven complete.
+        return LaunchdGatewayDiscovery((), False, tuple(errors))
+
+    for label, _plist_path, hermes_home in installed.plists:
+        for domain in domains:
+            target = f"{domain}/{label}"
+            try:
+                result = subprocess.run(
+                    ["launchctl", "print", target],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+                detail = f"{target}: {exc}"
+                errors.append(detail)
+                if warn:
+                    print(f"  ⚠ Could not inspect launchd gateway {detail}")
+                continue
+            if result.returncode != 0:
+                if result.returncode in {3, 113}:
+                    # Expected: this installed job is absent from this domain.
+                    continue
+                reason = (result.stderr or "").strip() or f"launchctl exited {result.returncode}"
+                detail = f"{target}: {reason}"
+                errors.append(detail)
+                if warn:
+                    print(f"  ⚠ Could not inspect launchd gateway {detail}")
+                continue
+            state, pid = _launchd_print_state(result.stdout or "")
+            if state == "running" and pid is not None:
+                jobs.append(LaunchdGatewayJob(domain, label, pid, hermes_home))
+            elif state == "invalid":
+                detail = f"{target}: launchctl returned unparseable PID/state output"
+                errors.append(detail)
+                if warn:
+                    print(f"  ⚠ Could not inspect launchd gateway {detail}")
+            # A recognized stopped state is complete discovery and intentionally
+            # contributes no ownership PID.
+    return LaunchdGatewayDiscovery(tuple(jobs), not errors, tuple(errors))
+
+
+def _wait_for_launchd_gateway_relaunch(
+    domain: str, label: str, previous_pid: int, timeout: float = 10.0
+) -> int | None:
+    """Wait until launchd reports a replacement PID for a named gateway job."""
+    deadline = time.monotonic() + max(timeout, 0.0)
+    while True:
+        try:
+            result = subprocess.run(
+                ["launchctl", "print", f"{domain}/{label}"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            if result.returncode == 0:
+                pid = _parse_launchd_print_pid(result.stdout or "")
+                if pid is not None and pid != previous_pid:
+                    return pid
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            pass
+
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(0.2)
+
+
+def _launchd_gateway_drain_budget(job: LaunchdGatewayJob, fallback: float) -> float:
+    """Read one gateway's non-secret config without changing global profile state.
+
+    HERMES_HOME comes from the already-validated installed plist. Only
+    ``config.yaml`` is read; sibling ``.env`` files and credentials are never
+    opened. Failure is conservative: retain the caller's existing finite budget.
+    """
+    safe_fallback = fallback
+    if not math.isfinite(safe_fallback) or safe_fallback <= 0:
+        safe_fallback = max(float(DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT), 30.0) + 15.0
+    try:
+        from hermes_cli.config import fast_safe_load
+
+        with (job.hermes_home / "config.yaml").open(encoding="utf-8") as handle:
+            config = fast_safe_load(handle) or {}
+        agent = config.get("agent") if isinstance(config, dict) else None
+        configured = agent.get("restart_drain_timeout") if isinstance(agent, dict) else None
+        if configured is None:
+            return safe_fallback
+        # Match update's existing safety margin. This avoids undercutting a
+        # sibling profile's drain and prematurely escalating to kickstart -k.
+        parsed = parse_restart_drain_timeout(configured)
+        if not math.isfinite(parsed):
+            return safe_fallback
+        return max(parsed, 30.0) + 15.0
+    except Exception:
+        # Config parsing is deliberately best-effort. Never shorten the known
+        # caller budget because one sibling config is missing or malformed.
+        return safe_fallback
+
+
+def restart_running_launchd_gateways(
+    drain_timeout: float,
+) -> LaunchdGatewayRestartResult:
+    """Best-effort restart of every running launchd-managed Hermes gateway.
+
+    Installed plists are probed in both bootstrap domains. The gateway containing
+    this updater is retained but not signalled here: the caller must complete its
+    manual-process sweep before calling
+    :func:`restart_deferred_current_launchd_gateways`.
+    """
+    discovery = _discover_running_launchd_gateways()
+    result = LaunchdGatewayRestartResult(
+        [],
+        {job.pid for job in discovery.jobs},
+        [],
+        discovery.complete,
+        discovery.errors,
+    )
+    for job in discovery.jobs:
+        if _is_pid_ancestor_of_current_process(job.pid):
+            result.deferred_current.append(job)
+            continue
+
+        budget = _launchd_gateway_drain_budget(job, drain_timeout)
+        try:
+            print(
+                f"  → {job.label}: draining gateway PID {job.pid} "
+                f"(up to {int(budget)}s)..."
+            )
+            if _graceful_restart_via_sigusr1(job.pid, drain_timeout=budget):
+                replacement = _wait_for_launchd_gateway_relaunch(
+                    job.domain, job.label, job.pid
+                )
+                if replacement is not None:
+                    result.service_pids.add(replacement)
+                    result.restarted_labels.append(job.label)
+                    continue
+                print(
+                    f"  ⚠ {job.label}: launchd did not report a replacement for "
+                    f"PID {job.pid} within 10s; using kickstart fallback"
+                )
+
+            subprocess.run(
+                ["launchctl", "kickstart", "-k", f"{job.domain}/{job.label}"],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=90,
+            )
+            replacement = _wait_for_launchd_gateway_relaunch(
+                job.domain, job.label, job.pid
+            )
+            if replacement is None:
+                print(
+                    f"  ⚠ Failed to restart {job.label}: launchd kickstart succeeded "
+                    "but no replacement PID appeared"
+                )
+                continue
+            result.service_pids.add(replacement)
+            result.restarted_labels.append(job.label)
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+            detail = (getattr(exc, "stderr", "") or "").strip() or str(exc)
+            print(f"  ⚠ Failed to restart {job.label}: {detail}")
+    return result
+
+
+def restart_deferred_current_launchd_gateways(
+    result: LaunchdGatewayRestartResult,
+) -> list[str]:
+    """Request invoking-gateway restarts after all manual sweeps have finished."""
+    restarted = []
+    for job in result.deferred_current:
+        if _request_gateway_self_restart(job.pid):
+            restarted.append(job.label)
+        else:
+            # A direct kickstart would kill the updater before it can finish and
+            # can strand later jobs. Preserve the running service and make the
+            # required manual action explicit instead of introducing that race.
+            print(
+                f"  ⚠ Failed to request deferred restart for {job.label}; "
+                "restart it manually after this update"
+            )
+    return restarted
 
 
 # Cached launchd domain result — probing is cheap but should only run once per

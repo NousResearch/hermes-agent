@@ -1,6 +1,22 @@
 import { h, clear, sparkline, fmtPrice, toast } from "../utils.js";
 import { openDetail } from "../detail.js";
-import { candleChart } from "../chart.js";
+import { candleChart, donut } from "../chart.js";
+
+// Portfolio math from holdings {coinId:{amount,cost?}} × a priceById map.
+function portfolioRows(holdings, priceById) {
+  const rows = [];
+  for (const [id, hold] of Object.entries(holdings || {})) {
+    const amount = Number(hold?.amount) || 0;
+    if (amount <= 0) continue;
+    const price = priceById[id];
+    if (price == null) continue;
+    const value = amount * price;
+    const cost = hold.cost != null ? Number(hold.cost) : null;
+    rows.push({ id, amount, price, value, cost, pl: cost != null ? value - cost : null });
+  }
+  rows.sort((a, b) => b.value - a.value);
+  return rows;
+}
 
 const CHART_RANGES = [["1", "1D"], ["7", "7D"], ["30", "30D"], ["90", "90D"], ["365", "1Y"]];
 
@@ -87,6 +103,61 @@ async function renderCoinDetail(body, ctx) {
       (chart.signals || []).map((s) => h("div.coin-signal", { class: `coin-signal tone-${s.tone}` },
         h("span.muted.small", {}, s.label), h("span", {}, s.value))));
 
+    // --- holdings for this coin + portfolio summary ---
+    const holdings = ctx.store.state.markets?.holdings || {};
+    const held = holdings[coinId] || {};
+    const priceById = Object.fromEntries((ctx._assets || []).map((a) => [a.id, a.price]));
+    priceById[coinId] = detail.price;  // ensure the open coin has a price
+    const amountInput = h("input.input.hold-input", {
+      type: "number", step: "any", min: "0", placeholder: "amount",
+      value: held.amount != null ? String(held.amount) : "",
+      "aria-label": "amount held",
+    });
+    const costInput = h("input.input.hold-input", {
+      type: "number", step: "any", min: "0", placeholder: "cost basis $ (optional)",
+      value: held.cost != null ? String(held.cost) : "",
+      "aria-label": "cost basis",
+    });
+    const saveHolding = () => {
+      const amount = parseFloat(amountInput.value);
+      const cost = parseFloat(costInput.value);
+      ctx.store.update((s) => {
+        if (!s.markets) s.markets = { ids: [] };
+        if (!s.markets.holdings) s.markets.holdings = {};
+        if (!amount || amount <= 0) delete s.markets.holdings[coinId];
+        else s.markets.holdings[coinId] = Number.isFinite(cost) && cost > 0
+          ? { amount, cost } : { amount };
+      }, "markets");
+      draw();
+    };
+    const heldValue = (Number(held.amount) || 0) * (detail.price || 0);
+    const holdingBox = h("div.hold-box", {},
+      h("div.muted.small", {}, "YOUR POSITION"),
+      h("div.hold-form", {}, amountInput, costInput,
+        h("button.btn.btn-primary", { type: "button", onclick: saveHolding }, "Save")),
+      held.amount ? h("div.hold-value", {},
+        `${held.amount} ${detail.symbol} = $${fmtPrice(heldValue)}`,
+        held.cost != null ? h("span.hold-pl", {},
+          " · P/L ", pct(held.cost > 0 ? ((heldValue - held.cost) / held.cost) * 100 : 0)) : null,
+      ) : null,
+    );
+
+    const pf = portfolioRows(holdings, priceById);
+    const pfTotal = pf.reduce((a, r) => a + r.value, 0);
+    const pfCost = pf.reduce((a, r) => a + (r.cost || 0), 0);
+    const pfSection = pf.length ? h("div.pf-section", {},
+      h("div.muted.small", {}, "PORTFOLIO"),
+      h("div.pf-body", {},
+        donut(pf.map((r) => ({ value: r.value, label: r.id })), { size: 108, thickness: 15 }),
+        h("div.pf-legend", {},
+          h("div.pf-total", {}, `$${fmtPrice(pfTotal)}`),
+          pfCost > 0 ? h("div.small", {}, "P/L ", pct(((pfTotal - pfCost) / pfCost) * 100)) : null,
+          ...pf.slice(0, 6).map((r) => h("div.pf-row.small", {},
+            h("span", {}, r.id), h("span.muted", {}, `$${fmtPrice(r.value)}`))),
+        ),
+      ),
+    ) : null;
+
     clear(body).append(
       h("div.coin-head", {},
         picker,
@@ -98,6 +169,8 @@ async function renderCoinDetail(body, ctx) {
       chartWrap,
       h("div.coin-signals-label.muted.small", {}, "TECHNICALS · informational only"),
       signals,
+      holdingBox,
+      pfSection,
       h("div.coin-stats", {},
         stat("Market cap", fmtBig(detail.marketCap)),
         stat("24h volume", fmtBig(detail.volume)),
@@ -164,7 +237,13 @@ const exportRef = {
       }
       ctx.setBadge(data.source === "sample" ? "sample" : null);
       ctx._track?.(data.assets);
+      ctx._assets = data.assets;  // shared with the detail drawer for portfolio math
       const editing = store.state.editMode;
+
+      const priceById = Object.fromEntries(data.assets.map((a) => [a.id, a.price]));
+      const pf = portfolioRows(store.state.markets?.holdings, priceById);
+      const pfTotal = pf.reduce((a, r) => a + r.value, 0);
+      const pfCost = pf.reduce((a, r) => a + (r.cost || 0), 0);
 
       const rows = h("div.market-rows", { role: "table", "aria-label": "Market watchlist" });
       for (const asset of data.assets) {
@@ -218,9 +297,16 @@ const exportRef = {
             }, c.symbol)))
         : null;
 
+      const pfLine = pf.length ? h("div.pf-line", {},
+        h("span.muted.small", {}, "PORTFOLIO"),
+        h("span.pf-line-v", {}, `$${fmtPrice(pfTotal)}`),
+        pfCost > 0 ? pct(((pfTotal - pfCost) / pfCost) * 100) : null,
+      ) : null;
+
       clear(body).append(
         glob ? globalBar(glob) : null,
         rows,
+        pfLine,
         trendStrip,
         h("div.market-note-row", {},
           h("span.muted.small", {}, "24h change · 7-day trend · tap a coin for detail"),

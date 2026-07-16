@@ -903,6 +903,19 @@ a { color: inherit; }
 .coin-signal.tone-up { border-left: 2px solid var(--delta-up); }
 .coin-signal.tone-down { border-left: 2px solid var(--delta-down); }
 .coin-signal.tone-neutral { border-left: 2px solid var(--hairline-2); }
+/* holdings + portfolio (in the coin detail + widget) */
+.hold-box { border-top: 1px solid var(--hairline); padding-top: 10px; margin-bottom: 12px; }
+.hold-form { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0; }
+.hold-input { width: 150px; font-size: 12px; }
+.hold-value { font-variant-numeric: tabular-nums; }
+.pf-section { border-top: 1px solid var(--hairline); padding-top: 10px; margin-bottom: 12px; }
+.pf-body { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+.pf-legend { flex: 1; min-width: 140px; display: grid; gap: 3px; }
+.pf-total { font-size: 20px; font-weight: 300; font-variant-numeric: tabular-nums; }
+.pf-row { display: flex; justify-content: space-between; gap: 10px; text-transform: capitalize; }
+.pf-line { display: flex; align-items: baseline; gap: 8px; padding: 8px 2px 2px; border-top: 1px solid var(--hairline); }
+.pf-line-v { font-variant-numeric: tabular-nums; font-weight: 600; }
+
 .coin-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
 .coin-stat { border-top: 1px solid var(--hairline); padding-top: 6px; }
 .coin-stat-v { font-variant-numeric: tabular-nums; margin-top: 2px; }

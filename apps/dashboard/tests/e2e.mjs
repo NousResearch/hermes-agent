@@ -497,6 +497,14 @@ check("coin detail opens with price", /\$[\d,]/.test(await page.locator(".coin-p
 check("coin detail renders a candle chart", (await page.locator(".coin-chart-wrap rect").count()) > 10);
 check("coin detail shows technical signals", (await page.locator(".coin-signal").count()) >= 3);
 check("coin detail shows stat grid", (await page.locator(".coin-stat").count()) >= 6);
+// portfolio: enter a holding → value, P/L and allocation donut appear
+await page.locator(".hold-input").first().fill("0.5");
+await page.locator(".hold-input").nth(1).fill("40000");
+await page.locator(".hold-box .btn-primary").click();
+await page.waitForSelector(".pf-section .pf-total", { timeout: 5000 });
+check("portfolio computes a total value", /\$[\d,]/.test(await page.locator(".pf-total").innerText()));
+check("portfolio renders an allocation donut", (await page.locator(".pf-section .chart-donut path").count()) >= 1);
+check("holding shows a P/L", /P\/L/.test(await page.locator(".hold-value").innerText()));
 // range switch re-renders the chart without closing the drawer
 await page.locator(".detail-pop .tab", { hasText: "7D" }).click();
 await page.waitForFunction(() =>

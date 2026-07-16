@@ -73,7 +73,7 @@ function defaultState() {
     news: { topic: "top" },
     reading: { items: [] },
     newsRead: {}, // url → timestamp of first open (bounded in markRead)
-    markets: { ids: ["bitcoin", "ethereum", "solana", "dogecoin"] },
+    markets: { ids: ["bitcoin", "ethereum", "solana", "dogecoin"], holdings: {} },
     search: { engine: "google" },
   };
 }

@@ -78,6 +78,19 @@ def test_bare_basename_in_cwd_blocked(fake_home):
     assert err is not None
 
 
+def test_uppercase_bare_basename_blocked(fake_home):
+    """Regression: the candidate-gate basename comparison used to skip the
+    membership test without lowercasing, so a literal ``cat .ENV`` (or any
+    other-case variant of a denylisted basename) never even reached
+    get_read_block_error -- get_read_block_error itself lowercases before
+    checking, so only the candidate gate needed the fix."""
+    from agent.file_safety import get_terminal_secret_access_error
+
+    _create(fake_home, ".env")
+    err = get_terminal_secret_access_error("cat .ENV", cwd=str(fake_home))
+    assert err is not None
+
+
 def test_auth_json_path_blocked(fake_home):
     from agent.file_safety import get_terminal_secret_access_error
 

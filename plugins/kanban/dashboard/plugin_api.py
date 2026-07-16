@@ -660,28 +660,16 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
 # Attachments — upload / list / download / delete (#35338)
 # ---------------------------------------------------------------------------
 
-# Cap a single upload so a runaway request can't fill the disk. 25 MB
-# comfortably covers PDFs, images, and source docs — the kanban use case.
-_MAX_ATTACHMENT_BYTES = kanban_db.KANBAN_ATTACHMENT_MAX_BYTES
-
-
-def _safe_attachment_name(raw: str) -> str:
-    """Reduce a client-supplied filename to a safe basename.
-
-    Strips any directory components (``os.path.basename`` on both
-    separators) so a malicious ``../../etc/passwd`` or ``C:\\x`` collapses
-    to its leaf. Rejects empty / dotfile-only names. The result is only
-    ever joined under the per-task attachments dir, never used verbatim
-    as a path from the client.
-    """
-    name = (raw or "").replace("\\", "/").split("/")[-1].strip()
-    # Drop control chars and leading dots so we never write a dotfile or
-    # a name with embedded NULs/newlines.
-    name = "".join(ch for ch in name if ch.isprintable() and ch not in '\x00').strip()
-    name = name.lstrip(".").strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="invalid attachment filename")
-    return name[:200]
+# The size cap, filename sanitiser, and collision resolver now live in
+# ``kanban_db`` so the dashboard, the agent toolset, and the CLI share one
+# implementation and cannot drift. ``_safe_attachment_name`` raises a plain
+# ``ValueError`` there; the upload handler's ``except ValueError`` below maps
+# it to a 400, preserving the previous response.
+from hermes_cli.kanban_db import (  # noqa: E402
+    KANBAN_ATTACHMENT_MAX_BYTES,
+    _collision_free_path,
+    _safe_attachment_name,
+)
 
 
 @router.get("/tasks/{task_id}/attachments")
@@ -727,13 +715,8 @@ async def upload_task_attachment(
         dest_dir.mkdir(parents=True, exist_ok=True)
 
         # Resolve name collisions: foo.pdf → foo (1).pdf, foo (2).pdf, …
-        stem, dot, ext = safe_name.partition(".")
-        candidate = safe_name
-        n = 1
-        while (dest_dir / candidate).exists():
-            candidate = f"{stem} ({n}){dot}{ext}"
-            n += 1
-        dest_path = dest_dir / candidate
+        dest_path = _collision_free_path(dest_dir, safe_name)
+        candidate = dest_path.name
 
         total = 0
         try:
@@ -743,13 +726,13 @@ async def upload_task_attachment(
                     if not chunk:
                         break
                     total += len(chunk)
-                    if total > _MAX_ATTACHMENT_BYTES:
+                    if total > KANBAN_ATTACHMENT_MAX_BYTES:
                         out.close()
                         dest_path.unlink(missing_ok=True)
                         raise HTTPException(
                             status_code=413,
                             detail=(
-                                f"attachment exceeds {_MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB limit"
+                                f"attachment exceeds {KANBAN_ATTACHMENT_MAX_BYTES // (1024 * 1024)} MB limit"
                             ),
                         )
                     out.write(chunk)

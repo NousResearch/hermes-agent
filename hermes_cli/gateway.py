@@ -17,6 +17,7 @@ import textwrap
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from xml.sax.saxutils import escape as xml_escape
 
 # Ensure /bin and /usr/bin are on PATH so launchctl/systemctl are discoverable
 # when running under UV's bundled Python which ships a minimal PATH (#3849).
@@ -2819,6 +2820,7 @@ def _systemd_watchdog_service_fields(
 def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) -> str:
     python_path = get_python_path()
     working_dir = _stable_service_working_dir()
+    configured_runtime_root = _configured_runtime_code_root()
     detected_venv = _detect_venv_dir()
     venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
 
@@ -2863,10 +2865,17 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         # (e.g. /root/) to the target user's home so the service can
         # actually access them.
         python_path = _remap_path_for_user(python_path, home_dir)
-        # Anchor cwd to the target user's HERMES_HOME (stable, always exists)
-        # rather than a remapped source-checkout path that can rot. See
-        # _stable_service_working_dir() for the full rationale.
-        working_dir = str(hermes_home) if hermes_home else _remap_path_for_user(working_dir, home_dir)
+        # Preserve an explicit runtime deployment contract. Without one, keep
+        # the long-standing system-service behavior of anchoring cwd at the
+        # target user's stable HERMES_HOME rather than a caller checkout.
+        if configured_runtime_root is not None:
+            working_dir = _remap_path_for_user(working_dir, home_dir)
+        else:
+            working_dir = (
+                str(hermes_home)
+                if hermes_home
+                else _remap_path_for_user(working_dir, home_dir)
+            )
         venv_dir = _remap_path_for_user(venv_dir, home_dir)
         path_entries = [_remap_path_for_user(p, home_dir) for p in path_entries]
         path_entries.extend(_build_user_local_paths(Path(home_dir), path_entries))
@@ -3542,11 +3551,35 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
         print_legacy_unit_warning()
         print()
 
-    if not systemd_unit_is_current(system=system):
+    runtime_config_error = None
+    try:
+        runtime_info = _runtime_code_root_status()
+        definition_current = systemd_unit_is_current(system=system)
+    except (ValueError, RuntimeError) as exc:
+        runtime_info = None
+        definition_current = False
+        runtime_config_error = str(exc)
+
+    if not definition_current:
         print("⚠ Installed gateway service definition is outdated")
-        print(
-            f"  Run: {'sudo ' if system else ''}hermes gateway restart{scope_flag}  # auto-refreshes the unit"
-        )
+        if runtime_config_error:
+            print(f"  Invalid runtime deployment contract: {runtime_config_error}")
+        else:
+            print(
+                f"  Run: {'sudo ' if system else ''}hermes gateway restart{scope_flag}  # auto-refreshes the unit"
+            )
+        print()
+
+    if runtime_info and runtime_info["configured"] is not None:
+        print(f"Configured runtime root: {runtime_info['configured']}")
+        print(f"Imported Hermes root: {runtime_info['imported']}")
+        if runtime_info["matches"]:
+            print("✓ Running Hermes code matches runtime.code_root")
+        else:
+            print("✗ Running Hermes code does not match runtime.code_root")
+            print(
+                "  Hold restart/promotion until the interpreter is bound to the configured runtime"
+            )
         print()
 
     status_cmd = ["status", get_service_name(), "--no-pager"]
@@ -4047,13 +4080,13 @@ def generate_launchd_plist() -> str:
 
     # Build ProgramArguments array, including --profile when using a named profile
     prog_args = [
-        f"<string>{python_path}</string>",
+        f"<string>{xml_escape(str(python_path))}</string>",
         "<string>-m</string>",
         "<string>hermes_cli.main</string>",
     ]
     if profile_arg:
         for part in profile_arg.split():
-            prog_args.append(f"<string>{part}</string>")
+            prog_args.append(f"<string>{xml_escape(part)}</string>")
     prog_args.extend(
         [
             "<string>gateway</string>",
@@ -4068,7 +4101,7 @@ def generate_launchd_plist() -> str:
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>{label}</string>
+    <string>{xml_escape(label)}</string>
 
     <key>ProgramArguments</key>
     <array>
@@ -4076,16 +4109,16 @@ def generate_launchd_plist() -> str:
     </array>
     
     <key>WorkingDirectory</key>
-    <string>{working_dir}</string>
+    <string>{xml_escape(working_dir)}</string>
     
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>{sane_path}</string>
+        <string>{xml_escape(sane_path)}</string>
         <key>VIRTUAL_ENV</key>
-        <string>{venv_dir}</string>
+        <string>{xml_escape(venv_dir)}</string>
         <key>HERMES_HOME</key>
-        <string>{hermes_home}</string>
+        <string>{xml_escape(str(hermes_home))}</string>
     </dict>
 
     <key>LimitLoadToSessionType</key>
@@ -4111,10 +4144,10 @@ def generate_launchd_plist() -> str:
     <integer>25</integer>
 
     <key>StandardOutPath</key>
-    <string>{log_dir}/gateway.log</string>
+    <string>{xml_escape(str(log_dir / 'gateway.log'))}</string>
     
     <key>StandardErrorPath</key>
-    <string>{log_dir}/gateway.error.log</string>
+    <string>{xml_escape(str(log_dir / 'gateway.error.log'))}</string>
 </dict>
 </plist>
 """

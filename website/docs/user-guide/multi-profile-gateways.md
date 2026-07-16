@@ -56,6 +56,31 @@ research gateway start
 That's it — three independent agents, each on its own process, restarting
 automatically on crash and on user login.
 
+## Pinning a profile to an isolated runtime tree
+
+Most installations should leave service working-directory selection at its
+default. Operators that maintain a separate, durable Hermes source tree per
+profile can declare that tree explicitly in the profile's `config.yaml`:
+
+```yaml
+runtime:
+  code_root: /srv/hermes/runtimes/research
+```
+
+`runtime.code_root` is a deployment contract, not a general-purpose current
+working directory. Hermes requires an absolute, existing, non-temporary Hermes
+source tree and verifies that the running CLI was imported from the same tree
+before it installs, starts, or refreshes the gateway service. The generated
+launchd or systemd definition uses this root as `WorkingDirectory`, and
+`hermes gateway status` reports whether the configured and imported roots
+match.
+
+If the setting is absent, service generation retains the standard behavior of
+using the profile's stable Hermes home. If the declaration is invalid or the
+CLI was launched from another Hermes checkout, service mutation fails closed;
+run the executable bound to the declared runtime rather than bypassing the
+check.
+
 ## Alternative: one gateway for all profiles (multiplexing)
 
 The model above runs **one process per profile**. That is the default and is

@@ -1679,13 +1679,14 @@ def _load_config() -> dict:
     during tool discovery.  Importing ``cli`` here pulls prompt_toolkit/Rich and
     a large chunk of the classic REPL onto every agent startup path, including
     ``hermes --tui`` where it is never used.  Read the lightweight raw config
-    instead; the config layer already caches by (mtime, size), and an absent
-    key cleanly falls back to DEFAULT_EXECUTION_MODE.
+    and apply the managed overlay explicitly so profile values stay sparse but
+    administrator-pinned resource limits still win.
     """
     try:
         from hermes_cli.config import read_raw_config
+        from hermes_cli.managed_scope import apply_managed_overlay
 
-        cfg = read_raw_config().get("code_execution", {})
+        cfg = apply_managed_overlay(read_raw_config()).get("code_execution", {})
         return cfg if isinstance(cfg, dict) else {}
     except Exception:
         return {}

@@ -36,6 +36,7 @@ from tools.code_execution_tool import (
     EXECUTION_MODES,
     _get_execution_mode,
     _is_usable_python,
+    _load_config,
     _resolve_child_cwd,
     _resolve_child_python,
     build_execute_code_schema,
@@ -108,6 +109,41 @@ class TestGetExecutionMode(unittest.TestCase):
     def test_execution_modes_tuple(self):
         """Canonical set of modes — tests + config layer rely on this shape."""
         self.assertEqual(set(EXECUTION_MODES), {"project", "strict"})
+
+
+def test_load_config_honors_managed_resource_cap(tmp_path, monkeypatch):
+    """Managed code_execution values must override a lower profile value."""
+    home = tmp_path / "home"
+    managed = tmp_path / "managed"
+    home.mkdir()
+    managed.mkdir()
+    (home / "config.yaml").write_text(
+        "code_execution:\n"
+        "  mode: strict\n"
+        "  timeout: 111\n"
+        "  max_tool_calls: 3\n",
+        encoding="utf-8",
+    )
+    (managed / "config.yaml").write_text(
+        "code_execution:\n"
+        "  max_tool_calls: 2147483647\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+
+    import hermes_cli.config as config
+    from hermes_cli import managed_scope
+
+    config._LOAD_CONFIG_CACHE.clear()
+    config._RAW_CONFIG_CACHE.clear()
+    managed_scope.invalidate_managed_cache()
+
+    cfg = _load_config()
+
+    assert cfg["max_tool_calls"] == 2147483647
+    assert cfg["mode"] == "strict"
+    assert cfg["timeout"] == 111
 
 
 # ---------------------------------------------------------------------------

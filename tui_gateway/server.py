@@ -4147,13 +4147,20 @@ def _apply_personality_to_session(
 
 
 def _cfg_max_turns(cfg: dict, default: int) -> int:
+    agent_cfg = cfg.get("agent") or {}
+    try:
+        from hermes_cli.managed_scope import is_key_managed
+
+        if is_key_managed("agent.max_turns"):
+            return int(agent_cfg.get("max_turns") or default)
+    except Exception:
+        pass
     try:
         env_max = int(os.environ.get("HERMES_TUI_MAX_TURNS", "") or 0)
         if env_max > 0:
             return env_max
     except (TypeError, ValueError):
         pass
-    agent_cfg = cfg.get("agent") or {}
     return int(agent_cfg.get("max_turns") or cfg.get("max_turns") or default)
 
 

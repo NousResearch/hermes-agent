@@ -526,6 +526,27 @@ class TestAuth:
         assert result is not None
         assert result.status == 401
 
+    def test_non_ascii_bearer_token_returns_401_not_500(self):
+        """A non-ASCII byte in the bearer token must be rejected with 401, not
+        crash the handler: hmac.compare_digest raises TypeError on a str with
+        non-ASCII characters, and the token is raw client input."""
+        config = PlatformConfig(enabled=True, extra={"key": "sk-test123"})
+        adapter = APIServerAdapter(config)
+        mock_request = MagicMock()
+        mock_request.headers = {"Authorization": "Bearer ské-not-the-key"}
+        result = adapter._check_auth(mock_request)  # must not raise
+        assert result is not None
+        assert result.status == 401
+
+    def test_non_ascii_key_config_still_authenticates(self):
+        """A non-ASCII configured key must still match its exact value byte for
+        byte (bytes comparison keeps this working)."""
+        config = PlatformConfig(enabled=True, extra={"key": "sk-tést-kéy"})
+        adapter = APIServerAdapter(config)
+        mock_request = MagicMock()
+        mock_request.headers = {"Authorization": "Bearer sk-tést-kéy"}
+        assert adapter._check_auth(mock_request) is None
+
 
 # ---------------------------------------------------------------------------
 # Concurrency cap (gateway.api_server.max_concurrent_runs) — #7483
@@ -631,7 +652,26 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
     app.router.add_delete("/v1/responses/{response_id}", adapter._handle_delete_response)
+    app.router.add_post(
+        "/api/platforms/{platform}/events",
+        adapter._handle_platform_event_callback,
+    )
     return app
+
+
+class _FakeGoogleChatAdapter:
+    def __init__(self, *, verify_ok: bool = True, verify_code: str = ""):
+        self.verify_ok = verify_ok
+        self.verify_code = verify_code
+        self.dispatched = []
+
+    def verify_http_event_request(self, auth_header: str):
+        self.auth_header = auth_header
+        return self.verify_ok, self.verify_code
+
+    async def dispatch_http_event(self, payload):
+        self.dispatched.append(payload)
+        return {"ok": True}
 
 
 @pytest.fixture
@@ -2827,6 +2867,81 @@ class TestSendMethod:
         result = await adapter.send("chat1", "hello")
         assert result.success is False
         assert "HTTP request/response" in result.error
+
+
+class TestPlatformEventCallbackEndpoint:
+    @pytest.mark.asyncio
+    async def test_dispatches_authorized_google_chat_event(self, adapter):
+        app = _create_app(adapter)
+        google_adapter = _FakeGoogleChatAdapter()
+        app["platform_event_adapters"] = {"google_chat": google_adapter}
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/api/platforms/google_chat/events",
+                headers={"Authorization": "Bearer google-token"},
+                json={"type": "MESSAGE", "message": {"text": "hi"}},
+            )
+            body = await resp.json()
+
+        assert resp.status == 200
+        assert body == {"ok": True}
+        assert google_adapter.auth_header == "Bearer google-token"
+        assert google_adapter.dispatched == [
+            {"type": "MESSAGE", "message": {"text": "hi"}}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_rejects_invalid_google_chat_auth(self, adapter):
+        app = _create_app(adapter)
+        app["platform_event_adapters"] = {
+            "google_chat": _FakeGoogleChatAdapter(
+                verify_ok=False,
+                verify_code="invalid_google_bearer",
+            )
+        }
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/api/platforms/google_chat/events",
+                headers={"Authorization": "Bearer bad"},
+                json={"type": "MESSAGE"},
+            )
+            body = await resp.json()
+
+        assert resp.status == 401
+        assert body["error"]["code"] == "invalid_google_bearer"
+
+    @pytest.mark.asyncio
+    async def test_requires_connected_google_chat_adapter(self, adapter):
+        app = _create_app(adapter)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/api/platforms/google_chat/events",
+                headers={"Authorization": "Bearer google-token"},
+                json={"type": "MESSAGE"},
+            )
+            body = await resp.json()
+
+        assert resp.status == 503
+        assert body["error"]["code"] == "platform_unavailable"
+
+    @pytest.mark.asyncio
+    async def test_rejects_malformed_platform_event_json(self, adapter):
+        app = _create_app(adapter)
+        app["platform_event_adapters"] = {"google_chat": _FakeGoogleChatAdapter()}
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/api/platforms/google_chat/events",
+                headers={"Authorization": "Bearer google-token"},
+                data="{",
+            )
+            body = await resp.json()
+
+        assert resp.status == 400
+        assert body["error"]["code"] == "invalid_json"
 
 
 # ---------------------------------------------------------------------------

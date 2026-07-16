@@ -374,6 +374,14 @@ def interruptible_api_call(agent, api_kwargs: dict):
     the main retry loop can try again with backoff / credential rotation /
     provider fallback.
     """
+    # New response starting — clear the per-response reasoning-delivery
+    # latch so a stale value from a previous (possibly aborted) response
+    # can never suppress this response's reasoning delivery. Consumed by
+    # build_assistant_message; set by _fire_reasoning_delta. Cleared
+    # before the direct-call branch so ALL paths (including cron/inline)
+    # start each response with a clean latch.
+    agent._reasoning_streamed_this_response = False
+
     # Cron and other non-interactive, nested-pool contexts must not spawn the
     # interrupt worker — it wedges before the socket opens on the 2nd+ call
     # (#62151). Run inline instead. See should_use_direct_api_call.
@@ -1100,22 +1108,42 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
         logging.debug(f"Captured reasoning ({len(reasoning_text)} chars): {reasoning_text}")
 
     if reasoning_text and agent.reasoning_callback:
-        # Skip the callback when this response's reasoning was already
-        # delivered incrementally via _fire_reasoning_delta (structured
-        # reasoning_content deltas or streamed <think> tag extraction) —
-        # read-and-clear the latch it sets. Re-firing here handed consumers
-        # the SAME reasoning twice: once as deltas, once as the full
-        # accumulated text (observed as 2-4x duplicated sentences on the
-        # Slack native task cards, 2026-07-05). The previous guard tested
-        # ``stream_delta_callback``/``_stream_callback``, but those are the
-        # *text*-streaming consumers — None on gateway platforms even while
-        # reasoning deltas stream fine — so the guard never tripped there.
-        # When nothing streamed (non-streaming modes: batch, quiet,
-        # streaming-disabled providers), the latch is unset and we fire so
-        # those consumers still get reasoning exactly once.
+        # Deliver reasoning to the callback EXACTLY ONCE per response.
+        # Two independent suppression signals, and BOTH must be checked:
+        #
+        #   (a) the per-response latch set by _fire_reasoning_delta —
+        #       structured reasoning deltas were already delivered
+        #       incrementally to THIS callback during streaming. Gateway
+        #       platforms register reasoning_callback while the *text*
+        #       stream callbacks are None, so signal (b) alone never trips
+        #       there and consumers received every reasoning burst twice:
+        #       once as deltas, once as this full accumulated re-fire
+        #       (observed as 2-4x duplicated sentences on the Slack native
+        #       task cards, 2026-07-05).
+        #
+        #   (b) active text-stream consumers — reasoning that arrives
+        #       inline as <think>/<REASONING_SCRATCHPAD> tags in content is
+        #       extracted and displayed by the CLI's tag-extraction path
+        #       (cli.py _stream_reasoning_delta), which never touches the
+        #       agent latch, so signal (a) alone would re-fire here and
+        #       duplicate the CLI reasoning box. Regression contract:
+        #       tests/cli/test_reasoning_command.py
+        #       (TestReasoningDeltasFiredFlag streaming-active cases).
+        #
+        # When neither signal tripped (non-streaming modes: gateway turns
+        # without reasoning deltas, batch, quiet, streaming-disabled
+        # providers), fire so those consumers still get reasoning exactly
+        # once. The latch is read-and-cleared here and additionally reset
+        # at the start of every API call (interruptible_api_call /
+        # interruptible_streaming_api_call) so a stale value from an
+        # aborted response can never suppress a later delivery.
         _already_streamed = getattr(agent, "_reasoning_streamed_this_response", False)
         agent._reasoning_streamed_this_response = False
-        if not _already_streamed:
+        _text_stream_active = bool(
+            getattr(agent, "stream_delta_callback", None)
+            or getattr(agent, "_stream_callback", None)
+        )
+        if not _already_streamed and not _text_stream_active:
             try:
                 agent.reasoning_callback(reasoning_text)
             except Exception:
@@ -2036,6 +2064,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     if agent._interrupt_requested:
         raise InterruptedError("Agent interrupted before streaming API call")
 
+    # New response starting — clear the per-response reasoning-delivery
+    # latch (see the matching comment in interruptible_api_call). The
+    # delegating branches below (direct-call, codex) re-clear via
+    # _interruptible_api_call; clearing here covers the streaming paths.
+    agent._reasoning_streamed_this_response = False
+
     # Cron and other non-interactive, nested-pool contexts deadlock on the
     # spawned worker thread (#62151). They also have no stream consumer, so the
     # deltas this path produces go nowhere. Delegate to the non-streaming entry
@@ -2434,14 +2468,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # reasoning_callback, CLI display) sits downstream of.
             reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
             if reasoning_text:
-                _acc = "".join(reasoning_parts)
-                if _acc and reasoning_text.startswith(_acc):
-                    # Cumulative snapshot (full text so far + maybe new
-                    # tokens): keep only the new suffix.
-                    reasoning_text = reasoning_text[len(_acc):]
-                elif _acc and (reasoning_text in _acc):
-                    # Exact echo of text already accumulated: drop.
-                    reasoning_text = ""
+                reasoning_text = normalize_reasoning_delta(
+                    "".join(reasoning_parts), reasoning_text
+                )
                 if reasoning_text:
                     reasoning_parts.append(reasoning_text)
                     _fire_first_delta()
@@ -3394,6 +3423,61 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         _reset_stale_streak(agent)
     return result["response"]
 
+# Minimum suffix/prefix overlap (chars) treated as a provider re-delivery
+# rather than legitimate repetition. 24 chars ≈ 6+ tokens — far beyond any
+# plausible legitimate immediate repetition at a token boundary, while
+# reconnect re-deliveries observed in practice overlap by hundreds+ chars.
+_MIN_REASONING_OVERLAP = 24
+
+
+def normalize_reasoning_delta(accumulated: str, delta: str) -> str:
+    """Normalize one incoming reasoning delta against the accumulated text.
+
+    Providers are not consistent about what a reasoning "delta" contains.
+    Three provider misbehaviors are corrected here (all observed in the
+    wild, 2026-07-05 — state.db rows with byte-identical doubled halves):
+
+    1. **Cumulative snapshot** — the chunk re-sends the ENTIRE accumulated
+       reasoning so far (optionally plus new tokens). Detected via
+       ``delta.startswith(accumulated)``; only the new suffix is kept.
+    2. **Exact echo** — the chunk is a byte-identical re-send of the full
+       accumulated text. Dropped (this is case 1 with an empty suffix).
+    3. **Overlapping re-delivery** — after an internal reconnect the
+       provider re-sends a trailing window of already-delivered text
+       followed by new tokens. Detected via a longest suffix(accumulated)/
+       prefix(delta) match; the overlapped head is trimmed.
+
+    A minimum-overlap gate (``_MIN_REASONING_OVERLAP`` chars) protects
+    legitimate repetition: real reasoning frequently repeats short
+    substrings ("the", " so ", word fragments at token boundaries), and a
+    naive containment test (``delta in accumulated``) silently discards
+    such valid tokens. Short overlaps are therefore treated as genuinely
+    new text and appended verbatim — for true incremental token streams
+    (deltas a few chars long) this function is a near-passthrough.
+    Duplicating a few chars in the pathological case is recoverable noise;
+    dropping real tokens is silent data loss, so the gate errs toward
+    appending.
+
+    Returns the (possibly trimmed) text to append, or "" when the delta
+    carries nothing new.
+    """
+    if not delta:
+        return ""
+    if not accumulated:
+        return delta
+    # Case 1+2: cumulative snapshot / exact echo.
+    if delta.startswith(accumulated):
+        return delta[len(accumulated):]
+    # Case 3: overlapping re-delivery — longest suffix of ``accumulated``
+    # that is a prefix of ``delta``, gated to ≥ _MIN_REASONING_OVERLAP so
+    # legitimate short repetitions are never eaten.
+    max_probe = min(len(accumulated), len(delta))
+    for probe in range(max_probe, _MIN_REASONING_OVERLAP - 1, -1):
+        if accumulated.endswith(delta[:probe]):
+            return delta[probe:]
+    return delta
+
+
 # ── Provider fallback ──────────────────────────────────────────────────
 
 
@@ -3402,6 +3486,7 @@ __all__ = [
     "interruptible_api_call",
     "build_api_kwargs",
     "build_assistant_message",
+    "normalize_reasoning_delta",
     "try_activate_fallback",
     "handle_max_iterations",
     "cleanup_task_resources",

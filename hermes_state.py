@@ -3666,6 +3666,7 @@ class SessionDB:
             if not child_id or child_id in seen:
                 return lineage
             seen.add(child_id)
+            lineage.append(child_id)
             current = child_id
             lineage.append(current)
         return lineage
@@ -5505,6 +5506,9 @@ class SessionDB:
         offset: int = 0,
         sort: str = None,
         include_inactive: bool = False,
+        session_id_filter: List[str] = None,
+        include_context: bool = True,
+        distinct_sessions: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Full-text search across session messages using FTS5.
@@ -5540,6 +5544,16 @@ class SessionDB:
         if not query or not query.strip():
             return []
 
+        session_filter_json = None
+        if session_id_filter is not None:
+            session_ids = list(dict.fromkeys(
+                session_id for session_id in session_id_filter
+                if isinstance(session_id, str) and session_id
+            ))
+            if not session_ids:
+                return []
+            session_filter_json = json.dumps(session_ids)
+
         query = self._sanitize_fts5_query(query)
         if not query:
             return []
@@ -5572,6 +5586,10 @@ class SessionDB:
             # are hidden. See archive_and_compact() / #38763.
             where_clauses.append("(m.active = 1 OR m.compacted = 1)")
 
+        if session_filter_json is not None:
+            where_clauses.append("m.session_id IN (SELECT value FROM json_each(?))")
+            params.append(session_filter_json)
+
         if source_filter is not None:
             source_placeholders = ",".join("?" for _ in source_filter)
             where_clauses.append(f"s.source IN ({source_placeholders})")
@@ -5590,25 +5608,60 @@ class SessionDB:
         where_sql = " AND ".join(where_clauses)
         params.extend([limit, offset])
 
-        sql = f"""
-            SELECT
-                m.id,
-                m.session_id,
-                m.role,
-                snippet(messages_fts, 0, '>>>', '<<<', '...', 40) AS snippet,
-                m.content,
-                m.timestamp,
-                m.tool_name,
-                s.source,
-                s.model,
-                s.started_at AS session_started
-            FROM messages_fts
-            JOIN messages m ON m.id = messages_fts.rowid
-            JOIN sessions s ON s.id = m.session_id
-            WHERE {where_sql}
-            {order_by_sql}
-            LIMIT ? OFFSET ?
-        """
+        if distinct_sessions:
+            if sort_norm == "newest":
+                representative_order = "timestamp DESC, search_rank, id DESC"
+                distinct_order = "timestamp DESC, search_rank"
+            elif sort_norm == "oldest":
+                representative_order = "timestamp ASC, search_rank, id ASC"
+                distinct_order = "timestamp ASC, search_rank"
+            else:
+                representative_order = "search_rank, timestamp DESC, id DESC"
+                distinct_order = "search_rank, timestamp DESC"
+            sql = f"""
+                WITH hits AS (
+                    SELECT
+                        m.id, m.session_id, m.role, NULL AS snippet, NULL AS content,
+                        m.timestamp, m.tool_name, s.source, s.model,
+                        s.started_at AS session_started,
+                        bm25(messages_fts) AS search_rank
+                    FROM messages_fts
+                    JOIN messages m ON m.id = messages_fts.rowid
+                    JOIN sessions s ON s.id = m.session_id
+                    WHERE {where_sql}
+                ), ranked AS (
+                    SELECT *, ROW_NUMBER() OVER (
+                        PARTITION BY session_id ORDER BY {representative_order}
+                    ) AS session_row
+                    FROM hits
+                )
+                SELECT id, session_id, role, snippet, content, timestamp,
+                       tool_name, source, model, session_started
+                FROM ranked
+                WHERE session_row = 1
+                ORDER BY {distinct_order}
+                LIMIT ? OFFSET ?
+            """
+        else:
+            sql = f"""
+                SELECT
+                    m.id,
+                    m.session_id,
+                    m.role,
+                    snippet(messages_fts, 0, '>>>', '<<<', '...', 40) AS snippet,
+                    m.content,
+                    m.timestamp,
+                    m.tool_name,
+                    s.source,
+                    s.model,
+                    s.started_at AS session_started
+                FROM messages_fts
+                JOIN messages m ON m.id = messages_fts.rowid
+                JOIN sessions s ON s.id = m.session_id
+                WHERE {where_sql}
+                {order_by_sql}
+                LIMIT ? OFFSET ?
+            """
 
         # CJK queries bypass the unicode61 FTS5 table.  The default tokenizer
         # splits CJK characters into individual tokens, so "大别山项目" becomes
@@ -5653,6 +5706,9 @@ class SessionDB:
                 tri_params: list = [trigram_query]
                 if not include_inactive:
                     tri_where.append("(m.active = 1 OR m.compacted = 1)")
+                if session_filter_json is not None:
+                    tri_where.append("m.session_id IN (SELECT value FROM json_each(?))")
+                    tri_params.append(session_filter_json)
                 if source_filter is not None:
                     tri_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                     tri_params.extend(source_filter)
@@ -5662,25 +5718,51 @@ class SessionDB:
                 if role_filter:
                     tri_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     tri_params.extend(role_filter)
-                tri_sql = f"""
-                    SELECT
-                        m.id,
-                        m.session_id,
-                        m.role,
-                        snippet(messages_fts_trigram, 0, '>>>', '<<<', '...', 40) AS snippet,
-                        m.content,
-                        m.timestamp,
-                        m.tool_name,
-                        s.source,
-                        s.model,
-                        s.started_at AS session_started
-                    FROM messages_fts_trigram
-                    JOIN messages m ON m.id = messages_fts_trigram.rowid
-                    JOIN sessions s ON s.id = m.session_id
-                    WHERE {' AND '.join(tri_where)}
-                    {order_by_sql}
-                    LIMIT ? OFFSET ?
-                """
+                if distinct_sessions:
+                    tri_sql = f"""
+                        WITH hits AS (
+                            SELECT
+                                m.id, m.session_id, m.role, NULL AS snippet, NULL AS content,
+                                m.timestamp, m.tool_name, s.source, s.model,
+                                s.started_at AS session_started,
+                                bm25(messages_fts_trigram) AS search_rank
+                            FROM messages_fts_trigram
+                            JOIN messages m ON m.id = messages_fts_trigram.rowid
+                            JOIN sessions s ON s.id = m.session_id
+                            WHERE {' AND '.join(tri_where)}
+                        ), ranked AS (
+                            SELECT *, ROW_NUMBER() OVER (
+                                PARTITION BY session_id ORDER BY {representative_order}
+                            ) AS session_row
+                            FROM hits
+                        )
+                        SELECT id, session_id, role, snippet, content, timestamp,
+                               tool_name, source, model, session_started
+                        FROM ranked
+                        WHERE session_row = 1
+                        ORDER BY {distinct_order}
+                        LIMIT ? OFFSET ?
+                    """
+                else:
+                    tri_sql = f"""
+                        SELECT
+                            m.id,
+                            m.session_id,
+                            m.role,
+                            snippet(messages_fts_trigram, 0, '>>>', '<<<', '...', 40) AS snippet,
+                            m.content,
+                            m.timestamp,
+                            m.tool_name,
+                            s.source,
+                            s.model,
+                            s.started_at AS session_started
+                        FROM messages_fts_trigram
+                        JOIN messages m ON m.id = messages_fts_trigram.rowid
+                        JOIN sessions s ON s.id = m.session_id
+                        WHERE {' AND '.join(tri_where)}
+                        {order_by_sql}
+                        LIMIT ? OFFSET ?
+                    """
                 tri_params.extend([limit, offset])
                 with self._lock:
                     try:
@@ -5710,6 +5792,9 @@ class SessionDB:
                     )
                     like_params += [f"%{esc}%", f"%{esc}%", f"%{esc}%"]
                 like_where = [f"({' OR '.join(token_clauses)})"]
+                if session_filter_json is not None:
+                    like_where.append("m.session_id IN (SELECT value FROM json_each(?))")
+                    like_params.append(session_filter_json)
                 if source_filter is not None:
                     like_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                     like_params.extend(source_filter)
@@ -5719,22 +5804,47 @@ class SessionDB:
                 if role_filter:
                     like_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     like_params.extend(role_filter)
-                like_sql = f"""
-                    SELECT m.id, m.session_id, m.role,
-                           substr(m.content,
-                                  max(1, instr(m.content, ?) - 40),
-                                  120) AS snippet,
-                           m.content, m.timestamp, m.tool_name,
-                           s.source, s.model, s.started_at AS session_started
-                    FROM messages m
-                    JOIN sessions s ON s.id = m.session_id
-                    WHERE {' AND '.join(like_where)}
-                    ORDER BY m.timestamp DESC
-                    LIMIT ? OFFSET ?
-                """
-                like_params.extend([limit, offset])
-                # instr() for snippet uses first search token
-                like_params = [non_op_tokens[0]] + like_params
+                if distinct_sessions:
+                    like_sql = f"""
+                        WITH hits AS (
+                            SELECT
+                                m.id, m.session_id, m.role, NULL AS snippet, NULL AS content,
+                                m.timestamp, m.tool_name, s.source, s.model,
+                                s.started_at AS session_started, 0.0 AS search_rank
+                            FROM messages m
+                            JOIN sessions s ON s.id = m.session_id
+                            WHERE {' AND '.join(like_where)}
+                        ), ranked AS (
+                            SELECT *, ROW_NUMBER() OVER (
+                                PARTITION BY session_id ORDER BY {representative_order}
+                            ) AS session_row
+                            FROM hits
+                        )
+                        SELECT id, session_id, role, snippet, content, timestamp,
+                               tool_name, source, model, session_started
+                        FROM ranked
+                        WHERE session_row = 1
+                        ORDER BY {distinct_order}
+                        LIMIT ? OFFSET ?
+                    """
+                    like_params.extend([limit, offset])
+                else:
+                    like_sql = f"""
+                        SELECT m.id, m.session_id, m.role,
+                               substr(m.content,
+                                      max(1, instr(m.content, ?) - 40),
+                                      120) AS snippet,
+                               m.content, m.timestamp, m.tool_name,
+                               s.source, s.model, s.started_at AS session_started
+                        FROM messages m
+                        JOIN sessions s ON s.id = m.session_id
+                        WHERE {' AND '.join(like_where)}
+                        ORDER BY m.timestamp DESC
+                        LIMIT ? OFFSET ?
+                    """
+                    like_params.extend([limit, offset])
+                    # instr() for snippet uses first search token
+                    like_params = [non_op_tokens[0]] + like_params
                 with self._lock:
                     like_cursor = self._conn.execute(like_sql, like_params)
                     matches = [dict(row) for row in like_cursor.fetchall()]
@@ -5747,6 +5857,11 @@ class SessionDB:
                     return []
                 else:
                     matches = [dict(row) for row in cursor.fetchall()]
+
+        if not include_context:
+            for match in matches:
+                match.pop("content", None)
+            return matches
 
         # Add surrounding context (1 message before + after each match).
         # Done outside the lock so we don't hold it across N sequential queries.

@@ -41,6 +41,7 @@ def _create_session_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_get("/api/sessions", adapter._handle_list_sessions)
     app.router.add_post("/api/sessions", adapter._handle_create_session)
+    app.router.add_post("/api/sessions/search", adapter._handle_search_sessions)
     app.router.add_get("/api/sessions/{session_id}", adapter._handle_get_session)
     app.router.add_patch("/api/sessions/{session_id}", adapter._handle_patch_session)
     app.router.add_delete("/api/sessions/{session_id}", adapter._handle_delete_session)
@@ -121,6 +122,169 @@ async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeyp
         "context_session_key": "request-key",
         "child_session_id": "request-session",
     }
+
+
+@pytest.mark.asyncio
+async def test_session_search_is_scoped_and_returns_only_safe_summaries(adapter, session_db):
+    session_db.create_session("allowed", "api_server")
+    session_db.set_session_title("allowed", "Allowed conversation")
+    session_db.append_message("allowed", "user", "private transcript needle")
+    session_db.create_session("foreign", "api_server")
+    session_db.append_message("foreign", "assistant", "private transcript needle")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/sessions/search",
+            json={"query": "needle", "session_ids": ["allowed"], "limit": 10},
+        )
+        payload = await response.json()
+
+    assert response.status == 200
+    assert [session["id"] for session in payload["data"]] == ["allowed"]
+    assert payload["data"][0]["title"] == "Allowed conversation"
+    assert set(payload["data"][0]) == {
+        "id",
+        "title",
+        "started_at",
+        "last_active",
+        "message_count",
+    }
+    assert "content" not in json.dumps(payload)
+    assert "snippet" not in json.dumps(payload)
+
+
+@pytest.mark.asyncio
+async def test_session_search_marks_result_limit_as_truncated(adapter, session_db):
+    for session_id in ("first", "second"):
+        session_db.create_session(session_id, "api_server")
+        session_db.append_message(session_id, "user", "bounded needle")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/sessions/search",
+            json={"query": "needle", "session_ids": ["first", "second"], "limit": 1},
+        )
+        payload = await response.json()
+
+    assert response.status == 200
+    assert len(payload["data"]) == 1
+    assert payload["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_session_search_distinct_results_cannot_be_starved(adapter, session_db):
+    session_db.create_session("noisy", "api_server")
+    session_db.create_session("quiet", "api_server")
+    for index in range(5_001):
+        session_db.append_message("noisy", "user", f"needle repeated {index}")
+    session_db.append_message("quiet", "assistant", "one needle match")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/sessions/search",
+            json={"query": "needle", "session_ids": ["noisy", "quiet"], "limit": 2},
+        )
+        payload = await response.json()
+
+    assert response.status == 200
+    assert {session["id"] for session in payload["data"]} == {"noisy", "quiet"}
+    assert payload["truncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_session_search_owned_root_covers_only_forward_compression_chain(adapter, session_db):
+    session_db.create_session("root", "api_server")
+    session_db.end_session("root", "compression")
+    session_db.create_session("child", "api_server", parent_session_id="root")
+    session_db.append_message("child", "assistant", "forward lineage needle")
+    session_db.create_session(
+        "branch",
+        "api_server",
+        parent_session_id="root",
+        model_config={"_branched_from": "root"},
+    )
+    session_db.append_message("branch", "assistant", "branch-only secret")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        forward = await cli.post(
+            "/api/sessions/search",
+            json={"query": "needle", "session_ids": ["root"], "limit": 10},
+        )
+        forward_payload = await forward.json()
+        branch = await cli.post(
+            "/api/sessions/search",
+            json={"query": "secret", "session_ids": ["root"], "limit": 10},
+        )
+        branch_payload = await branch.json()
+
+    assert forward.status == 200
+    assert [item["id"] for item in forward_payload["data"]] == ["root"]
+    assert branch.status == 200
+    assert branch_payload["data"] == []
+
+
+@pytest.mark.asyncio
+async def test_session_search_owned_tip_does_not_authorize_ancestors(adapter, session_db):
+    session_db.create_session("root", "api_server")
+    session_db.append_message("root", "user", "ancestor-only needle")
+    session_db.end_session("root", "compression")
+    session_db.create_session("child", "api_server", parent_session_id="root")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/sessions/search",
+            json={"query": "needle", "session_ids": ["child"], "limit": 10},
+        )
+        payload = await response.json()
+
+    assert response.status == 200
+    assert payload["data"] == []
+
+
+@pytest.mark.asyncio
+async def test_session_search_requires_bearer_auth(auth_adapter, session_db):
+    session_db.create_session("owned", "api_server")
+    session_db.append_message("owned", "user", "needle")
+    app = _create_session_app(auth_adapter)
+    async with TestClient(TestServer(app)) as cli:
+        unauthorized = await cli.post(
+            "/api/sessions/search",
+            json={"query": "needle", "session_ids": ["owned"]},
+        )
+        authorized = await cli.post(
+            "/api/sessions/search",
+            headers={"Authorization": "Bearer sk-test"},
+            json={"query": "needle", "session_ids": ["owned"]},
+        )
+
+    assert unauthorized.status == 401
+    assert authorized.status == 200
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("body", "code"),
+    [
+        ({"query": "", "session_ids": []}, "invalid_search_query"),
+        ({"query": "x" * 201, "session_ids": []}, "invalid_search_query"),
+        ({"query": "x", "session_ids": ["../foreign"]}, "invalid_session_ids"),
+        ({"query": "x", "session_ids": [], "limit": True}, "invalid_search_limit"),
+        ({"query": "x", "session_ids": [], "extra": 1}, "unsupported_search_field"),
+    ],
+)
+async def test_session_search_rejects_invalid_request_shapes(adapter, body, code):
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post("/api/sessions/search", json=body)
+        payload = await response.json()
+
+    assert response.status == 400
+    assert payload["error"]["code"] == code
 
 
 @pytest.mark.asyncio

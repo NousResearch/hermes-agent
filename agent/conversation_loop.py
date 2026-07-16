@@ -632,6 +632,10 @@ def run_conversation(
     # user-facing result available; it must not be confused with error or
     # recovery text produced by unrelated exit paths.
     _pending_verification_response = None
+    # If pre-API compression fires after MoA advisors have produced guidance,
+    # retain that ephemeral output and rebase it onto the compacted transcript
+    # on the next loop iteration. This prevents a second advisor fan-out.
+    pending_moa_prepared_request = None
 
     # Per-turn tally of consecutive successful credential-pool token refreshes,
     # keyed by (provider, pool-entry-id). A persistent upstream 401 lets
@@ -987,6 +991,29 @@ def run_conversation(
         # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
         _sanitize_messages_surrogates(api_messages)
 
+        # Build a persistent-MoA request before measuring compression pressure.
+        # MoA reference output is injected into the aggregator prompt, but it
+        # is deliberately ephemeral and therefore absent from ``messages``.
+        # Preparing here makes the pre-API guard measure the exact prompt the
+        # aggregator will receive; ``create()`` consumes this private prepared
+        # request later without running the advisors a second time.
+        _moa_prepared_request = None
+        if agent.provider == "moa":
+            _moa_completions = getattr(getattr(agent.client, "chat", None), "completions", None)
+            if pending_moa_prepared_request is not None:
+                _rebase_moa_request = getattr(_moa_completions, "rebase_prepared_request", None)
+                if callable(_rebase_moa_request):
+                    _moa_prepared_request = _rebase_moa_request(
+                        pending_moa_prepared_request, api_messages
+                    )
+                pending_moa_prepared_request = None
+            if _moa_prepared_request is None:
+                _prepare_moa_request = getattr(_moa_completions, "prepare", None)
+                if callable(_prepare_moa_request):
+                    _moa_prepared_request = _prepare_moa_request(api_messages)
+            if _moa_prepared_request is not None:
+                api_messages = _moa_prepared_request["messages"]
+
         # Calculate approximate request size for logging and pressure checks.
         # estimate_messages_tokens_rough(api_messages) includes the system
         # prompt copy but not the tool schema payload, which is sent as a
@@ -1048,6 +1075,8 @@ def run_conversation(
             and not _compression_cooldown
             and _compressor.should_compress(request_pressure_tokens)
         ):
+            if _moa_prepared_request is not None:
+                pending_moa_prepared_request = _moa_prepared_request
             compression_attempts += 1
             logger.info(
                 "Pre-API compression: ~%s request tokens >= %s threshold "
@@ -1293,6 +1322,12 @@ def run_conversation(
 
                 if env_var_enabled("HERMES_DUMP_REQUESTS"):
                     agent._dump_api_request_debug(api_kwargs, reason="preflight")
+
+                # This object is private to the in-process MoA facade.  Add it
+                # only after middleware, hooks, and debug dumps so none of them
+                # attempts to serialize it as part of the provider payload.
+                if _moa_prepared_request is not None and agent.provider == "moa":
+                    api_kwargs["_moa_prepared_request"] = _moa_prepared_request
 
                 # Always prefer the streaming path — even without stream
                 # consumers.  Streaming gives us fine-grained health

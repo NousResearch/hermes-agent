@@ -134,6 +134,7 @@ def _make_provider(
     scopes: str | None = None,
     client_secret: str | None = None,
     auth_methods: Any = "__unset__",
+    stateless_session_ttl_seconds: int | None = None,
 ):
     """Construct a provider with discovery + JWKS stubbed (no network).
 
@@ -147,6 +148,8 @@ def _make_provider(
         kwargs["scopes"] = scopes
     if client_secret is not None:
         kwargs["client_secret"] = client_secret
+    if stateless_session_ttl_seconds is not None:
+        kwargs["stateless_session_ttl_seconds"] = stateless_session_ttl_seconds
     p = oidc_plugin.SelfHostedOIDCProvider(**kwargs)
     # Pre-seed discovery so nothing hits the network.
     disco = dict(_DISCOVERY_DOC)
@@ -468,8 +471,8 @@ class TestStartLogin:
         )
         parsed = urllib.parse.urlparse(result.redirect_url)
         params = dict(urllib.parse.parse_qsl(parsed.query))
-        # offline_access is auto-injected when missing from custom scopes
-        assert params["scope"] == "openid email groups offline_access"
+        # offline_access is NOT auto-injected anymore
+        assert params["scope"] == "openid email groups"
 
     def test_code_verifier_length(self, provider):
         result = provider.start_login(
@@ -866,6 +869,10 @@ class TestVerifySession:
     def provider(self, rsa_keypair):
         return _make_provider(rsa_keypair)
 
+    @pytest.fixture
+    def provider_with_ttl(self, rsa_keypair):
+        return _make_provider(rsa_keypair, stateless_session_ttl_seconds=86400)
+
     def test_happy_path(self, provider, rsa_keypair):
         token = _mint_id_token(rsa_keypair)
         session = provider.verify_session(access_token=token)
@@ -879,17 +886,31 @@ class TestVerifySession:
         token = _mint_id_token(rsa_keypair, ttl_seconds=900, iat_offset_seconds=-86401)
         assert provider.verify_session(access_token=token) is None
 
-    def test_expired_id_token_within_session_ttl_returns_session(self, provider, rsa_keypair):
+    def test_expired_id_token_within_session_ttl_returns_session(self, provider_with_ttl, rsa_keypair):
         # Token past its short-lived exp (-600s / 10m ago) but whose iat is within
-        # the 24h session TTL remains valid for verify_session when no RT exists
+        # the configured session TTL remains valid for verify_session.
         token = _mint_id_token(rsa_keypair, ttl_seconds=-600)
-        session = provider.verify_session(access_token=token)
+        session = provider_with_ttl.verify_session(access_token=token)
         assert session is not None
         assert session.user_id == "usr_abc"
         # And expires_at is set to iat + session_ttl (86400) rather than the past exp
         import jwt
         claims = jwt.decode(token, options={"verify_signature": False, "verify_exp": False})
         assert session.expires_at == int(claims["iat"]) + 86400
+
+    def test_expired_id_token_without_ttl_configured_returns_none(self, provider, rsa_keypair):
+        # Without stateless_session_ttl_seconds configured, expired token fails verify_exp
+        # and verify_session returns None (so middleware can attempt refresh).
+        token = _mint_id_token(rsa_keypair, ttl_seconds=-600)
+        session = provider.verify_session(access_token=token)
+        assert session is None
+
+    def test_expired_beyond_session_ttl_returns_none(self, provider_with_ttl, rsa_keypair):
+        # Token whose iat is older than the configured TTL (e.g. 25h ago) is rejected
+        # even with the TTL fallback active.
+        token = _mint_id_token(rsa_keypair, ttl_seconds=-90000, iat_offset_seconds=-90000)
+        session = provider_with_ttl.verify_session(access_token=token)
+        assert session is None
 
     def test_wrong_audience_raises(self, provider, rsa_keypair):
         token = _mint_id_token(rsa_keypair, aud="some-other-client")
@@ -1163,7 +1184,7 @@ class TestPluginRegister:
         ctx = MagicMock()
         oidc_plugin.register(ctx)
         registered = ctx.register_dashboard_auth_provider.call_args.args[0]
-        assert registered._scopes == "openid email offline_access"
+        assert registered._scopes == "openid email"
 
     def test_config_load_failure_falls_through(self, monkeypatch):
         def _broken():

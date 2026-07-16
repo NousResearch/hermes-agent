@@ -185,6 +185,7 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         client_id: str,
         scopes: str = _DEFAULT_SCOPES,
         client_secret: str = "",
+        stateless_session_ttl_seconds: int | None = None,
     ) -> None:
         if not issuer:
             raise ValueError("issuer is required")
@@ -205,24 +206,8 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         self._scopes = raw_scopes or _DEFAULT_SCOPES
         # Session TTL when the IDP omits a refresh token (e.g. Cloudflare Access
         # without offline_access, where id_token.exp is short like 15 min).
-        # Defaults to 24 hours (86400s) matching Cloudflare Access web session TTL.
-        self._session_ttl_seconds = int(
-            os.environ.get("HERMES_DASHBOARD_OIDC_SESSION_TTL_SECONDS", 86400)
-        )
-        # offline_access is mandatory for refresh-token issuance (RFC 6749).
-        # Without it, short-lived ID tokens can't rotate and the session
-        # expires as soon as the token does.  Auto-inject if the operator's
-        # config omitted it — they can suppress the warning by adding it to
-        # their scopes config explicitly.
-        if "offline_access" not in self._scopes.split():
-            logger.warning(
-                "self-hosted OIDC: configured scopes %r missing "
-                "'offline_access' — adding it automatically so the IDP can "
-                "issue a refresh token.  Add 'offline_access' to your scopes "
-                "config to silence this warning.",
-                self._scopes,
-            )
-            self._scopes = f"{self._scopes} offline_access"
+        # Configured via dashboard.oauth.self_hosted.session_ttl_seconds.
+        self._session_ttl_seconds = stateless_session_ttl_seconds
         # An empty/whitespace secret means "public client" — strip so a
         # provisioned-but-blank secret can't flip us into a broken confidential
         # mode that sends an empty client_secret. Non-empty ⇒ confidential.
@@ -332,7 +317,7 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         # unreachable.
         try:
             claims = self._verify_id_token(
-                access_token, allow_expired_within_ttl=True
+                access_token, allow_expired_within_ttl=(self._session_ttl_seconds is not None)
             )
         except InvalidCodeError:
             # Expired / invalid token — protocol says return None, not raise.
@@ -685,11 +670,10 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
                 f"ID token verification failed: {exc}{details}"
             ) from exc
 
-        if allow_expired_within_ttl:
+        if allow_expired_within_ttl and self._session_ttl_seconds is not None:
             now = time.time()
             iat_claim = int(claims.get("iat", 0))
-            session_ttl = getattr(self, "_session_ttl_seconds", 86400)
-            if now >= iat_claim + session_ttl:
+            if now >= iat_claim + self._session_ttl_seconds:
                 raise InvalidCodeError("OIDC session TTL expired")
 
         return claims
@@ -736,13 +720,16 @@ class SelfHostedOIDCProvider(DashboardAuthProvider):
         exp_claim = int(claims["exp"])
         iat_claim = int(claims.get("iat", exp_claim))
         now = time.time()
-        session_ttl = getattr(self, "_session_ttl_seconds", 86400)
         
         # For Cloudflare Access and similar identity proxies, the ID token is short-lived 
         # (e.g. 15 mins) and standard refresh flows are not supported even if a dummy 
-        # refresh_token is returned. We MUST force the session to live for session_ttl 
-        # (default 24h) from the initial authentication time, regardless of refresh_token presence.
-        expires_at = max(exp_claim, iat_claim + session_ttl)
+        # refresh_token is returned. We force the session to live for session_ttl_seconds 
+        # from the initial authentication time, regardless of refresh_token presence, 
+        # ONLY IF the operator explicitly configured session_ttl_seconds.
+        if self._session_ttl_seconds is not None:
+            expires_at = max(exp_claim, iat_claim + self._session_ttl_seconds)
+        else:
+            expires_at = exp_claim
 
         return Session(
             user_id=user_id,
@@ -868,6 +855,10 @@ def register(ctx) -> None:
     client_secret = _resolve_setting(
         "HERMES_DASHBOARD_OIDC_CLIENT_SECRET", oidc_cfg.get("client_secret")
     )
+    
+    session_ttl = oidc_cfg.get("session_ttl_seconds")
+    if session_ttl is not None:
+        session_ttl = int(session_ttl)
 
     if not issuer or not client_id:
         LAST_SKIP_REASON = (
@@ -888,8 +879,9 @@ def register(ctx) -> None:
             client_id=client_id,
             scopes=scopes,
             client_secret=client_secret,
+            stateless_session_ttl_seconds=session_ttl,
         )
-    except (ValueError, ProviderError) as exc:
+    except Exception as exc:
         LAST_SKIP_REASON = (
             f"SelfHostedOIDCProvider construction failed: {exc}"
         )

@@ -349,3 +349,72 @@ def test_decompose_no_aux_client_configured(kanban_home):
     assert outcome.ok is False
     # call_llm's no-provider RuntimeError surfaces via the LLM-error branch.
     assert "LLM error" in outcome.reason
+
+
+@pytest.mark.parametrize(
+    "llm_result",
+    [
+        {
+            "fanout": False,
+            "title": "Specified title",
+            "body": "Specified body",
+        },
+        {
+            "fanout": True,
+            "tasks": [
+                {
+                    "title": "child",
+                    "body": "child body",
+                    "assignee": "worker",
+                    "parents": [],
+                }
+            ],
+        },
+    ],
+    ids=["specify-write", "fanout-write"],
+)
+def test_existing_only_decompose_write_does_not_recreate_archived_board(
+    tmp_path, monkeypatch, llm_result,
+):
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "decompose-race")
+    kb.create_board("decompose-race")
+    active_dir = kb.board_dir("decompose-race")
+    with kb.connect(board="decompose-race") as conn:
+        tid = kb.create_task(conn, title="rough idea", triage=True)
+
+    def archive_during_llm(**_kwargs):
+        kb.remove_board("decompose-race")
+        return _fake_aux_response(jsonlib.dumps(llm_result))
+
+    patches = _patch_list_profiles(["orchestrator", "worker"])
+    for profile_patch in patches:
+        profile_patch.start()
+    try:
+        with patch(
+            "agent.auxiliary_client.call_llm",
+            side_effect=archive_during_llm,
+        ), patch(
+            "hermes_cli.kanban_decompose._load_config",
+            return_value={
+                "kanban": {
+                    "orchestrator_profile": "orchestrator",
+                    "default_assignee": "worker",
+                }
+            },
+        ):
+            try:
+                outcome = decomp.decompose_task(
+                    tid,
+                    author="auto-decomposer",
+                    board="decompose-race",
+                    create_if_missing=False,
+                )
+            except FileNotFoundError:
+                outcome = None
+    finally:
+        for profile_patch in patches:
+            profile_patch.stop()
+
+    assert outcome is None or outcome.ok is False
+    assert not active_dir.exists()

@@ -1171,15 +1171,20 @@ class GatewayKanbanWatchersMixin:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
                 if attempted >= auto_decompose_per_tick:
                     break
-                # Pin this board for the duration of the call — same
-                # pattern as the dashboard specify endpoint. The
-                # decomposer module connects with no board kwarg and
-                # relies on the env var.
+                # Pin this board for the duration of the call — same pattern
+                # as the dashboard specify endpoint. Pass the slug explicitly
+                # to every decomposer DB open too: after an archive,
+                # get_current_board() intentionally ignores a missing env slug
+                # and falls back to default, which is not safe for a stale
+                # watcher snapshot.
                 prev_env = os.environ.get("HERMES_KANBAN_BOARD")
                 try:
                     os.environ["HERMES_KANBAN_BOARD"] = slug
                     try:
-                        triage_ids = _decomp.list_triage_ids()
+                        triage_ids = _decomp.list_triage_ids(
+                            board=slug,
+                            create_if_missing=False,
+                        )
                     except Exception as exc:
                         logger.debug(
                             "kanban auto-decompose: list_triage_ids failed on board %s (%s)",
@@ -1192,7 +1197,10 @@ class GatewayKanbanWatchersMixin:
                         attempted += 1
                         try:
                             outcome = _decomp.decompose_task(
-                                tid, author="auto-decomposer",
+                                tid,
+                                author="auto-decomposer",
+                                board=slug,
+                                create_if_missing=False,
                             )
                         except Exception:
                             logger.exception(

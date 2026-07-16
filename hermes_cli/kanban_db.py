@@ -1838,6 +1838,7 @@ def connect_closing(
     db_path: Optional[Path] = None,
     *,
     board: Optional[str] = None,
+    create_if_missing: bool = True,
 ):
     """Open a kanban DB connection and guarantee it is closed on exit.
 
@@ -1854,11 +1855,20 @@ def connect_closing(
 
     See #33159 for the production incident.
 
+    ``create_if_missing`` is forwarded to :func:`connect`. Long-lived
+    watchers pass ``False`` after discovering a board so a stale snapshot
+    cannot recreate a board that was archived before this open. The default
+    remains ``True`` for explicit CLI and dashboard operations.
+
     The ``connect()`` function itself remains unchanged so callers that
-    intentionally manage the connection lifetime (tests, long-lived
-    callers) continue to work.
+    intentionally manage the connection lifetime (tests, long-lived callers)
+    continue to work.
     """
-    conn = connect(db_path=db_path, board=board)
+    conn = connect(
+        db_path=db_path,
+        board=board,
+        create_if_missing=create_if_missing,
+    )
     try:
         yield conn
     finally:

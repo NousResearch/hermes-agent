@@ -118,3 +118,69 @@ def test_dispatcher_stale_snapshot_does_not_recreate_archived_board(
     asyncio.run(asyncio.wait_for(runner._kanban_dispatcher_watcher(), timeout=3))
 
     assert not active_dir.exists()
+
+
+def test_auto_decomposer_discovery_race_does_not_recreate_archived_board(
+    tmp_path, monkeypatch,
+):
+    from gateway.run import GatewayRunner
+    from hermes_cli import kanban_db as kb
+    import hermes_cli.config as config_module
+
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    kb.create_board("auto-decompose-race")
+    active_dir = kb.board_dir("auto-decompose-race")
+    default_db = kb.kanban_db_path(board=kb.DEFAULT_BOARD)
+    with kb.connect(board="auto-decompose-race") as conn:
+        kb.create_task(conn, title="rough idea", triage=True)
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    monkeypatch.setattr(
+        config_module,
+        "load_config",
+        lambda: {
+            "kanban": {
+                "dispatch_in_gateway": True,
+                "dispatch_interval_seconds": 1,
+                "auto_decompose": True,
+                "auto_decompose_per_tick": 1,
+            }
+        },
+    )
+    real_list_boards = kb.list_boards
+    archived = False
+
+    def archive_after_discovery(include_archived=False):
+        nonlocal archived
+        boards = real_list_boards(include_archived=include_archived)
+        discovered = [
+            board for board in boards
+            if board.get("slug") == "auto-decompose-race"
+        ]
+        if not archived:
+            archived = True
+            kb.remove_board("auto-decompose-race")
+        return discovered
+
+    monkeypatch.setattr(kb, "list_boards", archive_after_discovery)
+    monkeypatch.setattr(kb, "reap_worker_zombies", lambda: [])
+
+    async def run_inline(fn, *args, **kwargs):
+        result = fn(*args, **kwargs)
+        if getattr(fn, "__name__", "") == "_ready_nonempty":
+            runner._running = False
+        return result
+
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(asyncio, "to_thread", run_inline)
+    monkeypatch.setattr(asyncio, "sleep", no_sleep)
+
+    asyncio.run(asyncio.wait_for(runner._kanban_dispatcher_watcher(), timeout=3))
+
+    assert archived is True
+    assert not active_dir.exists()
+    assert not default_db.exists()

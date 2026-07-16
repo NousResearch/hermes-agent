@@ -68,6 +68,13 @@ def mirror_to_session(
             )
             return False
 
+        # Resolve against the live SessionStore BEFORE appending: the
+        # background expiry watcher may have already finalized/ended this
+        # session at an idle/daily boundary, in which case the live store
+        # redirects the mirror into the post-reset session the user's next
+        # reply will route to (see _resolve_live_session).
+        session_id = _resolve_live_session(session_id) or session_id
+
         mirror_msg = {
             "role": role,
             "content": message_text,
@@ -186,6 +193,37 @@ def _find_session_id(
     best_entry = max(candidates, key=lambda entry: entry.get("updated_at", ""))
     return best_entry.get("session_id")
 
+
+
+def _resolve_live_session(session_id: str) -> Optional[str]:
+    """Resolve the live routing target for *session_id* before appending.
+
+    The mirror append lands only in state.db; the gateway's in-memory
+    ``SessionEntry.updated_at`` still reflects the last real turn.  If the
+    mirror arrives after an idle/daily reset boundary (e.g. an early-morning
+    cron brief with ``attach_to_session=true``), the user's immediate reply
+    would trigger an auto-reset into a fresh session and lose the mirrored
+    context.  While the routed session is still live, the store refreshes
+    its ``updated_at`` so the reply stays associated with it.
+
+    When the background expiry watcher already finalized the session — or
+    the session was ended in state.db — before the mirror arrived, a touch
+    is not enough: the reply's ``get_or_create_session`` self-heals/resets
+    away from the ended session regardless of ``updated_at``.  The store
+    instead resolves/creates the post-reset session that reply will land in
+    and returns its id, so the mirror is appended there.
+
+    Best-effort — returns None (the caller keeps the id it found) when no
+    live SessionStore routes to *session_id* (CLI/cron standalone) or on any
+    error; a resolution failure must never block the mirror itself.
+    """
+    try:
+        from gateway.session import resolve_live_mirror_session
+
+        return resolve_live_mirror_session(session_id)
+    except Exception as e:
+        logger.debug("Mirror live-session resolve failed for %s: %s", session_id, e)
+        return None
 
 
 def _append_to_sqlite(session_id: str, message: dict) -> None:

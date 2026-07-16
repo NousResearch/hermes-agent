@@ -2412,6 +2412,25 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
     return Markdown(plain)
 
 
+def _post_stream_transform_output(response: str, result: dict | None) -> str:
+    """Return text that still needs display after a streamed response transform.
+
+    A transform hook is allowed to replace the final response, not merely append
+    to it. When the transformed text retains the streamed response as a prefix,
+    printing only its suffix avoids duplicating the already-rendered body. A
+    replacement has no safe suffix, so deliberately print the complete final
+    response rather than silently dropping it.
+    """
+    if not result or not result.get("response_transformed"):
+        return ""
+
+    original = result.get("pre_transform_response") or ""
+    if original and response.startswith(original):
+        return response[len(original):]
+
+    return f"\n[Response transformed after streaming]\n{response}"
+
+
 _OUTPUT_HISTORY_ENABLED = True
 _OUTPUT_HISTORY_REPLAYING = False
 _OUTPUT_HISTORY_SUPPRESSED = False
@@ -12398,13 +12417,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 elif already_streamed:
                     # Response was already streamed token-by-token with box framing;
                     # _flush_stream() already closed the box. Skip Rich Panel.
-                    # If a plugin appended content (shout, trace) after streaming,
-                    # print only the appended portion now.
-                    if result and result.get("response_transformed"):
-                        _pre = result.get("pre_transform_response") or ""
-                        _appended = response[len(_pre):]
-                        if _appended.strip():
-                            _cprint(_appended)
+                    # A transform hook runs after streaming. Show a suffix for
+                    # append-only changes, or the complete replacement otherwise.
+                    _post_stream_text = _post_stream_transform_output(response, result)
+                    if _post_stream_text.strip():
+                        _cprint(_post_stream_text)
                 else:
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(

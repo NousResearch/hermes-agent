@@ -15919,7 +15919,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             metadata = {}
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
-                metadata["gateway_session_id"] = parent_session_id
+                pinned_session_id = await self._resolve_completion_session_id(
+                    parent_session_id,
+                )
+                if not pinned_session_id:
+                    return False
+                metadata["gateway_session_id"] = pinned_session_id
             synth_event = MessageEvent(
                 text=synth_text,
                 message_type=MessageType.TEXT,
@@ -15939,6 +15944,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as e:
             logger.error("Watch notification injection error: %s", e)
             return False
+
+    async def _resolve_completion_session_id(
+        self, parent_session_id: str,
+    ) -> Optional[str]:
+        """Return a live delivery target without crossing user boundaries."""
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None:
+            return None
+        try:
+            parent = await session_db.get_session(parent_session_id)
+            if parent is None:
+                return None
+            if not parent.get("ended_at"):
+                return parent_session_id
+            if parent.get("end_reason") != "compression":
+                return None
+            tip_session_id = await session_db.get_compression_tip(parent_session_id)
+            if not tip_session_id or tip_session_id == parent_session_id:
+                return None
+            tip = await session_db.get_session(tip_session_id)
+            if tip is None or tip.get("ended_at"):
+                return None
+            return tip_session_id
+        except Exception:
+            logger.debug(
+                "Could not resolve async completion session %s",
+                parent_session_id,
+                exc_info=True,
+            )
+            return None
 
     @staticmethod
     def _completion_delivery_identity(evt: dict) -> Optional[tuple[str, str, object]]:

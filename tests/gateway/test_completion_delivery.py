@@ -186,6 +186,94 @@ def test_failed_async_injection_is_retried_and_only_success_is_acked(
     assert acknowledgements == ["deleg_duplicate"]
 
 
+def test_compression_parent_delivery_targets_live_tip_and_is_acked(
+    monkeypatch, isolated_registry,
+):
+    from tools import async_delegation
+
+    event = _async_event("deleg_compression")
+    event["parent_session_id"] = "sess_parent"
+    async_delegation._persist_dispatch({
+        "delegation_id": event["delegation_id"],
+        "session_key": event["session_key"],
+        "origin_ui_session_id": "",
+        "parent_session_id": event["parent_session_id"],
+        "dispatched_at": event["dispatched_at"],
+    })
+    async_delegation._persist_completion(event, {
+        "status": "completed",
+        "summary": event["summary"],
+    })
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    runner._session_db = SimpleNamespace(
+        get_session=AsyncMock(side_effect=[
+            {
+                "id": "sess_parent",
+                "ended_at": "2026-07-16T12:00:00",
+                "end_reason": "compression",
+            },
+            {"id": "sess_tip", "ended_at": None, "end_reason": None},
+        ]),
+        get_compression_tip=AsyncMock(return_value="sess_tip"),
+    )
+
+    assert asyncio.run(
+        runner._deliver_completion_notification("completion", event)
+    ) is True
+
+    delivered = adapter.handle_message.await_args.args[0]
+    assert delivered.metadata["gateway_session_id"] == "sess_tip"
+    durable = async_delegation.get_durable_delegation(event["delegation_id"])
+    assert durable is not None
+    assert durable["delivery_state"] == "delivered"
+
+
+def test_explicit_new_drop_stays_pending_for_restart_recovery(
+    monkeypatch, isolated_registry,
+):
+    from tools import async_delegation
+
+    event = _async_event("deleg_explicit_new")
+    event["parent_session_id"] = "sess_reset"
+    async_delegation._persist_dispatch({
+        "delegation_id": event["delegation_id"],
+        "session_key": event["session_key"],
+        "origin_ui_session_id": "",
+        "parent_session_id": event["parent_session_id"],
+        "dispatched_at": event["dispatched_at"],
+    })
+    async_delegation._persist_completion(event, {
+        "status": "completed",
+        "summary": event["summary"],
+    })
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    runner._session_db = SimpleNamespace(
+        get_session=AsyncMock(return_value={
+            "id": "sess_reset",
+            "ended_at": "2026-07-16T12:00:00",
+            "end_reason": "session_reset",
+        }),
+        get_compression_tip=AsyncMock(),
+    )
+
+    assert asyncio.run(
+        runner._deliver_completion_notification("completion", event)
+    ) is False
+
+    adapter.handle_message.assert_not_awaited()
+    durable = async_delegation.get_durable_delegation(event["delegation_id"])
+    assert durable is not None
+    assert durable["delivery_state"] == "pending"
+    assert durable["delivery_attempts"] == 1
+    restored = queue.Queue()
+    assert async_delegation.restore_undelivered_completions(restored) == 1
+    assert restored.get_nowait()["delegation_id"] == event["delegation_id"]
+
+
 def test_distinct_process_incarnations_are_not_deduplicated():
     """Producer spawn time distinguishes a reused process session ID."""
     adapter = SimpleNamespace(handle_message=AsyncMock())

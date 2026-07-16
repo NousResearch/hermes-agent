@@ -12101,6 +12101,28 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception:
             pass
 
+    def _esc_interrupt_active(self) -> bool:
+        """Whether a bare ESC should interrupt the running agent (#65303).
+
+        True only when the agent is actively responding AND nothing else owns
+        the screen: no /model picker, no secret/sudo/slash-confirm modal, and
+        no approval/clarify overlay. The picker and modal ESC bindings own ESC
+        while their state is set, so excluding those keeps this mutually
+        exclusive with them (two eager ``escape`` bindings must never both
+        qualify). Approval/clarify overlays are intentionally left to Ctrl+C
+        so ESC there stays a no-op rather than aborting the whole turn.
+        """
+        return bool(
+            self._agent_running
+            and self.agent
+            and not self._model_picker_state
+            and not self._secret_state
+            and not self._sudo_state
+            and not self._slash_confirm_state
+            and not self._approval_state
+            and not self._clarify_state
+        )
+
     def _clear_active_overlays_for_interrupt(self) -> None:
         """Drain and clear every input-blocking overlay left by an interrupted agent.
 
@@ -14181,6 +14203,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
+
+        @kb.add('escape', filter=Condition(lambda: self._esc_interrupt_active()), eager=True)
+        def handle_escape_interrupt(event):
+            """ESC interrupts a running agent — an ergonomic alternative to
+            Ctrl+C (#65303).
+
+            Gated by ``_esc_interrupt_active`` so it only fires while the agent
+            is responding with no modal/picker/overlay on screen, keeping it
+            mutually exclusive with the modal and /model-picker ESC bindings
+            above. Reuses the exact Ctrl+Q interrupt path (``agent.interrupt()``)
+            with no double-press force-exit.
+            """
+            if self._agent_running and self.agent:
+                print("\n⚡ Interrupting agent...")
+                self.agent.interrupt()
 
         @kb.add('c-z')
         def handle_ctrl_z(event):

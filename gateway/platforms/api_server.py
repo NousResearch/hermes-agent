@@ -1236,7 +1236,13 @@ class APIServerAdapter(BasePlatformAdapter):
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:].strip()
-            if hmac.compare_digest(token, self._api_key):
+            # Compare as bytes: ``hmac.compare_digest`` raises TypeError on a
+            # str containing non-ASCII characters, and ``token`` is the raw
+            # client-supplied header. A stray non-ASCII byte in the key would
+            # otherwise crash this handler (500) instead of returning a clean
+            # 401. Encoding both sides keeps the timing-safe comparison and
+            # matches web_server.py's dashboard-token check.
+            if hmac.compare_digest(token.encode(), self._api_key.encode()):
                 return None  # Auth OK
 
         logger.warning(

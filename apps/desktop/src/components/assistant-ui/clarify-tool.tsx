@@ -38,6 +38,7 @@ interface ClarifyResult {
   question?: string
   answer?: string
   error?: string
+  choices?: string[]
 }
 
 function stringField(row: Record<string, unknown>, ...keys: string[]): string | undefined {
@@ -68,10 +69,15 @@ export function readClarifyResult(result: unknown): ClarifyResult {
     return typeof result === 'string' && result.trim() ? { answer: result.trim() } : {}
   }
 
+  const choices = Array.isArray(row.choices_offered)
+    ? row.choices_offered.filter((choice): choice is string => typeof choice === 'string')
+    : undefined
+
   return {
     question: stringField(row, 'question'),
     answer: stringField(row, 'user_response', 'answer'),
-    error: stringField(row, 'error')
+    error: stringField(row, 'error'),
+    ...(choices && choices.length > 0 ? { choices } : {})
   }
 }
 
@@ -177,6 +183,7 @@ function ClarifyToolSettled({ args, result }: ToolCallMessagePartProps) {
   const fromResult = useMemo(() => readClarifyResult(result), [result])
 
   const question = fromResult.question || fromArgs.question || ''
+  const choices = fromArgs.choices ?? fromResult.choices ?? []
   const answer = fromResult.answer
   const error = fromResult.error
   const skipped = !error && answer !== undefined && !answer.trim()
@@ -198,10 +205,23 @@ function ClarifyToolSettled({ args, result }: ToolCallMessagePartProps) {
               skipped && 'italic text-(--ui-text-tertiary)'
             )}
             data-clarify-answer=""
+            data-testid="clarify-answer"
           >
             {answerText}
           </p>
         </ClarifyLine>
+      ) : null}
+      {choices.length > 0 ? (
+        <details className="rounded border border-primary/10 px-2 py-1 text-(--ui-text-tertiary)">
+          <summary className="cursor-pointer select-none text-xs">Quick Choice options</summary>
+          <ul className="mt-1 grid gap-0.5 pl-4 text-xs">
+            {choices.map(choice => (
+              <li className={choice === answer ? 'font-medium text-(--ui-text-primary)' : undefined} key={choice}>
+                {choice}
+              </li>
+            ))}
+          </ul>
+        </details>
       ) : null}
     </ClarifyShell>
   )
@@ -397,6 +417,21 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
       const active = document.activeElement as HTMLElement | null
       const surfaceId = surfaceIdRef.current
+
+      // Keep normal text-entry behavior intact. If the chat composer is empty,
+      // arrow navigation may still activate Quick Choice; once the user has
+      // typed content, the composer owns its cursor/navigation keys again.
+      const isTextEntry =
+        active?.isContentEditable || active?.matches('input, select, textarea')
+      const isEmptyComposer =
+        isTextEntry &&
+        active &&
+        !surfaceRef.current?.contains(active) &&
+        (active.isContentEditable ? active.textContent?.trim() === '' : (active as HTMLInputElement).value.trim() === '')
+
+      if (isTextEntry && !isEmptyComposer) {
+        return
+      }
 
       // Only the active clarify surface may consume window-level navigation.
       // The first mounted surface is the fallback owner when focus is in the

@@ -98,7 +98,8 @@ describe('readClarifyResult', () => {
     ).toEqual({
       question: 'Which target?',
       answer: 'staging',
-      error: undefined
+      error: undefined,
+      choices: ['staging', 'prod']
     })
   })
 
@@ -143,7 +144,9 @@ describe('ClarifyTool settled view', () => {
     )
 
     expect(screen.getByText('Which deployment target?')).toBeTruthy()
-    expect(screen.getByText('staging')).toBeTruthy()
+    expect(screen.getByTestId('clarify-answer').textContent).toBe('staging')
+    expect(screen.getByText('Quick Choice options')).toBeTruthy()
+    expect(screen.getByText('prod')).toBeTruthy()
     expect(document.querySelector('[data-clarify-settled]')).toBeTruthy()
     expect(document.querySelector('[data-clarify-answer]')?.textContent).toBe('staging')
   })

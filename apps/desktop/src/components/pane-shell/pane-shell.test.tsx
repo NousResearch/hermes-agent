@@ -330,4 +330,32 @@ describe('PaneShell composition', () => {
 
     expect($paneStates.get().preview?.widthOverride).toBe(340)
   })
+
+  it('dragging a right-pane separator resolves a viewport max width', () => {
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1280 })
+
+    const rendered = render(
+      <PaneShell>
+        <PaneMain>main</PaneMain>
+        <Pane id="preview" maxWidth="50vw" minWidth={220} resizable side="right" width="320px">
+          <span data-testid="preview-content">preview</span>
+        </Pane>
+      </PaneShell>
+    )
+
+    const paneCell = rendered.getByTestId('preview-content').parentElement
+
+    if (!(paneCell instanceof HTMLElement)) {
+      throw new Error('Expected pane cell element')
+    }
+
+    mockWidth(paneCell, 320)
+    const separator = rendered.getByLabelText('Resize preview')
+
+    fireEvent.pointerDown(separator, { clientX: 900, pointerId: 1 })
+    fireEvent.pointerMove(window, { clientX: 100 })
+    fireEvent.pointerUp(window, { clientX: 100 })
+
+    expect($paneStates.get().preview?.widthOverride).toBe(640)
+  })
 })

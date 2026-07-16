@@ -58,7 +58,8 @@ _VALID_MODES = frozenset({"auto", "native", "text"})
 # them differently (send_document), and we don't want to attach a PDF as a
 # vision part.
 _IMAGE_EXTS = (
-    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif", ".heic",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif",
+    ".heic", ".heif",
 )
 _IMAGE_EXT_PATTERN = "|".join(e.lstrip(".") for e in _IMAGE_EXTS)
 
@@ -492,16 +493,26 @@ def _sniff_mime_from_bytes(raw: bytes) -> Optional[str]:
     # BMP: "BM"
     if raw.startswith(b"BM"):
         return "image/bmp"
-    # ISO-BMFF family (HEIC/HEIF/AVIF): bytes 4..8 == 'ftyp', major brand at 8..12
+    # ISO-BMFF family (HEIC/HEIF/AVIF): bytes 4..8 == 'ftyp', major brand at 8..12.
+    # HEIC/HEIF brands must stay aligned with gateway.platforms.base
+    # ``_HEIC_HEIF_FTYP_BRANDS`` so Telegram/document caches that accept HEIF
+    # still enter the non-universal transcode path (not JPEG fallback).
     if len(raw) >= 12 and raw[4:8] == b"ftyp":
         brand = raw[8:12]
         if brand in {b"avif", b"avis"}:
             return "image/avif"
-        if brand in {
+        heif_brands = {
             b"heic", b"heix", b"hevc", b"hevx",
-            b"mif1", b"msf1", b"heim", b"heis",
-        }:
+            b"heim", b"heis", b"hevm", b"hevs",
+            b"heif", b"mif1", b"msf1",
+        }
+        if brand in heif_brands:
             return "image/heic"
+        # Compatible brands start at offset 16 (same scan window as base.py).
+        end = min(len(raw), 64)
+        for i in range(16, end - 3, 4):
+            if raw[i : i + 4] in heif_brands:
+                return "image/heic"
     # TIFF: II*\0 (little-endian) or MM\0* (big-endian)
     if raw[:4] in {b"II*\x00", b"MM\x00*"}:
         return "image/tiff"
@@ -607,6 +618,8 @@ def _guess_mime(path: Path, raw: Optional[bytes] = None) -> str:
         ".gif": "image/gif",
         ".webp": "image/webp",
         ".bmp": "image/bmp",
+        ".heic": "image/heic",
+        ".heif": "image/heic",
     }.get(suffix, "image/jpeg")
 
 

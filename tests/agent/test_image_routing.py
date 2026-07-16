@@ -737,6 +737,34 @@ class TestFormatCompatibility:
         heic_header = b"\x00\x00\x00\x20ftypheic\x00\x00\x00\x00"
         assert _sniff_mime_from_bytes(heic_header) == "image/heic"
 
+    def test_heif_major_brand_sniffed(self):
+        """ftypheif must not fall through to JPEG (review alignment with base cache)."""
+        from agent.image_routing import _guess_mime, _sniff_mime_from_bytes
+        from pathlib import Path
+
+        heif_header = b"\x00\x00\x00\x20ftypheif\x00\x00\x00\x00"
+        assert _sniff_mime_from_bytes(heif_header) == "image/heic"
+        # Full guess path used by vision attachment building.
+        assert _guess_mime(Path("photo.heif"), raw=heif_header) == "image/heic"
+
+    def test_hevm_hevs_brands_sniffed(self):
+        from agent.image_routing import _sniff_mime_from_bytes
+
+        assert _sniff_mime_from_bytes(b"\x00\x00\x00\x20ftyphevm\x00\x00\x00\x00") == "image/heic"
+        assert _sniff_mime_from_bytes(b"\x00\x00\x00\x20ftyphevs\x00\x00\x00\x00") == "image/heic"
+
+    def test_heif_extension_without_magic_defaults_heic_mime(self):
+        """Suffix-only guess must not map .heif/.heic → image/jpeg."""
+        from agent.image_routing import _guess_mime
+        from pathlib import Path
+
+        heif_mime = _guess_mime(Path("IMG_0001.heif"), raw=None)
+        heic_mime = _guess_mime(Path("IMG_0001.HEIC"), raw=None)
+        assert heif_mime in {"image/heic", "image/heif"}
+        assert heic_mime in {"image/heic", "image/heif"}
+        assert heif_mime != "image/jpeg"
+        assert heic_mime != "image/jpeg"
+
     def test_svg_sniffed_correctly(self):
         from agent.image_routing import _sniff_mime_from_bytes
         assert _sniff_mime_from_bytes(b'<svg xmlns="http://www.w3.org/2000/svg"/>') == "image/svg+xml"

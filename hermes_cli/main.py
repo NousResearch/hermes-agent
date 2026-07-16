@@ -13346,7 +13346,11 @@ def main():
     # =========================================================================
     # migrate command
     # =========================================================================
-    from hermes_cli.migrate import cmd_migrate, cmd_migrate_xai
+    from hermes_cli.migrate import (
+        cmd_migrate,
+        cmd_migrate_state_postgres,
+        cmd_migrate_xai,
+    )
 
     migrate_parser = subparsers.add_parser(
         "migrate",
@@ -13379,6 +13383,45 @@ def main():
         help="Skip the timestamped backup of config.yaml when applying",
     )
     migrate_xai.set_defaults(func=cmd_migrate_xai)
+
+    migrate_state_postgres = migrate_subparsers.add_parser(
+        "state-postgres",
+        allow_abbrev=False,
+        help="Migrate the SQLite state backend to a PostgreSQL schema",
+        description=(
+            "Preflight and migrate the active SQLite state database into an "
+            "explicit PostgreSQL schema. Dry-run is the default. PostgreSQL "
+            "credentials are read only from the named environment variable."
+        ),
+    )
+    migrate_state_postgres.add_argument(
+        "--apply",
+        action="store_true",
+        help="Copy, verify, publish, and atomically switch config.yaml",
+    )
+    migrate_state_postgres.add_argument(
+        "--dsn-env",
+        default="HERMES_STATE_POSTGRES_DSN",
+        metavar="NAME",
+        help="Environment variable holding the PostgreSQL DSN (never its value)",
+    )
+    migrate_state_postgres.add_argument(
+        "--schema",
+        required=True,
+        help="Explicit lowercase PostgreSQL target schema",
+    )
+    migrate_state_postgres.add_argument(
+        "--batch-size",
+        type=int,
+        default=1_000,
+        metavar="ROWS",
+        help="Bounded copy and verification batch size (default: 1000)",
+    )
+    migrate_state_postgres.add_argument(
+        "--run-id",
+        help="Resume or reconcile a prior migration run ID",
+    )
+    migrate_state_postgres.set_defaults(func=cmd_migrate_state_postgres)
     migrate_parser.set_defaults(func=cmd_migrate)
 
     # =========================================================================

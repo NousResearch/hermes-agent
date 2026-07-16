@@ -7086,6 +7086,71 @@ def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
     atomic_yaml_write(config_path, data, **kwargs)
 
 
+def atomic_switch_state_to_postgres(
+    *,
+    dsn_env: str,
+    schema: str,
+    config_path: Optional[Path] = None,
+) -> Path:
+    """Back up and atomically switch only ``sessions.state`` to PostgreSQL.
+
+    The DSN itself is intentionally never accepted or written.  This helper is
+    used exclusively as the final state-postgres migration cutover after the
+    target's durable publish marker and verification evidence exist.
+    """
+
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", dsn_env):
+        raise ValueError("PostgreSQL DSN must be an environment-variable name")
+    if not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", schema):
+        raise ValueError("PostgreSQL schema must be a lowercase identifier")
+    with _CONFIG_LOCK:
+        if is_managed():
+            raise RuntimeError("managed configuration cannot be switched locally")
+        path = Path(config_path) if config_path is not None else get_config_path()
+        if not path.is_file():
+            raise RuntimeError("refusing state backend cutover without an existing config.yaml")
+        require_readable_config_before_write(path)
+        try:
+            with path.open(encoding="utf-8") as file_handle:
+                raw_config = fast_safe_load(file_handle) or {}
+        except Exception as exc:
+            raise RuntimeError("refusing state backend cutover: config.yaml cannot be parsed") from exc
+        if not isinstance(raw_config, dict):
+            raise RuntimeError("refusing state backend cutover: config root must be a mapping")
+
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        backup_path = path.with_name(
+            f"{path.name}.bak-pre-state-postgres-{timestamp}"
+        )
+        suffix = 1
+        while backup_path.exists():
+            backup_path = path.with_name(
+                f"{path.name}.bak-pre-state-postgres-{timestamp}-{suffix}"
+            )
+            suffix += 1
+        shutil.copy2(path, backup_path)
+
+        updated = copy.deepcopy(raw_config)
+        sessions = updated.setdefault("sessions", {})
+        if not isinstance(sessions, dict):
+            raise RuntimeError("refusing state backend cutover: sessions must be a mapping")
+        state = sessions.setdefault("state", {})
+        if not isinstance(state, dict):
+            raise RuntimeError("refusing state backend cutover: sessions.state must be a mapping")
+        postgres = state.setdefault("postgres", {})
+        if not isinstance(postgres, dict):
+            raise RuntimeError(
+                "refusing state backend cutover: sessions.state.postgres must be a mapping"
+            )
+        state["backend"] = "postgres"
+        postgres["dsn_env"] = dsn_env
+        postgres["schema"] = schema
+        atomic_config_write(path, updated, sort_keys=False)
+        _RAW_CONFIG_CACHE.pop(str(path), None)
+        _LAST_EXPANDED_CONFIG_BY_PATH.pop(str(path), None)
+        return backup_path
+
+
 def load_config() -> Dict[str, Any]:
     """Load configuration from ~/.hermes/config.yaml.
 

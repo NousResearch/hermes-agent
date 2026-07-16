@@ -64,6 +64,19 @@
     "why": "Recovery paths must keep Telegram pending updates; only cold bootstrap may drop stale updates."
   },
   {
+    "feature": "cron scheduler per-job reasoning and script timeout helpers",
+    "tests": [
+      "tests/cron/test_cron_script.py::TestRunJobScript::test_script_timeout",
+      "tests/cron/test_per_job_reasoning_effort.py::TestResolution",
+      "tests/cron/test_reasoning_config_per_model.py::TestCronPerModelReasoningConfig"
+    ],
+    "paths": [
+      "cron/fork_ext/scheduler_ext.py",
+      "tests/golden/scheduler_ext/"
+    ],
+    "why": "Cron jobs intentionally support per-job reasoning overrides and a bounded script-timeout resolution chain; the extracted fork helper must keep both behaviors byte-identical."
+  },
+  {
     "feature": "relay-pool session affinity and lane headers",
     "tests": [
       "tests/agent/test_pool_affinity_header.py"

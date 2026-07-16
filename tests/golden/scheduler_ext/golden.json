@@ -1,0 +1,257 @@
+{
+  "16ce4a2f963ec2ac092b1e0ad66340a41b7c78bae7ee5b2337f9ec7e62773a7e": {
+    "input": {
+      "config": [],
+      "job": {},
+      "kind": "reasoning",
+      "model": "gpt-5.4",
+      "name": "reasoning nondict config handled"
+    },
+    "name": "reasoning nondict config handled",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": null
+    }
+  },
+  "178b1d00ab3f9e3c6b99ccbdaa9570b812ece3653c74ac57dafa362edd284204": {
+    "input": {
+      "config": {
+        "cron": {
+          "script_timeout_seconds": 0
+        }
+      },
+      "env": {
+        "HERMES_CRON_SCRIPT_TIMEOUT": "-1"
+      },
+      "kind": "timeout",
+      "name": "timeout nonpositive config falls to default",
+      "script_timeout": 3600
+    },
+    "name": "timeout nonpositive config falls to default",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": 3600
+    }
+  },
+  "215d51b7e2cfa9188b83506767f61ba6d2dfa45c02fd3da41b2f309b8946c0d8": {
+    "input": {
+      "config": {
+        "agent": {
+          "reasoning_effort": "medium"
+        }
+      },
+      "job": {
+        "reasoning_effort": "warp"
+      },
+      "kind": "reasoning",
+      "model": "gpt-5.4",
+      "name": "reasoning per job invalid falls to config"
+    },
+    "name": "reasoning per job invalid falls to config",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": {
+        "effort": "medium",
+        "enabled": true
+      }
+    }
+  },
+  "43b6cc879bf4e48827bab8eeb2845a9dd898f68fdd68d78218535c30f4ec5ff3": {
+    "input": {
+      "config": {
+        "cron": {
+          "script_timeout_seconds": 56
+        }
+      },
+      "env": {
+        "HERMES_CRON_SCRIPT_TIMEOUT": "34"
+      },
+      "kind": "timeout",
+      "name": "timeout invalid module override falls to env",
+      "script_timeout": "bad"
+    },
+    "name": "timeout invalid module override falls to env",
+    "output": {
+      "db": [],
+      "messages": [
+        {
+          "level": "warning",
+          "message": "Invalid patched _SCRIPT_TIMEOUT='bad'; using env/config/default"
+        }
+      ],
+      "return": 34
+    }
+  },
+  "467087a6b6989635e9b5c1c136cc86456d29cdd6f592b33e21b587a0499a55d4": {
+    "input": {
+      "config_error": "boom",
+      "env": {},
+      "kind": "timeout",
+      "name": "timeout config load failure falls to default",
+      "script_timeout": 3600
+    },
+    "name": "timeout config load failure falls to default",
+    "output": {
+      "db": [],
+      "messages": [
+        {
+          "level": "debug",
+          "message": "Failed to load cron script timeout from config: boom"
+        }
+      ],
+      "return": 3600
+    }
+  },
+  "4da8af3cdaabecba384463a7231a5b13ea91de10341a0f0d568af826e1aa0832": {
+    "input": {
+      "config": {
+        "agent": {
+          "reasoning_effort": "high"
+        }
+      },
+      "job": {
+        "reasoning_effort": "low"
+      },
+      "kind": "reasoning",
+      "model": "gpt-5.4",
+      "name": "reasoning per job valid wins"
+    },
+    "name": "reasoning per job valid wins",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": {
+        "effort": "low",
+        "enabled": true
+      }
+    }
+  },
+  "57453a9b5b62248ce0b43752f10e56ffb4ca9ee1c8ea154aafcf13bdad42ade8": {
+    "input": {
+      "config": [],
+      "env": {},
+      "kind": "timeout",
+      "name": "timeout nondict config falls to default",
+      "script_timeout": 3600
+    },
+    "name": "timeout nondict config falls to default",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": 3600
+    }
+  },
+  "6910e9beb57f2b0009b892f16702431bd7f3e32a3227c5ee9f1c3219615092c8": {
+    "input": {
+      "config": {
+        "cron": {
+          "script_timeout_seconds": "78"
+        }
+      },
+      "env": {
+        "HERMES_CRON_SCRIPT_TIMEOUT": "bad"
+      },
+      "kind": "timeout",
+      "name": "timeout invalid env falls to config",
+      "script_timeout": 3600
+    },
+    "name": "timeout invalid env falls to config",
+    "output": {
+      "db": [],
+      "messages": [
+        {
+          "level": "warning",
+          "message": "Invalid HERMES_CRON_SCRIPT_TIMEOUT='bad'; using config/default"
+        }
+      ],
+      "return": 78
+    }
+  },
+  "6ca92bf8892bbac75f76ca4d8f7ba54fe36e79142056a10abdeb2d4f0f912083": {
+    "input": {
+      "config": {
+        "cron": {
+          "script_timeout_seconds": 56
+        }
+      },
+      "env": {
+        "HERMES_CRON_SCRIPT_TIMEOUT": "45.9"
+      },
+      "kind": "timeout",
+      "name": "timeout env wins over config",
+      "script_timeout": 3600
+    },
+    "name": "timeout env wins over config",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": 45
+    }
+  },
+  "764eb5b6d502a42639784b8c9ed2ca59491319c31217d03b843e1e136391702f": {
+    "input": {
+      "config": {},
+      "job": {
+        "reasoning_effort": ""
+      },
+      "kind": "reasoning",
+      "model": "",
+      "name": "reasoning empty config disables"
+    },
+    "name": "reasoning empty config disables",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": null
+    }
+  },
+  "a3c3ea03696a07030a5521633518b2c9aa713d1b1dd46d980a6638df93751612": {
+    "input": {
+      "config": {
+        "agent": {
+          "reasoning_effort": "low",
+          "reasoning_overrides": {
+            "gpt-5.4": "high"
+          }
+        }
+      },
+      "job": {},
+      "kind": "reasoning",
+      "model": "gpt-5.4",
+      "name": "reasoning per model override wins over global"
+    },
+    "name": "reasoning per model override wins over global",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": {
+        "effort": "high",
+        "enabled": true
+      }
+    }
+  },
+  "de326994063b27265bbbe9da95438542f234fe2819f58e9d4e480e19fd0ec2d3": {
+    "input": {
+      "config": {
+        "cron": {
+          "script_timeout_seconds": 56
+        }
+      },
+      "env": {
+        "HERMES_CRON_SCRIPT_TIMEOUT": "34"
+      },
+      "kind": "timeout",
+      "name": "timeout patched module override wins",
+      "script_timeout": 12
+    },
+    "name": "timeout patched module override wins",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": 12
+    }
+  }
+}

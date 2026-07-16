@@ -90,6 +90,41 @@ def relay_header_mutations() -> list[Mutation]:
     ]
 
 
+def scheduler_ext_mutations() -> list[Mutation]:
+    """Three mutations for the pure cron scheduler extraction.
+
+    scheduler_ext exposes return-value helpers and emits diagnostics through
+    the caller-provided logger. It performs NO DB writes, so the third mutation
+    covers the reasoning fallback branch instead of a nonexistent DB output.
+    """
+    return [
+        Mutation(
+            "return-value: ignore script timeout env override",
+            lambda p: replace_once(
+                p,
+                'env_value = os.getenv("HERMES_CRON_SCRIPT_TIMEOUT", "").strip()',
+                'env_value = os.getenv("HERMES_CRON_SCRIPT_TIMEOUT_MUTATED", "").strip()',
+            ),
+        ),
+        Mutation(
+            "message-emit: alter invalid env warning",
+            lambda p: replace_once(
+                p,
+                'logger.warning("Invalid HERMES_CRON_SCRIPT_TIMEOUT=%r; using config/default", env_value)',
+                'logger.warning("Mutated HERMES_CRON_SCRIPT_TIMEOUT=%r; using config/default", env_value)',
+            ),
+        ),
+        Mutation(
+            "branch-classification: invert reasoning config fallback",
+            lambda p: replace_once(
+                p,
+                "if reasoning_config is None:",
+                "if reasoning_config is not None:",
+            ),
+        ),
+    ]
+
+
 def compaction_ext_mutations() -> list[Mutation]:
     """Three mutations over the pure compaction announce output surface."""
     return [
@@ -158,6 +193,8 @@ def main(argv: list[str] | None = None) -> int:
     module = args.module
     if module.endswith("relay_headers.py"):
         mutations = relay_header_mutations()
+    elif module.endswith("scheduler_ext.py"):
+        mutations = scheduler_ext_mutations()
     elif module.endswith("compaction_ext.py"):
         mutations = compaction_ext_mutations()
     elif module.endswith("tool_gate.py"):

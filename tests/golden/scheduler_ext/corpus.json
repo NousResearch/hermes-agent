@@ -1,0 +1,139 @@
+{
+  "cases": [
+    {
+      "name": "timeout patched module override wins",
+      "kind": "timeout",
+      "script_timeout": 12,
+      "env": {
+        "HERMES_CRON_SCRIPT_TIMEOUT": "34"
+      },
+      "config": {
+        "cron": {
+          "script_timeout_seconds": 56
+        }
+      }
+    },
+    {
+      "name": "timeout invalid module override falls to env",
+      "kind": "timeout",
+      "script_timeout": "bad",
+      "env": {
+        "HERMES_CRON_SCRIPT_TIMEOUT": "34"
+      },
+      "config": {
+        "cron": {
+          "script_timeout_seconds": 56
+        }
+      }
+    },
+    {
+      "name": "timeout env wins over config",
+      "kind": "timeout",
+      "script_timeout": 3600,
+      "env": {
+        "HERMES_CRON_SCRIPT_TIMEOUT": "45.9"
+      },
+      "config": {
+        "cron": {
+          "script_timeout_seconds": 56
+        }
+      }
+    },
+    {
+      "name": "timeout invalid env falls to config",
+      "kind": "timeout",
+      "script_timeout": 3600,
+      "env": {
+        "HERMES_CRON_SCRIPT_TIMEOUT": "bad"
+      },
+      "config": {
+        "cron": {
+          "script_timeout_seconds": "78"
+        }
+      }
+    },
+    {
+      "name": "timeout nonpositive config falls to default",
+      "kind": "timeout",
+      "script_timeout": 3600,
+      "env": {
+        "HERMES_CRON_SCRIPT_TIMEOUT": "-1"
+      },
+      "config": {
+        "cron": {
+          "script_timeout_seconds": 0
+        }
+      }
+    },
+    {
+      "name": "timeout config load failure falls to default",
+      "kind": "timeout",
+      "script_timeout": 3600,
+      "env": {},
+      "config_error": "boom"
+    },
+    {
+      "name": "timeout nondict config falls to default",
+      "kind": "timeout",
+      "script_timeout": 3600,
+      "env": {},
+      "config": []
+    },
+    {
+      "name": "reasoning per job valid wins",
+      "kind": "reasoning",
+      "job": {
+        "reasoning_effort": "low"
+      },
+      "config": {
+        "agent": {
+          "reasoning_effort": "high"
+        }
+      },
+      "model": "gpt-5.4"
+    },
+    {
+      "name": "reasoning per job invalid falls to config",
+      "kind": "reasoning",
+      "job": {
+        "reasoning_effort": "warp"
+      },
+      "config": {
+        "agent": {
+          "reasoning_effort": "medium"
+        }
+      },
+      "model": "gpt-5.4"
+    },
+    {
+      "name": "reasoning per model override wins over global",
+      "kind": "reasoning",
+      "job": {},
+      "config": {
+        "agent": {
+          "reasoning_effort": "low",
+          "reasoning_overrides": {
+            "gpt-5.4": "high"
+          }
+        }
+      },
+      "model": "gpt-5.4"
+    },
+    {
+      "name": "reasoning empty config disables",
+      "kind": "reasoning",
+      "job": {
+        "reasoning_effort": ""
+      },
+      "config": {},
+      "model": ""
+    },
+    {
+      "name": "reasoning nondict config handled",
+      "kind": "reasoning",
+      "job": {},
+      "config": [],
+      "model": "gpt-5.4"
+    }
+  ]
+}

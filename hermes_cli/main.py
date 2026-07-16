@@ -2503,7 +2503,9 @@ def cmd_chat(args):
     import importlib.util
 
     cli_module_name = "_hermes_project_cli"
-    cli_module = sys.modules.get(cli_module_name)
+    cli_module = sys.modules.get("cli")
+    if cli_module is None:
+        cli_module = sys.modules.get(cli_module_name)
     if cli_module is None:
         cli_path = PROJECT_ROOT / "cli.py"
         cli_spec = importlib.util.spec_from_file_location(cli_module_name, cli_path)
@@ -2513,7 +2515,7 @@ def cmd_chat(args):
         sys.modules[cli_module_name] = cli_module
         sys.modules["cli"] = cli_module
         cli_spec.loader.exec_module(cli_module)
-    else:
+    elif "cli" not in sys.modules:
         sys.modules["cli"] = cli_module
     cli_main = cli_module.main
 

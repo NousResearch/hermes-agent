@@ -1927,3 +1927,29 @@ class TestEditApprovalPolicyYolo:
         state = SimpleNamespace(mode="default", cwd="/workspace")
         policy, _ = agent._edit_approval_policy_for_state(state)
         assert policy == "session"
+
+    @pytest.mark.parametrize("value", ["1", "true", "yes", "on", "True", "YES", "ON"])
+    def test_yolo_accepts_all_truthy_strings(self, monkeypatch, value):
+        """is_truthy_value accepts all TRUTHY_STRINGS, not just '1'."""
+        monkeypatch.setenv("HERMES_YOLO_MODE", value)
+        from acp_adapter.server import HermesACPAgent
+
+        agent = HermesACPAgent(
+            session_manager=SessionManager(agent_factory=lambda: MagicMock())
+        )
+        state = SimpleNamespace(mode="default", cwd="/workspace")
+        policy, _ = agent._edit_approval_policy_for_state(state)
+        assert policy == "session"
+
+    @pytest.mark.parametrize("value", ["0", "false", "no", "off", ""])
+    def test_yolo_rejects_falsy_strings(self, monkeypatch, value):
+        """Falsy or empty HERMES_YOLO_MODE keeps default 'ask' policy."""
+        monkeypatch.setenv("HERMES_YOLO_MODE", value)
+        from acp_adapter.server import HermesACPAgent
+
+        agent = HermesACPAgent(
+            session_manager=SessionManager(agent_factory=lambda: MagicMock())
+        )
+        state = SimpleNamespace(mode="default", cwd="/workspace")
+        policy, _ = agent._edit_approval_policy_for_state(state)
+        assert policy == "ask"

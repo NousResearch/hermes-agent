@@ -74,6 +74,7 @@ from acp_adapter.permissions import make_approval_callback
 from acp_adapter.provenance import session_provenance_meta
 from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
 from acp_adapter.tools import build_tool_complete, build_tool_start
+from utils import is_truthy_value
 from tools.approval import (
     reset_hermes_interactive_context,
     set_hermes_interactive_context,
@@ -525,7 +526,7 @@ class HermesACPAgent(acp.Agent):
         # Freeze --yolo / HERMES_YOLO_MODE at server start so a mid-process
         # skill cannot flip it to bypass ACP edit approval (same security
         # rationale as tools/approval._YOLO_MODE_FROZEN).
-        self._yolo_mode: bool = os.environ.get("HERMES_YOLO_MODE") == "1"
+        self._yolo_mode: bool = is_truthy_value(os.getenv("HERMES_YOLO_MODE", ""))
 
     # ---- Connection lifecycle -----------------------------------------------
 

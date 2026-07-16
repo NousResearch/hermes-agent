@@ -47,6 +47,7 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 AUTHOR_MAP = {
     "doogie@spark.local": "SAMBAS123",  # PR #64986 salvage (gateway: multiplex primary bot token scope)
     "evefromwayback@gmail.com": "evefromwayback",  # PR #64611 salvage (agent: never load install-tree AGENTS.md as project context)
+    "Regina@Andreys-Mini.true.true": "Rival",  # PR #64935/#64936 salvage (state: restore-boundary alternation repair; agent: turn-overlap tripwire)
     "41409874+2751738943@users.noreply.github.com": "2751738943",  # PR #54785 salvage (tui: post-turn completion ownership routing)
     "Burgunthy@users.noreply.github.com": "Burgunthy",  # PR #20096 salvage (gateway: profile-based routing for inbound messages)
     "75556242+webtecnica@users.noreply.github.com": "webtecnica",  # PR #63360 salvage (nous: restore inference-api base_url)

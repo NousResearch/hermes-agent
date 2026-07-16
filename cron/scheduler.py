@@ -2958,10 +2958,11 @@ def run_job(
         _VAR_MAP[_var_name].set("")
 
     # Per-job working directory.  When set (and validated at create/update
-    # time), we pin it via the _SESSION_CWD ContextVar (set_session_cwd) so:
+    # time), pin it via authoritative per-context cwd state so:
     #   - build_context_files_prompt() picks up AGENTS.md / CLAUDE.md /
     #     .cursorrules from the job's project dir, AND
-    #   - the terminal, file, and code-exec tools run commands from there.
+    #   - terminal dispatch overrides any reused environment's mutable cwd,
+    #     while file and code-exec tools resolve the same context-local path.
     #
     # ContextVar isolation means each cron job's workdir is visible only
     # within that job's execution context (propagated through
@@ -2979,12 +2980,12 @@ def run_job(
         )
         _job_workdir = None
 
-    _cwd_token = None
+    _cwd_tokens = None
 
     try:
         if _job_workdir:
-            from agent.runtime_cwd import set_session_cwd
-            _cwd_token = set_session_cwd(_job_workdir)
+            from agent.runtime_cwd import set_authoritative_session_cwd
+            _cwd_tokens = set_authoritative_session_cwd(_job_workdir)
             logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
 
         # Re-read .env and config.yaml fresh every run so provider/key
@@ -3571,13 +3572,11 @@ def run_job(
         return False, output, "", error_msg
 
     finally:
-        # Reset the per-context _SESSION_CWD ContextVar if we overrode it.
-        # clear_session_vars (below) also resets _SESSION_CWD to "", but
-        # resetting the token explicitly is cleaner and handles the case
-        # where clear_session_vars is skipped due to an earlier exception.
-        if _cwd_token is not None:
-            from agent.runtime_cwd import _SESSION_CWD
-            _SESSION_CWD.reset(_cwd_token)
+        # Restore both the per-context cwd and its command-authority marker via
+        # their paired helper before the general session-context cleanup.
+        if _cwd_tokens is not None:
+            from agent.runtime_cwd import reset_authoritative_session_cwd
+            reset_authoritative_session_cwd(_cwd_tokens)
         # Clean up ContextVar session/delivery state for this job.
         clear_session_vars(_ctx_tokens)
         for _var_name in _cron_delivery_vars:

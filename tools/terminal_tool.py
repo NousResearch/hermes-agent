@@ -2085,20 +2085,46 @@ def _resolve_command_cwd(
     *,
     workdir: Optional[str],
     default_cwd: str,
-    session_key: Optional[str] = None,
+    env: Optional[Any] = None,
+    prev_owner: Optional[str] = None,
 ) -> str:
-    """Return the cwd for a command. Explicit ``workdir=`` overrides everything.
+    """Return the cwd for a command without breaking interactive ``cd`` state.
 
-    Otherwise the session's own cwd RECORD (``get_session_cwd``) wins — it is
-    written after every completed command for this session, so it IS the
-    session's ``cd`` state, with no shared-env ambiguity: another session's
-    ``cd`` lands in another record and can't affect us. A session with no
-    record yet (first command) runs in ``default_cwd`` (config/override cwd),
-    which is also what seeds a fresh environment.
+    Explicit ``workdir=`` wins. A scheduler-marked authoritative session cwd
+    comes next so concurrent cron runs can safely share a cached environment.
+    Ordinary interactive sessions then prefer mutable ``env.cwd`` and retain
+    their cross-command ``cd`` behavior; the init/config cwd remains fallback.
+
+    When ``prev_owner`` is provided and differs from the current session,
+    ``env.cwd`` was mutated by a *different* session's ``cd`` and must NOT be
+    trusted — fall through to ``default_cwd`` (the config/override cwd) so
+    the command runs in this session's own workspace, not the previous
+    session's leftover checkout. This mirrors the ``_live_cwd_if_owned``
+    guard file_tools uses for the same shared-env problem.
     """
     if workdir:
         return workdir
-    return get_session_cwd(session_key) or default_cwd
+
+    from agent.runtime_cwd import resolve_authoritative_tool_cwd
+    authoritative_cwd = resolve_authoritative_tool_cwd()
+    if authoritative_cwd:
+        return authoritative_cwd
+
+    live_cwd = getattr(env, "cwd", None)
+    if isinstance(live_cwd, str) and live_cwd.strip():
+        # The env is shared (collapsed to "default"); its cwd tracks the LAST
+        # session that ran a command.  If a different session owned the env
+        # before this call claimed it, env.cwd is that session's leftover `cd`
+        # — not ours.  Don't use it.
+        if prev_owner is not None:
+            session_key = getattr(env, "cwd_owner", "")
+            # cwd_owner was already overwritten to the current session at the
+            # call site, so compare against the captured previous owner.
+            if prev_owner and prev_owner != "default" and session_key != prev_owner:
+                return default_cwd
+        return live_cwd
+
+    return default_cwd
 
 
 def terminal_tool(
@@ -2466,7 +2492,7 @@ def terminal_tool(
             effective_cwd = _resolve_command_cwd(
                 workdir=workdir,
                 default_cwd=cwd,
-                session_key=session_key,
+                env=env,
             )
             try:
                 if env_type == "local":
@@ -2474,7 +2500,7 @@ def terminal_tool(
                         command=command,
                         cwd=effective_cwd,
                         task_id=effective_task_id,
-                        session_key=session_key,
+                        env=env,
                         env_vars=env.env if hasattr(env, 'env') else None,
                         use_pty=effective_pty,
                     )
@@ -2484,7 +2510,6 @@ def terminal_tool(
                         command=command,
                         cwd=effective_cwd,
                         task_id=effective_task_id,
-                        session_key=session_key,
                     )
 
                 result_data = {
@@ -2726,7 +2751,7 @@ def terminal_tool(
                     command_cwd = _resolve_command_cwd(
                         workdir=workdir,
                         default_cwd=cwd,
-                        session_key=session_key,
+                        env=env,
                     )
                     execute_kwargs = {
                         "timeout": effective_timeout,

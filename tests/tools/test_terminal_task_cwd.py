@@ -110,8 +110,26 @@ def test_foreground_command_prefers_recorded_session_cwd_over_init_time_cwd(monk
     assert calls == [("pwd", {"timeout": 60, "cwd": "/workspace/live", "bounded_capture": True})]
 
 
-def test_background_command_prefers_recorded_session_cwd_over_init_time_cwd(monkeypatch):
-    """Background process launches must also use the recorded session cwd."""
+def test_interactive_context_cwd_preserves_live_environment_cwd():
+    """Gateway session defaults must not erase an interactive ``cd``."""
+    from agent import runtime_cwd
+
+    token = runtime_cwd.set_session_cwd("/workspace/init")
+    env = SimpleNamespace(cwd="/workspace/live")
+    try:
+        resolved = terminal_tool._resolve_command_cwd(
+            workdir=None,
+            env=env,
+            default_cwd="/workspace/init",
+        )
+    finally:
+        runtime_cwd._SESSION_CWD.reset(token)
+
+    assert resolved == "/workspace/live"
+
+
+def test_background_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch):
+    """Background process launches must also use the live session cwd."""
 
     class FakeEnv:
         env = {}

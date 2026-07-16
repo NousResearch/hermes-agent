@@ -7,7 +7,8 @@ relies on the launch dir. Reading it in one place keeps the system prompt, the
 tool surfaces, and context-file discovery agreeing on where the agent lives.
 
 Multi-session gateways can pin a logical cwd via the `_SESSION_CWD`
-contextvar; CLI/cron fall through to `TERMINAL_CWD`/launch cwd.
+ContextVar. Cron runs additionally mark that cwd authoritative for command
+dispatch; CLI and unbound contexts fall through to `TERMINAL_CWD`/launch cwd.
 """
 
 import logging
@@ -21,6 +22,9 @@ logger = logging.getLogger(__name__)
 _UNSET: Any = object()
 
 _SESSION_CWD: ContextVar = ContextVar("HERMES_SESSION_CWD", default=_UNSET)
+_SESSION_CWD_AUTHORITATIVE: ContextVar = ContextVar(
+    "HERMES_SESSION_CWD_AUTHORITATIVE", default=False
+)
 
 # The Python package/source root (this file lives at <root>/agent/runtime_cwd.py).
 # When a backend is launched from, or self-spawns into, this tree (the desktop
@@ -46,8 +50,23 @@ def set_session_cwd(cwd: str | None) -> Token:
     return _SESSION_CWD.set((cwd or "").strip())
 
 
+def set_authoritative_session_cwd(cwd: str | None) -> tuple[Token, Token]:
+    """Pin a cwd that must override mutable terminal-environment state."""
+    cwd_token = set_session_cwd(cwd)
+    authority_token = _SESSION_CWD_AUTHORITATIVE.set(True)
+    return cwd_token, authority_token
+
+
+def reset_authoritative_session_cwd(tokens: tuple[Token, Token]) -> None:
+    """Restore state captured by :func:`set_authoritative_session_cwd`."""
+    cwd_token, authority_token = tokens
+    _SESSION_CWD_AUTHORITATIVE.reset(authority_token)
+    _SESSION_CWD.reset(cwd_token)
+
+
 def clear_session_cwd() -> None:
     _SESSION_CWD.set("")
+    _SESSION_CWD_AUTHORITATIVE.set(False)
 
 
 def _session_cwd_override() -> str:
@@ -55,6 +74,13 @@ def _session_cwd_override() -> str:
     if value is _UNSET:
         return ""
     return str(value).strip()
+
+
+def resolve_authoritative_tool_cwd() -> str:
+    """Return the session cwd only when dispatch must ignore live ``env.cwd``."""
+    if not _SESSION_CWD_AUTHORITATIVE.get():
+        return ""
+    return _session_cwd_override()
 
 
 def resolve_tool_cwd() -> str:

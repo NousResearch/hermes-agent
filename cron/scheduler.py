@@ -553,9 +553,13 @@ def _get_hermes_home() -> Path:
 
 
 def _get_lock_paths() -> tuple[Path, Path]:
-    """Resolve cron lock paths at call time so profile/env changes are honored."""
-    hermes_home = _get_hermes_home()
-    lock_dir = hermes_home / "cron"
+    """Resolve cron lock paths at call time so profile/config changes are honored."""
+    if _hermes_home is not None:
+        # Preserve the longstanding emergency/test override.
+        lock_dir = _hermes_home / "cron"
+    else:
+        from cron.jobs import get_cron_store_dir
+        lock_dir = get_cron_store_dir()
     return lock_dir, lock_dir / ".tick.lock"
 
 

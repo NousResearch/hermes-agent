@@ -23,6 +23,10 @@ from cron.jobs import (
     heartbeat_run_claim,
     get_due_jobs,
     save_job_output,
+    use_cron_store,
+    record_ticker_heartbeat,
+    get_ticker_heartbeat_age,
+    get_ticker_success_age,
 )
 
 
@@ -237,6 +241,86 @@ def tmp_cron_dir(tmp_path, monkeypatch):
     monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
     monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
     return tmp_path
+
+
+def test_configured_cron_dir_survives_runtime_home_replacement(tmp_path, monkeypatch):
+    """A durable cron directory must not depend on a runtime HERMES_HOME sync.
+
+    This models a rolling replacement: the old gateway writes a job, then a
+    new gateway begins with a distinct empty local home. Both receive the same
+    persisted config, so the new process sees the job without waiting for the
+    old process's shutdown hook.
+    """
+    durable_cron = tmp_path / "durable" / "cron"
+    old_runtime = tmp_path / "old-runtime"
+    new_runtime = tmp_path / "new-runtime"
+    for runtime in (old_runtime, new_runtime):
+        runtime.mkdir()
+        (runtime / "config.yaml").write_text(
+            f"cron:\n  store_dir: {durable_cron}\n", encoding="utf-8"
+        )
+
+    monkeypatch.setenv("HERMES_HOME", str(old_runtime))
+    from cron.scheduler import _get_lock_paths
+    assert _get_lock_paths() == (durable_cron, durable_cron / ".tick.lock")
+    created = create_job(prompt="persist me", schedule="every 5m", deliver="local")
+    assert (durable_cron / "jobs.json").exists()
+    assert not (old_runtime / "cron" / "jobs.json").exists()
+
+    # A replacement receives the same durable cron-store configuration but no
+    # copied runtime state. Loading from it is the startup-side assertion.
+    monkeypatch.setenv("HERMES_HOME", str(new_runtime))
+    restored = load_jobs()
+    assert [job["id"] for job in restored] == [created["id"]]
+    assert not (new_runtime / "cron" / "jobs.json").exists()
+
+
+def test_configured_cron_dir_must_be_absolute(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "cron:\n  store_dir: relative-cron\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    with pytest.raises(ValueError, match="must be an absolute path"):
+        load_jobs()
+
+
+def test_profile_store_overrides_configured_cron_dir(tmp_path, monkeypatch):
+    """An explicit profile context must retain its isolated cron store."""
+    durable_cron = tmp_path / "durable" / "cron"
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        f"cron:\n  store_dir: {durable_cron}\n", encoding="utf-8"
+    )
+    profile_home = tmp_path / "profile"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    with use_cron_store(profile_home):
+        created = create_job(prompt="profile-only", schedule="every 5m", deliver="local")
+        assert [job["id"] for job in load_jobs()] == [created["id"]]
+
+    assert (profile_home / "cron" / "jobs.json").exists()
+    assert not (durable_cron / "jobs.json").exists()
+
+
+def test_ticker_liveness_uses_configured_cron_dir(tmp_path, monkeypatch):
+    durable_cron = tmp_path / "durable" / "cron"
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        f"cron:\n  store_dir: {durable_cron}\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    record_ticker_heartbeat(success=True)
+
+    assert (durable_cron / "ticker_heartbeat").exists()
+    assert (durable_cron / "ticker_last_success").exists()
+    assert get_ticker_heartbeat_age() is not None
+    assert get_ticker_success_age() is not None
+    assert not (home / "cron" / "ticker_heartbeat").exists()
 
 
 class TestJobCRUD:

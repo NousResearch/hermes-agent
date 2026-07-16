@@ -390,7 +390,7 @@ not required (and is ignored) for DMs.
 
 ### Silent suppression
 
-If the agent's final response contains `[SILENT]`, delivery is suppressed entirely. The output is still saved locally for audit (in `~/.hermes/cron/output/`), but no message is sent to the delivery target.
+If the agent's final response contains `[SILENT]`, delivery is suppressed entirely. The output is still saved locally for audit (in `~/.hermes/cron/output/` by default), but no message is sent to the delivery target.
 
 This is useful for monitoring jobs that should only report when something is wrong:
 
@@ -400,6 +400,26 @@ Otherwise, report the issue.
 ```
 
 Failed jobs always deliver regardless of the `[SILENT]` marker — only successful runs can be silenced. For quiet monitoring jobs, prompt the agent to reply with only `[SILENT]` when there is nothing to report.
+
+### Durable cron storage
+
+By default, a profile stores cron state under `<HERMES_HOME>/cron`. If a
+single-profile gateway runs with an ephemeral home (for example, a container
+whose runtime filesystem is replaced during rollout), configure an absolute
+durable directory instead:
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  store_dir: /mnt/hermes-cron
+```
+
+This moves the complete cron store together: `jobs.json`, scheduler and job
+locks, ticker liveness markers, and job output. All replicas that can run the
+same profile must use the same mounted path and filesystem with reliable file
+locking. Leave `store_dir` empty (the default) to retain the per-profile
+`<HERMES_HOME>/cron` store. It is intentionally for a single-profile gateway;
+profile-scoped operations continue to use their own isolated stores.
 
 ## Script timeout
 

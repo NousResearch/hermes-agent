@@ -1,6 +1,7 @@
 """Tests for tools/skill_manager_tool.py — skill creation, editing, and deletion."""
 
 import json
+import os
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
@@ -976,6 +977,130 @@ class TestExternalSkillMutations:
         result = json.loads(raw)
         assert result["success"] is True
 
+
+class TestExternalDirsReadonlyGuard:
+    """skill_manage mutations on external-dir skills are blocked when
+    skills.external_dirs_readonly is enabled."""
+
+    @contextmanager
+    def _external_skill_env(self, tmp_path):
+        """Set up a local + external dir with a skill in the external dir,
+        and patch both SKILLS_DIR and get_all_skills_dirs so _find_skill
+        discovers it. Yields the skill_dir."""
+        ext_dir = tmp_path / "external-skills"
+        ext_dir.mkdir()
+        skill_dir = ext_dir / "ext-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+
+        local_dir = tmp_path / "local-skills"
+        local_dir.mkdir()
+
+        with patch("tools.skill_manager_tool.SKILLS_DIR", local_dir), \
+             patch("agent.skill_utils.get_all_skills_dirs",
+                   return_value=[local_dir, ext_dir]), \
+             patch("agent.skill_utils.get_external_skills_dirs",
+                   return_value=[ext_dir]):
+            yield skill_dir
+
+    def test_edit_blocked_with_real_config_path(self, tmp_path):
+        """The real HERMES_HOME config controls the external-dir guard."""
+        ext_dir = tmp_path / "external-skills"
+        skill_dir = ext_dir / "ext-skill"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text(VALID_SKILL_CONTENT)
+        (tmp_path / "skills").mkdir()
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n"
+            "  external_dirs:\n"
+            f"    - {ext_dir}\n"
+            "  external_dirs_readonly: true\n",
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            from agent.skill_utils import _external_dirs_cache_clear
+
+            _external_dirs_cache_clear()
+            result = _edit_skill("ext-skill", VALID_SKILL_CONTENT_2)
+
+        assert result["success"] is False
+        assert "external_dirs_readonly" in result["error"]
+        assert skill_md.read_text() == VALID_SKILL_CONTENT
+
+    def test_edit_blocked_on_external_skill(self, tmp_path):
+        with self._external_skill_env(tmp_path), \
+             patch("tools.skill_manager_tool._external_dirs_readonly_enabled",
+                   return_value=True):
+            result = _edit_skill("ext-skill", VALID_SKILL_CONTENT_2)
+        assert result["success"] is False
+        assert "external_dirs_readonly" in result["error"]
+
+    def test_patch_blocked_on_external_skill(self, tmp_path):
+        with self._external_skill_env(tmp_path), \
+             patch("tools.skill_manager_tool._external_dirs_readonly_enabled",
+                   return_value=True):
+            result = _patch_skill("ext-skill", "Do the thing.", "Do the new thing.")
+        assert result["success"] is False
+        assert "external_dirs_readonly" in result["error"]
+
+    def test_delete_blocked_on_external_skill(self, tmp_path):
+        with self._external_skill_env(tmp_path), \
+             patch("tools.skill_manager_tool._external_dirs_readonly_enabled",
+                   return_value=True):
+            result = _delete_skill("ext-skill")
+        assert result["success"] is False
+        assert "external_dirs_readonly" in result["error"]
+
+    def test_write_file_blocked_on_external_skill(self, tmp_path):
+        with self._external_skill_env(tmp_path), \
+             patch("tools.skill_manager_tool._external_dirs_readonly_enabled",
+                   return_value=True):
+            result = _write_file("ext-skill", "references/api.md", "# API")
+        assert result["success"] is False
+        assert "external_dirs_readonly" in result["error"]
+
+    def test_remove_file_blocked_on_external_skill(self, tmp_path):
+        with self._external_skill_env(tmp_path), \
+             patch("tools.skill_manager_tool._external_dirs_readonly_enabled",
+                   return_value=True):
+            result = _remove_file("ext-skill", "references/api.md")
+        assert result["success"] is False
+        assert "external_dirs_readonly" in result["error"]
+
+    def test_create_not_blocked_on_external_skill(self, tmp_path):
+        """create always writes to local ~/.hermes/skills/, never to external."""
+        with self._external_skill_env(tmp_path), \
+             patch("tools.skill_manager_tool._external_dirs_readonly_enabled",
+                   return_value=True):
+            result = _create_skill("new-local-skill", VALID_SKILL_CONTENT)
+        assert result["success"] is True
+
+    def test_mutations_allowed_when_flag_off(self, tmp_path):
+        with self._external_skill_env(tmp_path), \
+             patch("tools.skill_manager_tool._external_dirs_readonly_enabled",
+                   return_value=False):
+            result = _edit_skill("ext-skill", VALID_SKILL_CONTENT_2)
+        assert result["success"] is True
+
+    def test_flag_reads_config_default_false(self):
+        """_external_dirs_readonly_enabled preserves the foreground contract by default."""
+        from tools.skill_manager_tool import _external_dirs_readonly_enabled
+        with patch("hermes_cli.config.load_config", return_value={"skills": {}}):
+            assert _external_dirs_readonly_enabled() is False
+
+    def test_flag_reads_config_when_set_false(self):
+        from tools.skill_manager_tool import _external_dirs_readonly_enabled
+        with patch("hermes_cli.config.load_config",
+                   return_value={"skills": {"external_dirs_readonly": False}}):
+            assert _external_dirs_readonly_enabled() is False
+
+    def test_flag_handles_config_error(self):
+        """If load_config raises, preserve the foreground-edit contract."""
+        from tools.skill_manager_tool import _external_dirs_readonly_enabled
+        with patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
+            assert _external_dirs_readonly_enabled() is False
 
 
 # ---------------------------------------------------------------------------

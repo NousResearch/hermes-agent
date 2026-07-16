@@ -237,6 +237,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
 
     let rafId = requestAnimationFrame(settle)
+
     // After the settle loop starts, bump the render budget to the full value
     // in a subsequent rAF so the full transcript becomes available after the
     // first paint.

@@ -70,8 +70,7 @@ function preserveReasoningParts(message: ChatMessage, previous: ChatMessage): Ch
 // COMPARED. If it's metadata that shouldn't trigger a re-render, add it to
 // IGNORED.
 const _chatMessageFieldsExhaustive: {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  [K in Exclude<keyof ChatMessage, typeof COMPARED_FIELDS[number] | typeof IGNORED_FIELDS[number]>]: never
+  [K in Exclude<keyof ChatMessage, (typeof COMPARED_FIELDS)[number] | (typeof IGNORED_FIELDS)[number]>]: never
 } = {}
 
 const COMPARED_FIELDS = ['id', 'role', 'pending', 'error', 'hidden', 'branchGroupId'] as const
@@ -83,8 +82,7 @@ const IGNORED_FIELDS = ['timestamp', 'attachmentRefs', 'parts'] as const
 //   tool-call             → compared by toolCallId/toolName + result presence
 //   source, image, file, data, generative-ui, audio, data-* → shallow primitive compare
 const _chatMessagePartTypesExhaustive: {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  [T in Exclude<ChatMessage['parts'][number]['type'], typeof HANDLED_PART_TYPES[number]>]: never
+  [T in Exclude<ChatMessage['parts'][number]['type'], (typeof HANDLED_PART_TYPES)[number]>]: never
 } = {}
 
 const HANDLED_PART_TYPES = [

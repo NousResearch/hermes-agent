@@ -226,6 +226,7 @@ class TestDiscoveryShape:
         assert hit["matched_role"] == "session_title"
         assert "Session title matched" in hit["snippet"]
 
+
     def test_title_query_strips_common_model_quoting(self, db):
         db.create_session("s_fingerprint", source="cli")
         db.set_session_title("s_fingerprint", "fingerprint-login")
@@ -1028,6 +1029,41 @@ class TestReadShape:
         assert result["truncated"] is True
         assert len(result["messages"]) == 30  # head 20 + tail 10
         assert result["messages"][-1]["content"] == expected_last
+
+    def test_head_tail_query_does_not_rank_full_message_blobs(self, db):
+        db.create_session("s_perf", source="cli")
+        db._conn.executemany(
+            "INSERT INTO messages "
+            "(session_id, role, content, timestamp, active) VALUES (?, ?, ?, ?, 1)",
+            [
+                (
+                    "s_perf",
+                    "user" if i % 2 == 0 else "assistant",
+                    f"m{i}:" + ("x" * 256),
+                    float(i),
+                )
+                for i in range(20_000)
+            ],
+        )
+
+        vm_steps = 0
+
+        def count_steps():
+            nonlocal vm_steps
+            vm_steps += 100
+            return 0
+
+        db._conn.set_progress_handler(count_steps, 100)
+        try:
+            rows, total = db.get_message_head_tail("s_perf", head=20, tail=10)
+        finally:
+            db._conn.set_progress_handler(None, 0)
+
+        assert total == 20_000
+        assert len(rows) == 30
+        assert rows[0]["content"].startswith("m0:")
+        assert rows[-1]["content"].startswith("m19999:")
+        assert vm_steps < 600_000
 
 
 # =========================================================================

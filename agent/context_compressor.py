@@ -143,6 +143,7 @@ _SUMMARY_END_MARKER = (
 # at the start of the message, so _is_context_summary_content must look past it.
 _MERGED_PRIOR_CONTEXT_HEADER = "[PRIOR CONTEXT — for reference only; not a new message]"
 _MERGED_SUMMARY_DELIMITER = "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]"
+_QUOTED_MERGED_SUMMARY_DELIMITER = "[QUOTED COMPACTION SUMMARY BOUNDARY]"
 
 # Handoff prefixes that shipped in earlier releases. A summary persisted under
 # one of these can be inherited into a resumed lineage (#35344); when it is
@@ -395,29 +396,31 @@ def _content_text_for_contains(content: Any) -> str:
 def _context_summary_prefix_start(text: str) -> Optional[int]:
     """Return the exact summary-prefix offset for a supported persisted shape."""
     prefixes = (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES)
-    stripped = text.lstrip()
-    leading = len(text) - len(stripped)
-    if any(stripped.startswith(prefix) for prefix in prefixes):
+    leading = 0
+    while leading < len(text) and text[leading].isspace():
+        leading += 1
+    if any(text.startswith(prefix, leading) for prefix in prefixes):
         return leading
 
     # Merged summaries are generated with the full prior-context wrapper. The
     # preserved tail is arbitrary and may itself quote the delimiter, so scan
     # every occurrence and accept only one immediately followed by a real prefix.
-    if not stripped.startswith(_MERGED_PRIOR_CONTEXT_HEADER):
+    if not text.startswith(_MERGED_PRIOR_CONTEXT_HEADER, leading):
         return None
-    search_from = len(_MERGED_PRIOR_CONTEXT_HEADER)
+    search_from = leading + len(_MERGED_PRIOR_CONTEXT_HEADER)
     prefix_start: Optional[int] = None
     while True:
-        delimiter_at = stripped.find(_MERGED_SUMMARY_DELIMITER, search_from)
+        delimiter_at = text.find(_MERGED_SUMMARY_DELIMITER, search_from)
         if delimiter_at < 0:
-            return leading + prefix_start if prefix_start is not None else None
+            return prefix_start
         after_at = delimiter_at + len(_MERGED_SUMMARY_DELIMITER)
-        after = stripped[after_at:]
-        summary = after.lstrip()
-        if any(summary.startswith(prefix) for prefix in prefixes):
+        candidate = after_at
+        while candidate < len(text) and text[candidate].isspace():
+            candidate += 1
+        if any(text.startswith(prefix, candidate) for prefix in prefixes):
             # Preserved prior content can quote a complete delimiter + prefix
             # pair. The generated boundary is the final valid pair.
-            prefix_start = after_at + (len(after) - len(summary))
+            prefix_start = candidate
         search_from = after_at
 
 
@@ -436,20 +439,42 @@ def is_context_summary_content(content: Any) -> bool:
 def _merged_prior_context_text(content: Any) -> str:
     """Extract the real pre-summary turn from a generated merged wrapper."""
     text = _content_text_for_contains(content)
-    stripped = text.lstrip()
-    if not stripped.startswith(_MERGED_PRIOR_CONTEXT_HEADER):
+    leading = 0
+    while leading < len(text) and text[leading].isspace():
+        leading += 1
+    if not text.startswith(_MERGED_PRIOR_CONTEXT_HEADER, leading):
         return ""
-    prefix_start = _context_summary_prefix_start(stripped)
+    prefix_start = _context_summary_prefix_start(text)
     if prefix_start is None:
         return ""
-    delimiter_at = stripped.rfind(
+    prior_start = leading + len(_MERGED_PRIOR_CONTEXT_HEADER)
+    delimiter_at = text.rfind(
         _MERGED_SUMMARY_DELIMITER,
-        len(_MERGED_PRIOR_CONTEXT_HEADER),
+        prior_start,
         prefix_start,
     )
     if delimiter_at < 0:
         return ""
-    return stripped[len(_MERGED_PRIOR_CONTEXT_HEADER):delimiter_at].strip()
+    return text[prior_start:delimiter_at].strip()
+
+
+def _escape_merged_summary_delimiters(content: Any) -> Any:
+    """Quote boundary text inside payload content before building a wrapper."""
+    if isinstance(content, str):
+        return content.replace(
+            _MERGED_SUMMARY_DELIMITER,
+            _QUOTED_MERGED_SUMMARY_DELIMITER,
+        )
+    if isinstance(content, dict):
+        text = content.get("text")
+        if not isinstance(text, str):
+            return content
+        escaped = content.copy()
+        escaped["text"] = _escape_merged_summary_delimiters(text)
+        return escaped
+    if isinstance(content, list):
+        return [_escape_merged_summary_delimiters(part) for part in content]
+    return content
 
 
 def _append_text_to_content(content: Any, text: str, *, prepend: bool = False) -> Any:
@@ -3442,7 +3467,10 @@ This compaction should PRIORITISE preserving all information related to the focu
                 # Fixes ghost-message leakage across compaction boundaries
                 # where old head messages survived verbatim and appeared
                 # before the summary.
-                old_content = msg.get("content", "")
+                old_content = _escape_merged_summary_delimiters(
+                    msg.get("content", "")
+                )
+                summary = _escape_merged_summary_delimiters(summary)
                 suffix = (
                     "\n\n" + _MERGED_SUMMARY_DELIMITER + "\n\n"
                     + summary + "\n\n"

@@ -4179,8 +4179,8 @@ class SessionDB:
     ) -> Tuple[List[Dict[str, Any]], int]:
         """Return active message bookends and their source-of-truth count.
 
-        One window-function query gives the count and both slices from the same
-        SQLite snapshot while materializing at most ``head + tail`` rows.
+        One CTE query gives the count and both slices from the same SQLite
+        snapshot while hydrating at most ``head + tail`` full message rows.
         """
         head = max(0, int(head))
         tail = max(0, int(tail))
@@ -4189,17 +4189,30 @@ class SessionDB:
             raise RuntimeError("SessionDB connection is not initialized")
         with self._lock:
             rows = conn.execute(
-                "WITH ranked_messages AS ("
-                " SELECT m.*,"
-                " ROW_NUMBER() OVER (ORDER BY id) AS _row_number,"
-                " COUNT(*) OVER () AS _message_count"
-                " FROM messages m"
+                "WITH "
+                "message_count AS ("
+                " SELECT COUNT(*) AS total FROM messages"
                 " WHERE session_id = ? AND active = 1"
+                "), "
+                "head_ids AS ("
+                " SELECT id FROM messages"
+                " WHERE session_id = ? AND active = 1"
+                " ORDER BY id ASC LIMIT ?"
+                "), "
+                "tail_ids AS ("
+                " SELECT id FROM messages"
+                " WHERE session_id = ? AND active = 1"
+                " ORDER BY id DESC LIMIT ?"
+                "), "
+                "bookend_ids AS ("
+                " SELECT id FROM head_ids UNION SELECT id FROM tail_ids"
                 ")"
-                " SELECT * FROM ranked_messages"
-                " WHERE _row_number <= ? OR _row_number > _message_count - ?"
-                " ORDER BY id",
-                (session_id, head, tail),
+                " SELECT m.*, message_count.total AS _message_count"
+                " FROM bookend_ids"
+                " JOIN messages m ON m.id = bookend_ids.id"
+                " CROSS JOIN message_count"
+                " ORDER BY m.id",
+                (session_id, session_id, head, session_id, tail),
             ).fetchall()
             if not rows:
                 total = conn.execute(
@@ -4212,7 +4225,6 @@ class SessionDB:
         result = []
         for row in rows:
             msg = dict(row)
-            msg.pop("_row_number", None)
             msg.pop("_message_count", None)
             if "content" in msg:
                 msg["content"] = self._decode_content(msg["content"])

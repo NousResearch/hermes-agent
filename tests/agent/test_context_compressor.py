@@ -2252,6 +2252,78 @@ class TestCompressWithClient:
         assert ContextCompressor._is_context_summary_content(ordinary) is False
         assert ContextCompressor._strip_summary_prefix(ordinary) == ordinary
 
+    def test_summary_parser_does_not_copy_every_delimiter_suffix(self):
+        from agent.context_compressor import (
+            SUMMARY_PREFIX,
+            _MERGED_PRIOR_CONTEXT_HEADER,
+            _MERGED_SUMMARY_DELIMITER,
+            is_context_summary_content,
+        )
+
+        class NoSuffixSlices(str):
+            def lstrip(self, chars=None):
+                return self
+
+            def __getitem__(self, key):
+                if (
+                    isinstance(key, slice)
+                    and key.start not in (None, 0)
+                    and key.stop is None
+                ):
+                    raise AssertionError("parser copied an unbounded suffix")
+                return super().__getitem__(key)
+
+        merged = NoSuffixSlices(
+            f"{_MERGED_PRIOR_CONTEXT_HEADER}\n"
+            + (f"quote {_MERGED_SUMMARY_DELIMITER}\nnot a prefix\n" * 20)
+            + f"{_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}\nREAL_BODY"
+        )
+
+        assert is_context_summary_content(merged) is True
+
+    def test_generated_merged_summary_escapes_quoted_boundary_in_summary_body(self):
+        from agent.context_compressor import (
+            SUMMARY_PREFIX,
+            _MERGED_PRIOR_CONTEXT_HEADER,
+            _MERGED_SUMMARY_DELIMITER,
+        )
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=1,
+                protect_last_n=2,
+            )
+
+        quoted_summary = (
+            f"{SUMMARY_PREFIX}\nREAL SUMMARY BODY\nquoted wrapper:\n"
+            f"{_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}\nQUOTED BODY"
+        )
+        messages = [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "protected head"},
+            {"role": "assistant", "content": "middle 1"},
+            {"role": "user", "content": "middle 2"},
+            {"role": "assistant", "content": "middle 3"},
+            {"role": "assistant", "content": "real tail"},
+            {"role": "user", "content": "tail user"},
+            {"role": "assistant", "content": "tail assistant"},
+        ]
+
+        with patch.object(c, "_generate_summary", return_value=quoted_summary):
+            compressed = c.compress(messages, force=True)
+
+        merged_content = next(
+            str(message.get("content") or "")
+            for message in compressed
+            if _MERGED_PRIOR_CONTEXT_HEADER in str(message.get("content") or "")
+        )
+        assert merged_content.count(_MERGED_SUMMARY_DELIMITER) == 1
+        assert ContextCompressor._strip_summary_prefix(merged_content).startswith(
+            "REAL SUMMARY BODY"
+        )
+
     def test_recompaction_preserves_real_turn_from_merged_summary_wrapper(self):
         from agent.context_compressor import _MERGED_PRIOR_CONTEXT_HEADER
 

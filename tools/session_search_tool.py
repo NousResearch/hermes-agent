@@ -970,7 +970,6 @@ def _discover(
     # row — only that pairs validly with the FTS5 match id for the anchored
     # window. parent_session_id is exposed separately when different.
     seen_sessions = {}
-    summary_lineages = set()
     results = []
 
     if title_result:
@@ -980,7 +979,9 @@ def _discover(
         results.append(title_result)
 
     for r in raw_results:
-        if len(seen_sessions) >= limit and not summary_lineages:
+        if len(seen_sessions) >= limit and not any(
+            row.get("_is_summary_match") for row in seen_sessions.values()
+        ):
             break
         raw_sid = r["session_id"]
         resolved_sid = _resolve_to_parent(
@@ -1002,8 +1003,6 @@ def _discover(
             row = dict(r)
             row["_is_summary_match"] = _search_match_is_context_summary(db, row)
             seen_sessions[resolved_sid] = row
-            if row["_is_summary_match"]:
-                summary_lineages.add(resolved_sid)
             continue
 
         # A generated summary can outrank the real source row in FTS. Prefer the
@@ -1012,7 +1011,6 @@ def _discover(
             row = dict(r)
             row["_is_summary_match"] = False
             seen_sessions[resolved_sid] = row
-            summary_lineages.discard(resolved_sid)
 
     for lineage_root, match_info in seen_sessions.items():
         if match_info.get("_title_only"):

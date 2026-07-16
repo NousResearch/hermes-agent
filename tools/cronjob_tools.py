@@ -403,13 +403,12 @@ def _resolve_model_override(model_obj: Optional[Dict[str, Any]]) -> tuple:
         except Exception:
             provider_name = None
     if model_name and not provider_name:
-        # Pin to the current main provider so the job is stable
+        # Pin to the current main provider so the job is stable.
+        # Use _read_main_provider which respects runtime overrides
+        # (set by AIAgent at turn start) before falling back to config.
         try:
-            from hermes_cli.config import load_config
-            cfg = load_config()
-            model_cfg = cfg.get("model", {})
-            if isinstance(model_cfg, dict):
-                provider_name = model_cfg.get("provider") or None
+            from agent.auxiliary_client import _read_main_provider
+            provider_name = _read_main_provider() or None
         except Exception:
             pass  # Best-effort; provider stays None
     return (provider_name, model_name)

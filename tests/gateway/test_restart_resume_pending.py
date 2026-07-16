@@ -337,6 +337,77 @@ class TestMarkResumePending:
         assert reloaded.resume_pending is True
         assert reloaded.resume_reason == "restart_timeout"
 
+    def test_provider_deadline_rejects_later_drain_marker(self, tmp_path):
+        store = _make_store(tmp_path)
+        source = _make_source()
+        entry = store.get_or_create_session(source)
+        reset_at = time.time() + 86_400
+
+        assert store.mark_resume_pending(
+            entry.session_key,
+            reason="provider_rate_limit",
+            not_before=reset_at,
+            resume_transport=Platform.RELAY.value,
+        )
+        assert not store.mark_resume_pending(
+            entry.session_key,
+            reason="shutdown_timeout",
+        )
+        assert not store.clear_resume_pending(
+            entry.session_key,
+            reason="shutdown_timeout",
+        )
+
+        preserved = store._entries[entry.session_key]
+        assert preserved.resume_pending is True
+        assert preserved.resume_reason == "provider_rate_limit"
+        assert preserved.resume_not_before == reset_at
+        assert preserved.resume_transport == Platform.RELAY.value
+
+    def test_provider_relay_transport_survives_roundtrip_without_trust_marker(
+        self, tmp_path
+    ):
+        store = _make_store(tmp_path)
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="relay-chat",
+            chat_type="dm",
+            user_id="relay-user",
+            delivered_via_upstream_relay=True,
+        )
+        entry = store.get_or_create_session(source)
+        reset_at = time.time() + 86_400
+        assert store.mark_resume_pending(
+            entry.session_key,
+            reason="provider_rate_limit",
+            not_before=reset_at,
+            resume_transport=Platform.RELAY.value,
+        )
+
+        store2 = _make_store(tmp_path)
+        store2._ensure_loaded()
+        reloaded = store2._entries[entry.session_key]
+        assert reloaded.resume_transport == Platform.RELAY.value
+        assert reloaded.origin.platform == Platform.DISCORD
+        assert reloaded.origin.delivered_via_upstream_relay is False
+
+    def test_provider_deadline_survives_roundtrip_through_json(self, tmp_path):
+        store = _make_store(tmp_path)
+        source = _make_source()
+        entry = store.get_or_create_session(source)
+        reset_at = time.time() + 86_400
+        store.mark_resume_pending(
+            entry.session_key,
+            reason="provider_rate_limit",
+            not_before=reset_at,
+        )
+
+        store2 = _make_store(tmp_path)
+        store2._ensure_loaded()
+        reloaded = store2._entries[entry.session_key]
+        assert reloaded.resume_reason == "provider_rate_limit"
+        assert reloaded.resume_not_before == reset_at
+
 
 class TestClearResumePending:
     def test_clears_flag(self, tmp_path):
@@ -350,6 +421,7 @@ class TestClearResumePending:
         assert e.resume_pending is False
         assert e.resume_reason is None
         assert e.last_resume_marked_at is None
+        assert e.resume_not_before is None
 
     def test_returns_false_when_not_pending(self, tmp_path):
         store = _make_store(tmp_path)
@@ -361,6 +433,23 @@ class TestClearResumePending:
     def test_returns_false_for_unknown_key(self, tmp_path):
         store = _make_store(tmp_path)
         assert store.clear_resume_pending("no-such-key") is False
+
+    def test_reason_guard_does_not_clear_newer_recovery_marker(self, tmp_path):
+        store = _make_store(tmp_path)
+        source = _make_source()
+        entry = store.get_or_create_session(source)
+        store.mark_resume_pending(entry.session_key, reason="restart_timeout")
+
+        assert (
+            store.clear_resume_pending(
+                entry.session_key,
+                reason="provider_rate_limit",
+            )
+            is False
+        )
+        e = store._entries[entry.session_key]
+        assert e.resume_pending is True
+        assert e.resume_reason == "restart_timeout"
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +471,27 @@ class TestGetOrCreateResumePending:
         assert second.was_auto_reset is False
         assert second.auto_reset_reason is None
         # Flag is NOT cleared on read — only on successful turn completion.
+        assert second.resume_pending is True
+
+    def test_provider_wait_ignores_generic_resume_freshness(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_AUTO_CONTINUE_FRESHNESS", "1")
+        store = _make_store(tmp_path)
+        source = _make_source()
+        first = store.get_or_create_session(source)
+        store.mark_resume_pending(
+            first.session_key,
+            reason="provider_rate_limit",
+            not_before=time.time() + 86_400,
+        )
+        with store._lock:
+            store._entries[first.session_key].last_resume_marked_at = (
+                datetime.now() - timedelta(days=1)
+            )
+            store._save()
+
+        second = store.get_or_create_session(source)
+
+        assert second.session_id == first.session_id
         assert second.resume_pending is True
 
     def test_resume_pending_follows_compression_tip(self, tmp_path):
@@ -974,6 +1084,84 @@ async def test_drain_timeout_marks_resume_pending():
 
 
 @pytest.mark.asyncio
+async def test_graceful_drain_cleanup_does_not_clear_newer_provider_marker():
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+    session_key = "agent:main:telegram:dm:A"
+    runner._running_agents = {session_key: MagicMock()}
+    state = {"reason": None, "not_before": None}
+
+    session_store = MagicMock()
+
+    def _mark(_key, reason="restart_timeout", not_before=None):
+        state["reason"] = reason
+        state["not_before"] = not_before
+        return True
+
+    def _clear(_key, reason=None):
+        if reason is not None and state["reason"] != reason:
+            return False
+        state["reason"] = None
+        state["not_before"] = None
+        return True
+
+    session_store.mark_resume_pending.side_effect = _mark
+    session_store.clear_resume_pending.side_effect = _clear
+    runner.session_store = session_store
+
+    async def _finish_with_provider_marker(_timeout):
+        session_store.mark_resume_pending(
+            session_key,
+            "provider_rate_limit",
+            time.time() + 3_600,
+        )
+        runner._running_agents.clear()
+        return ({session_key: MagicMock()}, False)
+
+    runner._drain_active_agents = AsyncMock(side_effect=_finish_with_provider_marker)
+
+    with patch("gateway.status.remove_pid_file"), patch(
+        "gateway.status.write_runtime_status"
+    ):
+        await runner.stop()
+
+    assert state["reason"] == "provider_rate_limit"
+    assert state["not_before"] is not None
+    assert session_store.clear_resume_pending.call_args_list[0].kwargs == {
+        "reason": "shutdown_timeout"
+    }
+
+
+@pytest.mark.asyncio
+async def test_graceful_drain_does_not_clear_marker_it_failed_to_acquire():
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+    session_key = "agent:main:telegram:dm:A"
+    runner._running_agents = {session_key: MagicMock()}
+
+    session_store = MagicMock()
+    session_store.mark_resume_pending = MagicMock(return_value=False)
+    session_store.clear_resume_pending = MagicMock(return_value=False)
+    runner.session_store = session_store
+
+    async def _finish(_timeout):
+        runner._running_agents.clear()
+        return ({session_key: MagicMock()}, False)
+
+    runner._drain_active_agents = AsyncMock(side_effect=_finish)
+
+    with patch("gateway.status.remove_pid_file"), patch(
+        "gateway.status.write_runtime_status"
+    ):
+        await runner.stop()
+
+    session_store.mark_resume_pending.assert_called_once_with(
+        session_key, "shutdown_timeout"
+    )
+    session_store.clear_resume_pending.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_drain_timeout_uses_restart_reason_when_restarting():
     runner, adapter = make_restart_runner()
     adapter.disconnect = AsyncMock()
@@ -1075,6 +1263,131 @@ async def test_startup_auto_resume_schedules_fresh_pending_sessions():
     # _handle_message_with_agent owns the system-note injection so we don't
     # double it up.
     assert event.text == ""
+
+
+@pytest.mark.asyncio
+async def test_startup_auto_resume_restores_provider_deadline():
+    """A gateway restart must rebuild the delayed provider continuation."""
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="provider-wait")
+    reset_at = time.time() + 3_600
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:provider-wait",
+        session_id="sid",
+        created_at=datetime.now() - timedelta(days=1),
+        updated_at=datetime.now() - timedelta(days=1),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="provider_rate_limit",
+        last_resume_marked_at=datetime.now() - timedelta(days=1),
+        resume_not_before=reset_at,
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    runner._install_provider_rate_limit_resume = MagicMock(return_value=True)
+
+    scheduled = runner._schedule_resume_pending_sessions()
+
+    assert scheduled == 1
+    runner._install_provider_rate_limit_resume.assert_called_once_with(
+        session_key=pending_entry.session_key,
+        source=source,
+        reset_at=reset_at,
+        run_generation=0,
+        resume_transport=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_startup_auto_resume_restores_relay_transport():
+    runner, _adapter = make_restart_runner()
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="relay-provider-wait",
+        chat_type="dm",
+        user_id="relay-user",
+    )
+    reset_at = time.time() + 3_600
+    pending_entry = SessionEntry(
+        session_key="agent:main:discord:dm:relay-provider-wait",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.DISCORD,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="provider_rate_limit",
+        last_resume_marked_at=datetime.now(),
+        resume_not_before=reset_at,
+        resume_transport=Platform.RELAY.value,
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+    runner._install_provider_rate_limit_resume = MagicMock(return_value=True)
+
+    assert runner._schedule_resume_pending_sessions() == 1
+    runner._install_provider_rate_limit_resume.assert_called_once_with(
+        session_key=pending_entry.session_key,
+        source=source,
+        reset_at=reset_at,
+        run_generation=0,
+        resume_transport=Platform.RELAY.value,
+    )
+
+
+@pytest.mark.asyncio
+async def test_restart_loop_guard_does_not_block_provider_deadlines():
+    """The restart breaker must not suppress independent provider continuations."""
+    runner, adapter = make_restart_runner()
+    provider_source = make_restart_source(chat_id="provider-wait")
+    restart_source = make_restart_source(chat_id="restart-wait")
+    reset_at = time.time() + 3_600
+    provider_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:provider-wait",
+        session_id="provider-sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=provider_source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="provider_rate_limit",
+        last_resume_marked_at=datetime.now(),
+        resume_not_before=reset_at,
+    )
+    restart_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:restart-wait",
+        session_id="restart-sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=restart_source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_timeout",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {
+        provider_entry.session_key: provider_entry,
+        restart_entry.session_key: restart_entry,
+    }
+    runner._install_provider_rate_limit_resume = MagicMock(return_value=True)
+    runner._restart_loop_guard_config = MagicMock(return_value=(1, 60))
+    adapter.handle_message = AsyncMock()
+
+    with patch("gateway.restart_loop_guard.check_and_record", return_value=True):
+        scheduled = runner._schedule_resume_pending_sessions()
+
+    assert scheduled == 1
+    runner._install_provider_rate_limit_resume.assert_called_once_with(
+        session_key=provider_entry.session_key,
+        source=provider_source,
+        reset_at=reset_at,
+        run_generation=0,
+        resume_transport=None,
+    )
+    adapter.handle_message.assert_not_called()
 
 
 @pytest.mark.asyncio

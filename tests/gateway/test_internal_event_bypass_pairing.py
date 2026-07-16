@@ -141,6 +141,44 @@ async def test_poll_does_not_suppress_notify_on_complete_watcher(monkeypatch, tm
 
 
 @pytest.mark.asyncio
+async def test_internal_event_does_not_advance_provider_resume_generation(
+    monkeypatch, tmp_path
+):
+    """Background completions must not orphan a pending provider timer."""
+    import gateway.run as gateway_run
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text("", encoding="utf-8")
+
+    runner = GatewayRunner(GatewayConfig())
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="123",
+        chat_type="dm",
+    )
+    session_key = runner._session_key_for_source(source)
+    runner._session_run_generation[session_key] = 7
+    seen_generations = []
+
+    async def _capture(_self, _event, _source, _key, run_generation):
+        seen_generations.append(run_generation)
+        return {"final_response": ""}
+
+    monkeypatch.setattr(GatewayRunner, "_handle_message_with_agent", _capture)
+
+    await runner._handle_message(
+        MessageEvent(
+            text="[SYSTEM: Background process completed]",
+            source=source,
+            internal=True,
+        )
+    )
+
+    assert seen_generations == [7]
+    assert runner._session_run_generation[session_key] == 7
+
+
+@pytest.mark.asyncio
 async def test_internal_event_bypasses_authorization(monkeypatch, tmp_path):
     """An internal event should skip _is_user_authorized entirely."""
     import gateway.run as gateway_run

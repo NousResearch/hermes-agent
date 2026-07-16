@@ -115,6 +115,26 @@ class TestPruneBasics:
         assert "suspended" in store._entries
         assert "idle" not in store._entries
 
+    def test_prune_skips_durable_resume_pending_entries(self, tmp_path):
+        store = _make_store(tmp_path)
+        pending = _entry("pending", age_days=1000)
+        pending.resume_pending = True
+        pending.resume_reason = "provider_rate_limit"
+        pending.resume_not_before = 2_000_000_000.0
+        store._entries["pending"] = pending
+        restart_pending = _entry("restart-pending", age_days=1000)
+        restart_pending.resume_pending = True
+        restart_pending.resume_reason = "shutdown_timeout"
+        store._entries["restart-pending"] = restart_pending
+        store._entries["idle"] = _entry("idle", age_days=1000)
+
+        removed = store.prune_old_entries(max_age_days=90)
+
+        assert removed == 2
+        assert "pending" in store._entries
+        assert "restart-pending" not in store._entries
+        assert "idle" not in store._entries
+
     def test_prune_skips_entries_with_active_processes(self, tmp_path):
         """Sessions with active bg processes aren't pruned even if old.
 

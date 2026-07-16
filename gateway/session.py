@@ -730,6 +730,14 @@ class SessionEntry:
     resume_pending: bool = False
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
+    # Earliest unix timestamp at which a deferred continuation may run.
+    # Used by provider rate-limit recovery so the promise survives a gateway
+    # restart without replaying before the provider's reset window.
+    resume_not_before: Optional[float] = None
+    # Adapter transport required to deliver a deferred continuation. This is
+    # deliberately separate from SessionSource's wire-invisible relay trust
+    # marker: it is local routing state, not an inbound authorization claim.
+    resume_transport: Optional[str] = None
 
     # Session-scoped /model override (model/provider/base_url ONLY — never
     # credentials).  ``_session_model_overrides`` in the gateway runner is
@@ -766,6 +774,8 @@ class SessionEntry:
                 if self.last_resume_marked_at
                 else None
             ),
+            "resume_not_before": self.resume_not_before,
+            "resume_transport": self.resume_transport,
             "is_fresh_reset": self.is_fresh_reset,
             "was_auto_reset": self.was_auto_reset,
             "auto_reset_reason": self.auto_reset_reason,
@@ -791,6 +801,15 @@ class SessionEntry:
                 platform = Platform(data["platform"])
             except ValueError as e:
                 logger.debug("Unknown platform value %r: %s", data["platform"], e)
+
+        resume_transport = None
+        if data.get("resume_transport"):
+            try:
+                resume_transport = Platform(data["resume_transport"]).value
+            except (TypeError, ValueError) as e:
+                logger.debug(
+                    "Unknown resume transport %r: %s", data["resume_transport"], e
+                )
 
         last_resume_marked_at = None
         _lrma = data.get("last_resume_marked_at")
@@ -841,6 +860,8 @@ class SessionEntry:
             resume_pending=data.get("resume_pending", False),
             resume_reason=data.get("resume_reason"),
             last_resume_marked_at=last_resume_marked_at,
+            resume_not_before=data.get("resume_not_before"),
+            resume_transport=resume_transport,
             is_fresh_reset=data.get("is_fresh_reset", False),
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
@@ -1893,8 +1914,18 @@ class SessionStore:
             if _entry_for_checks.suspended:
                 _reset_reason = "suspended"
             elif _entry_for_checks.resume_pending:
-                _reset_reason = self._should_reset(_entry_for_checks, source)
-                if not _reset_reason:
+                # Provider-limit waits can legitimately span the normal
+                # one-hour recovery freshness window or a daily reset.  They
+                # carry an explicit future deadline and must retain the
+                # original transcript until that deadline is drained.
+                if _entry_for_checks.resume_reason == "provider_rate_limit":
+                    _reset_reason = None
+                else:
+                    _reset_reason = self._should_reset(_entry_for_checks, source)
+                if (
+                    not _reset_reason
+                    and _entry_for_checks.resume_reason != "provider_rate_limit"
+                ):
                     _fw = auto_continue_freshness_window()
                     _ref_time = (
                         _entry_for_checks.last_resume_marked_at
@@ -2114,8 +2145,10 @@ class SessionStore:
         self,
         session_key: str,
         reason: str = "restart_timeout",
+        not_before: Optional[float] = None,
+        resume_transport: Optional[str] = None,
     ) -> bool:
-        """Mark a session as resumable after a restart interruption.
+        """Mark a session as resumable after an interruption or deferred wait.
 
         Unlike ``suspend_session()``, this preserves the existing
         ``session_id`` and the transcript.  The next call to
@@ -2124,6 +2157,12 @@ class SessionStore:
 
         Returns True if the session existed and was marked.
         """
+        normalized_transport = None
+        if resume_transport:
+            try:
+                normalized_transport = Platform(resume_transport).value
+            except (TypeError, ValueError):
+                return False
         with self._lock:
             self._ensure_loaded_locked()
             if session_key in self._entries:
@@ -2132,20 +2171,50 @@ class SessionStore:
                 # forced-wipe signal (from /stop or stuck-loop escalation).
                 if entry.suspended:
                     return False
+                # A provider reset deadline is the stronger continuation
+                # promise: stop/restart drain markers are transient ownership
+                # bookkeeping and must not replace it.  This check is inside
+                # the store lock so mark(B) -> mark(A) -> clear(A) cannot erase
+                # a durable provider continuation.
+                if (
+                    entry.resume_pending
+                    and entry.resume_reason == "provider_rate_limit"
+                    and reason != "provider_rate_limit"
+                ):
+                    return False
                 entry.resume_pending = True
                 entry.resume_reason = reason
                 entry.last_resume_marked_at = _now()
+                entry.resume_not_before = not_before
+                entry.resume_transport = normalized_transport
                 self._save()
                 return True
         return False
 
-    def clear_resume_pending(self, session_key: str) -> bool:
-        """Clear the resume-pending flag after a successful resumed turn.
+    def is_resume_pending(
+        self,
+        session_key: str,
+        *,
+        reason: Optional[str] = None,
+    ) -> bool:
+        """Return whether a live, unsuspended resume marker still matches."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None or entry.suspended or not entry.resume_pending:
+                return False
+            return reason is None or entry.resume_reason == reason
 
-        Called from the gateway after ``run_conversation()`` returns a
-        final response for a session that had ``resume_pending=True``,
-        signalling that recovery succeeded.
+    def clear_resume_pending(
+        self,
+        session_key: str,
+        *,
+        reason: Optional[str] = None,
+    ) -> bool:
+        """Clear a matching resume-pending flag after success or supersession.
 
+        ``reason`` makes stale-continuation cancellation compare-and-clear: a
+        newer recovery marker installed for a different cause is never erased.
         Returns True if a flag was cleared.
         """
         with self._lock:
@@ -2153,9 +2222,13 @@ class SessionStore:
             entry = self._entries.get(session_key)
             if entry is None or not entry.resume_pending:
                 return False
+            if reason is not None and entry.resume_reason != reason:
+                return False
             entry.resume_pending = False
             entry.resume_reason = None
             entry.last_resume_marked_at = None
+            entry.resume_not_before = None
+            entry.resume_transport = None
             self._save()
             return True
 
@@ -2164,10 +2237,11 @@ class SessionStore:
 
         Pruning is based on ``updated_at`` (last activity), not ``created_at``.
         A session that's been active within the window is kept regardless of
-        how old it is.  Entries marked ``suspended`` are kept — the user
-        explicitly paused them for later resume.  Entries held by an active
-        process (via has_active_processes_fn) are also kept so long-running
-        background work isn't orphaned.
+        how old it is.  Entries marked ``suspended`` or carrying a durable
+        provider-rate-limit deadline are kept — the user explicitly paused
+        them or the gateway owns a bounded wait task. Entri...[truncated]
+        has_active_processes_fn) are also kept so long-running background work
+        isn't orphaned.
 
         Pruning is functionally identical to a natural reset-policy expiry:
         the transcript in SQLite stays, but the session_key → session_id
@@ -2186,7 +2260,12 @@ class SessionStore:
         with self._lock:
             self._ensure_loaded_locked()
             for key, entry in list(self._entries.items()):
-                if entry.suspended:
+                has_provider_deadline = (
+                    entry.resume_pending
+                    and entry.resume_reason == "provider_rate_limit"
+                    and entry.resume_not_before is not None
+                )
+                if entry.suspended or has_provider_deadline:
                     continue
                 # Never prune sessions with an active background process
                 # attached — the user may still be waiting on output.

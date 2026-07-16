@@ -3105,6 +3105,18 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
                 context["reset_at"] = time.time() + float(retry_after)
             except (TypeError, ValueError):
                 pass
+        resets_in_seconds = payload.get("resets_in_seconds")
+        if (
+            resets_in_seconds is not None
+            and resets_in_seconds != ""
+            and "reset_at" not in context
+        ):
+            try:
+                delay = float(resets_in_seconds)
+                if delay > 0:
+                    context["reset_at"] = time.time() + delay
+            except (TypeError, ValueError):
+                pass
 
     response = getattr(error, "response", None)
     headers = getattr(response, "headers", None)

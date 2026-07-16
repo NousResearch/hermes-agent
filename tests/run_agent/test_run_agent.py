@@ -238,6 +238,87 @@ def test_direct_session_db_flushes_share_marker_claim(agent):
     assert db.rows == ["exactly once"]
 
 
+def test_suppress_current_user_message_omits_synthetic_db_row(agent):
+    agent._session_db = MagicMock()
+    agent._session_db_created = True
+    agent.session_id = "session-123"
+    agent._last_flushed_db_idx = 0
+    agent._persist_user_message_idx = 0
+    agent._suppress_current_user_message_persistence = True
+    messages = [
+        {"role": "user", "content": "[System note: synthetic continuation]"},
+        {"role": "assistant", "content": "continued"},
+    ]
+
+    agent._flush_messages_to_session_db(messages)
+
+    persisted_roles = [
+        call.kwargs["role"] for call in agent._session_db.append_message.call_args_list
+    ]
+    assert persisted_roles == ["assistant"]
+
+
+def test_suppress_current_user_message_uses_stable_identity_after_compaction(agent):
+    token = "turn-token"
+    synthetic = {
+        "role": "user",
+        "content": "[System note: synthetic continuation]",
+        "_hermes_current_turn_user_id": token,
+    }
+    messages = [
+        {"role": "user", "content": "real compacted context"},
+        {"role": "assistant", "content": "prior answer"},
+        synthetic,
+        {"role": "assistant", "content": "continued"},
+    ]
+    agent._persist_user_message_idx = 99
+    agent._persist_user_message_token = token
+    agent._suppress_current_user_message_persistence = True
+
+    durable = agent._messages_for_session_persistence(messages)
+    assert [msg["content"] for msg in durable] == [
+        "real compacted context",
+        "prior answer",
+        "continued",
+    ]
+
+    agent._apply_persist_user_message_override(messages)
+    assert [msg["content"] for msg in messages] == [
+        "real compacted context",
+        "prior answer",
+        "continued",
+    ]
+
+
+def test_suppress_current_user_message_filters_json_session_log(agent):
+    agent._suppress_current_user_message_persistence = True
+    agent._persist_user_message_idx = 0
+    agent._session_db = None
+    agent._save_session_log = MagicMock()
+    messages = [
+        {"role": "user", "content": "[System note: synthetic continuation]"},
+        {"role": "assistant", "content": "continued"},
+    ]
+
+    agent._persist_session(messages)
+
+    assert agent._save_session_log.call_args.args[0] == [
+        {"role": "assistant", "content": "continued"}
+    ]
+
+
+def test_extract_api_error_context_ignores_unhashable_reset_delay():
+    from agent.agent_runtime_helpers import extract_api_error_context
+
+    for malformed in ({}, []):
+        error = RuntimeError("rate limited")
+        error.body = {"error": {"resets_in_seconds": malformed}}
+
+        context = extract_api_error_context(error)
+
+        assert "reset_at" not in context
+
+
 @pytest.fixture()
 def agent_with_memory_tool():
     """Agent whose valid_tool_names includes 'memory'."""
@@ -6027,7 +6108,16 @@ class TestRetryExhaustion:
     def test_api_error_returns_gracefully_after_retries(self, agent):
         """Exhausted retries on API errors must return error result, not crash."""
         self._setup_agent(agent)
-        agent.client.chat.completions.create.side_effect = RuntimeError("rate limited")
+        api_error = RuntimeError("rate limited")
+        api_error.body = {
+            "error": {
+                "type": "usage_limit_reached",
+                "message": "rate limited",
+                "resets_at": 2_000_000_000,
+            }
+        }
+        api_error.response = SimpleNamespace(headers={})
+        agent.client.chat.completions.create.side_effect = api_error
         from agent import conversation_loop as _conv_loop
         with (
             patch.object(agent, "_persist_session"),
@@ -6042,6 +6132,9 @@ class TestRetryExhaustion:
         assert result.get("failed") is True
         assert "error" in result
         assert "rate limited" in result["error"]
+        assert result.get("failure_reason") == "rate_limit"
+        assert result.get("error_context", {}).get("message") == "rate limited"
+        assert result.get("error_context", {}).get("reset_at") == 2_000_000_000
 
     def test_build_api_kwargs_error_no_unbound_local(self, agent):
         """When _build_api_kwargs raises, except handler must not crash with UnboundLocalError.
@@ -6391,6 +6484,26 @@ class TestCredentialPoolRecovery:
 
         assert context["reason"] == "usage_limit_reached"
         assert context["message"] == "The usage limit has been reached"
+
+    def test_extract_api_error_context_normalizes_resets_in_seconds(self, agent, monkeypatch):
+        from agent import agent_runtime_helpers
+
+        monkeypatch.setattr(agent_runtime_helpers.time, "time", lambda: 1_000.0)
+        error = SimpleNamespace(
+            body={
+                "error": {
+                    "type": "usage_limit_reached",
+                    "message": "The usage limit has been reached",
+                    "resets_in_seconds": 3_600,
+                }
+            },
+            response=SimpleNamespace(headers={}),
+        )
+
+        context = agent._extract_api_error_context(error)
+
+        assert context["reason"] == "usage_limit_reached"
+        assert context["reset_at"] == 4_600.0
 
     def test_extract_api_error_context_parses_resets_in_hours_and_minutes(self, agent, monkeypatch):
         from agent import agent_runtime_helpers

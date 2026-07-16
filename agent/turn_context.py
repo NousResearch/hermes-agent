@@ -37,6 +37,8 @@ from agent.model_metadata import (
 
 logger = logging.getLogger(__name__)
 
+_CURRENT_TURN_USER_MARKER = "_hermes_current_turn_user_id"
+
 
 def _compression_made_progress(
     orig_len: int, new_len: int, orig_tokens: int, new_tokens: int
@@ -125,6 +127,7 @@ def build_turn_context(
     stream_callback,
     persist_user_message: Optional[Any],
     persist_user_timestamp: Optional[float] = None,
+    suppress_user_message_persistence: bool = False,
     *,
     restore_or_build_system_prompt,
     install_safe_stdio,
@@ -210,8 +213,12 @@ def build_turn_context(
     # Store stream callback for _interruptible_api_call to pick up.
     agent._stream_callback = stream_callback
     agent._persist_user_message_idx = None
+    agent._persist_user_message_token = None
     agent._persist_user_message_override = persist_user_message
     agent._persist_user_message_timestamp = persist_user_timestamp
+    agent._suppress_current_user_message_persistence = bool(
+        suppress_user_message_persistence
+    )
     # Generate unique task_id if not provided to isolate VMs between tasks.
     effective_task_id = task_id or str(uuid.uuid4())
     agent._current_task_id = effective_task_id
@@ -311,9 +318,12 @@ def build_turn_context(
     # Add the current user message after the prompt/session setup has made
     # close persistence safe. The handoff above preserves any marker already
     # stamped by an earlier close flush.
+    current_turn_user_token = uuid.uuid4().hex
+    user_msg[_CURRENT_TURN_USER_MARKER] = current_turn_user_token
     messages.append(user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
+    agent._persist_user_message_token = current_turn_user_token
 
     # Track user turns for memory flush and periodic nudge logic.
     agent._user_turn_count += 1
@@ -490,6 +500,27 @@ def build_turn_context(
                     messages, system_message, approx_tokens=_preflight_tokens,
                     task_id=effective_task_id,
                 )
+                current_turn_user_idx = next(
+                    (
+                        idx
+                        for idx, msg in enumerate(messages)
+                        if isinstance(msg, dict)
+                        and msg.get("role") == "user"
+                        and msg.get(_CURRENT_TURN_USER_MARKER)
+                        == current_turn_user_token
+                    ),
+                    -1,
+                )
+                if current_turn_user_idx < 0:
+                    # Third-party context engines must not be able to summarize
+                    # away the live turn. Re-append it for the API; the early
+                    # persistence path already handled genuine user rows, while
+                    # synthetic provider rows remain suppression-marked.
+                    recovered_user_msg = user_msg.copy()
+                    recovered_user_msg.pop("_db_persisted", None)
+                    messages.append(recovered_user_msg)
+                    current_turn_user_idx = len(messages) - 1
+                agent._persist_user_message_idx = current_turn_user_idx
                 # Re-estimate now so size-only compression (same row count,
                 # lower token count — e.g. summarising tool outputs) is
                 # recognised as progress instead of being misread as

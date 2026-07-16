@@ -1296,11 +1296,15 @@ def classify_bedrock_error(error_message: str) -> str:
 # detection is unavailable.
 
 BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
-    # Mythos-class Claude (Fable 5, Sonnet 5) + Opus 4.7/4.8 — 1M context,
-    # unlocked by the context-1m-2025-08-07 beta that build_anthropic_bedrock_client
-    # sends on every Bedrock Claude request. Without an entry here these fell
-    # through to BEDROCK_DEFAULT_CONTEXT_LENGTH (128K), silently capping the
-    # window far below what the beta already enables.
+    # Mythos-class Claude (Fable 5, Sonnet 5) + Opus 4.7/4.8 — the AWS Bedrock
+    # model cards document a 1M-token context window for each of these models
+    # (default for the model, not beta-gated):
+    #   https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-fable-5.html
+    #   https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-sonnet-5.html
+    #   https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-opus-4-8.html
+    #   https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-anthropic-claude-opus-4-7.html
+    # Without an entry here they fell through to BEDROCK_DEFAULT_CONTEXT_LENGTH
+    # (128K), silently capping the usable window far below the documented 1M.
     "anthropic.claude-fable-5":      1_000_000,
     "anthropic.claude-sonnet-5":     1_000_000,
     "anthropic.claude-opus-4-8":     1_000_000,

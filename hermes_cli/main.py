@@ -12399,7 +12399,7 @@ def _build_provider_choices() -> list[str]:
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
         "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
-        "computer-use",
+        "computer-use", "conductor",
         "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
@@ -12944,6 +12944,10 @@ def main():
 
     parser, subparsers, chat_parser = build_top_level_parser()
     chat_parser.set_defaults(func=cmd_chat)
+
+    from hermes_cli.subcommands.conductor import build_conductor_parser
+
+    build_conductor_parser(subparsers)
 
     # =========================================================================
     # model command  (parser built in hermes_cli/subcommands/model.py)

@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple, Set
 
+from conductor.config import DEFAULT_CONDUCTOR_CONFIG
 from hermes_cli.secret_prompt import masked_secret_prompt
 
 logger = logging.getLogger(__name__)
@@ -987,6 +988,9 @@ DEFAULT_CONFIG = {
     # sessions (no live client) so accumulated agents don't pile up under memory
     # pressure. Reopening one re-resumes it from disk. 0/null disables.
     "max_live_sessions": 16,
+    # Opt-in governed campaign conductor. It is an edge dispatcher, not an
+    # agent tool: disabled by default and absent from ordinary chat toolsets.
+    "conductor": copy.deepcopy(DEFAULT_CONDUCTOR_CONFIG),
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).

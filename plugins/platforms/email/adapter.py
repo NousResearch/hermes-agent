@@ -552,24 +552,9 @@ class EmailAdapter(BasePlatformAdapter):
             # Retry with IPv4 only.
             return _connect(ipv4_only=True)
 
-    def _set_active_imap(self, imap: Any) -> None:
-        """Remember the IMAP connection currently owned by the poll worker."""
-        with self._active_imap_lock:
-            self._active_imap = imap
-
-    def _clear_active_imap(self, imap: Any) -> None:
-        """Clear the active IMAP handle without racing a newer poll."""
-        with self._active_imap_lock:
-            if self._active_imap is imap:
-                self._active_imap = None
-
-    def _interrupt_active_imap(self) -> None:
-        """Wake a blocking IMAP poll by closing its socket from the loop thread."""
-        with self._active_imap_lock:
-            imap = self._active_imap
-        if imap is None:
-            return
-
+    @staticmethod
+    def _close_imap_socket(imap: Any) -> None:
+        """Close an IMAP socket directly to wake a blocking worker."""
         raw_sock = None
         for attr in ("sock", "_sock"):
             raw_sock = getattr(imap, attr, None)
@@ -590,6 +575,34 @@ class EmailAdapter(BasePlatformAdapter):
             pass
         except Exception as exc:
             logger.debug("[Email] Error closing active IMAP socket: %s", exc)
+
+    def _register_active_imap(self, imap: Any) -> bool:
+        """Publish the active poll connection unless shutdown already began."""
+        should_close = False
+        with self._active_imap_lock:
+            if self._poll_stop_event.is_set():
+                should_close = True
+            else:
+                self._active_imap = imap
+
+        if should_close:
+            self._close_imap_socket(imap)
+            return False
+        return True
+
+    def _clear_active_imap(self, imap: Any) -> None:
+        """Clear the active IMAP handle without racing a newer poll."""
+        with self._active_imap_lock:
+            if self._active_imap is imap:
+                self._active_imap = None
+
+    def _interrupt_active_imap(self) -> None:
+        """Wake a blocking IMAP poll by closing its socket from the loop thread."""
+        with self._active_imap_lock:
+            imap = self._active_imap
+        if imap is None:
+            return
+        self._close_imap_socket(imap)
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to the IMAP server and start polling for new messages."""
@@ -701,7 +714,8 @@ class EmailAdapter(BasePlatformAdapter):
             return results
         try:
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
-            self._set_active_imap(imap)
+            if not self._register_active_imap(imap):
+                return results
             try:
                 if self._poll_stop_event.is_set():
                     return results

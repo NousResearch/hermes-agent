@@ -1309,6 +1309,49 @@ class TestImapPollingShutdown(unittest.TestCase):
         self.assertEqual(results, [])
         mock_imap.assert_not_called()
 
+    def test_fetch_closes_connection_when_shutdown_races_after_constructor(self):
+        """If shutdown wins after IMAP construction, the returned socket must be closed."""
+        adapter = self._make_adapter()
+
+        class FakeSocket:
+            def __init__(self):
+                self.shutdown_called = False
+                self.close_called = False
+
+            def shutdown(self, _how):
+                self.shutdown_called = True
+
+            def close(self):
+                self.close_called = True
+
+        class RaceImap:
+            def __init__(self):
+                self.sock = FakeSocket()
+                self.login_called = False
+
+            def login(self, *_args):
+                self.login_called = True
+                raise AssertionError("stopped poll should not log in")
+
+            def logout(self):
+                return "OK", []
+
+        fake_imap = RaceImap()
+
+        def construct_imap(*_args, **_kwargs):
+            adapter._poll_stop_event.set()
+            adapter._interrupt_active_imap()
+            return fake_imap
+
+        with patch("imaplib.IMAP4_SSL", side_effect=construct_imap):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(results, [])
+        self.assertFalse(fake_imap.login_called)
+        self.assertTrue(fake_imap.sock.shutdown_called)
+        self.assertTrue(fake_imap.sock.close_called)
+        self.assertIsNone(adapter._active_imap)
+
     def test_fetch_stops_between_uids_when_disconnect_requested(self):
         """A long UID batch should stop after shutdown begins."""
         import asyncio

@@ -543,6 +543,36 @@ def resolve_bedrock_region(env: Optional[Dict[str, str]] = None) -> str:
     return "us-east-1"
 
 
+def resolve_bedrock_runtime_region(config: Optional[Dict[str, Any]] = None) -> str:
+    """Resolve the Bedrock region with the same priority as the main runtime.
+
+    Priority (matches the runtime provider resolver in
+    ``hermes_cli/runtime_provider.py``):
+      1. ``bedrock.region`` in config.yaml
+      2. ``resolve_bedrock_region()`` (AWS_REGION / AWS_DEFAULT_REGION /
+         botocore profile / us-east-1)
+
+    Callers that already hold a loaded config dict should pass it to avoid a
+    disk read; when *config* is None the config is loaded read-only. Every
+    non-runtime call site that constructs a Bedrock endpoint (auxiliary
+    client resolution, model discovery for the picker) must use this helper —
+    using bare ``resolve_bedrock_region()`` there lets auxiliary calls leave
+    the primary runtime's configured region when ``bedrock.region`` and the
+    ambient AWS env/profile disagree.
+    """
+    if config is None:
+        try:
+            from hermes_cli.config import load_config_readonly
+            config = load_config_readonly()
+        except Exception:
+            config = {}
+    bedrock_cfg = (config or {}).get("bedrock") or {}
+    cfg_region = str(bedrock_cfg.get("region") or "").strip()
+    if cfg_region:
+        return cfg_region
+    return resolve_bedrock_region()
+
+
 def bedrock_model_ids_or_none() -> Optional[List[str]]:
     """Live-discover Bedrock model IDs for the active region.
 

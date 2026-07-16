@@ -882,8 +882,8 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
             # that would break a no-auth local server, so we substitute the SDK's
             # required-non-empty placeholder unless the host block opts in.
             _raw = config.raw or {}
-            _host_block = (_raw.get("hosts") or {}).get(config.host, {})
-            _host_has_key = bool(_host_block.get("apiKey"))
+            host_block = _host_block(_raw, config.host)
+            _host_has_key = bool(host_block.get("apiKey"))
             effective_api_key = config.api_key if _host_has_key else "local"
         else:
             effective_api_key = config.api_key

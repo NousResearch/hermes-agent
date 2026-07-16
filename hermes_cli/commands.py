@@ -18,6 +18,7 @@ import subprocess
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from utils import is_truthy_value
@@ -766,6 +767,23 @@ _clamp_telegram_names = _clamp_command_names
 # Shared skill/plugin collection for gateway platforms
 # ---------------------------------------------------------------------------
 
+def _is_registered_plugin_skill(info: Mapping[str, Any], skill_path: str | Path) -> bool:
+    """Return whether *skill_path* is the exact PluginManager registration."""
+    qualified_name = str(info.get("qualified_name") or "").strip()
+    if not qualified_name:
+        return False
+    try:
+        from hermes_cli.plugins import get_plugin_manager
+
+        registered_path = get_plugin_manager().find_plugin_skill(qualified_name)
+        return bool(
+            registered_path
+            and Path(skill_path).resolve() == registered_path.resolve()
+        )
+    except Exception:
+        return False
+
+
 def _collect_gateway_skill_entries(
     platform: str,
     max_slots: int,
@@ -777,7 +795,8 @@ def _collect_gateway_skill_entries(
 
     Priority order:
       1. Plugin slash commands (take precedence over skills)
-      2. Built-in skill commands (fill remaining slots, alphabetical)
+      2. Built-in and registered plugin skills (fill remaining slots;
+         Telegram honors configured menu priority before alphabetical order)
 
     Only skills are trimmed when the cap is reached.
     Hub-installed skills are excluded.  Per-platform disabled skills are
@@ -825,7 +844,7 @@ def _collect_gateway_skill_entries(
     for n, d in plugin_pairs:
         all_entries.append((n, d, ""))
 
-    # --- Tier 2: Built-in skill commands (trimmed at cap) -----------------
+    # --- Tier 2: Built-in and plugin skill commands (trimmed at cap) -------
     _platform_disabled: set[str] = set()
     try:
         from agent.skill_utils import get_disabled_skill_names
@@ -856,7 +875,10 @@ def _collect_gateway_skill_entries(
             skill_path = info.get("skill_md_path", "")
             if not skill_path:
                 continue
-            if not any(skill_path.startswith(prefix) for prefix in _allowed_prefixes):
+            if (
+                not _is_registered_plugin_skill(info, skill_path)
+                and not any(skill_path.startswith(prefix) for prefix in _allowed_prefixes)
+            ):
                 continue
             if skill_path.startswith(_hub_dir):
                 continue
@@ -877,6 +899,23 @@ def _collect_gateway_skill_entries(
     # Clamp names; cmd_key is passed through as extra payload so it survives
     # any clamp-induced renames.
     skill_triples = _clamp_command_names(skill_triples, reserved_names)
+    if platform == "telegram":
+        # Apply the same user-configured command-menu priority to skills before
+        # the capped slice. This lets an explicitly selected plugin skill stay
+        # visible without weakening the rule that core commands keep their
+        # reserved slots.
+        priority = {
+            name: index
+            for index, name in enumerate(_telegram_effective_priority())
+        }
+        skill_triples.sort(
+            key=lambda entry: (
+                0,
+                priority[entry[0]],
+            )
+            if entry[0] in priority
+            else (1, 0)
+        )
 
     # Skills fill remaining slots — only tier that gets trimmed
     remaining = max(0, max_slots - len(all_entries))
@@ -897,7 +936,8 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
     Priority order (higher priority = never bumped by overflow):
       1. Core CommandDef commands (always included)
       2. Plugin slash commands (take precedence over skills)
-      3. Built-in skill commands (fill remaining slots, alphabetical)
+      3. Built-in and registered plugin skills (fill remaining slots;
+         configured priorities first, then alphabetical)
 
     Skills are the only tier that gets trimmed when the cap is hit.
     User-installed hub skills are excluded — accessible via /skills.
@@ -966,12 +1006,10 @@ def discord_skill_commands_by_category(
     category.  Root-level skills (e.g. ``dogfood/SKILL.md``) are returned as
     *uncategorized*.
 
-    Scan roots include the local ``SKILLS_DIR`` **and** any configured
-    ``skills.external_dirs`` — matching the widened filter applied to the
-    flat ``discord_skill_commands()`` collector in #18741. Without this
-    parity, external-dir skills are visible via ``hermes skills list`` and
-    the agent's ``/skill-name`` dispatch but silently absent from Discord's
-    ``/skill`` autocomplete.
+    Accepted sources include the local ``SKILLS_DIR``, configured
+    ``skills.external_dirs``, and exact paths registered by PluginManager.
+    This matches the flat ``discord_skill_commands()`` collector while
+    keeping unregistered arbitrary paths out of Discord autocomplete.
 
     Filtering mirrors :func:`discord_skill_commands`: hub skills excluded,
     per-platform disabled excluded, names clamped to 32 chars, descriptions
@@ -1055,6 +1093,10 @@ def discord_skill_commands_by_category(
                     continue
                 matched_root = root
                 break
+            if matched_root is None and _is_registered_plugin_skill(info, sp):
+                # Plugin skills do not belong to the user's local/external
+                # skill hierarchy. Surface them as uncategorized entries.
+                matched_root = sp.parent
             if matched_root is None:
                 continue
 

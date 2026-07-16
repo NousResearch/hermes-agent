@@ -20,6 +20,7 @@ from hermes_cli.commands import (
     _clamp_telegram_names,
     _sanitize_telegram_name,
     discord_skill_commands,
+    discord_skill_commands_by_category,
     gateway_help_lines,
     resolve_command,
     slack_app_manifest,
@@ -1323,6 +1324,92 @@ class TestTelegramMenuCommands:
 
         menu_names = {name for name, _ in menu}
         assert "lcm" in menu_names
+
+    def test_plugin_registered_skill_appears_in_gateway_menus(self, tmp_path, monkeypatch):
+        """PluginManager skills are discoverable in Telegram and Discord menus."""
+        import agent.skill_commands as skill_commands
+        import hermes_cli.plugins as plugins_mod
+
+        plugin_dir = tmp_path / "plugins" / "menu-plugin"
+        skill_dir = plugin_dir / "skills" / "plugin-study"
+        skill_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            "name: menu-plugin\nversion: 0.1.0\ndescription: Test plugin skills\n"
+        )
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: plugin-study\n"
+            "description: Run the plugin study workflow.\n"
+            "---\n\n"
+            "# Plugin Study\n"
+        )
+        (plugin_dir / "__init__.py").write_text(
+            "from pathlib import Path\n"
+            "def register(ctx):\n"
+            "    skill = Path(__file__).parent / 'skills' / 'plugin-study' / 'SKILL.md'\n"
+            "    ctx.register_skill('plugin-study', skill, 'Run the plugin study workflow.')\n"
+        )
+        (tmp_path / "config.yaml").write_text(
+            "plugins:\n"
+            "  enabled:\n"
+            "    - menu-plugin\n"
+            "platforms:\n"
+            "  telegram:\n"
+            "    extra:\n"
+            "      command_menu:\n"
+            "        priority:\n"
+            "          - plugin-study\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", None)
+        monkeypatch.setattr(skill_commands, "_skill_commands", {})
+        monkeypatch.setattr(skill_commands, "_skill_commands_platform", None)
+
+        plugins_mod.discover_plugins(force=True)
+        skill_commands.scan_skill_commands()
+        unregistered_skill = tmp_path / "unregistered" / "SKILL.md"
+        unregistered_skill.parent.mkdir()
+        unregistered_skill.write_text("# Unregistered\n")
+        skill_commands._skill_commands["/spoofed-plugin-study"] = {
+            "name": "spoofed-plugin-study",
+            "description": "Must remain hidden.",
+            "skill_md_path": str(unregistered_skill),
+            "qualified_name": "menu-plugin:plugin-study",
+        }
+        local_skills = tmp_path / "skills"
+        local_skill = local_skills / "aaa-local" / "SKILL.md"
+        local_skill.parent.mkdir(parents=True)
+        local_skill.write_text("# AAA Local\n")
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", local_skills)
+        skill_commands._skill_commands["/aaa-local"] = {
+            "name": "aaa-local",
+            "description": "Alphabetically before the plugin skill.",
+            "skill_md_path": str(local_skill),
+        }
+
+        telegram, telegram_hidden = telegram_menu_commands(max_commands=500)
+        telegram_capped, telegram_capped_hidden = telegram_menu_commands(
+            max_commands=len(telegram_bot_commands()) + 1,
+        )
+        discord_categories, discord_uncategorized, discord_hidden = (
+            discord_skill_commands_by_category(
+                reserved_names=set(),
+            )
+        )
+        discord = list(discord_uncategorized)
+        for category_skills in discord_categories.values():
+            discord.extend(category_skills)
+
+        assert telegram_hidden == 0
+        assert telegram_capped_hidden > 0
+        assert discord_hidden == 0
+        telegram_names = {name for name, _description in telegram}
+        discord_names = {name for name, _description, _key in discord}
+        assert "plugin_study" in telegram_names
+        assert "plugin_study" in {name for name, _description in telegram_capped}
+        assert "plugin-study" in discord_names
+        assert "spoofed_plugin_study" not in telegram_names
+        assert "spoofed-plugin-study" not in discord_names
 
     def test_excludes_telegram_disabled_skills(self, tmp_path, monkeypatch):
         """Skills disabled for telegram should not appear in the menu."""

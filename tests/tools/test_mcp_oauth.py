@@ -928,6 +928,48 @@ def test_resolve_redirect_uri_empty_string_falls_back():
     assert _resolve_redirect_uri({"redirect_uri": ""}, 5678) == "http://127.0.0.1:5678/callback"
 
 
+def test_resolve_redirect_uri_redirect_host_localhost():
+    """``redirect_host: localhost`` swaps only the loopback hostname (WAF-safe)."""
+    from tools.mcp_oauth import _resolve_redirect_uri
+
+    assert (
+        _resolve_redirect_uri({"redirect_host": "localhost"}, 1234)
+        == "http://localhost:1234/callback"
+    )
+
+
+def test_resolve_redirect_uri_full_uri_wins_over_redirect_host():
+    """An explicit redirect_uri takes precedence over redirect_host."""
+    from tools.mcp_oauth import _resolve_redirect_uri
+
+    cfg = {"redirect_uri": _PROXY_REDIRECT, "redirect_host": "localhost"}
+    assert _resolve_redirect_uri(cfg, 1234) == _PROXY_REDIRECT
+
+
+def test_resolve_redirect_uri_empty_redirect_host_falls_back():
+    """An empty redirect_host is treated as unset (YAML ``redirect_host:``)."""
+    from tools.mcp_oauth import _resolve_redirect_uri
+
+    assert (
+        _resolve_redirect_uri({"redirect_host": ""}, 9012)
+        == "http://127.0.0.1:9012/callback"
+    )
+
+
+def test_build_client_metadata_uses_redirect_host():
+    """redirect_host flows into the client metadata's redirect_uris."""
+    pytest.importorskip("mcp")
+    from tools.mcp_oauth import _build_client_metadata, _configure_callback_port
+
+    cfg = {"redirect_host": "localhost"}
+    port = _configure_callback_port(cfg)
+    md = _build_client_metadata(cfg)
+
+    assert [str(u).rstrip("/") for u in md.redirect_uris] == [
+        f"http://localhost:{port}/callback"
+    ]
+
+
 def test_build_client_metadata_uses_configured_redirect_uri():
     """A proxied redirect_uri (e.g. Tailscale Funnel) flows into the metadata.
 

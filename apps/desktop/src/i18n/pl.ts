@@ -90,10 +90,14 @@ export const pl: Translations = {
       retry: 'Spróbuj ponownie',
       repairInstall: 'Napraw instalację',
       useLocalGateway: 'Użyj bramy lokalnej',
+      gatewaySettings: 'Ustawienia bramy',
+      back: 'Wstecz',
       openLogs: 'Otwórz logi',
       repairHint: 'Naprawa ponownie uruchamia instalator i na nowym komputerze może potrwać kilka minut.',
-      remoteSignInHint:
-        'Otwiera okno logowania do bramy. Zamiast tego możesz użyć bramy lokalnej, aby przełączyć się na wbudowany backend.',
+      remoteSignInHint: signInLabel =>
+        `Wylogowuje zapisaną sesję przeglądarki bramy zdalnej, a następnie otwiera ${signInLabel}. Aby przełączyć się na wbudowany backend, użyj bramy lokalnej.`,
+      signOutAndSignIn: 'Wyloguj i zaloguj się',
+      remoteFailureHint: 'Sprawdź adres URL bramy i logowanie w Ustawieniach bramy albo przełącz się na bramę lokalną.',
       hideRecentLogs: 'Ukryj ostatnie logi',
       showRecentLogs: 'Pokaż ostatnie logi',
       signedInTitle: 'Zalogowano',
@@ -931,6 +935,9 @@ export const pl: Translations = {
       change: 'Zmień',
       autoUseMain: 'automatycznie · użyj modelu głównego',
       providerDefault: '(domyślny dostawca)',
+      fallbackAdd: 'Dodaj model zapasowy',
+      fallbackEmpty: 'Brak modeli zapasowych — model domyślny będzie używany, dopóki nie zawiedzie.',
+      notInCatalog: 'nie znajduje się na liście modeli tego dostawcy — wywołania mogą zostać obsłużone przez model zapasowy.',
       tasks: {
         vision: { label: 'Wizja', hint: 'Analiza obrazu' },
         web_extract: { label: 'Pobieranie treści stron', hint: 'Podsumowywanie stron' },
@@ -1712,7 +1719,10 @@ export const pl: Translations = {
     customPlaceholder: '0 9 * * * lub w dni robocze o 9:00',
     customHint: 'Wyrażenie cron lub zwrot, np. „co godzinę” albo „w dni robocze o 9:00”.',
     optional: 'Opcjonalne',
+    promptRequired: 'Prompt jest wymagany.',
     promptScheduleRequired: 'Prompt i harmonogram są wymagane.',
+    scheduleRequired: 'Harmonogram jest wymagany.',
+    scriptOnlyEditHint: 'Zadanie tylko ze skryptem (bez promptu AI). Identyfikator zadania:',
     saveChanges: 'Zapisz zmiany',
     createAction: 'Utwórz zadanie cron'
   },
@@ -2177,6 +2187,10 @@ export const pl: Translations = {
     featuredPitch: 'Jedna subskrypcja, ponad 300 wiodących modeli — zalecany sposób korzystania z Hermesa',
     openRouterPitch: 'Jeden klucz, setki modeli — dobry wybór domyślny',
     apiKeyOptions: {
+      fireworks: {
+        short: 'bezpośrednie API modeli',
+        description: 'Bezpośredni dostęp do modeli hostowanych przez Fireworks AI.'
+      },
       openrouter: {
         short: 'jeden klucz, wiele modeli',
         description: 'Obsługuje setki modeli za jednym kluczem. Dobre ustawienie domyślne dla nowych instalacji.'
@@ -2280,7 +2294,9 @@ export const pl: Translations = {
       low: 'Niski',
       medium: 'Średni',
       high: 'Wysoki',
+      xhigh: 'Bardzo wysoki',
       max: 'Maksymalny',
+      ultra: 'Ultra',
       updateFailed: 'Aktualizacja opcji modelu nie powiodła się',
       fastFailed: 'Aktualizacja w trybie szybkim nie powiodła się'
     },
@@ -2298,6 +2314,16 @@ export const pl: Translations = {
       recentActivity: 'Ostatnia aktywność',
       viewAllLogs: 'Zobacz wszystkie logi →',
       messagingPlatforms: 'Platformy przesyłania wiadomości'
+    },
+    approvalMode: {
+      title: 'Tryb zatwierdzania',
+      ariaLabel: mode => `Tryb zatwierdzania: ${mode}`,
+      manual: 'Ręczny',
+      manualDescription: 'Pytaj przed działaniami wymagającymi zatwierdzenia',
+      smart: 'Inteligentny',
+      smartDescription: 'Automatycznie oceniaj działania i pytaj, gdy to konieczne',
+      off: 'Wyłączony',
+      offDescription: 'Uruchamiaj bez pytań o zatwierdzenie'
     },
     statusbar: {
       unknown: 'nieznany',
@@ -2561,6 +2587,7 @@ export const pl: Translations = {
       other: 'Inne (wpisz swoją odpowiedź)',
       placeholder: 'Wpisz swoją odpowiedź…',
       skip: 'Pomiń',
+      skipped: 'Pominięto',
       continueLabel: 'Kontynuuj'
     },
     tool: {

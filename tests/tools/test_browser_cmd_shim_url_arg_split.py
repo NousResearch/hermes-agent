@@ -5,7 +5,7 @@ batch shim on Windows (``node_modules/.bin/agent-browser.cmd`` or, for the npx
 fallback, ``npx.cmd``).  Those shims run under ``cmd.exe`` and end their
 dispatch line with an unquoted ``%*``, so any argument containing a cmd
 metacharacter — notably ``&`` in a real search URL like
-``https://x.com/search?q=from%3ACityBureaucrat&src=typed_query&f=live`` — gets
+``https://x.com/search?q=from%3ANousResearch&src=typed_query&f=live`` — gets
 re-parsed by cmd.exe into separate "commands", silently breaking navigation
 (``'src' is not recognized as an internal or external command``).
 
@@ -34,7 +34,7 @@ import pytest
 import tools.browser_tool as browser_tool
 
 
-X_SEARCH_URL = "https://x.com/search?q=from%3ACityBureaucrat&src=typed_query&f=live"
+X_SEARCH_URL = "https://x.com/search?q=from%3ANousResearch&src=typed_query&f=live"
 
 _WINDOWS_ONLY = pytest.mark.skipif(
     os.name != "nt",

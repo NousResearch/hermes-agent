@@ -360,6 +360,83 @@ def atomic_roundtrip_yaml_update(
         raise
 
 
+def atomic_roundtrip_yaml_update_many(
+    path: Union[str, Path],
+    pairs: dict,
+) -> None:
+    """Update multiple dotted YAML keys in a single atomic write.
+
+    Same comment/ordering/quote/Unicode-preserving behavior as
+    :func:`atomic_roundtrip_yaml_update`, but applies every ``key_path ->
+    value`` pair in ``pairs`` to the in-memory document before doing the
+    tempfile + fsync + atomic replace exactly once.
+
+    This closes the partial-write gap that exists when a caller needs
+    several related keys to move together (e.g. ``agent.system_prompt`` and
+    ``display.personality``): calling :func:`atomic_roundtrip_yaml_update`
+    once per key means each call is independently atomic, but the *pair* is
+    not — a failure between calls can leave the file with only some of the
+    keys updated. Routing all of them through a single load/mutate/write
+    cycle means the whole batch either lands together or the file is left
+    exactly as it was (the exception path still unlinks the tempfile and
+    re-raises without touching the real file).
+    """
+    from ruamel.yaml import YAML
+    from ruamel.yaml.comments import CommentedMap
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    yaml_rt = YAML(typ="rt")
+    yaml_rt.preserve_quotes = True
+    yaml_rt.allow_unicode = True
+    yaml_rt.default_flow_style = False
+    yaml_rt.indent(mapping=2, sequence=4, offset=2)
+
+    if path.exists():
+        with path.open("r", encoding="utf-8") as f:
+            config = yaml_rt.load(f) or CommentedMap()
+    else:
+        config = CommentedMap()
+
+    if not isinstance(config, CommentedMap):
+        config = CommentedMap(config)
+
+    for key_path, value in pairs.items():
+        current = config
+        keys = key_path.split(".")
+        for key in keys[:-1]:
+            next_value = current.get(key)
+            if not isinstance(next_value, CommentedMap):
+                next_value = CommentedMap()
+                current[key] = next_value
+            current = next_value
+        current[keys[-1]] = value
+
+    original_mode = _preserve_file_mode(path)
+    original_owner = _preserve_file_owner(path)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=f".{path.stem}_",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            yaml_rt.dump(config, f)
+            f.flush()
+            os.fsync(f.fileno())
+        real_path = atomic_replace(tmp_path, path)
+        real_path_obj = Path(real_path)
+        _restore_file_owner(real_path_obj, original_owner)
+        _restore_file_mode(real_path_obj, original_mode)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def atomic_roundtrip_yaml_save(
     path: Union[str, Path],
     new_state: dict,

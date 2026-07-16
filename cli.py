@@ -3648,6 +3648,48 @@ def save_config_value(key_path: str, value: any) -> bool:
         return False
 
 
+def save_config_values(pairs: dict) -> bool:
+    """
+    Save multiple key/value pairs to the active config file in one atomic
+    write.
+
+    Use this instead of calling save_config_value() once per key when the
+    keys are logically related (e.g. "agent.system_prompt" and
+    "display.personality" for a single personality change). Two sequential
+    save_config_value() calls are each individually atomic, but the pair is
+    not: if the first write succeeds and the second fails, the config file
+    is left in a partially-updated, inconsistent state. Routing both
+    through a single atomic_roundtrip_yaml_update_many() call means they
+    land together or not at all.
+
+    Args:
+        pairs: Mapping of dot-separated key path -> value, e.g.
+            {"agent.system_prompt": "...", "display.personality": "..."}
+
+    Returns:
+        True if successful, False otherwise (never raises).
+    """
+    user_config_path = _hermes_home / 'config.yaml'
+    project_config_path = Path(__file__).parent / 'cli-config.yaml'
+    config_path = user_config_path if user_config_path.exists() else project_config_path
+
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+
+        from utils import atomic_roundtrip_yaml_update_many
+        atomic_roundtrip_yaml_update_many(config_path, pairs)
+
+        try:
+            os.chmod(config_path, 0o600)
+        except (OSError, NotImplementedError):
+            pass
+
+        return True
+    except Exception as e:
+        logger.error("Failed to save config: %s", e)
+        return False
+
+
 
 
 # ============================================================================

@@ -9968,4 +9968,3 @@ def test_config_set_personality_writes_both_keys_and_preserves_comments(
     assert "# inline skin note" in text
     # Unicode stays readable.
     assert "\\u4f60" not in text
-

@@ -2182,19 +2182,27 @@ class GatewaySlashCommandsMixin:
             return str(value)
 
         # Lazy import to avoid a module-level circular import (cli.py imports
-        # gateway modules at startup); save_config_value is the comment-preserving,
-        # per-key write helper the CLI already uses for the same command.
-        from cli import save_config_value
+        # gateway modules at startup); save_config_values is the comment-
+        # preserving, single-atomic-write helper for related key pairs (see
+        # save_config_value for the single-key equivalent the CLI uses
+        # elsewhere). It returns False on failure rather than raising, so we
+        # check the return value instead of relying on a try/except — a
+        # bare except around it would never fire and would let a failed
+        # write silently report success.
+        from cli import save_config_values
 
         if args in {"none", "default", "neutral"}:
-            try:
-                save_config_value("agent.system_prompt", "")
-                # Mirror the canonical personality name to display.personality so
-                # the TUI status bar and `/personality` listing agree with the
-                # gateway on which persona (if any) is active.
-                save_config_value("display.personality", "")
-            except Exception as e:
-                return t("gateway.personality.save_failed", error=str(e))
+            # Both keys land in a single atomic write so the pair can't be
+            # left half-updated if the write fails partway through.
+            saved = save_config_values({
+                "agent.system_prompt": "",
+                # Mirror the canonical personality name to display.personality
+                # so the TUI status bar and `/personality` listing agree with
+                # the gateway on which persona (if any) is active.
+                "display.personality": "",
+            })
+            if not saved:
+                return t("gateway.personality.save_failed", error="Config write failed")
             self._ephemeral_system_prompt = ""
             return t("gateway.personality.cleared")
         elif args in personalities:
@@ -2203,12 +2211,13 @@ class GatewaySlashCommandsMixin:
             # Write to config.yaml via the same comment-preserving helper the
             # CLI uses. Mirrors agent.system_prompt + display.personality so
             # `/personality` listings, TUI status bar, and gateway agree on
-            # which persona is active.
-            try:
-                save_config_value("agent.system_prompt", new_prompt)
-                save_config_value("display.personality", args)
-            except Exception as e:
-                return t("gateway.personality.save_failed", error=str(e))
+            # which persona is active. Single atomic write — see above.
+            saved = save_config_values({
+                "agent.system_prompt": new_prompt,
+                "display.personality": args,
+            })
+            if not saved:
+                return t("gateway.personality.save_failed", error="Config write failed")
 
             # Update in-memory so it takes effect on the very next message.
             self._ephemeral_system_prompt = new_prompt

@@ -578,7 +578,7 @@ def init_agent(
     agent._credential_pool = credential_pool
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
-    if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
+    if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server", "claude_agent_sdk"}:
         agent.api_mode = api_mode
     elif agent.provider == "openai-codex":
         agent.api_mode = "codex_responses"
@@ -1070,6 +1070,17 @@ def init_agent(
         if not agent.quiet_mode:
             _gr_label = " + Guardrails" if agent._bedrock_guardrail_config else ""
             print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock, {agent._bedrock_region}{_gr_label})")
+    elif agent.api_mode == "claude_agent_sdk":
+        # claude-agent-sdk runtime — the official Agent SDK owns its own
+        # subprocess and subscription OAuth (CLAUDE_CODE_OAUTH_TOKEN /
+        # ~/.claude); there is no OpenAI-style client on this path, and no
+        # API key by design (#25267). Mirrors the bedrock_converse shape.
+        agent.client = None
+        agent._client_kwargs = {}
+        agent.api_key = api_key or "claude-subscription-oauth"
+        agent.base_url = base_url or ""
+        if not agent.quiet_mode:
+            print(f"🤖 AI Agent initialized with model: {agent.model} (Claude Agent SDK, subscription)")
     else:
         if api_key and base_url:
             # Explicit credentials from CLI/gateway — construct directly.

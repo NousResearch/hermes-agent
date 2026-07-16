@@ -869,6 +869,18 @@ def run_conversation(
             should_review_memory=_should_review_memory,
         )
 
+    # Same shape for the claude-agent-sdk runtime: the official Agent SDK
+    # owns the whole agent loop (tools, permissions, subscription OAuth).
+    # See agent/transports/claude_agent_sdk_session.py.
+    if agent.api_mode == "claude_agent_sdk":
+        return agent._run_claude_agent_sdk_turn(
+            user_message=user_message,
+            original_user_message=original_user_message,
+            messages=messages,
+            effective_task_id=effective_task_id,
+            should_review_memory=_should_review_memory,
+        )
+
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         _redirect_text = agent._drain_pending_redirect()
         if _redirect_text:

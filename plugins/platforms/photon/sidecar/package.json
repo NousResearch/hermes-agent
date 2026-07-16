@@ -7,7 +7,8 @@
   "main": "index.mjs",
   "scripts": {
     "start": "node index.mjs",
-    "postinstall": "node patch-spectrum-mixed-attachments.mjs"
+    "postinstall": "node patch-spectrum-mixed-attachments.mjs",
+    "test": "node --test test/"
   },
   "engines": {
     "node": ">=18.17"

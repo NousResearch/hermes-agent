@@ -45,6 +45,25 @@ except ImportError:  # pragma: no cover - non-POSIX
 pytestmark = pytest.mark.skipif(fcntl is None, reason="flock semantics are POSIX-only")
 
 
+@pytest.fixture(autouse=True)
+def _isolated_cron_store(_hermetic_environment):
+    """Route this file's module-level cron imports into the per-test home."""
+    with jobs_mod.use_cron_store(Path(os.environ["HERMES_HOME"])):
+        yield
+
+
+def test_cron_store_follows_hermetic_home():
+    """This file must never write cron fixtures outside pytest's isolated home."""
+    job = create_job(name="isolation probe", schedule="0 7 * * *", prompt="x")
+    expected_jobs_file = Path(os.environ["HERMES_HOME"]) / "cron" / "jobs.json"
+
+    assert expected_jobs_file.exists()
+    assert any(
+        saved["id"] == job["id"]
+        for saved in json.loads(expected_jobs_file.read_text(encoding="utf-8"))["jobs"]
+    )
+
+
 def _hold_jobs_flock(path: Path, release: threading.Event, held: threading.Event):
     """Hold an exclusive flock on *path* from a separate fd until released.
 

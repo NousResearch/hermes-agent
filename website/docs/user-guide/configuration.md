@@ -303,7 +303,7 @@ Every key under `terminal:` has an env-var override of the form `TERMINAL_<KEY_U
 
 ### SSH Backend
 
-Runs commands on a remote server over SSH. Uses ControlMaster for connection reuse (5-minute idle keepalive). Persistent shell is enabled by default — state (cwd, env vars) survives across commands.
+Runs commands on a remote server over SSH. On Unix-like systems, it uses ControlMaster for connection reuse (5-minute idle keepalive). Native Windows opens a fresh SSH connection per command because Windows OpenSSH does not support ControlMaster. Persistent shell is enabled by default — state (cwd, env vars) survives across commands.
 
 ```yaml
 terminal:

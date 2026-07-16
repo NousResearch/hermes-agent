@@ -6367,6 +6367,9 @@ class ProtectedMergeVerifierIntent:
     kind: str = "protected_merge_verifier"
 
 
+_INTENT_REQUIRED_FIELDS = ("pr_url", "approved_head", "approved_base")
+
+
 def parse_protected_merge_verifier_intent(
     data: Any,
 ) -> "ProtectedMergeVerifierIntent":
@@ -6381,6 +6384,12 @@ def parse_protected_merge_verifier_intent(
     ``ValueError`` with an actionable message on anything malformed;
     callers translate that into their own surface-appropriate error
     response (CLI stderr + exit code, tool_error JSON, HTTP 400).
+
+    Like the evidence parser below, unknown fields are rejected rather
+    than ignored — default deny. Silently dropping fields the contract
+    doesn't define would let a request LOOK like it carried verifier
+    material the bypass validation never saw; and because every surface
+    shares this one parser, the field vocabulary cannot drift per surface.
 
     Note this only validates STRUCTURE (the typed contract's shape). The
     deeper semantic checks -- does ``readiness_evidence`` actually say
@@ -6400,8 +6409,15 @@ def parse_protected_merge_verifier_intent(
             f"unknown intent kind {kind!r}; only 'protected_merge_verifier' "
             "is supported"
         )
+    unknown = sorted(set(data) - {"kind", *_INTENT_REQUIRED_FIELDS, "readiness_evidence"})
+    if unknown:
+        raise ValueError(
+            f"intent has unsupported field(s): {', '.join(unknown)}; "
+            "supported fields are pr_url, approved_head, approved_base, "
+            "readiness_evidence (and the optional 'kind' discriminator)"
+        )
     missing = [
-        f for f in ("pr_url", "approved_head", "approved_base")
+        f for f in _INTENT_REQUIRED_FIELDS
         if not (isinstance(data.get(f), str) and data.get(f).strip())
     ]
     if missing:
@@ -6472,7 +6488,7 @@ def parse_protected_merge_verifier_evidence(
     their own surface-appropriate error response (CLI stderr + exit code,
     tool_error JSON, HTTP 400) BEFORE any mutation.
 
-    Unlike the intent parser, unknown fields are rejected rather than
+    Like the intent parser, unknown fields are rejected rather than
     ignored: evidence is recorded verbatim on the task row and audited
     later, so silently dropping (or silently storing) fields the contract
     doesn't define would corrupt what the bypass validation is trusted to

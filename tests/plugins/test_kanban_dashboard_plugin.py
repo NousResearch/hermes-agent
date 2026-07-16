@@ -610,6 +610,93 @@ def test_patch_unblock_rejects_free_text_intent(merge_verifier_client):
         conn.close()
 
 
+def test_patch_unblock_rejects_unsupported_intent_fields(merge_verifier_client):
+    """Unknown keys inside the typed intent are rejected outright (default
+    deny) by the ONE shared kanban_db parser — the same contract the CLI's
+    ``unblock --intent`` and the ``kanban_unblock`` tool enforce — never
+    silently dropped. The rejection covers the WHOLE request: an assignee
+    change riding along must not land."""
+    client, db_path = merge_verifier_client
+    tid = _seed_merge_verifier_blocked_task(db_path)
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{tid}",
+        json={
+            "assignee": "mallory",
+            "status": "ready",
+            "intent": _valid_intent_payload(operator_note="looks fine to me"),
+        },
+    )
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert "unsupported field" in detail
+    assert "operator_note" in detail
+
+    conn = kb.connect(db_path=db_path)
+    try:
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert task.assignee == "alice"  # assignee write never happened
+        assert not any(
+            e.kind == "guard_bypass_granted" for e in kb.list_events(conn, tid)
+        )
+    finally:
+        conn.close()
+
+
+def test_patch_intent_requires_ready_status(merge_verifier_client):
+    """intent rides ONLY on a status='ready' transition — sending it with any
+    other (or no) status change is a caller bug and must be rejected, not
+    silently dropped (block_evidence's unblock-side twin)."""
+    client, db_path = merge_verifier_client
+    tid = _seed_merge_verifier_blocked_task(db_path)
+
+    for payload in (
+        {"intent": _valid_intent_payload()},
+        {"status": "todo", "intent": _valid_intent_payload()},
+    ):
+        r = client.patch(f"/api/plugins/kanban/tasks/{tid}", json=payload)
+        assert r.status_code == 400
+        assert "intent" in r.json()["detail"]
+
+    conn = kb.connect(db_path=db_path)
+    try:
+        assert kb.get_task(conn, tid).status == "blocked"
+        assert not any(
+            e.kind == "guard_bypass_granted" for e in kb.list_events(conn, tid)
+        )
+    finally:
+        conn.close()
+
+
+def test_patch_intent_on_unblocked_task_rejected(merge_verifier_client):
+    """A bypass request aimed at a task that isn't blocked/scheduled (the
+    drag-drop direct-set path) can never take effect — reject it rather than
+    silently dropping verifier material."""
+    client, db_path = merge_verifier_client
+    conn = kb.connect(db_path=db_path)
+    try:
+        tid = kb.create_task(conn, title="already ready")  # no parents -> ready
+    finally:
+        conn.close()
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{tid}",
+        json={"status": "ready", "intent": _valid_intent_payload()},
+    )
+    assert r.status_code == 400
+    assert "intent" in r.json()["detail"]
+
+    conn = kb.connect(db_path=db_path)
+    try:
+        assert kb.get_task(conn, tid).status == "ready"
+        assert not any(
+            e.kind == "guard_bypass_granted" for e in kb.list_events(conn, tid)
+        )
+    finally:
+        conn.close()
+
+
 def test_patch_schedule_then_unblock(client):
     t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
     r = client.patch(
@@ -772,6 +859,128 @@ def test_patch_status_running_rejected(client):
         for tt in col["tasks"]
     }
     assert statuses.get(t["id"]) != "running"
+
+
+# ---------------------------------------------------------------------------
+# PATCH /tasks/:id — strict field contract + whole-request atomicity
+# ---------------------------------------------------------------------------
+
+
+def _task_detail(client, task_id):
+    r = client.get(f"/api/plugins/kanban/tasks/{task_id}")
+    assert r.status_code == 200
+    return r.json()
+
+
+def test_patch_unknown_top_level_field_rejected_without_mutation(client):
+    """An unknown top-level PATCH key is a caller bug: the WHOLE request is
+    rejected (400) — including valid changes riding along — matching the
+    default-deny the CLI flags and kanban_* tool schemas give the other
+    surfaces."""
+    t = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "x", "assignee": "a"},
+    ).json()["task"]
+    before = _task_detail(client, t["id"])
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}",
+        json={"assignee": "mallory", "status": "done", "statuss": "done"},
+    )
+    assert r.status_code == 400
+    assert "statuss" in r.json()["detail"]
+
+    after = _task_detail(client, t["id"])
+    assert after["task"]["status"] == before["task"]["status"]
+    assert after["task"]["assignee"] == "a"
+    assert after["events"] == before["events"]  # no audit rows leaked
+
+
+def test_patch_static_validation_failure_leaves_no_partial_mutation(client):
+    """Static validation (empty title, bogus status) runs before ANY write:
+    a request combining a valid assignee change with a statically invalid
+    field rejects whole — no assignee/status/audit mutation survives."""
+    t = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "x", "assignee": "a"},
+    ).json()["task"]
+    before = _task_detail(client, t["id"])
+
+    for bad in (
+        {"assignee": "b", "title": "   "},
+        {"assignee": "b", "status": "banana"},
+        {"assignee": "b", "priority": 9, "status": "running"},
+    ):
+        r = client.patch(f"/api/plugins/kanban/tasks/{t['id']}", json=bad)
+        assert r.status_code == 400, r.text
+
+        after = _task_detail(client, t["id"])
+        assert after["task"]["assignee"] == "a"
+        assert after["task"]["title"] == "x"
+        assert after["task"]["status"] == before["task"]["status"]
+        assert after["task"]["priority"] == before["task"]["priority"]
+        assert after["events"] == before["events"]
+
+
+def test_patch_semantic_ready_failure_rolls_back_whole_request(client):
+    """Whole-request atomicity for SEMANTIC failures: a parent-gated 409 on
+    status='ready' must also roll back the assignee/priority/title changes
+    riding in the same PATCH — and leave no audit rows behind. (The assignee
+    write commits before the status transition runs; the 409 must undo it.)"""
+    parent = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "p"},
+    ).json()["task"]
+    child = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "c", "assignee": "a", "parents": [parent["id"]]},
+    ).json()["task"]
+    assert child["status"] == "todo"
+    before = _task_detail(client, child["id"])
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{child['id']}",
+        json={
+            "assignee": "b",
+            "priority": 7,
+            "title": "hijacked",
+            "status": "ready",  # parent not done -> parent-gating 409
+        },
+    )
+    assert r.status_code == 409
+    assert "Cannot move to 'ready'" in r.json()["detail"]
+
+    after = _task_detail(client, child["id"])
+    assert after["task"]["status"] == "todo"
+    assert after["task"]["assignee"] == "a"
+    assert after["task"]["priority"] == before["task"]["priority"]
+    assert after["task"]["title"] == "c"
+    assert after["events"] == before["events"]  # 'assigned' audit rolled back
+
+
+def test_patch_semantic_transition_failure_rolls_back_assignee(client):
+    """Same atomicity contract for a plain invalid-transition 409 (not
+    parent gating): scheduling a task that is already done is refused by
+    the verb, and the riding assignee change must not survive it."""
+    t = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "x", "assignee": "a"},
+    ).json()["task"]
+    done = client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}",
+        json={"status": "done", "result": "shipped"},
+    )
+    assert done.status_code == 200
+    before = _task_detail(client, t["id"])
+
+    # done -> scheduled is not a valid transition — schedule_task only
+    # moves tasks out of todo/ready/running/blocked.
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}",
+        json={"assignee": "b", "status": "scheduled"},
+    )
+    assert r.status_code == 409
+
+    after = _task_detail(client, t["id"])
+    assert after["task"]["status"] == "done"
+    assert after["task"]["assignee"] == "a"
+    assert after["events"] == before["events"]
 
 
 # ---------------------------------------------------------------------------

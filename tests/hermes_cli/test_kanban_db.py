@@ -6275,6 +6275,35 @@ def test_parse_protected_merge_verifier_intent_rejects_unknown_kind():
         kb.parse_protected_merge_verifier_intent(data)
 
 
+def test_parse_protected_merge_verifier_intent_rejects_unknown_fields():
+    """Default deny, matching the evidence parser: fields outside the typed
+    contract are rejected, never silently dropped. Every surface (CLI
+    ``unblock --intent``, the ``kanban_unblock`` tool, the dashboard PATCH)
+    shares this parser, so the field vocabulary cannot drift per surface."""
+    data = {
+        "kind": "protected_merge_verifier",
+        "pr_url": PR_URL,
+        "approved_head": HEAD_SHA,
+        "approved_base": BASE_BRANCH,
+        "readiness_evidence": {"ready": True},
+        "operator_note": "looks fine to me",
+        "attachments": [],
+    }
+    with pytest.raises(ValueError, match="unsupported field") as exc:
+        kb.parse_protected_merge_verifier_intent(data)
+    # Actionable: names every offending field and the supported vocabulary.
+    message = str(exc.value)
+    assert "operator_note" in message
+    assert "attachments" in message
+    assert "readiness_evidence" in message  # supported-fields hint
+
+    # The same payload without the extras parses fine — the rejection is
+    # about the unknown keys, not the known ones.
+    del data["operator_note"], data["attachments"]
+    intent = kb.parse_protected_merge_verifier_intent(data)
+    assert isinstance(intent, kb.ProtectedMergeVerifierIntent)
+
+
 def test_parse_protected_merge_verifier_intent_rejects_missing_fields():
     data = {"kind": "protected_merge_verifier", "readiness_evidence": {"ready": True}}
     with pytest.raises(ValueError, match="missing required field"):

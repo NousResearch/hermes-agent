@@ -59,24 +59,36 @@ from typing import Any, Dict, List, Optional
 def get_provider_env(name: str) -> str:
     """Config-aware env lookup for web providers.
 
-    Resolves *name* via :func:`hermes_cli.config.get_env_value` (checks
-    ``os.environ`` first, then ``~/.hermes/.env``) so credentials set
-    through Hermes' config layer are visible even when they were never
-    exported into the process environment — gateway sessions, delegate
-    children, and subprocess agent runs (issue #40190). Falls back to a
-    bare ``os.getenv`` when the config module is unavailable (stripped
-    installs, early import contexts).
+    Prefers a deliberate ``~/.hermes/.env`` value over a stale/empty value
+    already present in ``os.environ`` (via
+    :func:`hermes_cli.config.get_env_value_prefer_dotenv`). That matches how
+    Hermes-managed provider credentials are rotated: editing ``.env`` must
+    take effect even when a parent shell, TUI host, or multiplexedTimeout
+    process still transports an outdated export — which otherwise surfaces
+    as persistent 401s (Tavily, Firecrawl, Exa, …; issue #65459).
+
+    Falls back to :func:`hermes_cli.config.get_env_value` (process env first)
+    and finally a bare ``os.getenv`` when the prefer-dotenv helper is
+    unavailable (older installs / early import contexts). Still covers the
+    original gateway / delegate / subprocess path (issue #40190).
 
     Returns the stripped value, or ``""`` when unset.
     """
     val: Optional[str] = None
     try:
-        from hermes_cli.config import get_env_value
+        from hermes_cli.config import get_env_value_prefer_dotenv
 
-        val = get_env_value(name)
-    except Exception:  # noqa: BLE001 — config layer optional here
+        val = get_env_value_prefer_dotenv(name)
+    except Exception:  # noqa: BLE001 — prefer-dotenv optional on older trees
         val = None
-    if val is None:
+    if not val:
+        try:
+            from hermes_cli.config import get_env_value
+
+            val = get_env_value(name)
+        except Exception:  # noqa: BLE001 — config layer optional here
+            val = None
+    if not val:
         val = os.getenv(name, "")
     return (val or "").strip()
 

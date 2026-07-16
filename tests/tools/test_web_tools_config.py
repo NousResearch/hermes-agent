@@ -881,12 +881,12 @@ class TestSiblingProvidersEnvResolution:
         assert provider.is_available() is False
 
         with patch(
-            "hermes_cli.config.get_env_value",
+            "hermes_cli.config.get_env_value_prefer_dotenv",
             side_effect=lambda k: "test-key-from-dotenv" if k == env_key else None,
         ):
             assert provider.is_available() is True, (
                 f"{cls_name}.is_available() ignored {env_key} from the "
-                "config-aware env layer (get_env_value)"
+                "config-aware env layer (get_env_value_prefer_dotenv)"
             )
 
     def test_get_provider_env_falls_back_to_os_environ(self, monkeypatch):
@@ -894,12 +894,52 @@ class TestSiblingProvidersEnvResolution:
         from agent.web_search_provider import get_provider_env
 
         monkeypatch.setenv("WSP_TEST_FALLBACK_KEY", "  from-process-env  ")
-        with patch("hermes_cli.config.get_env_value", return_value=None):
+        with patch(
+            "hermes_cli.config.get_env_value_prefer_dotenv",
+            return_value=None,
+        ), patch("hermes_cli.config.get_env_value", return_value=None):
             assert get_provider_env("WSP_TEST_FALLBACK_KEY") == "from-process-env"
+
+    def test_get_provider_env_prefers_dotenv_over_stale_os_environ(self, monkeypatch):
+        """Shell/export may still hold a stale key; ~/.hermes/.env wins.
+
+        Tavily (and peers) 401 when an empty or rotated process env masks a
+        valid .env value — issue #65459.
+        """
+        from agent.web_search_provider import get_provider_env
+
+        monkeypatch.setenv("TAVILY_API_KEY", "stale-from-shell")
+        with patch(
+            "hermes_cli.config.get_env_value_prefer_dotenv",
+            return_value="tvly-from-dotenv",
+        ) as prefer, patch(
+            "hermes_cli.config.get_env_value",
+            return_value="stale-from-shell",
+        ) as process_first:
+            assert get_provider_env("TAVILY_API_KEY") == "tvly-from-dotenv"
+            prefer.assert_called_once_with("TAVILY_API_KEY")
+            process_first.assert_not_called()
+
+    def test_get_provider_env_falls_back_when_prefer_dotenv_empty(self, monkeypatch):
+        """If prefer-dotenv finds nothing, process-env lookup still works."""
+        from agent.web_search_provider import get_provider_env
+
+        monkeypatch.delenv("WSP_TEST_PROCESS_ONLY", raising=False)
+        with patch(
+            "hermes_cli.config.get_env_value_prefer_dotenv",
+            return_value=None,
+        ), patch(
+            "hermes_cli.config.get_env_value",
+            return_value="  process-only-key  ",
+        ):
+            assert get_provider_env("WSP_TEST_PROCESS_ONLY") == "process-only-key"
 
     def test_get_provider_env_unset_returns_empty(self, monkeypatch):
         monkeypatch.delenv("WSP_TEST_UNSET_KEY", raising=False)
-        with patch("hermes_cli.config.get_env_value", return_value=None):
+        with patch(
+            "hermes_cli.config.get_env_value_prefer_dotenv",
+            return_value=None,
+        ), patch("hermes_cli.config.get_env_value", return_value=None):
             from agent.web_search_provider import get_provider_env
 
             assert get_provider_env("WSP_TEST_UNSET_KEY") == ""

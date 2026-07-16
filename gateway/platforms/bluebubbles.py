@@ -413,7 +413,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.warning(
                 "[bluebubbles] failed to register webhook with server: %s",
-                exc,
+                _redact_bb_error_text(exc),
             )
             return False
 
@@ -446,7 +446,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.debug(
                 "[bluebubbles] failed to unregister webhook (non-critical): %s",
-                exc,
+                _redact_bb_error_text(exc),
             )
         return removed
 

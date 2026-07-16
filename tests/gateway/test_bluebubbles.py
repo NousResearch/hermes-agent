@@ -991,3 +991,31 @@ class TestBlueBubblesPasswordRedaction:
         )
         assert result.success is False
         assert "Sup3rS3cr3tPw" not in (result.error or "")
+
+
+class TestBlueBubblesWebhookErrorRedaction:
+    """The webhook register/unregister exception logs interpolate the httpx
+    error, whose URL carries ?password=<pw> — they must be redacted too."""
+
+    def test_register_webhook_failure_log_is_redacted(self, monkeypatch, caplog):
+        import logging
+        import httpx
+
+        adapter = _make_adapter(monkeypatch, password="Sup3rS3cr3tPw")
+        adapter.client = object()  # pass the "if not self.client" guard
+
+        async def _no_existing(url):
+            return []
+        adapter._find_registered_webhooks = _no_existing
+
+        async def boom(path, payload):
+            req = httpx.Request("POST", adapter._api_url(path))
+            raise httpx.HTTPStatusError(
+                "Client error", request=req, response=httpx.Response(401, request=req)
+            )
+        adapter._api_post = boom
+
+        with caplog.at_level(logging.WARNING):
+            ok = asyncio.get_event_loop().run_until_complete(adapter._register_webhook())
+        assert ok is False
+        assert "Sup3rS3cr3tPw" not in caplog.text

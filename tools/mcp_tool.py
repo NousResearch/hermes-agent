@@ -2467,15 +2467,16 @@ class MCPServerTask:
         new_pids: set = set()
         try:
             async with contextlib.AsyncExitStack() as stack:
-                async with _stdio_spawn_lock:
+                # Redirect subprocess stderr into a shared log file so MCP servers
+                # (FastMCP banners, slack-mcp startup JSON, etc.) don't dump onto
+                # the user's TTY and corrupt the TUI. Preserves debuggability via
+                # ~/.hermes/logs/mcp-stderr.log. Keep this setup outside the spawn
+                # attribution critical section.
+                _write_stderr_log_header(self.name)
+                _errlog = _get_mcp_stderr_log()
+                async with _stdio_spawn_attribution_guard():
                     # Snapshot child PIDs before spawning so we can track the new one.
                     pids_before = _snapshot_child_pids()
-                    # Redirect subprocess stderr into a shared log file so MCP servers
-                    # (FastMCP banners, slack-mcp startup JSON, etc.) don't dump onto
-                    # the user's TTY and corrupt the TUI. Preserves debuggability via
-                    # ~/.hermes/logs/mcp-stderr.log.
-                    _write_stderr_log_header(self.name)
-                    _errlog = _get_mcp_stderr_log()
                     read_stream, write_stream = await stack.enter_async_context(
                         stdio_client(server_params, errlog=_errlog)
                     )
@@ -4143,13 +4144,37 @@ _mcp_thread: Optional[threading.Thread] = None
 # _parallel_safe_servers, _mcp_tool_server_names, and _stdio_pids.
 _lock = threading.Lock()
 
+# Prevent a replacement MCP loop from being published while the old loop is
+# draining and performing its final active-PID sweep. The condition shares
+# _lock so loop publication and the stopping flag change atomically.
+_mcp_loop_state_condition = threading.Condition(_lock)
+_mcp_loop_stopping = False
+
 # Serialize only the stdio spawn-attribution window (snapshot → spawn → delta
-# → registration) so concurrent _run_stdio() coroutines on the shared MCP loop
-# cannot claim each other's child PIDs. Spawns are rare, so the serialization
-# cost is negligible; _filter_mcp_children remains defense-in-depth for
-# unrelated children. On Python 3.10+ asyncio.Lock() is loop-agnostic at
-# construction and this lock is only awaited on the MCP loop.
-_stdio_spawn_lock = asyncio.Lock()
+# → registration) so concurrent _run_stdio() coroutines cannot claim each
+# other's child PIDs. Unexpected loop failure can leave an old thread unwinding
+# while _ensure_mcp_loop() publishes a replacement, so this guard must work
+# across event loops and threads.
+# A dedicated threading.Lock provides that process-wide exclusion. Polling its
+# non-blocking acquire keeps every event loop responsive and, unlike
+# asyncio.to_thread(lock.acquire), cannot strand the lock if a queued coroutine
+# is cancelled while a worker thread is still waiting.
+_stdio_spawn_lock = threading.Lock()
+_STDIO_SPAWN_LOCK_POLL_INTERVAL_S = 0.01
+
+
+@contextlib.asynccontextmanager
+async def _stdio_spawn_attribution_guard():
+    """Cancellation-safe, cross-loop guard for stdio PID attribution."""
+    acquired = False
+    try:
+        while not _stdio_spawn_lock.acquire(blocking=False):
+            await asyncio.sleep(_STDIO_SPAWN_LOCK_POLL_INTERVAL_S)
+        acquired = True
+        yield
+    finally:
+        if acquired:
+            _stdio_spawn_lock.release()
 
 # ---------------------------------------------------------------------------
 # Cross-process MCP discovery guard
@@ -4394,7 +4419,9 @@ def _mcp_loop_exception_handler(loop, context):
 def _ensure_mcp_loop():
     """Start the background event loop thread if not already running."""
     global _mcp_loop, _mcp_thread
-    with _lock:
+    with _mcp_loop_state_condition:
+        while _mcp_loop_stopping:
+            _mcp_loop_state_condition.wait()
         if _mcp_loop is not None and _mcp_loop.is_running():
             return
         _mcp_loop = asyncio.new_event_loop()
@@ -7178,9 +7205,11 @@ async def _drain_and_stop_mcp_loop() -> None:
 
 
 def _stop_mcp_loop(*, only_if_idle: bool = False) -> bool:
-    """Stop the background event loop and join its thread."""
-    global _mcp_loop, _mcp_thread
-    with _lock:
+    """Stop the old loop before allowing a replacement loop to be published."""
+    global _mcp_loop, _mcp_thread, _mcp_loop_stopping
+    with _mcp_loop_state_condition:
+        while _mcp_loop_stopping:
+            _mcp_loop_state_condition.wait()
         if only_if_idle and (_servers or _server_connecting):
             logger.debug("Leaving MCP event loop running; active servers are registered or connecting")
             return False
@@ -7188,6 +7217,20 @@ def _stop_mcp_loop(*, only_if_idle: bool = False) -> bool:
         thread = _mcp_thread
         _mcp_loop = None
         _mcp_thread = None
+        _mcp_loop_stopping = True
+    try:
+        return _finish_stopping_mcp_loop(loop, thread)
+    finally:
+        with _mcp_loop_state_condition:
+            _mcp_loop_stopping = False
+            _mcp_loop_state_condition.notify_all()
+
+
+def _finish_stopping_mcp_loop(
+    loop: Optional[asyncio.AbstractEventLoop],
+    thread: Optional[threading.Thread],
+) -> bool:
+    """Drain/close one detached MCP loop and reap only before replacement."""
     if loop is not None:
         # Drain before stopping: closing the loop with tasks still suspended
         # leaves their coroutines for the GC, whose finalizer then resumes them

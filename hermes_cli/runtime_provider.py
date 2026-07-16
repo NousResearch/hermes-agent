@@ -1938,7 +1938,7 @@ def resolve_runtime_provider(
         from agent.bedrock_adapter import (
             has_aws_credentials,
             resolve_aws_auth_env_var,
-            resolve_bedrock_region,
+            resolve_bedrock_runtime_region,
             is_anthropic_bedrock_model,
             is_openai_bedrock_model,
             bedrock_openai_base_url,
@@ -1961,9 +1961,9 @@ def resolve_runtime_provider(
         # Read bedrock-specific config from config.yaml
         _bedrock_cfg = load_config().get("bedrock", {})
         # Region priority: config.yaml bedrock.region → env var → us-east-1.
-        # Same resolution as resolve_bedrock_runtime_region() in
-        # agent/bedrock_adapter.py — auxiliary calls must agree with this.
-        region = (_bedrock_cfg.get("region") or "").strip() or resolve_bedrock_region()
+        # resolve_bedrock_runtime_region() is the canonical implementation of
+        # this priority; auxiliary resolution uses the same helper.
+        region = resolve_bedrock_runtime_region({"bedrock": _bedrock_cfg})
         auth_source = resolve_aws_auth_env_var() or "aws-sdk-default-chain"
         # Build guardrail config if configured
         _gr = _bedrock_cfg.get("guardrail", {})

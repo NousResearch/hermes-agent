@@ -23,6 +23,7 @@ CUSTOMIZATION:
   - ENGINE_DEPS: list of dicts with name + command (as list, not shell string)
 """
 
+import os
 import re
 import sys
 import subprocess
@@ -34,8 +35,10 @@ from datetime import datetime
 # ─── CONFIGURATION — edit these to match your setup ───────────────────────
 
 # Path to your skills directory (where UPSTREAM_MANIFEST.md lives)
-# Override with SKILLS_ROOT env var if needed
-SKILLS_ROOT = Path.home() / ".hermes" / "skills"
+# Derived from HERMES_HOME so named profiles are respected; override with
+# SKILLS_ROOT env var if needed.
+HERMES_HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+SKILLS_ROOT = HERMES_HOME / "skills"
 
 # Path to your published repo (for Layer 2 checks). Set to None to skip.
 # Override with LAYER_2_REPO env var if needed
@@ -56,8 +59,7 @@ ENGINE_DEPS = [
 
 
 def _resolve_config():
-    """Allow env var overrides without importing os at module level clutter."""
-    import os
+    """Allow env var overrides for configuration."""
     global SKILLS_ROOT, LAYER_2_REPO
     env_root = os.environ.get("SKILLS_ROOT")
     if env_root:
@@ -281,7 +283,8 @@ def check_layer_1_skills(manifest_data):
     checked_repos = {}  # cache: repo -> default_branch
 
     all_entries = (manifest_data["layer1_skills"] +
-                   manifest_data["layer1_refs"])
+                   manifest_data["layer1_refs"] +
+                   manifest_data["layer1_third_party"])
 
     for row in all_entries:
         skill = row.get("skill", row.get("file", "?"))
@@ -500,7 +503,8 @@ def main():
     manifest_data = parse_manifest(manifest_path)
 
     skill_count = (len(manifest_data["layer1_skills"]) +
-                   len(manifest_data["layer1_refs"]))
+                   len(manifest_data["layer1_refs"]) +
+                   len(manifest_data["layer1_third_party"]))
     published_count = len(manifest_data["layer2_published"])
     lines.append(f"Manifest: {skill_count} adapted skills, "
                  f"{published_count} published, "
@@ -527,8 +531,8 @@ def main():
     if has_drift:
         print(output)
         return 1
-    elif "✅" in output or "📦" in output:
-        print(output)
+    # Silent when in sync — no_agent cron delivers stdout only when there's
+    # something to report. Empty stdout means "all good, nothing to say."
     return 0
 
 

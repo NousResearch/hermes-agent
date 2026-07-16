@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
 Test suite for upstream_check.py — tests manifest parsing, version extraction,
-content hash drift detection, and Layer 2 same-version content drift.
+content hash drift detection, Layer 2 same-version content drift, and
+behavioral verification that engine deps use list-form subprocess (no shell=True).
 
-Run: python3 -m pytest tests/test_upstream_check.py -v --tb=short
-     python3 tests/test_upstream_check.py  # standalone (no pytest needed)
+Run: python3 -m pytest tests/skills/test_skill_maintainer_skill.py -v --tb=short
+     python3 tests/skills/test_skill_maintainer_skill.py  # standalone (no pytest needed)
 """
 
 import sys
@@ -12,9 +13,10 @@ import os
 import tempfile
 import textwrap
 from pathlib import Path
+from unittest.mock import patch, MagicMock
 
 # Add scripts dir to path
-SKILL_ROOT = Path(__file__).resolve().parent.parent / "optional-skills" / "software-development" / "skill-maintainer"
+SKILL_ROOT = Path(__file__).resolve().parent.parent.parent / "optional-skills" / "software-development" / "skill-maintainer"
 SCRIPTS_DIR = SKILL_ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
@@ -298,27 +300,62 @@ def test_layer2_missing_local():
             upstream_check.SKILLS_ROOT = old_root
 
 
-def test_engine_deps_list_form_no_shell():
-    """ENGINE_DEPS commands are lists, not shell strings — no shell=True."""
-    # Inspect the source to verify no shell=True is used in check_engine_deps
-    source = (SCRIPTS_DIR / "upstream_check.py").read_text()
-    # The check_engine_deps function should use list-form subprocess.run
-    # Check only actual code lines (not comments/docstrings) for shell=True
-    func_start = source.index("def check_engine_deps")
-    func_end = source.index("\n\n\n# ─── Main", func_start)
-    func_source = source[func_start:func_end]
-    code_lines = []
-    for l in func_source.splitlines():
-        s = l.strip()
-        if not s or s.startswith("#"):
-            continue
-        # Strip inline comments (rough but sufficient for this check)
-        if "  #" in s:
-            s = s.split("  #")[0].strip()
-        code_lines.append(s)
-    for line in code_lines:
-        assert "shell=True" not in line, \
-            f"check_engine_deps should not use shell=True, found in: {line}"
+def test_engine_deps_uses_list_form_no_shell():
+    """check_engine_deps passes commands as lists to subprocess.run (no shell=True).
+
+    Behavioral test: mocks subprocess.run and verifies the call receives a
+    list argument without shell=True, rather than inspecting source text.
+    """
+    # Configure a test engine dep
+    old_deps = upstream_check.ENGINE_DEPS
+    upstream_check.ENGINE_DEPS = [
+        {"name": "test-tool", "command": ["test-tool", "--version"],
+         "version_regex": r"(\d+\.\d+\.\d+)"},
+    ]
+
+    mock_result = MagicMock()
+    mock_result.stdout = "test-tool version 1.2.3\n"
+    mock_result.stderr = ""
+    mock_result.returncode = 0
+
+    try:
+        with patch("upstream_check.subprocess.run", return_value=mock_result) as mock_run:
+            results = upstream_check.check_engine_deps({})
+
+            # Verify subprocess.run was called
+            assert mock_run.called, "subprocess.run should have been called"
+
+            # Verify the call used a list (not a string) and no shell=True
+            call_args, call_kwargs = mock_run.call_args
+            # First positional arg should be the command list
+            cmd = call_args[0] if call_args else call_kwargs.get("args")
+            assert isinstance(cmd, list), \
+                f"Expected list argument, got {type(cmd)}: {cmd}"
+            assert "shell" not in call_kwargs or call_kwargs["shell"] is not True, \
+                f"shell=True should not be used, kwargs: {call_kwargs}"
+
+            # Verify result contains version info
+            combined = " ".join(results)
+            assert "1.2.3" in combined, f"Expected version 1.2.3 in results: {results}"
+    finally:
+        upstream_check.ENGINE_DEPS = old_deps
+
+
+def test_engine_deps_handles_missing_command():
+    """check_engine_deps reports warning when command not found."""
+    old_deps = upstream_check.ENGINE_DEPS
+    upstream_check.ENGINE_DEPS = [
+        {"name": "nonexistent-tool", "command": ["nonexistent-tool-xyz", "--version"],
+         "version_regex": r"(\d+\.\d+\.\d+)"},
+    ]
+
+    try:
+        results = upstream_check.check_engine_deps({})
+        combined = " ".join(results)
+        assert "not installed" in combined.lower() or "⚠️" in combined, \
+            f"Expected not-installed warning, got: {results}"
+    finally:
+        upstream_check.ENGINE_DEPS = old_deps
 
 
 def test_split_sections():

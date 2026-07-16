@@ -1288,14 +1288,15 @@ def _get_env_config() -> Dict[str, Any]:
         docker_extra_args = []
 
     # Default cwd: local uses the host's current directory, ssh uses the
-    # remote home, and everything else starts in the backend's default
-    # root-like cwd.
+    # remote home, and everything else uses the user's real home directory
+    # (not hardcoded /root) so non-root runtimes (systemd, cron) don't get
+    # Permission denied when the process runs as a non-root user (#65583).
     if env_type == "local":
         default_cwd = _safe_getcwd()
     elif env_type == "ssh":
         default_cwd = "~"
     else:
-        default_cwd = "/root"
+        default_cwd = os.path.expanduser("~")
 
     # Read TERMINAL_CWD but sanity-check it for container backends.
     # If Docker cwd passthrough is explicitly enabled, remap the host path to

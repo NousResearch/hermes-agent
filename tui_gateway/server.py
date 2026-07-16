@@ -5696,7 +5696,11 @@ def _(rid, params: dict) -> dict:
             db.reopen_session(target)
             # The child's OWN conversation only — include_ancestors would prepend
             # the parent's transcript onto the subagent's branch.
-            history = db.get_messages_as_conversation(target)
+            # repair_alternation: this resume feeds LIVE REPLAY (the loaded
+            # history becomes the resumed session record's working conversation),
+            # so heal a durable ``user;user`` violation once here instead of
+            # re-firing the pre-request repair on every subsequent turn.
+            history = db.get_messages_as_conversation(target, repair_alternation=True)
         except Exception as e:
             if lease is not None:
                 lease.release()

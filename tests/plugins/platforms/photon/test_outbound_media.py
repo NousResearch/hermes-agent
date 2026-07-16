@@ -38,6 +38,10 @@ def _capture_sidecar(adapter: PhotonAdapter) -> List[Tuple[str, Dict[str, Any]]]
     return calls
 
 
+def test_photon_disables_progressive_text_streaming() -> None:
+    assert PhotonAdapter.SUPPORTS_MESSAGE_EDITING is False
+
+
 @pytest.fixture()
 def real_file(tmp_path) -> str:
     p = tmp_path / "photo.jpg"

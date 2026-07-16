@@ -195,6 +195,10 @@ class PhotonAdapter(BasePlatformAdapter):
     """
 
     MAX_MESSAGE_LENGTH = _MAX_MESSAGE_LENGTH
+    # Photon can send edits upstream, but this adapter does not yet implement
+    # edit_message(). Opt out of progressive streaming so a partial MEDIA:
+    # control line can never become an irreversible visible iMessage.
+    SUPPORTS_MESSAGE_EDITING = False
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("photon"))

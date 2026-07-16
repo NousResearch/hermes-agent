@@ -1423,6 +1423,13 @@ class TestShouldSendMediaAsAudio:
         assert should_send_media_as_audio(Platform.TELEGRAM, ".flac") is False
         assert should_send_media_as_audio(Platform.DISCORD, ".flac") is True
 
+    def test_caf_media_directive_is_hidden_from_display(self):
+        from gateway.platforms.base import BasePlatformAdapter, MEDIA_DELIVERY_EXTS
+
+        assert ".caf" in MEDIA_DELIVERY_EXTS
+        text = "MEDIA:/Users/example/.hermes/audio_cache/reply.caf"
+        assert BasePlatformAdapter.strip_media_directives_for_display(text) == ""
+
 
 # ---------------------------------------------------------------------------
 # truncate_message

@@ -3931,6 +3931,24 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     "error": f"MCP server '{server_name}' is not connected"
                 }, ensure_ascii=False)
 
+        # Strict providers (Anthropic) rewrite schema property keys their
+        # validator rejects (e.g. ``filters[]`` → ``filters``) before the
+        # model ever sees the tool, so the model's arguments come back under
+        # the sanitized names. The server's contract is the ORIGINAL
+        # inputSchema — map renamed keys back before dispatch. The rename is
+        # deterministic given the original schema, so no per-request state
+        # is needed; arguments already using canonical names pass through
+        # untouched (#63441).
+        if args:
+            declared = next(
+                (t for t in (server._tools or []) if t.name == tool_name), None
+            )
+            input_schema = getattr(declared, "inputSchema", None)
+            if isinstance(input_schema, dict):
+                from tools.schema_sanitizer import restore_value_property_keys
+
+                args = restore_value_property_keys(input_schema, args)
+
         async def _call():
             _mark_server_call_started(server)
             async with server._rpc_lock:

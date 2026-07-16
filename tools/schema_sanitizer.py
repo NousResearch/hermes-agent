@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -499,3 +500,160 @@ def strip_slash_enum(tools: list[dict]) -> tuple[list[dict], int]:
             stripped,
         )
     return tools, stripped
+
+
+# ---------------------------------------------------------------------------
+# Strict property-key sanitization (Anthropic tool schema validator)
+# ---------------------------------------------------------------------------
+
+# Anthropic's tool schema validator only accepts property keys matching this
+# pattern; offending keys (e.g. Rails-style ``filters[]``) fail the whole
+# request with HTTP 400, which disables native tool-use for the turn.
+STRICT_PROPERTY_KEY_RE = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
+
+
+def sanitize_property_key(key: str, seen: set) -> str:
+    """Return a strict-validator-safe property key, unique within ``seen``.
+
+    Deterministic for a given ``(key, seen)`` state: renames never depend
+    on randomness, so the mapping can be recomputed later from the original
+    schema alone (see :func:`restore_value_property_keys`).
+    """
+    import hashlib
+
+    original = str(key or "")
+    sanitized = original.replace("[]", "")
+    sanitized = re.sub(r"[^a-zA-Z0-9_.-]+", "_", sanitized)
+    sanitized = re.sub(r"_+", "_", sanitized).strip("_")
+    if not sanitized:
+        sanitized = "property"
+    sanitized = sanitized[:64]
+    if sanitized not in seen:
+        seen.add(sanitized)
+        return sanitized
+
+    suffix = "_" + hashlib.sha1(original.encode("utf-8")).hexdigest()[:8]
+    base = sanitized[: 64 - len(suffix)] or "property"
+    candidate = base + suffix
+    counter = 2
+    while candidate in seen:
+        extra = f"_{counter}"
+        candidate = base[: 64 - len(suffix) - len(extra)] + suffix + extra
+        counter += 1
+    seen.add(candidate)
+    return candidate
+
+
+def _property_key_map(properties: dict) -> dict:
+    """Compute the original→sanitized key mapping for one ``properties`` dict.
+
+    Iterates in insertion order — the same order sanitization uses at
+    request-build time — so collision suffixes reproduce identically.
+    """
+    key_map: dict = {}
+    seen: set = set()
+    for prop_key in properties:
+        prop_key_str = str(prop_key)
+        if STRICT_PROPERTY_KEY_RE.match(prop_key_str) and prop_key_str not in seen:
+            seen.add(prop_key_str)
+            key_map[prop_key_str] = prop_key_str
+        else:
+            key_map[prop_key_str] = sanitize_property_key(prop_key_str, seen)
+    return key_map
+
+
+def sanitize_schema_property_keys(node: Any) -> Any:
+    """Recursively rewrite JSON Schema property keys to strict-safe names.
+
+    Keys already matching :data:`STRICT_PROPERTY_KEY_RE` pass through
+    untouched; ``required`` arrays are rewritten in step, and two keys that
+    sanitize to the same name are disambiguated with a deterministic hash
+    suffix so nothing is silently overwritten.
+    """
+    if isinstance(node, list):
+        return [sanitize_schema_property_keys(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+
+    out = {
+        key: sanitize_schema_property_keys(value)
+        for key, value in node.items()
+    }
+    properties = out.get("properties")
+    if isinstance(properties, dict):
+        key_map = _property_key_map(properties)
+        out["properties"] = {
+            key_map[str(prop_key)]: prop_schema
+            for prop_key, prop_schema in properties.items()
+        }
+
+        required = out.get("required")
+        if isinstance(required, list):
+            rewritten_required = [
+                key_map.get(req, req)
+                for req in required
+                if isinstance(req, str) and key_map.get(req, req) in out["properties"]
+            ]
+            if rewritten_required:
+                out["required"] = rewritten_required
+            else:
+                out.pop("required", None)
+
+    return out
+
+
+def restore_value_property_keys(schema: Any, value: Any) -> Any:
+    """Rename sanitized property keys in ``value`` back to the schema's names.
+
+    Inverse of :func:`sanitize_schema_property_keys` applied to *data*
+    rather than schemas: given the ORIGINAL (unsanitized) schema, recompute
+    the deterministic rename map per object level and map any argument key
+    the model produced under a sanitized name back to the canonical name
+    the tool's real contract declares (e.g. ``filters`` → ``filters[]``).
+
+    Keys that were never renamed — including arguments already using the
+    canonical names — pass through untouched, so applying this to input
+    from providers that don't sanitize schemas is a no-op.
+    """
+    if not isinstance(schema, dict):
+        return value
+
+    if isinstance(value, list):
+        items = schema.get("items")
+        if isinstance(items, dict):
+            return [restore_value_property_keys(items, item) for item in value]
+        return value
+
+    if not isinstance(value, dict):
+        return value
+
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        # Nullable/union wrappers: descend into the first object-shaped
+        # branch (mirrors how nullable-union collapsing picked the non-null
+        # branch before the keys were sanitized).
+        for combinator in ("anyOf", "oneOf", "allOf"):
+            branches = schema.get(combinator)
+            if isinstance(branches, list):
+                for branch in branches:
+                    if isinstance(branch, dict) and isinstance(
+                        branch.get("properties"), dict
+                    ):
+                        return restore_value_property_keys(branch, value)
+        return value
+
+    reverse_map = {
+        sanitized: original
+        for original, sanitized in _property_key_map(properties).items()
+        if sanitized != original
+    }
+    restored: dict = {}
+    for arg_key, arg_value in value.items():
+        original_key = reverse_map.get(arg_key, arg_key)
+        sub_schema = properties.get(original_key)
+        restored[original_key] = (
+            restore_value_property_keys(sub_schema, arg_value)
+            if isinstance(sub_schema, dict)
+            else arg_value
+        )
+    return restored

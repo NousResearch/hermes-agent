@@ -179,10 +179,12 @@ def notify_other_tool_call(task_id: str = "default"):
                     task_data[key].clear()
 
 
-def _invalidate_dedup_for_path(filepath: str, task_id: str) -> None:
+def _invalidate_dedup_for_path(
+    filepath: str, task_id: str, resolved_path: str | None = None
+) -> None:
     """Evict every dedup entry (all offset/limit ranges) and not-found entry for *filepath*
     after a write, so the next read returns fresh content. Acquires the lock itself."""
-    resolved = _resolved_or_none(filepath, task_id)
+    resolved = resolved_path or _resolved_or_none(filepath, task_id)
     if resolved is None:
         return
     with _read_tracker_lock:
@@ -197,15 +199,17 @@ def _invalidate_dedup_for_path(filepath: str, task_id: str) -> None:
         _pop_not_found("search", resolved, task_id)
 
 
-def _update_read_timestamp(filepath: str, task_id: str) -> None:
+def _update_read_timestamp(
+    filepath: str, task_id: str, resolved_path: str | None = None
+) -> None:
     """After a successful write: invalidate dedup and refresh the stored mtime so
     consecutive edits by the same task don't trigger false staleness warnings.
 
     Also invalidates the dedup cache for the written path so that subsequent reads return fresh content
     (fixes #13144).
     """
-    _invalidate_dedup_for_path(filepath, task_id)
-    resolved = _resolved_or_none(filepath, task_id)
+    _invalidate_dedup_for_path(filepath, task_id, resolved_path)
+    resolved = resolved_path or _resolved_or_none(filepath, task_id)
     if resolved is None:
         return
     try:
@@ -219,10 +223,12 @@ def _update_read_timestamp(filepath: str, task_id: str) -> None:
             _cap_read_tracker_data(task_data)
 
 
-def _check_file_staleness(filepath: str, task_id: str) -> str | None:
+def _check_file_staleness(
+    filepath: str, task_id: str, resolved_path: str | None = None
+) -> str | None:
     """Warn (don't block) when the file's mtime changed since this task last read it.
     ``None`` when never read, fresh, or unstattable (a deleted file is the write's problem)."""
-    resolved = _resolved_or_none(filepath, task_id)
+    resolved = resolved_path or _resolved_or_none(filepath, task_id)
     if resolved is None:
         return None
     with _read_tracker_lock:

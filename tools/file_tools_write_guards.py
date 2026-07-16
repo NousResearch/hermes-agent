@@ -10,10 +10,16 @@ deny), ``_check_binary_document_write``, ``_check_protected_instruction_write``
 
 import fnmatch
 import os
+import posixpath
 from pathlib import Path
 
 from tools.binary_extensions import has_opaque_document_extension, is_pdf_path
-from tools.file_tools_paths import _expand_tilde, _resolve_path_for_task
+from tools.file_tools_paths import (
+    _expand_tilde,
+    _resolve_path_for_task,
+    _terminal_env_type_for_task,
+    _uses_container_paths,
+)
 
 # Prefixes matched after realpath. macOS: /private/var mirrors /var — block the
 # sensitive subtrees only; a blanket "/private/var/" refuses every temp-file
@@ -76,9 +82,18 @@ def _resolved_or_raw(filepath: str, task_id: str) -> str:
         return filepath
 
 
-def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
-    """Return an error message if the path targets a sensitive system location."""
-    candidates = (_resolved_or_raw(filepath, task_id), os.path.normpath(_expand_tilde(filepath)))
+def _check_sensitive_path(
+    filepath: str, task_id: str = "default", resolved_path: str | None = None
+) -> str | None:
+    """Check both the original namespace and captured backend identity."""
+    resolved = resolved_path or _resolved_or_raw(filepath, task_id)
+    if posixpath.isabs(filepath):
+        normalized = posixpath.normpath(filepath)
+    elif _terminal_env_type_for_task(task_id) == "ssh":
+        normalized = filepath
+    else:
+        normalized = os.path.normpath(_expand_tilde(filepath))
+    candidates = (resolved, normalized)
     if any(c.startswith(_SENSITIVE_PATH_PREFIXES) or c in _SENSITIVE_EXACT_PATHS for c in candidates):
         return (
             f"Refusing to write to sensitive system path: {filepath}\n"
@@ -130,7 +145,8 @@ def _protected_instruction_config() -> tuple[bool, list[str]]:
 
 def _protected_instruction_reason(filepath: str, task_id: str = "default",
                                   *, enabled: bool | None = None,
-                                  extra_patterns: list[str] | None = None) -> str | None:
+                                  extra_patterns: list[str] | None = None,
+                                  resolved_path: str | None = None) -> str | None:
     """Return a short label when ``filepath`` targets a protected instruction file, else ``None``.
     Matches BOTH the normalized input and its realpath so no symlink direction escapes.
 
@@ -144,10 +160,13 @@ def _protected_instruction_reason(filepath: str, task_id: str = "default",
         return None
 
     normalized = os.path.normpath(_expand_tilde(filepath))
-    try:
-        resolved = os.path.realpath(str(_resolve_path_for_task(filepath, task_id)))
-    except (OSError, ValueError, RuntimeError):
-        resolved = os.path.realpath(normalized)
+    if resolved_path is not None:
+        resolved = os.path.realpath(resolved_path)
+    else:
+        try:
+            resolved = os.path.realpath(str(_resolve_path_for_task(filepath, task_id)))
+        except (OSError, ValueError, RuntimeError):
+            resolved = os.path.realpath(normalized)
 
     # ~/.hermes itself is governed by its own guards (config.yaml hard-block,
     # mirror guard, write_approval); this gate targets PROJECT-LOCAL files only.
@@ -245,20 +264,27 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
     return timed_out if timed else denied
 
 
-def _check_protected_instruction_write(paths: list[str], task_id: str = "default") -> str | None:
+def _check_protected_instruction_write(
+    paths: list[str], task_id: str = "default", resolved_paths: dict[str, str] | None = None
+) -> str | None:
     """Gate a write/patch touching protected instruction files. ONE protected file gates
     the ENTIRE multi-file patch (one prompt, all-or-nothing)."""
     enabled, extra = _protected_instruction_config()
     if not enabled:
         return None
-    reasons = [r for r in (_protected_instruction_reason(p, task_id, enabled=enabled, extra_patterns=extra)
+    resolved_paths = resolved_paths or {}
+    reasons = [r for r in (_protected_instruction_reason(
+        p, task_id, enabled=enabled, extra_patterns=extra,
+        resolved_path=resolved_paths.get(p))
                            for p in paths) if r]
     if not reasons:
         return None
     return _request_protected_instruction_approval(reasons, task_id)
 
 
-def _check_approval_required_write(paths: list[str], task_id: str = "default") -> str | None:
+def _check_approval_required_write(
+    paths: list[str], task_id: str = "default", resolved_paths: dict[str, str] | None = None
+) -> str | None:
     """Gate a write/patch touching an approval-required path (``~/.ssh/config`` can steer
     execution via ``ProxyCommand``). Routine gate: once/session/always, honors --yolo,
     fail-closed without an interactive/gateway channel."""
@@ -267,7 +293,12 @@ def _check_approval_required_write(paths: list[str], task_id: str = "default") -
     except Exception:
         return None
 
-    targets = [p for p in paths if is_write_approval_required(p)]
+    resolved_paths = resolved_paths or {}
+    targets = [
+        p for p in paths
+        if is_write_approval_required(p)
+        or (resolved_paths.get(p) is not None and is_write_approval_required(resolved_paths[p]))
+    ]
     if not targets:
         return None
 
@@ -324,7 +355,9 @@ def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | Non
     return None
 
 
-def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | None:
+def _check_cross_profile_path(
+    filepath: str, task_id: str = "default", resolved_path: str | None = None
+) -> str | None:
     """Soft-guard: warn when ``filepath`` lands on a host-side or Docker sandbox MIRROR of
     Hermes state (a write the host never reads). Not profile isolation — that guard was
     removed; ``cross_profile=True`` keeps bypassing this one for replay compat. Fails open."""
@@ -332,14 +365,16 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
         from agent.file_safety import get_container_mirror_warning, get_sandbox_mirror_warning
     except Exception:
         return None
-    resolved = _resolved_or_raw(filepath, task_id)
+    resolved = resolved_path or _resolved_or_raw(filepath, task_id)
     warning = get_sandbox_mirror_warning(resolved)
     if warning is not None:
         return warning
     return get_container_mirror_warning(resolved, mirror_prefix=_get_container_mirror_prefix_for_task(task_id))
 
 
-def _check_binary_document_write(filepath: str, task_id: str = "default") -> str | None:
+def _check_binary_document_write(
+    filepath: str, task_id: str = "default", resolved_path: str | None = None
+) -> str | None:
     """Reject text-tool writes that would corrupt a binary document (read_file showed
     EXTRACTED text, so the model may write it back). Opaque formats are always rejected;
     .pdf only when OVERWRITING an existing file (raw PDF syntax is text-authorable).
@@ -349,8 +384,10 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
     write_file/patch. A plain-text write can never produce a valid OOXML/OLE/ODF container, so that write
     silently destroys the document (port of nearai/ironclaw#7109).
     """
-    if has_opaque_document_extension(filepath):
-        ext = filepath[filepath.rfind("."):].lower()
+    backend_path = resolved_path or filepath
+    opaque_path = filepath if has_opaque_document_extension(filepath) else backend_path
+    if has_opaque_document_extension(opaque_path):
+        ext = opaque_path[opaque_path.rfind("."):].lower()
         return (
             f"Refusing to write plain text to binary document '{filepath}' ({ext}). "
             "A text write cannot produce a valid document container and would "
@@ -358,21 +395,37 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
             "bytes). Use the docx/xlsx/powerpoint skills or a library like "
             "python-docx/openpyxl/python-pptx via the terminal to create or edit "
             "this document.")
-    if is_pdf_path(filepath):
-        try:
-            resolved = Path(_resolve_path_for_task(filepath, task_id))
-        except Exception:
-            resolved = Path(_expand_tilde(filepath))
-        try:
-            if resolved.is_file():
+    if is_pdf_path(filepath) or is_pdf_path(backend_path):
+        if _uses_container_paths(task_id):
+            try:
+                from tools.file_tools import _get_file_ops
+                probe = getattr(_get_file_ops(task_id), "is_regular_file", None)
+                if not callable(probe):
+                    raise RuntimeError("backend has no regular-file probe")
+                pdf_exists = bool(probe(backend_path))
+            except Exception:
+                return (
+                    f"Refusing to write PDF '{filepath}' because Hermes could not safely determine "
+                    "whether the backend target already exists. Retry after the SSH/container backend is healthy."
+                )
+        else:
+            try:
+                resolved = Path(resolved_path) if resolved_path is not None else Path(
+                    _resolve_path_for_task(filepath, task_id)
+                )
+            except Exception:
+                resolved = Path(_expand_tilde(filepath))
+            try:
+                pdf_exists = resolved.is_file()
+            except OSError:
+                pdf_exists = False
+        if pdf_exists:
                 return (
                     f"Refusing to overwrite existing PDF '{filepath}' with plain text. "
                     "read_file showed you EXTRACTED text, not the real bytes — writing "
                     "text back would destroy the document. Use the pdf skill or a PDF "
                     "library via the terminal to modify it. (Creating a NEW .pdf file "
                     "is allowed.)")
-        except OSError:
-            pass
     return None
 
 

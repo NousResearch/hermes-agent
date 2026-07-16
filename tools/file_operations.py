@@ -19,6 +19,7 @@ import logging
 import secrets
 import unicodedata
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Optional, Dict
 from pathlib import Path
 
@@ -35,6 +36,14 @@ logger = logging.getLogger(__name__)
 
 # Controller home; SearchMixin reads it (tests monkeypatch it here).
 _HOME = str(Path.home())
+
+
+@dataclass(frozen=True)
+class ResolvedMutationTarget:
+    """A user-facing path paired with its captured backend mutation identity."""
+
+    display_path: str
+    backend_path: str
 
 # --- Binary-content identification -------------------------------------------
 
@@ -165,6 +174,35 @@ def _split_segments(output: str, sentinel: str) -> list[str]:
     always ``sentinel + "\n"`` on its own line; the text after the final sentinel
     is the status segment."""
     return output.split(sentinel + "\n")
+
+
+class _ResolvedTargetFileOperations:
+    """Use captured backend identities while keeping V4A display paths."""
+
+    def __init__(self, delegate: "ShellFileOperations", resolved_targets: Dict[str, ResolvedMutationTarget]):
+        self._delegate = delegate
+        self._resolved_targets = resolved_targets
+
+    def _path(self, display_path: str) -> str:
+        target = self._resolved_targets.get(display_path)
+        if target is None:
+            raise ValueError("No captured resolved identity for a V4A target")
+        return target.backend_path
+
+    def read_file_raw(self, path: str):
+        return self._delegate.read_file_raw(self._path(path))
+
+    def write_file(self, path: str, content: str, pre_content: Optional[str] = None):
+        return self._delegate.write_file(self._path(path), content, pre_content=pre_content)
+
+    def delete_file(self, path: str):
+        return self._delegate.delete_file(self._path(path))
+
+    def move_file(self, src: str, dst: str):
+        return self._delegate.move_file(self._path(src), self._path(dst))
+
+    def _check_lint(self, path: str, content: Optional[str] = None):
+        return self._delegate._check_lint(self._path(path), content)
 
 
 class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
@@ -454,6 +492,22 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return int(stat_output), "ok"
         except ValueError:
             return 0, "bad_size"
+
+    def is_regular_file(self, path: str) -> bool:
+        """Return whether *path* is an existing regular file in the selected backend."""
+        arg = self._escape_shell_arg(path)
+        result = self._exec(
+            f"if [ -f {arg} ]; then echo regular; "
+            f"elif [ -e {arg} ]; then echo non_regular; else echo missing; fi"
+        )
+        if result.exit_code != 0:
+            raise OSError(f"backend regular-file probe failed for {path!r}: {result.stdout.strip()}")
+        output = _strip_terminal_fence_leaks(result.stdout).strip()
+        if output == "regular":
+            return True
+        if output in {"missing", "non_regular"}:
+            return False
+        raise OSError(f"backend regular-file probe returned an unknown result for {path!r}: {output!r}")
 
     def _detect_binary(self, path: str) -> tuple[bool, Optional[bytes]]:
         """``(is_binary, sample_bytes)`` — byte-layer detection when the transport
@@ -1333,13 +1387,30 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             lsp_diagnostics=write_result.lsp_diagnostics)
 
     def patch_v4a(self, patch_content: str) -> PatchResult:
-        """Apply a V4A format patch (``*** Begin Patch`` / ``*** Update File:`` /
-        ``@@ hint @@`` hunks / ``*** End Patch``)."""
+        """Apply V4A through the historical one-argument interface."""
+        return self.patch_v4a_resolved(patch_content, resolved_targets=None)
+
+    def patch_v4a_resolved(
+        self,
+        patch_content: str,
+        resolved_targets: Optional[Dict[str, ResolvedMutationTarget]],
+    ) -> PatchResult:
+        """Apply a V4A patch using captured backend identities when supplied."""
         from tools.patch_parser import parse_v4a_patch, apply_v4a_operations
         operations, parse_error = parse_v4a_patch(patch_content)
         if parse_error:
             return PatchResult(error=f"Failed to parse patch: {parse_error}")
-        return apply_v4a_operations(operations, self)
+        file_ops = self
+        if resolved_targets is not None:
+            operation_paths = []
+            for operation in operations:
+                operation_paths.append(operation.file_path)
+                if operation.new_path is not None:
+                    operation_paths.append(operation.new_path)
+            if any(path not in resolved_targets for path in operation_paths):
+                return PatchResult(error="No captured resolved identity for a V4A target")
+            file_ops = _ResolvedTargetFileOperations(self, resolved_targets)
+        return apply_v4a_operations(operations, file_ops)
 
     # --- SEARCH -------------------------------------------------------------
 

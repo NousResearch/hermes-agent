@@ -67,9 +67,26 @@ def _uses_container_paths(task_id: str = "default") -> bool:
     try:
         from tools.terminal_tool import _is_container_backend
 
-        return _is_container_backend(env_type)
+        return env_type == "ssh" or _is_container_backend(env_type)
     except Exception:
-        return env_type in _CONTAINER_PATH_BACKENDS_FALLBACK
+        return env_type == "ssh" or env_type in _CONTAINER_PATH_BACKENDS_FALLBACK
+
+
+def _expand_tilde_for_backend(path: str, task_id: str = "default") -> str:
+    """Expand SSH ``~`` against the remote home, never the local host home."""
+    if _terminal_env_type_for_task(task_id) != "ssh":
+        return _expand_tilde(path)
+    if not path or not path.startswith("~"):
+        return path
+    if path != "~" and not path.startswith("~/"):
+        raise ValueError("SSH paths for another user's home are unsupported")
+    from tools.file_tools import _get_file_ops
+
+    file_ops = _get_file_ops(task_id)
+    remote_home = str(getattr(getattr(file_ops, "env", None), "_remote_home", "") or "")
+    if not posixpath.isabs(remote_home):
+        raise ValueError("Unable to determine the SSH user's remote home")
+    return remote_home if path == "~" else posixpath.join(remote_home, path[2:])
 
 
 def _normalize_without_host_deref(path: str | Path | PurePosixPath) -> PurePosixPath:
@@ -169,12 +186,23 @@ def _resolve_base_dir(
     return _anchor(_host_text(root or os.getcwd(), container_paths), os.getcwd, container_paths)
 
 
-def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
+def _resolve_path_for_task(
+    filepath: str, task_id: str = "default", backend_cwd: str | None = None
+) -> Path | PurePosixPath:
     """Resolve *filepath* against the task's absolute base directory
     (absolute inputs are returned resolved-but-unanchored)."""
     container_paths = _uses_container_paths(task_id)
-    return _anchor(_host_text(filepath, container_paths),
-                   lambda: _resolve_base_dir(task_id, container_paths=container_paths), container_paths)
+    text = (
+        _expand_tilde_for_backend(filepath, task_id)
+        if container_paths
+        else _host_text(filepath, container_paths)
+    )
+    base = (
+        lambda: _normalize_without_host_deref(backend_cwd)
+        if backend_cwd
+        else _resolve_base_dir(task_id, container_paths=container_paths)
+    )
+    return _anchor(text, base, container_paths)
 
 
 

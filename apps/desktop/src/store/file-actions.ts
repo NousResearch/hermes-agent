@@ -1,7 +1,14 @@
 import { atom } from 'nanostores'
 
 import { translateNow } from '@/i18n'
-import { copyTextToClipboard, renameDesktopPath, revealDesktopPath, trashDesktopPath } from '@/lib/desktop-fs'
+import {
+  copyTextToClipboard,
+  isDesktopFsRemoteMode,
+  renameDesktopPath,
+  revealDesktopPath,
+  saveDesktopFileAs,
+  trashDesktopPath
+} from '@/lib/desktop-fs'
 import { notify, notifyError } from '@/store/notifications'
 import { notifyWorkspaceChanged } from '@/store/workspace-events'
 
@@ -62,6 +69,26 @@ export async function copyFilePath(path: string): Promise<void> {
     notify({ durationMs: 1500, kind: 'info', message: translateNow('fileMenu.pathCopied') })
   } catch (error) {
     notifyError(error, translateNow('common.copyFailed'))
+  }
+}
+
+export async function saveFileEntry(path: string, name: string): Promise<void> {
+  const remote = isDesktopFsRemoteMode()
+
+  try {
+    const result = await saveDesktopFileAs(path, translateNow(remote ? 'fileMenu.download' : 'fileMenu.saveCopy'))
+
+    if (result.canceled) {
+      return
+    }
+
+    notify({
+      detail: result.path || undefined,
+      kind: 'success',
+      message: translateNow('fileMenu.saved', name)
+    })
+  } catch (error) {
+    notifyError(error, translateNow('fileMenu.saveFailed'))
   }
 }
 

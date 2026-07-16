@@ -2,6 +2,7 @@ import type {
   HermesConnection,
   HermesReadDirResult,
   HermesReadFileTextResult,
+  HermesSaveFileResult,
   HermesSelectPathsOptions
 } from '@/global'
 import { $connection } from '@/store/session'
@@ -102,6 +103,24 @@ export async function readDesktopFileDataUrl(path: string): Promise<string> {
   const result = await remoteFsApi<string | { dataUrl?: string }>(fsPath('read-data-url', path))
 
   return typeof result === 'string' ? result : result.dataUrl || ''
+}
+
+// Save a file selected in either tree to the user's local machine. Electron
+// performs the actual local copy or authenticated remote stream so the renderer
+// never gains direct filesystem or credential access.
+export async function saveDesktopFileAs(path: string, title?: string): Promise<HermesSaveFileResult> {
+  const desktop = bridge()
+
+  if (!desktop.saveFileAs) {
+    throw new Error('Saving files is not available')
+  }
+
+  return desktop.saveFileAs({
+    path,
+    profile: desktopFsProfile(),
+    remote: isDesktopFsRemoteMode(),
+    title
+  })
 }
 
 export async function desktopGitRoot(path: string): Promise<string | null> {

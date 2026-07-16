@@ -24,6 +24,7 @@ import {
   type FileActionTarget,
   requestFileDelete,
   revealFile,
+  saveFileEntry,
   toRelativePath
 } from '@/store/file-actions'
 import { notifyError } from '@/store/notifications'
@@ -79,6 +80,14 @@ export function FileEntryContextMenu({ children, isDirectory, name, path, relati
           <ContextMenuItem onSelect={() => void copyFilePath(toRelativePath(path, relativeTo))}>
             {m.copyRelativePath}
           </ContextMenuItem>
+        )}
+        {!isDirectory && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem onSelect={() => void saveFileEntry(path, name)}>
+              {localFs ? m.saveCopy : m.download}
+            </ContextMenuItem>
+          </>
         )}
         {localFs && (
           <>

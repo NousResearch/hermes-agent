@@ -4742,6 +4742,44 @@ def run_conversation(
 
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 
+                # ── Mid-turn MCP tool refresh (#65428) ────────────────────
+                # An MCP server may have sent `notifications/tools/list_changed`
+                # during the tool call we just executed (e.g. mcp-dap-server
+                # swapping from the startup `debug` tool to session tools
+                # `context`/`step`/`breakpoint` once a debug session starts).
+                # `_refresh_tools()` updates the global registry immediately,
+                # but the agent snapshots `agent.tools` once per turn in
+                # `build_turn_context()`.  Without this check, newly registered
+                # tools are invisible to the next API call in the SAME turn —
+                # the agent must wait for the next user message before it can
+                # use them, breaking autonomous workflows that cross
+                # tool-set boundaries.
+                #
+                # Compare the registry generation stamp to the snapshot's
+                # stamp; if the registry advanced, rebuild the snapshot now.
+                # The cheap-generation short-circuit keeps the no-MCP case on
+                # the fast path.  `refresh_agent_mcp_tools` is additive-
+                # preserving, diff-by-name, and atomic under `_agent_tools_lock`
+                # — safe to call mid-turn.  It is a no-op when nothing changed,
+                # so an MCP server that fires list_changed without altering
+                # the visible tool set pays only the cheap generation compare.
+                if not getattr(agent, "_skip_mcp_refresh", False):
+                    try:
+                        import sys as _sys
+                        if "tools.mcp_tool" in _sys.modules:
+                            from tools.registry import registry as _snap_registry
+                            _reg_gen = getattr(_snap_registry, "_generation", 0)
+                            _agent_gen = getattr(agent, "_tool_snapshot_generation", 0)
+                            if isinstance(_reg_gen, int) and isinstance(_agent_gen, int) and _reg_gen > _agent_gen:
+                                from tools.mcp_tool import refresh_agent_mcp_tools
+                                refresh_agent_mcp_tools(agent, quiet_mode=True)
+                    except Exception:
+                        logger.debug(
+                            "Mid-turn MCP tool refresh failed (session=%s): exc_info=True",
+                            agent.session_id or "none",
+                            exc_info=True,
+                        )
+
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision
                     _turn_exit_reason = "guardrail_halt"

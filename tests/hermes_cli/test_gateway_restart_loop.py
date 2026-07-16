@@ -8,6 +8,7 @@ Covers:
 
 import json
 import os
+import subprocess
 from argparse import Namespace
 
 import pytest
@@ -379,6 +380,39 @@ class TestTerminalToolGatewayLifecycleGuard:
         # approval flow handles it (here mocked as approved).
         assert result["exit_code"] == 0
         assert calls == ["systemctl restart hermes-gateway"]
+
+
+class TestWebServerSpawnHermesActionEnv:
+    """Dashboard subprocesses must not inherit the gateway self-targeting marker."""
+
+    def test_spawn_scrubs_gateway_marker_but_keeps_noninteractive(self, monkeypatch, tmp_path):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws, "_ACTION_LOG_DIR", tmp_path / "logs")
+        monkeypatch.setitem(ws._ACTION_LOG_FILES, "gateway-restart", "gateway-restart.log")
+        monkeypatch.setattr(ws, "_dashboard_spawn_executable", lambda: "python3")
+        monkeypatch.setenv("_HERMES_GATEWAY", "1")
+        monkeypatch.setenv("KEEP_ME", "yes")
+
+        captured = {}
+
+        class _FakeProc:
+            pid = 1234
+
+        def fake_popen(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            return _FakeProc()
+
+        monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+        proc = ws._spawn_hermes_action(["gateway", "restart"], "gateway-restart")
+
+        assert proc.pid == 1234
+        assert captured["cmd"] == ["python3", "-m", "hermes_cli.main", "gateway", "restart"]
+        assert captured["kwargs"]["env"]["HERMES_NONINTERACTIVE"] == "1"
+        assert captured["kwargs"]["env"]["KEEP_ME"] == "yes"
+        assert "_HERMES_GATEWAY" not in captured["kwargs"]["env"]
 
 
 # ---------------------------------------------------------------------------

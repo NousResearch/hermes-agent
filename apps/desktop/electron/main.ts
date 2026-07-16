@@ -100,6 +100,7 @@ import {
   TEXT_PREVIEW_SOURCE_MAX_BYTES
 } from './hardening'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
+import { createNotificationRegistry } from './notification-registry'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
 import {
@@ -6980,6 +6981,10 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
 // builder live in session-windows.ts so they stay unit-testable.
 const sessionWindows = createSessionWindowRegistry()
 
+// Holds shown toasts so V8 can't collect them (and their click handlers) while
+// they're still on screen. See notification-registry.ts.
+const notifications = createNotificationRegistry()
+
 function focusWindow(win) {
   if (!win || win.isDestroyed()) {
     return
@@ -7973,6 +7978,11 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
       mainWindow.webContents.send('hermes:notification-action', { sessionId: payload?.sessionId, actionId: action.id })
     }
   })
+
+  // Load-bearing: without a reference that outlives this handler, V8 collects
+  // the notification while its toast is still on screen and the handlers above
+  // die with it — the click then does nothing. See notification-registry.ts.
+  notifications.retain(notification)
   notification.show()
 
   return true

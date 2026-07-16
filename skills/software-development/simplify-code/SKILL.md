@@ -153,15 +153,20 @@ contaminate the aggregation.
 **Acceptance filter.** For every result:
 - Drop if `status != "completed"`.
 - Drop if `summary` is empty or whitespace-only.
-- Drop if `tool_trace` exists and any entry has `status: "error"`.
+- If `tool_trace` exists and any entry has `status: "error"`, treat as
+  advisory only — keep the result if `summary` is non-empty and useful.
+  A recovered tool failure does not invalidate a good review.
 
 Record `discarded_count` and `survivor_count`. If every result is
 discarded, fall back to all original results without judge (best-effort)
 rather than failing the skill.
 
-**Best-of-N judge.** If `survivors >= 2`, run one additional LLM call
-to pick the best result. Do NOT run the judge when only one survivor
-remains — the choice is already forced.
+**Best-of-N judge.** If `survivors >= 2`, run one bounded one-shot LLM
+call via `call_llm` (not `delegate_task`, which ignores per-call iteration
+limits) with `temperature=0` to pick the best result. Do NOT run the judge
+when only one survivor remains — the choice is already forced. Build the
+candidate list dynamically from actual survivors, preserving each result's
+original `task_index`.
 
 Judge prompt:
 
@@ -173,17 +178,15 @@ Judge prompt:
 > 3. Tests passing: existing tests were run and still pass (if reported).
 > 4. Files touched: only source files, no collateral churn.
 >
-> Worker summaries:
+> Worker summaries (original task_index: summary — only surviving reviewers):
 >
-> [0] {summary of reviewer 0}
-> [1] {summary of reviewer 1}
-> [2] {summary of reviewer 2}
+> [{task_index}] {summary} — one entry per survivor, built dynamically
 >
 > Reply with exactly:
-> WINNER: <index>
+> WINNER: <task_index>
 > REASON: <one sentence>
 
-Parse the reply, extract `winner_index` and `reasoning`, and attach
+Parse the reply, extract the original `task_index` as `winner_index` and `reasoning`, and attach
 them to the surviving results for the next phase. If the judge call
 fails or returns an invalid index, fall back to the first survivor by
 task order.

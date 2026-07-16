@@ -1287,7 +1287,15 @@ def _maybe_wrap_anthropic(
         return client_obj
 
     try:
-        real_client = build_anthropic_client(api_key, base_url)
+        # Forward model.default_headers so auxiliary Anthropic calls (title,
+        # compression, vision) honour the same overrides the main agent client
+        # does. Without this, a user who configures headers to satisfy a
+        # gateway/WAF in front of an Anthropic-compatible endpoint sees the
+        # main turn succeed while auxiliary side-channel calls fail. (#9589)
+        real_client = build_anthropic_client(
+            api_key, base_url,
+            user_default_headers=_apply_user_default_headers(None),
+        )
     except Exception as exc:
         logger.warning(
             "Failed to build Anthropic client for %s (%s) — falling back to "
@@ -2060,7 +2068,15 @@ def _try_custom_endpoint() -> Tuple[Optional[Any], Optional[str]]:
         # Anthropic OAuth claims only apply to api.anthropic.com.
         try:
             from agent.anthropic_adapter import build_anthropic_client
-            real_client = build_anthropic_client(custom_key, custom_base)
+            # Forward model.default_headers so this auxiliary Anthropic
+            # construction honours the same overrides the main agent
+            # client does. Without this, custom endpoints behind a
+            # gateway/WAF that needs user-set headers succeed on the main
+            # turn and fail on auxiliary side-channels. (#9589)
+            real_client = build_anthropic_client(
+                custom_key, custom_base,
+                user_default_headers=_apply_user_default_headers(None),
+            )
         except ImportError:
             logger.warning(
                 "Custom endpoint declares api_mode=anthropic_messages but the "
@@ -2307,7 +2323,12 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
     model = _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001"
     logger.debug("Auxiliary client: Anthropic native (%s) at %s (oauth=%s)", model, base_url, is_oauth)
     try:
-        real_client = build_anthropic_client(token, base_url)
+        # Forward model.default_headers so auxiliary Anthropic calls honour
+        # the same overrides the main agent client does. (#9589)
+        real_client = build_anthropic_client(
+            token, base_url,
+            user_default_headers=_apply_user_default_headers(None),
+        )
     except ImportError:
         # The anthropic_adapter module imports fine but the SDK itself is
         # missing — build_anthropic_client raises ImportError at call time
@@ -4149,7 +4170,13 @@ def resolve_provider_client(
                 if entry_api_mode == "anthropic_messages":
                     try:
                         from agent.anthropic_adapter import build_anthropic_client
-                        real_client = build_anthropic_client(custom_key, custom_base)
+                        # Forward model.default_headers so this named-custom
+                        # auxiliary Anthropic construction honours the same
+                        # overrides the main agent client does. (#9589)
+                        real_client = build_anthropic_client(
+                            custom_key, custom_base,
+                            user_default_headers=_apply_user_default_headers(None),
+                        )
                     except ImportError:
                         logger.warning(
                             "Named custom provider %r declares api_mode="

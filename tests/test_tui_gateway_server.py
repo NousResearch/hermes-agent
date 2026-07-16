@@ -6638,6 +6638,8 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
     """
     started = threading.Event()
     release = threading.Event()
+    history_committed = threading.Event()
+    finish_completion = threading.Event()
     done = threading.Event()
 
     class _Agent:
@@ -6660,7 +6662,14 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
 
     server._sessions["sid-live"] = _session(agent=_Agent())
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
-    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+
+    def _render_message(raw, cols):
+        # render_message runs after history commit but before message.complete.
+        history_committed.set()
+        assert finish_completion.wait(2), "test timed out waiting to finish completion"
+        return None
+
+    monkeypatch.setattr(server, "render_message", _render_message)
     monkeypatch.setattr(server, "_get_db", lambda: None)
     monkeypatch.setattr(server, "_session_info", lambda agent: {"model": agent.model})
 
@@ -6698,6 +6707,22 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
         assert resp["result"]["messages"] == []
 
         release.set()
+        assert history_committed.wait(2), "completed history was not committed"
+
+        at_commit_boundary = server.handle_request(
+            {
+                "id": "activate-committing",
+                "method": "session.activate",
+                "params": {"session_id": "sid-live"},
+            }
+        )
+        assert at_commit_boundary["result"].get("inflight") is None
+        assert at_commit_boundary["result"]["messages"] == [
+            {"role": "user", "text": "write a long answer"},
+            {"role": "assistant", "text": "partial answer complete"},
+        ]
+
+        finish_completion.set()
         assert done.wait(2), "fake model turn did not complete"
         completed = server.handle_request(
             {
@@ -6713,6 +6738,7 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
         ]
     finally:
         release.set()
+        finish_completion.set()
         done.wait(2)
         server._sessions.pop("sid-live", None)
 

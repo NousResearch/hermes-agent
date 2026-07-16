@@ -9149,6 +9149,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
 
             last_reasoning = None
             status_note = None
+            inflight_cleared_with_history = False
             if isinstance(result, dict):
                 if isinstance(result.get("messages"), list):
                     with session["history_lock"]:
@@ -9156,6 +9157,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         if current_version == history_version:
                             session["history"] = result["messages"]
                             session["history_version"] = history_version + 1
+                            _clear_inflight_turn(session)
+                            inflight_cleared_with_history = True
                         else:
                             # History mutated externally during the turn
                             # (undo/compress/retry/rollback now guard on
@@ -9219,8 +9222,9 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             rendered = render_message(raw, cols)
             if rendered:
                 payload["rendered"] = rendered
-            with session["history_lock"]:
-                _clear_inflight_turn(session)
+            if not inflight_cleared_with_history:
+                with session["history_lock"]:
+                    _clear_inflight_turn(session)
             _emit("message.complete", sid, payload)
 
             # ── /goal continuation (Ralph-style loop) ─────────────────

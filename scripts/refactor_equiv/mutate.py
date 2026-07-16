@@ -52,6 +52,16 @@ def _clear_bytecode(path: Path) -> None:
 
 
 def relay_header_mutations() -> list[Mutation]:
+    """Three mutations, one per OUTPUT CLASS of this module.
+
+    relay_headers is a pure header-builder: its observable output classes are
+    (1) the return value's gating (which providers get headers at all),
+    (2) the emitted header VALUES, and (3) the lane-classification branch that
+    decides the x-hermes-lane value. It performs NO DB writes — the spec's
+    generic third class (DB-write) has no representative here by construction,
+    so the third mutation covers the classifier branch instead. A future
+    extraction that DOES write a DB must register a real DB-write mutation.
+    """
     return [
         Mutation(
             "return-value: provider gate accepts direct anthropic",
@@ -70,7 +80,7 @@ def relay_header_mutations() -> list[Mutation]:
             ),
         ),
         Mutation(
-            "DB-write: invert delegated lane branch",
+            "branch-classification: invert delegated lane branch",
             lambda p: replace_once(
                 p,
                 'return "background" if (delegated or noninteractive) else "interactive"',

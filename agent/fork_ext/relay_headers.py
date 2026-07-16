@@ -93,7 +93,7 @@ def _pool_affinity_headers(agent, aux_task=None) -> dict:
         NOT the HERMES_SESSION_ID ContextVar which could go stale across the httpx
         worker-thread boundary → cross-conversation key bleed).
       * POOL-SCOPED — only stamped for ``claude-apr`` (the api-proxy pool, api_mode
-        ``anthropic_messages``; legacy alias ``claude-app`` also accepted), so they are never sent to a direct Anthropic endpoint
+        ``anthropic_messages``; the legacy ``claude-app`` alias was retired 2026-07-08), so they are never sent to a direct Anthropic endpoint
         or any third party. The relay strips them before dispatching upstream (routing
         metadata on a loopback hop, no egress, no telemetry — satisfies the
         no-outbound-attribution rubric).

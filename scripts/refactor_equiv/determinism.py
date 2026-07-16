@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as _datetime_module
 import os
 import re
 import secrets
@@ -17,6 +18,26 @@ FROZEN_EPOCH = 1_800_000_000.0
 FROZEN_MONOTONIC = 500_000.0
 FROZEN_SQL_DATETIME = "2027-01-15 08:00:00"
 _SCAN = re.compile(r"monotonic|CURRENT_TIMESTAMP|datetime\('now'\)|AUTOINCREMENT")
+
+
+class _FrozenDateTime(_datetime_module.datetime):
+    """datetime subclass whose now()/utcnow() return the frozen instant.
+
+    ``datetime.datetime`` is a C type — its methods cannot be monkeypatched
+    directly, so the seam swaps the module attribute for this subclass
+    (isinstance checks still pass; arithmetic still works).
+    """
+
+    @classmethod
+    def now(cls, tz=None):  # noqa: D102
+        base = _datetime_module.datetime.fromtimestamp(FROZEN_EPOCH, tz=_datetime_module.timezone.utc)
+        if tz is None:
+            return cls.fromtimestamp(FROZEN_EPOCH)
+        return base.astimezone(tz)
+
+    @classmethod
+    def utcnow(cls):  # noqa: D102
+        return cls.utcfromtimestamp(FROZEN_EPOCH)
 
 
 class DeterminismError(RuntimeError):
@@ -45,6 +66,7 @@ class Determinism(ContextDecorator):
 
         self._patch(time, "time", lambda: FROZEN_EPOCH)
         self._patch(time, "monotonic", lambda: FROZEN_MONOTONIC)
+        self._patch(_datetime_module, "datetime", _FrozenDateTime)
         self._patch(uuid, "uuid4", self._uuid4)
         self._patch(secrets, "token_hex", self._token_hex)
         self._patch(sqlite3, "connect", self._connect)

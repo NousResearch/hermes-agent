@@ -3729,16 +3729,20 @@ class APIServerAdapter(BasePlatformAdapter):
                 # non-streaming path).
                 if history_from_store and isinstance(result, dict):
                     _result_sid = result.get("session_id")
-                    if _result_sid and _result_sid != session_id:
+                    _did_compress = bool(result.get("_compressed"))
+                    _rotated = bool(_result_sid and _result_sid != session_id)
+                    if _did_compress or _rotated:
                         try:
                             from hermes_cli.config import load_config
                             _comp_cfg = load_config().get("compression", {})
                             if _comp_cfg.get("persist_in_response_store", True):
                                 _agent_messages = result.get("messages")
                                 if isinstance(_agent_messages, list) and _agent_messages:
+                                    _mode = "in-place" if _did_compress and not _rotated else "rotation"
                                     logger.info(
-                                        "Compression persisted in response_store (streaming): "
+                                        "Compression persisted in response_store (streaming, %s): "
                                         "%d messages (was %d before compression)",
+                                        _mode,
                                         len(_agent_messages),
                                         len(conversation_history) + 1,
                                     )
@@ -4071,22 +4075,26 @@ class APIServerAdapter(BasePlatformAdapter):
         _effective_session_id = session_id
         if _history_from_store and isinstance(result, dict):
             _result_sid = result.get("session_id")
-            if _result_sid and _result_sid != session_id:
-                # Session rotation = compression happened
+            _did_compress = bool(result.get("_compressed"))
+            _rotated = bool(_result_sid and _result_sid != session_id)
+            if _did_compress or _rotated:
                 try:
                     from hermes_cli.config import load_config
                     _comp_cfg = load_config().get("compression", {})
                     if _comp_cfg.get("persist_in_response_store", True):
                         _agent_messages = result.get("messages")
                         if isinstance(_agent_messages, list) and _agent_messages:
+                            _mode = "in-place" if _did_compress and not _rotated else "rotation"
                             logger.info(
-                                "Compression persisted in response_store: "
+                                "Compression persisted in response_store (%s): "
                                 "%d messages (was %d before compression)",
+                                _mode,
                                 len(_agent_messages),
                                 len(conversation_history) + 1,
                             )
                             full_history = list(_agent_messages)
-                            _effective_session_id = _result_sid
+                            if _rotated and _result_sid:
+                                _effective_session_id = _result_sid
                 except Exception:
                     pass  # Fall back to default behavior
 

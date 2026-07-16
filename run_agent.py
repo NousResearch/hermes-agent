@@ -5882,10 +5882,6 @@ class AIAgent:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.conversation_loop import run_conversation
 
-        user_message, persist_user_message = self._expand_skill_mentions(
-            user_message, persist_user_message, task_id
-        )
-
         return run_conversation(
             self,
             user_message,
@@ -5906,10 +5902,12 @@ class AIAgent:
     ) -> tuple[Any, Optional[Any]]:
         """Load any inline ``$skill-name`` mentions in *user_message* (#64601).
 
-        Sits here rather than in a surface (cli.py / gateway/run.py) because
-        every caller — CLI, gateway, batch_runner — reaches the agent through
-        ``run_conversation``; hooking one of the surfaces would leave ``$``
-        mentions silently inert in the others.
+        Called from ``agent.conversation_loop.run_conversation`` *after* hidden
+        MoA turns are decoded and *before* ``build_turn_context``, so every
+        surface (CLI, gateway, batch_runner) gets mentions — including
+        ``/moa … $skill`` prompts whose real text is base64-encoded until
+        decode. Hooking a surface instead would leave ``$`` mentions inert
+        elsewhere; hooking before MoA decode would miss encoded prompts.
 
         The model sees the skill bodies; transcripts and memory keep the text
         the user actually typed, via ``persist_user_message`` (the same

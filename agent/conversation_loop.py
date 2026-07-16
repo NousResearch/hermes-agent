@@ -579,6 +579,16 @@ def run_conversation(
         except Exception:
             pass
 
+    # Inline $skill-name mentions (#64601). Must run *after* MoA decode above:
+    # encode_moa_turn() URL-safe-base64-encodes the real prompt, so a pre-decode
+    # `$` scan cannot see `$code-review`. Expanding here — before turn-context
+    # construction — keeps `/moa review this $code-review` on the same path as
+    # a plain turn. persist_user_message already holds the decoded typed text
+    # (set above), so expansion leaves transcripts/memory clean.
+    user_message, persist_user_message = agent._expand_skill_mentions(
+        user_message, persist_user_message, task_id
+    )
+
     # ── Per-turn setup (the prologue) ──
     # All once-per-turn setup — stdio guarding, retry-counter resets, user
     # message sanitization, todo/nudge hydration, system-prompt restore-or-

@@ -146,7 +146,7 @@ def test_adapter_allowlist_is_case_insensitive_for_dm_and_group():
     assert adapter._sender_allowed("mallory@example.org", is_group=False) is False
 
 
-def test_inbound_dm_builds_event_then_marks_message_seen():
+def test_inbound_dm_resolves_sender_contact_from_raw_message_data():
     adapter = DeltaChatAdapter(
         _config(dm_policy="allowlist", allow_from=["alice@example.org"])
     )
@@ -192,7 +192,7 @@ def test_inbound_dm_builds_event_then_marks_message_seen():
     assert methods[-2:] == ["accept_chat", "markseen_msgs"]
 
 
-def test_group_requires_mention_and_strips_it_before_dispatch():
+def test_group_resolves_sender_contact_from_raw_message_data():
     adapter = DeltaChatAdapter(
         _config(
             group_policy="allowlist",
@@ -241,6 +241,7 @@ def test_group_requires_mention_and_strips_it_before_dispatch():
     event = adapter.handle_message.await_args.args[0]
     assert event.text == "summarize this"
     assert event.source.chat_type == "group"
+    assert ("get_contact", (7, 33), 30.0) in adapter._rpc.calls
 
 
 def test_send_uses_misc_send_msg_and_preserves_reply_anchor():

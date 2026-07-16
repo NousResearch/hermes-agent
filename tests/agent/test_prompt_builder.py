@@ -1208,6 +1208,7 @@ class TestEnvironmentHints:
         monkeypatch.setattr(
             sys, "getwindowsversion",
             lambda: _WinVer(10, 0, 26200, 2, "Windows 11"),
+            raising=False,
         )
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
         _pb._clear_backend_probe_cache()
@@ -1230,6 +1231,7 @@ class TestEnvironmentHints:
         monkeypatch.setattr(
             sys, "getwindowsversion",
             lambda: _WinVer(10, 0, 19045, 2, "Windows 10"),
+            raising=False,
         )
         monkeypatch.delenv("TERMINAL_ENV", raising=False)
         _pb._clear_backend_probe_cache()

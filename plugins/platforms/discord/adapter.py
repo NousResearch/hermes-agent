@@ -5880,6 +5880,13 @@ class DiscordAdapter(BasePlatformAdapter):
 
             if require_mention and not is_free_channel and not in_bot_thread:
                 if not self._self_is_explicitly_mentioned(message) and not mention_prefix:
+                    logger.info(
+                        "[Discord] Silently dropping message in channel %s "
+                        "(require_mention=True, no @mention, not a free/thread channel). "
+                        "Set discord.require_mention: false in config.yaml to allow "
+                        "un-mentioned messages.",
+                        current_channel_id,
+                    )
                     return
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).

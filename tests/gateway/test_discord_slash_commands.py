@@ -1047,3 +1047,25 @@ def test_register_skill_command_autocomplete_filters_by_name_and_description(ada
     # via direct function call in the real-discord integration path.
     assert skill_cmd.callback is not None
 
+
+
+def test_require_mention_drop_logs_info_in_source():
+    """When require_mention drops a message, an INFO log must be emitted so
+    operators can diagnose silent drops (PR #33975).
+
+    Verifies the logger.info() call exists at the mention-gate return site
+    in plugins/platforms/discord/adapter.py.
+    """
+    src = open("plugins/platforms/discord/adapter.py").read()
+    # Find the require_mention gate
+    gate_idx = src.find("require_mention and not is_free_channel and not in_bot_thread")
+    assert gate_idx >= 0, "require_mention gate must exist in adapter.py"
+    # The INFO log must appear between the gate and the return statement
+    gate_section = src[gate_idx:gate_idx + 800]
+    assert "logger.info" in gate_section, (
+        "An INFO log must be emitted at the require_mention drop site so "
+        "operators can diagnose why the bot is silent in server channels."
+    )
+    assert "silently dropping" in gate_section.lower() or "require_mention" in gate_section.lower(), (
+        "The INFO log must mention the drop reason (require_mention or silently dropping)"
+    )

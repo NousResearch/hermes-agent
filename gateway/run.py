@@ -16615,11 +16615,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # threads and stdio bridge subprocesses; leaving them alive
                 # leaks one bridge per evicted cached agent. Pass the current
                 # transcript when available, matching _cleanup_agent_resources.
+                #
+                # finalize_session=False: soft eviction is, by design, not a
+                # real session boundary (see _commit_memory_before_soft_evict's
+                # docstring) — only the provider transport gets torn down
+                # here. For finalizable sessions, _commit_then_release_soft
+                # already ran commit_memory_session() (which fires
+                # on_session_end() without a transport teardown) immediately
+                # before this call. Passing finalize_session=True here would
+                # fire on_session_end() a second time for the same
+                # transcript, double-ingesting it into any external memory
+                # backend that treats session-end as a one-shot event.
                 session_messages = getattr(agent, "_session_messages", None)
                 if isinstance(session_messages, list):
-                    agent.shutdown_memory_provider(session_messages)
+                    agent.shutdown_memory_provider(session_messages, finalize_session=False)
                 else:
-                    agent.shutdown_memory_provider()
+                    agent.shutdown_memory_provider(finalize_session=False)
         except Exception:
             pass
         try:

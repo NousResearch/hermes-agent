@@ -784,7 +784,7 @@ class TestAgentCacheBoundedGrowth:
         runner._release_evicted_agent_soft(agent)
 
         agent.release_clients.assert_called_once_with()
-        agent.shutdown_memory_provider.assert_called_once_with(transcript)
+        agent.shutdown_memory_provider.assert_called_once_with(transcript, finalize_session=False)
         assert cleanup_calls == []
         assert agent._session_messages == []
 
@@ -805,7 +805,7 @@ class TestAgentCacheBoundedGrowth:
 
         runner._release_evicted_agent_soft(agent)
 
-        agent.shutdown_memory_provider.assert_called_once_with()
+        agent.shutdown_memory_provider.assert_called_once_with(finalize_session=False)
         # release_clients is absent, so the second cleanup step falls back to
         # the "older agent instance" hard-teardown path — unrelated to this
         # fix, but asserted here so the test doesn't rely on that fallback

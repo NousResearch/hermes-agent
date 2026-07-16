@@ -1961,6 +1961,21 @@ class HindsightMemoryProvider(MemoryProvider):
         # / "Unclosed connector" warnings reported in #11923. The loop
         # runs on a daemon thread and is reclaimed on process exit;
         # per-session cleanup happens via self._client.aclose() above.
+        #
+        # Unregister the atexit hook now that shutdown has run to completion.
+        # Without this, the bound _atexit_shutdown callback keeps this
+        # already-torn-down instance reachable from atexit's internal
+        # registry until process exit — e.g. a gateway soft-evicting this
+        # provider's owning agent would otherwise retain every evicted
+        # instance for the life of the process. atexit.unregister() is a
+        # documented no-op when the callback was never registered (an
+        # idle-embedded provider that never called _register_atexit), so
+        # this is safe to call unconditionally.
+        try:
+            atexit.unregister(self._atexit_shutdown)
+        except Exception:
+            pass
+        self._atexit_registered = False
 
 
 def register(ctx) -> None:

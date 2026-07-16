@@ -3312,25 +3312,40 @@ class AIAgent:
             "budget_max": self.iteration_budget.max_total,
         }
 
-    def shutdown_memory_provider(self, messages: list = None) -> None:
-        """Shut down the memory provider and context engine — call at actual session boundaries.
+    def shutdown_memory_provider(self, messages: list = None, *, finalize_session: bool = True) -> None:
+        """Shut down the memory provider and context engine.
 
         This calls on_session_end() then shutdown_all() on the memory
         manager, and on_session_end() on the context engine.
         NOT called per-turn — only at CLI exit, /reset, gateway
         session expiry, etc.
+
+        finalize_session: When False, skip both on_session_end() calls and
+        only tear down provider transports (shutdown_all()). Use this ONLY
+        when on_session_end() has already fired for this transcript via a
+        separate path — e.g. gateway soft cache eviction of a finalizable
+        session already runs commit_memory_session() (which fires
+        on_session_end() without a transport teardown) before this method
+        tears down the transport. Without finalize_session=False there, the
+        transcript would be finalized twice — once via commit_memory_session
+        and once here — double-ingesting it into external memory backends
+        that treat on_session_end as a one-shot event (e.g. full-session
+        ingestion). Callers passing False must be certain on_session_end
+        already ran for this transcript; otherwise real extraction is
+        silently skipped.
         """
         if self._memory_manager:
-            try:
-                self._memory_manager.on_session_end(messages or [])
-            except Exception as e:
-                logger.warning("Memory provider on_session_end failed during shutdown: %s", e, exc_info=True)
+            if finalize_session:
+                try:
+                    self._memory_manager.on_session_end(messages or [])
+                except Exception as e:
+                    logger.warning("Memory provider on_session_end failed during shutdown: %s", e, exc_info=True)
             try:
                 self._memory_manager.shutdown_all()
             except Exception:
                 pass
         # Notify context engine of session end (flush DAG, close DBs, etc.)
-        if hasattr(self, "context_compressor") and self.context_compressor:
+        if finalize_session and hasattr(self, "context_compressor") and self.context_compressor:
             try:
                 self.context_compressor.on_session_end(
                     self.session_id or "",

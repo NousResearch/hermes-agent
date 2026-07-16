@@ -24,6 +24,7 @@ import {
 import { isSecondaryWindow } from '@/store/windows'
 
 import { MessageRenderBoundary } from '../message-render-boundary'
+
 import { RENDER_BUDGET, useTwoPhaseRenderBudget } from './use-two-phase-render-budget'
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']

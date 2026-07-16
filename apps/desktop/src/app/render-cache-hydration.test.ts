@@ -43,7 +43,9 @@ function stubApi(overrides: any = {}) {
     reportDivergence: vi.fn(),
     ...overrides
   }
+
   vi.stubGlobal('window', { hermesDesktop: { renderCache: api } })
+
   return api
 }
 
@@ -57,11 +59,13 @@ describe('hydrateFromRenderCache', () => {
     stubApi()
     const setSessions = vi.fn()
     const setTotal = vi.fn()
+
     const result = await hydrateFromRenderCache({
       getSessions: () => [],
       setSessions,
       setSessionsTotal: setTotal
     })
+
     expect(result.painted).toBe(true)
     expect(result.gatewayUrl).toBe('http://studio:9119')
     expect(result.cachedSessionIds).toEqual(['a', 'b'])
@@ -72,11 +76,13 @@ describe('hydrateFromRenderCache', () => {
   it('NEVER clobbers a non-empty (live) list', async () => {
     stubApi()
     const setSessions = vi.fn()
+
     const result = await hydrateFromRenderCache({
       getSessions: () => [s('live')],
       setSessions,
       setSessionsTotal: vi.fn()
     })
+
     expect(result.painted).toBe(false)
     expect(setSessions).not.toHaveBeenCalled()
   })
@@ -84,11 +90,13 @@ describe('hydrateFromRenderCache', () => {
   it('fail-open: missing API / disabled / empty cache -> no paint, no throw', async () => {
     // no API at all
     vi.stubGlobal('window', { hermesDesktop: {} })
+
     let result = await hydrateFromRenderCache({
       getSessions: () => [],
       setSessions: vi.fn(),
       setSessionsTotal: vi.fn()
     })
+
     expect(result.painted).toBe(false)
 
     // disabled
@@ -185,6 +193,7 @@ describe('AC7 — cursor-seam ordering: delta during the hydrate→replace windo
 
     // The store under test: a plain array with wholesale-set semantics.
     let store: SessionInfo[] = []
+
     const setSessions = (rows: SessionInfo[]) => {
       store = rows
     }
@@ -195,6 +204,7 @@ describe('AC7 — cursor-seam ordering: delta during the hydrate→replace windo
       setSessions,
       setSessionsTotal: vi.fn()
     })
+
     expect(hydration.painted).toBe(true)
     expect(store.map(r => r.id)).toEqual(['a', 'b'])
 
@@ -231,6 +241,7 @@ describe('transcript paint (chat pane)', () => {
       })
     })
     const setMessages = vi.fn()
+
     const result = await hydrateFromRenderCache({
       getSessions: () => [],
       setSessions: vi.fn(),
@@ -239,6 +250,7 @@ describe('transcript paint (chat pane)', () => {
       getMessages: () => [],
       setMessages
     })
+
     expect(result.transcriptPainted).toBe(true)
     expect(setMessages).toHaveBeenCalledWith([{ role: 'user', parts: [{ type: 'text', text: 'hello' }] }])
   })
@@ -253,7 +265,9 @@ describe('transcript paint (chat pane)', () => {
         transcript: { storedSessionId: 'sid', rows: [{ role: 'user', parts: [{ type: 'text', text: 'hello' }] }] }
       })
     })
+
     const setMessages = vi.fn()
+
     // non-empty store
     let result = await hydrateFromRenderCache({
       getSessions: () => [],
@@ -263,6 +277,7 @@ describe('transcript paint (chat pane)', () => {
       getMessages: () => [{ live: true }],
       setMessages
     })
+
     expect(result.transcriptPainted).toBe(false)
     expect(setMessages).not.toHaveBeenCalled()
     // no remembered session
@@ -326,6 +341,7 @@ describe('optimistic-row cache hygiene (zombie re-infection guard)', () => {
       { id: '100', role: 'user', parts: [{ type: 'text', text: 'hi' }] },
       { id: 'assistant-stream-1784143089811', role: 'assistant', parts: [{ type: 'text', text: 'zombie' }] }
     ])
+
     expect(rows.map(row => (row as { id?: string }).id)).toEqual(['100'])
   })
 
@@ -333,6 +349,7 @@ describe('optimistic-row cache hygiene (zombie re-infection guard)', () => {
     const rows = normalizeCachedTranscriptRows([
       { id: 'user-1-x', role: 'user', parts: [{ type: 'text', text: 'zombie' }] }
     ])
+
     expect(rows).toEqual([])
   })
 })

@@ -14,6 +14,7 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+
 import { test } from 'vitest'
 
 import {
@@ -182,6 +183,7 @@ test('cullSession removes the transcript file AND any pending write for it (I4b)
 test('enforceTranscriptCap keeps the newest N by mtime (LRU)', () => {
   const dir = tmpDir()
   const cache = makeCache(dir)
+
   // 5 transcript files with staggered mtimes
   for (let i = 0; i < 5; i++) {
     const f = path.join(dir, `transcript-s${i}.json`)
@@ -189,6 +191,7 @@ test('enforceTranscriptCap keeps the newest N by mtime (LRU)', () => {
     const t = new Date(Date.now() - (5 - i) * 60_000) // s4 newest
     fs.utimesSync(f, t, t)
   }
+
   cache.enforceTranscriptCap(2)
   const left = fs.readdirSync(dir).sort()
   assert.deepEqual(left, ['transcript-s3.json', 'transcript-s4.json'])

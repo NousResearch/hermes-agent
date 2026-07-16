@@ -63,20 +63,25 @@ export interface RenderCacheOptions {
 /** Sanitize a stored-session id into a safe filename fragment. */
 function safeSessionFile(storedSessionId: string): string | null {
   const id = String(storedSessionId || '').trim()
+
   // Session ids are timestamp_hex shaped; refuse anything path-ish.
   if (!id || !/^[\w.-]+$/.test(id) || id.includes('..')) {
     return null
   }
+
   return `${TRANSCRIPT_PREFIX}${id}.json`
 }
 
 /** Extract the stored-session id back out of a transcript filename. */
 export function sessionIdFromTranscriptFile(fileName: string): string | null {
   const name = String(fileName || '')
+
   if (!name.startsWith(TRANSCRIPT_PREFIX) || !name.endsWith('.json')) {
     return null
   }
+
   const id = name.slice(TRANSCRIPT_PREFIX.length, -'.json'.length)
+
   return id || null
 }
 
@@ -117,24 +122,29 @@ export class RenderCache {
   /** Queue a transcript tail (rows already capped by the caller) for a session. */
   putTranscript(storedSessionId: string, rows: unknown[]): void {
     const file = safeSessionFile(storedSessionId)
+
     if (!file) {
       return
     }
+
     const capped = Array.isArray(rows) ? rows.slice(-TRANSCRIPT_ROW_CAP) : []
     this.queue(file, { storedSessionId, rows: capped })
   }
 
   private queue(file: string, data: unknown): void {
     this.pending.set(file, data)
+
     if (this.timer) {
       return
     }
+
     const elapsed = this.now() - this.lastFlushAt
     const wait = Math.max(0, this.debounceMs - Math.max(0, elapsed))
     this.timer = setTimeout(() => {
       this.timer = null
       this.flush()
     }, wait)
+
     // Never keep the process alive just for a cache write.
     if (typeof (this.timer as any)?.unref === 'function') {
       ;(this.timer as any).unref()
@@ -151,12 +161,15 @@ export class RenderCache {
       clearTimeout(this.timer)
       this.timer = null
     }
+
     if (this.pending.size === 0) {
       return
     }
+
     const entries = [...this.pending.entries()]
     this.pending.clear()
     this.lastFlushAt = this.now()
+
     for (const [file, data] of entries) {
       this.writeOne(file, data)
     }
@@ -165,6 +178,7 @@ export class RenderCache {
   private writeOne(file: string, data: unknown): void {
     try {
       fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 })
+
       const envelope: RenderCacheEnvelope<unknown> = {
         schema: RENDER_CACHE_SCHEMA,
         appVersion: this.appVersion,
@@ -172,6 +186,7 @@ export class RenderCache {
         savedAt: new Date(this.now()).toISOString(),
         data
       }
+
       const target = path.join(this.dir, file)
       const tmp = `${target}.tmp-${process.pid}`
       fs.writeFileSync(tmp, JSON.stringify(envelope), { mode: 0o600 })
@@ -195,15 +210,19 @@ export class RenderCache {
     try {
       const raw = fs.readFileSync(path.join(this.dir, file), 'utf8')
       const parsed = JSON.parse(raw) as RenderCacheEnvelope<T>
+
       if (!parsed || typeof parsed !== 'object') {
         return null
       }
+
       if (parsed.schema !== RENDER_CACHE_SCHEMA) {
         return null // schema mismatch → discard (D5)
       }
+
       if (parsed.gatewayUrl !== this.gatewayUrl) {
         return null // different gateway wrote this → discard (D5)
       }
+
       // appVersion mismatch is deliberately KEPT (schema is the contract, D5).
       return parsed.data ?? null
     } catch {
@@ -221,6 +240,7 @@ export class RenderCache {
 
   readTranscript<T = unknown>(storedSessionId: string): T | null {
     const file = safeSessionFile(storedSessionId)
+
     return file ? this.readOne<T>(file) : null
   }
 
@@ -232,10 +252,13 @@ export class RenderCache {
    */
   cullSession(storedSessionId: string): void {
     const file = safeSessionFile(storedSessionId)
+
     if (!file) {
       return
     }
+
     this.pending.delete(file)
+
     try {
       fs.rmSync(path.join(this.dir, file), { force: true })
     } catch (error: any) {
@@ -250,9 +273,11 @@ export class RenderCache {
   enforceTranscriptCap(max: number = MAX_TRANSCRIPT_FILES): void {
     try {
       const files = this.listTranscriptFiles()
+
       if (files.length <= max) {
         return
       }
+
       const withTimes = files
         .map(name => {
           try {
@@ -262,6 +287,7 @@ export class RenderCache {
           }
         })
         .sort((a, b) => b.mtime - a.mtime)
+
       for (const { name } of withTimes.slice(max)) {
         try {
           fs.rmSync(path.join(this.dir, name), { force: true })
@@ -282,13 +308,17 @@ export class RenderCache {
    */
   sweepAgainstLiveSessions(liveSessionIds: Iterable<string>): number {
     let culled = 0
+
     try {
       const live = new Set<string>()
+
       for (const id of liveSessionIds) {
         live.add(String(id))
       }
+
       for (const name of this.listTranscriptFiles()) {
         const id = sessionIdFromTranscriptFile(name)
+
         if (id && !live.has(id)) {
           try {
             fs.rmSync(path.join(this.dir, name), { force: true })
@@ -298,10 +328,12 @@ export class RenderCache {
           }
         }
       }
+
       this.enforceTranscriptCap()
     } catch (error: any) {
       this.log(`[render-cache] boot sweep failed: ${error?.message || error}`)
     }
+
     return culled
   }
 

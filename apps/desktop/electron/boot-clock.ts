@@ -34,9 +34,11 @@ function defaultNow(): number {
   // performance.now() is monotonic and immune to wall-clock steps; Date.now is
   // the fallback for any exotic runtime without a global performance.
   const perf = (globalThis as any).performance
+
   if (perf && typeof perf.now === 'function') {
     return perf.now()
   }
+
   return Date.now()
 }
 
@@ -59,6 +61,7 @@ export function createBootClock(opts: { now?: () => number; t0?: number } = {}):
 
   const elapsedMs = (): number => {
     const delta = now() - t0
+
     // A monotonic source can't go backwards, but clamp defensively so a swapped
     // clock never emits a negative offset that reads as corrupt.
     return Math.max(0, Math.round(delta))
@@ -67,6 +70,7 @@ export function createBootClock(opts: { now?: () => number; t0?: number } = {}):
   const mark = (milestone: BootMilestone, detail?: string): string => {
     const base = `[boot:t+${elapsedMs()}ms] ${milestone}`
     const extra = detail == null ? '' : String(detail).trim()
+
     return extra ? `${base} ${extra}` : base
   }
 
@@ -81,7 +85,9 @@ export function formatCacheHit(hit: boolean, rows?: number): string {
   if (!hit) {
     return '[boot] cache-miss'
   }
+
   const n = Number.isFinite(rows as number) ? Math.max(0, Math.round(rows as number)) : 0
+
   return `[boot] cache-hit rows=${n}`
 }
 
@@ -93,5 +99,6 @@ export function formatCacheHit(hit: boolean, rows?: number): string {
  */
 export function formatCacheDivergence(rows: number): string {
   const n = Number.isFinite(rows) ? Math.max(0, Math.round(rows)) : 0
+
   return `[boot] cache-divergence rows=${n}`
 }

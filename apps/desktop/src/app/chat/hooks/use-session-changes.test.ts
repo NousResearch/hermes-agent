@@ -2,15 +2,15 @@ import { act, cleanup, render } from '@testing-library/react'
 import { createElement } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ChatMessage } from '@/lib/chat-messages'
 import type { ClientSessionState } from '@/app/types'
+import type { ChatMessage } from '@/lib/chat-messages'
 import type { StatusResponse } from '@/types/hermes'
 
 import {
+  adoptZombieFooters,
   advanceCursorAfterRows,
   appendFetchedMessages,
   createSessionChangesController,
-  adoptZombieFooters,
   discardUnstampedOptimisticTranscriptRows,
   dropZombieOptimisticRows,
   extractCommittedMessageIds,
@@ -197,8 +197,9 @@ describe('useSessionChanges B1', () => {
     })
 
     expect(requestGateway).toHaveBeenCalled()
+
     for (const call of requestGateway.mock.calls as unknown[][]) {
-      if (call[0] !== 'session.changes') continue
+      if (call[0] !== 'session.changes') {continue}
       expect((call[1] as { session_id: string }).session_id).toBe(STORED_SID)
       expect((call[1] as { session_id: string }).session_id).not.toBe(SID)
     }
@@ -221,6 +222,7 @@ describe('useSessionChanges B1', () => {
 
   it('stops quietly on feature-disabled errors without advancing the cursor', async () => {
     const info = vi.spyOn(console, 'info').mockImplementation(() => undefined)
+
     const requestGateway = vi.fn(async () => {
       throw new Error('session changes disabled')
     })
@@ -291,6 +293,7 @@ describe('useSessionChanges B2 materialization', () => {
     const again = appendFetchedMessages(result.messages, [
       { id: 13, role: 'tool', content: '{}', tool_call_id: 'call_x', timestamp: 13 }
     ], result.renderedIds)
+
     expect(again.messages).toHaveLength(result.messages.length)
   })
 })
@@ -361,6 +364,7 @@ describe('useSessionChanges B4 own-turn suspension helpers', () => {
       ],
       ['100', '101']
     )
+
     const result = appendFetchedMessages(stamped.messages, [
       { id: 100, role: 'user', content: 'own user' },
       { id: 101, role: 'assistant', content: 'own assistant' }
@@ -399,6 +403,7 @@ describe('useSessionChanges B4 own-turn suspension helpers', () => {
       ],
       extractCommittedMessageIds({ message_ids: [100, 101] })
     )
+
     const result = appendFetchedMessages(stamped.messages, [
       { id: 100, role: 'user', content: 'own user' },
       { id: 101, role: 'assistant', content: 'own assistant' }
@@ -415,6 +420,7 @@ describe('useSessionChanges B4 own-turn suspension helpers', () => {
       ],
       ['100', '103']
     )
+
     const result = appendFetchedMessages(stamped.messages, [
       { id: 100, role: 'user', content: 'own user' },
       { id: 101, role: 'user', content: 'remote user' },
@@ -431,6 +437,7 @@ describe('useSessionChanges B5 watchdog and hatch', () => {
   it('does not hatch during a long quiet tool call while active_list still reports working', async () => {
     const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined)
     const states: ClientSessionState[] = []
+
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.active_list') {
         return { sessions: [{ session_id: SID, status: 'working' }] }
@@ -465,6 +472,7 @@ describe('useSessionChanges B5 watchdog and hatch', () => {
   it('runs the refocus hatch before polling so unstamped optimistic rows cannot dedupe against committed ids', async () => {
     const debug = vi.spyOn(console, 'debug').mockImplementation(() => undefined)
     const states: ClientSessionState[] = []
+
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.changes') {
         return {
@@ -505,6 +513,7 @@ describe('useSessionChanges B5 watchdog and hatch', () => {
 
   it('discards only transcript rows, leaving queued composer entries out of hatch scope', () => {
     const queuedChip = { id: 'queue-chip-1', role: 'system', parts: [{ type: 'text', text: 'queued' }] } as ChatMessage
+
     const remaining = discardUnstampedOptimisticTranscriptRows(
       [message('user-temp', 'user'), queuedChip],
       new Set(['user-temp'])
@@ -531,6 +540,7 @@ describe('reconnect-seam zombie optimistic rows (severed message.complete stamp)
       textMessage('100', 'user', 'hello'),
       textMessage('assistant-stream-1784172446416', 'assistant', 'the reply')
     ]
+
     const result = appendFetchedMessages(current, [
       { id: 101, role: 'assistant', content: 'the reply' }
     ])
@@ -544,6 +554,7 @@ describe('reconnect-seam zombie optimistic rows (severed message.complete stamp)
     const current = [
       textMessage('user-1784173429344-vh9u3f', 'user', 'i see the footer!!!')
     ]
+
     const result = appendFetchedMessages(current, [
       { id: 200, role: 'user', content: 'i see the footer!!!' }
     ])
@@ -553,6 +564,7 @@ describe('reconnect-seam zombie optimistic rows (severed message.complete stamp)
 
   it('never drops a PENDING (actively streaming) optimistic row', () => {
     const current = [textMessage('assistant-stream-1', 'assistant', 'partial text', true)]
+
     const result = appendFetchedMessages(current, [
       { id: 300, role: 'assistant', content: 'partial text' }
     ])
@@ -567,6 +579,7 @@ describe('reconnect-seam zombie optimistic rows (severed message.complete stamp)
       textMessage('400', 'assistant', 'same words'),
       textMessage('assistant-stream-2', 'assistant', 'different words')
     ]
+
     const result = appendFetchedMessages(current, [
       { id: 401, role: 'assistant', content: 'same words' }
     ])
@@ -581,6 +594,7 @@ describe('reconnect-seam zombie optimistic rows (severed message.complete stamp)
       textMessage('user-a', 'user', 'continue'),
       textMessage('user-b', 'user', 'continue')
     ]
+
     const remaining = dropZombieOptimisticRows(zombies, [textMessage('500', 'user', 'continue')])
 
     expect(remaining.messages.map(row => row.id)).toEqual(['user-b'])
@@ -593,6 +607,7 @@ describe('reconnect-seam zombie optimistic rows (severed message.complete stamp)
     // footer-bearing zombie must NOT lose the footer (live regression
     // 2026-07-16: footer visible live, gone after the poll adopted the twin).
     const zombie = { ...textMessage('assistant-stream-7', 'assistant', 'the reply'), footer: 'model · 5% · 3s' }
+
     const result = appendFetchedMessages([zombie], [
       { id: 800, role: 'assistant', content: 'the reply' }
     ])
@@ -622,6 +637,7 @@ describe('reconnect-seam zombie optimistic rows (severed message.complete stamp)
     // streamed zombie may hold the raw MEDIA: line. The join key normalizes
     // both sides so the zombie still drops (Greptile #361 P2).
     const zombie = textMessage('assistant-stream-9', 'assistant', 'here you go\nMEDIA:/tmp/pic.png')
+
     const committed = appendFetchedMessages([zombie], [
       { id: 700, role: 'assistant', content: 'here you go\nMEDIA:/tmp/pic.png' }
     ])

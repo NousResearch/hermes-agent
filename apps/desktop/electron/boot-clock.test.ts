@@ -9,9 +9,10 @@
  */
 
 import assert from 'node:assert/strict'
+
 import { test } from 'vitest'
 
-import { createBootClock, formatCacheHit, formatCacheDivergence } from './boot-clock.ts'
+import { createBootClock, formatCacheDivergence, formatCacheHit } from './boot-clock.ts'
 
 test('mark() formats [boot:t+<ms>ms] <milestone> from a fake clock', () => {
   let t = 1000

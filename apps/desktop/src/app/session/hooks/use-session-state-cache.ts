@@ -24,8 +24,8 @@ import {
 } from '@/store/session'
 import { publishSessionState } from '@/store/session-states'
 
-import type { ClientSessionState } from '../../types'
 import { pushTranscriptToRenderCache } from '../../render-cache-hydration'
+import type { ClientSessionState } from '../../types'
 
 // Shallow per-message identity check. When a flush carries no transcript
 // changes, `preserveLocalAssistantErrors` returns the same message objects in

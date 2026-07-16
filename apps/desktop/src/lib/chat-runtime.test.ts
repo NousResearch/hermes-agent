@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { ComposerAttachment } from '@/store/composer'
 
+import type { ChatMessage } from './chat-messages'
 import {
   attachmentDisplayText,
   coalesceToolOnlyAssistants,
@@ -11,7 +12,6 @@ import {
   parseCommandDispatch,
   parseSlashCommand
 } from './chat-runtime'
-import type { ChatMessage } from './chat-messages'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
 
@@ -184,9 +184,11 @@ describe('coalesceToolOnlyAssistants — duplicate toolCallId render-key crash g
 
     // Must merge to a single message...
     expect(coalesced).toHaveLength(1)
+
     const parts = coalesced[0].parts.filter(
       (p): p is Extract<ChatMessage['parts'][number], { type: 'tool-call' }> => p.type === 'tool-call'
     )
+
     // ...whose tool parts have NO duplicate toolCallId (the tapResources invariant).
     const ids = parts.map(p => p.toolCallId)
     expect(new Set(ids).size).toBe(ids.length)
@@ -207,9 +209,11 @@ describe('coalesceToolOnlyAssistants — duplicate toolCallId render-key crash g
     const coalesced = coalesceToolOnlyAssistants(messages, createToolMergeCache())
 
     expect(coalesced).toHaveLength(1)
+
     const ids = coalesced[0].parts
       .filter((p): p is Extract<ChatMessage['parts'][number], { type: 'tool-call' }> => p.type === 'tool-call')
       .map(p => p.toolCallId)
+
     expect(ids).toEqual(['a', 'b', 'c'])
   })
 })

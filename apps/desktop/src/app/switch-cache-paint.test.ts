@@ -72,6 +72,7 @@ describe('normalizeCachedTranscriptRows (dual writer shapes)', () => {
       { role: 'user', content: 'hello' },
       { role: 'assistant', content: 'hey there' }
     ]
+
     const out = normalizeCachedTranscriptRows(raw)
     expect(out.length).toBeGreaterThan(0)
     expect(out[0]).toHaveProperty('parts')

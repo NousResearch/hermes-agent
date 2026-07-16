@@ -114,7 +114,7 @@ const CachedHighlight: FC<{ code: string; language: string }> = ({ code, languag
 
   // Shiki output: static HTML from our own tokenizer over escaped code — the
   // standard shiki consumption pattern (upstream react-shiki does the same).
-  // eslint-disable-next-line react/no-danger
+   
   return <div dangerouslySetInnerHTML={{ __html: html }} />
 }
 

@@ -741,24 +741,40 @@ def _make_goal_mode_worker_env(monkeypatch, tmp_path):
     return goal_task_id
 
 
-def test_block_goal_mode_rejects_missing_kind(monkeypatch, tmp_path):
-    """A goal_mode worker calling kanban_block with no kind must not be able
-    to use it as an unguarded escape from the goal loop (Issue #38696,
-    sibling of the kanban_complete judge gate / Issue #38367)."""
+def test_block_goal_mode_omitted_kind_defaults_to_needs_input(monkeypatch, tmp_path):
+    """Schema marks kind optional; goal_mode coerces omit → needs_input (#59764).
+
+    Still a classified exit (needs_input), not an untyped escape hatch — the
+    #38696 gate continues to reject capability/transient.
+    """
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
 
     tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
-    out = kt._handle_block({"reason": "giving up"})
+    out = kt._handle_block({"reason": "need repo credentials"})
     d = json.loads(out)
-    assert "error" in d
-    assert "goal_mode" in d["error"]
+    assert d.get("ok") is True
+    assert d.get("block_kind") == "needs_input"
 
     conn = kb.connect()
     try:
-        assert kb.get_task(conn, tid).status == "running"
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert task.block_kind == "needs_input"
     finally:
         conn.close()
+
+
+def test_block_schema_documents_goal_mode_kind_contract():
+    """Published tool schema must match the goal_mode handler contract (#59764)."""
+    from tools.kanban_tools import KANBAN_BLOCK_SCHEMA
+
+    desc = KANBAN_BLOCK_SCHEMA["description"]
+    kind_desc = KANBAN_BLOCK_SCHEMA["parameters"]["properties"]["kind"]["description"]
+    for text in (desc, kind_desc):
+        assert "goal_mode" in text
+        assert "needs_input" in text
+    assert "defaults to" in kind_desc or "default" in desc.lower()
 
 
 def test_block_goal_mode_rejects_disallowed_kind(monkeypatch, tmp_path):

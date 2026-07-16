@@ -358,3 +358,34 @@ def test_goal_mode_kanban_block_rejects_invalid_kind(kanban_home, monkeypatch):
     )
 
     assert "kind must be one of" in result
+
+
+def test_goal_mode_kanban_block_omitted_kind_defaults_to_needs_input(
+    kanban_home, monkeypatch
+):
+    """Model-facing path: omit kind on a goal_mode task → needs_input (#59764)."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="goal task",
+            assignee="worker",
+            goal_mode=True,
+        )
+        assert kb.claim_task(conn, tid, claimer="worker") is not None
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+
+    from tools import kanban_tools
+    import json
+
+    result = kanban_tools._handle_block(
+        {"task_id": tid, "reason": "need repo credentials"}
+    )
+    payload = json.loads(result)
+    assert payload.get("ok") is True
+    assert payload.get("block_kind") == "needs_input"
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.status == "blocked"
+    assert task.block_kind == "needs_input"

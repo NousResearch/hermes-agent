@@ -4923,16 +4923,17 @@ function installDevToolsShortcut(window) {
 }
 
 function installPreviewShortcut(window) {
+  // Only macOS needs the main-process interception: the native menu item for
+  // Close Tab — deliberately left without an accelerator — would otherwise
+  // close the window when Cmd+W is pressed. On Windows/Linux, Ctrl+W reaches
+  // the renderer directly via the keybinding system, which lets the focused
+  // context (e.g. the terminal pane) process the keystroke as a readline
+  // word-delete command instead of always closing a tab.
+  if (!IS_MAC) return
+
   window.webContents.on('before-input-event', (event, input) => {
     const key = String(input.key || '').toLowerCase()
-    const isCloseTabShortcut = key === 'w' && (IS_MAC ? input.meta : input.control) && !input.alt && !input.shift
-
-    // Always claim ⌘W here (the File>Close item deliberately has no
-    // accelerator, so nothing else does). The renderer decides tab-vs-window
-    // — no `previewShortcutActive` gate, so it works for every closeable tab.
-    if (!isCloseTabShortcut) {
-      return
-    }
+    if (key !== 'w' || !input.meta || input.alt || input.shift) return
 
     event.preventDefault()
     sendClosePreviewRequested()

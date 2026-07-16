@@ -3081,6 +3081,32 @@ class TestSendMediaViaAdapter:
         adapter.send_document.assert_called_once()
         assert adapter.send_document.call_args[1]["file_path"] == str(media_path)
 
+    def test_single_document_caption_is_forwarded(self, tmp_path, monkeypatch):
+        adapter = MagicMock()
+        adapter.send_document = AsyncMock()
+        media_path = self._safe_media_path(tmp_path, monkeypatch, "report.html")
+        media_files = [(str(media_path), False)]
+        from concurrent.futures import Future
+
+        def fake_run_coro(coro, _loop):
+            coro.close()
+            completed = Future()
+            completed.set_result(MagicMock(success=True))
+            return completed
+
+        with patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            _send_media_via_adapter(
+                adapter,
+                "123",
+                media_files,
+                None,
+                MagicMock(),
+                {"id": "j-caption"},
+                caption="SecurePath report",
+            )
+
+        assert adapter.send_document.call_args[1]["caption"] == "SecurePath report"
+
     def test_multiple_media_files_all_delivered(self, tmp_path, monkeypatch):
         adapter = MagicMock()
         adapter.send_voice = AsyncMock()

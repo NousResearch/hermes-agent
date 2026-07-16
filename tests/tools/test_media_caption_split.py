@@ -42,6 +42,16 @@ def test_single_document_short_text_becomes_caption():
     assert body == ""
 
 
+def test_single_html_report_short_text_becomes_caption():
+    caption, body = _media_caption_split(
+        "SecurePath monthly report",
+        [("/tmp/securepath-monthly.html", False)],
+        max_caption_len=_DEFAULT_CAPTION_LIMIT,
+    )
+    assert caption == "SecurePath monthly report"
+    assert body == ""
+
+
 def test_multi_file_keeps_separate_body():
     text = "two photos"
     caption, body = _media_caption_split(

@@ -2688,14 +2688,20 @@ class AIAgent:
             # partial history and would otherwise clobber the full JSON log.
             if log_file.exists():
                 try:
-                    existing = json.loads(log_file.read_text(encoding="utf-8"))
-                    existing_count = existing.get("message_count", len(existing.get("messages", [])))
-                    if existing_count > len(cleaned):
-                        logging.debug(
-                            "Skipping session log overwrite: existing has %d messages, current has %d",
-                            existing_count, len(cleaned),
-                        )
-                        return
+                    stat = log_file.stat()
+                    marker = getattr(self, "_session_log_snapshot_marker", None)
+                    owns_latest = marker == (
+                        str(log_file), stat.st_mtime_ns, stat.st_size
+                    )
+                    if not owns_latest:
+                        existing = json.loads(log_file.read_text(encoding="utf-8"))
+                        existing_count = existing.get("message_count", len(existing.get("messages", [])))
+                        if existing_count > len(cleaned):
+                            logging.debug(
+                                "Skipping session log overwrite: existing has %d messages, current has %d",
+                                existing_count, len(cleaned),
+                            )
+                            return
                 except Exception:
                     pass  # corrupted existing file — allow the overwrite
 
@@ -2717,6 +2723,10 @@ class AIAgent:
                 entry,
                 indent=2,
                 default=str,
+            )
+            stat = log_file.stat()
+            self._session_log_snapshot_marker = (
+                str(log_file), stat.st_mtime_ns, stat.st_size
             )
 
         except Exception as e:
@@ -3648,6 +3658,26 @@ class AIAgent:
         """
         from tools.todo_tool import MAX_TODO_RESULT_CHARS
 
+        # Resolve every tool result against its nearest earlier assistant in a
+        # single backward pass. User/system messages break pairing exactly as
+        # they did in _tool_response_matches_todo_call().
+        matched_todo_responses = set()
+        pending_tools: Dict[str, List[int]] = {}
+        for idx in range(len(history) - 1, -1, -1):
+            msg = history[idx]
+            role = msg.get("role")
+            if role == "tool":
+                tool_call_id = msg.get("tool_call_id")
+                if tool_call_id:
+                    pending_tools.setdefault(tool_call_id, []).append(idx)
+            elif role == "assistant":
+                for tool_call_id, indexes in pending_tools.items():
+                    if self._assistant_has_todo_tool_call(msg, tool_call_id):
+                        matched_todo_responses.update(indexes)
+                pending_tools.clear()
+            elif role in {"user", "system"}:
+                pending_tools.clear()
+
         # Walk history backwards to find the most recent todo tool response
         last_todo_response = None
         for idx in range(len(history) - 1, -1, -1):
@@ -3658,7 +3688,7 @@ class AIAgent:
             if not isinstance(content, str):
                 continue
             # Only accept tool results paired with a prior assistant todo call.
-            if not self._tool_response_matches_todo_call(history, idx):
+            if idx not in matched_todo_responses:
                 continue
             if len(content) > MAX_TODO_RESULT_CHARS:
                 logger.warning(

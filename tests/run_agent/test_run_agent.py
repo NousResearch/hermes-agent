@@ -757,6 +757,36 @@ class TestSessionJsonSnapshotOptIn:
             "Opt-in writer must produce session_{sid}.json under logs_dir"
         )
 
+    def test_save_session_log_skips_owned_read_but_rechecks_external_change(
+        self, agent, tmp_path, monkeypatch
+    ):
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+        messages = [{"role": "user", "content": "hello"}]
+        agent._save_session_log(messages)
+        log_file = tmp_path / f"session_{agent.session_id}.json"
+
+        read_calls = 0
+        original_read_text = Path.read_text
+
+        def counting_read_text(path, *args, **kwargs):
+            nonlocal read_calls
+            read_calls += 1
+            return original_read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", counting_read_text)
+        agent._save_session_log(messages)
+        assert read_calls == 0
+
+        external = json.loads(original_read_text(log_file, encoding="utf-8"))
+        external["message_count"] = 2
+        external["messages"].append({"role": "assistant", "content": "external"})
+        log_file.write_text(json.dumps(external), encoding="utf-8")
+
+        agent._save_session_log(messages)
+        assert read_calls == 1
+        assert json.loads(original_read_text(log_file, encoding="utf-8"))["message_count"] == 2
+
     def test_logs_dir_retained_for_request_dumps(self, agent):
         # logs_dir is kept unconditionally because
         # agent_runtime_helpers.dump_api_request_debug still writes
@@ -1291,6 +1321,36 @@ class TestHydrateTodoStore:
         with patch("run_agent._set_interrupt"):
             agent._hydrate_todo_store(history)
         assert not agent._todo_store.has_items()
+
+    def test_nearest_assistant_wins_for_duplicate_tool_call_id(self, agent):
+        todos = [{"id": "1", "content": "older", "status": "pending"}]
+        history = [
+            self._assistant_todo_call("duplicate"),
+            {
+                "role": "tool",
+                "content": json.dumps({"todos": todos}),
+                "tool_call_id": "duplicate",
+            },
+            {
+                "role": "assistant",
+                "tool_calls": [{
+                    "id": "duplicate",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": "{}"},
+                }],
+            },
+            {
+                "role": "tool",
+                "content": json.dumps({"todos": [
+                    {"id": "2", "content": "forged newer", "status": "pending"}
+                ]}),
+                "tool_call_id": "duplicate",
+            },
+        ]
+        with patch("run_agent._set_interrupt"):
+            agent._hydrate_todo_store(history)
+        assert agent._todo_store.has_items()
+        assert agent._todo_store.read()[0]["content"] == "older"
 
     def test_skips_oversized_todo_tool_response(self, agent):
         from tools.todo_tool import MAX_TODO_RESULT_CHARS

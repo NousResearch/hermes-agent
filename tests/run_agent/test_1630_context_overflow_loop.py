@@ -260,32 +260,36 @@ class TestContextOverflowErrorMessages:
 # ---------------------------------------------------------------------------
 
 class TestAgentSkipsPersistenceForLargeFailedSessions:
-    """When a 400 error occurs and the session is large, the agent
-    should skip persisting to prevent the growth loop."""
+    """Persistence behavior must be exercised through the real loop."""
 
-    def test_large_session_400_skips_persistence(self):
-        """Status 400 + high token count should skip persistence."""
-        status_code = 400
-        approx_tokens = 60000  # > 50000 threshold
-        api_messages = [{"role": "user", "content": "x"}] * 10
+    def test_large_model_not_supported_400_persists_through_real_loop(self):
+        class ModelNotSupportedError(Exception):
+            status_code = 400
+            body = {
+                "error": {
+                    "code": "model_not_supported",
+                    "message": "The requested model is not supported for this Copilot subscription.",
+                }
+            }
 
-        should_skip = status_code == 400 and (approx_tokens > 50000 or len(api_messages) > 80)
-        assert should_skip
+        agent = TestGeneric400Heuristic()._make_agent()
+        agent.max_iterations = 1
+        agent._interruptible_api_call = MagicMock(
+            side_effect=ModelNotSupportedError(
+                "model_not_supported: The requested model is not supported for this Copilot subscription."
+            )
+        )
+        agent._persist_session = MagicMock()
+        history = [
+            {
+                "role": "user" if index % 2 == 0 else "assistant",
+                "content": f"history message {index}",
+            }
+            for index in range(82)
+        ]
 
-    def test_small_session_400_persists_normally(self):
-        """Status 400 + small session should still persist."""
-        status_code = 400
-        approx_tokens = 5000  # < 50000
-        api_messages = [{"role": "user", "content": "x"}] * 10  # < 80
+        result = agent.run_conversation("switch model", conversation_history=history)
 
-        should_skip = status_code == 400 and (approx_tokens > 50000 or len(api_messages) > 80)
-        assert not should_skip
-
-    def test_non_400_error_persists_normally(self):
-        """Non-400 errors should always persist normally."""
-        status_code = 401  # Auth error
-        approx_tokens = 100000  # Large session, but not a 400
-        api_messages = [{"role": "user", "content": "x"}] * 100
-
-        should_skip = status_code == 400 and (approx_tokens > 50000 or len(api_messages) > 80)
-        assert not should_skip
+        assert result["failed"] is True
+        assert "not supported" in result["error"]
+        assert agent._persist_session.call_count == 2

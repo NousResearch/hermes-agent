@@ -77,6 +77,7 @@ class TransportSpec:
     args: List[str] = field(default_factory=list)
     url: Optional[str] = None
     version: Optional[str] = None  # informational, pinned
+    headers: Dict[str, str] = field(default_factory=dict)  # http only
 
 
 @dataclass
@@ -147,6 +148,35 @@ def _parse_env_spec(raw: Any) -> EnvVarSpec:
     )
 
 
+# RFC 7230 token — the legal character set for an HTTP header field name.
+_HEADER_NAME_RE = re.compile(r"^[A-Za-z0-9!#$%&'*+.^_`|~-]+$")
+
+
+def _parse_transport_headers(raw: Any, path: Path) -> Dict[str, str]:
+    """Validate ``transport.headers`` into a str->str mapping.
+
+    Static HTTP headers a client must send to the server (e.g. a demo
+    ``X-Tenant-Id``). Keys must be valid header names; values are coerced to
+    strings. Newlines are rejected to prevent header injection.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise CatalogError(f"{path}: transport.headers must be a mapping")
+    headers: Dict[str, str] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or not _HEADER_NAME_RE.match(key):
+            raise CatalogError(f"{path}: invalid header name {key!r}")
+        if not isinstance(value, (str, int, float, bool)):
+            raise CatalogError(
+                f"{path}: header {key!r} value must be a string or number")
+        text = str(value)
+        if "\n" in text or "\r" in text:
+            raise CatalogError(f"{path}: header {key!r} value may not contain newlines")
+        headers[key] = text
+    return headers
+
+
 def _parse_manifest(path: Path) -> CatalogEntry:
     """Read and validate a manifest.yaml. Raise CatalogError on any problem."""
     try:
@@ -184,12 +214,16 @@ def _parse_manifest(path: Path) -> CatalogEntry:
     args = transport_raw.get("args") or []
     if not isinstance(args, list):
         raise CatalogError(f"{path}: transport.args must be a list")
+    headers = _parse_transport_headers(transport_raw.get("headers"), path)
+    if headers and t_type != "http":
+        raise CatalogError(f"{path}: transport.headers is only valid for http")
     transport = TransportSpec(
         type=t_type,
         command=transport_raw.get("command"),
         args=[str(a) for a in args],
         url=transport_raw.get("url"),
         version=transport_raw.get("version"),
+        headers=headers,
     )
     if t_type == "stdio" and not transport.command:
         raise CatalogError(f"{path}: stdio transport requires 'command'")
@@ -470,6 +504,8 @@ def _build_server_config(
             cfg["args"] = [_expand_install_dir(a, install_dir) for a in t.args]
     elif t.type == "http":
         cfg["url"] = t.url
+        if t.headers:
+            cfg["headers"] = dict(t.headers)
         if entry.auth.type == "oauth":
             cfg["auth"] = "oauth"
     return cfg

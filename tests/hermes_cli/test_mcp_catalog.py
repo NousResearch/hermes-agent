@@ -307,6 +307,81 @@ class TestInstall:
         assert server["url"] == "https://mcp.example.com/sse"
         assert server["auth"] == "oauth"
 
+    def test_install_http_headers_written_to_config(self, catalog_dir):
+        """Static transport.headers must survive into the installed server
+        config — else a manifest's demo tenant header is silently dropped."""
+        body = _basic_manifest(
+            transport={
+                "type": "http",
+                "url": "https://mcp.example.com/mcp",
+                "headers": {"X-Tenant-Id": "desktop-demo"},
+            },
+            auth={"type": "none"},
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import load_config
+
+        install_entry(_entry("demo"), enable=True)
+
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["url"] == "https://mcp.example.com/mcp"
+        assert server["headers"] == {"X-Tenant-Id": "desktop-demo"}
+
+    def test_manifest_http_header_value_coerced_to_string(self, catalog_dir):
+        body = _basic_manifest(
+            transport={
+                "type": "http",
+                "url": "https://mcp.example.com/mcp",
+                "headers": {"X-Api-Version": 6},
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        assert _entry("demo").transport.headers == {"X-Api-Version": "6"}
+
+    def test_manifest_invalid_header_name_skipped(self, catalog_dir):
+        # Invalid manifests are skipped by the loader (see
+        # test_missing_transport_command_rejected), not surfaced.
+        from hermes_cli.mcp_catalog import get_entry
+
+        body = _basic_manifest(
+            transport={
+                "type": "http",
+                "url": "https://mcp.example.com/mcp",
+                "headers": {"Bad Header": "x"},
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        assert get_entry("demo") is None
+
+    def test_manifest_header_injection_newline_skipped(self, catalog_dir):
+        from hermes_cli.mcp_catalog import get_entry
+
+        body = _basic_manifest(
+            transport={
+                "type": "http",
+                "url": "https://mcp.example.com/mcp",
+                "headers": {"X-Tenant-Id": "demo\r\nX-Evil: 1"},
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        assert get_entry("demo") is None
+
+    def test_manifest_headers_on_stdio_skipped(self, catalog_dir):
+        from hermes_cli.mcp_catalog import get_entry
+
+        body = _basic_manifest(
+            transport={
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "demo-mcp"],
+                "headers": {"X-Tenant-Id": "demo"},
+            },
+        )
+        _write_manifest(catalog_dir, "demo", body)
+        assert get_entry("demo") is None
+
     def test_install_required_env_missing_raises(self, catalog_dir, monkeypatch):
         body = _basic_manifest(
             auth={

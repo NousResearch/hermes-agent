@@ -4430,7 +4430,11 @@ function closePreviewWatchers() {
 }
 
 async function waitForHermes(baseUrl, token) {
-  const deadline = Date.now() + 45_000
+  // A cold backend boot (plugin discovery + route mounting at web_server
+  // import time) can take 45-60s on slower hardware; a 45s deadline makes
+  // first-boot readiness a coin flip and orphans a backend process on every
+  // lost race. Wait long enough to always win.
+  const deadline = Date.now() + 180_000
   let lastError = null
 
   while (Date.now() < deadline) {
@@ -6927,6 +6931,20 @@ async function startHermes() {
       },
       { allowDecrease: true }
     )
+    // A backend that missed the readiness deadline must not be abandoned:
+    // the orphan keeps running on its port, contends for CPU with the next
+    // spawn, slows ITS boot past the deadline too, and the retries cascade
+    // into a backend-per-3-minutes process storm. Kill it so retries are
+    // strictly serialized — at most one backend exists at any time.
+    if (hermesProcess && !hermesProcess.killed) {
+      rememberLog('[boot] killing backend that missed the readiness deadline')
+      try {
+        hermesProcess.kill('SIGTERM')
+      } catch {
+        // already gone
+      }
+      hermesProcess = null
+    }
     connectionPromise = null
     throw error
   })

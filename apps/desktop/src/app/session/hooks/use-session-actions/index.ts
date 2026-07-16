@@ -834,7 +834,18 @@ export function useSessionActions({
 
         return true
       } catch (err) {
-        notifyError(err, copy.branchFailed)
+        // The RPC (and its args) are still in scope here — a backend
+        // restart mid-request (auto-update, crash) silently drops the
+        // in-flight session.create with no automatic retry, and the branch
+        // intent (parent + message slice) is otherwise lost with no way to
+        // recover short of redoing the whole branch flow (#65410). Offer a
+        // one-click retry with the same args instead of a transient toast.
+        notifyError(err, copy.branchFailed, {
+          label: t.common.retry,
+          onClick: () => {
+            void forkBranch(branchMessages, parentStoredId, cwd)
+          }
+        })
 
         return false
       } finally {
@@ -851,6 +862,7 @@ export function useSessionActions({
       navigate,
       requestGateway,
       selectedStoredSessionIdRef,
+      t,
       updateSessionState
     ]
   )

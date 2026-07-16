@@ -26,6 +26,7 @@ describe('model-status-label', () => {
     expect(reasoningEffortLabel('max')).toBe('Max')
     expect(reasoningEffortLabel('ultra')).toBe('Ultra')
     expect(reasoningEffortLabel('')).toBe('')
+    expect(reasoningEffortLabel('  ')).toBe('')
   })
 
   it('appends fast + effort session state to the status label', () => {

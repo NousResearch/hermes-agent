@@ -11,6 +11,7 @@ import {
   Sun,
   Wrench
 } from '@/lib/icons'
+import { ENABLED_REASONING_EFFORTS } from '@/lib/reasoning-effort'
 import type { ThemeMode } from '@/themes/context'
 
 import { defineFieldCopy } from './field-copy'
@@ -237,7 +238,7 @@ export const ENUM_OPTIONS: Record<string, string[]> = {
   'approvals.mode': ['manual', 'smart', 'off'],
   'code_execution.mode': ['project', 'strict'],
   'context.engine': ['compressor', 'default', 'custom'],
-  'delegation.reasoning_effort': ['', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+  'delegation.reasoning_effort': ['', ...ENABLED_REASONING_EFFORTS],
   'memory.provider': ['', 'builtin', 'hindsight', 'honcho'],
   // Terminal execution backends — kept in sync with the dispatch ladder in
   // tools/terminal_tool.py::_create_environment (local/docker/singularity/

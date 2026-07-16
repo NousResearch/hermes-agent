@@ -1,6 +1,7 @@
+import { isReasoningEffort, type ReasoningEffort } from '@/lib/reasoning-effort'
 import { normalize } from '@/lib/text'
 
-const REASONING_LABELS: Record<string, string> = {
+const REASONING_LABELS: Record<ReasoningEffort, string> = {
   none: 'Off',
   minimal: 'Min',
   low: 'Low',
@@ -18,7 +19,7 @@ export function reasoningEffortLabel(effort: string): string {
     return ''
   }
 
-  return REASONING_LABELS[key] ?? effort
+  return isReasoningEffort(key) ? REASONING_LABELS[key] : effort
 }
 
 /** Which model/provider a picker should mark "current". With a live session the

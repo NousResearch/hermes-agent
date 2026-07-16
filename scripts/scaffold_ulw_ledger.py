@@ -11,6 +11,8 @@ import argparse
 import json
 import os
 import re
+import stat
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -45,12 +47,29 @@ def default_root() -> Path:
     return _default_hermes_home() / "reports" / "ulw-loop"
 
 
+def _is_reparse_point(path: Path) -> bool:
+    try:
+        attributes = getattr(os.lstat(path), "st_file_attributes", 0)
+    except FileNotFoundError:
+        return False
+    return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0))
+
+
+def _ensure_safe_existing_path(path: Path, label: str, *, reject_hardlinks: bool = False) -> None:
+    if path.is_symlink():
+        raise ValueError(f"{label} must not be a symlink: {path}")
+    if _is_reparse_point(path):
+        raise ValueError(f"{label} must not be a reparse point or junction: {path}")
+    if reject_hardlinks and path.exists() and not path.is_dir():
+        if os.stat(path, follow_symlinks=False).st_nlink > 1:
+            raise ValueError(f"{label} must not be a hardlink: {path}")
+
+
 def _target_under_root(root: Path | str, run_id: str) -> tuple[Path, Path]:
     clean_run_id = validate_run_id(run_id)
     root_path = Path(root).expanduser().resolve()
     requested_target = root_path / clean_run_id
-    if requested_target.is_symlink():
-        raise ValueError(f"run directory must not be a symlink: {requested_target}")
+    _ensure_safe_existing_path(requested_target, "run directory")
     resolved_target = requested_target.resolve()
     try:
         resolved_target.relative_to(root_path)
@@ -153,28 +172,45 @@ Rules:
 """
 
 
-def _ensure_not_symlink(path: Path, label: str) -> None:
-    if path.is_symlink():
-        raise ValueError(f"{label} must not be a symlink: {path}")
-
-
 def _ensure_safe_scaffold_targets(plan: dict[str, Any]) -> None:
     run_dir = Path(plan["run_dir"])
     evidence_dir = run_dir / "evidence"
 
-    _ensure_not_symlink(run_dir, "run directory")
+    _ensure_safe_existing_path(run_dir, "run directory")
     if run_dir.exists() and not run_dir.is_dir():
         raise ValueError(f"run directory path exists but is not a directory: {run_dir}")
 
-    _ensure_not_symlink(evidence_dir, "evidence directory")
+    _ensure_safe_existing_path(evidence_dir, "evidence directory")
     if evidence_dir.exists() and not evidence_dir.is_dir():
         raise ValueError(f"evidence path exists but is not a directory: {evidence_dir}")
 
     for name, raw_path in plan["files"].items():
         file_path = Path(raw_path)
-        _ensure_not_symlink(file_path, f"scaffold file {name}")
+        _ensure_safe_existing_path(file_path, f"scaffold file {name}", reject_hardlinks=True)
         if file_path.exists() and file_path.is_dir():
             raise ValueError(f"scaffold file path exists but is a directory: {file_path}")
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
 
 
 def create_scaffold(
@@ -202,11 +238,12 @@ def create_scaffold(
 
     evidence_dir = run_dir / "evidence"
     evidence_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_safe_scaffold_targets(plan)
 
-    Path(plan["files"]["brief"]).write_text(_brief_markdown(plan), encoding="utf-8")
-    Path(plan["files"]["goals"]).write_text(_goals_json(plan), encoding="utf-8")
-    Path(plan["files"]["ledger"]).write_text(_ledger_jsonl(plan), encoding="utf-8")
-    Path(plan["files"]["evidence_readme"]).write_text(_evidence_readme(plan), encoding="utf-8")
+    _atomic_write_text(Path(plan["files"]["brief"]), _brief_markdown(plan))
+    _atomic_write_text(Path(plan["files"]["goals"]), _goals_json(plan))
+    _atomic_write_text(Path(plan["files"]["ledger"]), _ledger_jsonl(plan))
+    _atomic_write_text(Path(plan["files"]["evidence_readme"]), _evidence_readme(plan))
 
     plan["created"] = True
     return plan

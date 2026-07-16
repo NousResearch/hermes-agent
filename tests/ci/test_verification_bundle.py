@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shlex
 import shutil
 import subprocess
@@ -53,6 +54,16 @@ def test_gateway_and_desktop_store_paths_get_focused_checks():
     assert "git-diff-check" in ids
     assert "conflict-marker-scan" in ids
     assert "added-line-security-scan" in ids
+    assert bundle.risk_level == "medium"
+
+
+def test_traversal_like_changed_path_is_canonicalized_before_classification():
+    mod = _load_bundle()
+
+    bundle = mod.suggest_bundle(["docs/../gateway/run.py"])
+
+    assert bundle.changed_paths == ("gateway/run.py",)
+    assert "gateway-restart-drain-pytest" in _ids(bundle)
     assert bundle.risk_level == "medium"
 
 
@@ -303,6 +314,54 @@ def test_generated_added_line_security_scan_command_redacts_and_uses_lhs(tmp_pat
     assert "redacted-hit" in risky.stdout
     assert "dummy-value" not in risky.stdout
     assert "dummy-value" not in risky.stderr
+
+    subprocess.run(
+        ["git", "checkout", "--", "sample.py"],
+        cwd=tmp_path,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    untracked = tmp_path / "untracked.py"
+    untracked.write_text(f'{term_a} = "untracked-dummy-value"\n', encoding="utf-8")
+    untracked_risky = subprocess.run(
+        [bash, "-lc", command],
+        cwd=tmp_path,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+    assert untracked_risky.returncode == 1
+    assert "redacted-hit" in untracked_risky.stdout
+    assert "untracked-dummy-value" not in untracked_risky.stdout
+    assert "untracked-dummy-value" not in untracked_risky.stderr
+
+
+def test_stdout_only_cli_does_not_write_import_bytecode(tmp_path):
+    scripts_dir = tmp_path / "scripts"
+    ci_dir = scripts_dir / "ci"
+    ci_dir.mkdir(parents=True)
+    copied_cli = shutil.copy2(CLI_PATH, scripts_dir / CLI_PATH.name)
+    shutil.copy2(BUNDLE_PATH, ci_dir / BUNDLE_PATH.name)
+    env = os.environ.copy()
+    env.pop("PYTHONDONTWRITEBYTECODE", None)
+    env.pop("PYTHONPYCACHEPREFIX", None)
+
+    proc = subprocess.run(
+        [sys.executable, str(copied_cli), "--paths", "gateway/run.py", "--format", "json"],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout)["changed_paths"] == ["gateway/run.py"]
+    assert not (ci_dir / "__pycache__").exists()
 
 
 def test_scripts_paths_recommend_scope_c_focused_tests():

@@ -18,9 +18,14 @@ python scripts/suggest_verification_bundle.py --from-git --base origin/main --fo
 ```
 
 The helper is read-only. It does not execute checks, read file contents, inspect
-secrets, or mutate runtime state. It writes rendered output only to stdout; use
-shell redirection if a report file is needed. Unknown or empty path inputs fail
-open by recommending broader checks instead of skipping work.
+secrets, or mutate runtime state. It disables import bytecode writes and writes
+rendered output only to stdout; use shell redirection if a report file is needed.
+Changed paths are canonicalized before classification, so traversal-like spellings
+cannot downgrade focused checks. Unknown or empty path inputs fail open by
+recommending broader checks instead of skipping work. The suggested added-line
+security command scans staged, unstaged, and untracked files with redacted-only
+findings; executing that suggested command is a separate explicit verification
+step.
 
 ## ULW evidence ledger scaffold
 
@@ -61,6 +66,9 @@ Safety properties:
 - `--dry-run --format json` reports intended paths without writing files.
 - Existing run IDs are refused unless `--force` is passed.
 - Path separators and traversal-like run IDs are rejected.
+- `--force` refuses symlinks, Windows junction/reparse points, and hardlinked
+  scaffold files; normal replacements use same-directory atomic writes instead
+  of truncating an existing target in place.
 - The helper does not read raw memory, credential stores, `.env`, OAuth files,
   or Hermes config.
 

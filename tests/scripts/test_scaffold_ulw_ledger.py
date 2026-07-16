@@ -31,6 +31,23 @@ def _symlink_or_skip(target: Path, link: Path, *, target_is_directory: bool = Fa
         pytest.skip(f"symlink creation unavailable on this platform: {exc}")
 
 
+def _windows_junction_or_skip(target: Path, link: Path) -> None:
+    if os.name != "nt":
+        pytest.skip("Windows junction coverage only applies on Windows")
+    target_from_parent = os.path.relpath(target, link.parent)
+    command = f"mklink /J {link.name} {target_from_parent}"
+    proc = subprocess.run(
+        ["cmd.exe", "/d", "/c", command],
+        cwd=link.parent,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).decode("cp949", errors="replace")
+        pytest.skip(f"junction creation unavailable: {detail}")
+
+
 def test_default_root_uses_hermes_home_without_runtime_config(monkeypatch, tmp_path):
     mod = _load_scaffold()
     hermes_home = tmp_path / "hermes-home"
@@ -172,6 +189,51 @@ def test_force_refuses_symlinked_evidence_directory(tmp_path):
         mod.create_scaffold(root=tmp_path, run_id="demo-run", goal="demo goal", force=True)
 
     assert not (outside_dir / "README.md").exists()
+
+
+def test_force_refuses_windows_junctioned_evidence_directory(tmp_path):
+    mod = _load_scaffold()
+    run_dir = tmp_path / "demo-run"
+    outside_dir = tmp_path / "outside-evidence"
+    run_dir.mkdir()
+    outside_dir.mkdir()
+    junction = run_dir / "evidence"
+    _windows_junction_or_skip(outside_dir, junction)
+
+    try:
+        assert junction.is_symlink() is False
+        with pytest.raises(ValueError, match="reparse|junction"):
+            mod.create_scaffold(root=tmp_path, run_id="demo-run", goal="demo goal", force=True)
+        assert not (outside_dir / "README.md").exists()
+    finally:
+        if junction.exists():
+            subprocess.run(
+                ["cmd.exe", "/d", "/c", f'rmdir "{junction.name}"'],
+                cwd=junction.parent,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+
+
+def test_force_refuses_hardlinked_scaffold_file(tmp_path):
+    mod = _load_scaffold()
+    run_dir = tmp_path / "demo-run"
+    run_dir.mkdir()
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside\n", encoding="utf-8")
+    hardlink = run_dir / "brief.md"
+    try:
+        os.link(outside, hardlink)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"hardlink creation unavailable on this platform: {exc}")
+
+    assert hardlink.is_symlink() is False
+    assert hardlink.stat().st_nlink > 1
+    with pytest.raises(ValueError, match="hardlink"):
+        mod.create_scaffold(root=tmp_path, run_id="demo-run", goal="demo goal", force=True)
+
+    assert outside.read_text(encoding="utf-8") == "outside\n"
 
 
 def test_run_id_rejects_path_traversal_and_empty_values():

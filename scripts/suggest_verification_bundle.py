@@ -12,6 +12,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.dont_write_bytecode = True
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 CI_DIR = SCRIPT_DIR / "ci"
 if str(CI_DIR) not in sys.path:

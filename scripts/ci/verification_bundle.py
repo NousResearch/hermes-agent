@@ -9,6 +9,7 @@ state. Unknown inputs fail open by recommending broader hygiene.
 from __future__ import annotations
 
 import json
+import posixpath
 import shlex
 from typing import Iterable, Literal, NamedTuple
 
@@ -40,9 +41,8 @@ class VerificationBundle(NamedTuple):
 
 def _normalize_path(path: str) -> str:
     p = str(path).strip().replace("\\", "/")
-    while p.startswith("./"):
-        p = p[2:]
-    return p
+    normalized = posixpath.normpath(p)
+    return "" if normalized == "." else normalized
 
 
 def _normalize_paths(paths: Iterable[str]) -> tuple[str, ...]:
@@ -149,18 +149,39 @@ def scan_added_line_security_hits(diff: str, terms: Iterable[str] = _CREDENTIAL_
 def _added_line_security_scan_command() -> str:
     return (
         "python - <<'PY'\n"
+        "import os\n"
         "import subprocess\n"
+        "from pathlib import Path\n"
         f"terms={_CREDENTIAL_TERMS!r}\n"
         "diff=subprocess.run(['git','diff','--cached'], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True).stdout\n"
         "diff += subprocess.run(['git','diff'], text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True).stdout\n"
         "hits=[]\n"
+        "def scan_body(body):\n"
+        "    body=body.strip().lower()\n"
+        "    if '=' in body:\n"
+        "        lhs=body.split('=', 1)[0]\n"
+        "        if any(term in lhs for term in terms):\n"
+        "            hits.append('redacted-hit')\n"
         "for line in diff.splitlines():\n"
         "    if line.startswith('+') and not line.startswith('+++'):\n"
-        "        body=line[1:].strip().lower()\n"
-        "        if '=' in body:\n"
-        "            lhs=body.split('=', 1)[0]\n"
-        "            if any(term in lhs for term in terms):\n"
-        "                hits.append('redacted-hit')\n"
+        "        scan_body(line[1:])\n"
+        "raw_paths=subprocess.run(['git','ls-files','--others','--exclude-standard','-z'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True).stdout\n"
+        "for raw_path in raw_paths.split(b'\\0'):\n"
+        "    if not raw_path:\n"
+        "        continue\n"
+        "    path=Path(os.fsdecode(raw_path))\n"
+        "    if path.is_symlink():\n"
+        "        hits.append('redacted-hit')\n"
+        "        continue\n"
+        "    try:\n"
+        "        if not path.is_file():\n"
+        "            continue\n"
+        "        text=path.read_text(encoding='utf-8', errors='ignore')\n"
+        "    except OSError:\n"
+        "        hits.append('redacted-hit')\n"
+        "        continue\n"
+        "    for body in text.splitlines():\n"
+        "        scan_body(body)\n"
         "print('credential_like_added_assignments=', hits)\n"
         "raise SystemExit(1 if hits else 0)\n"
         "PY"

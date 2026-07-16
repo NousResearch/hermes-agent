@@ -12,6 +12,10 @@ _VALID_BACKENDS = frozenset({"local", "docker", "modal", "daytona", "ssh", "sing
 _DEFAULT_SANDBOX_LIFETIME = 3600
 
 
+def _is_valid_backend(value: object) -> bool:
+    return isinstance(value, str) and value in _VALID_BACKENDS
+
+
 def _gateway_config(config: dict) -> dict:
     gateway = config.get("gateway", {})
     return gateway if isinstance(gateway, dict) else {}
@@ -50,7 +54,9 @@ def should_warn_insecure_gateway(config: dict) -> bool:
     else:
         terminal_backend = os.environ.get("TERMINAL_ENV", "local")
     gateway_backend = get_gateway_terminal_backend(config)
-    effective_backend = gateway_backend if gateway_backend is not None else terminal_backend
+    effective_backend = (
+        gateway_backend if _is_valid_backend(gateway_backend) else terminal_backend
+    )
     return effective_backend == "local"
 
 
@@ -65,7 +71,7 @@ def apply_gateway_backend_to_env(config: dict) -> None:
     gateway = _gateway_config(config)
     backend = gateway.get("terminal_backend")
     if backend is not None:
-        if not isinstance(backend, str) or backend not in _VALID_BACKENDS:
+        if not _is_valid_backend(backend):
             logger.warning(
                 "Invalid gateway.terminal_backend %r; keeping the terminal backend. "
                 "Valid values: %s",

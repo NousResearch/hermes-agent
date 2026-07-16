@@ -2471,13 +2471,6 @@ DEFAULT_CONFIG = {
         "channel_prompts": {},         # Per-channel ephemeral system prompts
     },
 
-    # Gateway-only terminal overrides. ``None`` preserves terminal settings
-    # when no explicit gateway override is configured.
-    "gateway": {
-        "terminal_backend": None,
-        "sandbox_image": None,
-        "sandbox_lifetime": None,
-    },
 
     # Discord platform settings (gateway mode)
     "discord": {
@@ -2906,6 +2899,12 @@ DEFAULT_CONFIG = {
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
+        # Gateway-only terminal overrides. ``None`` preserves terminal
+        # settings when no explicit gateway override is configured.
+        "terminal_backend": None,
+        "sandbox_image": None,
+        "sandbox_lifetime": None,
+
         # Seconds the gateway waits for a single messaging platform to finish
         # connecting during startup (and on reconnect). Discord in particular
         # can blow past the old fixed 30s when an account has many slash

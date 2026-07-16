@@ -79,6 +79,13 @@ def test_invalid_gateway_backend_is_visible_and_preserves_terminal_env(monkeypat
     assert "invalid" in caplog.text
 
 
+def test_invalid_gateway_backend_keeps_local_warning(monkeypatch):
+    config = {"terminal": {"backend": "local"}, "gateway": {"terminal_backend": "invalid"}}
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+
+    assert should_warn_insecure_gateway(config) is True
+
+
 def test_invalid_gateway_lifetime_is_visible_and_preserves_terminal_env(monkeypatch, caplog):
     config = {"terminal": {"lifetime_seconds": 90}, "gateway": {"sandbox_lifetime": "forever"}}
     monkeypatch.setenv("TERMINAL_LIFETIME_SECONDS", "90")

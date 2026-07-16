@@ -396,7 +396,12 @@ def get_terminal_secret_access_error(command: str, cwd: Optional[str] = None) ->
         if not candidate:
             continue
 
-        basename = os.path.basename(candidate.rstrip("/"))
+        # Lowercased for the membership test only (mirrors get_read_block_error,
+        # which lowercases the resolved basename before checking the denylist)
+        # -- a bare `cat .ENV` must not skip this gate just because the
+        # candidate set is all-lowercase. The original-case `candidate` is
+        # still what gets resolved/passed to get_read_block_error below.
+        basename = os.path.basename(candidate.rstrip("/")).lower()
         looks_pathlike = candidate.startswith(("/", "~", "./", "../"))
         if not looks_pathlike and basename not in _SECRET_BASENAME_CANDIDATES:
             continue

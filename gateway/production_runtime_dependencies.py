@@ -134,7 +134,25 @@ def _sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
-def _read_regular(path: Path, *, maximum: int) -> bytes:
+def _regular_identity(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _read_regular(
+    path: Path,
+    *,
+    maximum: int,
+    allow_empty: bool = False,
+    expected: os.stat_result | None = None,
+) -> bytes:
     try:
         before = path.lstat()
         resolved = path.resolve(strict=True)
@@ -145,15 +163,16 @@ def _read_regular(path: Path, *, maximum: int) -> bytes:
         or stat.S_ISLNK(before.st_mode)
         or not stat.S_ISREG(before.st_mode)
         or before.st_nlink != 1
-        or not 0 < before.st_size <= maximum
+        or not (0 if allow_empty else 1) <= before.st_size <= maximum
     ):
         raise RuntimeDependencyError("runtime_dependency_source_invalid")
+    if expected is not None and _regular_identity(before) != _regular_identity(expected):
+        raise RuntimeDependencyError("runtime_dependency_source_raced")
     payload = path.read_bytes()
     after = path.lstat()
     if (
         len(payload) != before.st_size
-        or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-        != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        or _regular_identity(before) != _regular_identity(after)
     ):
         raise RuntimeDependencyError("runtime_dependency_source_raced")
     return payload
@@ -752,7 +771,12 @@ def _tree_identity(path: Path, *, maximum_files: int, maximum_bytes: int) -> Map
         total += state.st_size
         if len(records) >= maximum_files or total > maximum_bytes:
             raise RuntimeDependencyError("runtime_dependency_tree_oversized")
-        payload = _read_regular(item, maximum=max(1, state.st_size))
+        payload = _read_regular(
+            item,
+            maximum=max(1, state.st_size),
+            allow_empty=True,
+            expected=state,
+        )
         records.append(
             {
                 "path": relative,

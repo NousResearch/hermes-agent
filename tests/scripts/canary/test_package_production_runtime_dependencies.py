@@ -322,6 +322,110 @@ def test_root_sealed_config_requires_exact_owner_group_mode_and_one_link(
         )
 
 
+def test_tree_identity_hashes_zero_byte_regular_files_canonically(
+    tmp_path: Path,
+) -> None:
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    empty = tree / "empty"
+    value = tree / "value"
+    empty.write_bytes(b"")
+    value.write_bytes(b"x")
+
+    records = [
+        {
+            "path": "empty",
+            "kind": "file",
+            "mode": empty.stat().st_mode & 0o7777,
+            "size": 0,
+            "sha256": package._sha256(b""),
+        },
+        {
+            "path": "value",
+            "kind": "file",
+            "mode": value.stat().st_mode & 0o7777,
+            "size": 1,
+            "sha256": package._sha256(b"x"),
+        },
+    ]
+
+    assert package._tree_identity(
+        tree,
+        maximum_files=2,
+        maximum_bytes=1,
+    ) == {
+        "file_count": 2,
+        "total_bytes": 1,
+        "tree_sha256": package._sha256(_canonical(records)),
+    }
+    with pytest.raises(
+        package.RuntimeDependencyError,
+        match="runtime_dependency_source_invalid",
+    ):
+        package._read_regular(empty, maximum=1)
+
+
+def test_tree_identity_rejects_hardlinks(tmp_path: Path) -> None:
+    hardlinked = tmp_path / "hardlinked"
+    hardlinked.mkdir()
+    first = hardlinked / "first"
+    first.write_bytes(b"")
+    os.link(first, hardlinked / "second")
+    with pytest.raises(
+        package.RuntimeDependencyError,
+        match="runtime_dependency_tree_invalid",
+    ):
+        package._tree_identity(
+            hardlinked,
+            maximum_files=2,
+            maximum_bytes=1,
+        )
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO creation is unavailable")
+def test_tree_identity_rejects_special_files(tmp_path: Path) -> None:
+    special = tmp_path / "special"
+    special.mkdir()
+    os.mkfifo(special / "pipe")
+    with pytest.raises(
+        package.RuntimeDependencyError,
+        match="runtime_dependency_tree_invalid",
+    ):
+        package._tree_identity(
+            special,
+            maximum_files=1,
+            maximum_bytes=1,
+        )
+
+
+def test_tree_identity_rejects_zero_byte_read_races(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    empty = tree / "empty"
+    empty.write_bytes(b"")
+    original = Path.read_bytes
+
+    def raced(path: Path) -> bytes:
+        payload = original(path)
+        if path == empty:
+            path.write_bytes(b"changed")
+        return payload
+
+    monkeypatch.setattr(Path, "read_bytes", raced)
+    with pytest.raises(
+        package.RuntimeDependencyError,
+        match="runtime_dependency_source_raced",
+    ):
+        package._tree_identity(
+            tree,
+            maximum_files=1,
+            maximum_bytes=1,
+        )
+
+
 def test_verify_manifest_is_observational_and_rejects_drift(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

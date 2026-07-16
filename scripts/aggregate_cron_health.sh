@@ -80,7 +80,6 @@ with open(outfile, 'w') as f:
     json.dump(result, f, indent=2, ensure_ascii=False)
 
 # Summary line for health check consumers (stdout → delivery / machine-readable)
-print(json.dumps({'ok': True, 'file': outfile, 'success_rate': success_rate}))
 
 # Exit code strategy (compatible with hermes health #51028):
 # 0 = healthy, 1 = warning, 2 = critical
@@ -102,4 +101,5 @@ if alerts:
         print(a)
 
 sys.exit(exit_code)
+# Healthy: no output → no_agent mode stays silent
 PYEOF

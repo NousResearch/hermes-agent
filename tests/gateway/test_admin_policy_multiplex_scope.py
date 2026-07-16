@@ -107,6 +107,26 @@ class TestMakeAdapterAdminPolicyCheck:
         )
         assert check(_source("12345")) is True
 
+    def test_resolution_error_is_logged_not_silent(self, monkeypatch, caplog):
+        """The fail-toward-permissive path must leave a trace: an operator
+        who configured allow_admin_from needs to know the tier silently
+        stopped applying (e.g. their profile config no longer loads), and a
+        bare ``except: return True`` in an authorization gate is invisible."""
+        import logging
+
+        runner = _make_runner(_tiered_config(admin_ids=["999"]))
+        check = runner._make_adapter_admin_policy_check(profile_home="/fake")
+        monkeypatch.setattr(
+            "gateway.run._profile_runtime_scope",
+            MagicMock(side_effect=RuntimeError("boom")),
+        )
+        with caplog.at_level(logging.WARNING, logger="gateway.run"):
+            assert check(_source("12345")) is True
+        assert any(
+            "Admin-tier policy resolution failed" in rec.message
+            for rec in caplog.records
+        ), "policy-resolution failure must be logged, not swallowed"
+
 
 class TestAdapterButtonGateUsesInjectedCheckNotHandlerIntrospection:
     """The exact scenario sweeper described: a secondary multiplexed

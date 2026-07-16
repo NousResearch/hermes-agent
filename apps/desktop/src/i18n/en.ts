@@ -1672,7 +1672,7 @@ export const en: Translations = {
       createFolder: 'New folder…',
       renameFolder: 'Rename folder',
       deleteFolder: 'Delete folder',
-      deleteFolderConfirm: 'Delete "{name}"? Sessions in it won\\'t be deleted.',
+      deleteFolderConfirm: "Delete \"{name}\"? Sessions in it won't be deleted.",
       moveToFolder: 'Move to folder',
       removeFromFolder: 'Remove from folder',
       addToFolder: 'Add to folder',

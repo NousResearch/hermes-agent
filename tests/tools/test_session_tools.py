@@ -58,9 +58,16 @@ def _mock_urlopen_failing(error: Exception | None = None) -> MagicMock:
 
 class TestDashboardCheck:
     def test_reachable(self):
-        with patch("urllib.request.urlopen", return_value=_mock_urlopen()):
+        with patch.dict(os.environ, {"HERMES_DASHBOARD_SESSION_TOKEN": "secret"}), \
+             patch("urllib.request.urlopen", return_value=_mock_urlopen()):
             from tools.session_tools import _check_dashboard
             assert _check_dashboard() is True
+
+    def test_public_status_is_not_enough(self):
+        with patch.dict(os.environ, {}, clear=True), \
+             patch("urllib.request.urlopen", return_value=_mock_urlopen()):
+            from tools.session_tools import _check_dashboard
+            assert _check_dashboard() is False
 
     def test_unreachable_connection_refused(self):
         with patch("urllib.request.urlopen", _mock_urlopen_failing(ConnectionRefusedError())):
@@ -76,10 +83,13 @@ class TestDashboardCheck:
 class TestApiGet:
     def test_success(self):
         resp = {"sessions": [{"id": "s1"}]}
-        with patch("urllib.request.urlopen", return_value=_mock_urlopen(body=resp)):
+        with patch("tools.session_tools._dashboard_token", return_value="secret"), \
+             patch("urllib.request.urlopen", return_value=_mock_urlopen(body=resp)) as mock_urlopen:
             from tools.session_tools import _api_get
             result = _api_get("/api/sessions")
             assert result == resp
+            request = mock_urlopen.call_args.args[0]
+            assert request.get_header("X-hermes-session-token") == "secret"
 
     def test_returns_none_on_failure(self):
         with patch("urllib.request.urlopen", _mock_urlopen_failing()):

@@ -2118,6 +2118,29 @@ class TestDeleteAndExport:
         ).fetchone()[0]
         assert count == 0
 
+    def test_delete_session_removes_folder_memberships(self, db):
+        db.create_session(session_id="foldered", source="cli")
+        folder = db.create_folder(name="Folder")
+        db.add_sessions_to_folder(folder["id"], ["foldered"])
+
+        assert db.delete_session("foldered") is True
+        assert db.list_folders()[0]["session_count"] == 0
+        assert db.list_folders()[0]["session_ids"] == []
+
+    def test_delete_delegate_children_removes_folder_memberships(self, db):
+        db.create_session(session_id="parent", source="cli")
+        db.create_session(
+            session_id="delegate",
+            source="cli",
+            parent_session_id="parent",
+            model_config={"_delegate_from": "parent"},
+        )
+        folder = db.create_folder(name="Folder")
+        db.add_sessions_to_folder(folder["id"], ["delegate"])
+
+        assert db.delete_session("parent") is True
+        assert db.list_folders()[0]["session_count"] == 0
+
     def test_delete_nonexistent(self, db):
         assert db.delete_session("nope") is False
 
@@ -2181,6 +2204,13 @@ class TestDeleteAndExport:
         assert count == 2
         count = db.add_sessions_to_folder(folder["id"], ["s1", "s2"])
         assert count == 0
+
+    def test_add_sessions_to_folder_rejects_unknown_session(self, db):
+        folder = db.create_folder(name="My Folder")
+        db.create_session(session_id="s1", source="cli")
+        with pytest.raises(ValueError, match="session not found: missing"):
+            db.add_sessions_to_folder(folder["id"], ["s1", "missing"])
+        assert db.list_folders()[0]["session_count"] == 0
 
     def test_remove_sessions_from_folder(self, db):
         folder = db.create_folder(name="My Folder")

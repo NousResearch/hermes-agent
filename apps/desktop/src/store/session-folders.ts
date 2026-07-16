@@ -14,21 +14,37 @@ export type { SessionFolder } from '@/hermes'
 export const $folders = atom<SessionFolder[]>([])
 export const $foldersLoading = atom(true)
 
+let refreshGeneration = 0
+let folderProfile: string | undefined
+
 export async function refreshFolders(profile?: string): Promise<void> {
+  const generation = ++refreshGeneration
+  if (folderProfile !== profile) {
+    folderProfile = profile
+    $folders.set([])
+  }
+  $foldersLoading.set(true)
+
   try {
     const result = await listSessionFolders(profile)
-    $folders.set(result)
+    if (generation === refreshGeneration) {
+      $folders.set(result)
+    }
   } catch {
     // Silently fail — folders are non-critical UI
   } finally {
-    $foldersLoading.set(false)
+    if (generation === refreshGeneration) {
+      $foldersLoading.set(false)
+    }
   }
 }
 
 export async function createFolder(name: string, profile?: string): Promise<SessionFolder | null> {
   try {
     const folder = await createSessionFolder(name, profile)
-    $folders.set([...$folders.get(), folder])
+    if (folderProfile === profile) {
+      $folders.set([...$folders.get(), folder])
+    }
     return folder
   } catch {
     return null
@@ -38,7 +54,9 @@ export async function createFolder(name: string, profile?: string): Promise<Sess
 export async function deleteAndRemoveFolder(id: string, profile?: string): Promise<boolean> {
   try {
     await deleteSessionFolder(id, profile)
-    $folders.set($folders.get().filter(f => f.id !== id))
+    if (folderProfile === profile) {
+      $folders.set($folders.get().filter(f => f.id !== id))
+    }
     return true
   } catch {
     return false
@@ -52,10 +70,13 @@ export async function moveToFolder(
   profile?: string
 ): Promise<boolean> {
   try {
+    if (currentFolderId === folderId) {
+      return true
+    }
+    await addSessionsToFolder(folderId, [sessionId], profile)
     if (currentFolderId) {
       await removeSessionsFromFolder(currentFolderId, [sessionId], profile)
     }
-    await addSessionsToFolder(folderId, [sessionId], profile)
     await refreshFolders(profile)
     return true
   } catch {

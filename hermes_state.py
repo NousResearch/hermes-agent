@@ -127,6 +127,7 @@ def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
     ids = _collect_delegate_child_ids(conn, parent_ids)
     if ids:
         ph = ",".join("?" * len(ids))
+        conn.execute(f"DELETE FROM session_folder_members WHERE session_id IN ({ph})", ids)
         conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", ids)
         # FK safety: orphan any untagged stragglers pointing at a doomed row.
         conn.execute(
@@ -1419,7 +1420,9 @@ class SessionDB:
                 "SELECT f.*, 0 AS session_count FROM session_folders f WHERE f.id = ?",
                 (fid,),
             ).fetchone()
-            return dict(row) if row else {}
+            result = dict(row) if row else {}
+            result["session_ids"] = []
+            return result
 
         return self._execute_write(_do)
 
@@ -1448,8 +1451,29 @@ class SessionDB:
     def add_sessions_to_folder(self, folder_id: str, session_ids: list[str]) -> int:
         """Add sessions to a folder. Returns count of newly added."""
         now = time.time()
-        return self._execute_write(
-            lambda conn: sum(
+
+        def _do(conn):
+            unique_ids = list(dict.fromkeys(sid for sid in session_ids if sid))
+            if not unique_ids:
+                return 0
+            if not conn.execute(
+                "SELECT 1 FROM session_folders WHERE id = ?", (folder_id,)
+            ).fetchone():
+                # Preserve the existing foreign-key error contract for a
+                # missing folder; session validation applies to real folders.
+                raise sqlite3.IntegrityError("Folder not found")
+            placeholders = ",".join("?" * len(unique_ids))
+            existing = {
+                row[0]
+                for row in conn.execute(
+                    f"SELECT id FROM sessions WHERE id IN ({placeholders})",
+                    unique_ids,
+                ).fetchall()
+            }
+            missing = [sid for sid in unique_ids if sid not in existing]
+            if missing:
+                raise ValueError(f"session not found: {missing[0]}")
+            return sum(
                 1
                 for sid in session_ids
                 if sid
@@ -1459,7 +1483,8 @@ class SessionDB:
                     (folder_id, sid, now),
                 ).rowcount
             )
-        )
+
+        return self._execute_write(_do)
 
     def remove_sessions_from_folder(
         self, folder_id: str, session_ids: list[str]
@@ -3010,6 +3035,9 @@ class SessionDB:
             ids = [r[0] if isinstance(r, (tuple, list)) else r["id"] for r in rows]
             if ids:
                 placeholders = ",".join("?" * len(ids))
+                conn.execute(
+                    f"DELETE FROM session_folder_members WHERE session_id IN ({placeholders})", ids
+                )
                 conn.execute(
                     f"DELETE FROM sessions WHERE id IN ({placeholders})", ids
                 )
@@ -6106,6 +6134,10 @@ class SessionDB:
                 """,
                 (session_id,),
             )
+            if cursor.rowcount:
+                conn.execute(
+                    "DELETE FROM session_folder_members WHERE session_id = ?", (session_id,)
+                )
             return cursor.rowcount > 0
 
         deleted = self._execute_write(_do)

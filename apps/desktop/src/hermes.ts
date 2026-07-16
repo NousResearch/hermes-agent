@@ -1319,18 +1319,23 @@ export interface SessionFolder {
   sort_order: number
   created_at: number
   session_count: number
+  session_ids: string[]
 }
 
 export function listSessionFolders(profile?: string): Promise<SessionFolder[]> {
   const params = profile ? `?profile=${encodeURIComponent(profile)}` : ''
-  return window.hermesDesktop.api<SessionFolder[]>({ path: `/api/session-folders${params}` })
+  return window.hermesDesktop.api<SessionFolder[]>({
+    ...(profile ? { profile } : {}),
+    path: `/api/session-folders${params}`
+  })
 }
 
 export function createSessionFolder(name: string, profile?: string): Promise<SessionFolder> {
   return window.hermesDesktop.api<SessionFolder>({
+    ...(profile ? { profile } : {}),
     path: '/api/session-folders',
     method: 'POST',
-    body: { name, profile }
+    body: { name, ...(profile ? { profile } : {}) }
   })
 }
 
@@ -1340,15 +1345,17 @@ export function updateSessionFolder(
   profile?: string
 ): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
+    ...(profile ? { profile } : {}),
     path: `/api/session-folders/${encodeURIComponent(folderId)}`,
     method: 'PATCH',
-    body: { name, profile }
+    body: { name, ...(profile ? { profile } : {}) }
   })
 }
 
 export function deleteSessionFolder(folderId: string, profile?: string): Promise<{ ok: boolean }> {
   const params = profile ? `?profile=${encodeURIComponent(profile)}` : ''
   return window.hermesDesktop.api<{ ok: boolean }>({
+    ...(profile ? { profile } : {}),
     path: `/api/session-folders/${encodeURIComponent(folderId)}${params}`,
     method: 'DELETE'
   })
@@ -1360,9 +1367,10 @@ export function addSessionsToFolder(
   profile?: string
 ): Promise<{ ok: boolean; count: number }> {
   return window.hermesDesktop.api<{ ok: boolean; count: number }>({
+    ...(profile ? { profile } : {}),
     path: `/api/session-folders/${encodeURIComponent(folderId)}/sessions`,
     method: 'POST',
-    body: { session_ids: sessionIds, profile }
+    body: { session_ids: sessionIds, ...(profile ? { profile } : {}) }
   })
 }
 
@@ -1372,9 +1380,10 @@ export function removeSessionsFromFolder(
   profile?: string
 ): Promise<{ ok: boolean; count: number }> {
   return window.hermesDesktop.api<{ ok: boolean; count: number }>({
+    ...(profile ? { profile } : {}),
     path: `/api/session-folders/${encodeURIComponent(folderId)}/sessions`,
     method: 'DELETE',
-    body: { session_ids: sessionIds, profile }
+    body: { session_ids: sessionIds, ...(profile ? { profile } : {}) }
   })
 }
 
@@ -1385,6 +1394,7 @@ export function getSessionFolderMap(
   const ids = sessionIds.join(',')
   const params = `?session_ids=${encodeURIComponent(ids)}${profile ? `&profile=${encodeURIComponent(profile)}` : ''}`
   return window.hermesDesktop.api<Record<string, string[]>>({
+    ...(profile ? { profile } : {}),
     path: `/api/session-folders/map${params}`
   })
 }

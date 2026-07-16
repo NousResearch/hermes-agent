@@ -9,6 +9,8 @@ no external dependencies beyond Python stdlib.
 
 import json
 import logging
+import os
+import sys
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -17,12 +19,35 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 _DASHBOARD_BASE = "http://127.0.0.1:9119"
+_SESSION_TOKEN_ENV = "HERMES_DASHBOARD_SESSION_TOKEN"
+_SESSION_HEADER = "X-Hermes-Session-Token"
+
+
+def _dashboard_token() -> str:
+    """Return the token shared with the dashboard backend, when available."""
+    token = os.environ.get(_SESSION_TOKEN_ENV, "").strip()
+    if token:
+        return token
+    # Standalone dashboard runs generate the token in the already-loaded
+    # web_server module instead of exporting it through the environment.
+    server = sys.modules.get("hermes_cli.web_server")
+    return str(getattr(server, "_SESSION_TOKEN", "") or "").strip()
+
+
+def _api_headers(*, json_body: bool = False) -> dict[str, str]:
+    headers = {"Content-Type": "application/json"} if json_body else {}
+    token = _dashboard_token()
+    if token:
+        headers[_SESSION_HEADER] = token
+    return headers
 
 
 def _api_get(path: str) -> Optional[dict]:
     """GET request to the Hermes dashboard API."""
     try:
-        req = urllib.request.Request(f"{_DASHBOARD_BASE}{path}", method="GET")
+        req = urllib.request.Request(
+            f"{_DASHBOARD_BASE}{path}", method="GET", headers=_api_headers()
+        )
         with urllib.request.urlopen(req, timeout=5) as resp:
             return json.loads(resp.read())
     except (urllib.error.URLError, urllib.error.HTTPError, ConnectionRefusedError, OSError) as e:
@@ -36,7 +61,7 @@ def _api_patch(path: str, body: dict) -> Optional[dict]:
         data = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(
             f"{_DASHBOARD_BASE}{path}", data=data, method="PATCH",
-            headers={"Content-Type": "application/json"},
+            headers=_api_headers(json_body=True),
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
             return json.loads(resp.read())
@@ -48,7 +73,9 @@ def _api_patch(path: str, body: dict) -> Optional[dict]:
 def _api_delete(path: str) -> Optional[dict]:
     """DELETE request to the Hermes dashboard API."""
     try:
-        req = urllib.request.Request(f"{_DASHBOARD_BASE}{path}", method="DELETE")
+        req = urllib.request.Request(
+            f"{_DASHBOARD_BASE}{path}", method="DELETE", headers=_api_headers()
+        )
         with urllib.request.urlopen(req, timeout=5) as resp:
             return json.loads(resp.read())
     except (urllib.error.URLError, urllib.error.HTTPError, ConnectionRefusedError, OSError) as e:
@@ -62,7 +89,7 @@ def _api_post(path: str, body: dict) -> Optional[dict]:
         data = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(
             f"{_DASHBOARD_BASE}{path}", data=data, method="POST",
-            headers={"Content-Type": "application/json"},
+            headers=_api_headers(json_body=True),
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
             return json.loads(resp.read())
@@ -72,13 +99,8 @@ def _api_post(path: str, body: dict) -> Optional[dict]:
 
 
 def _check_dashboard() -> bool:
-    """Check if the Hermes dashboard API is reachable."""
-    try:
-        req = urllib.request.Request(f"{_DASHBOARD_BASE}/api/status", method="GET")
-        with urllib.request.urlopen(req, timeout=2):
-            return True
-    except Exception:
-        return False
+    """Check that the dashboard is reachable and the caller is authenticated."""
+    return bool(_dashboard_token()) and _api_get("/api/sessions?limit=1") is not None
 
 
 # ── Tool handlers ────────────────────────────────────────────────────

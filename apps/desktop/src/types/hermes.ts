@@ -370,6 +370,7 @@ export interface SessionFolder {
   sort_order: number
   created_at: number
   session_count: number
+  session_ids: string[]
 }
 
 export interface SessionMessage {

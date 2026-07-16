@@ -7732,6 +7732,7 @@ ipcMain.handle('hermes:requestMicrophoneAccess', async () => {
 //   GET    /api/sessions/{id}[/messages] → read from remote
 //   DELETE /api/sessions/{id}            → delete on remote
 //   PATCH  /api/sessions/{id}            → rename/archive on remote
+//   *      /api/session-folders[/*]       → folder operations on remote
 async function interceptSessionRequestForRemote(request) {
   if (typeof request?.path !== 'string') {
     return undefined
@@ -7748,6 +7749,43 @@ async function interceptSessionRequestForRemote(request) {
   }
 
   const { pathname, searchParams } = parsed
+
+  // Folder wrappers keep profile in the REST path/body for local and global
+  // backends, but a per-profile remote backend is already scoped to that
+  // profile. Strip the duplicate scope before forwarding or the remote host
+  // will try to open a second local profile named after the desktop profile.
+  const isFolderRequest =
+    pathname === '/api/session-folders' ||
+    pathname === '/api/session-folders/map' ||
+    /^\/api\/session-folders\/[^/]+(?:\/sessions)?$/.test(pathname)
+  if (isFolderRequest) {
+    const profile = (request.profile || searchParams.get('profile') || '').trim()
+    if (!profile || !profileHasRemoteOverride(profile)) {
+      if (!profile || !globalRemoteActive()) {
+        return undefined
+      }
+
+      const path = pathWithGlobalRemoteProfile(request.path, profile, {
+        globalRemote: true,
+        profileRemoteOverride: false
+      })
+
+      if (method === 'GET') {
+        return fetchJsonForProfile(null, path)
+      }
+
+      const body = request.body && typeof request.body === 'object' ? { ...request.body, profile } : { profile }
+      return requestJsonForProfile(null, path, method, body)
+    }
+    if (method === 'GET') {
+      const sessionIds = searchParams.get('session_ids')
+      const path = sessionIds === null ? pathname : `${pathname}?session_ids=${encodeURIComponent(sessionIds)}`
+      return fetchJsonForProfile(profile, path)
+    }
+    const body = request.body && typeof request.body === 'object' ? { ...request.body } : request.body
+    if (body) delete body.profile
+    return requestJsonForProfile(profile, pathname, method, body)
+  }
 
   if (method === 'GET' && pathname === '/api/profiles/sessions') {
     const remoteProfiles = configuredRemoteProfileNames()

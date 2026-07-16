@@ -95,7 +95,6 @@ import {
   sessionPinId,
   setCurrentCwd
 } from '@/store/session'
-import { $folders } from '@/store/session-folders'
 import { $focusedStoredSessionId, type SplitDir } from '@/store/session-states'
 
 import {
@@ -278,7 +277,6 @@ export function ChatSidebar({
   const pinsOpen = useStore($sidebarPinsOpen)
   const agentsOpen = useStore($sidebarRecentsOpen)
   const cronOpen = useStore($sidebarCronOpen)
-  const foldersList = useStore($folders)
   const [foldersOpen, setFoldersOpen] = useState(true)
   // The sidebar highlight tracks the FOCUSED session — the interacted tile's
   // tab, else the main selection — so it stays 1:1 with whatever tab is active.
@@ -1239,7 +1237,7 @@ export function ChatSidebar({
               />
             )}
 
-            {!trimmedQuery && foldersList.length > 0 && (
+            {!trimmedQuery && !showAllProfiles && (
               <SidebarFoldersSection
                 label={s.row.folders ?? 'Folders'}
                 onArchiveSession={onArchiveSession}
@@ -1248,6 +1246,7 @@ export function ChatSidebar({
                 onToggle={() => setFoldersOpen(!foldersOpen)}
                 onTogglePin={pinSession}
                 open={foldersOpen}
+                profile={profileScope}
               />
             )}
 

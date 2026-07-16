@@ -10068,6 +10068,8 @@ async def add_sessions_to_folder(folder_id: str, body: FolderMemberships):
         try:
             count = db.add_sessions_to_folder(folder_id, body.session_ids)
             return {"ok": True, "count": count}
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         except sqlite3.IntegrityError:
             raise HTTPException(
                 status_code=500,

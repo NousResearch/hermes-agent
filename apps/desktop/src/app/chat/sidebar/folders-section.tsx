@@ -18,7 +18,7 @@ import { Input } from '@/components/ui/input'
 import { SidebarGroup, SidebarGroupContent } from '@/components/ui/sidebar'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
-import type { SessionFolder } from '@/hermes'
+import { getSession, type SessionFolder, type SessionInfo } from '@/hermes'
 import { triggerHaptic } from '@/lib/haptics'
 import { $folders, $foldersLoading, createFolder, deleteAndRemoveFolder, refreshFolders } from '@/store/session-folders'
 import { $selectedStoredSessionId, $sessions, $workingSessionIds, sessionPinId } from '@/store/session'
@@ -34,6 +34,7 @@ interface SidebarFoldersSectionProps {
   onDeleteSession: (sessionId: string) => void
   onArchiveSession: (sessionId: string) => void
   onTogglePin: (sessionId: string) => void
+  profile?: string
 }
 
 export function SidebarFoldersSection({
@@ -44,6 +45,7 @@ export function SidebarFoldersSection({
   onDeleteSession,
   onArchiveSession,
   onTogglePin,
+  profile
 }: SidebarFoldersSectionProps) {
   const { t } = useI18n()
   const r = t.sidebar.row
@@ -58,10 +60,11 @@ export function SidebarFoldersSection({
   const workingSessionIds = useStore($workingSessionIds)
   const workingSessionIdSet = new Set(workingSessionIds)
 
-  // Fetch folders on mount
+  // Refresh whenever the sidebar profile scope changes so a remote/profile
+  // folder list never falls back to the primary backend's folders.
   useEffect(() => {
-    void refreshFolders()
-  }, [])
+    void refreshFolders(profile)
+  }, [profile])
 
   if (foldersLoading) {
     return null
@@ -74,7 +77,7 @@ export function SidebarFoldersSection({
   const handleCreate = async () => {
     if (!newFolderName.trim() || creating) return
     setCreating(true)
-    const result = await createFolder(newFolderName.trim())
+    const result = await createFolder(newFolderName.trim(), profile)
     setCreating(false)
     if (result) {
       setCreatingFolder(false)
@@ -174,7 +177,7 @@ export function SidebarFoldersSection({
                       variant="destructive"
                       onSelect={() => {
                         triggerHaptic('warning')
-                        void deleteAndRemoveFolder(folder.id)
+                        void deleteAndRemoveFolder(folder.id, profile)
                       }}
                     >
                       <Codicon name="trash" size="0.875rem" />
@@ -192,6 +195,7 @@ export function SidebarFoldersSection({
                     onDeleteSession={onDeleteSession}
                     onArchiveSession={onArchiveSession}
                     onTogglePin={onTogglePin}
+                    profile={profile}
                   />
                 )}
               </div>
@@ -212,20 +216,54 @@ function FolderMemberList({
   onDeleteSession,
   onArchiveSession,
   onTogglePin,
+  profile
 }: {
   folder: SessionFolder
-  sessions: import('@/hermes').SessionInfo[]
+  sessions: SessionInfo[]
   activeSessionId: string | null
   workingSessionIdSet: Set<string>
   onResumeSession: (id: string) => void
   onDeleteSession: (id: string) => void
   onArchiveSession: (id: string) => void
   onTogglePin: (id: string) => void
+  profile?: string
 }) {
   const sessionIds = folder.session_ids ?? []
+  const [fetchedSessions, setFetchedSessions] = useState<SessionInfo[]>([])
+
+  useEffect(() => {
+    const loaded = new Set(sessions.flatMap(session => [session.id, sessionPinId(session)]))
+    const missingIds = sessionIds.filter(id => !loaded.has(id))
+
+    if (missingIds.length === 0) {
+      setFetchedSessions([])
+
+      return
+    }
+
+    let cancelled = false
+
+    void Promise.all(
+      missingIds.map(id =>
+        getSession(id, profile)
+          .then(session => ({ ...session, profile: session.profile ?? profile }))
+          .catch(() => null)
+      )
+    ).then(results => {
+      if (!cancelled) {
+        setFetchedSessions(results.filter((session): session is SessionInfo => session !== null))
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [profile, sessionIds, sessions])
+
+  const allSessions = [...sessions, ...fetchedSessions]
   const memberSessions = sessionIds
-    .map(fsid => sessions.find(s => sessionPinId(s) === fsid || s.id === fsid))
-    .filter((s): s is import('@/hermes').SessionInfo => s !== undefined)
+    .map(fsid => allSessions.find(s => sessionPinId(s) === fsid || s.id === fsid))
+    .filter((s): s is SessionInfo => s !== undefined)
 
   if (memberSessions.length === 0) {
     return (
@@ -239,14 +277,16 @@ function FolderMemberList({
     <div className="ml-[1.125rem] flex flex-col gap-px">
       {memberSessions.map(session => (
         <SidebarSessionRow
-          active={session.id === activeSessionId}
+          currentFolderId={folder.id}
+          isPinned={false}
+          isSelected={session.id === activeSessionId}
+          isWorking={workingSessionIdSet.has(session.id)}
           key={session.id}
           onArchive={() => onArchiveSession(session.id)}
           onDelete={() => onDeleteSession(session.id)}
           onPin={() => onTogglePin(session.id)}
           onResume={() => onResumeSession(session.id)}
           session={session}
-          working={workingSessionIdSet.has(session.id)}
         />
       ))}
     </div>

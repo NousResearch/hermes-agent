@@ -111,7 +111,6 @@ interface SessionActions {
   onBranch?: () => void
   onArchive?: () => void
   onDelete?: () => void
-  folderIds?: string[]
   currentFolderId?: string | null
   /** Close this surface (a tile tab) — omitted where nothing closes (sidebar
    *  rows, the main tab). */
@@ -167,7 +166,6 @@ function useSessionActions({
   title,
   pinned = false,
   profile,
-  folderIds = [],
   currentFolderId,
   onPin,
   onBranch,
@@ -373,7 +371,7 @@ function useSessionActions({
         <kit.Item
           onSelect={() => {
             triggerHaptic('selection')
-            void storeRemoveFromFolder(sessionId, currentFolderId)
+            void storeRemoveFromFolder(sessionId, currentFolderId, profile)
           }}
         >
           <Codicon name="close" size="0.875rem" />
@@ -392,7 +390,7 @@ function useSessionActions({
                 key={folder.id}
                 onSelect={() => {
                   triggerHaptic('selection')
-                  void storeMoveToFolder(sessionId, folder.id, currentFolderId)
+                  void storeMoveToFolder(sessionId, folder.id, currentFolderId, profile)
                 }}
               >
                 <span>{folder.name}</span>

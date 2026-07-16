@@ -85,6 +85,7 @@ class TestCreateFolder:
         data = resp.json()
         assert data["name"] == "Bug Reports"
         assert data["session_count"] == 0
+        assert data["session_ids"] == []
         assert data["id"].startswith("sf_")
 
     def test_empty_name_returns_400(self, test_app):
@@ -96,6 +97,13 @@ class TestCreateFolder:
         client, db = test_app
         resp = client.post("/api/session-folders", json={})
         assert resp.status_code == 422
+
+    def test_agent_style_request_requires_dashboard_token(self, test_app):
+        client, db = test_app
+        client.headers.pop("X-Hermes-Session-Token")
+        assert client.post("/api/session-folders", json={"name": "Denied"}).status_code == 401
+        client.headers["X-Hermes-Session-Token"] = "test-session-token-for-testing"
+        assert client.post("/api/session-folders", json={"name": "Allowed"}).status_code == 200
 
 
 class TestListFolders:
@@ -207,6 +215,15 @@ class TestAddSessions:
         )
         assert resp.status_code == 200
         assert resp.json()["count"] == 0
+
+    def test_add_rejects_nonexistent_session_without_partial_membership(self, db_with_sessions):
+        client, db, folder = db_with_sessions
+        resp = client.post(
+            f"/api/session-folders/{folder['id']}/sessions",
+            json={"session_ids": ["s0", "missing"]},
+        )
+        assert resp.status_code == 400
+        assert db.list_folders()[0]["session_count"] == 0
 
     def test_add_nonexistent_folder(self, test_app):
         client, db = test_app

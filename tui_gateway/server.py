@@ -1152,6 +1152,13 @@ def _emit_approval_request(sid: str, data: dict | None) -> None:
     platforms and the SSE/API stream fixed in #50767). Reuse the shared gateway
     seam so all approval transports redact consistently."""
     payload = dict(data or {})
+    if "choices" not in payload:
+        if payload.get("smart_denied"):
+            payload["choices"] = ["once", "deny"]
+        elif payload.get("allow_permanent") is False:
+            payload["choices"] = ["once", "session", "deny"]
+        elif "allow_permanent" in payload:
+            payload["choices"] = ["once", "session", "always", "deny"]
     if "command" in payload:
         from gateway.run import _redact_approval_command
 
@@ -1859,7 +1866,10 @@ def _persist_session_git_meta(session: dict, cwd: str) -> None:
 
 
 def _set_session_cwd(session: dict, cwd: str) -> str:
-    resolved = os.path.abspath(os.path.expanduser(str(cwd)))
+    from hermes_constants import translate_cwd_for_wsl_backend
+
+    cwd = translate_cwd_for_wsl_backend(str(cwd))
+    resolved = os.path.abspath(os.path.expanduser(cwd))
     if not os.path.isdir(resolved):
         raise ValueError(f"working directory does not exist: {cwd}")
     session["cwd"] = resolved
@@ -2035,15 +2045,26 @@ def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
         _pending[rid] = (sid, ev)
         payload["request_id"] = rid
         _pending_prompt_payloads[rid] = (event, dict(payload))
+    answered = False
+    answer = ""
+    answer_present = False
     try:
         _emit(event, sid, payload)
-        ev.wait(timeout=timeout)
+        answered = ev.wait(timeout=timeout)
     finally:
         with _prompt_lock:
             _pending.pop(rid, None)
             _pending_prompt_payloads.pop(rid, None)
-    with _prompt_lock:
-        return _answers.pop(rid, "")
+            answer_present = rid in _answers
+            answer = _answers.pop(rid, "")
+
+    if not answered and not answer_present and event in {"secret.request", "sudo.request"}:
+        _emit(
+            f"{event.removesuffix('.request')}.expire",
+            sid,
+            {"request_id": rid},
+        )
+    return answer
 
 
 def _clear_pending(sid: str | None = None) -> None:
@@ -2096,7 +2117,15 @@ def _resolve_model() -> str:
         return str(m.get("default", "") or "").strip()
     if isinstance(m, str) and m:
         return m.strip()
-    return "anthropic/claude-sonnet-4"
+    # No env seed and no config preference: fall back to the cost-safe silent
+    # default (catalog-labeled, cache-only read), never an expensive Anthropic
+    # flagship the user didn't pick.
+    try:
+        from hermes_cli.models import get_preferred_silent_default_model
+
+        return get_preferred_silent_default_model()
+    except Exception:
+        return "z-ai/glm-5.2"
 
 
 def _resolve_session_platform() -> str:
@@ -2472,6 +2501,19 @@ def _write_config_key(key_path: str, value):
 
 
 _STATUSBAR_MODES = frozenset({"off", "top", "bottom"})
+_APPROVAL_MODES = frozenset({"manual", "smart", "off"})
+
+
+def _load_approval_mode() -> str:
+    from hermes_cli.config import DEFAULT_CONFIG, _deep_merge
+    from tools.approval import _normalize_approval_mode
+
+    raw_cfg = _load_cfg()
+    cfg = _deep_merge(DEFAULT_CONFIG, raw_cfg if isinstance(raw_cfg, dict) else {})
+    approvals = cfg.get("approvals")
+    raw = approvals.get("mode") if isinstance(approvals, dict) else None
+    mode = _normalize_approval_mode(raw)
+    return mode if mode in _APPROVAL_MODES else "manual"
 
 
 def _coerce_statusbar(raw) -> str:
@@ -2528,15 +2570,17 @@ def _display_mouse_tracking(display: dict) -> str:
     return "all"
 
 
-def _load_reasoning_config() -> dict | None:
-    from hermes_constants import parse_reasoning_effort
+def _load_reasoning_config(model: str = "") -> dict | None:
+    """Load reasoning effort from config.yaml, respecting per-model overrides.
 
-    # Pass the raw value through — ``or ""`` would coerce a YAML boolean
-    # False (``reasoning_effort: false``/``off``/``no``) to "", silently
-    # re-enabling thinking for users who explicitly turned it off.
-    return parse_reasoning_effort(
-        (_load_cfg().get("agent") or {}).get("reasoning_effort", "")
-    )
+    Thin wrapper over the shared chokepoint
+    :func:`hermes_constants.resolve_reasoning_config` (per-model override >
+    global ``agent.reasoning_effort``; YAML boolean False = disabled).
+    Closes #21256.
+    """
+    from hermes_constants import resolve_reasoning_config
+
+    return resolve_reasoning_config(_load_cfg(), model)
 
 
 def _load_service_tier() -> str | None:
@@ -3307,7 +3351,8 @@ def _current_profile_name() -> str:
 # checkout), surfacing a one-click "update to align" prompt instead of failing
 # cryptically downstream. Bump whenever the desktop's backend contract changes.
 # v2: adds the file.attach RPC (remote-gateway non-image file upload).
-DESKTOP_BACKEND_CONTRACT = 2
+# v3: adds approvals.mode config RPCs and session.info reconciliation.
+DESKTOP_BACKEND_CONTRACT = 3
 
 
 def _session_info(agent, session: dict | None = None) -> dict:
@@ -3341,17 +3386,15 @@ def _session_info(agent, session: dict | None = None) -> dict:
     # the desktop status bar (it would show YOLO "off" while approvals.mode=off
     # silently auto-approves every dangerous command).
     yolo = False
+    approval_mode = "manual"
     try:
-        from tools.approval import (
-            _YOLO_MODE_FROZEN,
-            _get_approval_mode,
-            is_session_yolo_enabled,
-        )
+        from tools.approval import _YOLO_MODE_FROZEN, is_session_yolo_enabled
 
         session_yolo = (
             bool(is_session_yolo_enabled(session_key)) if session_key else False
         )
-        yolo = bool(_YOLO_MODE_FROZEN) or session_yolo or _get_approval_mode() == "off"
+        approval_mode = _load_approval_mode()
+        yolo = bool(_YOLO_MODE_FROZEN) or session_yolo or approval_mode == "off"
     except Exception:
         yolo = False
     info: dict = {
@@ -3361,6 +3404,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "service_tier": service_tier,
         "fast": service_tier == "priority",
         "yolo": yolo,
+        "approval_mode": approval_mode,
         "tools": {},
         "skills": {},
         "cwd": cwd,
@@ -4177,7 +4221,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "openrouter_min_coding_score": getattr(agent, "openrouter_min_coding_score", None),
         "session_id": task_id,
         "reasoning_config": getattr(agent, "reasoning_config", None)
-        or _load_reasoning_config(),
+        or _load_reasoning_config(str(getattr(agent, "model", "") or "")),
         "service_tier": getattr(agent, "service_tier", None) or _load_service_tier(),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "platform": "tui",
@@ -4606,7 +4650,7 @@ def _make_agent(
         reasoning_config=(
             reasoning_config_override
             if reasoning_config_override is not None
-            else _load_reasoning_config()
+            else _load_reasoning_config(str(model or ""))
         ),
         service_tier=(
             service_tier_override
@@ -7932,14 +7976,18 @@ def _(rid, params: dict) -> dict:
             agent = session["agent"]
             _sync_session_key_after_compress(sid, session)
             summary = summarize_manual_compression(
-                before_messages, messages, before_tokens, after_tokens
+                before_messages,
+                messages,
+                before_tokens,
+                after_tokens,
+                compression_state=getattr(agent, "context_compressor", None),
             )
             info = _session_info(agent, session)
             _emit("session.info", sid, info)
             return _ok(
                 rid,
                 {
-                    "status": "compressed",
+                    "status": "aborted" if summary["aborted"] else "compressed",
                     "removed": removed,
                     "before_messages": before_count,
                     "after_messages": after_count,
@@ -8419,7 +8467,11 @@ def _(rid, params: dict) -> dict:
 
 @method("prompt.submit")
 def _(rid, params: dict) -> dict:
-    sid, text = params.get("session_id", ""), params.get("text", "")
+    from hermes_cli.input_sanitize import sanitize_user_prompt_text
+
+    sid = params.get("session_id", "")
+    raw_text = params.get("text", "")
+    text = sanitize_user_prompt_text(raw_text) if isinstance(raw_text, str) else raw_text
     truncate_user_ordinal = params.get("truncate_before_user_ordinal")
     session, err = _sess_nowait(params, rid)
     if err:
@@ -8604,9 +8656,9 @@ def _session_owns_notification_event(sid: str, session: dict, evt: dict) -> bool
     minus its orphan-adoption fallback. An event owns-matches when its
     ``origin_ui_session_id`` is this live session, or its ``session_key``
     (raw or resolved through the compression chain) matches this session's
-    key/lineage. Used as a fail-closed gate for async-delegation payloads:
-    "not provably elsewhere" is NOT good enough to inject a conversation
-    payload into this chat (#55578).
+    key/lineage. Used as the fail-closed gate for every addressed notification:
+    "not provably elsewhere" is NOT good enough to inject a payload into this
+    chat (#55578).
     """
     if session.get("_finalized"):
         return False
@@ -8629,6 +8681,14 @@ def _session_owns_notification_event(sid: str, session: dict, evt: dict) -> bool
     except Exception:
         resolved_key = evt_key
     return resolved_key in current_keys
+
+
+def _notification_event_requires_owner(evt: dict) -> bool:
+    """Whether ``evt`` must be positively claimed before TUI delivery."""
+    return evt.get("type") == "async_delegation" or bool(
+        str(evt.get("origin_ui_session_id") or "")
+        or str(evt.get("session_key") or "")
+    )
 
 
 def _notification_event_dedup_key(evt: dict) -> tuple:
@@ -8677,10 +8737,9 @@ def _notification_poller_loop(
     status.update (kind=process) for user visibility, then chains an
     agent turn via _run_prompt_submit if the session is idle.
 
-    NOTE: The completion_queue is global (one per process). If multiple
-    TUI sessions coexist, whichever poller wakes first grabs the event,
-    even if the process was started by a different session. This matches
-    CLI/gateway behavior (single session per process).
+    The completion_queue is process-global. In multi-session Desktop each
+    poller requeues events owned by another live session and drops addressed
+    events whose owner is gone; ownerless legacy notifications remain global.
     """
     from tools.process_registry import process_registry, format_process_notification
 
@@ -8701,26 +8760,22 @@ def _notification_poller_loop(
             time.sleep(0.1)
             continue
 
-        # Fail closed for async-delegation results (#55578): these carry a
-        # conversation payload, and injecting one into any chat other than the
-        # one that commissioned it is a hard cross-session leak. The
-        # belongs-elsewhere check above already re-queued events owned by
-        # another LIVE session; what reaches here is either ours or an
-        # orphan whose owner is gone. Orphaned delegation payloads are
-        # DROPPED, not adopted — the subagent's summary is already persisted
-        # in the delegation records/output store, so nothing is lost, whereas
-        # a wrong-chat injection is unrecoverable. Non-delegation events
-        # (background process completions etc.) keep the historical
-        # adopt-orphans behavior.
-        if evt.get("type") == "async_delegation" and not _session_owns_notification_event(
-            sid, session, evt
-        ):
-            logger.warning(
-                "async-delegation completion %s has no live owner "
-                "(origin=%r key=%r); dropping from injection instead of "
-                "delivering to session %s (#55578 fail-closed; result "
-                "remains in the delegation records)",
-                evt.get("delegation_id", "?"),
+        # What reaches here is not owned by another LIVE session. Addressed
+        # events still require positive proof before injection: exact UI origin,
+        # direct durable key, or compression lineage. If none proves ownership,
+        # the event is orphaned and must not be adopted by this chat. Truly
+        # ownerless ordinary notifications retain legacy global delivery.
+        requires_owner = _notification_event_requires_owner(evt)
+        if requires_owner and not _session_owns_notification_event(sid, session, evt):
+            log = (
+                logger.warning
+                if evt.get("type") == "async_delegation"
+                else logger.debug
+            )
+            log(
+                "Dropping unowned %s notification (origin=%r key=%r) instead "
+                "of delivering to session %s",
+                evt.get("type", "completion"),
                 str(evt.get("origin_ui_session_id") or ""),
                 str(evt.get("session_key") or ""),
                 sid,
@@ -8759,10 +8814,18 @@ def _notification_poller_loop(
             continue
 
         rid = f"__notif__{int(time.time() * 1000)}"
+        from tools.async_delegation import (
+            claim_event_delivery, complete_event_delivery, release_event_delivery,
+        )
+        _claim = claim_event_delivery(evt, "tui-poller")
+        if _claim is None:
+            continue
         try:
             _emit("message.start", sid)
             _run_prompt_submit(rid, sid, session, text)
+            complete_event_delivery(evt, _claim)
         except Exception as exc:
+            release_event_delivery(evt, _claim)
             print(
                 f"[tui_gateway] notification poller dispatch failed: "
                 f"{type(exc).__name__}: {exc}",
@@ -8774,6 +8837,7 @@ def _notification_poller_loop(
     # Drain any remaining events after stop signal (process all pending
     # before exiting so nothing is lost on shutdown). Events owned by other
     # live sessions are set aside and re-queued so their poller still sees them.
+    # Orphaned events (owner gone) are dropped — same guard as the main loop.
     deferred: list = []
     while not process_registry.completion_queue.empty():
         try:
@@ -8783,14 +8847,21 @@ def _notification_poller_loop(
         if _notification_event_belongs_elsewhere(sid, session, evt):
             deferred.append(evt)
             continue
-        # Same fail-closed rule as the live loop: an orphaned async-delegation
-        # payload is never adopted by a foreign session — defer it (a later
-        # resume of the owner's lineage can still claim it) rather than
-        # injecting another chat's conversation here (#55578).
-        if evt.get("type") == "async_delegation" and not _session_owns_notification_event(
-            sid, session, evt
-        ):
-            deferred.append(evt)
+        # Same positive-proof rule as the live loop. Preserve the existing
+        # shutdown behavior for orphaned delegation payloads by deferring them
+        # for a later resume; ordinary addressed orphans are dropped.
+        requires_owner = _notification_event_requires_owner(evt)
+        if requires_owner and not _session_owns_notification_event(sid, session, evt):
+            if evt.get("type") == "async_delegation":
+                deferred.append(evt)
+            else:
+                logger.debug(
+                    "Dropping unowned %s notification during shutdown drain "
+                    "(origin=%r key=%r)",
+                    evt.get("type", "completion"),
+                    str(evt.get("origin_ui_session_id") or ""),
+                    str(evt.get("session_key") or ""),
+                )
             continue
         _evt_sid = evt.get("session_id", "")
         if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
@@ -8811,10 +8882,18 @@ def _notification_poller_loop(
             session["running"] = True
 
         rid = f"__notif__{int(time.time() * 1000)}"
+        from tools.async_delegation import (
+            claim_event_delivery, complete_event_delivery, release_event_delivery,
+        )
+        _claim = claim_event_delivery(evt, "tui-poller")
+        if _claim is None:
+            continue
         try:
             _emit("message.start", sid)
             _run_prompt_submit(rid, sid, session, text)
+            complete_event_delivery(evt, _claim)
         except Exception as exc:
+            release_event_delivery(evt, _claim)
             print(
                 f"[tui_gateway] notification poller dispatch failed: "
                 f"{type(exc).__name__}: {exc}",
@@ -9347,27 +9426,43 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         # Drain completion notifications that arrived during this turn.
         # The background poller handles between-turn delivery; this is
         # the safety net for events that arrived mid-turn.
+        #
+        # Ownership filter (#42674, #35652): a turn finishing in session B
+        # must not consume an event that belongs to session A. The registry
+        # requeues every addressed event this session cannot positively claim;
+        # the poller then delivers it to a live owner or drops an orphan.
         try:
             from tools.process_registry import process_registry
 
             # Positive-proof ownership (compression-chain aware) — the same
             # fail-closed gate the poller uses, so the post-turn drain can't
-            # adopt another session's (or an orphan's) delegation payload,
-            # while a post-compression session still claims its own
-            # pre-compression dispatches (#55578).
-            for _evt, synth in process_registry.drain_notifications(
+            # adopt another session's addressed notification while a
+            # post-compression session still claims its own pre-compression
+            # dispatches (#55578).
+            drained = process_registry.drain_notifications(
                 session_key=session.get("session_key", ""),
                 owns_event=lambda e: _session_owns_notification_event(sid, session, e),
-            ):
+                skip_poll_observed=False,
+            )
+            for index, (_evt, synth) in enumerate(drained):
                 with session["history_lock"]:
                     if session.get("running"):
-                        process_registry.completion_queue.put(_evt)
+                        for pending_evt, _pending_synth in drained[index:]:
+                            process_registry.completion_queue.put(pending_evt)
                         break
                     session["running"] = True
+                from tools.async_delegation import (
+                    claim_event_delivery, complete_event_delivery, release_event_delivery,
+                )
+                _claim = claim_event_delivery(_evt, "tui-post-turn")
+                if _claim is None:
+                    continue
                 try:
                     _emit("message.start", sid)
                     _run_prompt_submit(rid, sid, session, synth)
+                    complete_event_delivery(_evt, _claim)
                 except Exception as _n_exc:
+                    release_event_delivery(_evt, _claim)
                     print(
                         f"[tui_gateway] completion notification dispatch failed: "
                         f"{type(_n_exc).__name__}: {_n_exc}",
@@ -10163,11 +10258,13 @@ def _(rid, params: dict) -> dict:
 # ── Methods: respond ─────────────────────────────────────────────────
 
 
-def _respond(rid, params, key):
+def _respond(rid, params, key, *, allow_expired=False):
     r = params.get("request_id", "")
     with _prompt_lock:
         entry = _pending.get(r)
         if not entry:
+            if allow_expired and r:
+                return _ok(rid, {"status": "expired"})
             return _err(rid, 4009, f"no pending {key} request")
         _, ev = entry
         _answers[r] = params.get(key, "")
@@ -10188,12 +10285,12 @@ def _(rid, params: dict) -> dict:
 
 @method("sudo.respond")
 def _(rid, params: dict) -> dict:
-    return _respond(rid, params, "password")
+    return _respond(rid, params, "password", allow_expired=True)
 
 
 @method("secret.respond")
 def _(rid, params: dict) -> dict:
-    return _respond(rid, params, "value")
+    return _respond(rid, params, "value", allow_expired=True)
 
 
 @method("approval.respond")
@@ -10382,6 +10479,22 @@ def _(rid, params: dict) -> dict:
             if agent is not None:
                 agent.verbose_logging = nv == "verbose"
         return _ok(rid, {"key": key, "value": nv})
+
+    if key in {"approval_mode", "approvals.mode"}:
+        raw = str(value or "").strip().lower()
+        if raw not in _APPROVAL_MODES:
+            return _err(
+                rid,
+                4002,
+                f"unknown approval mode: {value}; pick one of manual|smart|off",
+            )
+
+        _write_config_key("approvals.mode", raw)
+        for sid, sess in list(_sessions.items()):
+            agent = sess.get("agent")
+            if agent is not None:
+                _emit("session.info", sid, _session_info(agent, sess))
+        return _ok(rid, {"key": "approvals.mode", "value": raw})
 
     if key == "yolo":
         # Approval bypass. Two scopes:
@@ -10920,6 +11033,25 @@ def _is_repo_junk(root: str) -> bool:
     return real == home or real == hermes_home or real.startswith(hermes_home + os.sep)
 
 
+def _is_session_cwd_junk(cwd: str) -> bool:
+    """A non-git cwd that should stay in flat Recents rather than auto-group.
+
+    Unlike discovered git roots, an explicitly selected descendant of
+    HERMES_HOME may be an intentional prose/data workspace. The pre-Projects
+    desktop surfaced every such cwd, so exclude only the two broad defaults
+    that would create catch-all projects.
+    """
+    if not cwd:
+        return True
+
+    from hermes_constants import get_hermes_home
+
+    real = os.path.normcase(os.path.realpath(cwd))
+    home = os.path.normcase(os.path.realpath(os.path.expanduser("~")))
+    hermes_home = os.path.normcase(os.path.realpath(str(get_hermes_home())))
+    return real == home or real == hermes_home
+
+
 def _discover_repos_payload(db, *, conn=None, backfill: bool = True) -> list[dict]:
     """Merge filesystem-scanned repos (cached) with session-derived repo roots.
 
@@ -11121,6 +11253,7 @@ def _build_project_tree(
         preview_limit=preview_limit,
         hydrate=hydrate,
         is_junk_root=_is_repo_junk,
+        is_junk_cwd=_is_session_cwd_junk,
     )
     return tree, active_id
 
@@ -11276,6 +11409,11 @@ def _(rid, params: dict) -> dict:
         )
     if key == "busy":
         return _ok(rid, {"value": _load_busy_input_mode()})
+    if key in {"approval_mode", "approvals.mode"}:
+        try:
+            return _ok(rid, {"value": _load_approval_mode()})
+        except Exception as e:
+            return _err(rid, 5001, str(e))
     if key == "details_mode":
         allowed_dm = frozenset({"hidden", "collapsed", "expanded"})
         raw = (
@@ -11867,6 +12005,52 @@ def _(rid, params: dict) -> dict:
         pass
 
     try:
+        from agent.skill_bundles import (
+            build_bundle_invocation_message,
+            get_skill_bundles,
+            resolve_bundle_command_key,
+        )
+
+        from hermes_cli.commands import resolve_command
+
+        bundle_key = (
+            resolve_bundle_command_key(name)
+            if resolve_command(name) is None
+            else None
+        )
+    except Exception:
+        bundle_key = None
+
+    if bundle_key is not None:
+        try:
+            bundle_result = build_bundle_invocation_message(
+                bundle_key,
+                arg,
+                task_id=session.get("session_key", "") if session else "",
+                platform=_resolve_session_platform(),
+            )
+        except Exception as exc:
+            return _err(rid, 4018, f"bundle dispatch failed: {exc}")
+
+        if not bundle_result:
+            return _err(rid, 4018, f"failed to load bundle: {bundle_key}")
+
+        msg, loaded_names, missing = bundle_result
+        bundle_info = get_skill_bundles().get(bundle_key, {})
+        bundle_name = bundle_info.get("name", bundle_key.lstrip("/"))
+        notice = f"⚡ Loading bundle: {bundle_name} ({len(loaded_names)} skills)"
+        if missing:
+            notice += f"\nSkipped missing skills: {', '.join(missing)}"
+        return _ok(
+            rid,
+            {
+                "type": "send",
+                "message": msg,
+                "notice": notice,
+            },
+        )
+
+    try:
         from agent.skill_commands import (
             scan_skill_commands,
             build_skill_invocation_message,
@@ -12262,7 +12446,11 @@ def _(rid, params: dict) -> dict:
             )
             _sync_session_key_after_compress(sid, session)
             summary = summarize_manual_compression(
-                before_messages, after_messages, before_tokens, after_tokens
+                before_messages,
+                after_messages,
+                before_tokens,
+                after_tokens,
+                compression_state=getattr(_agent, "context_compressor", None),
             )
             _emit("session.info", sid, _session_info(session.get("agent"), session))
             return _ok(
@@ -12277,7 +12465,7 @@ def _(rid, params: dict) -> dict:
         except Exception as exc:
             return _err(rid, 5009, f"compress failed: {exc}")
 
-    return _err(rid, 4018, f"not a quick/plugin/skill command: {name}")
+    return _err(rid, 4018, f"not a quick/plugin/bundle/skill command: {name}")
 
 
 # ── Methods: paste ────────────────────────────────────────────────────
@@ -13035,7 +13223,11 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             )
             _emit("session.info", sid, _session_info(agent, session))
             _fb = summarize_manual_compression(
-                _before_messages, _after_messages, _before_tokens, _after_tokens
+                _before_messages,
+                _after_messages,
+                _before_tokens,
+                _after_tokens,
+                compression_state=getattr(agent, "context_compressor", None),
             )
             _lines = [_fb["headline"], _fb["token_line"]]
             if _fb.get("note"):
@@ -13069,10 +13261,11 @@ def _(rid, params: dict) -> dict:
     if not cmd:
         return _err(rid, 4004, "empty command")
 
-    # Skill slash commands and _pending_input commands must NOT go through the
-    # slash worker — see _PENDING_INPUT_COMMANDS definition above. Plugin
-    # commands must also avoid the worker, but unlike skills/pending-input they
-    # still return normal slash.exec output so the TUI keeps the pager path.
+    # Skill and bundle slash commands plus _pending_input commands must NOT go
+    # through the slash worker — see _PENDING_INPUT_COMMANDS definition above.
+    # Plugin commands must also avoid the worker, but unlike skills and
+    # pending-input commands they still return normal slash.exec output so the
+    # TUI keeps the pager path.
     _cmd_text = cmd.lstrip("/") if cmd.startswith("/") else cmd
     _cmd_parts = _cmd_text.split(maxsplit=1)
     _cmd_base = (_cmd_parts[0] if _cmd_parts else "").lower()
@@ -13099,6 +13292,27 @@ def _(rid, params: dict) -> dict:
                 4018,
                 "snapshot restore mutates live config/state; use command.dispatch for /snapshot restore",
             )
+
+    try:
+        from agent.skill_bundles import resolve_bundle_command_key
+        from hermes_cli.commands import resolve_command
+
+        _bundle_key = (
+            resolve_bundle_command_key(_cmd_base)
+            if resolve_command(_cmd_base) is None
+            else None
+        )
+        if _bundle_key is not None:
+            return _methods["command.dispatch"](
+                rid,
+                {
+                    "name": _bundle_key.lstrip("/"),
+                    "arg": _cmd_arg,
+                    "session_id": params.get("session_id", ""),
+                },
+            )
+    except Exception:
+        pass
 
     try:
         from agent.skill_commands import get_skill_commands

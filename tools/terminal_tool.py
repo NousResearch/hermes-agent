@@ -2350,17 +2350,22 @@ def _resolve_command_cwd(
     default_cwd: str,
     session_key: Optional[str] = None,
 ) -> str:
-    """Return the cwd for a command. Explicit ``workdir=`` overrides everything.
+    """Return the cwd for a command.
 
-    Otherwise the session's own cwd RECORD (``get_session_cwd``) wins — it is
-    written after every completed command for this session, so it IS the
-    session's ``cd`` state, with no shared-env ambiguity: another session's
-    ``cd`` lands in another record and can't affect us. A session with no
-    record yet (first command) runs in ``default_cwd`` (config/override cwd),
-    which is also what seeds a fresh environment.
+    Explicit ``workdir=`` wins. A scheduler-marked authoritative session cwd
+    comes next so each cron run ignores shared terminal state. Ordinary
+    interactive sessions then prefer their own recorded cwd, preserving
+    cross-command ``cd`` state without consulting another session's record.
+    The init/config cwd remains the fallback for a session's first command.
     """
     if workdir:
         return workdir
+
+    from agent.runtime_cwd import resolve_authoritative_tool_cwd
+
+    authoritative_cwd = resolve_authoritative_tool_cwd()
+    if authoritative_cwd:
+        return authoritative_cwd
     return get_session_cwd(session_key) or default_cwd
 
 

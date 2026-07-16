@@ -1937,6 +1937,10 @@ class PluginManager:
         """Return True when at least one callback is registered for a hook."""
         return bool(self._hooks.get(hook_name))
 
+    def iter_hook_callbacks(self, hook_name: str) -> tuple[Callable, ...]:
+        """Return a stable snapshot of callbacks registered for a hook."""
+        return tuple(self._hooks.get(hook_name, ()))
+
     def has_middleware(self, kind: str) -> bool:
         """Return True when at least one callback is registered for middleware."""
         return bool(self._middleware.get(kind))
@@ -2081,6 +2085,11 @@ def has_middleware(kind: str) -> bool:
 def has_hook(hook_name: str) -> bool:
     """Return True when a hook has registered callbacks."""
     return get_plugin_manager().has_hook(hook_name)
+
+
+def iter_hook_callbacks(hook_name: str) -> tuple[Callable, ...]:
+    """Return a stable snapshot of callbacks registered for a hook."""
+    return get_plugin_manager().iter_hook_callbacks(hook_name)
 
 
 _thread_tool_whitelist = threading.local()

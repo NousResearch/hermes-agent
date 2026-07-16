@@ -404,7 +404,7 @@ def register(ctx):
 
 ### Streaming output hooks
 
-These observer-only hooks let plugins consume streaming LLM output for telemetry, live dashboards, or TTS pipelines without changing the response. They are delivered through a host-owned bounded queue on a background worker, so plugin callbacks never run inline on the token path. If the queue fills, Hermes drops the oldest pending observer event rather than delaying user-visible streaming.
+These observer-only hooks let plugins consume streaming LLM output for telemetry, live dashboards, or TTS pipelines without changing the response. They are delivered through host-owned bounded queues with one background worker per registered callback, so plugin callbacks never run inline on the token path. If one callback stalls, only that callback's queue can fill and drop its oldest pending observer event; other observers continue receiving events independently.
 
 Register them like any other plugin hook:
 
@@ -436,6 +436,8 @@ Additional fields:
 | `on_stream_delta` | `delta: str`, `kind: "text" | "reasoning"` |
 | `on_stream_end` | `final_text: str`, `finished: bool`, `error: str | None` |
 | `on_interim_message` | `text: str`, `already_streamed: bool` |
+
+`on_interim_message` can also fire after a non-streaming response, so registering only that hook does not force a provider call onto streaming transport.
 
 Reasoning deltas are not exposed to plugins by default. Opt in explicitly:
 

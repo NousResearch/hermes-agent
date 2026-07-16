@@ -109,15 +109,6 @@ def _single_subsystem(surface: dict) -> Optional[str]:
     return subsystems[0] if len(subsystems) == 1 else None
 
 
-def _explicit_subsystem(token: str) -> Optional[str]:
-    token = token.casefold()
-    if token in {"memory", "память", "памяти"}:
-        return "memory"
-    if token in {"skills", "skill", "навыки", "навыков"}:
-        return "skills"
-    return None
-
-
 def command_for_reply_intent(text: str, raw_surface: Any) -> Optional[str]:
     """Map an exact intent to an existing slash command.
 
@@ -134,26 +125,13 @@ def command_for_reply_intent(text: str, raw_surface: Any) -> Optional[str]:
         return None
 
     single = _single_subsystem(surface)
-    all_words = {"all", "всё", "все"}
     approve_words = {"approve", "одобри", "одобрить"}
     reject_words = {"reject", "deny", "отклони", "отклонить"}
     parts = intent.split()
 
-    if len(parts) == 2 and parts[0] in approve_words and parts[1] in all_words:
-        return f"/{single} approve all" if single else None
-    if len(parts) == 2 and parts[0] in reject_words and parts[1] in all_words:
-        return f"/{single} reject all" if single else None
-
-    if len(parts) in {2, 3} and parts[0] in approve_words | reject_words:
+    if len(parts) == 2 and parts[0] in approve_words | reject_words:
         action = "approve" if parts[0] in approve_words else "reject"
-        target_token = parts[-1]
-        if len(parts) == 3 and parts[1] not in all_words:
-            return None
-        subsystem = _explicit_subsystem(target_token)
-        if subsystem:
-            if subsystem not in surface["subsystems"]:
-                return None
-            return f"/{subsystem} {action} all"
+        target_token = parts[1]
         if _PENDING_ID_RE.fullmatch(target_token):
             owners = [
                 name for name, ids in surface["items"].items() if target_token in ids
@@ -194,6 +172,8 @@ def command_for_callback_data(data: str) -> Optional[str]:
         if subsystem != "skills" or target == "all":
             return None
         return f"/skills diff {target}"
+    if target == "all":
+        return None
     action = "approve" if action_code == "a" else "reject"
     return f"/{subsystem} {action} {target}"
 

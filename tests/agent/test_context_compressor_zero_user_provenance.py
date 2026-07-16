@@ -1,11 +1,13 @@
 """Regression coverage for zero-user compaction integrity (#64539)."""
 
+import os
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 from agent.context_compressor import (
+    COMPRESSION_CONTINUATION_USER_CONTENT,
     COMPRESSED_SUMMARY_HAS_USER_TURN_KEY,
     COMPRESSED_SUMMARY_METADATA_KEY,
     HISTORICAL_TASK_HEADING,
@@ -13,6 +15,12 @@ from agent.context_compressor import (
     ContextCompressor,
     _NO_USER_TASK_SENTINEL,
 )
+from agent.conversation_compression import (
+    _ensure_compressed_has_user_turn,
+    compress_context,
+)
+from hermes_state import SessionDB
+from tools.todo_tool import TODO_INJECTION_HEADER
 
 
 def _response(content: str) -> SimpleNamespace:
@@ -65,6 +73,40 @@ def _assistant_tool_turns(start: int, count: int) -> list[dict]:
             ]
         )
     return turns
+
+
+def _assistant_turns(start: int, count: int) -> list[dict]:
+    return [
+        {
+            "role": "assistant",
+            "content": f"Scheduled step {idx} completed. " + ("x" * 500),
+        }
+        for idx in range(start, start + count)
+    ]
+
+
+def _lifecycle_agent(db: SessionDB, session_id: str):
+    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            session_db=db,
+            session_id=session_id,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+    agent.compression_in_place = True
+    agent.context_compressor.protect_first_n = 0
+    agent.context_compressor.protect_last_n = 2
+    agent.context_compressor.tail_token_budget = 80
+    agent._todo_store.write(
+        [{"id": "inspect", "content": "Inspect artifacts", "status": "pending"}]
+    )
+    return agent
 
 
 @pytest.fixture()
@@ -173,6 +215,121 @@ def test_zero_user_provenance_survives_iterative_compaction(compressor):
     ]
     assert len(second_handoffs) == 1
     assert second_handoffs[0][COMPRESSED_SUMMARY_HAS_USER_TURN_KEY] is False
+
+
+def test_compress_context_todo_snapshot_stays_synthetic_across_two_boundaries(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / "hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "zero-user-todo-lifecycle"
+    db.create_session(session_id, source="cron", model="test/model")
+
+    first_agent = _lifecycle_agent(db, session_id)
+    with patch(
+        "agent.context_compressor.call_llm",
+        return_value=_response(_valid_zero_user_summary("First boundary")),
+    ):
+        first, _ = compress_context(
+            first_agent,
+            _assistant_turns(0, 24),
+            "system",
+            approx_tokens=90_000,
+            force=True,
+        )
+
+    first_handoff = next(
+        message
+        for message in first
+        if message.get(COMPRESSED_SUMMARY_METADATA_KEY)
+    )
+    assert first_handoff[COMPRESSED_SUMMARY_HAS_USER_TURN_KEY] is False
+    assert "First boundary" in first_handoff["content"]
+    assert any(
+        message.get("role") == "user"
+        and str(message.get("content") or "").startswith(TODO_INJECTION_HEADER)
+        for message in first
+    )
+    projected = db.get_messages_as_conversation(session_id)
+    assert projected
+    assert all(
+        COMPRESSED_SUMMARY_METADATA_KEY not in message
+        and COMPRESSED_SUMMARY_HAS_USER_TURN_KEY not in message
+        for message in projected
+    )
+
+    second_agent = _lifecycle_agent(db, session_id)
+    with patch(
+        "agent.context_compressor.call_llm",
+        return_value=_response(_valid_zero_user_summary("Second boundary")),
+    ):
+        second, _ = compress_context(
+            second_agent,
+            [*projected, *_assistant_turns(30, 24)],
+            "system",
+            approx_tokens=90_000,
+            force=True,
+        )
+
+    handoff = next(
+        message
+        for message in second
+        if message.get(COMPRESSED_SUMMARY_METADATA_KEY)
+    )
+    assert handoff[COMPRESSED_SUMMARY_HAS_USER_TURN_KEY] is False
+    assert "Second boundary" in handoff["content"]
+    assert "User asked:" not in handoff["content"]
+    db.close()
+
+
+def test_continuation_user_marker_is_not_reused_as_real_provenance():
+    todo_snapshot = f"{TODO_INJECTION_HEADER}\n- [ ] inspect. Inspect artifacts (pending)"
+    compressed = [{"role": "assistant", "content": "Scheduled work completed."}]
+
+    _ensure_compressed_has_user_turn(
+        [{"role": "user", "content": todo_snapshot}],
+        compressed,
+    )
+
+    assert compressed[-1] == {
+        "role": "user",
+        "content": COMPRESSION_CONTINUATION_USER_CONTENT,
+    }
+    projected = [{"role": row["role"], "content": row["content"]} for row in compressed]
+    assert ContextCompressor._transcript_has_real_user_turn(projected) is False
+
+
+def test_continuation_markers_are_not_human_anchors():
+    from agent.conversation_compression import _is_real_user_message
+
+    legacy = (
+        "Continue from the compressed conversation context above. "
+        "This marker exists because the compacted transcript contained "
+        "no preserved user turn."
+    )
+    assert not _is_real_user_message(
+        {"role": "user", "content": COMPRESSION_CONTINUATION_USER_CONTENT}
+    )
+    assert not _is_real_user_message({"role": "user", "content": legacy})
+
+
+def test_static_fallback_does_not_attribute_synthetic_rows_to_user(compressor):
+    todo_snapshot = f"{TODO_INJECTION_HEADER}\n- [ ] inspect. Inspect artifacts (pending)"
+    fallback = compressor._build_static_fallback_summary(
+        [
+            {"role": "user", "content": todo_snapshot},
+            {
+                "role": "user",
+                "content": COMPRESSION_CONTINUATION_USER_CONTENT,
+            },
+            *_assistant_tool_turns(0, 2),
+        ]
+    )
+
+    assert _NO_USER_TASK_SENTINEL in fallback
+    assert "User asked:" not in fallback
+    assert "INTERNAL CONTEXT:" in fallback
 
 
 def test_zero_user_deterministic_fallback_uses_same_provenance(compressor):

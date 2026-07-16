@@ -395,7 +395,7 @@ def test_tui_slash_worker_hides_python_window(monkeypatch):
 
     monkeypatch.setattr(subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
 
-    server._SlashWorker("session-key", "model-x")
+    server._SlashWorker("session-key", "model-x", str(Path.cwd()))
 
     assert captured[0][0][:3] == [server.sys.executable, "-m", "tui_gateway.slash_worker"]
     assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW

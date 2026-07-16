@@ -232,7 +232,7 @@ class SocketServer:
         self._queue = queue
         self._executor = executor
         self._config = config or {}
-        self._stamp_secrets: dict[int, bytes] = {}  # pid -> secret (multi-process safe)
+        self._stamp_secrets: dict[str, bytes] = {}  # nonce -> secret  # pid -> secret (multi-process safe)
         self._running = False
         self._request_server: Optional[socket.socket] = None
         self._control_server: Optional[socket.socket] = None
@@ -371,7 +371,8 @@ class SocketServer:
                 pass
 
     def _handle_stamp_init(self, client: socket.socket, req: dict):
-        """Register stamp secret from plugin, keyed by peer PID."""
+        """Register stamp secret, returns nonce for later verification."""
+        import uuid
         secret_b64 = req.get("secret", "")
         if not secret_b64:
             _send_json(client, {"status": "error", "error": "secret required"})
@@ -384,16 +385,12 @@ class SocketServer:
         if len(secret) < 16:
             _send_json(client, {"status": "error", "error": "secret too short"})
             return
-        try:
-            cred = client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
-            pid, _, _ = struct.unpack("3i", cred)
-        except Exception:
-            pid = 0
-        self._stamp_secrets[pid] = secret
-        if len(self._stamp_secrets) > 100:
+        nonce = uuid.uuid4().hex
+        self._stamp_secrets[nonce] = secret
+        if len(self._stamp_secrets) > 200:
             self._stamp_secrets.clear()
-        logger.info("stamp secret registered for pid=%d (%d bytes)", pid, len(secret))
-        _send_json(client, {"status": "ok"})
+        logger.info("stamp secret registered nonce=%s (%d bytes)", nonce[:8], len(secret))
+        _send_json(client, {"status": "ok", "nonce": nonce})
     def _handle_sudo_request(self, client: socket.socket, req: dict):
         """Handle a sudo request：入队列→等待审批→执行→返回结果"""
         command = req.get("command", "")
@@ -455,11 +452,12 @@ class SocketServer:
         _store_result(entry.req_id, {"status": "approved", "req_id": entry.req_id, "result": exec_result})
 
     def _handle_sudo_execute(self, client: socket.socket, req: dict):
-        """Handle direct execution with defense-in-depth stamp verification."""
+        """Handle direct execution with nonce-based stamp verification."""
         command = req.get("command", "")
         reason = req.get("reason", "direct execution")
         origin = req.get("origin", {})
         stamp = req.get("stamp", "")
+        nonce = req.get("nonce", "")
 
         if not isinstance(origin, dict):
             origin = {"channel": "vip_sudo"}
@@ -467,37 +465,27 @@ class SocketServer:
             _send_json(client, {"status": "error", "error": "command required"})
             return
 
-        try:
-            cred = client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
-            pid, _, _ = struct.unpack("3i", cred)
-        except Exception:
-            pid = 0
-        secret = self._stamp_secrets.get(pid)
+        if not nonce:
+            _send_json(client, {"status": "error", "error": "REJECTED: nonce required"})
+            return
+
+        secret = self._stamp_secrets.get(nonce)
         if not secret:
-            _send_json(client, {"status": "error",
-                "error": "REJECTED: no stamp secret for this process"})
-            logger.warning("sudo_execute REJECTED: no secret for pid=%d", pid)
+            _send_json(client, {"status": "error", "error": "REJECTED: invalid nonce"})
+            logger.warning("sudo_execute REJECTED: unknown nonce=%s", nonce[:8])
             return
 
-        expected = hmac.new(
-            secret, command.encode(), hashlib.sha256,
-        ).hexdigest()
+        expected = hmac.new(secret, command.encode(), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(stamp, expected):
-            _send_json(client, {"status": "error",
-                "error": "REJECTED: invalid stamp"})
-            logger.warning("sudo_execute REJECTED: stamp mismatch pid=%d cmd=%s",
-                           pid, command[:60])
+            _send_json(client, {"status": "error", "error": "REJECTED: invalid stamp"})
+            logger.warning("sudo_execute REJECTED: stamp mismatch nonce=%s", nonce[:8])
             return
 
-        logger.info("sudo_execute cmd=%s reason=%s pid=%d stamp=OK",
-                     command[:60], reason[:30], pid)
+        logger.info("sudo_execute cmd=%s nonce=%s stamp=OK", command[:60], nonce[:8])
         audit.request("direct", command, origin.get("channel", "vip_sudo"))
-
         exec_result = self._executor.execute(command)
-
         _send_json(client, {"status": "approved", "result": exec_result})
-        logger.info("sudo_execute done exit_code=%d", exec_result.get("exit_code", -1))
-    # ── Control socket handler（含 UID 验证）──
+        logger.info("sudo_execute done exit_code=%d", exec_result.get("exit_code", -1))    # ── Control socket handler（含 UID 验证）──
 
     def _serve_control(self):
         """Control socket main loop"""

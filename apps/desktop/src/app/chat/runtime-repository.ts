@@ -76,3 +76,18 @@ export function useRuntimeMessageRepository(messages: ChatMessage[]): ExportedMe
     return ExportedMessageRepository.fromBranchableArray(items, { headId })
   }, [messages])
 }
+
+// The funnel above suffixes duplicate runtime ids (`id#1`, `id#2`) so
+// assistant-ui's MessageRepository never sees a colliding render key. Real
+// message ids are `${timestamp}-${index}-${role}` and never contain `#`, so a
+// trailing `#<n>` is unambiguously that render-only dedup marker. Strip it
+// before an id crosses BACK to the $messages store or the gateway (edit /
+// reload / branch / restore), or the backend lookup misses the real message.
+// Idempotent on un-suffixed ids.
+export function stripRuntimeIdSuffix(id: string): string {
+  return id.replace(/#\d+$/, '')
+}
+
+export function stripRuntimeIdSuffixNullable(id: string | null): string | null {
+  return id === null ? null : stripRuntimeIdSuffix(id)
+}

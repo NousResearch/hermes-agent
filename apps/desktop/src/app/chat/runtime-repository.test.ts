@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
 
-import { useRuntimeMessageRepository } from './runtime-repository'
+import { stripRuntimeIdSuffix, stripRuntimeIdSuffixNullable, useRuntimeMessageRepository } from './runtime-repository'
 
 function assistant(id: string, text: string, extra: Partial<ChatMessage> = {}): ChatMessage {
   return { id, role: 'assistant', parts: [{ type: 'text', text }], ...extra }
@@ -87,5 +87,28 @@ describe('useRuntimeMessageRepository — duplicate message id (performOp/link c
 
     expect(() => linkThroughRepository(result.current)).not.toThrow()
     expect(result.current.messages.map(({ message }) => message.id)).toEqual(['u-1', 'a-1', 'u-2', 'a-2'])
+  })
+})
+
+describe('stripRuntimeIdSuffix', () => {
+  it('strips a single dedup suffix back to the real id', () => {
+    expect(stripRuntimeIdSuffix('1784158733-1-assistant#1')).toBe('1784158733-1-assistant')
+    expect(stripRuntimeIdSuffix('1784158733-1-assistant#2')).toBe('1784158733-1-assistant')
+  })
+
+  it('leaves an un-suffixed real id untouched (idempotent)', () => {
+    expect(stripRuntimeIdSuffix('1784158733-1-assistant')).toBe('1784158733-1-assistant')
+    expect(stripRuntimeIdSuffix('u-1')).toBe('u-1')
+  })
+
+  it('only strips a trailing #<digits>, not a mid-id hash or non-numeric suffix', () => {
+    expect(stripRuntimeIdSuffix('weird#id')).toBe('weird#id')
+    expect(stripRuntimeIdSuffix('a#1b')).toBe('a#1b')
+  })
+
+  it('nullable variant passes null through and strips otherwise', () => {
+    expect(stripRuntimeIdSuffixNullable(null)).toBeNull()
+    expect(stripRuntimeIdSuffixNullable('1784158733-1-assistant#3')).toBe('1784158733-1-assistant')
+    expect(stripRuntimeIdSuffixNullable('u-2')).toBe('u-2')
   })
 })

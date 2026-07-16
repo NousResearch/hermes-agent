@@ -3,44 +3,34 @@ model:
   provider: anthropic
 
 # ──────────────────────────────────────────────────────────────
-# Browser toolset — lock to Browserbase cloud engine.
-# No local Chromium; every browser_navigate / browser_click call
-# goes through a Browserbase managed session with proxies + stealth.
+# Browser Agent profile — uses Browserbase Agents REST API.
+#
+# Tasks are delegated to a pre-built Browserbase cloud agent
+# via POST /v1/agents/runs. No local Chromium, no CDP sessions.
+# The profile picks up Kanban tasks (assignee=browser), fires
+# the BB Agents API, polls for completion, and reports back.
 # ──────────────────────────────────────────────────────────────
-browser:
-  engine: browserbase
-  record_sessions: true        # useful for debugging browser tasks
-  allow_private_urls: false
-  inactivity_timeout: 300      # 5 min — browser tasks can be slow
-  command_timeout: 60
 
 agent:
-  max_turns: 60
+  max_turns: 40
   task_completion_guidance: true
   parallel_tool_call_guidance: true
 
-# Enabled toolsets for this profile.
-# Minimal surface: browser + web research + file I/O + delegation.
-# Terminal is intentionally excluded — browser agents should not shell out.
+# Minimal toolset: terminal for curl API calls, web for fallback
+# lookups, file for writing outputs, delegation for subtasks.
+# NO local browser toolset — we go through BB Agents API instead.
 toolsets:
-  - browser
+  - terminal
   - web
   - file
-  - vision
   - delegation
   - todo
   - session_search
 
-# Plugins: enable the Browserbase browser backend.
-# The plugin reads BROWSERBASE_API_KEY + BROWSERBASE_PROJECT_ID from .env.
-plugins:
-  enabled:
-    - browser-browserbase
-
 terminal:
   backend: local
-  timeout: 60
+  timeout: 120
 
-# No cron dispatch from this profile — it's a worker, not an orchestrator.
+# Worker-only — dispatcher runs in the default profile.
 kanban:
   dispatch_in_gateway: false

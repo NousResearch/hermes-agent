@@ -15,17 +15,9 @@ env_requires:
   - name: BROWSERBASE_API_KEY
     description: "Browserbase API key (https://browserbase.com)"
     required: true
-  - name: BROWSERBASE_PROJECT_ID
-    description: "Browserbase project ID"
+  - name: BROWSERBASE_AGENT_ID
+    description: "Pre-built Browserbase agent ID to dispatch tasks to"
     required: true
-  - name: BROWSERBASE_PROXIES
-    description: "Enable Browserbase residential proxies (true/false)"
-    required: false
-    default: "true"
-  - name: BROWSERBASE_KEEP_ALIVE
-    description: "Keep browser sessions alive between steps (true/false)"
-    required: false
-    default: "true"
 
 # Distribution owns these paths; user-owned paths (.env, memories/, sessions/) are never touched.
 distribution_owned:

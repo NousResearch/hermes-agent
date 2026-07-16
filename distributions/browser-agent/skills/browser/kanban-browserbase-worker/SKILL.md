@@ -1,95 +1,120 @@
 ---
 name: kanban-browserbase-worker
 description: >
-  Use when the browser-agent Kanban profile picks up a task tagged `browser`.
-  Defines the full execution loop: claim the task, run Browserbase browser
-  automation, verify the result visually, and complete/block on the board.
-version: 1.0.0
+  Use when the browser-agent Kanban profile picks up a task (assignee=browser).
+  Executes the task via the Browserbase Agents REST API — POST /v1/agents/runs,
+  poll until terminal state, return structured result to the Kanban board.
+version: 2.0.0
 author: Kyle Jeong / Hermes
 license: MIT
 metadata:
   hermes:
-    tags: [kanban, browserbase, browser, worker, automation]
+    tags: [kanban, browserbase, browser, worker, automation, agents-api]
     related_skills: [kanban-codex-lane, browserbase-agent]
 ---
 
 # Kanban Browserbase Worker
 
-This skill governs how the `browser` Hermes profile executes Kanban tasks.
-It is the browser-side counterpart to `kanban-codex-lane`.
+Executes Kanban browser tasks via the **Browserbase Agents REST API**.
+No local browser. No CDP. Just curl → poll → report.
 
-## Trigger
+## Credentials (always available in this profile's .env)
 
-Load this skill when:
-- You are running as the `browser` Hermes profile
-- A Kanban task has been dispatched to you (assignee = `browser`)
-- The task body describes a web automation, scraping, form-fill, or verification job
+```bash
+BB_KEY="bb_live_Tsm1wObH8ZippKfZa-h9jw82q3Y"
+BB_AGENT="1387922d-aec4-4225-a93e-a602e19f1f48"
+BASE="https://api.browserbase.com"
+```
 
 ## Execution Loop
 
-### 1. Parse the task
+### Step 1 — Parse the Kanban task
 
-Read the task title and body. Extract:
-- **Target URL(s)** — where to navigate
-- **Action** — scrape | click | fill | verify | extract
-- **Success criteria** — what does done look like?
-- **Output format** — raw text, JSON, screenshot, table
+Read title + body. Extract:
+- **URL(s)** to visit
+- **Action** (scrape, click, extract, verify, fill)
+- **Output format** (JSON schema, plain text, table)
+- **Success criteria**
 
-### 2. Set up the browser session
+### Step 2 — Create a Browserbase agent run
 
-The `browser` toolset is pre-configured to use Browserbase cloud.
-No setup required — just call browser tools directly.
-
-```
-browser_navigate(url)        → loads the page via Browserbase
-browser_snapshot()           → get accessibility tree + ref IDs
-browser_click(ref)           → click an element
-browser_type(ref, text)      → type into a field
-browser_vision(question)     → visual inspection / screenshot
-browser_scroll(direction)    → scroll the page
-browser_press(key)           → keyboard input
+For plain extraction (free-form result):
+```bash
+RUN=$(curl -s -X POST "$BASE/v1/agents/runs" \
+  -H "X-BB-API-Key: $BB_KEY" \
+  -H "Content-Type: application/json" \
+  -d "{\"agentId\": \"$BB_AGENT\", \"task\": \"YOUR TASK HERE\"}")
+RUN_ID=$(echo "$RUN" | python3 -c "import sys,json; print(json.load(sys.stdin)['runId'])")
+echo "Started run: $RUN_ID"
 ```
 
-### 3. Execute and verify
+For structured JSON output (preferred when task asks for data):
+```bash
+RUN=$(curl -s -X POST "$BASE/v1/agents/runs" \
+  -H "X-BB-API-Key: $BB_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agentId": "'"$BB_AGENT"'",
+    "task": "YOUR TASK HERE",
+    "resultSchema": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {"type": "object"}
+        },
+        "summary": {"type": "string"}
+      }
+    }
+  }')
+RUN_ID=$(echo "$RUN" | python3 -c "import sys,json; print(json.load(sys.stdin)['runId'])")
+```
 
-- Always call `browser_snapshot()` before clicking to confirm element refs
-- After completing the action, call `browser_vision("Did the action succeed? Describe what you see.")` to visually verify
-- For data extraction, collect the structured output
+### Step 3 — Poll until terminal state
 
-### 4. Handle common failure modes
+```bash
+while true; do
+  RESP=$(curl -s "$BASE/v1/agents/runs/$RUN_ID" -H "X-BB-API-Key: $BB_KEY")
+  STATUS=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
+  echo "Status: $STATUS"
+  case "$STATUS" in
+    COMPLETED|FAILED|STOPPED|TIMED_OUT) echo "$RESP"; break ;;
+  esac
+  sleep 5
+done
+```
 
-| Symptom | Action |
-|---------|--------|
-| Login wall / CAPTCHA | Block the task: `"Requires authenticated session — no credentials available"` |
-| Element not found | Scroll and re-snapshot; try once more |
-| Page loads wrong content | Screenshot + vision to diagnose; retry navigation |
-| JS-heavy SPA slow to render | `browser_scroll(down)` to trigger lazy-load; wait implicitly |
-| Rate limit / bot detection | Browserbase has stealth+proxies enabled — log the error and retry once |
+### Step 4 — Handle the result
 
-### 5. Complete the task
+**On COMPLETED:**
+```bash
+SUMMARY=$(echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('result',{}).get('summary',''))")
+```
+Write `SUMMARY` + any structured data fields to the Kanban task comment, then mark complete.
 
-On success:
-- Write a clear summary of what was found/done
-- Include any extracted data inline
-- Mark the Kanban task complete
+**On FAILED:**
+```bash
+CAUSE=$(echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('cause',{}).get('message','unknown'))")
+```
+Block the Kanban task with: `"Browserbase agent failed: $CAUSE"`
 
-On failure after retries:
-- Screenshot the failure state with `browser_vision`
-- Write a precise failure reason
-- Block the Kanban task with the failure context
+**On TIMED_OUT / STOPPED:**
+Block with reason + run ID for debugging.
 
-## Task body format (what the Kanban creator should provide)
+## Task body format (what creators should write)
 
 ```
 URL: https://example.com/page
-Action: scrape the product prices table
-Output: JSON array of {name, price, sku}
-Success: table has at least 1 row
+Action: [scrape | extract | verify | fill | click]
+Output: [JSON with fields X,Y,Z | plain text | table]
+Success: [what done looks like]
 ```
 
 ## Pitfalls
 
-- Never use `terminal` tools — this profile does not have shell access by design
-- Do not mark a task complete based on navigation alone — always verify the outcome visually
-- Browserbase sessions are cloud-managed; do not try to manage CDP URLs manually
-- If `browser_navigate` returns a crash error, the VM has no local Chromium — this is expected and means the Browserbase plugin is not active; check that `browser-browserbase` plugin is enabled in this profile's config
+- **Always poll** — 201 just means queued
+- **Terminal states only**: COMPLETED, FAILED, STOPPED, TIMED_OUT
+- `result` key is only populated on COMPLETED
+- Don't chain runs for a single task — one task = one run
+- Use `resultSchema` to get clean structured output, not just `.summary`
+- Runs typically finish in 5–30s; budget 3 min max poll time

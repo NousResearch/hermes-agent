@@ -330,6 +330,55 @@ def test_sync_timeout_reaps_escaped_session_descendant(tmp_path):
         _kill_test_descendant(pid_path)
 
 
+@pytest.mark.live_system_guard_bypass
+@pytest.mark.skipif(sys.platform == "win32", reason="real process-group regression is POSIX-only")
+def test_sync_unexpected_exception_terminates_leader_group(monkeypatch, tmp_path):
+    heartbeat_path = tmp_path / "interrupted-leader.heartbeat"
+    script = (
+        "import pathlib,sys,time\n"
+        "path=pathlib.Path(sys.argv[1])\n"
+        "while True:\n"
+        " path.write_text(str(time.time_ns()))\n"
+        " time.sleep(0.01)\n"
+    )
+    original_popen = subprocess.Popen
+    spawned = []
+
+    def interrupt_after_start(*args, **kwargs):
+        proc = original_popen(*args, **kwargs)
+        spawned.append(proc)
+        original_poll = proc.poll
+        interrupted = False
+
+        def poll():
+            nonlocal interrupted
+            if heartbeat_path.exists() and not interrupted:
+                interrupted = True
+                raise KeyboardInterrupt("synthetic caller interruption")
+            return original_poll()
+
+        proc.poll = poll
+        return proc
+
+    monkeypatch.setattr(subprocess, "Popen", interrupt_after_start)
+    try:
+        with pytest.raises(KeyboardInterrupt, match="synthetic caller interruption"):
+            run_bounded_argv(
+                [sys.executable, "-c", script, str(heartbeat_path)],
+                env=_minimal_test_env(),
+                timeout=5,
+            )
+
+        assert spawned[0].poll() is not None
+        before = heartbeat_path.read_text()
+        time.sleep(0.1)
+        assert heartbeat_path.read_text() == before
+    finally:
+        if spawned and spawned[0].poll() is None:
+            os.killpg(spawned[0].pid, signal.SIGKILL)
+            spawned[0].wait()
+
+
 @pytest.mark.asyncio
 @pytest.mark.live_system_guard_bypass
 async def test_async_streaming_combined_cap_terminates_and_reaps():

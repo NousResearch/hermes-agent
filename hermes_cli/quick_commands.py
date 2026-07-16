@@ -68,6 +68,11 @@ def run_bounded_argv(
     try:
         descendant_tracker.start()
         return _communicate_bounded_sync(proc, argv=argv, timeout=timeout)
+    except BaseException:
+        # Mirror the async path: cancellation and unexpected caller-thread
+        # exceptions must not bypass leader/original-group cleanup.
+        _terminate_sync_process(proc)
+        raise
     finally:
         descendant_tracker.stop_and_terminate()
 

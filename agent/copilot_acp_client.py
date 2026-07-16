@@ -32,6 +32,7 @@ from tools.environments.local import hermes_subprocess_env
 
 ACP_MARKER_BASE_URL = "acp://copilot"
 _DEFAULT_TIMEOUT_SECONDS = 900.0
+_PROMPT_RESULT_DRAIN_SECONDS = 0.5
 
 _TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 _TOOL_CALL_JSON_RE = re.compile(r"\{\s*\"id\"\s*:\s*\"[^\"]+\"\s*,\s*\"type\"\s*:\s*\"function\"\s*,\s*\"function\"\s*:\s*\{.*?\}\s*\}", re.DOTALL)
@@ -104,6 +105,7 @@ def _build_subprocess_env() -> dict[str, str]:
     # provider credentials. Route through the central helper so Tier-1 secrets
     # (gateway bot tokens, GitHub auth, infra) are still stripped (#29157).
     env = hermes_subprocess_env(inherit_credentials=True)
+    env.setdefault("COPILOT_AUTO_UPDATE", "false")
     home = _resolve_home_dir()
     env["HOME"] = home
     from hermes_constants import apply_subprocess_home_env
@@ -552,6 +554,33 @@ class CopilotACPClient:
 
         next_id = 0
 
+        def _drain_prompt_notifications(
+            *,
+            deadline: float,
+            text_parts: list[str],
+            reasoning_parts: list[str],
+        ) -> None:
+            # ACP has no separate end-of-turn notification for Copilot's final
+            # assistant chunks.  After the prompt result, drain only already
+            # arriving async messages for a bounded 0.5s window, capped by the
+            # caller's original timeout so this never extends a timed-out call.
+            drain_deadline = min(deadline, time.monotonic() + _PROMPT_RESULT_DRAIN_SECONDS)
+            while time.monotonic() < drain_deadline:
+                timeout = max(0.0, min(0.1, drain_deadline - time.monotonic()))
+                try:
+                    msg = inbox.get(timeout=timeout)
+                except queue.Empty:
+                    if proc.poll() is not None:
+                        break
+                    continue
+                self._handle_server_message(
+                    msg,
+                    process=proc,
+                    cwd=self._acp_cwd,
+                    text_parts=text_parts,
+                    reasoning_parts=reasoning_parts,
+                )
+
         def _request(method: str, params: dict[str, Any], *, text_parts: list[str] | None = None, reasoning_parts: list[str] | None = None) -> Any:
             nonlocal next_id
             next_id += 1
@@ -590,7 +619,14 @@ class CopilotACPClient:
                     raise RuntimeError(
                         f"Copilot ACP {method} failed: {err.get('message') or err}"
                     )
-                return msg.get("result")
+                result = msg.get("result")
+                if method == "session/prompt" and text_parts is not None and reasoning_parts is not None:
+                    _drain_prompt_notifications(
+                        deadline=deadline,
+                        text_parts=text_parts,
+                        reasoning_parts=reasoning_parts,
+                    )
+                return result
 
             stderr_text = "\n".join(stderr_tail).strip()
             if proc.poll() is not None and stderr_text:
@@ -657,7 +693,14 @@ class CopilotACPClient:
                 text_parts=text_parts,
                 reasoning_parts=reasoning_parts,
             )
-            return "".join(text_parts), "".join(reasoning_parts)
+            response_text = "".join(text_parts)
+            reasoning_text = "".join(reasoning_parts)
+            if not response_text and not reasoning_text:
+                raise RuntimeError(
+                    "Copilot ACP returned an empty response after the prompt result; "
+                    "no assistant chunks arrived during the bounded drain window."
+                )
+            return response_text, reasoning_text
         finally:
             self.close()
 

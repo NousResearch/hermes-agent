@@ -2745,6 +2745,105 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
+# ── multiplex profile scope helpers ─────────────────────────────────────────
+# These three helpers are the cron-side seam for the multiplexed gateway.
+# When multiplex_profiles is on, every get_secret() call requires an active
+# profile_runtime_scope. The helpers resolve which profile home to enter, and
+# run_one_job wraps its body in that scope. Single-profile deployments skip
+# the scope entirely (is_multiplex_active() returns False).
+# See docs/design/multiplexing-gateway.md (Workstream A) and
+# tests/cron/test_cron_multiplex_profile_scope.py for the full contract.
+
+def _is_multiplex_active() -> bool:
+    """Return True if this process is running as a profile multiplexer."""
+    from agent.secret_scope import is_multiplex_active
+    return is_multiplex_active()
+
+
+def _parse_delivery_chat_id(deliver: str):
+    """Parse a deliver value like 'weixin:chat_id[:thread]' → (platform, chat_id).
+
+    Returns (None, None) for 'local', '', bare platform names, or empty chat_id.
+    Thread suffix (third colon-segment) is stripped — pairing files are keyed
+    by chat_id only.
+    """
+    if not deliver or deliver == "local":
+        return (None, None)
+    parts = deliver.split(":", 2)
+    if len(parts) < 2:
+        return (None, None)
+    platform, chat_id = parts[0], parts[1]
+    if not chat_id:
+        return (None, None)
+    return (platform, chat_id)
+
+
+def _resolve_target_profile_home(job: dict):
+    """Resolve the HERMES_HOME for the profile that should handle this job.
+
+    Resolution order (first match wins):
+      1. job['profile_home']  — explicit absolute path
+      2. job['profile']       — explicit profile name ('default' → multiplex root)
+      3. chat_id scan         — scan all profile pairing files for the deliver chat_id
+      4. multiplex root       — fallback
+
+    When multiplex is OFF, always returns the multiplex root (legacy behavior).
+    """
+    import os
+    from pathlib import Path
+
+    hermes_home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+
+    # 1. Explicit profile_home path
+    explicit_home = job.get("profile_home")
+    if explicit_home:
+        return Path(explicit_home)
+
+    # 2. Explicit profile name
+    explicit_profile = job.get("profile")
+    if explicit_profile:
+        if explicit_profile == "default":
+            return hermes_home
+        candidate = hermes_home / "profiles" / explicit_profile
+        if candidate.exists():
+            return candidate
+        logger.warning(
+            "Cron job '%s': profile '%s' not found under %s — falling back to root",
+            job.get("id", "?"), explicit_profile, hermes_home / "profiles",
+        )
+        return hermes_home
+
+    # Multiplex off: always use root (legacy single-profile behavior)
+    if not _is_multiplex_active():
+        return hermes_home
+
+    # 3. Auto-resolve via pairing files (multiplex on only)
+    _platform, chat_id = _parse_delivery_chat_id(job.get("deliver", "local"))
+    if chat_id:
+        profiles_dir = hermes_home / "profiles"
+        if profiles_dir.exists():
+            for profile_dir in profiles_dir.iterdir():
+                if not profile_dir.is_dir():
+                    continue
+                # Skip stub dirs (no .env = not a real profile home)
+                if not (profile_dir / ".env").exists():
+                    continue
+                pairing_file = profile_dir / "pairing" / f"{_platform}-approved.json"
+                if not pairing_file.exists():
+                    # Try legacy location
+                    pairing_file = profile_dir / "pairing" / "weixin-approved.json"
+                try:
+                    import json as _json
+                    approved = _json.loads(pairing_file.read_text(encoding="utf-8"))
+                    if chat_id in approved:
+                        return profile_dir
+                except Exception:
+                    continue
+
+    # 4. Fallback: multiplex root
+    return hermes_home
+
+
 def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -> bool:
     """Run ONE due job end-to-end: execute → save output → deliver → mark.
 
@@ -2760,6 +2859,24 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
     Returns True if the job was processed (even if the job itself failed —
     failure is recorded via ``mark_job_run``), False only if processing raised.
     """
+    # Multiplex seam: when running inside a profile multiplexer, enter the
+    # target profile's runtime scope so get_secret() (provider keys in the LLM
+    # path, platform tokens in the delivery path) reads THIS profile's .env and
+    # never raises UnscopedSecretError. Single-profile deployments skip the
+    # scope (is_multiplex_active() is False → resolver returns root, and we use
+    # a nullcontext so behavior is byte-identical to the pre-patch path).
+    from contextlib import nullcontext
+    if _is_multiplex_active():
+        from agent.profile_scope import profile_runtime_scope
+        _scope = profile_runtime_scope(_resolve_target_profile_home(job))
+    else:
+        _scope = nullcontext()
+    with _scope:
+        return _run_one_job_body(job, adapters=adapters, loop=loop, verbose=verbose)
+
+
+def _run_one_job_body(job: dict, *, adapters=None, loop=None, verbose: bool = False) -> bool:
+    """The actual firing body of run_one_job, wrapped by the profile scope."""
     try:
         success, output, final_response, error = run_job(job)
 

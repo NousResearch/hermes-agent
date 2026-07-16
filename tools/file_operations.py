@@ -146,7 +146,7 @@ def _has_bom(text: Optional[str]) -> bool:
 
 def _windows_bash_path_to_drive(path: str) -> str:
     """Convert Git Bash/MSYS drive paths back to native Windows syntax."""
-    if os.name != "nt" or not path:
+    if not _IS_WINDOWS or not path:
         return path
     match = re.match(r"^/mnt/([a-zA-Z])(?:/(.*))?$", path)
     if match:
@@ -171,6 +171,17 @@ def _is_write_denied(path: str) -> bool:
         return True
     native_path = _windows_bash_path_to_drive(path)
     return native_path != path and _shared_is_write_denied(native_path)
+
+
+def _write_denied_error(path: str, verb: str | None = None) -> str | None:
+    native_path = _windows_bash_path_to_drive(path)
+    for candidate in (path, native_path):
+        if _shared_is_write_denied(candidate):
+            return f"{verb or 'Write'} denied: path is protected"
+        denied = get_write_denied_error(candidate, verb=verb)
+        if denied:
+            return denied
+    return None
 
 
 # =============================================================================
@@ -625,7 +636,7 @@ def _looks_like_linter_unusable(base_cmd: str, output: str) -> bool:
 
 def _is_windows_wsl_bash(bash_path: str) -> bool:
     """Return True for Windows WSL bash launchers."""
-    if os.name != "nt" or not bash_path:
+    if not _IS_WINDOWS or not bash_path:
         return False
     normalized = os.path.normcase(os.path.normpath(bash_path))
     return (
@@ -636,7 +647,7 @@ def _is_windows_wsl_bash(bash_path: str) -> bool:
 
 def _windows_drive_path_for_bash(path: str, path_style: str = "msys") -> str:
     """Convert native Windows drive paths to bash drive path syntax."""
-    if os.name != "nt" or not path:
+    if not _IS_WINDOWS or not path:
         return path
     match = re.match(r"^([a-zA-Z]):[\\/](.*)$", path)
     if not match:
@@ -1360,7 +1371,7 @@ class ShellFileOperations(FileOperations):
 
     def _python_delete(self, path: str, recursive: bool) -> WriteResult:
         path = self._expand_path(path)
-        denied = get_write_denied_error(path, verb="Delete")
+        denied = _write_denied_error(path, verb="Delete")
         if denied:
             return WriteResult(error=denied)
 
@@ -1407,7 +1418,7 @@ class ShellFileOperations(FileOperations):
         src = self._expand_path(src)
         dst = self._expand_path(dst)
         for p in (src, dst):
-            denied = get_write_denied_error(p, verb="Move")
+            denied = _write_denied_error(p, verb="Move")
             if denied:
                 return WriteResult(error=denied)
         result = self._exec(
@@ -1456,7 +1467,7 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        denied = get_write_denied_error(path)
+        denied = _write_denied_error(path, verb="Write")
         if denied:
             return WriteResult(error=denied)
 
@@ -1640,7 +1651,7 @@ class ShellFileOperations(FileOperations):
         path = self._expand_path(path)
 
         # Block writes to sensitive paths
-        denied = get_write_denied_error(path)
+        denied = _write_denied_error(path, verb="Write")
         if denied:
             return PatchResult(error=denied)
 
@@ -2582,3 +2593,4 @@ class ShellFileOperations(FileOperations):
                 truncated=total > offset + limit or bool(limit_reason),
                 limit_reason=limit_reason,
             )
+_IS_WINDOWS = os.name == "nt"

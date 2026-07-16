@@ -145,28 +145,14 @@ def test_fetch_api_models_sends_extra_headers_to_models_probe(monkeypatch):
     captured = {}
 
     class FakeResponse:
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {"data": [{"id": "proxy-model"}]}
-
-    class FakeClient:
-        def __init__(self, *args, **kwargs):
-            captured["client_kwargs"] = kwargs
-
         def __enter__(self):
             return self
 
         def __exit__(self, exc_type, exc, tb):
             return False
 
-        def get(self, url, headers=None):
-            captured["url"] = url
-            captured["headers"] = {
-                key.lower(): value for key, value in (headers or {}).items()
-            }
-            return FakeResponse()
+        def read(self):
+            return b'{"data": [{"id": "proxy-model"}]}'
 
     def fake_urlopen(request, timeout=0):
         captured["url"] = request.full_url

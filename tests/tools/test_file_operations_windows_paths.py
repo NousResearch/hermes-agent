@@ -33,7 +33,7 @@ def test_read_file_converts_windows_drive_path_for_git_bash(monkeypatch):
     """Native C:\\ paths must be translated before shelling through Git Bash."""
     from tools import file_operations
 
-    monkeypatch.setattr(file_operations.os, "name", "nt", raising=False)
+    monkeypatch.setattr(file_operations, "_IS_WINDOWS", True)
     env = _FakeGitBashEnv()
     ops = ShellFileOperations(env)
 
@@ -45,7 +45,7 @@ def test_read_file_converts_windows_drive_path_for_git_bash(monkeypatch):
     assert any("/c/Users/alice/project/notes.txt" in cmd for cmd in env.commands)
 
 
-class _FakeWslBashEnv:
+class _FakeGitBashEnvWithLegacyStyle:
     cwd = r"C:\Users\alice\project"
 
     def __init__(self):
@@ -57,7 +57,7 @@ class _FakeWslBashEnv:
         self.commands.append(command)
         if r"C:\Users\alice\project\notes.txt" in command:
             return {"output": "", "returncode": 1}
-        if "/mnt/c/Users/alice/project/notes.txt" not in command:
+        if "/c/Users/alice/project/notes.txt" not in command:
             return {"output": "", "returncode": 1}
         if command.startswith("wc -c"):
             return {"output": "12\n", "returncode": 0}
@@ -70,14 +70,10 @@ class _FakeWslBashEnv:
         return {"output": "", "returncode": 1}
 
 
-def test_read_file_converts_windows_drive_path_for_wsl_bash(monkeypatch):
-    """WSL bash expects mounted drive paths instead of Git Bash /c paths."""
+def test_read_file_uses_git_bash_path_despite_legacy_style_attribute(monkeypatch):
     from tools import file_operations
-    from tools.environments import local
-
-    monkeypatch.setattr(file_operations.os, "name", "nt", raising=False)
-    monkeypatch.setattr(local, "_find_bash", lambda: r"C:\Windows\System32\bash.exe")
-    env = _FakeWslBashEnv()
+    monkeypatch.setattr(file_operations, "_IS_WINDOWS", True)
+    env = _FakeGitBashEnvWithLegacyStyle()
     ops = ShellFileOperations(env)
 
     result = ops.read_file(r"C:\Users\alice\project\notes.txt")
@@ -85,7 +81,7 @@ def test_read_file_converts_windows_drive_path_for_wsl_bash(monkeypatch):
     assert result.error is None
     assert "1|hello" in result.content
     assert all(r"C:\Users\alice\project\notes.txt" not in cmd for cmd in env.commands)
-    assert any("/mnt/c/Users/alice/project/notes.txt" in cmd for cmd in env.commands)
+    assert any("/c/Users/alice/project/notes.txt" in cmd for cmd in env.commands)
 
 
 def test_windows_drive_path_for_bash_supports_other_drives(monkeypatch):
@@ -93,7 +89,7 @@ def test_windows_drive_path_for_bash_supports_other_drives(monkeypatch):
     from tools import file_operations
     from tools.file_operations import _windows_drive_path_for_bash
 
-    monkeypatch.setattr(file_operations.os, "name", "nt", raising=False)
+    monkeypatch.setattr(file_operations, "_IS_WINDOWS", True)
 
     result = _windows_drive_path_for_bash(r"D:\hermes jiyi\2026-04-29.md")
 
@@ -112,7 +108,7 @@ def windows_denylist(monkeypatch):
         calls.append(path)
         return path == blocked
 
-    monkeypatch.setattr(file_operations.os, "name", "nt", raising=False)
+    monkeypatch.setattr(file_operations, "_IS_WINDOWS", True)
     monkeypatch.setattr(file_operations, "_shared_is_write_denied", fake_is_write_denied)
     return blocked, calls
 

@@ -4532,6 +4532,64 @@ def test_setup_runtime_check_honors_requested_provider(monkeypatch):
     assert default["result"]["provider"] == "anthropic"
 
 
+def test_setup_runtime_check_singleflights_slow_resolution(monkeypatch):
+    """Overlapping desktop polls must share one provider-resolution probe."""
+    started = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def slow_resolve(requested=None):
+        nonlocal calls
+        calls += 1
+        started.set()
+        release.wait(timeout=2)
+        return {
+            "provider": "custom",
+            "api_key": "no-key-required",
+            "source": "config",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        slow_resolve,
+    )
+    monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda: True)
+    monkeypatch.setattr(server, "_RUNTIME_CHECK_WAIT_SECONDS", 0.05)
+
+    first = {}
+
+    def run_first():
+        first["response"] = server.handle_request(
+            {"id": "first", "method": "setup.runtime_check", "params": {}}
+        )
+
+    thread = threading.Thread(target=run_first)
+    thread.start()
+    assert started.wait(timeout=1)
+
+    before = time.monotonic()
+    second = server.handle_request(
+        {"id": "second", "method": "setup.runtime_check", "params": {}}
+    )
+    elapsed = time.monotonic() - before
+
+    assert second["result"]["timeout"] is True
+    assert "ok" not in second["result"]
+    assert elapsed < 0.2
+    assert calls == 1
+
+    thread.join(timeout=1)
+    assert not thread.is_alive()
+    assert first["response"]["result"]["timeout"] is True
+    assert "ok" not in first["response"]["result"]
+
+    release.set()
+    deadline = time.monotonic() + 1
+    while server._runtime_check_inflight and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not server._runtime_check_inflight
+
+
 def test_complete_slash_drops_removed_provider_alias():
     # `/provider` was folded into a single `/model` command, so autocomplete
     # must no longer offer the dead alias...

@@ -264,6 +264,23 @@ _pool = concurrent.futures.ThreadPoolExecutor(
 )
 atexit.register(lambda: _pool.shutdown(wait=False, cancel_futures=True))
 
+# Runtime readiness is frontend-polled and already executes on ``_pool`` via
+# ``_LONG_HANDLERS``.  Keep the potentially blocking provider resolution on a
+# separate single-worker executor: submitting it back to ``_pool`` from the
+# handler can starve the shared RPC pool when several polls overlap.  A
+# single-flight future also prevents a slow keyring/OAuth lookup from spawning
+# another probe on every desktop refresh.
+_runtime_check_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="tui-runtime-check",
+)
+_runtime_check_lock = threading.Lock()
+_runtime_check_inflight: dict[str, concurrent.futures.Future] = {}
+_RUNTIME_CHECK_WAIT_SECONDS = 4.0
+atexit.register(
+    lambda: _runtime_check_pool.shutdown(wait=False, cancel_futures=True)
+)
+
 # Reserve real stdout for JSON-RPC only; redirect Python's stdout to stderr
 # so stray print() from libraries/tools becomes harmless gateway.stderr instead
 # of corrupting the JSON protocol.
@@ -12445,12 +12462,14 @@ def _(rid, params: dict) -> dict:
     when the user's configured model cannot actually be served, so UIs can
     surface onboarding before the user submits a doomed prompt.
     """
-    try:
+    requested = str(params.get("provider") or "").strip() or None
+    probe_key = requested or ""
+
+    def _do_check() -> dict:
         from hermes_cli.runtime_provider import resolve_runtime_provider
         from hermes_cli.auth import has_usable_secret
         from hermes_cli.main import _has_any_provider_configured
 
-        requested = str(params.get("provider") or "").strip() or None
         runtime = resolve_runtime_provider(requested=requested)
         provider_configured = bool(_has_any_provider_configured())
         provider = runtime.get("provider") or "provider"
@@ -12459,16 +12478,13 @@ def _(rid, params: dict) -> dict:
             "iam-role",
             "aws-sdk-default-chain",
         }:
-            return _ok(
-                rid,
-                {
-                    "ok": False,
-                    "provider": provider,
-                    "model": runtime.get("model"),
-                    "source": source,
-                    "error": "No Hermes provider is configured.",
-                },
-            )
+            return {
+                "ok": False,
+                "provider": provider,
+                "model": runtime.get("model"),
+                "source": source,
+                "error": "No Hermes provider is configured.",
+            }
 
         api_key = runtime.get("api_key")
         api_key_text = "" if callable(api_key) else str(api_key or "").strip()
@@ -12480,26 +12496,67 @@ def _(rid, params: dict) -> dict:
         )
 
         if not credential_ok:
+            return {
+                "ok": False,
+                "provider": provider,
+                "model": runtime.get("model"),
+                "source": runtime.get("source"),
+                "error": f"No usable credentials found for {provider}.",
+            }
+
+        return {
+            "ok": True,
+            "provider": runtime.get("provider"),
+            "model": runtime.get("model"),
+            "source": runtime.get("source"),
+        }
+
+    def _clear_inflight(future: concurrent.futures.Future) -> None:
+        with _runtime_check_lock:
+            if _runtime_check_inflight.get(probe_key) is future:
+                _runtime_check_inflight.pop(probe_key, None)
+
+    try:
+        created_future = None
+        with _runtime_check_lock:
+            future = _runtime_check_inflight.get(probe_key)
+            if future is None:
+                future = _runtime_check_pool.submit(_do_check)
+                _runtime_check_inflight[probe_key] = future
+                created_future = future
+                wait_for_result = True
+            else:
+                wait_for_result = future.done()
+
+        if created_future is not None:
+            created_future.add_done_callback(_clear_inflight)
+
+        if not wait_for_result:
             return _ok(
                 rid,
                 {
-                    "ok": False,
-                    "provider": provider,
-                    "model": runtime.get("model"),
-                    "source": runtime.get("source"),
-                    "error": f"No usable credentials found for {provider}.",
+                    "error": "runtime check still in progress; retrying next tick",
+                    "timeout": True,
                 },
             )
 
-        return _ok(
-            rid,
-            {
-                "ok": True,
-                "provider": runtime.get("provider"),
-                "model": runtime.get("model"),
-                "source": runtime.get("source"),
-            },
-        )
+        try:
+            result = future.result(timeout=_RUNTIME_CHECK_WAIT_SECONDS)
+        except concurrent.futures.TimeoutError:
+            logger.warning(
+                "setup.runtime_check exceeded %.1fs budget; probe continues in background",
+                _RUNTIME_CHECK_WAIT_SECONDS,
+            )
+            return _ok(
+                rid,
+                {
+                    "error": "runtime check timed out; retrying next tick",
+                    "timeout": True,
+                },
+            )
+
+        _clear_inflight(future)
+        return _ok(rid, result)
     except Exception as e:
         return _ok(rid, {"ok": False, "error": str(e)})
 

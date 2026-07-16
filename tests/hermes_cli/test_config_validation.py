@@ -159,7 +159,7 @@ class TestFallbackModelValidation:
         fb_issues = [i for i in issues if "reasoning_effort" in i.message]
         assert len(fb_issues) == 0
 
-    def test_fallback_reasoning_effort_rejects_ultra(self):
+    def test_fallback_reasoning_effort_accepts_ultra(self):
         issues = validate_config_structure({
             "fallback_model": [
                 {
@@ -169,7 +169,9 @@ class TestFallbackModelValidation:
                 },
             ],
         })
-        assert any("reasoning_effort" in i.message and "ultra" in i.message for i in issues)
+        # 2026-07-15 parity merge: upstream #62650 made ultra a valid effort.
+        fb_issues = [i for i in issues if "reasoning_effort" in i.message]
+        assert len(fb_issues) == 0
 
     def test_fallback_list_entry_missing_provider(self):
         issues = validate_config_structure({

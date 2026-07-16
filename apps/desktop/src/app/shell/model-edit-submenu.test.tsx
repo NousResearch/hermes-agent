@@ -110,7 +110,8 @@ describe('ModelEditSubmenu reasoning effort parity', () => {
       'Medium',
       'High',
       'Extra High',
-      'Max'
+      'Max',
+      'Ultra'
     ])
   })
 

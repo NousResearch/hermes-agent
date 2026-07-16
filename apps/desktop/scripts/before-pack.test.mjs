@@ -1,7 +1,8 @@
+import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { expect, test } from 'vitest'
+import { test } from 'vitest'
 
 import beforePack, { cleanStaleAppOutDir } from '../scripts/before-pack.mjs'
 
@@ -19,8 +20,8 @@ test('cleanStaleAppOutDir removes a populated unpacked directory', () => {
 
     const removed = cleanStaleAppOutDir(appOutDir)
 
-    expect(removed).toBe(true)
-    expect(fs.existsSync(appOutDir)).toBe(false)
+    assert.equal(removed, true)
+    assert.equal(fs.existsSync(appOutDir), false)
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
@@ -30,22 +31,22 @@ test('cleanStaleAppOutDir is a no-op when the directory is absent', () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-before-pack-'))
   try {
     const missing = path.join(tempRoot, 'does-not-exist')
-    expect(cleanStaleAppOutDir(missing)).toBe(false)
+    assert.equal(cleanStaleAppOutDir(missing), false)
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true })
   }
 })
 
 test('cleanStaleAppOutDir ignores empty or invalid input', () => {
-  expect(cleanStaleAppOutDir('')).toBe(false)
-  expect(cleanStaleAppOutDir(undefined)).toBe(false)
-  expect(cleanStaleAppOutDir(null)).toBe(false)
-  expect(cleanStaleAppOutDir(42)).toBe(false)
+  assert.equal(cleanStaleAppOutDir(''), false)
+  assert.equal(cleanStaleAppOutDir(undefined), false)
+  assert.equal(cleanStaleAppOutDir(null), false)
+  assert.equal(cleanStaleAppOutDir(42), false)
 })
 
 test('beforePack default export resolves even when cleanup throws', async () => {
   // A directory path that rmSync can't remove is simulated by passing a
   // context whose appOutDir is a file the hook will try (and be allowed) to
   // remove; the contract under test is that the hook never rejects.
-  await expect(beforePack({ appOutDir: '', electronPlatformName: 'linux' })).resolves.toBeUndefined()
+  await assert.doesNotReject(beforePack({ appOutDir: '', electronPlatformName: 'linux' }))
 })

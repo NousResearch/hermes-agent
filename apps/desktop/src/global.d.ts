@@ -133,6 +133,8 @@ declare global {
       gitRoot?: (path: string) => Promise<string | null>
       // Reveal a path in the OS file manager (Finder / Explorer).
       revealPath?: (path: string) => Promise<boolean>
+      // Open a DIRECTORY (created if missing) in the OS file manager.
+      openDir?: (path: string) => Promise<{ ok: boolean; error?: string }>
       // Rename a file/folder in place (new base name, same parent dir).
       renamePath?: (path: string, newName: string) => Promise<{ path: string }>
       // Write a small UTF-8 text file (hardened path, parent must exist).
@@ -154,6 +156,10 @@ declare global {
         branchSwitch: (repoPath: string, branch: string) => Promise<{ branch: string }>
         // Local branches for the "convert a branch into a worktree" picker.
         branchList: (repoPath: string) => Promise<HermesGitBranch[]>
+        // Local + remote-tracking branches for the "base branch" picker in the
+        // new-worktree dialog. The remote default (origin/HEAD) is flagged so
+        // the UI can preselect it.
+        baseBranchList: (repoPath: string) => Promise<HermesGitBaseBranch[]>
         // Compact working-tree status for the composer coding rail. Null on a
         // non-repo / remote backend (where the Electron probe can't run).
         repoStatus: (repoPath: string) => Promise<HermesRepoStatus | null>
@@ -187,6 +193,10 @@ declare global {
         scanRepos: (roots: string[], options?: { maxDepth?: number }) => Promise<{ root: string; label: string }[]>
       }
       terminal: {
+        /** Best-effort current working directory of the live PTY child (POSIX
+         *  only; null on Windows or when unavailable). Used to reopen a tab
+         *  where the user last `cd`'d. */
+        cwd: (id: string) => Promise<string | null>
         dispose: (id: string) => Promise<boolean>
         onData: (id: string, callback: (payload: string) => void) => () => void
         onExit: (id: string, callback: (payload: HermesTerminalExit) => void) => () => void
@@ -622,6 +632,10 @@ export interface HermesApiRequest {
   path: string
   method?: string
   body?: unknown
+  // Single-file multipart upload (FastAPI UploadFile endpoints). Mutually
+  // exclusive with `body`; bytes transfer over IPC as a structured-clone
+  // ArrayBuffer. Token-mode backends only.
+  upload?: { filename: string; contentType?: string; bytes: ArrayBuffer }
   timeoutMs?: number
   // Route this REST call to a specific profile's backend. Omit for the primary
   // (window) backend. Read-only cross-profile data is served by the primary, so
@@ -686,6 +700,16 @@ export interface HermesGitBranch {
   checkedOut: boolean
   isDefault: boolean
   worktreePath: null | string
+}
+
+// A branch the new worktree can be based on: local heads + remote-tracking
+// refs. `isRemote` distinguishes `origin/main` from a local `main` (the UI
+// may show a remote glyph); `isDefault` flags origin/HEAD so the dialog can
+// preselect it.
+export interface HermesGitBaseBranch {
+  name: string
+  isRemote: boolean
+  isDefault: boolean
 }
 
 // A single changed path from `git status --porcelain=v2`, classified by state

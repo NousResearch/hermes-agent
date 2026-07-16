@@ -24,6 +24,7 @@ describe('model-status-label', () => {
     expect(reasoningEffortLabel('high')).toBe('High')
     expect(reasoningEffortLabel('xhigh')).toBe('XHigh')
     expect(reasoningEffortLabel('max')).toBe('Max')
+    expect(reasoningEffortLabel('ultra')).toBe('Ultra')
     expect(reasoningEffortLabel('')).toBe('')
   })
 

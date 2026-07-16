@@ -30,6 +30,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   componentDidCatch(error: Error, info: ErrorInfo) {
     const tag = this.props.label ? `[error-boundary:${this.props.label}]` : '[error-boundary]'
     console.error(tag, error, info.componentStack)
+
     // Persist the crash + React component stack so a repeat is diagnosable
     // (the fallback's "Open logs" only surfaces main-process logs; renderer
     // crash stacks were previously lost to the devtools console). Best-effort;
@@ -42,10 +43,12 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
         stack: error.stack ?? null,
         componentStack: info.componentStack ?? null
       }
+
       window.localStorage?.setItem('hermes:lastCrash', JSON.stringify(record))
     } catch {
       // ignore storage failures
     }
+
     this.props.onError?.(error, info)
   }
 
@@ -78,18 +81,22 @@ function RootErrorFallback({ error, reset }: ErrorBoundaryFallbackProps) {
   // backend and in the separate auth partition, so they survive) then reloads.
   const resetAndRecover = () => {
     const done = () => window.location.reload()
+
     try {
       // Preserve the crash record across the flush — clearing localStorage would
       // otherwise delete the very diagnostic hermes:lastCrash that Reset & recover
       // is meant to survive (a dev opening devtools afterward would find it gone).
       let lastCrash: string | null = null
+
       try {
         lastCrash = window.localStorage?.getItem('hermes:lastCrash') ?? null
       } catch {
         lastCrash = null
       }
+
       window.localStorage?.clear()
       window.sessionStorage?.clear()
+
       if (lastCrash !== null) {
         try {
           window.localStorage?.setItem('hermes:lastCrash', lastCrash)
@@ -97,17 +104,20 @@ function RootErrorFallback({ error, reset }: ErrorBoundaryFallbackProps) {
           // storage unavailable post-clear — best effort
         }
       }
+
       window.indexedDB?.databases?.().then(dbs => {
         for (const db of dbs) {
-          if (db.name) window.indexedDB.deleteDatabase(db.name)
+          if (db.name) {window.indexedDB.deleteDatabase(db.name)}
         }
       }).catch(() => undefined)
+
       if (window.caches?.keys) {
         void window.caches.keys().then(keys => Promise.all(keys.map(k => window.caches.delete(k)))).catch(() => undefined)
       }
     } catch {
       // ignore — still reload below
     }
+
     // Give the async deletes a beat to start, then reload regardless.
     window.setTimeout(done, 150)
   }

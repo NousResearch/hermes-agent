@@ -32,9 +32,11 @@ export function parseRenderCacheEnabled(yamlText: string): boolean {
     for (const rawLine of lines) {
       const line = rawLine.replace(/\t/g, '  ')
       const stripped = line.trim()
+
       if (!stripped || stripped.startsWith('#')) {
         continue
       }
+
       const indent = line.length - line.trimStart().length
 
       if (!inDesktop) {
@@ -42,6 +44,7 @@ export function parseRenderCacheEnabled(yamlText: string): boolean {
           inDesktop = true
           desktopIndent = indent
         }
+
         continue
       }
 
@@ -50,12 +53,15 @@ export function parseRenderCacheEnabled(yamlText: string): boolean {
         if (inRenderCache) {
           break
         }
+
         inDesktop = false
+
         // The same line might START a new top-level desktop block (unlikely);
         // re-test it.
         if (/^desktop:\s*(#.*)?$/.test(stripped) && indent === 0) {
           inDesktop = true
         }
+
         continue
       }
 
@@ -64,6 +70,7 @@ export function parseRenderCacheEnabled(yamlText: string): boolean {
           inRenderCache = true
           renderCacheIndent = indent
         }
+
         continue
       }
 
@@ -73,14 +80,17 @@ export function parseRenderCacheEnabled(yamlText: string): boolean {
       }
 
       const m = /^enabled:\s*(\S+)/.exec(stripped)
+
       if (m) {
         const v = m[1].toLowerCase().replace(/["']/g, '')
+
         return !(v === 'false' || v === 'no' || v === 'off' || v === '0')
       }
     }
   } catch {
     // fall through to default
   }
+
   return true
 }
 
@@ -88,6 +98,7 @@ export function parseRenderCacheEnabled(yamlText: string): boolean {
 export function readRenderCacheEnabled(hermesHome: string): boolean {
   try {
     const raw = fs.readFileSync(path.join(hermesHome, 'config.yaml'), 'utf8')
+
     return parseRenderCacheEnabled(raw)
   } catch {
     return true

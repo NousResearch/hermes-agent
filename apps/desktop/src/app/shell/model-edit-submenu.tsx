@@ -12,11 +12,22 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
-import { ENABLED_REASONING_EFFORTS, normalizeEnabledReasoningEffort } from '@/lib/reasoning-effort'
 import { normalize } from '@/lib/text'
 import { setModelPreset } from '@/store/model-presets'
 import { notifyError } from '@/store/notifications'
 import { $activeSessionId, setCurrentFastMode, setCurrentReasoningEffort } from '@/store/session'
+
+// Hermes' real reasoning levels (see VALID_REASONING_EFFORTS); `none` is owned
+// by the Thinking toggle, not the radio.
+const EFFORT_OPTIONS = [
+  { value: 'minimal', labelKey: 'minimal' },
+  { value: 'low', labelKey: 'low' },
+  { value: 'medium', labelKey: 'medium' },
+  { value: 'high', labelKey: 'high' },
+  { value: 'xhigh', labelKey: 'xhigh' },
+  { value: 'max', labelKey: 'max' },
+  { value: 'ultra', labelKey: 'ultra' }
+] as const
 
 /** How "fast" is achieved for a given model — two different mechanisms:
  *  - `param`: the Anthropic/OpenAI `speed=fast` request parameter.
@@ -204,14 +215,14 @@ export function ModelEditSubmenu({
               <DropdownMenuSeparator className="mx-0" />
               <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.effort}</DropdownMenuLabel>
               <DropdownMenuRadioGroup onValueChange={value => void patchReasoning(value)} value={effortValue}>
-                {ENABLED_REASONING_EFFORTS.map(value => (
+                {EFFORT_OPTIONS.map(option => (
                   <DropdownMenuRadioItem
                     className={dropdownMenuRow}
-                    key={value}
+                    key={option.value}
                     onSelect={event => event.preventDefault()}
-                    value={value}
+                    value={option.value}
                   >
-                    {copy[value]}
+                    {copy[option.labelKey]}
                   </DropdownMenuRadioItem>
                 ))}
               </DropdownMenuRadioGroup>
@@ -236,5 +247,5 @@ function normalizeEffort(effort: string): string {
     return ''
   }
 
-  return normalizeEnabledReasoningEffort(value)
+  return EFFORT_OPTIONS.some(option => option.value === value) ? value : 'medium'
 }

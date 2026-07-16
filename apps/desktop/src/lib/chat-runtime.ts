@@ -55,7 +55,8 @@ export function createClientSessionState(
     pendingBranchGroup: null,
     interrupted: false,
     needsInput: false,
-    turnStartedAt: null
+    turnStartedAt: null,
+    usage: null
   }
 }
 
@@ -442,16 +443,22 @@ function mergeToolParts(prevParts: ChatMessagePart[], nextParts: ChatMessagePart
 
     if (id === undefined) {
       merged.push(part)
+
       continue
     }
 
     const existing = indexByToolCallId.get(id)
+
     if (existing === undefined) {
       indexByToolCallId.set(id, merged.length)
       merged.push(part)
     } else {
       // Collapse the duplicate onto the existing row (later wins its fields).
-      merged[existing] = { ...merged[existing], ...part }
+      const previous = merged[existing]
+
+      if (previous.type === 'tool-call') {
+        merged[existing] = { ...previous, ...part }
+      }
     }
   }
 

@@ -240,55 +240,56 @@ def _start_polling_calls_in_adapter():
     # wrapper's start_polling as if it lived at each call site. This keeps the
     # guard's teeth (the real recovery ladders at their own raw start_polling
     # sites are unaffected) while not false-flagging an audited wrapper.
-    wrapper_names = set()
+    # 2026-07-15 parity merge: upstream split the wrapper into TWO levels
+    # (``_start_polling_resilient`` → ``_start_polling_once`` →
+    # ``updater.start_polling``), so resolution must be TRANSITIVE: any
+    # function that takes a ``drop_pending_updates`` param is a potential
+    # wrapper, and a row whose expr is the bare forwarded param is re-resolved
+    # to that wrapper's own call sites, iterating to a fixpoint (bounded to
+    # guard against pathological cycles).
+    param_fns = set()
     for fn in ast.walk(tree):
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         params = {a.arg for a in fn.args.args} | {a.arg for a in fn.args.kwonlyargs}
-        if "drop_pending_updates" not in params:
+        if "drop_pending_updates" in params:
+            param_fns.add(fn.name)
+
+    # Every call site of each param-taking fn: fn_name -> [(lineno, caller_fn, dpu_expr)].
+    calls_of: dict = {name: [] for name in param_fns}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
             continue
-        for c in ast.walk(fn):
-            if (
-                isinstance(c, ast.Call)
-                and isinstance(c.func, ast.Attribute)
-                and c.func.attr == "start_polling"
-                and any(
-                    kw.arg == "drop_pending_updates"
-                    and isinstance(kw.value, ast.Name)
-                    and kw.value.id == "drop_pending_updates"
-                    for kw in c.keywords
-                )
-            ):
-                wrapper_names.add(fn.name)
-                break
-    if wrapper_names:
-        # Gather every call to a wrapper: (caller_fn_name, dpu_expr_passed_in).
-        wrapper_calls = []
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            name = (
-                func.attr if isinstance(func, ast.Attribute)
-                else func.id if isinstance(func, ast.Name) else None
-            )
-            if name in wrapper_names:
-                caller = enclosing.get(id(node))
-                caller_name = caller.name if caller is not None else "<module>"
-                dpu = "<MISSING>"
-                for kw in node.keywords:
-                    if kw.arg == "drop_pending_updates":
-                        dpu = ast.unparse(kw.value)
-                wrapper_calls.append((node.lineno, caller_name, dpu))
-        # Replace each wrapper's own forwarded-param row with the resolved
-        # rows from its call sites.
+        func = node.func
+        name = (
+            func.attr if isinstance(func, ast.Attribute)
+            else func.id if isinstance(func, ast.Name) else None
+        )
+        if name in param_fns:
+            caller = enclosing.get(id(node))
+            caller_name = caller.name if caller is not None else "<module>"
+            dpu = "<MISSING>"
+            for kw in node.keywords:
+                if kw.arg == "drop_pending_updates":
+                    dpu = ast.unparse(kw.value)
+            calls_of[name].append((node.lineno, caller_name, dpu))
+
+    # Fixpoint: replace (fn, 'drop_pending_updates') rows — a wrapper
+    # forwarding its own param — with the rows of the wrapper's callers.
+    for _ in range(10):  # bound: wrapper chains are short; avoid cycles
+        changed = False
         resolved = []
         for lineno, fn_name, dpu in results:
-            if fn_name in wrapper_names and dpu == "drop_pending_updates":
-                resolved.extend(wrapper_calls)
-            else:
-                resolved.append((lineno, fn_name, dpu))
+            if dpu == "drop_pending_updates" and fn_name in param_fns:
+                callers = calls_of.get(fn_name, [])
+                if callers:
+                    resolved.extend(callers)
+                    changed = True
+                    continue
+            resolved.append((lineno, fn_name, dpu))
         results = resolved
+        if not changed:
+            break
 
     return results
 

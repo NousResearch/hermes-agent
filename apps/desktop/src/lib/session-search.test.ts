@@ -52,6 +52,12 @@ describe('sessionMatchesSearch', () => {
     expect(sessionMatchesSearch(session, 'hermes-agent')).toBe(true)
   })
 
+  it('matches sessions by git branch', () => {
+    expect(sessionMatchesSearch(makeSession({ git_branch: 'feat/cool-thing' }), 'feat/cool-thing')).toBe(true)
+    expect(sessionMatchesSearch(makeSession({ git_branch: 'feat/cool-thing' }), 'cool')).toBe(true)
+    expect(sessionMatchesSearch(makeSession({ git_branch: 'main' }), 'main')).toBe(true)
+  })
+
   it('matches sessions by source platform and aliases', () => {
     expect(sessionMatchesSearch(makeSession({ source: 'telegram' }), 'Telegram')).toBe(true)
     expect(sessionMatchesSearch(makeSession({ source: 'whatsapp' }), 'WhatsApp')).toBe(true)
@@ -143,12 +149,14 @@ describe('rankTitleMatchesFirst', () => {
 
   it('ranks sessions matching MORE query tokens first (channel+platform beats single title token)', () => {
     const contentHit = makeSession({ id: 'content-1', preview: 'talked about voice stuff', title: 'Other' })
+
     const channelHit = makeSession({
       display_name: 'Daemonarchy / #voice-assitant',
       id: 'channel-1',
       source: 'discord',
       title: 'Firmware Build'
     })
+
     const platformOnly = makeSession({ id: 'platform-1', source: 'discord', title: 'Unrelated' })
     const titleHit = makeSession({ id: 'title-1', title: 'Voice pipeline design' })
 
@@ -164,6 +172,7 @@ describe('rankTitleMatchesFirst', () => {
     const cronJunk = Array.from({ length: 5 }, (_, i) =>
       makeSession({ id: `cron-${i}`, source: 'cron', title: `skill-patch-applier · Jul 1${i}` })
     )
+
     const threadHit = makeSession({
       display_name: 'Daemonarchy / #voice-assitant / Desktop App',
       id: 'thread-1',
@@ -184,6 +193,7 @@ describe('rankTitleMatchesFirst', () => {
       source: 'discord',
       title: 'Other'
     })
+
     const phraseTitle = makeSession({ id: 'title-1', title: 'Troubleshooting Desktop App Timeout' })
 
     const ranked = rankTitleMatchesFirst([channelHit, phraseTitle], 'desktop app')

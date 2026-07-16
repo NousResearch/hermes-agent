@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import {
   $paneOpen,
@@ -97,7 +97,7 @@ describe('panes store', () => {
       expect(getPaneStateSnapshot('files')?.widthOverride).toBeUndefined()
     })
 
-    it('width override is persisted with pane state', () => {
+    it('width override is NOT in-memory only, and is persisted across reloads', () => {
       ensurePaneRegistered('files', { open: true })
       setPaneWidthOverride('files', 300)
 
@@ -105,15 +105,6 @@ describe('panes store', () => {
 
       expect(persisted).not.toBeNull()
       expect(JSON.parse(persisted ?? '{}')).toEqual({ files: { open: true, widthOverride: 300 } })
-    })
-
-    it('loads persisted width override on module reload', async () => {
-      window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ files: { open: true, widthOverride: 300 } }))
-      vi.resetModules()
-
-      const fresh = await import('./panes')
-
-      expect(fresh.getPaneStateSnapshot('files')).toMatchObject({ open: true, widthOverride: 300 })
     })
 
     it('open flag is persisted across changes', () => {

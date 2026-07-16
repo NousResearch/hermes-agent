@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import test from 'node:test'
+
+import { test } from 'vitest'
 
 import {
   buildPinArgs,
@@ -86,16 +87,7 @@ test('fresh bootstrap args include the packaged commit pin', () => {
       activeRoot: '/tmp/hermes-agent',
       hermesHome: '/tmp/hermes'
     }),
-    [
-      '--dir',
-      '/tmp/hermes-agent',
-      '--hermes-home',
-      '/tmp/hermes',
-      '--branch',
-      'main',
-      '--commit',
-      installStamp.commit
-    ]
+    ['--dir', '/tmp/hermes-agent', '--hermes-home', '/tmp/hermes', '--branch', 'main', '--commit', installStamp.commit]
   )
 })
 

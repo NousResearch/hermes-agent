@@ -45,6 +45,7 @@ import {
   setSessionsLoading,
   setSessionsTotal
 } from '@/store/session'
+import { resetTileRuntimeBindings } from '@/store/session-states'
 import type { RpcEvent } from '@/types/hermes'
 
 import { hydrateFromRenderCache, reconcileRenderCache } from '../../render-cache-hydration'
@@ -182,6 +183,9 @@ export function useGatewayBoot({
         }
 
         reconnectAttempt = 0
+        // A respawned backend re-mints (recycles) runtime ids, so any tile's
+        // bound runtime id is now stale — drop them so each tile re-resumes.
+        resetTileRuntimeBindings()
         // Resync state that may have moved on the backend while we were asleep.
         await callbacksRef.current.refreshHermesConfig().catch(() => undefined)
         await callbacksRef.current.refreshSessions().catch(() => undefined)
@@ -328,6 +332,7 @@ export function useGatewayBoot({
 
       applyDesktopBootProgress(payload)
     })
+
     void desktop
       .getBootProgress()
       .then(snapshot => applyDesktopBootProgress(snapshot))
@@ -371,7 +376,11 @@ export function useGatewayBoot({
       }
     })
 
-    const offEvent = gateway.onEvent(event => callbacksRef.current.handleGatewayEvent(event))
+    const sourceProfile = normalizeProfileKey($activeGatewayProfile.get())
+
+    const offEvent = gateway.onEvent(event =>
+      callbacksRef.current.handleGatewayEvent({ ...event, profile: sourceProfile })
+    )
 
     // Wake signals: power resume (macOS/Windows), network coming back, and the
     // window regaining focus/visibility. Each nudges an immediate reconnect.

@@ -16,16 +16,20 @@ type RequestCall = { method: string; params: Record<string, unknown> }
 
 function mountHook() {
   const calls: RequestCall[] = []
+
   const fakeGateway = {
     request: vi.fn(async (method: string, params: Record<string, unknown>) => {
       calls.push({ method, params })
+
       return { ok: true }
     })
   }
 
   let requestGateway!: ReturnType<typeof useGatewayRequest>['requestGateway']
+
   function Probe() {
     requestGateway = useGatewayRequest().requestGateway
+
     return null
   }
 

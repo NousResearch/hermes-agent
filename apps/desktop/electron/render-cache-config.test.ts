@@ -8,7 +8,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import test from 'node:test'
+
+import { test } from 'vitest'
 
 import { parseRenderCacheEnabled, readRenderCacheEnabled } from './render-cache-config.ts'
 
@@ -46,6 +47,7 @@ test('enabled under a DIFFERENT block does not count', () => {
     '  something_else: 1',
     ''
   ].join('\n')
+
   assert.equal(parseRenderCacheEnabled(yaml), true)
 })
 
@@ -59,6 +61,7 @@ test('desktop block with other keys before render_cache still resolves', () => {
     '  after: 1',
     ''
   ].join('\n')
+
   assert.equal(parseRenderCacheEnabled(yaml), false)
 })
 
@@ -72,6 +75,7 @@ test('comments and blank lines are ignored', () => {
     '    enabled: false  # off for debugging',
     ''
   ].join('\n')
+
   assert.equal(parseRenderCacheEnabled(yaml), false)
 })
 

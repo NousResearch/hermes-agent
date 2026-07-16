@@ -312,13 +312,14 @@ class TestOpenRouterProfile:
         """effort set + reasoning enabled → top-level verbosity == effort,
         and NO reasoning field in extra_body.
 
-        Covers the ordinary configurable levels through ``xhigh``. The distinct
-        ``max`` passthrough contract is covered separately below.
+        Covers the full real config range produced by
+        ``hermes_constants.parse_reasoning_effort`` —
+        ``VALID_REASONING_EFFORTS`` (including max and ultra).
         """
         p = get_provider_profile("openrouter")
         model = "anthropic/claude-fable-5"
         assert self._is_mandatory(model)  # fixture really is mandatory
-        for effort in ("minimal", "low", "medium", "high", "xhigh"):
+        for effort in ("minimal", "low", "medium", "high", "xhigh", "max", "ultra"):
             eb, tl = p.build_api_kwargs_extras(
                 reasoning_config={"enabled": True, "effort": effort},
                 supports_reasoning=True,
@@ -341,13 +342,12 @@ class TestOpenRouterProfile:
 
     def test_mandatory_anthropic_verbosity_is_value_agnostic_passthrough(self):
         """The mapping passes the effort value through verbatim — it must NOT
-        clamp or whitelist. ``xhigh`` and ``max`` are both real config values;
-        OpenRouter accepts both for Claude (live-proven in #43432), so either
-        value must survive rather than be silently dropped. The OpenAI SDK
-        type only literals ``low|medium|high`` but it's a TypedDict (no runtime
-        validation), so the extended scale reaches the wire untouched."""
+        clamp or whitelist. Extended values must survive
+        rather than be silently dropped. The OpenAI SDK type only literals
+        ``low|medium|high`` but it's a TypedDict (no runtime validation), so the
+        extended scale reaches the wire untouched."""
         p = get_provider_profile("openrouter")
-        for effort in ("xhigh", "max"):
+        for effort in ("xhigh", "max", "ultra"):
             _, tl = p.build_api_kwargs_extras(
                 reasoning_config={"enabled": True, "effort": effort},
                 supports_reasoning=True,

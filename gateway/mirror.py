@@ -114,7 +114,7 @@ def _find_session_id(
     # Primary: state.db
     try:
         from hermes_state import SessionDB
-        db = SessionDB()
+        db = SessionDB(db_path=get_hermes_home() / "state.db")
         try:
             finder = getattr(db, "find_session_by_origin", None)
             if callable(finder):

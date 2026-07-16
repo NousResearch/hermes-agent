@@ -88,9 +88,14 @@ export const zh: Translations = {
       retry: '重试',
       repairInstall: '修复安装',
       useLocalGateway: '使用本地网关',
+      gatewaySettings: '网关设置',
+      back: '返回',
       openLogs: '打开日志',
       repairHint: '修复会重新运行安装器，在新机器上可能需要几分钟。',
-      remoteSignInHint: '打开网关登录窗口。也可以使用本地网关切换到随应用提供的后端。',
+      remoteSignInHint: signInLabel =>
+        `先退出已保存的远程浏览器会话，然后打开${signInLabel}。也可以使用本地网关切换到随应用提供的后端。`,
+      signOutAndSignIn: '退出并重新登录',
+      remoteFailureHint: '在“网关设置”中检查网关 URL 和登录，或切换到本地网关。',
       hideRecentLogs: '隐藏最近日志',
       showRecentLogs: '显示最近日志',
       signedInTitle: '已登录',
@@ -180,7 +185,9 @@ export const zh: Translations = {
     unmuteHaptics: '开启触感反馈',
     openSettings: '打开设置',
     openStarmap: '打开记忆图谱',
-    openKeybinds: '键盘快捷键'
+    openKeybinds: '键盘快捷键',
+    layoutEditor: '布局编辑器',
+    layoutEditorTitle: '布局编辑器 — ⌘ 点击重置布局'
   },
 
   keybinds: {
@@ -211,6 +218,7 @@ export const zh: Translations = {
       'nav.cron': '打开定时任务',
       'nav.agents': '打开智能体',
       'session.new': '新建会话',
+      'session.newTab': '新建会话标签',
       'session.newWindow': '在新窗口中新建会话',
       'session.next': '下一个会话',
       'session.prev': '上一个会话',
@@ -235,7 +243,8 @@ export const zh: Translations = {
       'view.showFiles': '显示文件浏览器',
       'view.showTerminal': '显示终端',
       'view.terminalSelection': '将终端选区发送到输入框',
-      'view.closePreviewTab': '关闭预览标签',
+      'view.closeTab': '关闭标签',
+      'view.reopenTab': '重新打开已关闭的标签',
       'view.flipPanes': '交换侧边栏位置',
       'appearance.toggleMode': '切换浅色/深色',
       'profile.default': '切换到默认配置',
@@ -302,7 +311,22 @@ export const zh: Translations = {
       mcp: 'MCP',
       archivedChats: '已归档对话',
       about: '关于',
-      notifications: '通知'
+      notifications: '通知',
+      plugins: '插件'
+    },
+    plugins: {
+      title: '桌面插件',
+      blurb:
+        '加载到此应用中的界面扩展——随构建捆绑，或放入 desktop-plugins 文件夹（包括 Hermes 编写的插件）。禁用会即时卸载插件并在重启后保持。',
+      count: n => `已安装 ${n} 个`,
+      openFolder: '打开插件文件夹',
+      rescan: '重新扫描',
+      reveal: '在文件管理器中显示',
+      enable: '启用',
+      disable: '禁用',
+      failed: '失败',
+      empty: '尚未安装桌面插件。',
+      kinds: { bundled: '内置', disk: '磁盘', runtime: '运行时' }
     },
     notifications: {
       title: '通知',
@@ -376,6 +400,8 @@ export const zh: Translations = {
         `缩放整个应用的文字和界面。也可使用 Cmd/Ctrl 加 +、- 或 0 调整。当前：${percent}%`,
       translucencyTitle: '窗口透明',
       translucencyDesc: '让整个窗口透出桌面。仅支持 macOS 和 Windows。',
+      backdropTitle: '聊天背景',
+      backdropDesc: '对话后方那张淡淡的雕像图片。',
       embedsTitle: '内嵌预览',
       embedsDesc:
         '富预览会从第三方网站（YouTube、X 等）加载。询问会在你允许前显示占位符；总是会自动加载；关闭则保留纯链接。',
@@ -890,6 +916,9 @@ export const zh: Translations = {
       change: '更改',
       autoUseMain: '自动 · 使用主模型',
       providerDefault: '(提供方默认)',
+      fallbackAdd: '添加备用模型',
+      fallbackEmpty: '未配置备用模型 — 默认模型失败时才会使用备用模型。',
+      notInCatalog: '不在该提供方的模型列表中 — 调用可能回退到备用模型。',
       tasks: {
         vision: { label: '视觉', hint: '图片分析' },
         web_extract: { label: '网页提取', hint: '页面总结' },
@@ -1158,6 +1187,7 @@ export const zh: Translations = {
     goTo: '前往',
     goToSession: '前往会话',
     branches: '分支',
+    commands: '命令',
     startInBranch: branch => `在 ${branch} 中开始新对话`,
     commandCenter: '命令中心',
     appearance: '外观',
@@ -1647,7 +1677,10 @@ export const zh: Translations = {
     customPlaceholder: '0 9 * * * 或 weekdays at 9am',
     customHint: 'Cron 表达式，或类似"每小时""工作日上午 9 点"的短语。',
     optional: '可选',
+    promptRequired: '提示词为必填项。',
     promptScheduleRequired: '提示词和排程为必填项。',
+    scheduleRequired: '排程为必填项。',
+    scriptOnlyEditHint: '仅脚本任务（无 AI 提示词）。任务 ID：',
     saveChanges: '保存更改',
     createAction: '创建定时任务'
   },
@@ -1741,8 +1774,7 @@ export const zh: Translations = {
       menuSetActive: '设为活动',
       menuDelete: '删除',
       reveal: '在文件夹中显示',
-      remoteRevealUnavailable:
-        '此路径位于网关上。远程工作区无法在这台 Mac 的文件管理器中显示；请改为复制路径。',
+      remoteRevealUnavailable: '此路径位于网关上。远程工作区无法在这台 Mac 的文件管理器中显示；请改为复制路径。',
       copyPath: '复制路径',
       removeFromSidebar: '从侧边栏移除',
       createFailed: '无法创建项目',
@@ -1752,6 +1784,9 @@ export const zh: Translations = {
       newWorktreeTitle: '新建工作树',
       newWorktreeDesc: '为这个工作树命名分支。',
       branchPlaceholder: '例如 my-feature',
+      branchOff: () => ({ after: ' 分支', before: '从 ' }),
+      baseBranchPlaceholder: '搜索分支…',
+      baseBranchNone: '未找到分支',
       startWorkFailed: '无法创建工作树',
       convertBranch: '转换分支…',
       convertBranchTitle: '转换分支',
@@ -1788,18 +1823,24 @@ export const zh: Translations = {
       rename: '重命名',
       archive: '归档',
       newWindow: '新窗口',
+      hideTabBar: '隐藏标签栏',
+      openInNewTab: '在新标签页中打开',
+      openInSplit: '在分屏中打开',
       copyIdFailed: '无法复制会话 ID',
       actionsFor: title => `${title} 的操作`,
       sessionActions: '会话操作',
       sessionRunning: '会话运行中',
       needsInput: '需要你输入',
       waitingForAnswer: '正在等待你的回答',
+      finishedUnread: '已完成 — 未读',
+      backgroundRunning: '后台任务运行中',
       handoffOrigin: platform => `从 ${platform} 转接`,
       renamed: '已重命名',
       renameFailed: '重命名失败',
       renameTitle: '重命名会话',
       renameDesc: '给这个对话起一个好记的标题。留空则清除。',
       untitledPlaceholder: '无标题会话',
+      untitledChat: id => `会话 ${id}`,
       ageNow: '刚刚',
       ageDay: '天',
       ageHour: '时',
@@ -2104,6 +2145,7 @@ export const zh: Translations = {
     featuredPitch: '一个订阅，300+ 前沿模型 — 运行 Hermes 的推荐方式',
     openRouterPitch: '一个密钥，数百个模型 — 稳妥的默认选择',
     apiKeyOptions: {
+      fireworks: { short: '直接模型 API', description: '直接访问 Fireworks AI 托管的模型。' },
       openrouter: { short: '一个密钥，多个模型', description: '用一个密钥访问数百个模型。适合新安装的默认选择。' },
       openai: { short: 'GPT 级模型', description: '直接访问 OpenAI 模型。' },
       gemini: { short: 'Gemini 模型', description: '直接访问 Google Gemini 模型。' },
@@ -2201,8 +2243,9 @@ export const zh: Translations = {
       low: '低',
       medium: '中',
       high: '高',
-      xhigh: '超高',
+      xhigh: '极高',
       max: '最高',
+      ultra: '超高',
       updateFailed: '模型选项更新失败',
       fastFailed: '快速模式更新失败'
     },
@@ -2220,6 +2263,16 @@ export const zh: Translations = {
       recentActivity: '最近活动',
       viewAllLogs: '查看全部日志 →',
       messagingPlatforms: '消息平台'
+    },
+    approvalMode: {
+      title: '审批模式',
+      ariaLabel: mode => `审批模式：${mode}`,
+      manual: '手动',
+      manualDescription: '执行需要审批的操作前询问',
+      smart: '智能',
+      smartDescription: '自动评估操作，并在需要时询问',
+      off: '关闭',
+      offDescription: '不显示审批提示，直接运行'
     },
     statusbar: {
       unknown: '未知',
@@ -2418,6 +2471,51 @@ export const zh: Translations = {
     }
   },
 
+  zones: {
+    showHeader: '显示标题栏',
+    hideHeader: '隐藏标题栏',
+    minimize: '最小化',
+    restore: '还原',
+    closeRunningTitle: '关闭正在运行的标签？',
+    closeRunningBody: '此对话仍在运行（或正在等待你的输入）。关闭标签只会隐藏它——会话将保留进度，可从侧边栏重新打开。',
+    closeRunningConfirm: '关闭标签',
+    closeOthers: '关闭其他',
+    closeToRight: '关闭右侧',
+    closeAll: '全部关闭',
+    split: dir => `向${dir}拆分`,
+    move: dir => `向${dir}移动`,
+    dirUp: '上',
+    dirDown: '下',
+    dirLeft: '左',
+    dirRight: '右',
+    pluginDisabled: pluginId => `插件“${pluginId}”已禁用`,
+    pluginDisabledBody: '在 设置 → 插件 中重新启用即可恢复面板。',
+    missingPane: paneId => `缺少面板：${paneId}`,
+    editTitle: '布局',
+    editHint: '选择一个布局，或在区域之间拖动面板。右键点击区域可拆分。',
+    reset: '重置',
+    templates: '模板',
+    custom: '自定义',
+    newGridLayout: '新建网格布局',
+    saveCurrentAs: '将当前排列保存为模板',
+    nameLayoutPlaceholder: '为布局命名…',
+    deletePreset: name => `删除 ${name}`,
+    zoneEditorTitle: '区域编辑器',
+    editorHintPre: '点击拆分 · ',
+    editorHintPost: ' 翻转分割线 · 拖过多个区域可合并 · 拖动共享边可调整大小',
+    templateColumns: '列',
+    templateRows: '行',
+    templateGrid: '网格',
+    templatePriority: '优先',
+    zoneTag: index => `区域 ${index}`,
+    mergeZones: count => `合并 ${count} 个区域`,
+    customZoneName: count => `自定义 ${count} 区`,
+    layoutNamePlaceholder: fallback => `布局名称（${fallback}）`,
+    saveApply: '保存并应用',
+    notExpressible: '此排列互相咬合（风车形）——暂无法表示为嵌套拆分',
+    zoneCount: count => `${count} 个区域`
+  },
+
   assistant: {
     thread: {
       loadingSession: '正在加载会话',
@@ -2475,6 +2573,7 @@ export const zh: Translations = {
       other: '其他 (输入你的答案)',
       placeholder: '输入你的答案…',
       skip: '跳过',
+      skipped: '已跳过',
       continueLabel: '继续'
     },
     tool: {
@@ -2580,14 +2679,14 @@ export const zh: Translations = {
     yoloTitle: 'YOLO',
     yoloToggleFailed: '无法切换 YOLO',
     footer: {
-      status: on => `运行时页脚: ${on ? '开' : '关'}。使用 /footer on|off 更改。`,
-      set: on => `运行时页脚已${on ? '开启 — 回复末尾将显示 model · context · cwd' : '关闭'}`,
-      failed: '无法更新页脚设置'
+      status: on => `运行时页脚：${on ? '开启' : '关闭'}。使用 /footer on|off。`,
+      set: on => `运行时页脚${on ? '已开启——回复末尾会显示模型 · 上下文 · cwd' : '已关闭'}`,
+      failed: '无法更新页脚'
     },
     reasoning: {
-      status: (level, display) => `推理强度: ${level} · 显示: ${display}。使用 /reasoning <none|minimal|low|medium|high|xhigh|max|show|hide> 更改。`,
-      effortSet: level => `本会话的推理强度已设为 ${level}`,
-      displaySet: value => `推理显示: ${value}`,
+      status: (level, display) => `推理强度：${level} · 显示：${display}。使用 /reasoning <none|minimal|low|medium|high|xhigh|max|show|hide>。`,
+      effortSet: level => `此会话的推理强度已设为 ${level}`,
+      displaySet: value => `推理显示：${value}`,
       failed: '无法更新推理设置'
     },
     profileStatus: current => `配置档案：${current}。使用 /profile <name> 或“新建会话”选择器在其他配置档案中开始对话。`,

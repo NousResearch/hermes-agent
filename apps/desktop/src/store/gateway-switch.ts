@@ -16,6 +16,7 @@ import {
   setSessions,
   setSessionsLoading,
   setSessionsTotal,
+  setUnreadFinishedSessionIds,
   setWorkingSessionIds
 } from '@/store/session'
 
@@ -23,8 +24,6 @@ import {
 // boot hook suppress the backend-exit toast and keeps the cold-boot CONNECTING
 // overlay from resurrecting when startHermes re-emits boot progress.
 export const $gatewaySwitching = atom(false)
-
-const PREVIEW_HOLD_MS = 1400
 
 /**
  * Clear gateway-bound session UI so sidebar skeletons retrigger.
@@ -48,6 +47,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   setMessagingTruncated(false)
   setWorkingSessionIds([])
   setAttentionSessionIds([])
+  setUnreadFinishedSessionIds([])
   setSessionsLoading(true)
   resetSessionsLimit()
 
@@ -57,27 +57,4 @@ export function wipeSessionListsForGatewaySwitch(): void {
   setFreshDraftReady(true)
 
   void queryClient.invalidateQueries()
-}
-
-/**
- * Dev review beat: wipe → skeletons for PREVIEW_HOLD_MS → clear loading.
- * Does not tear down a real backend. Fired from the Settings button (Electron
- * has no easy `?query=` entry).
- */
-export async function previewGatewaySwitch(holdMs = PREVIEW_HOLD_MS): Promise<void> {
-  if ($gatewaySwitching.get()) {
-    return
-  }
-
-  $gatewaySwitching.set(true)
-  wipeSessionListsForGatewaySwitch()
-
-  try {
-    await new Promise<void>(resolve => {
-      window.setTimeout(resolve, holdMs)
-    })
-  } finally {
-    setSessionsLoading(false)
-    $gatewaySwitching.set(false)
-  }
 }

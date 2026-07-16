@@ -253,7 +253,7 @@ class TestProviderModelIds:
                 }
             },
         ), patch(
-            "hermes_cli.models.urllib.request.urlopen",
+            "hermes_cli.models._urlopen_model_catalog_request",
             return_value=_Resp(),
         ) as mock_urlopen:
             assert provider_model_ids("anthropic") == ["enterprise-claude"]
@@ -292,7 +292,7 @@ class TestFetchApiModels:
         assert fetch_api_models("key", None) is None
 
     def test_returns_none_on_network_error(self):
-        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=Exception("timeout")):
+        with patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=Exception("timeout")):
             assert fetch_api_models("key", "https://example.com/v1") is None
 
     def test_probe_api_models_tries_v1_fallback(self):
@@ -314,7 +314,7 @@ class TestFetchApiModels:
                 return _Resp()
             raise Exception("404")
 
-        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=_fake_urlopen):
+        with patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=_fake_urlopen):
             probe = probe_api_models("key", "http://localhost:8000")
 
         assert calls == ["http://localhost:8000/models", "http://localhost:8000/v1/models"]
@@ -333,7 +333,7 @@ class TestFetchApiModels:
             def read(self):
                 return b'{"data": [{"id": "gpt-5.4", "model_picker_enabled": true, "supported_endpoints": ["/responses"], "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}}}, {"id": "claude-sonnet-4.6", "model_picker_enabled": true, "supported_endpoints": ["/chat/completions"], "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}}}, {"id": "text-embedding-3-small", "model_picker_enabled": true, "capabilities": {"type": "embedding"}}]}'
 
-        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()) as mock_urlopen:
+        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()) as mock_urlopen:
             probe = probe_api_models("gh-token", "https://api.githubcopilot.com")
 
         assert mock_urlopen.call_args[0][0].full_url == "https://api.githubcopilot.com/models"
@@ -352,7 +352,7 @@ class TestFetchApiModels:
             def read(self):
                 return b'{"data": [{"id": "gpt-5.4", "model_picker_enabled": true, "supported_endpoints": ["/responses"], "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}}}, {"id": "text-embedding-3-small", "model_picker_enabled": true, "capabilities": {"type": "embedding"}}]}'
 
-        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
+        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()):
             catalog = fetch_github_model_catalog("gh-token")
 
         assert catalog is not None
@@ -766,7 +766,7 @@ class TestValidateApiFallback:
             b']}'
         )
 
-        with patch("hermes_cli.models.urllib.request.urlopen", return_value=mock_resp):
+        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=mock_resp):
             models = fetch_lmstudio_models(base_url="http://localhost:1234/v1")
 
         assert models == ["publisher/chat-model"]
@@ -777,7 +777,7 @@ class TestValidateApiFallback:
         mock_resp.__exit__.return_value = False
         mock_resp.read.return_value = b'{"models":[{"key":"publisher/chat-model","type":"llm"}]}'
 
-        with patch("hermes_cli.models.urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
+        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=mock_resp) as mock_urlopen:
             models = fetch_lmstudio_models(base_url="http://localhost:1234/api/v1")
 
         request = mock_urlopen.call_args[0][0]
@@ -795,7 +795,7 @@ class TestValidateApiFallback:
             b']}'
         )
 
-        with patch("hermes_cli.models.urllib.request.urlopen", return_value=mock_resp):
+        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=mock_resp):
             result = validate_requested_model(
                 "publisher/embed-model",
                 "lmstudio",
@@ -819,7 +819,7 @@ class TestValidateApiFallback:
             fp=None,
         )
 
-        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=http_error):
+        with patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=http_error):
             with pytest.raises(AuthError) as excinfo:
                 fetch_lmstudio_models(base_url="http://localhost:1234/v1")
 
@@ -829,7 +829,7 @@ class TestValidateApiFallback:
 
     def test_fetch_lmstudio_models_returns_empty_on_network_error(self):
         with patch(
-            "hermes_cli.models.urllib.request.urlopen",
+            "hermes_cli.models._urlopen_model_catalog_request",
             side_effect=ConnectionRefusedError(),
         ):
             models = fetch_lmstudio_models(base_url="http://localhost:1234/v1")
@@ -847,7 +847,7 @@ class TestValidateApiFallback:
             fp=None,
         )
 
-        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=http_error):
+        with patch("hermes_cli.models._urlopen_model_catalog_request", side_effect=http_error):
             result = validate_requested_model(
                 "publisher/chat-model",
                 "lmstudio",
@@ -860,7 +860,7 @@ class TestValidateApiFallback:
 
     def test_validate_lmstudio_distinguishes_unreachable(self):
         with patch(
-            "hermes_cli.models.urllib.request.urlopen",
+            "hermes_cli.models._urlopen_model_catalog_request",
             side_effect=ConnectionRefusedError(),
         ):
             result = validate_requested_model(
@@ -927,7 +927,7 @@ class TestProbeApiModelsUserAgent:
 
         body = b'{"data":[{"id":"claude-opus-4.7"}]}'
         with patch(
-            "hermes_cli.models.urllib.request.urlopen",
+            "hermes_cli.models._urlopen_model_catalog_request",
             return_value=self._make_mock_response(body),
         ) as mock_urlopen:
             result = probe_api_models("sk-test", "https://example.com/v1")
@@ -949,7 +949,7 @@ class TestProbeApiModelsUserAgent:
 
         body = b'{"data":[]}'
         with patch(
-            "hermes_cli.models.urllib.request.urlopen",
+            "hermes_cli.models._urlopen_model_catalog_request",
             return_value=self._make_mock_response(body),
         ) as mock_urlopen:
             probe_api_models(None, "https://example.com/v1")
@@ -959,3 +959,33 @@ class TestProbeApiModelsUserAgent:
         assert ua and ua.startswith("hermes-cli/")
         # No Authorization was set, but UA must still be present.
         assert req.get_header("Authorization") is None
+
+    def test_probe_sends_client_context_to_gemini(self):
+        from unittest.mock import patch
+        from hermes_cli.models import _HERMES_VERSION
+
+        body = b'{"data":[]}'
+        with patch(
+            "hermes_cli.models._urlopen_model_catalog_request",
+            return_value=self._make_mock_response(body),
+        ) as mock_urlopen:
+            probe_api_models(
+                "gemini-key",
+                "https://generativelanguage.googleapis.com/v1beta/openai",
+            )
+
+        req = mock_urlopen.call_args[0][0]
+        assert req.get_header("X-goog-api-client") == f"hermes-agent/{_HERMES_VERSION}"
+
+    def test_probe_omits_gemini_client_context_for_other_providers(self):
+        from unittest.mock import patch
+
+        body = b'{"data":[]}'
+        with patch(
+            "hermes_cli.models._urlopen_model_catalog_request",
+            return_value=self._make_mock_response(body),
+        ) as mock_urlopen:
+            probe_api_models("provider-key", "https://api.example.com/v1")
+
+        req = mock_urlopen.call_args[0][0]
+        assert req.get_header("X-goog-api-client") is None

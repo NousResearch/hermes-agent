@@ -1,5 +1,6 @@
 """Tests for agent/context_compressor.py — compression logic, thresholds, truncation fallback."""
 
+import json
 import pytest
 import time
 from unittest.mock import patch, MagicMock
@@ -9,6 +10,7 @@ from agent.context_compressor import (
     HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,
     COMPRESSED_SUMMARY_METADATA_KEY,
+    _summarize_tool_result,
 )
 from hermes_state import SessionDB
 
@@ -25,6 +27,49 @@ def compressor():
             quiet_mode=True,
         )
         return c
+
+
+class TestSummarizeToolResultWebExtract:
+    """Pre-compression pruning must survive web_extract calls whose ``urls`` are
+    web_search result dicts ({"url"/"href": ...}), which models routinely forward
+    straight into web_extract.
+    """
+
+    CONTENT = "x" * 500  # >200 chars so the pruning pass actually summarizes
+
+    def test_multiple_dict_urls_do_not_crash(self):
+        # Two dict URLs previously hit ``dict + str`` -> TypeError, aborting
+        # _prune_old_tool_results() (and thus compress()).
+        args = json.dumps({
+            "urls": [
+                {"url": "https://example.com/a", "title": "A"},
+                {"url": "https://example.org/b", "title": "B"},
+            ]
+        })
+        summary = _summarize_tool_result("web_extract", args, self.CONTENT)
+        assert summary == "[web_extract] https://example.com/a (+1 more) (500 chars)"
+
+    def test_single_dict_url_is_unwrapped_not_stringified(self):
+        args = json.dumps({"urls": [{"url": "https://example.com/a", "title": "A"}]})
+        summary = _summarize_tool_result("web_extract", args, self.CONTENT)
+        assert summary == "[web_extract] https://example.com/a (500 chars)"
+        assert "{" not in summary  # no raw dict repr leaked into the summary
+
+    def test_href_key_is_unwrapped(self):
+        args = json.dumps({"urls": [{"href": "https://example.com/h"}]})
+        summary = _summarize_tool_result("web_extract", args, self.CONTENT)
+        assert summary == "[web_extract] https://example.com/h (500 chars)"
+
+    def test_malformed_dict_falls_back_to_placeholder(self):
+        args = json.dumps({"urls": [{"title": "no url here"}, {"title": "still none"}]})
+        summary = _summarize_tool_result("web_extract", args, self.CONTENT)
+        assert summary == "[web_extract] ? (+1 more) (500 chars)"
+
+    def test_plain_string_urls_unchanged(self):
+        # Regression guard: the normal (already-working) string path is intact.
+        args = json.dumps({"urls": ["https://example.com/a", "https://example.org/b"]})
+        summary = _summarize_tool_result("web_extract", args, self.CONTENT)
+        assert summary == "[web_extract] https://example.com/a (+1 more) (500 chars)"
 
 
 class TestShouldCompress:
@@ -212,6 +257,50 @@ class TestCalibratedStoreUsesCalibrated:
         assert calibrated < raw
         # And it reflects the provider's measured accounting, not the inflated guess.
         assert abs(calibrated - int(round(raw * compressor._current_skew()))) <= 1
+
+
+class TestPreflightDeferral:
+    def test_calibrated_preflight_defers_when_recent_real_usage_fit(self, compressor):
+        compressor.threshold_tokens = 85_000
+        compressor.note_rough_sent(90_000)
+        compressor.update_from_response({"prompt_tokens": 50_000, "completion_tokens": 1})
+
+        # 2026-07-15 parity merge: the fork's calibrated preflight contract
+        # replaced the removed should_defer_preflight_to_real_usage ratchet.
+        assert compressor.should_compress_calibrated(93_000) is False
+
+    def test_calibrated_preflight_fires_when_rough_growth_is_large(self, compressor):
+        compressor.threshold_tokens = 85_000
+        compressor.note_rough_sent(90_000)
+        compressor.update_from_response({"prompt_tokens": 50_000, "completion_tokens": 1})
+
+        assert compressor.should_compress_calibrated(160_000) is True
+
+    def test_calibrated_preflight_uses_raw_without_recent_real_usage(self, compressor):
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 0
+
+        assert compressor.should_compress_calibrated(93_000) is True
+
+    def test_awaiting_real_usage_after_compaction_uses_compression_rough_pair(self, compressor):
+        compressor.threshold_tokens = 85_000
+        compressor.last_compression_rough_tokens = 95_000
+        compressor.awaiting_real_usage_after_compression = True
+        compressor.last_prompt_tokens = 50_000
+        compressor.update_from_response({"prompt_tokens": 50_000, "completion_tokens": 1})
+
+        assert compressor.last_rough_tokens_when_real_prompt_fit == 95_000
+        assert compressor.awaiting_real_usage_after_compression is False
+
+    def test_resumes_normal_calibration_after_flag_cleared(self, compressor):
+        compressor.threshold_tokens = 85_000
+        compressor.awaiting_real_usage_after_compression = False
+        compressor.note_rough_sent(95_000)
+        compressor.update_from_response({"prompt_tokens": 50_000, "completion_tokens": 1})
+
+        assert compressor.awaiting_real_usage_after_compression is False
+        assert compressor.should_compress_calibrated(90_000) is False
+
 
 class TestCompress:
     def _make_messages(self, n):

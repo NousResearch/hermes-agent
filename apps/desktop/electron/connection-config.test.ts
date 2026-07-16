@@ -11,7 +11,8 @@
  */
 
 import assert from 'node:assert/strict'
-import test from 'node:test'
+
+import { test } from 'vitest'
 
 import {
   AT_COOKIE_VARIANTS,
@@ -109,6 +110,7 @@ test('profileRemoteOverride treats a cloud entry as a remote override', () => {
       coder: { mode: 'cloud', url: 'https://agent-1.agents.nousresearch.com', authMode: 'oauth' }
     }
   }
+
   assert.deepEqual(profileRemoteOverride(config, 'coder'), {
     url: 'https://agent-1.agents.nousresearch.com',
     authMode: 'oauth',

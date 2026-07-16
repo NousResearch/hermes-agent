@@ -55,12 +55,16 @@ export async function hydrateFromRenderCache(deps: {
   setMessages?: (rows: unknown[]) => void
 }): Promise<HydrationResult> {
   const none: HydrationResult = { painted: false, transcriptPainted: false, gatewayUrl: null, cachedSessionIds: [] }
+
   try {
     const api = renderCacheApi()
+
     if (!api) {
       return none
     }
+
     const result = await api.read(null, deps.rememberedSessionId ?? null)
+
     if (!result?.enabled) {
       return { ...none, gatewayUrl: result?.gatewayUrl ?? null }
     }
@@ -71,9 +75,11 @@ export async function hydrateFromRenderCache(deps: {
     // thread-switch branch, which publishes pending.state.messages unmerged).
     let transcriptPainted = false
     const cachedTranscript = result.transcript as { rows?: unknown[] } | null
+
     const transcriptRows = Array.isArray(cachedTranscript?.rows)
       ? normalizeCachedTranscriptRows(cachedTranscript!.rows)
       : []
+
     if (
       deps.setMessages &&
       deps.getMessages &&
@@ -87,15 +93,19 @@ export async function hydrateFromRenderCache(deps: {
 
     const cached = result.sessions as CachedSessionList | null
     const rows = Array.isArray(cached?.sessions) ? cached!.sessions : null
+
     if (!rows || rows.length === 0) {
       return { ...none, transcriptPainted, gatewayUrl: result.gatewayUrl }
     }
+
     // Never clobber live data: hydrate only into an EMPTY list.
     if (deps.getSessions().length > 0) {
       return { ...none, transcriptPainted, gatewayUrl: result.gatewayUrl }
     }
+
     deps.setSessions(rows)
     deps.setSessionsTotal(Number.isFinite(cached!.total) ? cached!.total : rows.length)
+
     return {
       painted: true,
       transcriptPainted,
@@ -115,18 +125,25 @@ export async function hydrateFromRenderCache(deps: {
 export function computeListDivergence(cached: SessionInfo[], live: SessionInfo[]): number {
   const liveById = new Map(live.map(s => [s.id, s]))
   let divergent = 0
+
   for (const c of cached) {
     const l = liveById.get(c.id)
+
     if (!l) {
       divergent += 1 // cached row no longer live
+
       continue
     }
+
     if ((c.title ?? '') !== (l.title ?? '') || !!c.pinned !== !!l.pinned || !!c.archived !== !!l.archived) {
       divergent += 1
     }
+
     liveById.delete(c.id)
   }
+
   divergent += liveById.size // live rows the cache didn't know about
+
   return divergent
 }
 
@@ -144,13 +161,17 @@ export function reconcileRenderCache(opts: {
 }): void {
   try {
     const api = renderCacheApi()
+
     if (!api || !opts.gatewayUrl) {
       return
     }
+
     if (opts.cachedSessions) {
       api.reportDivergence(computeListDivergence(opts.cachedSessions, opts.liveSessions))
     }
+
     api.putSessions(opts.gatewayUrl, { sessions: opts.liveSessions, total: opts.liveTotal })
+
     if (!opts.sweptRef.current) {
       opts.sweptRef.current = true
       api.sweep(
@@ -174,11 +195,14 @@ export function reconcileRenderCache(opts: {
 export async function readCachedTranscript(storedSessionId: string | null): Promise<unknown[] | null> {
   try {
     const api = renderCacheApi()
+
     if (!api?.readTranscript || !storedSessionId) {
       return null
     }
+
     const result = (await api.readTranscript(null, storedSessionId)) as { rows?: unknown[] } | null
     const rows = Array.isArray(result?.rows) ? result!.rows : null
+
     return rows && rows.length > 0 ? rows : null
   } catch {
     return null
@@ -233,16 +257,21 @@ export function normalizeCachedTranscriptRows(rows: unknown[]): ChatMessage[] {
     if (!Array.isArray(rows) || rows.length === 0) {
       return []
     }
+
     // Preserve array identity when nothing needs filtering (the write-through
     // pass-through contract asserted by switch-cache-paint.test.ts).
     const committed = rows.every(isCommittedTranscriptRow) ? rows : rows.filter(isCommittedTranscriptRow)
+
     if (committed.length === 0) {
       return []
     }
+
     const first = committed[0] as { parts?: unknown }
+
     if (first != null && typeof first === 'object' && Array.isArray(first.parts)) {
       return committed as ChatMessage[]
     }
+
     return toChatMessages(committed as SessionMessage[])
   } catch {
     return []
@@ -253,6 +282,7 @@ export function normalizeCachedTranscriptRows(rows: unknown[]): ChatMessage[] {
 export function pushStatusToRenderCache(gatewayUrl: string | null, status: unknown): void {
   try {
     const api = renderCacheApi()
+
     if (api && gatewayUrl) {
       api.putStatus(gatewayUrl, status)
     }
@@ -269,11 +299,13 @@ export function pushTranscriptToRenderCache(
 ): void {
   try {
     const api = renderCacheApi()
+
     if (api && gatewayUrl && storedSessionId && Array.isArray(rows) && rows.length > 0) {
       // Persist COMMITTED rows only. Optimistic rows (client-minted ids) are
       // live-turn scaffolding — a persisted zombie re-infects every boot and
       // paints duplicates beside its committed twin after a severed stamp.
       const committed = rows.filter(isCommittedTranscriptRow)
+
       if (committed.length > 0) {
         api.putTranscript(gatewayUrl, storedSessionId, committed)
       }
@@ -287,6 +319,7 @@ export function pushTranscriptToRenderCache(
 export function cullRenderCacheSession(gatewayUrl: string | null, storedSessionId: string | null): void {
   try {
     const api = renderCacheApi()
+
     if (api && gatewayUrl && storedSessionId) {
       api.cullSession(gatewayUrl, storedSessionId)
     }

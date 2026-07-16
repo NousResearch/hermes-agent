@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react'
 
-import { chatMessageText, type ChatMessage, renderMediaTags, toChatMessages } from '@/lib/chat-messages'
 import type { ClientSessionState } from '@/app/types'
+import { type ChatMessage, chatMessageText, renderMediaTags, toChatMessages } from '@/lib/chat-messages'
 import type { SessionMessage, StatusResponse } from '@/types/hermes'
 
 type GatewayRequest = <T = unknown>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
@@ -141,6 +141,7 @@ export function appendFetchedMessages(
   const swept = appendable.length
     ? dropZombieOptimisticRows(current, appendable)
     : { messages: [...current], adoptedFooters: new Map<string, string>() }
+
   const base = swept.messages
   const adopted = adoptZombieFooters(appendable, swept.adoptedFooters)
 
@@ -255,6 +256,7 @@ export function dropZombieOptimisticRows(
   // join key representation-stable for both (Greptile #361 P2).
   const contentKey = (message: ChatMessage): string =>
     `${message.role}\u0000${renderMediaTags(chatMessageText(message)).trim()}`
+
   const incomingBudget = new Map<string, number>()
 
   for (const message of incoming) {
@@ -359,6 +361,7 @@ export function stampOptimisticTranscriptRows(messages: readonly ChatMessage[], 
 
   const stampedIds = new Set<string>()
   let nextIdIndex = 0
+
   const next = messages.map(message => {
     if (Number.isInteger(Number(message.id)) || nextIdIndex >= committedIds.length) {
       return message
@@ -373,6 +376,7 @@ export function stampOptimisticTranscriptRows(messages: readonly ChatMessage[], 
     // optimistic id (`user-`/`assistant-` prefix) OR a still-pending row.
     const isOptimisticId =
       message.id.startsWith('user-') || message.id.startsWith('assistant-')
+
     if (!isOptimisticId && !message.pending) {
       return message
     }
@@ -434,6 +438,7 @@ export function useSessionChanges({
 
   useEffect(() => {
     storedSessionIdRef.current = storedSessionId ?? null
+
     if (sessionIdRef.current === activeSessionId) {
       controllerRef.current.renderedIds = new Set(messages.map(message => message.id))
 
@@ -474,10 +479,12 @@ export function useSessionChanges({
 
     try {
       const since = controllerRef.current.cursor
+
       const response = await requestGateway<SessionChangesResponse>('session.changes', {
         session_id: wireId,
         since_message_id: since
       })
+
       const rows = response.messages ?? []
 
       updateSessionState(sessionId, state => {
@@ -569,6 +576,7 @@ export function useSessionChanges({
         const active = await requestGateway<ActiveListResponse>('session.active_list', {
           current_session_id: sessionId
         })
+
         const own = active.sessions?.find(row => row.session_id === sessionId || row.id === sessionId)
         const status = own?.status
 

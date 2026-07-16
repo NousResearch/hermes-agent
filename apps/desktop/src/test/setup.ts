@@ -45,6 +45,7 @@ if (!globalThis.CSS) {
 
 if (!globalThis.CSS.escape) {
   globalThis.CSS.escape = (value: string) =>
+    // eslint-disable-next-line no-control-regex -- CSS.escape spec explicitly handles C0 control chars
     String(value).replace(/[\0-\x1f\x7f]|^-?\d|^-$|[^\w-]/g, char => {
       if (char === '\0') {
         return '\uFFFD'
@@ -99,9 +100,11 @@ beforeEach(() => {
   if (typeof window !== 'undefined' && window.localStorage) {
     window.localStorage.clear()
   }
+
   if (typeof window !== 'undefined' && window.sessionStorage) {
     window.sessionStorage.clear()
   }
+
   for (const fn of Object.values(canvasContext)) {
     if (typeof fn === 'function' && 'mockClear' in fn) {
       ;(fn as ReturnType<typeof vi.fn>).mockClear()

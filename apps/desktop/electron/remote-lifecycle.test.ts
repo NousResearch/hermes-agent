@@ -480,6 +480,8 @@ test('connect() respawns when the lockfile pid is dead (killed dashboard)', asyn
   assert.equal(result.reused, false)
   assert.equal(result.pid, 888)
   assert.equal(result.remotePort, 42000)
+  assert.ok(!ssh.calls.some(command => command.includes('pid=333') && command.includes('print("OWNED"')),
+    'a dead pid has no process identity to verify')
 })
 
 test('connect() respawns when the dashboard is wedged (alive pid, probe fails)', async () => {

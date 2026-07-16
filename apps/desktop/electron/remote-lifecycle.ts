@@ -317,8 +317,8 @@ async function pidIsOurDashboard(ssh, pid, spawnNonce, hermesPath = '') {
 }
 
 // Kill the stale dashboard ONLY if provably ours, then drop the lockfile.
-async function cleanupStale(ssh, ownershipId, lock) {
-  if (lock && await pidIsOurDashboard(ssh, lock.pid, lock.spawnNonce, lock.hermesPath)) {
+async function cleanupStale(ssh, ownershipId, lock, pidAlive = true) {
+  if (pidAlive && lock && await pidIsOurDashboard(ssh, lock.pid, lock.spawnNonce, lock.hermesPath)) {
     try {
       const result = (await ssh.exec(
         `kill ${Number(lock.pid)} && ` +
@@ -553,7 +553,7 @@ async function connect(deps) {
   const lock = await readLockfile(ssh, ownershipId)
   if (lock) {
     const pidAlive = await remotePidAlive(ssh, lock.pid)
-    const owned = await pidIsOurDashboard(ssh, lock.pid, lock.spawnNonce, lock.hermesPath)
+    const owned = pidAlive && await pidIsOurDashboard(ssh, lock.pid, lock.spawnNonce, lock.hermesPath)
     const reusable = pidAlive && owned && Boolean(reuseToken) &&
       lock.tokenFingerprint === fingerprintToken(reuseToken) &&
       lock.hermesPath === hermesPath && lock.hermesHome === hermesHome
@@ -607,7 +607,7 @@ async function connect(deps) {
       }
     } else {
       assertNotAborted(signal)
-      await cleanupStale(ssh, ownershipId, lock)
+      await cleanupStale(ssh, ownershipId, lock, pidAlive)
     }
   }
 

@@ -1073,6 +1073,64 @@ class TestStreamConverseWithCallbacks:
         assert reasoning == ["Let me think..."]
         assert result.choices[0].message.reasoning_content == "Let me think..."
 
+    def _tool_call_events(self, input_json):
+        """Synthetic Converse stream emitting one tool call with the given input JSON."""
+        return {"stream": [
+            {"messageStart": {"role": "assistant"}},
+            {"contentBlockStart": {"contentBlockIndex": 0, "start": {
+                "toolUse": {"toolUseId": "c1", "name": "write_file"},
+            }}},
+            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {
+                "toolUse": {"input": input_json},
+            }}},
+            {"contentBlockStop": {"contentBlockIndex": 0}},
+            {"messageStop": {"stopReason": "tool_use"}},
+            {"metadata": {"usage": {"inputTokens": 0, "outputTokens": 0}}},
+        ]}
+
+    def test_valid_tool_args_pass_through(self):
+        """Well-formed streamed tool args are emitted unchanged as a normal tool call."""
+        from agent.bedrock_adapter import stream_converse_with_callbacks
+        result = stream_converse_with_callbacks(
+            self._tool_call_events('{"path": "/tmp/f", "content": "hi"}'),
+        )
+        choice = result.choices[0]
+        assert choice.finish_reason == "tool_calls"
+        tool_call = choice.message.tool_calls[0]
+        assert json.loads(tool_call.function.arguments) == {
+            "path": "/tmp/f", "content": "hi",
+        }
+
+    def test_repairable_tool_args_are_repaired(self):
+        """Malformed-but-repairable args (trailing comma) are repaired and executed."""
+        from agent.bedrock_adapter import stream_converse_with_callbacks
+        result = stream_converse_with_callbacks(
+            self._tool_call_events('{"path": "/tmp/f",}'),
+        )
+        choice = result.choices[0]
+        assert choice.finish_reason == "tool_calls"
+        tool_call = choice.message.tool_calls[0]
+        assert json.loads(tool_call.function.arguments) == {"path": "/tmp/f"}
+
+    def test_unrepairable_tool_args_flag_truncation(self):
+        """Unrepairable (truncated) args must NOT be executed as {}.
+
+        Regression: contentBlockStop used to swallow the JSONDecodeError and
+        emit the tool call as valid with empty arguments, so a stream that
+        dropped mid tool-call executed write_file/terminal/etc. with
+        fabricated empty args.  Now the raw arguments are preserved and
+        finish_reason is forced to "length" so the agent loop's truncation
+        handling engages (same policy as the chat-completions path).
+        """
+        from agent.bedrock_adapter import stream_converse_with_callbacks
+        truncated = '{"path": "/tmp/f", "content": "unterminated'
+        result = stream_converse_with_callbacks(self._tool_call_events(truncated))
+        choice = result.choices[0]
+        assert choice.finish_reason == "length"
+        tool_call = choice.message.tool_calls[0]
+        assert tool_call.function.arguments == truncated
+        assert tool_call.function.arguments != "{}"
+
 
 # ---------------------------------------------------------------------------
 # Guardrail config in build_converse_kwargs

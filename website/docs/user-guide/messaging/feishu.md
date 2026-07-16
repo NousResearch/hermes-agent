@@ -29,6 +29,21 @@ group_sessions_per_user: true
 
 Set it to `false` only if you explicitly want one shared conversation per chat.
 
+### Reply in topics
+
+By default, Hermes replies directly in the chat timeline. To make each reply to
+a top-level Feishu/Lark message start a topic, enable `reply_in_thread`:
+
+```yaml
+feishu:
+  reply_in_thread: true
+```
+
+Messages received inside an existing topic always stay in that topic,
+regardless of this setting. Feishu requires a message reply anchor to enter a
+topic; asynchronous or resumed deliveries that no longer have one fall back to
+the parent chat instead of failing delivery.
+
 ## Step 1: Create a Feishu / Lark App
 
 ### Recommended: Scan-to-Create (one command)

@@ -2569,12 +2569,18 @@ def _canonical_verifier_contract_payload(contract: dict) -> dict[str, Any]:
     ).encode("utf-8")
     if len(encoded_evidence) > _CTX_MAX_FIELD_BYTES:
         raise ValueError("verifier contract readiness_evidence is too large")
+    # Readiness evidence is supplied by an untrusted external surface.  It is
+    # useful to bind it to the verification decision, but it must never become
+    # durable task/audit state or child-process input: those surfaces outlive
+    # the operator's intent and are broadly readable.  Persist only the ready
+    # bit plus a deterministic digest of the validated value.
+    readiness_digest = hashlib.sha256(encoded_evidence).hexdigest()
     return {
         "contract_id": VERIFIER_RESULT_CONTRACT_ID,
         "pr_url": pr_url.strip(),
         "approved_head": approved_head.strip(),
         "approved_base": approved_base.strip(),
-        "readiness_evidence": readiness_evidence,
+        "readiness_evidence": {"ready": True, "digest": readiness_digest},
     }
 
 
@@ -2992,6 +2998,7 @@ def authorize_verifier_result(
         raise ValueError("verifier authorization binding fields must be non-empty strings")
     now = int(time.time())
     with write_txn(conn):
+        _reconcile_legacy_active_verifier_authorizations(conn, task_id=task_id)
         task_row = conn.execute(
             "SELECT current_run_id, claim_lock FROM tasks WHERE id = ?", (task_id,)
         ).fetchone()
@@ -3042,6 +3049,55 @@ def authorize_verifier_result(
         assert authorization_id is not None
         _append_event(conn, task_id, "verifier_authorization", {"authorization_id": authorization_id, "state": "authorized"}, run_id=run_id)
         return VerifierAuthorization(int(authorization_id), "authorized", "authorized")
+
+
+def _reconcile_legacy_active_verifier_authorizations(
+    conn: sqlite3.Connection,
+    *,
+    task_id: Optional[str] = None,
+) -> list[int]:
+    """Fail closed legacy active rows that lack the modern binding columns.
+
+    Additive SQLite migrations leave NULLs on old rows.  Such an authorization
+    cannot prove a contract binding and must not keep the active-row unique
+    index occupied forever.  This helper is called while a write transaction
+    is already held, both before authorization and during dispatcher recovery.
+    """
+    where = "state IN ('authorized', 'reserved', 'started', 'consumed') AND (contract_hash IS NULL OR contract_hash = '' OR approved_head IS NULL OR approved_head = '' OR approved_base IS NULL OR approved_base = '')"
+    params: tuple[Any, ...] = ()
+    if task_id is not None:
+        where += " AND task_id = ?"
+        params = (task_id,)
+    rows = conn.execute(
+        "SELECT id, task_id, run_id, claim_lock, state FROM verifier_result_authorizations WHERE " + where,
+        params,
+    ).fetchall()
+    reconciled: list[int] = []
+    now = int(time.time())
+    for row in rows:
+        cur = conn.execute(
+            "UPDATE verifier_result_authorizations SET state = 'reconciled', reason_code = 'legacy_incomplete_binding', updated_at = ? WHERE id = ? AND state IN ('authorized', 'reserved', 'started', 'consumed')",
+            (now, row["id"]),
+        )
+        if cur.rowcount != 1:
+            continue
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked', current_run_id = NULL, claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, block_kind = 'needs_input', block_evidence = NULL, guard_bypass = NULL WHERE id = ? AND status = 'running' AND current_run_id = ? AND claim_lock IS ?",
+            (row["task_id"], row["run_id"], row["claim_lock"]),
+        )
+        conn.execute(
+            "UPDATE task_runs SET status = 'blocked', outcome = 'blocked', summary = 'verifier result channel failed: legacy_incomplete_binding', ended_at = ?, claim_lock = NULL, claim_expires = NULL, worker_pid = NULL WHERE id = ? AND task_id = ? AND status = 'running'",
+            (now, row["run_id"], row["task_id"]),
+        )
+        _append_event(
+            conn,
+            row["task_id"],
+            "verifier_authorization_reconciled",
+            {"authorization_id": int(row["id"]), "from_state": row["state"], "to_state": "reconciled", "reason": "legacy_incomplete_binding"},
+            run_id=int(row["run_id"]),
+        )
+        reconciled.append(int(row["id"]))
+    return reconciled
 
 
 def _transition_verifier_result(
@@ -3193,6 +3249,7 @@ def reconcile_verifier_authorizations(
     restored: list[int] = []
     now = int(time.time())
     with write_txn(conn):
+        restored.extend(_reconcile_legacy_active_verifier_authorizations(conn))
         rows = conn.execute(
             "SELECT id, task_id, run_id, state, supervisor_owner "
             "FROM verifier_result_authorizations "
@@ -9828,8 +9885,6 @@ def _read_verifier_result_pipe(
             total += len(chunk)
             if total > max_bytes:
                 return b"x" * (int(max_bytes) + 1)
-            if b"\n" in chunk:
-                break
         return b"".join(chunks)
     finally:
         try:
@@ -10414,16 +10469,25 @@ def _write_verifier_config(
     model_cfg = profile_config.get("model")
     if not isinstance(model_cfg, (dict, str)):
         model_cfg = {}
+    provider = _verifier_provider_from_config(profile_config)
     config: dict[str, Any] = {
         "model": model_cfg,
         "toolsets": ["kanban_verifier"],
         "agent": {"disabled_toolsets": [], "max_turns": 6},
         "display": {"interface": "cli", "tool_progress": "off"},
     }
-    for key in ("providers", "custom_providers"):
-        value = profile_config.get(key)
-        if isinstance(value, (dict, list)):
-            config[key] = value
+    providers = profile_config.get("providers")
+    if isinstance(providers, dict) and provider in providers:
+        config["providers"] = {provider: providers[provider]}
+    custom_providers = profile_config.get("custom_providers")
+    if isinstance(custom_providers, list) and provider.startswith("custom:"):
+        wanted = provider.split(":", 1)[1].strip().lower()
+        selected = [
+            item for item in custom_providers
+            if isinstance(item, dict) and str(item.get("name") or "").strip().lower() == wanted
+        ]
+        if selected:
+            config["custom_providers"] = selected
     (verifier_root / "config.yaml").write_text(
         yaml.safe_dump(config, sort_keys=False, allow_unicode=True),
         encoding="utf-8",
@@ -10458,6 +10522,38 @@ def _copy_required_provider_credential(
         value = base_env.get(base_url_name) or dotenv.get(base_url_name)
         if value:
             env[base_url_name] = value
+
+
+def _copy_provider_auth_store(
+    *,
+    verifier_root: Path,
+    profile_home: Path,
+    provider: str,
+) -> None:
+    """Copy only one provider's auth-store state into the isolated home."""
+    if not provider:
+        return
+    try:
+        raw = json.loads((profile_home / "auth.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(raw, dict):
+        return
+    result: dict[str, Any] = {"version": raw.get("version", 1)}
+    providers = raw.get("providers")
+    if isinstance(providers, dict) and isinstance(providers.get(provider), dict):
+        result["providers"] = {provider: providers[provider]}
+    pool = raw.get("credential_pool")
+    if isinstance(pool, dict) and isinstance(pool.get(provider), (dict, list)):
+        result["credential_pool"] = {provider: pool[provider]}
+    if len(result) == 1:
+        return
+    path = verifier_root / "auth.json"
+    path.write_text(json.dumps(result, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
 
 
 def _verifier_prompt(contract: dict[str, Any]) -> str:
@@ -10551,6 +10647,11 @@ def _build_verifier_child_env(
     _copy_required_provider_credential(
         env=env,
         base_env=base_env,
+        profile_home=profile_home,
+        provider=_verifier_provider_from_config(profile_config),
+    )
+    _copy_provider_auth_store(
+        verifier_root=verifier_root,
         profile_home=profile_home,
         provider=_verifier_provider_from_config(profile_config),
     )

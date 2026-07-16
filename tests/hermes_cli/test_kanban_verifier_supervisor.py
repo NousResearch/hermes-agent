@@ -251,6 +251,24 @@ def test_result_frame_rejects_trailing_bytes_after_newline():
     assert result.reason == "trailing_bytes"
 
 
+def test_result_pipe_waits_for_eof_before_accepting_a_frame():
+    read_fd, writer_fd = os.pipe()
+
+    def write_late_trailing_bytes():
+        os.write(writer_fd, b'{"version":1}\n')
+        time.sleep(0.05)
+        os.write(writer_fd, b"late")
+        os.close(writer_fd)
+
+    writer = threading.Thread(target=write_late_trailing_bytes)
+    writer.start()
+    raw = kb._read_verifier_result_pipe(read_fd, deadline_seconds=2, max_bytes=256)
+    writer.join(timeout=1)
+
+    assert raw == b'{"version":1}\nlate'
+    assert kb.parse_verifier_result_frame(raw, max_bytes=256).reason == "trailing_bytes"
+
+
 @pytest.mark.parametrize("legacy_verdict", ["approve", "reject"])
 def test_verifier_result_tool_rejects_legacy_verdict_names(
     kanban_home,
@@ -946,6 +964,61 @@ def test_default_spawn_verifier_preserves_only_configured_provider_credential(
     assert env["OPENAI_API_KEY"] == "sk-live"
     assert "ANTHROPIC_API_KEY" not in env
     assert "GITHUB_TOKEN" not in env
+
+
+def test_verifier_auth_store_is_provider_scoped_and_supports_pool_credentials(
+    kanban_home,
+    tmp_path,
+):
+    profile_home = tmp_path / "profile"
+    verifier_root = tmp_path / "verifier"
+    profile_home.mkdir()
+    verifier_root.mkdir()
+    (profile_home / "auth.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "providers": {
+                    "openai-codex": {"tokens": {"access_token": "wanted"}},
+                    "anthropic": {"tokens": {"access_token": "unrelated"}},
+                },
+                "credential_pool": {
+                    "openai-codex": [{"token": "wanted-pool"}],
+                    "anthropic": [{"token": "unrelated-pool"}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    kb._copy_provider_auth_store(
+        verifier_root=verifier_root,
+        profile_home=profile_home,
+        provider="openai-codex",
+    )
+
+    copied = json.loads((verifier_root / "auth.json").read_text(encoding="utf-8"))
+    assert copied == {
+        "version": 1,
+        "providers": {"openai-codex": {"tokens": {"access_token": "wanted"}}},
+        "credential_pool": {"openai-codex": [{"token": "wanted-pool"}]},
+    }
+
+
+def test_verifier_contract_redacts_readiness_evidence_from_bound_payload():
+    contract = {
+        "pr_url": PR_URL,
+        "approved_head": HEAD_SHA,
+        "approved_base": BASE_BRANCH,
+        "readiness_evidence": {"ready": True, "private_review": "do-not-persist"},
+    }
+
+    canonical = kb._canonical_verifier_contract_payload(contract)
+
+    assert canonical["readiness_evidence"]["ready"] is True
+    assert len(canonical["readiness_evidence"]["digest"]) == 64
+    assert "private_review" not in json.dumps(canonical)
+    assert "do-not-persist" not in kb._verifier_prompt(canonical)
 
 
 def test_verifier_result_tool_posix_e2e_emits_bound_frame(kanban_home, monkeypatch):

@@ -6420,3 +6420,36 @@ def test_parse_evidence_round_trips_through_bypass_validation(tmp_path):
         assert kb.unblock_task(conn, tid, intent=_valid_intent())
         kinds = [e.kind for e in kb.list_events(conn, tid)]
         assert "guard_bypass_granted" in kinds
+
+
+def test_legacy_incomplete_active_authorization_is_reconciled_before_replacement(tmp_path):
+    db_path = _explicit_tmp_db(tmp_path)
+    with kb.connect(db_path=db_path) as conn:
+        task_id = kb.create_task(conn, title="legacy verifier", assignee="alice")
+        claim = kb.claim_task(conn, task_id)
+        assert claim is not None
+        binding = _stage1_authorization_binding(
+            claim.id, int(claim.current_run_id), str(claim.claim_lock)
+        )
+        now = 1
+        conn.execute(
+            "INSERT INTO verifier_result_authorizations (task_id, run_id, claim_lock, contract_id, contract_hash, pr_url, approved_head, approved_base, nonce_digest, state, reason_code, created_at, updated_at) VALUES (?, ?, ?, ?, '', ?, '', '', ?, 'authorized', 'authorized', ?, ?)",
+            (claim.id, binding["run_id"], binding["claim_lock"], binding["contract_id"], PR_URL, "0" * 64, now, now),
+        )
+
+        denied = kb.authorize_verifier_result(conn, **binding)
+        row = conn.execute(
+            "SELECT state, reason_code FROM verifier_result_authorizations WHERE task_id = ? ORDER BY id LIMIT 1",
+            (claim.id,),
+        ).fetchone()
+        assert denied.reason == "stale_claim"
+        assert (row["state"], row["reason_code"]) == ("reconciled", "legacy_incomplete_binding")
+
+        assert kb.unblock_task(conn, claim.id)
+        replacement = kb.claim_task(conn, claim.id)
+        assert replacement is not None
+        replacement_binding = _stage1_authorization_binding(
+            replacement.id, int(replacement.current_run_id), str(replacement.claim_lock)
+        )
+        authorized = kb.authorize_verifier_result(conn, **replacement_binding)
+        assert authorized.state == "authorized"

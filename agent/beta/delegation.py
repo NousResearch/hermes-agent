@@ -10,6 +10,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agent.beta.router import RoutingDecision
+from agent.beta.risk import ApprovalGate, ApprovalReceipt, Operation, RiskLevel
 from agent.beta.specialists import Specialist, SpecialistRegistry, default_specialist_registry
 from toolsets import resolve_multiple_toolsets
 
@@ -142,16 +143,49 @@ def _contract_error(task: DelegationTask, error: str, status: str = "contract_er
     )
 
 
+def task_operation(task: DelegationTask) -> Operation:
+    """Build the exact approval scope for one delegated operation."""
+    return Operation(
+        target=task.minimal_context,
+        action=task.objective,
+        impact="May change production or another high-impact system",
+        rollback="Use the specialist-provided rollback plan",
+        risk=RiskLevel(task.risk),
+    )
+
+
 def execute_delegations(
     tasks: Iterable[DelegationTask],
     parent_agent: Any,
     *,
     delegate: Callable[..., str] | None = None,
+    approval_gate: ApprovalGate | None = None,
+    approval_receipts: dict[str, ApprovalReceipt] | None = None,
 ) -> tuple[SpecialistResult, ...]:
     """Run one delegate_task batch and validate each specialist response."""
     task_list = tuple(tasks)
     if not task_list:
         return ()
+    gate = approval_gate or ApprovalGate()
+    receipts = approval_receipts or {}
+    blocked = {
+        index: task
+        for index, task in enumerate(task_list)
+        if not gate.authorized(task_operation(task), receipts.get(task.task_id))
+    }
+    runnable = tuple(task for index, task in enumerate(task_list) if index not in blocked)
+    if not runnable:
+        return tuple(
+            SpecialistResult(
+                task_id=task.task_id,
+                specialist_id=task.specialist_id,
+                correlation_id=task.correlation_id,
+                status="failed",
+                authorization_required=True,
+                errors=("Explicit approval required before high-risk execution",),
+            )
+            for task in task_list
+        )
     if delegate is None:
         from tools.delegate_tool import delegate_task
 
@@ -160,17 +194,19 @@ def execute_delegations(
     try:
         payload = _json_object(
             delegate(
-                tasks=[task.delegate_entry() for task in task_list],
+                tasks=[task.delegate_entry() for task in runnable],
                 background=False,
                 parent_agent=parent_agent,
             )
         )
     except (ValueError, json.JSONDecodeError) as exc:
-        return tuple(_contract_error(task, f"delegation response invalid: {exc}") for task in task_list)
+        delegated = tuple(_contract_error(task, f"delegation response invalid: {exc}") for task in runnable)
+        return _merge_blocked(task_list, delegated)
 
     raw_results = payload.get("results")
     if not isinstance(raw_results, list):
-        return tuple(_contract_error(task, "delegation response missing results list") for task in task_list)
+        delegated = tuple(_contract_error(task, "delegation response missing results list") for task in runnable)
+        return _merge_blocked(task_list, delegated)
 
     by_index = {
         entry.get("task_index"): entry
@@ -178,7 +214,7 @@ def execute_delegations(
         if isinstance(entry, dict) and isinstance(entry.get("task_index"), int)
     }
     results = []
-    for index, task in enumerate(task_list):
+    for index, task in enumerate(runnable):
         entry = by_index.get(index)
         if entry is None:
             results.append(_contract_error(task, "missing specialist result"))
@@ -201,5 +237,23 @@ def execute_delegations(
             results.append(result)
         except (ValidationError, ValueError, json.JSONDecodeError) as exc:
             results.append(_contract_error(task, f"invalid specialist response: {exc}"))
-    return tuple(results)
+    return _merge_blocked(task_list, tuple(results))
 
+
+def _merge_blocked(
+    all_tasks: tuple[DelegationTask, ...],
+    delegated: tuple[SpecialistResult, ...],
+) -> tuple[SpecialistResult, ...]:
+    by_task = {result.task_id: result for result in delegated}
+    return tuple(
+        by_task.get(task.task_id)
+        or SpecialistResult(
+            task_id=task.task_id,
+            specialist_id=task.specialist_id,
+            correlation_id=task.correlation_id,
+            status="failed",
+            authorization_required=True,
+            errors=("Explicit approval required before high-risk execution",),
+        )
+        for task in all_tasks
+    )

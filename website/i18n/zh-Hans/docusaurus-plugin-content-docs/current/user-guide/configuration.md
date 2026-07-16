@@ -1243,6 +1243,17 @@ display:
 
 `interim_assistant_messages` 仅限 gateway。启用后，Hermes 将已完成的轮次中 assistant 更新作为单独的聊天消息发送。这与 `tool_progress` 无关，不需要 gateway 流式传输。
 
+## 粘贴折叠
+
+当你向 CLI 或 TUI 粘贴多行文本时，Hermes 可以将其折叠为简短的文件引用，而不是用完整内容淹没提示。两个顶层键用于调节此行为：
+
+```yaml
+paste_collapse_threshold: 5            # 当 bracketed paste 的行数达到或超过该值时，折叠为文件引用（0 = 从不折叠）。安全：引用会追加到你已输入的内容之后。
+paste_collapse_threshold_fallback: 0   # 针对不支持 bracketed paste 的终端使用的同类阈值。该路径会替换整个输入缓冲区（破坏性），因此默认禁用。0 = 禁用。
+```
+
+两个阈值都按粘贴块的行数计数，当行数达到或超过阈值时触发。首个非空白字符为 `/` 的粘贴文本（斜杠命令）永不折叠，因此命令始终完整传递给解析器。
+
 ## 隐私
 
 ```yaml

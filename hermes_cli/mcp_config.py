@@ -481,6 +481,15 @@ def cmd_mcp_add(args):
         server_config["connect_timeout"] = raw_connect_timeout
 
     issues = validate_mcp_server_entry(name, server_config)
+    # Fire the install gate BEFORE discovery: `_probe_single_server` below
+    # connects to (and for stdio, launches) the untrusted server, so a
+    # save-time-only gate would run only after that execution. invoke_hook drops
+    # a callback that raises (fail-open), so gates must RETURN a block reason.
+    for ret in invoke_hook("pre_mcp_add", name=name, server_config=server_config):
+        if isinstance(ret, str):
+            issues.append(ret)
+        elif isinstance(ret, (list, tuple)):
+            issues.extend(str(x) for x in ret if x)
     if issues:
         for issue in issues:
             _warning(issue)

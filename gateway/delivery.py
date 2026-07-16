@@ -472,6 +472,49 @@ class DeliveryRouter:
             }
 
         send_metadata = dict(metadata or {})
+
+        # Notification / attention budget gate. Only messages a producer
+        # explicitly tags `proactive` are gated — user-requested deliveries
+        # (cron, webhooks, /goal status) and live replies never set this flag
+        # and pass straight through. Mirrors the silence-narration drop above:
+        # a suppress is a successful-but-undelivered outcome, not an error. The
+        # governor fails open, so a bug here can never silence a message. Import
+        # is lazy to avoid an import cycle (delivery -> notification_budget ->
+        # config). Currently exercised by the Omi commitment notifier; reusable
+        # by any future ambient/proactive producer.
+        if send_metadata.get("proactive"):
+            try:
+                from agent.notification_budget import should_deliver
+
+                decision = should_deliver(
+                    category=send_metadata.get("notification_category", "generic"),
+                    value_hint=send_metadata.get("value_hint"),
+                    candidate_id=send_metadata.get("candidate_id"),
+                    platform=target.platform.value,
+                    chat_id=target.chat_id,
+                )
+                if not decision.allow:
+                    logger.info(
+                        "Notification budget suppressed proactive to %s "
+                        "(cat=%s, score=%.2f < thr=%.2f, %s)",
+                        target.platform.value,
+                        decision.category,
+                        decision.score,
+                        decision.threshold,
+                        decision.reason,
+                    )
+                    return {
+                        "success": True,
+                        "filtered": "notification_budget",
+                        "delivered": False,
+                    }
+            except Exception as exc:  # fail open — never block on governor error
+                logger.debug(
+                    "notification budget gate errored (allowing send): %s",
+                    exc,
+                    exc_info=True,
+                )
+
         is_named_telegram_private_topic = False
         named_telegram_private_topic_name: Optional[str] = None
         if target.thread_id:

@@ -13258,6 +13258,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             metadata = None
 
+        # NOTE: goal-status notices are intentionally NOT routed through the
+        # notification budget governor (agent/notification_budget.py). They are
+        # the completion signal of a user-initiated /goal (done / paused /
+        # budget-exhausted) — requested payoff, not unsolicited proactivity.
+        # The governor only gates producers that set metadata["proactive"].
         result = await adapter.send(source.chat_id, message, metadata=metadata)
         if result is not None and not getattr(result, "success", True):
             logger.warning(

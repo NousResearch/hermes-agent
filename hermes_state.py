@@ -883,6 +883,40 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     delivery_claimed_at REAL
 );
 
+CREATE TABLE IF NOT EXISTS notification_ledger (
+    id             TEXT PRIMARY KEY,
+    candidate_id   TEXT,
+    category       TEXT NOT NULL,
+    score          REAL NOT NULL,
+    p_act          REAL NOT NULL,
+    value_hint     REAL NOT NULL,
+    attention_cost REAL NOT NULL,
+    threshold_used REAL NOT NULL,
+    decision       TEXT NOT NULL,
+    platform       TEXT,
+    chat_id        TEXT,
+    day_key        TEXT NOT NULL,
+    created_at     REAL NOT NULL,
+    feedback       TEXT,
+    feedback_at    REAL
+);
+
+CREATE TABLE IF NOT EXISTS notification_category_stats (
+    category      TEXT PRIMARY KEY,
+    threshold     REAL NOT NULL,
+    p_act_ewma    REAL NOT NULL,
+    sent_count    INTEGER NOT NULL DEFAULT 0,
+    act_count     INTEGER NOT NULL DEFAULT 0,
+    dismiss_count INTEGER NOT NULL DEFAULT 0,
+    updated_at    REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS omi_processed_conversations (
+    conversation_id   TEXT PRIMARY KEY,
+    processed_at      REAL NOT NULL,
+    commitments_found INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
@@ -893,6 +927,11 @@ CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usag
 CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
 CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
     ON async_delegations(delivery_state, completed_at);
+CREATE INDEX IF NOT EXISTS idx_notif_ledger_day ON notification_ledger(day_key);
+CREATE INDEX IF NOT EXISTS idx_notif_ledger_cat_day
+    ON notification_ledger(category, day_key);
+CREATE INDEX IF NOT EXISTS idx_notif_ledger_candidate
+    ON notification_ledger(candidate_id);
 """
 
 # Indexes that reference columns added in later schema versions must be
@@ -6796,6 +6835,173 @@ class SessionDB:
                 "INSERT INTO state_meta (key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (key, value),
+            )
+        self._execute_write(_do)
+
+    # ── Notification budget governor + Omi commitment bookkeeping ──
+
+    def record_notification(self, ledger_row: Dict[str, Any]) -> None:
+        """Insert one row into the notification_ledger.
+
+        *ledger_row* must contain: id, category, score, p_act, value_hint,
+        attention_cost, threshold_used, decision, day_key, created_at.
+        Optional: candidate_id, platform, chat_id, feedback, feedback_at.
+        """
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO notification_ledger (
+                       id, candidate_id, category, score, p_act, value_hint,
+                       attention_cost, threshold_used, decision, platform,
+                       chat_id, day_key, created_at, feedback, feedback_at
+                   )
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    ledger_row["id"],
+                    ledger_row.get("candidate_id"),
+                    ledger_row["category"],
+                    ledger_row["score"],
+                    ledger_row["p_act"],
+                    ledger_row["value_hint"],
+                    ledger_row["attention_cost"],
+                    ledger_row["threshold_used"],
+                    ledger_row["decision"],
+                    ledger_row.get("platform"),
+                    ledger_row.get("chat_id"),
+                    ledger_row["day_key"],
+                    ledger_row["created_at"],
+                    ledger_row.get("feedback"),
+                    ledger_row.get("feedback_at"),
+                ),
+            )
+        self._execute_write(_do)
+
+    def count_notifications_today(
+        self, day_key: str, *, decision: str = "allowed"
+    ) -> int:
+        """Count ledger rows for *day_key* with the given decision."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM notification_ledger "
+                "WHERE day_key = ? AND decision = ?",
+                (day_key, decision),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    def get_category_stats(self, category: str) -> Optional[Dict[str, Any]]:
+        """Read learned per-category stats, or None if unseen."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM notification_category_stats WHERE category = ?",
+                (category,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def upsert_category_stats(self, category: str, **fields: Any) -> None:
+        """Insert or update per-category stats.
+
+        Accepts any subset of: threshold, p_act_ewma, sent_count, act_count,
+        dismiss_count, updated_at. Missing columns default on insert; on
+        conflict only the provided columns are overwritten.
+        """
+        cols = ["threshold", "p_act_ewma", "sent_count", "act_count",
+                "dismiss_count", "updated_at"]
+        defaults = {
+            "threshold": 0.5,
+            "p_act_ewma": 0.5,
+            "sent_count": 0,
+            "act_count": 0,
+            "dismiss_count": 0,
+            "updated_at": 0.0,
+        }
+        values = {c: fields.get(c, defaults[c]) for c in cols}
+        set_cols = [c for c in cols if c in fields]
+
+        def _do(conn):
+            update_clause = (
+                ", ".join(f"{c} = excluded.{c}" for c in set_cols)
+                if set_cols
+                else "category = excluded.category"
+            )
+            conn.execute(
+                f"""INSERT INTO notification_category_stats (
+                        category, threshold, p_act_ewma, sent_count,
+                        act_count, dismiss_count, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(category) DO UPDATE SET {update_clause}""",
+                (
+                    category,
+                    values["threshold"],
+                    values["p_act_ewma"],
+                    values["sent_count"],
+                    values["act_count"],
+                    values["dismiss_count"],
+                    values["updated_at"],
+                ),
+            )
+        self._execute_write(_do)
+
+    def find_notification_by_candidate(
+        self, candidate_id: str, day_key: str
+    ) -> Optional[Dict[str, Any]]:
+        """Return the most recent non-deferred ledger row for a candidate today.
+
+        Used for idempotency: a repeated candidate_id must not double-count.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM notification_ledger "
+                "WHERE candidate_id = ? AND day_key = ? AND decision != 'deferred' "
+                "ORDER BY created_at DESC LIMIT 1",
+                (candidate_id, day_key),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def set_notification_feedback(self, ledger_id: str, signal: str) -> None:
+        """Stamp feedback ('act'|'dismiss') on a ledger row."""
+        def _do(conn):
+            conn.execute(
+                "UPDATE notification_ledger "
+                "SET feedback = ?, feedback_at = ? WHERE id = ?",
+                (signal, time.time(), ledger_id),
+            )
+        self._execute_write(_do)
+
+    def list_deferred_today(self, day_key: str) -> List[Dict[str, Any]]:
+        """List today's suppressed/deferred notifications for the digest."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM notification_ledger "
+                "WHERE day_key = ? AND decision = 'deferred' "
+                "ORDER BY created_at DESC",
+                (day_key,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def omi_conversation_seen(self, conversation_id: str) -> bool:
+        """Whether an Omi conversation has already been processed."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM omi_processed_conversations "
+                "WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+        return row is not None
+
+    def mark_omi_conversation(
+        self, conversation_id: str, commitments_found: int
+    ) -> None:
+        """Record that an Omi conversation was processed."""
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO omi_processed_conversations (
+                       conversation_id, processed_at, commitments_found
+                   )
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(conversation_id) DO UPDATE SET
+                       processed_at = excluded.processed_at,
+                       commitments_found = excluded.commitments_found""",
+                (conversation_id, time.time(), int(commitments_found)),
             )
         self._execute_write(_do)
 

@@ -2270,6 +2270,41 @@ DEFAULT_CONFIG = {
         "provider": "",
     },
 
+    # Notification / attention budget governor. Gates PROACTIVE agent-initiated
+    # messages (currently Omi commitment nudges; the router gate is reusable by
+    # future ambient producers) against a hard daily budget with per-category
+    # thresholds that self-tune from user dismiss/act feedback. User-requested
+    # deliveries (cron, webhooks, /goal status) and live replies are NOT gated.
+    "notifications": {
+        "enabled": True,
+        "daily_cap": 3,               # soft cap: below this the threshold gate applies
+        "daily_ceiling": 5,           # hard cap: never exceed regardless of score
+        "base_threshold": 0.5,        # starting per-category bar
+        "escalation_threshold": 0.8,  # bar to spend budget between cap and ceiling
+        "dismiss_step": 0.1,          # threshold += this on dismiss
+        "act_step": 0.05,             # threshold -= this on act
+        "threshold_min": 0.1,
+        "threshold_max": 0.95,
+        "p_act_ewma_alpha": 0.3,      # learning rate for the act-rate prior
+        "default_value_hint": 0.5,    # producer value when unspecified
+        "categories": {},             # per-category overrides, e.g.
+                                      #   {"omi_commitment": {"daily_cap": 2}}
+    },
+
+    # Omi wearable commitment extraction. A scheduled scan reads the Omi
+    # transcript (via the omi MCP server) and files commitments the device
+    # owner personally made as kanban cards. OPT-IN (consent): off by default.
+    "omi_commitments": {
+        "enabled": False,
+        "scan_interval_hours": 6,
+        "lookback_hours": 24,
+        "min_confidence": 0.6,
+        "board": "",                  # empty = default board
+        "assignee": "",               # empty = unassigned (triage, human-reviewed)
+        "create_notification": True,
+        "max_conversations_per_scan": 25,
+    },
+
     # Subagent delegation — override the provider:model used by delegate_task
     # so child agents can run on a different (cheaper/faster) provider and model.
     # Uses the same runtime provider resolution as CLI/gateway startup, so all
@@ -5434,6 +5469,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "moa", "custom_providers", "context", "memory", "gateway",
+    "notifications", "omi_commitments",
     "sessions", "streaming", "updates", "mcp_servers",
 }
 

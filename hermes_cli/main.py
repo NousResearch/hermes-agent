@@ -294,6 +294,7 @@ from hermes_cli.subcommands.logout import build_logout_parser
 from hermes_cli.subcommands.auth import build_auth_parser
 from hermes_cli.subcommands.status import build_status_parser
 from hermes_cli.subcommands.webhook import build_webhook_parser
+from hermes_cli.subcommands.notify import build_notify_parser, build_omi_parser
 from hermes_cli.subcommands.hooks import build_hooks_parser
 from hermes_cli.subcommands.doctor import build_doctor_parser
 from hermes_cli.subcommands.security import build_security_parser
@@ -4279,6 +4280,20 @@ def cmd_webhook(args):
     from hermes_cli.webhook import webhook_command
 
     webhook_command(args)
+
+
+def cmd_notify(args):
+    """Notification / attention budget inspection and tuning."""
+    from hermes_cli.notify_cmd import notify_command
+
+    return notify_command(args)
+
+
+def cmd_omi(args):
+    """Omi wearable commitment extraction."""
+    from hermes_cli.notify_cmd import omi_command
+
+    return omi_command(args)
 
 
 def cmd_slack(args):
@@ -11433,6 +11448,8 @@ def _coalesce_session_name_args(argv: list) -> list:
         "security",
         "acp",
         "webhook",
+        "notify",
+        "omi",
         "memory",
         "dump",
         "debug",
@@ -12674,7 +12691,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "prompt-size",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
-        "version", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
+        "version", "webhook", "notify", "omi", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
         # expensive eager import of every bundled plugin module.
@@ -13439,6 +13456,12 @@ def main():
     # webhook command  (parser built in hermes_cli/subcommands/webhook.py)
     # =========================================================================
     build_webhook_parser(subparsers, cmd_webhook=cmd_webhook)
+
+    # =========================================================================
+    # notify + omi commands (parsers built in hermes_cli/subcommands/notify.py)
+    # =========================================================================
+    build_notify_parser(subparsers, cmd_notify=cmd_notify)
+    build_omi_parser(subparsers, cmd_omi=cmd_omi)
 
     # =========================================================================
     # portal command — Nous Portal status + Tool Gateway routing

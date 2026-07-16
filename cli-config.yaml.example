@@ -1103,6 +1103,49 @@ code_execution:
   max_tool_calls: 50   # Max RPC tool calls per execution (default: 50)
 
 # =============================================================================
+# Notification / Attention Budget
+# =============================================================================
+# Gates PROACTIVE agent-initiated messages (cron deliveries, webhook pushes,
+# goal-status notices, Omi nudges) against a hard daily budget. Each candidate
+# is scored (p_act * value_hint); quantity is bounded by a soft cap and a hard
+# ceiling; per-category thresholds self-tune from `hermes notify keep|mute`
+# feedback. Live replies to you are NEVER gated. Inspect with `hermes notify
+# status`. Kill switch: HERMES_NOTIFICATIONS_DISABLED=1.
+notifications:
+  enabled: true
+  daily_cap: 3                  # soft cap: below this, only the threshold gate applies
+  daily_ceiling: 5              # hard cap: never exceeded regardless of score
+  base_threshold: 0.5           # starting per-category bar (0-1)
+  escalation_threshold: 0.8     # bar to spend budget between cap and ceiling
+  dismiss_step: 0.1             # threshold += this when you `notify mute` a category
+  act_step: 0.05                # threshold -= this when you `notify keep` a category
+  threshold_min: 0.1
+  threshold_max: 0.95
+  p_act_ewma_alpha: 0.3         # learning rate for the per-category act-rate prior
+  default_value_hint: 0.5       # producer value when unspecified
+  # categories:                 # per-category overrides
+  #   omi_commitment:
+  #     daily_cap: 2
+
+# =============================================================================
+# Omi Commitment Extraction
+# =============================================================================
+# Scans the Omi wearable transcript (via the omi MCP server) for commitments
+# YOU personally made and files them as kanban cards for review. OPT-IN: off by
+# default (consent). Enable with `hermes omi enable`; run once with
+# `hermes omi scan`. Cards land in `triage` (never auto-dispatched); the summary
+# notification is routed through the attention budget above.
+omi_commitments:
+  enabled: false                # opt-in — reads your ambient transcript when true
+  scan_interval_hours: 6
+  lookback_hours: 24            # ignore conversations older than this
+  min_confidence: 0.6           # drop commitments below this confidence (0-1)
+  board: ""                     # empty = default kanban board
+  assignee: ""                  # empty = unassigned (triage, human-reviewed)
+  create_notification: true     # ping when cards are filed (subject to the budget)
+  max_conversations_per_scan: 25
+
+# =============================================================================
 # Subagent Delegation
 # =============================================================================
 # The delegate_task tool spawns child agents with isolated context.

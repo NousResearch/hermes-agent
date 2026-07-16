@@ -651,6 +651,7 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         # A board-local concurrency policy, deliberately metadata rather than
         # a separately persisted pool entity.
         "agent_limit": 10,
+        "executor": "hermes-worker",
         "created_at": None,
         "archived": False,
     }
@@ -679,6 +680,7 @@ def write_board_metadata(
     archived: Optional[bool] = None,
     default_workdir: Optional[str] = None,
     agent_limit: Optional[int] = None,
+    executor: Optional[str] = None,
 ) -> dict:
     """Create / update ``board.json`` for ``board``.
 
@@ -710,6 +712,11 @@ def write_board_metadata(
         if parsed_limit < 1:
             raise ValueError("agent_limit must be a positive integer")
         meta["agent_limit"] = parsed_limit
+    if executor is not None:
+        normalized_executor = str(executor).strip().lower()
+        if normalized_executor not in {"hermes-worker", "claude-code", "codex"}:
+            raise ValueError("executor must be hermes-worker, claude-code, or codex")
+        meta["executor"] = normalized_executor
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
@@ -730,7 +737,6 @@ def create_board(
     icon: Optional[str] = None,
     color: Optional[str] = None,
     default_workdir: Optional[str] = None,
-    agent_limit: Optional[int] = None,
 ) -> dict:
     """Create a new board directory + DB + metadata. Idempotent.
 
@@ -748,7 +754,6 @@ def create_board(
         icon=icon,
         color=color,
         default_workdir=default_workdir,
-        agent_limit=agent_limit,
     )
     # Touch the DB so list_boards() sees it immediately.
     init_db(board=normed)
@@ -871,6 +876,7 @@ class Task:
     tenant: Optional[str]
     branch_name: Optional[str] = None
     project_id: Optional[str] = None
+    executor: str = "hermes-worker"
     result: Optional[str] = None
     idempotency_key: Optional[str] = None
     # Unified non-success counter. Incremented on any of:
@@ -957,6 +963,7 @@ class Task:
             workspace_path=row["workspace_path"],
             branch_name=row["branch_name"] if "branch_name" in keys else None,
             project_id=row["project_id"] if "project_id" in keys else None,
+            executor=(row["executor"] if "executor" in keys and row["executor"] else "hermes-worker"),
             claim_lock=row["claim_lock"],
             claim_expires=row["claim_expires"],
             tenant=row["tenant"] if "tenant" in keys else None,
@@ -1126,6 +1133,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- the task's worktree is anchored under the project's primary repo with a
     -- deterministic branch name instead of a random wt/<task-id> fallback.
     project_id           TEXT,
+    executor             TEXT NOT NULL DEFAULT 'hermes-worker',
     claim_lock           TEXT,
     claim_expires        INTEGER,
     tenant               TEXT,
@@ -1878,6 +1886,8 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(conn, "tasks", "branch_name", "branch_name TEXT")
     if "project_id" not in cols:
         _add_column_if_missing(conn, "tasks", "project_id", "project_id TEXT")
+    if "executor" not in cols:
+        _add_column_if_missing(conn, "tasks", "executor", "executor TEXT NOT NULL DEFAULT 'hermes-worker'")
     if "idempotency_key" not in cols:
         _add_column_if_missing(
             conn, "tasks", "idempotency_key", "idempotency_key TEXT"
@@ -2422,6 +2432,7 @@ def create_task(
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
+    executor: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2505,6 +2516,9 @@ def create_task(
                 project_repo = str(project_obj.primary_path)
 
     parents = tuple(p for p in parents if p)
+    executor = str(executor or read_board_metadata(board if board else get_current_board()).get("executor") or "hermes-worker").strip().lower()
+    if executor not in {"hermes-worker", "claude-code", "codex"}:
+        raise ValueError("executor must be hermes-worker, claude-code, or codex")
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
     # (preserving order). Refuse commas inside a single name so we don't
@@ -2648,10 +2662,10 @@ def create_task(
                     INSERT INTO tasks (
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
-                        branch_name, project_id, tenant, idempotency_key,
+                        branch_name, project_id, executor, tenant, idempotency_key,
                         max_runtime_seconds,
                         skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2666,6 +2680,7 @@ def create_task(
                         workspace_path,
                         branch_name,
                         project_id,
+                        executor,
                         tenant,
                         idempotency_key,
                         int(max_runtime_seconds) if max_runtime_seconds is not None else None,
@@ -5975,8 +5990,6 @@ class DispatchResult:
     subsequent tick when the assignee has capacity. Separate bucket so
     telemetry / dashboards can show "this profile is busy" vs
     "task is genuinely stuck"."""
-    skipped_board_capped: list[str] = field(default_factory=list)
-    """Tasks deferred because the board's persisted agent_limit is full."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -7285,7 +7298,7 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         requeued_after = conn.execute(
             "SELECT 1 FROM task_events "
             "WHERE task_id = ? AND created_at >= ? "
-            "AND kind IN ('status', 'promoted', 'promoted_manual', 'unblocked', 'reclaimed') "
+            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed') "
             "LIMIT 1",
             (task_id, completed_at),
         ).fetchone()
@@ -7521,25 +7534,18 @@ def _dispatch_once_locked(
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
-    # The board pool is an additional cap to global max_in_progress. It is a
-    # counter over running tasks, not a separately persisted pool entity.
-    try:
-        board_agent_limit = int(read_board_metadata(board).get("agent_limit", 10))
-    except (TypeError, ValueError):
-        board_agent_limit = 10
-    board_agent_limit = max(1, board_agent_limit)
-    effective_max_in_progress = board_agent_limit
-    if isinstance(max_in_progress, int) and max_in_progress > 0:
-        effective_max_in_progress = min(effective_max_in_progress, max_in_progress)
-    if ready_rows:
+    # Honour kanban.max_in_progress: if the board already has enough running
+    # tasks, skip spawning this tick so slow workers (local LLMs,
+    # resource-constrained hosts) can finish what they have before more tasks
+    # pile up and time out.
+    if max_in_progress is not None and ready_rows:
         in_progress = conn.execute(
             "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
         ).fetchone()[0]
-        if in_progress >= effective_max_in_progress:
-            result.skipped_board_capped.extend(row["id"] for row in ready_rows)
+        if in_progress >= max_in_progress:
             return result
-        # Only spawn enough to reach the combined global/board cap.
-        remaining = effective_max_in_progress - in_progress
+        # Only spawn enough to reach the cap, respecting max_spawn too.
+        remaining = max_in_progress - in_progress
         if max_spawn is None or max_spawn > remaining:
             max_spawn = remaining
     spawned = 0
@@ -7685,9 +7691,6 @@ def _dispatch_once_locked(
             continue
         if dry_run:
             result.spawned.append((row["id"], row_assignee, ""))
-            # Count virtual spawns against every concurrency cap, including the
-            # board pool. A dry run must report the same capacity decision.
-            spawned += 1
             # Increment per-profile counter even in dry_run so the cap
             # check sees the would-be spawn on subsequent iterations.
             # Without this, dry_run reports every task as spawnable and
@@ -8256,6 +8259,12 @@ def _default_spawn(
         # turn, prints text, exits rc=0, and the dispatcher records a
         # protocol violation (incident 2026-06-09 t_d9cbe312).
         cmd.append("-Q")
+    # External coding harnesses are a distinct execution path, not providers:
+    # one process owns exactly one native ACP session and then writes the
+    # ordinary Kanban completion/block transition itself.
+    if task.executor in {"claude-code", "codex"}:
+        env["HERMES_KANBAN_EXECUTOR"] = task.executor
+        cmd = [sys.executable, "-m", "agent.acp_task_executor"]
     # Redirect output to a per-task log under <board-root>/logs/.
     # Anchored at the board root (not the shared kanban root), so
     # `hermes kanban log` on a specific board reads its own file and

@@ -2590,6 +2590,75 @@ def _replay_output_history() -> None:
         _OUTPUT_HISTORY_REPLAYING = False
 
 
+# Matches CSI escape sequences (SGR colors like \x1b[2;3m, cursor moves,
+# erases). Used to strip ANSI before plain output when there's no console.
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def _stdout_is_console() -> bool:
+    """True when stdout is a real interactive console/terminal.
+
+    Mirrors the ``isatty()`` gate prompt_toolkit itself uses on POSIX (and
+    that ``_b``/``_d`` already use here). When stdout is piped/redirected/
+    captured — e.g. any non-interactive ``hermes chat -q`` spawned with
+    ``stdio: pipe`` — prompt_toolkit's output backend can't initialize: on
+    Windows ``Win32Output`` calls ``GetConsoleScreenBufferInfo`` on a pipe
+    handle and raises ``NoConsoleScreenBufferError``. Callers must avoid the
+    pt renderer in that case (#65558).
+    """
+    try:
+        return bool(sys.stdout.isatty())
+    except Exception:
+        return False
+
+
+def _plain_output(text: str) -> None:
+    """Emit text without prompt_toolkit: ANSI stripped, encoding-safe.
+
+    Used when stdout isn't a real console. Two failure modes the pt path
+    causes there and this avoids: literal ANSI escapes leaking into captured
+    output (stripped here), and ``UnicodeEncodeError`` when box-drawing /
+    braille characters hit a legacy Windows code page (cp1252). The latter is
+    handled by re-encoding through stdout's encoding with replacement, so such
+    characters degrade to ``?`` instead of raising (#65558).
+    """
+    plain = _ANSI_ESCAPE_RE.sub("", text)
+    try:
+        print(plain)
+        return
+    except UnicodeEncodeError:
+        pass
+    except Exception:
+        return
+    enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+    safe = plain.encode(enc, "replace").decode(enc, "replace")
+    try:
+        print(safe)
+    except Exception:
+        pass
+
+
+def _emit_without_running_app(text: str) -> None:
+    """Emit ``text`` when no prompt_toolkit Application is running.
+
+    With no running app there is no live pt output backend, so ``_pt_print``
+    would construct a fresh one — which on a non-console stdout raises
+    ``NoConsoleScreenBufferError`` on Windows (#65558). Use the pt renderer
+    only when stdout is a real console; otherwise emit plain, ANSI-stripped,
+    encoding-safe text (parity with prompt_toolkit's own POSIX isatty
+    fallback). A running app's backend already exists and is not routed here.
+    """
+    if not _stdout_is_console():
+        _plain_output(text)
+        return
+    try:
+        _pt_print(_PT_ANSI(text))
+    except Exception:
+        # Console vanished / backend failed unexpectedly despite the isatty
+        # check — degrade cleanly rather than crash.
+        _plain_output(text)
+
+
 def _cprint(text: str):
     """Print ANSI-colored text through prompt_toolkit's native renderer.
 
@@ -2611,7 +2680,8 @@ def _cprint(text: str):
     try:
         from prompt_toolkit.application import get_app_or_none, run_in_terminal
     except Exception:
-        _pt_print(_PT_ANSI(text))
+        # prompt_toolkit.application unavailable — no app can be running.
+        _emit_without_running_app(text)
         return
 
     app = None
@@ -2620,20 +2690,12 @@ def _cprint(text: str):
     except Exception:
         app = None
 
-    # No active app, or we're already on the app's main thread: the
-    # direct prompt_toolkit print is safe and matches existing behavior
-    # (spinner frames, streamed tokens, tool activity prefixes, …).
+    # No active app, or app tearing down: emit via the console-aware path so a
+    # piped/redirected stdout (non-interactive `hermes chat -q`) degrades to
+    # plain text instead of crashing the pt Win32 backend (#65558). A running
+    # app's output backend already exists, so the branches below are unchanged.
     if app is None or not getattr(app, "_is_running", False):
-        try:
-            _pt_print(_PT_ANSI(text))
-        except Exception:
-            # Fallback when stdout is not a real console (e.g. subprocess
-            # worker logging to a file). prompt_toolkit raises
-            # NoConsoleScreenBufferError (Windows) or OSError (other).
-            try:
-                print(text)
-            except Exception:
-                pass
+        _emit_without_running_app(text)
         return
 
     try:

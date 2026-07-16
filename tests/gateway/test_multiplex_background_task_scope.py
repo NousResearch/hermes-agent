@@ -1,74 +1,88 @@
 """Regression: background tasks respect profile secret scope when multiplexing.
 
-Issue #60726: /background command runs _run_background_task without a profile
-scope, causing UnscopedSecretError when multiplexing is active and credentials
-are profile-scoped.
+Issue #60726: /background spawns _run_background_task as a fire-and-forget
+asyncio task with no profile scope, so _resolve_session_agent_runtime()'s
+credential reads raise UnscopedSecretError when multiplex_profiles is on.
+The fix wraps the task body in _profile_runtime_scope, mirroring _run_agent.
 """
-import pytest
+import asyncio
+from pathlib import Path
 from unittest import mock
+
+from gateway.config import GatewayConfig
+from gateway.run import GatewayRunner
+
+
+def _make_runner(multiplex: bool) -> GatewayRunner:
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=multiplex)
+    return runner
 
 
 class TestBackgroundTaskProfileScope:
     """_run_background_task installs _profile_runtime_scope when multiplexing is active."""
 
-    def test_background_task_calls_inner_wrapped_in_scope_when_multiplex_active(self):
-        """When multiplex_profiles is True, _run_background_task wraps call in _profile_runtime_scope."""
-        from gateway.run import GatewayRunner
+    def test_wraps_in_profile_scope_when_multiplex_active(self):
+        runner = _make_runner(multiplex=True)
+        inner = mock.AsyncMock(return_value=None)
+        runner._run_background_task_inner = inner
 
-        config = {"multiplex_profiles": True}
-        gw = GatewayRunner(config=config)
-        gw._session_db = mock.MagicMock()
-        gw._adapter_for_source = mock.MagicMock(return_value=mock.MagicMock())
-
-        mock_inner = mock.AsyncMock(return_value=None)
-        gw._run_background_task_inner = mock_inner
-
-        import asyncio
         source = mock.MagicMock()
-        source.profile_home = "/fake/profile"
+        source.profile = "test_profile"
 
-        # Mock _profile_runtime_scope
-        from gateway.run import _profile_runtime_scope
-        with mock.patch("gateway.run._profile_runtime_scope") as mock_scope:
-            mock_scope.return_value.__enter__ = mock.MagicMock()
-            mock_scope.return_value.__exit__ = mock.MagicMock()
-
+        with mock.patch.object(
+            GatewayRunner,
+            "_resolve_profile_home_for_source",
+            return_value=Path("/fake/profile"),
+        ), mock.patch("gateway.run._profile_runtime_scope") as scope:
+            scope.return_value.__enter__ = mock.MagicMock()
+            scope.return_value.__exit__ = mock.MagicMock(return_value=False)
             asyncio.run(
-                gw._run_background_task(
-                    prompt="test",
-                    source=source,
-                    task_id="test_task",
+                runner._run_background_task(
+                    prompt="test", source=source, task_id="bg_test"
                 )
             )
 
-            # _profile_runtime_scope should have been called with profile_home
-            mock_scope.assert_called_once_with("/fake/profile")
-            mock_inner.assert_called_once()
+        scope.assert_called_once_with(Path("/fake/profile"))
+        inner.assert_awaited_once()
 
-    def test_background_task_calls_inner_direct_when_multiplex_disabled(self):
-        """When multiplex_profiles is False, _run_background_task calls inner directly."""
-        from gateway.run import GatewayRunner
+    def test_calls_inner_directly_when_multiplex_disabled(self):
+        runner = _make_runner(multiplex=False)
+        inner = mock.AsyncMock(return_value=None)
+        runner._run_background_task_inner = inner
 
-        config = {"multiplex_profiles": False}
-        gw = GatewayRunner(config=config)
-        gw._session_db = mock.MagicMock()
-        gw._adapter_for_source = mock.MagicMock(return_value=mock.MagicMock())
-
-        mock_inner = mock.AsyncMock(return_value=None)
-        gw._run_background_task_inner = mock_inner
-
-        import asyncio
-        source = mock.MagicMock()
-
-        with mock.patch("gateway.run._profile_runtime_scope") as mock_scope:
+        with mock.patch("gateway.run._profile_runtime_scope") as scope:
             asyncio.run(
-                gw._run_background_task(
-                    prompt="test",
-                    source=source,
-                    task_id="test_task",
+                runner._run_background_task(
+                    prompt="test", source=mock.MagicMock(), task_id="bg_test"
                 )
             )
 
-            # _profile_runtime_scope should NOT have been called
-            mock_scope.assert_not_called()
-            mock_inner.assert_called_once()
+        scope.assert_not_called()
+        inner.assert_awaited_once()
+
+    def test_inner_receives_all_arguments(self):
+        runner = _make_runner(multiplex=True)
+        inner = mock.AsyncMock(return_value=None)
+        runner._run_background_task_inner = inner
+        source = mock.MagicMock()
+
+        with mock.patch.object(
+            GatewayRunner,
+            "_resolve_profile_home_for_source",
+            return_value=Path("/fake/profile"),
+        ), mock.patch("gateway.run._profile_runtime_scope") as scope:
+            scope.return_value.__enter__ = mock.MagicMock()
+            scope.return_value.__exit__ = mock.MagicMock(return_value=False)
+            asyncio.run(
+                runner._run_background_task(
+                    prompt="p",
+                    source=source,
+                    task_id="t",
+                    event_message_id="m1",
+                    media_urls=["u"],
+                    media_types=["image"],
+                )
+            )
+
+        inner.assert_awaited_once_with("p", source, "t", "m1", ["u"], ["image"])

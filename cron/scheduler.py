@@ -245,6 +245,51 @@ from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
 
+def _sanitize_cron_delivery_content(content: str) -> str:
+    """Prepare cron final text for messaging delivery.
+
+    Agents sometimes prepend status/receipt chatter before the real digest body
+    (``今日摘要``). That preamble can include incomplete HTML fragments such as
+    bare ``<a href>`` inside backticks, which makes Telegram HTML parse_mode
+    fail and fall back to plain text (raw tags visible to the user).
+
+    When a ``今日摘要`` marker is present, deliver from that marker onward.
+    Also convert Markdown item titles ``N. [title](url)`` to HTML
+    ``N. <a href="url">title</a>`` so GitHub Radar style finals render as
+    clickable titles under Telegram HTML mode.
+    """
+    if not isinstance(content, str) or not content:
+        return content or ""
+
+    text = content
+    marker = "今日摘要"
+    idx = text.find(marker)
+    if idx > 0:
+        text = text[idx:]
+        logger.info("cron delivery: trimmed %d-char preamble before %s", idx, marker)
+
+    # Markdown [title](url) item lines → HTML anchors (Telegram HTML-friendly).
+    try:
+        import html as _html
+        import re as _re
+
+        md_item = _re.compile(
+            r"(?m)^(\d+)\.\s*\[([^\]]+)\]\((https?://[^)\s]+)\)\s*$"
+        )
+
+        def _to_html(m: "_re.Match[str]") -> str:
+            title = _html.escape(m.group(2), quote=False)
+            return f'{m.group(1)}. <a href="{m.group(3)}">{title}</a>'
+
+        if md_item.search(text):
+            text = md_item.sub(_to_html, text)
+            logger.info("cron delivery: converted Markdown item titles to HTML anchors")
+    except Exception:
+        logger.debug("cron delivery: title normalization skipped", exc_info=True)
+
+    return text
+
+
 # Canonical silence tokens recognized in cron output.  Cron's contract is
 # intentionally looser than the gateway's exact-whole-response rule: the cron
 # system prompt *instructs* the agent to emit "[SILENT]", and real agents often
@@ -1413,6 +1458,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     Returns None on success, or an error string on failure.
     """
+    content = _sanitize_cron_delivery_content(content or "")
     targets = _resolve_delivery_targets(job)
     if not targets:
         deliver_value = _normalize_deliver_value(job.get("deliver", "local"))
@@ -2101,7 +2147,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         result = subprocess.run(
             argv,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
             timeout=script_timeout,
             cwd=str(path.parent),
             env=_sanitize_subprocess_env(os.environ.copy()),

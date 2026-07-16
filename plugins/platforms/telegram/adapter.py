@@ -428,6 +428,14 @@ def _escape_mdv2(text: str) -> str:
     return _MDV2_ESCAPE_RE.sub(r'\\\1', text)
 
 
+def _strip_html(text: str) -> str:
+    """Strip HTML tags to produce clean plain text for Telegram fallback."""
+    import html as _html
+    cleaned = _html.unescape(text)          # &amp; → &, &lt; → <, etc.
+    cleaned = re.sub(r'<[^>]+>', '', cleaned)  # strip tags
+    return cleaned.strip()
+
+
 def _strip_mdv2(text: str) -> str:
     """Strip MarkdownV2 escape backslashes to produce clean plain text.
 
@@ -3974,8 +3982,16 @@ class TelegramAdapter(BasePlatformAdapter):
                                 pass  # Typing failures are non-fatal
                     return rich_result
 
-            # Format and split message if needed
-            formatted = self.format_message(content)
+            # Auto-detect HTML: if present, skip MarkdownV2 and send as HTML.
+            # Matches the same regex used in tools/send_message_tool.py.
+            import re as _re
+            _has_html = bool(_re.search(r'<[a-zA-Z/][^>]*>', content))
+            if _has_html:
+                formatted = content
+                _use_markdown = False
+            else:
+                formatted = self.format_message(content)
+                _use_markdown = True
             chunks = self.truncate_message(
                 formatted, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
             )
@@ -4061,17 +4077,21 @@ class TelegramAdapter(BasePlatformAdapter):
                             msg = await self._bot.send_message(
                                 chat_id=normalize_telegram_chat_id(chat_id),
                                 text=chunk,
-                                parse_mode=ParseMode.MARKDOWN_V2,
+                                parse_mode=ParseMode.HTML if _has_html else ParseMode.MARKDOWN_V2,
                                 reply_to_message_id=reply_to_id,
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
                             )
                         except Exception as md_error:
-                            # Markdown parsing failed, try plain text
-                            if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower():
-                                logger.warning("[%s] MarkdownV2 parse failed, falling back to plain text: %s", self.name, md_error)
-                                plain_chunk = _strip_mdv2(chunk)
+                            # Markdown/HTML parsing failed, try plain text
+                            if "parse" in str(md_error).lower() or "markdown" in str(md_error).lower() or "html" in str(md_error).lower():
+                                logger.warning("[%s] parse mode %s failed, falling back to plain text: %s",
+                                    self.name,
+                                    "HTML" if _has_html else "MarkdownV2",
+                                    md_error,
+                                )
+                                plain_chunk = _strip_mdv2(chunk) if not _has_html else _strip_html(chunk)
                                 msg = await self._bot.send_message(
                                     chat_id=normalize_telegram_chat_id(chat_id),
                                     text=plain_chunk,

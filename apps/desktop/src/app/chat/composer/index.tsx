@@ -7,12 +7,14 @@ import { Button } from '@/components/ui/button'
 import { Slot as ContribSlot } from '@/contrib/react/slot'
 import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
+import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
+import { $composerEnterSends } from '@/store/composer-prefs'
 import { removeQueuedPrompt } from '@/store/composer-queue'
 import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
@@ -26,6 +28,7 @@ import { ContextMenu } from './context-menu'
 import { COMPOSER_AREAS, runComposerMiddleware } from './contrib'
 import { ComposerControls } from './controls'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
+import { resolveComposerEnterKeyIntent } from './enter-key-mode'
 import { markActiveComposer } from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
@@ -104,6 +107,7 @@ export function ChatBar({
   // focus-bus key, and awaiting-input edge. Main scope = the legacy globals.
   const scope = useComposerScope()
   const attachments = useStore(scope.attachments.$attachments)
+  const enterSends = useStore($composerEnterSends)
   const scrolledUp = useStore($threadScrolledUp)
   const autoSpeak = useStore($autoSpeakReplies)
   // The turn is parked on the user (clarify / approval / sudo / secret). Esc must
@@ -225,7 +229,6 @@ export function ChatBar({
     activeQueueSessionKeyRef,
     attachments,
     busy,
-    canSteer,
     clearDraft,
     disabled,
     draftRef,
@@ -561,30 +564,58 @@ export function ChatBar({
       return
     }
 
-    // Cmd/Ctrl+Enter is reserved for steering the live run — never a send.
-    // Steer when there's a steerable draft, otherwise swallow it so it can't
-    // surprise-send. (Plain Enter still queues while busy / sends when idle.)
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
-      event.preventDefault()
+    // Decide Enter-key behavior from the live DOM, not React state. The AUI
+    // composer state lags the latest keystroke by a render, so on fast typing /
+    // IME the just-typed text may not be in state yet. Keeping this read at the
+    // keydown seam preserves the queue-drain / submit / steer distinction.
+    const editorText = editorRef.current ? composerPlainText(editorRef.current) : draftRef.current
+    const trimmedEditorText = editorText.trim()
 
-      if (canSteer) {
-        steerDraft()
-      }
+    const liveCanSteer =
+      busy &&
+      !!onSteer &&
+      attachments.length === 0 &&
+      trimmedEditorText.length > 0 &&
+      !SLASH_COMMAND_RE.test(trimmedEditorText)
+
+    const enterIntent = resolveComposerEnterKeyIntent({
+      canSteer: liveCanSteer,
+      enterSends,
+      key: event.key,
+      modKey: event.metaKey || event.ctrlKey,
+      shiftKey: event.shiftKey
+    })
+
+    if (enterIntent === 'noop') {
+      event.preventDefault()
 
       return
     }
 
-    if (event.key === 'Enter' && !event.shiftKey) {
+    if (enterIntent === 'newline') {
+      event.preventDefault()
+      insertPlainTextAtCaret(event.currentTarget, '\n')
+      flushEditorToDraft(event.currentTarget)
+
+      return
+    }
+
+    if (enterIntent === 'steer') {
       event.preventDefault()
 
-      // Decide from the DOM, not React state. `hasComposerPayload` is derived
-      // from the AUI composer state, which lags the latest keystroke by a
-      // render, so on fast typing / IME the just-typed text isn't in state yet.
-      // Without the live read, a real message typed while prompts are queued
-      // would drain the queue instead of sending. submitDraft() re-syncs and
-      // sends the live editor text.
-      const editorText = editorRef.current ? composerPlainText(editorRef.current) : draftRef.current
-      const hasLivePayload = editorText.trim().length > 0 || attachments.length > 0
+      if (editorRef.current) {
+        flushEditorToDraft(editorRef.current)
+      }
+
+      steerDraft()
+
+      return
+    }
+
+    if (enterIntent === 'submit') {
+      event.preventDefault()
+
+      const hasLivePayload = trimmedEditorText.length > 0 || attachments.length > 0
 
       if (disabled) {
         return

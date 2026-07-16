@@ -3,6 +3,7 @@ import { type MutableRefObject, useCallback, useState } from 'react'
 import { getHermesConfig, getHermesConfigDefaults } from '@/hermes'
 import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromConfig } from '@/lib/chat-runtime'
 import { normalize } from '@/lib/text'
+import { applyComposerPrefsFromConfig } from '@/store/composer-prefs'
 import {
   $currentCwd,
   setAvailablePersonalities,
@@ -88,6 +89,7 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
       setVoiceMaxRecordingSeconds(recordingLimit(config.voice?.max_recording_seconds))
       setSttEnabled(config.stt?.enabled !== false)
       applyAutoSpeakFromConfig(config)
+      applyComposerPrefsFromConfig(config)
     } catch {
       // Config is nice-to-have; chat still works without it.
     }

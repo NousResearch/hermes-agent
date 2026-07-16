@@ -2,6 +2,8 @@ import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { useRef, useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { resolveComposerEnterKeyIntent } from './enter-key-mode'
+
 // No global setupFiles registers auto-cleanup, so unmount between tests —
 // otherwise a second render() leaks the first editor and getByTestId('editor')
 // matches multiple nodes.
@@ -25,19 +27,23 @@ afterEach(cleanup)
 function Harness({
   busy = false,
   disabled = false,
+  enterSends = true,
   queued = [],
   onSubmit,
   onQueue,
   onCancel,
-  onDrain
+  onDrain,
+  onSteer
 }: {
   busy?: boolean
   disabled?: boolean
+  enterSends?: boolean
   queued?: readonly string[]
   onSubmit: (text: string) => void
   onQueue: (text: string) => void
   onCancel: () => void
   onDrain: () => void
+  onSteer?: (text: string) => void
 }) {
   const editorRef = useRef<HTMLDivElement>(null)
   const draftRef = useRef('')
@@ -86,10 +92,51 @@ function Harness({
   }
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.key === 'Enter' && !event.shiftKey) {
+    const editorText = editorRef.current ? composerPlainText(editorRef.current) : draftRef.current
+    const canSteer = Boolean(busy && onSteer && editorText.trim() && attachments.length === 0)
+
+    const intent = resolveComposerEnterKeyIntent({
+      canSteer,
+      enterSends,
+      key: event.key,
+      modKey: event.metaKey || event.ctrlKey,
+      shiftKey: event.shiftKey
+    })
+
+    if (intent === 'noop') {
       event.preventDefault()
 
-      const editorText = editorRef.current ? composerPlainText(editorRef.current) : draftRef.current
+      return
+    }
+
+    if (intent === 'newline') {
+      event.preventDefault()
+      const next = `${editorText}\n`
+
+      if (editorRef.current) {
+        editorRef.current.textContent = next
+      }
+
+      setText(next)
+
+      return
+    }
+
+    if (intent === 'steer') {
+      event.preventDefault()
+      onSteer?.(editorText.trim())
+      setText('')
+
+      if (editorRef.current) {
+        editorRef.current.textContent = ''
+      }
+
+      return
+    }
+
+    if (intent === 'submit') {
+      event.preventDefault()
+
       const hasLivePayload = editorText.trim().length > 0 || attachments.length > 0
 
       if (disabled) {
@@ -232,6 +279,95 @@ describe('composer Enter submit — live DOM vs stale composer state (#39630)', 
 
     expect(editor.textContent).toBe('draft while reconnecting')
     expect(onDrain).not.toHaveBeenCalled()
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('in multiline-first mode inserts a newline on Enter without submitting', async () => {
+    const onSubmit = vi.fn()
+
+    const { getByTestId } = render(
+      <Harness enterSends={false} onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />
+    )
+
+    const editor = getByTestId('editor')
+
+    await act(async () => {
+      editor.textContent = 'line one'
+      fireEvent.keyDown(editor, { key: 'Enter' })
+    })
+
+    expect(editor.textContent).toBe('line one\n')
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('in multiline-first mode sends live DOM text on Ctrl/Cmd+Enter even when composer state has not synced', async () => {
+    const onSubmit = vi.fn()
+
+    const { getByTestId } = render(
+      <Harness enterSends={false} onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />
+    )
+
+    const editor = getByTestId('editor')
+
+    await act(async () => {
+      editor.textContent = 'multiline send'
+      fireEvent.keyDown(editor, { key: 'Enter', metaKey: true })
+    })
+
+    expect(onSubmit).toHaveBeenCalledWith('multiline send')
+  })
+
+  it('in multiline-first mode steers with Shift+Enter only when a run is steerable', async () => {
+    const onSteer = vi.fn()
+    const onSubmit = vi.fn()
+
+    const { getByTestId } = render(
+      <Harness
+        busy
+        enterSends={false}
+        onCancel={vi.fn()}
+        onDrain={vi.fn()}
+        onQueue={vi.fn()}
+        onSteer={onSteer}
+        onSubmit={onSubmit}
+      />
+    )
+
+    const editor = getByTestId('editor')
+
+    await act(async () => {
+      editor.textContent = 'nudge the run'
+      fireEvent.keyDown(editor, { key: 'Enter', shiftKey: true })
+    })
+
+    expect(onSteer).toHaveBeenCalledWith('nudge the run')
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('in multiline-first mode Shift+Enter while idle inserts a newline instead of sending', async () => {
+    const onSubmit = vi.fn()
+    const onSteer = vi.fn()
+
+    const { getByTestId } = render(
+      <Harness
+        enterSends={false}
+        onCancel={vi.fn()}
+        onDrain={vi.fn()}
+        onQueue={vi.fn()}
+        onSteer={onSteer}
+        onSubmit={onSubmit}
+      />
+    )
+
+    const editor = getByTestId('editor')
+
+    await act(async () => {
+      editor.textContent = 'idle draft'
+      fireEvent.keyDown(editor, { key: 'Enter', shiftKey: true })
+    })
+
+    expect(editor.textContent).toBe('idle draft\n')
+    expect(onSteer).not.toHaveBeenCalled()
     expect(onSubmit).not.toHaveBeenCalled()
   })
 })

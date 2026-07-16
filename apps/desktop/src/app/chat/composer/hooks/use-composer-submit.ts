@@ -17,7 +17,6 @@ interface UseComposerSubmitArgs {
   activeQueueSessionKeyRef: RefObject<string | null>
   attachments: ComposerAttachment[]
   busy: boolean
-  canSteer: boolean
   clearDraft: () => void
   disabled: boolean
   draftRef: RefObject<string>
@@ -52,7 +51,6 @@ export function useComposerSubmit({
   activeQueueSessionKeyRef,
   attachments,
   busy,
-  canSteer,
   clearDraft,
   disabled,
   draftRef,
@@ -177,11 +175,26 @@ export function useComposerSubmit({
   // for snappy feedback; if the gateway rejects (no live tool window) the words
   // are re-queued so nothing is lost — same safety net as a plain queue.
   const steerDraft = () => {
-    if (!onSteer || !canSteer) {
+    if (!onSteer || !busy) {
       return
     }
 
+    const editor = editorRef.current
+
+    if (editor) {
+      const domText = composerPlainText(editor)
+
+      if (domText !== draftRef.current) {
+        draftRef.current = domText
+        setComposerText(domText)
+      }
+    }
+
     const text = draftRef.current.trim()
+
+    if (attachments.length > 0 || !text || SLASH_COMMAND_RE.test(text)) {
+      return
+    }
 
     triggerHaptic('submit')
     clearDraft()

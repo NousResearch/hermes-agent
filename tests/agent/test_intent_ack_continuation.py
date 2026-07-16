@@ -112,6 +112,29 @@ def test_codex_only_path_requires_workspace():
     )
 
 
+def test_multipart_user_message_does_not_crash_on_workspace_path():
+    """#9562: vision requests forward ``user_message`` as a multi-part list.
+
+    The OpenAI-compat API server passes the raw ``content`` field straight
+    through for vision turns, so ``user_message`` reaches the detector as
+    ``[{type:"text",...}, {type:"image_url",...}]``. The ``require_workspace``
+    path flattened it with ``(user_message or "").strip()`` — a truthy list
+    survived and ``.strip()`` raised ``AttributeError``, killing the turn.
+    The text part still has to drive workspace detection.
+    """
+    a = _agent("auto", "codex_responses")
+    multipart = [
+        {"type": "text", "text": CODE_USER},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+    ]
+    msgs = [{"role": "user", "content": multipart}]
+    # No crash, and the text part ("review the codebase in /app") still
+    # satisfies the workspace requirement so the ack fires.
+    assert looks_like_codex_intermediate_ack(
+        a, multipart, CODE_ACK, msgs, require_workspace=True
+    )
+
+
 def test_all_path_drops_workspace_requirement():
     """The #27881 fix: opted-in turns catch non-codebase intent acks."""
     a = _agent(True, "chat_completions")

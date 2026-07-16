@@ -51,7 +51,7 @@ def _title_language() -> str:
 def generate_title(
     user_message: str,
     assistant_response: str,
-    timeout: float = 30.0,
+    timeout: Optional[float] = None,
     failure_callback: Optional[FailureCallback] = None,
     main_runtime: dict = None,
 ) -> Optional[str]:
@@ -87,7 +87,15 @@ def generate_title(
             timeout=timeout,
             main_runtime=main_runtime,
         )
-        title = (response.choices[0].message.content or "").strip()
+        content = response.choices[0].message.content or ""
+        # Strip thinking/reasoning blocks that think-enabled models
+        # (MiniMax M2.7, DeepSeek, etc.) emit even for simple prompts like
+        # title generation. Without this the raw <think>...</think> XML
+        # leaks into session titles. Reuses the canonical scrubber so all
+        # tag variants (unterminated blocks, orphan closes, mixed case)
+        # are handled, not just a single literal <think> pair.
+        from agent.agent_runtime_helpers import strip_think_blocks
+        title = strip_think_blocks(None, content).strip()
         # Clean up: remove quotes, trailing punctuation, prefixes like "Title: "
         title = title.strip('"\'')
         if title.lower().startswith("title:"):
@@ -136,6 +144,21 @@ def auto_title_session(
             return
     except Exception:
         return
+
+    # This runs on a bare daemon thread spawned AFTER the turn's ambient
+    # conversation context was reset, so publish it here from the session id
+    # we already hold — the title-generation LLM call then carries the same
+    # ``conversation=`` Portal tag as the turn it titles. Root-of-lineage for
+    # consistency with the agent loop (a no-op on first exchange, where
+    # titling happens, but correct if this ever runs on a continuation).
+    from agent.portal_tags import set_conversation_context
+
+    conversation_id = session_id
+    try:
+        conversation_id = session_db.get_conversation_root(session_id) or session_id
+    except Exception:
+        pass
+    set_conversation_context(conversation_id)
 
     title = generate_title(
         user_message, assistant_response, failure_callback=failure_callback, main_runtime=main_runtime

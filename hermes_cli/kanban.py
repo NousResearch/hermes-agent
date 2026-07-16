@@ -2180,6 +2180,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 {"task_id": tid, "assignee": who, "current": current}
                 for (tid, who, current) in res.skipped_per_profile_capped
             ],
+            "skipped_board_capped": res.skipped_board_capped,
             "auto_assigned_default": res.auto_assigned_default,
         }, indent=2))
         return 0

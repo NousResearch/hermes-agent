@@ -1297,7 +1297,7 @@ def batch_take(payload: BatchTakeBody, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
     with kanban_db.scoped_current_board(board or kanban_db.DEFAULT_BOARD):
         from hermes_cli import kanban_batch_take
-        outcome = kanban_batch_take.plan_and_take(payload.ids)
+        outcome = kanban_batch_take.take(payload.ids)
     return {
         "ok": outcome.ok,
         "reason": outcome.reason,
@@ -2036,6 +2036,7 @@ class CreateBoardBody(BaseModel):
     icon: Optional[str] = None
     color: Optional[str] = None
     default_workdir: Optional[str] = None
+    agent_limit: Optional[int] = None
     switch: bool = False
 
 
@@ -2044,6 +2045,7 @@ class RenameBoardBody(BaseModel):
     description: Optional[str] = None
     icon: Optional[str] = None
     color: Optional[str] = None
+    agent_limit: Optional[int] = None
 
 
 def _board_counts(slug: str) -> dict[str, int]:
@@ -2113,6 +2115,7 @@ def create_board_endpoint(payload: CreateBoardBody):
             icon=payload.icon,
             color=payload.color,
             default_workdir=default_workdir,
+            agent_limit=payload.agent_limit,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -2140,6 +2143,7 @@ def rename_board(slug: str, payload: RenameBoardBody):
         description=payload.description,
         icon=payload.icon,
         color=payload.color,
+        agent_limit=payload.agent_limit,
     )
     return {"board": meta}
 

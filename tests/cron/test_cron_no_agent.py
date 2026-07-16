@@ -12,6 +12,9 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
+import time
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -469,6 +472,79 @@ def test_no_agent_silence_clears_key_so_same_alert_can_recur(
     )
     assert scheduler.run_one_job(recovered) is True
     assert deliveries == ["same alert", "same alert"]
+
+
+@pytest.mark.parametrize("confirmation", ["partial", "assumed", "unconfirmed"])
+def test_no_agent_newer_delivery_hold_replaces_obsolete_confirmed_key(
+    hermes_env, monkeypatch, confirmation
+):
+    """A non-confirmed B hold must not keep obsolete confirmed A active."""
+    from cron.jobs import create_job, get_job
+    import cron.scheduler as scheduler
+
+    (hermes_env / "scripts" / "alert.sh").write_text("echo alert\n")
+    job = create_job(
+        prompt=None,
+        schedule="every 5m",
+        script="alert.sh",
+        no_agent=True,
+        deduplicate_delivery=True,
+        deliver="telegram:raw-private-chat-id",
+    )
+    outputs = iter(["alert A", "alert B", "alert B", "alert A"])
+    monkeypatch.setattr(
+        scheduler,
+        "run_job",
+        lambda job, defer_agent_teardown=None: (True, "doc", next(outputs), None),
+    )
+    monkeypatch.setattr(
+        scheduler, "save_job_output", lambda job_id, output: f"/tmp/{job_id}.md"
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_resolve_delivery_targets",
+        lambda job: [{"platform": "telegram", "chat_id": "raw-private-chat-id"}],
+    )
+    deliveries = []
+    delivery_confirmations = iter(["confirmed", confirmation, "confirmed"])
+
+    def deliver(job, output, adapters=None, loop=None, receipt_out=None):
+        deliveries.append(output)
+        outcome = next(delivery_confirmations)
+        receipt_out.update(
+            {
+                "confirmation": outcome,
+                "dedup_holds_key": True,
+                "message_id_hashes": [],
+                "attempt_counts": [1],
+                "thread_fallback": False,
+                "error_kind": None,
+            }
+        )
+        return None
+
+    monkeypatch.setattr(scheduler, "_deliver_result", deliver)
+
+    assert scheduler.run_one_job(job) is True
+    after_a = get_job(job["id"])
+    confirmed_a_key = after_a["last_delivery_key"]
+
+    assert scheduler.run_one_job(after_a) is True
+    after_b = get_job(job["id"])
+    held_b_key = after_b["last_delivery_hold_key"]
+    assert held_b_key != confirmed_a_key
+    assert after_b["last_delivery_key"] is None
+
+    assert scheduler.run_one_job(after_b) is True
+    after_b_repeat = get_job(job["id"])
+    assert after_b_repeat["last_delivery_receipt"]["confirmation"] == "suppressed"
+    assert after_b_repeat["last_delivery_hold_key"] == held_b_key
+
+    assert scheduler.run_one_job(after_b_repeat) is True
+    after_a_recurrence = get_job(job["id"])
+    assert deliveries == ["alert A", "alert B", "alert A"]
+    assert after_a_recurrence["last_delivery_receipt"]["confirmation"] == "confirmed"
+    assert after_a_recurrence["last_delivery_key"] == confirmed_a_key
 
 
 @pytest.mark.parametrize(
@@ -1092,3 +1168,116 @@ def test_run_job_script_path_traversal_still_blocked(hermes_env):
     ok, output = _run_job_script("/etc/passwd")
     assert ok is False
     assert "Blocked" in output or "outside" in output
+
+
+def test_run_job_script_without_workdir_keeps_scripts_directory_cwd(hermes_env):
+    from cron.scheduler import _run_job_script
+
+    scripts_dir = hermes_env / "scripts"
+    (scripts_dir / "marker.txt").write_text("scripts marker\n")
+    (scripts_dir / "default-cwd.py").write_text(
+        "from pathlib import Path\n"
+        "print(f'{Path.cwd()}|{Path(\"marker.txt\").read_text().strip()}')\n"
+    )
+
+    ok, output = _run_job_script("default-cwd.py")
+
+    assert ok is True
+    assert output == f"{scripts_dir}|scripts marker"
+
+
+def test_run_job_no_agent_uses_workdir_for_pwd_and_relative_files(hermes_env, tmp_path):
+    from cron.scheduler import run_job
+
+    workdir = tmp_path / "project"
+    workdir.mkdir()
+    (workdir / "marker.txt").write_text("project marker\n")
+    (hermes_env / "scripts" / "relative.py").write_text(
+        "from pathlib import Path\n"
+        "print(f'{Path.cwd()}|{Path(\"marker.txt\").read_text().strip()}')\n"
+    )
+    job = {
+        "id": "relative-workdir",
+        "name": "relative workdir",
+        "script": "relative.py",
+        "no_agent": True,
+        "workdir": str(workdir),
+    }
+
+    success, _doc, output, error = run_job(job)
+
+    assert success is True
+    assert error is None
+    assert output == f"{workdir}|project marker"
+
+
+def test_run_job_no_agent_invalid_workdir_fails_clearly(hermes_env, tmp_path):
+    from cron.scheduler import run_job
+
+    missing = tmp_path / "missing-project"
+    (hermes_env / "scripts" / "relative.py").write_text("print('should not run')\n")
+    job = {
+        "id": "missing-workdir",
+        "name": "missing workdir",
+        "script": "relative.py",
+        "no_agent": True,
+        "workdir": str(missing),
+    }
+
+    success, _doc, output, error = run_job(job)
+
+    assert success is False
+    assert error is not None
+    assert "workdir" in error.lower()
+    assert "does not exist" in error.lower()
+    assert "should not run" not in output
+
+
+def test_overlapping_no_agent_workdirs_never_change_process_cwd(hermes_env, tmp_path):
+    from cron.scheduler import run_job
+
+    initial_cwd = os.getcwd()
+    workdirs = [tmp_path / "project-a", tmp_path / "project-b"]
+    for index, workdir in enumerate(workdirs):
+        workdir.mkdir()
+        (workdir / "marker.txt").write_text(f"marker-{index}\n")
+    (hermes_env / "scripts" / "overlap.py").write_text(
+        "import time\n"
+        "from pathlib import Path\n"
+        "Path('started').write_text('ready')\n"
+        "deadline = time.monotonic() + 3\n"
+        "while not Path('release').exists() and time.monotonic() < deadline:\n"
+        "    time.sleep(0.01)\n"
+        "print(f'{Path.cwd()}|{Path(\"marker.txt\").read_text().strip()}')\n"
+    )
+    jobs = [
+        {
+            "id": f"overlap-{index}",
+            "name": f"overlap {index}",
+            "script": "overlap.py",
+            "no_agent": True,
+            "workdir": str(workdir),
+        }
+        for index, workdir in enumerate(workdirs)
+    ]
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(run_job, job) for job in jobs]
+        deadline = time.monotonic() + 2
+        while not all((workdir / "started").exists() for workdir in workdirs):
+            assert os.getcwd() == initial_cwd
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.01)
+        assert all((workdir / "started").exists() for workdir in workdirs)
+        assert os.getcwd() == initial_cwd
+        for workdir in workdirs:
+            (workdir / "release").write_text("go\n")
+        results = [future.result(timeout=5) for future in futures]
+
+    assert os.getcwd() == initial_cwd
+    assert all(result[0] is True and result[3] is None for result in results)
+    assert {result[2] for result in results} == {
+        f"{workdirs[0]}|marker-0",
+        f"{workdirs[1]}|marker-1",
+    }

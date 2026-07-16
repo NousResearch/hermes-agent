@@ -10160,10 +10160,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
-            if isinstance(self.config, dict):
-                quick_commands = self.config.get("quick_commands", {}) or {}
+            quick_config = self.config
+            quick_profile_home = None
+            multiplex_profiles = (
+                bool(self.config.get("multiplex_profiles", False))
+                if isinstance(self.config, dict)
+                else bool(getattr(self.config, "multiplex_profiles", False))
+            )
+            if multiplex_profiles:
+                quick_profile_home = self._resolve_profile_home_for_source(source)
+                from gateway.config import load_gateway_config
+
+                with _profile_runtime_scope(quick_profile_home):
+                    quick_config = load_gateway_config()
+
+            if isinstance(quick_config, dict):
+                quick_commands = quick_config.get("quick_commands", {}) or {}
             else:
-                quick_commands = getattr(self.config, "quick_commands", {}) or {}
+                quick_commands = getattr(quick_config, "quick_commands", {}) or {}
             if not isinstance(quick_commands, dict):
                 quick_commands = {}
             if command in quick_commands:
@@ -10174,7 +10188,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # dispatch sink unchecked. Apply the same admin/user policy to
                 # the raw typed name here so non-admins can't invoke admin-only
                 # quick commands. (#44727)
-                _denied = self._check_slash_access(source, command)
+                _denied = self._check_slash_access(
+                    source, command, gateway_config=quick_config
+                )
                 if _denied is not None:
                     return _denied
                 qcmd = quick_commands[command]
@@ -10218,6 +10234,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         build_gateway_argv_environment,
                         communicate_bounded_async,
                         prepare_argv_command,
+                        _new_process_group_kwargs,
                     )
 
                     canary_claim = None
@@ -10321,12 +10338,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     try:
                         argv = prepare_argv_command(qcmd, event.get_command_args())
                         platform_name = getattr(source.platform, "value", source.platform)
-                        child_env = build_gateway_argv_environment(
-                            qcmd,
-                            platform=platform_name,
-                            message_id=event.message_id,
-                            update_id=getattr(event, "platform_update_id", None),
-                        )
+                        if quick_profile_home is None:
+                            child_env = build_gateway_argv_environment(
+                                qcmd,
+                                platform=platform_name,
+                                message_id=event.message_id,
+                                update_id=getattr(event, "platform_update_id", None),
+                            )
+                        else:
+                            with _profile_runtime_scope(quick_profile_home):
+                                child_env = build_gateway_argv_environment(
+                                    qcmd,
+                                    platform=platform_name,
+                                    message_id=event.message_id,
+                                    update_id=getattr(event, "platform_update_id", None),
+                                )
                     except QuickCommandConfigError as exc:
                         _mark_canary_failure("quick_command_configuration_error")
                         return f"Quick command '/{command}' configuration error: {exc}."
@@ -10338,6 +10364,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             stdout=asyncio.subprocess.PIPE,
                             stderr=asyncio.subprocess.PIPE,
                             env=child_env,
+                            **_new_process_group_kwargs(),
                         )
                         stdout, stderr = await communicate_bounded_async(
                             proc, timeout=QUICK_COMMAND_TIMEOUT_SECONDS
@@ -12905,7 +12932,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
 
     def _check_slash_access(
-        self, source: SessionSource, canonical_cmd: str
+        self,
+        source: SessionSource,
+        canonical_cmd: str,
+        *,
+        gateway_config: Any = None,
     ) -> Optional[str]:
         """Return a denial message if ``source`` cannot run ``canonical_cmd``,
         else None. Used by both the cold and running-agent dispatch paths
@@ -12921,7 +12952,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if not canonical_cmd:
             return None
-        policy = _policy_for_source(self.config, source)
+        policy = _policy_for_source(
+            self.config if gateway_config is None else gateway_config,
+            source,
+        )
         if not policy.enabled or policy.can_run(source.user_id, canonical_cmd):
             return None
         logger.info(

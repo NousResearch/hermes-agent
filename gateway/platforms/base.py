@@ -4686,12 +4686,45 @@ class BasePlatformAdapter(ABC):
         # Offloaded: the sync hook must not block the loop.
         await asyncio.to_thread(self._apply_topic_recovery, event)
 
-        session_key = build_session_key(
-            event.source,
-            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-            profile=event.source.profile,
-        )
+        session_key = None
+        runner = getattr(self, "gateway_runner", None)
+        resolver = getattr(runner, "_session_key_for_source", None)
+        if callable(resolver):
+            try:
+                resolved = resolver(event.source)
+                if isinstance(resolved, str) and resolved:
+                    session_key = resolved
+            except Exception:
+                logger.debug(
+                    "[%s] Runner session-key resolution failed; using adapter fallback",
+                    self.name,
+                    exc_info=True,
+                )
+        if session_key is None:
+            session_store = getattr(self, "_session_store", None)
+            resolver = getattr(session_store, "_generate_session_key", None)
+            if callable(resolver):
+                try:
+                    resolved = resolver(event.source)
+                    if isinstance(resolved, str) and resolved:
+                        session_key = resolved
+                except Exception:
+                    logger.debug(
+                        "[%s] Session-store key resolution failed; using legacy fallback",
+                        self.name,
+                        exc_info=True,
+                    )
+        if session_key is None:
+            session_key = build_session_key(
+                event.source,
+                group_sessions_per_user=self.config.extra.get(
+                    "group_sessions_per_user", True
+                ),
+                thread_sessions_per_user=self.config.extra.get(
+                    "thread_sessions_per_user", False
+                ),
+                profile=event.source.profile,
+            )
 
         # On-entry self-heal: if the adapter still has an _active_sessions
         # entry for this key but the owner task has already exited (done or

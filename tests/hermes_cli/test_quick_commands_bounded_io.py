@@ -15,10 +15,24 @@ from hermes_cli.quick_commands import (
     communicate_bounded_async,
     run_bounded_argv,
 )
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
 def _minimal_test_env() -> dict[str, str]:
     return {"PATH": os.environ.get("PATH", "")}
+
+
+def test_minimal_environment_preserves_context_resolved_hermes_home(tmp_path):
+    from hermes_cli.quick_commands import build_argv_environment
+
+    named_home = tmp_path / "profiles" / "coder"
+    token = set_hermes_home_override(named_home)
+    try:
+        child_env = build_argv_environment()
+    finally:
+        reset_hermes_home_override(token)
+
+    assert child_env["HERMES_HOME"] == str(named_home)
 
 
 @pytest.mark.live_system_guard_bypass
@@ -82,6 +96,51 @@ def test_sync_streaming_timeout_terminates_and_reaps(monkeypatch):
 
     assert len(spawned) == 1
     assert spawned[0].poll() is not None
+
+
+@pytest.mark.live_system_guard_bypass
+def test_sync_reader_hang_terminates_forked_descendant(monkeypatch, tmp_path):
+    pid_path = tmp_path / "descendant.pid"
+    heartbeat_path = tmp_path / "descendant.heartbeat"
+    descendant = (
+        "import pathlib,sys,time\n"
+        "path=pathlib.Path(sys.argv[1])\n"
+        "while True:\n"
+        " path.write_text(str(time.time_ns()))\n"
+        " time.sleep(0.01)\n"
+    )
+    script = (
+        "import pathlib,subprocess,sys,time\n"
+        "heartbeat=pathlib.Path(sys.argv[2])\n"
+        "child=subprocess.Popen([sys.executable,'-c',sys.argv[3],str(heartbeat)])\n"
+        "deadline=time.monotonic()+2\n"
+        "while not heartbeat.exists() and time.monotonic()<deadline: time.sleep(0.01)\n"
+        "pathlib.Path(sys.argv[1]).write_text(str(child.pid))\n"
+    )
+    monkeypatch.setattr("hermes_cli.quick_commands._PROCESS_STOP_GRACE_SECONDS", 0.1)
+
+    with pytest.raises(QuickCommandOutputError, match="streams did not close"):
+        run_bounded_argv(
+            [
+                sys.executable,
+                "-c",
+                script,
+                str(pid_path),
+                str(heartbeat_path),
+                descendant,
+            ],
+            env=_minimal_test_env(),
+            timeout=5,
+        )
+
+    descendant_pid = int(pid_path.read_text())
+    before = heartbeat_path.read_text()
+    import time
+
+    time.sleep(0.1)
+    assert heartbeat_path.read_text() == before, (
+        f"forked argv descendant {descendant_pid} survived reader hang"
+    )
 
 
 def test_sync_streaming_allows_exact_combined_cap():

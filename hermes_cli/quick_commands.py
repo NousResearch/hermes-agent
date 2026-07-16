@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import signal
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Mapping
@@ -57,6 +59,7 @@ def run_bounded_argv(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=dict(env),
+        **_new_process_group_kwargs(),
     )
     if proc.stdout is None or proc.stderr is None:  # pragma: no cover - Popen contract
         _terminate_sync_process(proc)
@@ -130,8 +133,15 @@ def run_bounded_argv(
             f"output exceeds {QUICK_COMMAND_OUTPUT_MAX_BYTES} UTF-8 bytes"
         )
     if any(reader.is_alive() for reader in readers):
+        # The argv leader may have exited after forking a descendant that
+        # inherited our pipes. Kill the dedicated process group before
+        # reporting the hung readers so no background child survives.
+        _terminate_sync_process(proc)
+        for reader in readers:
+            reader.join(_PROCESS_STOP_GRACE_SECONDS)
         raise QuickCommandOutputError("output streams did not close")
     if reader_errors:
+        _terminate_sync_process(proc)
         raise OSError("quick-command output read failed") from reader_errors[0]
 
     return subprocess.CompletedProcess(
@@ -191,40 +201,94 @@ async def communicate_bounded_async(
     return bytes(stdout), bytes(stderr)
 
 
-def _terminate_sync_process(proc: subprocess.Popen[bytes]) -> None:
-    """Terminate, escalate if needed, and synchronously reap a child."""
+def _new_process_group_kwargs() -> dict[str, Any]:
+    """Return platform-safe kwargs for a dedicated quick-command group."""
+    if sys.platform == "win32":
+        return {
+            "creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200)
+        }
+    return {"start_new_session": True}
+
+
+def _posix_group_exists(pgid: int) -> bool:
     try:
-        proc.terminate()
+        os.killpg(pgid, 0)
+        return True
     except ProcessLookupError:
+        return False
+    except (PermissionError, OSError):
+        # Treat an indeterminate result as live and fail toward cleanup.
+        return True
+
+
+def _terminate_windows_tree(pid: int) -> None:
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+            check=False,
+        )  # windows-footgun: ok -- Windows-only process-tree primitive
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         pass
+
+
+def _terminate_sync_process(proc: subprocess.Popen[bytes]) -> None:
+    """Terminate, escalate, and reap the child's entire process tree."""
+    pid = proc.pid
+    if sys.platform == "win32":
+        _terminate_windows_tree(pid)
+    else:
+        try:
+            os.killpg(pid, signal.SIGTERM)  # windows-footgun: ok -- POSIX branch
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        deadline = time.monotonic() + _PROCESS_STOP_GRACE_SECONDS
+        while _posix_group_exists(pid) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if _posix_group_exists(pid):
+            try:
+                os.killpg(pid, signal.SIGKILL)  # windows-footgun: ok -- POSIX branch
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
     try:
         proc.wait(timeout=_PROCESS_STOP_GRACE_SECONDS)
-        return
     except subprocess.TimeoutExpired:
-        pass
-    try:
-        proc.kill()
-    except ProcessLookupError:
-        pass
-    proc.wait()
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        proc.wait()
 
 
 async def _terminate_async_process(proc: asyncio.subprocess.Process) -> None:
-    """Terminate, escalate if needed, and asynchronously reap a child."""
-    try:
-        proc.terminate()
-    except ProcessLookupError:
-        pass
+    """Terminate, escalate, and reap the child's entire process tree."""
+    pid = proc.pid
+    if sys.platform == "win32":
+        await asyncio.to_thread(_terminate_windows_tree, pid)
+    else:
+        try:
+            os.killpg(pid, signal.SIGTERM)  # windows-footgun: ok -- POSIX branch
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        deadline = asyncio.get_running_loop().time() + _PROCESS_STOP_GRACE_SECONDS
+        while _posix_group_exists(pid) and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.01)
+        if _posix_group_exists(pid):
+            try:
+                os.killpg(pid, signal.SIGKILL)  # windows-footgun: ok -- POSIX branch
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
     try:
         await asyncio.wait_for(proc.wait(), timeout=_PROCESS_STOP_GRACE_SECONDS)
-        return
     except asyncio.TimeoutError:
-        pass
-    try:
-        proc.kill()
-    except ProcessLookupError:
-        pass
-    await proc.wait()
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        await proc.wait()
 
 
 def prepare_argv_command(qcmd: Any, argument_text: str) -> list[str]:
@@ -269,6 +333,12 @@ def build_argv_environment(extra: Mapping[str, Any] | None = None) -> dict[str, 
         for key in _TRUSTED_BASE_ENV_KEYS
         if (value := os.environ.get(key)) is not None and "\x00" not in value
     }
+    # ``HERMES_HOME`` may be a context-local profile override rather than a
+    # process environment variable. Preserve the resolved home explicitly so
+    # named CLI/TUI and multiplexed gateway argv children stay in their lane.
+    from hermes_constants import get_hermes_home
+
+    child_env["HERMES_HOME"] = str(get_hermes_home())
     for name, value in (extra or {}).items():
         child_env[name] = _bounded_metadata(value, name)
     return child_env

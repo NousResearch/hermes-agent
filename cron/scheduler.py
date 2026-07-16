@@ -2323,7 +2323,9 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
-def _run_job_script(script_path: str) -> tuple[bool, str]:
+def _run_job_script(
+    script_path: str, *, workdir: Optional[str] = None
+) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
     Scripts must reside within HERMES_HOME/scripts/.  Both relative and
@@ -2349,6 +2351,10 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         script_path: Path to the script.  Relative paths are resolved
             against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
             are also validated to ensure they stay within the scripts dir.
+        workdir: Optional configured directory for the child process.  When
+            omitted, the script directory remains the subprocess cwd for
+            backward compatibility.  A configured path is validated at run
+            time and never applied to the scheduler process itself.
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
@@ -2378,6 +2384,27 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         return False, f"Script not found: {path}"
     if not path.is_file():
         return False, f"Script path is not a file: {path}"
+
+    subprocess_cwd = path.parent
+    if workdir is not None:
+        raw_workdir = str(workdir).strip()
+        if raw_workdir:
+            configured_workdir = Path(raw_workdir).expanduser()
+            if not configured_workdir.is_absolute():
+                return False, (
+                    "Configured workdir must be an absolute path: "
+                    f"{raw_workdir!r}"
+                )
+            try:
+                subprocess_cwd = configured_workdir.resolve(strict=True)
+            except FileNotFoundError:
+                return False, f"Configured workdir does not exist: {configured_workdir}"
+            except OSError as exc:
+                return False, (
+                    f"Configured workdir cannot be resolved: {configured_workdir}: {exc}"
+                )
+            if not subprocess_cwd.is_dir():
+                return False, f"Configured workdir is not a directory: {subprocess_cwd}"
 
     script_timeout = _get_script_timeout()
 
@@ -2414,7 +2441,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             capture_output=True,
             text=True,
             timeout=script_timeout,
-            cwd=str(path.parent),
+            cwd=str(subprocess_cwd),
             env=_sanitize_subprocess_env(os.environ.copy()),
             **popen_kwargs,
         )
@@ -2448,7 +2475,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
 
 def _run_job_script_with_claim_heartbeat(
-    job: dict, script_path: str
+    job: dict, script_path: str, *, workdir: Optional[str] = None
 ) -> tuple[bool, str]:
     """Run a cron script while keeping its owned one-shot claim fresh.
 
@@ -2462,6 +2489,11 @@ def _run_job_script_with_claim_heartbeat(
     storage.  ``heartbeat_run_claim`` compares that stable owner before every
     refresh, so a stale runner cannot extend a replacement owner's claim.
     """
+    def _execute_script() -> tuple[bool, str]:
+        if workdir is None:
+            return _run_job_script(script_path)
+        return _run_job_script(script_path, workdir=workdir)
+
     schedule = job.get("schedule")
     claim = job.get("run_claim")
     owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
@@ -2470,7 +2502,7 @@ def _run_job_script_with_claim_heartbeat(
         and schedule.get("kind") == "once"
         and owner
     ):
-        return _run_job_script(script_path)
+        return _execute_script()
 
     job_id = str(job.get("id") or "")
     stop = threading.Event()
@@ -2501,10 +2533,10 @@ def _run_job_script_with_claim_heartbeat(
             job_id,
             exc_info=True,
         )
-        return _run_job_script(script_path)
+        return _execute_script()
 
     try:
-        return _run_job_script(script_path)
+        return _execute_script()
     finally:
         stop.set()
         # Event.wait() wakes immediately.  Keep completion bounded if the
@@ -2906,26 +2938,13 @@ def run_job(
             logger.error("Job '%s': %s", job_id, err)
             return False, "", "", err
 
-        # Apply workdir if configured — lets scripts use predictable relative
-        # paths. For no_agent jobs this is just the subprocess cwd (not an
-        # agent TERMINAL_CWD bridge).
+        # Apply workdir only to the child process.  os.chdir() is
+        # process-global, so using it here would let overlapping deterministic
+        # jobs redirect each other's relative I/O (and unrelated gateway work).
         _job_workdir = (job.get("workdir") or "").strip() or None
-        _prior_cwd = None
-        if _job_workdir and Path(_job_workdir).is_dir():
-            _prior_cwd = os.getcwd()
-            try:
-                os.chdir(_job_workdir)
-            except OSError:
-                _prior_cwd = None
-
-        try:
-            ok, output = _run_job_script_with_claim_heartbeat(job, script_path)
-        finally:
-            if _prior_cwd is not None:
-                try:
-                    os.chdir(_prior_cwd)
-                except OSError:
-                    pass
+        ok, output = _run_job_script_with_claim_heartbeat(
+            job, script_path, workdir=_job_workdir
+        )
 
         now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -4010,19 +4029,27 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
                     delivery_state["last_delivery_key"] = delivery_key
                     delivery_state["last_delivery_hold_key"] = delivery_key
                 elif (
-                    confirmation in {"assumed", "suppressed", "partial", "unconfirmed"}
+                    confirmation == "suppressed"
                     and holds_key
                     and delivery_key
                 ):
+                    # Suppression is not a newer delivery.  Preserve whether
+                    # the matching current hold came from an earlier confirmed
+                    # delivery or a non-confirmed exact-payload hold.
                     delivery_state["last_delivery_hold_key"] = delivery_key
-                elif confirmation in {"silent", "local", "ineligible", "filtered"}:
-                    # Silence is the watchdog's recovery signal. Clearing the
-                    # old fingerprint lets the same alert be delivered again
-                    # if the condition later recurs. Local/fan-out routing is
-                    # likewise outside the single-target dedup contract.
+                elif confirmation in {"assumed", "partial", "unconfirmed"}:
+                    # A newer non-confirmed B replaces obsolete confirmed A.
+                    # Hold only B when delivery evidence says replaying that
+                    # exact payload is unsafe; unrelated content may recur.
                     delivery_state["last_delivery_key"] = None
-                    delivery_state["last_delivery_hold_key"] = None
-                elif confirmation == "failed":
+                    delivery_state["last_delivery_hold_key"] = (
+                        delivery_key if holds_key and delivery_key else None
+                    )
+                else:
+                    # Silence is the watchdog's recovery signal.  Failed,
+                    # local, filtered, fan-out, and unknown outcomes likewise
+                    # establish no current single-target delivery hold.
+                    delivery_state["last_delivery_key"] = None
                     delivery_state["last_delivery_hold_key"] = None
             elif should_deliver:
                 try:

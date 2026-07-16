@@ -256,6 +256,66 @@ class TestSessionKeyIntegration:
 
         assert not adapter._pending_messages
 
+    @pytest.mark.asyncio
+    async def test_adapter_guard_uses_named_active_profile_fallback(self):
+        """An unstamped active-profile event must use the runner's key."""
+        import asyncio
+        from unittest.mock import AsyncMock, MagicMock
+
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import BasePlatformAdapter, MessageEvent
+        from gateway.session import Platform, SessionSource
+
+        class _ConcreteAdapter(BasePlatformAdapter):
+            platform = Platform.DISCORD
+
+            async def connect(self, *, is_reconnect: bool = False):
+                pass
+
+            async def disconnect(self):
+                pass
+
+            async def send(self, chat_id, content, **kwargs):
+                pass
+
+            async def get_chat_info(self, chat_id):
+                return {}
+
+        adapter = _ConcreteAdapter(
+            PlatformConfig(enabled=True, token="***"), Platform.DISCORD
+        )
+        event = MessageEvent(
+            text="follow-up",
+            source=SessionSource(
+                platform=Platform.DISCORD,
+                chat_id="123",
+                chat_type="dm",
+                user_id="456",
+                profile=None,
+            ),
+            message_id="m1",
+        )
+        coder_key = "agent:coder:discord:dm:123"
+        runner = MagicMock()
+        runner._session_key_for_source.return_value = coder_key
+        adapter.gateway_runner = runner
+        adapter.set_message_handler(AsyncMock())
+        adapter.set_busy_session_handler(AsyncMock(return_value=True))
+        guard = asyncio.Event()
+        owner = asyncio.create_task(asyncio.sleep(60))
+        adapter._active_sessions[coder_key] = guard
+        adapter._session_tasks[coder_key] = owner
+
+        try:
+            await adapter.handle_message(event)
+        finally:
+            owner.cancel()
+            await asyncio.gather(owner, return_exceptions=True)
+
+        runner._session_key_for_source.assert_called_once_with(event.source)
+        adapter._busy_session_handler.assert_awaited_once_with(event, coder_key)
+        adapter._message_handler.assert_not_awaited()
+
 
 
 class TestParentChatIdMatching:

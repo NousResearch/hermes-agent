@@ -4,7 +4,15 @@ import { useCallback } from 'react'
 import { getGlobalModelInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
-import { $activeSessionId, $currentModel, $currentProvider, setCurrentModel, setCurrentProvider } from '@/store/session'
+import {
+  $activeSessionId,
+  $currentModel,
+  $currentModelExplicitlySet,
+  $currentProvider,
+  setCurrentModel,
+  setCurrentModelExplicitlySet,
+  setCurrentProvider
+} from '@/store/session'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
 interface ModelSelection {
@@ -46,6 +54,10 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
         return
       }
 
+      if (force) {
+        setCurrentModelExplicitlySet(false)
+      }
+
       if (!force && $currentModel.get()) {
         return
       }
@@ -84,6 +96,7 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
 
       setCurrentModel(selection.model)
       setCurrentProvider(selection.provider)
+      setCurrentModelExplicitlySet(true)
       updateModelOptionsCache(selection.provider, selection.model, !activeSessionId)
 
       // No live session yet: the pick is pure UI state. session.create reads

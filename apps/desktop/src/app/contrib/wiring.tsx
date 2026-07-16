@@ -79,6 +79,7 @@ import { useCwdActions } from '../session/hooks/use-cwd-actions'
 import { useHermesConfig } from '../session/hooks/use-hermes-config'
 import { useMessageStream } from '../session/hooks/use-message-stream'
 import { useModelControls } from '../session/hooks/use-model-controls'
+import { useModelProfileSync } from '../session/hooks/use-model-profile-sync'
 import { usePreviewRouting } from '../session/hooks/use-preview-routing'
 import { usePromptActions } from '../session/hooks/use-prompt-actions'
 import { useRouteResume } from '../session/hooks/use-route-resume'
@@ -630,6 +631,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     refreshSessions,
     requestGateway
   })
+
+  // Keep the composer in sync with the profile's model.default after the
+  // initial seed from refreshCurrentModel (above). Polls every 30 s while the
+  // gateway is open — catches Dashboard edits, hermes model, hermes config set,
+  // and other clients on the same profile.
+  useModelProfileSync({ gatewayOpen: gatewayState === 'open' })
 
   // Electron-main / OS / cross-window integrations: update polling, ⌘W close,
   // deep links, native-notification nav, preview-shortcut enablement,

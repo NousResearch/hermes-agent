@@ -20,6 +20,10 @@ const COMPOSER_MODEL_KEY = 'hermes.desktop.composer.model'
 const COMPOSER_PROVIDER_KEY = 'hermes.desktop.composer.provider'
 const COMPOSER_EFFORT_KEY = 'hermes.desktop.composer.reasoning-effort'
 const COMPOSER_FAST_KEY = 'hermes.desktop.composer.fast'
+// Persisted provenance: did the user explicitly pick the model (picker UI) vs.
+// was it auto-seeded from the profile default? Persisted so a page reload
+// doesn't forget a picker selection equal to the default.
+const COMPOSER_MODEL_EXPLICITLY_SET_KEY = 'hermes.desktop.composer.model-explicit'
 
 // The last chat the user had open, so a relaunch lands back on it instead of an
 // empty new-chat. Stored (not runtime) id — the route is keyed by stored id.
@@ -278,6 +282,12 @@ export const $resumeFailedSessionId = atom<string | null>(null)
 export const $resumeExhaustedSessionId = atom<string | null>(null)
 export const $currentModel = atom(storedString(COMPOSER_MODEL_KEY) ?? '')
 export const $currentProvider = atom(storedString(COMPOSER_PROVIDER_KEY) ?? '')
+// True when the user explicitly picked a model via selectModel (the picker UI).
+// A picker selection equal to the current default is still an explicit pick —
+// the next external default change must not overwrite it. Persisted so a page
+// reload doesn't forget a picker selection equal to the default. Reset to
+// false when refreshCurrentModel(force=true) reseeds from a new profile's default.
+export const $currentModelExplicitlySet = atom(storedBoolean(COMPOSER_MODEL_EXPLICITLY_SET_KEY, false))
 export const $currentReasoningEffort = atom(storedString(COMPOSER_EFFORT_KEY) ?? '')
 export const $currentServiceTier = atom('')
 export const $currentFastMode = atom(storedBoolean(COMPOSER_FAST_KEY, false))
@@ -350,6 +360,13 @@ export const setCurrentProvider = (next: Updater<string>) => {
 export const setCurrentReasoningEffort = (next: Updater<string>) => {
   updateAtom($currentReasoningEffort, next)
   persistString(COMPOSER_EFFORT_KEY, $currentReasoningEffort.get() || null)
+}
+
+// Persisted so a page reload doesn't forget a picker selection equal to the
+// default. Set to true in selectModel, false in refreshCurrentModel(force=true).
+export const setCurrentModelExplicitlySet = (next: Updater<boolean>) => {
+  updateAtom($currentModelExplicitlySet, next)
+  persistBoolean(COMPOSER_MODEL_EXPLICITLY_SET_KEY, $currentModelExplicitlySet.get())
 }
 
 export const setCurrentServiceTier = (next: Updater<string>) => updateAtom($currentServiceTier, next)

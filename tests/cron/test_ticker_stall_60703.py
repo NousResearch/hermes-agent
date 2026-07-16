@@ -34,6 +34,9 @@ from cron.jobs import (
     save_jobs,
 )
 
+_IMPORT_TIME_TICKER_HEARTBEAT_FILE = jobs_mod.TICKER_HEARTBEAT_FILE
+_IMPORT_TIME_TICKER_SUCCESS_FILE = jobs_mod.TICKER_SUCCESS_FILE
+
 
 try:
     import fcntl
@@ -50,12 +53,41 @@ def test_cron_store_uses_hermetic_home():
         jobs_mod.CRON_DIR,
         jobs_mod.JOBS_FILE,
         jobs_mod.OUTPUT_DIR,
+        jobs_mod.TICKER_HEARTBEAT_FILE,
+        jobs_mod.TICKER_SUCCESS_FILE,
     ) == (
         hermes_home,
         hermes_home / "cron",
         hermes_home / "cron" / "jobs.json",
         hermes_home / "cron" / "output",
+        hermes_home / "cron" / "ticker_heartbeat",
+        hermes_home / "cron" / "ticker_last_success",
     )
+
+
+def test_ticker_heartbeat_uses_hermetic_home():
+    hermes_home = Path(os.environ["HERMES_HOME"]).resolve()
+    heartbeat_file = hermes_home / "cron" / "ticker_heartbeat"
+    success_file = hermes_home / "cron" / "ticker_last_success"
+    original_files = (
+        _IMPORT_TIME_TICKER_HEARTBEAT_FILE,
+        _IMPORT_TIME_TICKER_SUCCESS_FILE,
+    )
+    assert heartbeat_file not in original_files
+    assert success_file not in original_files
+    original_contents = {
+        path: path.read_bytes() if path.exists() else None for path in original_files
+    }
+
+    jobs_mod.record_ticker_heartbeat()
+    assert heartbeat_file.is_file()
+    assert not success_file.exists()
+
+    jobs_mod.record_ticker_heartbeat(success=True)
+    assert success_file.is_file()
+    assert {
+        path: path.read_bytes() if path.exists() else None for path in original_files
+    } == original_contents
 
 
 def _hold_jobs_flock(path: Path, release: threading.Event, held: threading.Event):

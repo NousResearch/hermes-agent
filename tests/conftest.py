@@ -368,6 +368,18 @@ def _hermetic_environment(tmp_path, monkeypatch):
         monkeypatch.setattr(cron_jobs, "HERMES_DIR", fake_hermes_home, raising=False)
         monkeypatch.setattr(cron_jobs, "CRON_DIR", cron_dir, raising=False)
         monkeypatch.setattr(cron_jobs, "JOBS_FILE", cron_dir / "jobs.json", raising=False)
+        monkeypatch.setattr(
+            cron_jobs,
+            "TICKER_HEARTBEAT_FILE",
+            cron_dir / "ticker_heartbeat",
+            raising=False,
+        )
+        monkeypatch.setattr(
+            cron_jobs,
+            "TICKER_SUCCESS_FILE",
+            cron_dir / "ticker_last_success",
+            raising=False,
+        )
         monkeypatch.setattr(cron_jobs, "OUTPUT_DIR", cron_dir / "output", raising=False)
 
     # 4. Deterministic locale / timezone / hashseed. CI runs in UTC with

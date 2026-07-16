@@ -4612,8 +4612,17 @@ class FeishuAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
         effective_reply_to = reply_to
+        # Feishu exposes two different APIs here:
+        #   * message.reply(message_id, reply_in_thread=True) enters a topic;
+        #   * message.create(receive_id_type=...) only accepts chat/user IDs.
+        # A thread_id (omt_*) is routing context, not a valid create recipient.
+        # Cron/resumed paths therefore carry the original message_id separately
+        # as reply_to_message_id so they can still use the reply API later.
         if not effective_reply_to and metadata and metadata.get("thread_id"):
             effective_reply_to = metadata.get("reply_to_message_id")
+        # Existing topics must always stay threaded. The config flag only changes
+        # top-level replies: when enabled, replying to a top-level message starts
+        # a new topic; when disabled, legacy flat-reply behaviour is preserved.
         reply_in_thread = bool((metadata or {}).get("thread_id")) or _to_boolean(
             self.config.extra.get("reply_in_thread", False)
         )
@@ -4630,8 +4639,10 @@ class FeishuAdapter(BasePlatformAdapter):
         # Feishu topics do not support direct creation by thread_id. Entering a
         # topic requires message.reply with reply_in_thread=True, which in turn
         # requires a message anchor. Async/resumed sends can retain thread_id
-        # after that anchor is gone; deliver those to the parent chat rather than
-        # issuing the invalid receive_id_type="thread_id" request (error 99992402).
+        # after that anchor is gone. Trade-off: an actually anchorless delivery
+        # loses topic placement but still reaches the parent chat. This is safer
+        # than issuing receive_id_type="thread_id", which Feishu rejects with
+        # [99992402] field validation failed and drops the delivery entirely.
         receive_id = chat_id
         receive_id_type = "chat_id"
         if chat_id.startswith("feishu_user_id:"):
@@ -5405,6 +5416,11 @@ async def _standalone_send(
     succeed when cron runs separately from the gateway. Builds a transient
     FeishuAdapter, hydrates its lark client, and sends text + native media
     (images, video, voice, documents). Replaces the legacy _send_feishu helper.
+
+    ``thread_id`` alone cannot address a Feishu topic. Keep the persisted
+    ``reply_to_message_id`` beside it so this path has the same reply-API routing
+    as the live gateway; otherwise a gateway outage would silently change a
+    thread-scoped cron result into a parent-chat message.
     """
     if not FEISHU_AVAILABLE:
         return {"error": "Feishu dependencies not installed. Run: pip install 'hermes-agent[feishu]'"}

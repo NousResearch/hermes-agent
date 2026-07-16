@@ -792,6 +792,11 @@ async def _send_to_platform(
     Long messages are automatically chunked to fit within platform limits
     using the same smart-splitting algorithm as the gateway adapters
     (preserves code-block boundaries, adds part indicators).
+
+    ``reply_to_message_id`` is keyword-only to preserve the long-standing
+    positional calling convention. It is currently needed by Feishu standalone
+    cron delivery because Feishu topics are entered by replying to an om_* message;
+    thread_id alone is not a supported create-message recipient.
     """
     from gateway.config import Platform
 

@@ -38,6 +38,7 @@ interface SubmitPromptDeps {
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
   getRouteToken: () => string
   requestGateway: GatewayRequest
+  runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   selectedStoredSessionIdRef: MutableRefObject<string | null>
   syncAttachmentsForSubmit: (
     sessionId: string,
@@ -81,6 +82,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
     createBackendSessionForSend,
     getRouteToken,
     requestGateway,
+    runtimeIdByStoredSessionIdRef,
     selectedStoredSessionIdRef,
     syncAttachmentsForSubmit,
     updateSessionState,
@@ -250,6 +252,33 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       clearNotifications()
 
       let sessionId: null | string = activeSessionId
+
+      // Entry-time consistency check (#64789/#65328): activeSessionId is a
+      // render-closure value that can already be stale relative to the
+      // currently selected stored session by the time submit fires (e.g. a
+      // fast reselect, or a new-chat draft's active ref not yet re-homed).
+      // The #54527 drift guard only catches divergence that happens AFTER
+      // this point, so an already-diverged runtime/stored pair sails
+      // through it. Prove membership from BOTH directions against the same
+      // cache rather than trusting an absent forward entry as "no
+      // conflict" — a bare forward miss can't rule out the runtime being
+      // known to belong to a DIFFERENT stored session (the failure mode a
+      // one-directional check misses): if either direction disagrees,
+      // activeSessionId is not trustworthy and the resume-by-stored-id path
+      // below re-establishes the correct runtime id instead of silently
+      // sending to the wrong one.
+      if (sessionId && startingStoredSessionId) {
+        const provenRuntimeId = runtimeIdByStoredSessionIdRef.current.get(startingStoredSessionId)
+        const knownMismatch = provenRuntimeId !== undefined && provenRuntimeId !== sessionId
+
+        const runtimeOwnedByOtherStored = Array.from(runtimeIdByStoredSessionIdRef.current.entries()).some(
+          ([storedId, runtimeId]) => runtimeId === sessionId && storedId !== startingStoredSessionId
+        )
+
+        if (knownMismatch || runtimeOwnedByOtherStored) {
+          sessionId = null
+        }
+      }
 
       if (sessionId) {
         seedOptimistic(sessionId)
@@ -457,6 +486,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       createBackendSessionForSend,
       getRouteToken,
       requestGateway,
+      runtimeIdByStoredSessionIdRef,
       scope,
       selectedStoredSessionIdRef,
       syncAttachmentsForSubmit,

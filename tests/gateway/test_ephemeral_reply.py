@@ -246,9 +246,11 @@ async def test_process_message_unwraps_ephemeral_before_send():
     adapter.set_message_handler(_handler)
 
     sleeps: list[float] = []
+    real_sleep = asyncio.sleep
 
     async def _fake_sleep(duration):
         sleeps.append(duration)
+        await real_sleep(0)
 
     event = _make_event()
     session_key = "agent:main:telegram:private:42"

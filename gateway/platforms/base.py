@@ -3936,28 +3936,38 @@ class BasePlatformAdapter(ABC):
         stop_attempts: int = 2,
     ) -> None:
         """Stop the refresh task and platform typing state as one operation."""
+        caller_cancel: asyncio.CancelledError | None = None
         self._typing_paused.add(chat_id)
         try:
             if typing_task is not None and not typing_task.done():
                 typing_task.cancel()
                 try:
                     await asyncio.wait_for(asyncio.shield(typing_task), timeout=timeout)
-                except (asyncio.CancelledError, asyncio.TimeoutError):
-                    # The task is cancelled; don't let a slow adapter-specific
-                    # cleanup block response delivery or shutdown.
+                except asyncio.CancelledError as exc:
+                    current_task = asyncio.current_task()
+                    if current_task is not None and current_task.cancelling():
+                        # Preserve cancellation of the message-processing task.
+                        # A child typing task's normal cancellation must remain
+                        # swallowed, but caller cancellation must suppress stale
+                        # final delivery.
+                        caller_cancel = exc
+                except asyncio.TimeoutError:
+                    # Don't let slow adapter-specific cleanup block response
+                    # delivery or shutdown.
                     pass
-            if not hasattr(self, "stop_typing"):
-                return
-            attempts = max(1, stop_attempts)
-            for attempt in range(attempts):
-                try:
-                    await self._stop_typing_with_metadata(chat_id, metadata)
-                except Exception:
-                    pass
-                if attempt < attempts - 1:
-                    await asyncio.sleep(0)
+            if hasattr(self, "stop_typing"):
+                attempts = max(1, stop_attempts)
+                for attempt in range(attempts):
+                    try:
+                        await self._stop_typing_with_metadata(chat_id, metadata)
+                    except Exception:
+                        pass
+                    if attempt < attempts - 1:
+                        await asyncio.sleep(0)
         finally:
             self._typing_paused.discard(chat_id)
+        if caller_cancel is not None:
+            raise caller_cancel
 
     def pause_typing_for_chat(self, chat_id: str) -> None:
         """Pause typing indicator for a chat (e.g. during approval waits).
@@ -4924,6 +4934,7 @@ class BasePlatformAdapter(ABC):
 
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
+            await _stop_typing_task()
             is_ephemeral_response = isinstance(response, EphemeralReply)
 
             # Slash-command handlers may return an EphemeralReply sentinel to
@@ -5297,10 +5308,14 @@ class BasePlatformAdapter(ABC):
                     self.name, notify_err, exc_info=True,
                 )  # Last resort — don't let error reporting crash the handler
         finally:
-            # Stop typing before any deferred callback work.  Post-delivery
-            # callbacks may perform platform I/O; a stuck callback must not
-            # leave the typing refresh task running indefinitely.
-            await _stop_typing_task()
+            # A cancellation first delivered while stopping typing must not
+            # abort the remaining callback/drain/session bookkeeping. Delay
+            # propagation until ownership cleanup has completed.
+            cleanup_cancel: asyncio.CancelledError | None = None
+            try:
+                await _stop_typing_task()
+            except asyncio.CancelledError as exc:
+                cleanup_cancel = exc
             # Fire any one-shot post-delivery callback registered for this
             # session (e.g. deferred background-review notifications).
             #
@@ -5413,6 +5428,8 @@ class BasePlatformAdapter(ABC):
                 current_task = asyncio.current_task()
                 if current_task is not None and self._session_tasks.get(session_key) is current_task:
                     self._cleanup_finished_session_task(session_key, interrupt_event)
+            if cleanup_cancel is not None:
+                raise cleanup_cancel
     
     def _cleanup_finished_session_task(
         self, session_key: str, interrupt_event: Optional[asyncio.Event]

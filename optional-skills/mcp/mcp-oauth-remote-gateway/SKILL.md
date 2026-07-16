@@ -1,13 +1,14 @@
 ---
 name: mcp-oauth-remote-gateway
-description: Connect an OAuth-gated remote MCP server (Better Stack, Linear, Cloudflare, Datadog, Stripe, etc.) to Hermes when Hermes runs as a REMOTE gateway (container, VPS, messaging bot) where the built-in browser OAuth flow cannot capture the localhost callback. Manually performs RFC 7591 Dynamic Client Registration + RFC 7636 PKCE + authorization_code exchange and writes tokens in the exact schema Hermes persistence expects.
+description: Manual OAuth for remote MCP servers on headless gateways.
 version: 1.0.0
-author: Hermes Agent
+author: Ben Barclay (benbarclay), Hermes Agent
 license: MIT
+platforms: [linux, macos]
 metadata:
   hermes:
-    tags: [MCP, OAuth, PKCE, remote-deployment]
-    related_skills: [native-mcp, mcporter]
+    tags: [MCP, OAuth, PKCE, Remote-Deployment]
+    related_skills: [native-mcp, mcporter, fastmcp]
 ---
 
 # MCP OAuth on a Remote Hermes Gateway
@@ -57,6 +58,23 @@ Symptoms to recognize: `[xdg-open] <defunct>` processes under the hermes user, a
 empty or missing tokens directory (`$HERMES_HOME/mcp-tokens/`), and a reload that
 responds without any "Added/Reconnected: X" line in `change_detail`.
 
+## Cheap First Fallbacks: the Built-in Flow's Own Escape Hatches
+
+Before any manual token surgery, check whether the built-in flow's fallbacks
+already cover the deployment. When Hermes detects a remote session it prints two
+options alongside the authorize URL (`tools/mcp_oauth.py`):
+
+1. **Paste-back** — on an interactive TTY, a stdin reader races the HTTP
+   listener. The user authorizes, the browser fails to connect to
+   `127.0.0.1:<port>`, and they paste the full address-bar URL
+   (`?code=...&state=...`) back at the prompt. Works for SSH'd-in CLI sessions.
+2. **SSH port-forward** — `ssh -N -L <port>:127.0.0.1:<port> <user>@<host>`
+   makes the redirect reach the remote listener normally.
+
+Both require an interactive terminal to the Hermes host. The rest of this skill
+is for when there is NO interactive TTY — Hermes running purely as a messaging
+gateway/bot where `/reload-mcp` triggers the flow with nobody at a prompt.
+
 ## Preferred Front Door: the Hermes Dashboard (try this BEFORE manual token surgery)
 
 A remote Hermes gateway often also runs the **dashboard** web UI as a SEPARATE
@@ -101,6 +119,11 @@ are out of the dashboard's scope regardless.
 Do the OAuth dance manually, then write the resulting tokens into the exact files
 Hermes' `HermesTokenStorage` would have written, so on `/reload-mcp` Hermes finds
 cached tokens and skips the browser flow entirely.
+
+Run the shell commands below through the `terminal` tool on the gateway host and
+do the Python steps (PKCE generation, token exchange, file writes) via
+`execute_code` or a `terminal` python3 invocation — file writes must happen in
+the SAME code block as the token exchange (see pitfall 16).
 
 ### 1. Confirm it's a remote gateway
 

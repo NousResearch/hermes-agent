@@ -146,7 +146,8 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
         parsed = yaml_load(yaml_content)
         if isinstance(parsed, dict):
             frontmatter = parsed
-    except Exception:
+    except Exception as exc:
+        logger.debug("YAML frontmatter parse failed, falling back to simple parser: %s", exc)
         # Fallback: simple key:value parsing for malformed YAML
         for line in yaml_content.strip().split("\n"):
             if ":" not in line:

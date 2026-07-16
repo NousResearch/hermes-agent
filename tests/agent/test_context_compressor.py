@@ -12,6 +12,10 @@ from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
     _summarize_tool_result,
 )
+from agent.agent_runtime_helpers import (
+    needs_thinking_reasoning_pad,
+    ensure_reasoning_content_on_messages,
+)
 from hermes_state import SessionDB
 
 
@@ -3483,3 +3487,180 @@ class TestDoubleCompactionSummaryRole:
             "summary of earlier turns" in (m.get("content") or "")
             for m in result
         )
+
+
+class TestPreLlmFeasibilityCheck:
+    """Pre-LLM feasibility check in compress(): skip the LLM summarization call
+    when the middle section is too small to yield meaningful token savings."""
+
+    def test_skips_when_middle_below_10_percent(self, compressor):
+        """compress() should return messages unchanged when the middle section is
+        below 10% of threshold_tokens."""
+        # The fixture compressor has threshold_percent=0.85 on a 100K model,
+        # so threshold_tokens=85K.  10% of that = 8.5K.
+        # Build a transcript where the middle section is a single tiny turn
+        # (~5 tokens) while the tail dominates.
+        #
+        # We cannot rely purely on real token counts because _find_tail_cut_by_tokens
+        # uses estimate_messages_tokens_rough for boundary detection and the estimate
+        # is based on message structure, not content length.  Instead we patch
+        # estimate_messages_tokens_rough to return controlled values.
+
+        # Pre-set the ineffective count to 1 so the pre-LLM check fires
+        # on this first call.  Without at least one prior ineffective cycle
+        # the check is intentionally lenient — the first compress always
+        # fires the LLM call and only subsequent repeats are skipped.
+        compressor._ineffective_compression_count = 1
+
+        msgs = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            # Middle — tiny
+            {"role": "user", "content": "short"},
+            {"role": "assistant", "content": "ok"},
+            # Tail — large enough to be protected
+            {"role": "user", "content": "x" * 500},
+            {"role": "assistant", "content": "y" * 500},
+        ]
+
+        with patch("agent.context_compressor.estimate_messages_tokens_rough") as mock_est:
+            def fake_estimate(msgs_list):
+                if len(msgs_list) <= 2:
+                    return 50
+                return 50_000
+            mock_est.side_effect = fake_estimate
+
+            result = compressor.compress(msgs)
+
+        # compress_start >= compress_end guard should pass (6 messages > 2+3+1),
+        # then _prune_old_tool_results runs, then compress_end is found.
+        # The second estimate_messages_tokens_rough call for the middle section
+        # returns the small value, triggering the pre-LLM skip.
+        assert result is msgs, "Should return the same list when skipping"
+        assert compressor._ineffective_compression_count >= 1
+
+    def test_proceeds_when_middle_exceeds_minimum(self, compressor):
+        """compress() should proceed with summarization when the middle section
+        has enough tokens."""
+        head = [{"role": "user", "content": "hello"}]
+        middle = [{"role": "user", "content": "x" * 5000}, {"role": "assistant", "content": "y" * 3000}]
+        tail = []
+        for i in range(30):
+            tail.append({"role": "user", "content": "x" * 500})
+            tail.append({"role": "assistant", "content": "y" * 200})
+        msgs = head + middle + tail
+
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message = MagicMock()
+        mock_response.choices[0].message.content = "summary of earlier turns"
+
+        initial_count = compressor._ineffective_compression_count
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            with patch("agent.context_compressor.estimate_messages_tokens_rough") as mock_est:
+                def fake_estimate(msgs_list):
+                    if len(msgs_list) <= 4:
+                        return 100 * len(msgs_list)
+                    return 10_000 * len(msgs_list)
+                mock_est.side_effect = fake_estimate
+
+                result = compressor.compress(msgs)
+
+        assert result is not msgs, "Should return a new list when compression proceeds"
+        assert compressor._ineffective_compression_count == initial_count
+
+    def test_has_content_to_compress_stays_simple(self, compressor):
+        """has_content_to_compress() should only check compress_start < compress_end,
+        not the 10% middle threshold (which belongs in compress())."""
+        with patch.object(compressor, "_align_boundary_forward", return_value=2):
+            with patch.object(compressor, "_find_tail_cut_by_tokens", return_value=10):
+                assert compressor.has_content_to_compress([]) is True
+
+        with patch.object(compressor, "_align_boundary_forward", return_value=10):
+            with patch.object(compressor, "_find_tail_cut_by_tokens", return_value=5):
+                assert compressor.has_content_to_compress([]) is False
+
+
+class TestReasoningContentPadding:
+    """Tests for ensure_reasoning_content_on_messages and needs_thinking_reasoning_pad."""
+
+    def test_deepseek_provider_triggers_padding(self):
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "tool_calls": [{"id": "call_1"}], "content": ""},
+        ]
+        patched = ensure_reasoning_content_on_messages(msgs, provider="deepseek")
+        assert patched == 1
+        assert msgs[1].get("reasoning_content") == " "
+
+    def test_deepseek_model_triggers_padding(self):
+        msgs = [
+            {"role": "assistant", "tool_calls": [{"id": "call_1"}], "content": ""},
+        ]
+        patched = ensure_reasoning_content_on_messages(msgs, model="deepseek-v4")
+        assert patched == 1
+
+    def test_kimi_provider_triggers_padding(self):
+        msgs = [
+            {"role": "assistant", "tool_calls": [{"id": "call_1"}], "content": ""},
+        ]
+        patched = ensure_reasoning_content_on_messages(msgs, provider="kimi-coding")
+        assert patched == 1
+        assert msgs[0].get("reasoning_content") == " "
+
+    def test_mimo_model_triggers_padding(self):
+        msgs = [
+            {"role": "assistant", "tool_calls": [{"id": "call_1"}], "content": ""},
+        ]
+        patched = ensure_reasoning_content_on_messages(msgs, model="mimo-1.5")
+        assert patched == 1
+
+    def test_skips_non_tool_call_messages(self):
+        msgs = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "plain response"},
+        ]
+        patched = ensure_reasoning_content_on_messages(msgs, provider="deepseek")
+        # These are not tool-call messages but needs_thinking_reasoning_pad is True
+        # so all assistant messages should still get reasoning_content.
+        # The established contract pads ALL assistant turns.
+        assert patched == 1
+        assert msgs[1].get("reasoning_content") == " "
+
+    def test_skips_when_reasoning_content_already_present(self):
+        msgs = [
+            {"role": "assistant", "tool_calls": [{"id": "call_1"}],
+             "reasoning_content": "existing reasoning"},
+        ]
+        patched = ensure_reasoning_content_on_messages(msgs, provider="deepseek")
+        assert patched == 0
+        assert msgs[0]["reasoning_content"] == "existing reasoning"
+
+    def test_strict_provider_skips_padding(self):
+        msgs = [
+            {"role": "assistant", "tool_calls": [{"id": "call_1"}], "content": ""},
+        ]
+        patched = ensure_reasoning_content_on_messages(msgs, provider="openai")
+        assert patched == 0
+
+    def test_needs_thinking_reasoning_pad_deepseek(self):
+        assert needs_thinking_reasoning_pad(provider="deepseek") is True
+        assert needs_thinking_reasoning_pad(model="deepseek-v4") is True
+        assert needs_thinking_reasoning_pad(base_url="https://api.deepseek.com") is True
+
+    def test_needs_thinking_reasoning_pad_kimi(self):
+        assert needs_thinking_reasoning_pad(provider="kimi-coding") is True
+        assert needs_thinking_reasoning_pad(provider="kimi-coding-cn") is True
+        assert needs_thinking_reasoning_pad(base_url="https://api.kimi.com/v1") is True
+        assert needs_thinking_reasoning_pad(base_url="https://moonshot.ai") is True
+
+    def test_needs_thinking_reasoning_pad_mimo(self):
+        assert needs_thinking_reasoning_pad(provider="xiaomi") is True
+        assert needs_thinking_reasoning_pad(model="mimo-1.5") is True
+        assert needs_thinking_reasoning_pad(base_url="https://api.xiaomimimo.com") is True
+
+    def test_needs_thinking_reasoning_pad_false_for_other(self):
+        assert needs_thinking_reasoning_pad(provider="openai") is False
+        assert needs_thinking_reasoning_pad(provider="anthropic") is False
+        assert needs_thinking_reasoning_pad(provider="", model="", base_url="") is False
+

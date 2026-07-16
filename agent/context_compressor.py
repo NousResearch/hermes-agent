@@ -32,6 +32,7 @@ from agent.model_metadata import (
     estimate_messages_tokens_rough,
 )
 from agent.redact import redact_sensitive_text
+from agent.agent_runtime_helpers import ensure_reasoning_content_on_messages
 
 logger = logging.getLogger(__name__)
 
@@ -3155,6 +3156,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             return messages
 
         turns_to_summarize = messages[compress_start:compress_end]
+
         # A persisted handoff summary can sit in the protected head after a
         # resume (commonly immediately after the system prompt). Search from
         # the first non-system message through the compression window so we can
@@ -3204,7 +3206,46 @@ This compaction should PRIORITISE preserving all information related to the focu
 
         # Phase 3: Generate structured summary
         summary_focus_topic = focus_topic or self._derive_auto_focus_topic(messages)
-        summary = self._generate_summary(turns_to_summarize, focus_topic=summary_focus_topic)
+
+        # Pre-LLM feasibility check: if the middle section is too small to
+        # yield meaningful token savings, skip the expensive LLM summarization
+        # call and fall through to the deterministic message-dropping path
+        # (which is cheap and always applicable).  Without this guard a
+        # tool-heavy session where the protected tail already holds most of
+        # the tokens can burn 500+ seconds on a summary call that replaces a
+        # few lightweight messages, leaving the total token count essentially
+        # unchanged.
+        #
+        # Only fires after at least one prior compression cycle, tracked by
+        # ``_ineffective_compression_count``.  The first-ever compress for a
+        # session always attempts the LLM call so error/fallback paths are
+        # exercised before the guard suppresses subsequent retries.
+        #
+        # Skipped when ``force=True`` (manual /compress) so auth/error
+        # handling paths are always exercised on explicit user request.
+        if not force and self._ineffective_compression_count >= 1:
+            middle_tokens = estimate_messages_tokens_rough(turns_to_summarize)
+            summary_is_too_small = middle_tokens < int(self.threshold_tokens * 0.1)
+            if summary_is_too_small:
+                self._ineffective_compression_count += 1
+                self._last_compression_savings_pct = 0.0
+                if not self.quiet_mode:
+                    logger.warning(
+                        "Compression skipped: middle section (%d tokens at indices "
+                        "%d-%d) is less than 10%% of threshold (%d tokens) — "
+                        "skipping LLM summarization, proceeding with message dropping. "
+                        "ineffective_compression_count=%d",
+                        middle_tokens, compress_start, compress_end,
+                        self.threshold_tokens,
+                        self._ineffective_compression_count,
+                    )
+        else:
+            summary_is_too_small = False
+
+        if summary_is_too_small:
+            summary = None  # Skip the LLM call; fall through to message dropping
+        else:
+            summary = self._generate_summary(turns_to_summarize, focus_topic=summary_focus_topic)
 
         # If summary generation failed, behavior splits on
         # ``abort_on_summary_failure`` (config: compression.abort_on_summary_failure):
@@ -3448,5 +3489,18 @@ This compaction should PRIORITISE preserving all information related to the focu
         # future copy site cannot re-leak the marker into the child-session flush.
         _strip_persistence_markers(compressed)
         self._last_compression_made_progress = True
+
+        # Ensure every assistant tool-call message carries reasoning_content
+        # for providers that enforce the echo-back (DeepSeek, Kimi, MiMo).
+        # Compressed messages are persisted to the session DB and may be loaded
+        # by paths outside the main loop's API message building, which already
+        # handles this via copy_reasoning_content_for_api(). Self-healing here
+        # is defense-in-depth. Refs #17341.
+        ensure_reasoning_content_on_messages(
+            compressed,
+            provider=getattr(self, "provider", None),
+            model=getattr(self, "model", None),
+            base_url=getattr(self, "base_url", None),
+        )
 
         return compressed

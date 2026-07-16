@@ -105,35 +105,58 @@ Notes:
 ```sql
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     content,
-    content=messages,
-    content_rowid=id
+    tool_name,
+    tool_calls,
+    content='messages',
+    content_rowid='id'
 );
 ```
 
-The FTS5 table is kept in sync via three triggers that fire on INSERT, UPDATE,
+The base and trigram FTS5 tables use `messages` as external content, so SQLite
+stores index data without keeping an additional private copy of the three
+indexed columns in each FTS table. `messages` remains the source of truth.
+Queries match all three columns. Phrase queries do not span column boundaries;
+for example, a phrase cannot begin in `content` and continue in `tool_name`.
+
+The FTS5 tables are kept in sync via three triggers that fire on INSERT, UPDATE,
 and DELETE of the `messages` table:
 
 ```sql
 CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
-    INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+    INSERT INTO messages_fts(rowid, content, tool_name, tool_calls) VALUES (
+        new.id, new.content, new.tool_name, new.tool_calls
+    );
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
-    INSERT INTO messages_fts(messages_fts, rowid, content)
-        VALUES('delete', old.id, old.content);
+    INSERT INTO messages_fts(
+        messages_fts, rowid, content, tool_name, tool_calls
+    ) VALUES (
+        'delete', old.id, old.content, old.tool_name, old.tool_calls
+    );
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
-    INSERT INTO messages_fts(messages_fts, rowid, content)
-        VALUES('delete', old.id, old.content);
-    INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+    INSERT INTO messages_fts(
+        messages_fts, rowid, content, tool_name, tool_calls
+    ) VALUES (
+        'delete', old.id, old.content, old.tool_name, old.tool_calls
+    );
+    INSERT INTO messages_fts(rowid, content, tool_name, tool_calls) VALUES (
+        new.id, new.content, new.tool_name, new.tool_calls
+    );
 END;
 ```
+
+The trigram table uses the same external-content columns and trigger pattern,
+with `tokenize='trigram'` for CJK and substring search. Rebuilding either table
+uses FTS5's special `rebuild` command so the index is repopulated from
+`messages`.
 
 
 ## Schema Version and Migrations
 
-Current schema version: **11**
+Current schema version: **21**
 
 The `schema_version` table stores a single integer. Simple column additions are handled declaratively by `_reconcile_columns()` (which diffs live columns against `SCHEMA_SQL` and ADDs any missing ones). The version-gated chain is reserved for data migrations and index/FTS changes that can't be expressed declaratively:
 
@@ -150,6 +173,7 @@ The `schema_version` table stores a single integer. Simple column additions are 
 | 9 | Add `codex_message_items` column to messages for Codex Responses message id/phase replay |
 | 10 | Add `messages_fts_trigram` virtual table (trigram tokenizer for CJK / substring search) and backfill existing rows |
 | 11 | Re-index `messages_fts` and `messages_fts_trigram` to cover `tool_name` + `tool_calls` and switch from external-content to inline mode; drop old triggers and backfill every message row |
+| 21 | Switch both FTS tables to three-column external-content mode backed by `messages`; rebuild derived indexes without duplicating message text in FTS content shadow tables |
 
 Declarative column adds use `ALTER TABLE ADD COLUMN` wrapped in try/except to handle the column-already-exists case (idempotent). The version number is bumped after each successful migration block.
 

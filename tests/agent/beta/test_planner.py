@@ -16,6 +16,7 @@ def test_plan_has_dependency_order():
     decision = RoutingDecision(
         intent="diagnosis", delegation_needed=True, specialists=("dba",),
         initial_risk="low", parallelizable=False, rationale="database request",
+        confidence=1.0,
     )
     plan = build_plan("PostgreSQL is slow", decision, registry())
     assert [step.id for step in plan.ordered_steps()] == ["investigate-1", "consolidate"]

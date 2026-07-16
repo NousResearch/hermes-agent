@@ -5,7 +5,6 @@ import os
 from contextlib import contextmanager
 from pathlib import Path
 
-import hermes_state
 from hermes_state import SessionDB
 
 
@@ -110,9 +109,16 @@ def _seed_title_search_fixture(db: SessionDB) -> None:
 
 
 def _helper(name: str):
+    # Post-extraction tree: the symbols live in hermes_state_ext.
+    # Pre-extraction replay (the throwaway-worktree PRE-GREEN check): the module
+    # doesn't exist yet and the symbols still live inline in hermes_state — that
+    # branch is the reason this fallback exists, NOT dead code. hermes_state is
+    # imported lazily here because on a post-extraction tree it itself imports
+    # hermes_state_ext (a top-level import would raise before this fallback ran).
     try:
         import hermes_state_ext
     except ModuleNotFoundError:
+        import hermes_state
         return getattr(hermes_state, name)
     return getattr(hermes_state_ext, name)
 

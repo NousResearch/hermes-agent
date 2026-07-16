@@ -149,6 +149,79 @@ describe('migrateQueuedPrompts', () => {
   })
 })
 
+describe('cross-window sync (#46732)', () => {
+  beforeEach(() => {
+    window.localStorage.removeItem(QUEUE_STORAGE_KEY)
+    $queuedPromptsBySession.set({})
+  })
+
+  // Simulate another window writing the shared key: localStorage mutates and a
+  // `storage` event fires — that event never fires in the writing window itself,
+  // so dispatching it manually is exactly the other-window signal.
+  function otherWindowWrites(state: Record<string, unknown>) {
+    const value = JSON.stringify(state)
+    window.localStorage.setItem(QUEUE_STORAGE_KEY, value)
+    window.dispatchEvent(new StorageEvent('storage', { key: QUEUE_STORAGE_KEY, newValue: value }))
+  }
+
+  it('adopts another window\u2019s write into the local atom', () => {
+    otherWindowWrites({ 'session-remote': [{ id: 'q-1', text: 'from window B', attachments: [], queuedAt: 1 }] })
+
+    expect(getQueuedPrompts('session-remote').map(e => e.text)).toEqual(['from window B'])
+  })
+
+  it('does not clobber another window\u2019s entries when saving its own', () => {
+    // Window B enqueues for its session; this window then enqueues for a
+    // different session. Both must survive in storage.
+    otherWindowWrites({ 'session-b': [{ id: 'q-b', text: 'B entry', attachments: [], queuedAt: 1 }] })
+    enqueueQueuedPrompt('session-a', { attachments: [], text: 'A entry' })
+
+    const persisted = JSON.parse(window.localStorage.getItem(QUEUE_STORAGE_KEY) ?? '{}')
+    expect(Object.keys(persisted).sort()).toEqual(['session-a', 'session-b'])
+  })
+
+  it('merges over live storage even without a storage event (same-frame race)', () => {
+    // The `storage` event is asynchronous in real browsers; a write racing it
+    // must still be preserved because writeSession re-reads storage at save time.
+    window.localStorage.setItem(
+      QUEUE_STORAGE_KEY,
+      JSON.stringify({ 'session-b': [{ id: 'q-b', text: 'unsynced B entry', attachments: [], queuedAt: 1 }] })
+    )
+
+    enqueueQueuedPrompt('session-a', { attachments: [], text: 'A entry' })
+
+    const persisted = JSON.parse(window.localStorage.getItem(QUEUE_STORAGE_KEY) ?? '{}')
+    expect(Object.keys(persisted).sort()).toEqual(['session-a', 'session-b'])
+  })
+
+  it('drops entries locally once another window drains them', () => {
+    enqueueQueuedPrompt('session-a', { attachments: [], text: 'about to be drained elsewhere' })
+
+    // Window B drains session-a and persists the now-empty map.
+    otherWindowWrites({})
+
+    expect(getQueuedPrompts('session-a')).toEqual([])
+    expect(dequeueQueuedPrompt('session-a')).toBeNull()
+  })
+
+  it('resyncs on full storage clear (event.key === null)', () => {
+    enqueueQueuedPrompt('session-a', { attachments: [], text: 'entry' })
+
+    window.localStorage.clear()
+    window.dispatchEvent(new StorageEvent('storage', { key: null }))
+
+    expect(getQueuedPrompts('session-a')).toEqual([])
+  })
+
+  it('ignores storage events for unrelated keys', () => {
+    enqueueQueuedPrompt('session-a', { attachments: [], text: 'kept' })
+
+    window.dispatchEvent(new StorageEvent('storage', { key: 'some.other.key', newValue: '"x"' }))
+
+    expect(getQueuedPrompts('session-a').map(e => e.text)).toEqual(['kept'])
+  })
+})
+
 describe('shouldAutoDrain', () => {
   it('drains whenever idle with a non-empty queue', () => {
     expect(shouldAutoDrain({ isBusy: false, queueLength: 1 })).toBe(true)

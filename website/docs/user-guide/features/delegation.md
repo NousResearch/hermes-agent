@@ -157,6 +157,45 @@ delegation:
 
 If omitted, subagents use the same model as the parent.
 
+### Operator-controlled per-task presets
+
+Use `delegation.presets` when different task types should use different models
+or reasoning levels. Preset internals remain in trusted config; `delegate_task`
+exposes only configured names and descriptions to the model.
+
+```yaml
+delegation:
+  presets:
+    explorer:
+      description: "Fast source exploration"
+      model: "gpt-5.6-luna"
+      reasoning_effort: low
+    reviewer:
+      description: "Deep independent review"
+      model: "gpt-5.6-sol"
+      reasoning_effort: high
+```
+
+A configured preset can be selected for one task or independently inside a
+batch:
+
+```python
+delegate_task(
+    tasks=[
+        {"goal": "Map the code path", "preset": "explorer"},
+        {"goal": "Review the proposed fix", "preset": "reviewer"},
+    ]
+)
+```
+
+Preset values override the global delegation `model` and `reasoning_effort`
+keys for that child only. Provider and credential routing remain controlled by
+the global delegation config. Omitted values continue to inherit the global
+delegation config and then the parent.
+Unknown preset names fail before any child starts. `role` remains independent:
+it controls whether a child can delegate, while `preset` controls its trusted
+execution route.
+
 ## Toolset Selection Tips
 
 The `toolsets` parameter controls what tools the subagent has access to. Choose based on the task:

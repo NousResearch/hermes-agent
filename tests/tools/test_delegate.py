@@ -88,6 +88,47 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertNotIn("acp_args", props["tasks"]["items"]["properties"])
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
 
+    @patch("tools.delegate_tool._load_config")
+    def test_schema_exposes_only_operator_configured_preset_names(self, mock_cfg):
+        mock_cfg.return_value = {
+            "presets": {
+                "reviewer": {
+                    "description": "Deep independent review",
+                    "model": "gpt-5.6-sol",
+                    "reasoning_effort": "high",
+                },
+                "explorer": {
+                    "description": "Fast source exploration",
+                    "model": "gpt-5.6-luna",
+                    "reasoning_effort": "low",
+                },
+            }
+        }
+        from tools.delegate_tool import _build_dynamic_schema_overrides
+
+        params = _build_dynamic_schema_overrides()["parameters"]
+        description = _build_dynamic_schema_overrides()["description"]
+        top_level = params["properties"]["preset"]
+        per_task = params["properties"]["tasks"]["items"]["properties"]["preset"]
+
+        self.assertEqual(top_level["enum"], ["explorer", "reviewer"])
+        self.assertEqual(per_task["enum"], ["explorer", "reviewer"])
+        self.assertIn("explorer: Fast source exploration", top_level["description"])
+        self.assertIn("reviewer: Deep independent review", top_level["description"])
+        self.assertNotIn("gpt-5.6-sol", top_level["description"])
+        self.assertIn("operator-configured preset", description)
+        self.assertNotIn("NOT selectable per call", description)
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_schema_omits_preset_when_operator_configures_none(self, _mock_cfg):
+        from tools.delegate_tool import _build_dynamic_schema_overrides
+
+        params = _build_dynamic_schema_overrides()["parameters"]
+        self.assertNotIn("preset", params["properties"])
+        self.assertNotIn(
+            "preset", params["properties"]["tasks"]["items"]["properties"]
+        )
+
     def test_schema_description_advertises_runtime_limits(self):
         """The model must see the user's actual concurrency / spawn-depth caps,
         not the framework defaults. Without this, models that read 'default 3'
@@ -1071,6 +1112,144 @@ class TestBlockedTools(unittest.TestCase):
         self.assertEqual(_get_max_spawn_depth(), 1)       # default: flat
         self.assertTrue(_get_orchestrator_enabled())      # default
         self.assertEqual(_MIN_SPAWN_DEPTH, 1)
+
+
+class TestDelegationPresetRouting(unittest.TestCase):
+    """Operator presets route each child without exposing raw model settings."""
+
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._load_config")
+    def test_mixed_batch_routes_each_preset_model_and_effort(
+        self, mock_cfg, mock_build, mock_run
+    ):
+        mock_cfg.return_value = {
+            "model": "",
+            "provider": "",
+            "reasoning_effort": "",
+            "max_iterations": 50,
+            "presets": {
+                "explorer": {
+                    "description": "Fast exploration",
+                    "model": "gpt-5.6-luna",
+                    "reasoning_effort": "low",
+                },
+                "reviewer": {
+                    "description": "Deep review",
+                    "model": "gpt-5.6-sol",
+                    "reasoning_effort": "high",
+                },
+            },
+        }
+        mock_build.side_effect = [MagicMock(), MagicMock()]
+        mock_run.side_effect = lambda task_index, **_: {
+            "task_index": task_index,
+            "status": "completed",
+            "summary": "done",
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+        }
+        parent = _make_mock_parent()
+        parent._memory_manager = None
+
+        result = json.loads(
+            delegate_task(
+                tasks=[
+                    {"goal": "Explore", "preset": "explorer"},
+                    {"goal": "Review", "preset": "reviewer"},
+                ],
+                parent_agent=parent,
+            )
+        )
+
+        self.assertEqual(len(result["results"]), 2)
+        calls = mock_build.call_args_list
+        self.assertEqual(calls[0].kwargs["model"], "gpt-5.6-luna")
+        self.assertEqual(calls[0].kwargs["reasoning_effort_override"], "low")
+        self.assertEqual(calls[1].kwargs["model"], "gpt-5.6-sol")
+        self.assertEqual(calls[1].kwargs["reasoning_effort_override"], "high")
+
+    @patch("tools.delegate_tool._load_config")
+    def test_unknown_preset_fails_before_child_construction(self, mock_cfg):
+        mock_cfg.return_value = {
+            "max_iterations": 50,
+            "presets": {"reviewer": {"model": "gpt-5.6-sol"}},
+        }
+        parent = _make_mock_parent()
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build:
+            result = json.loads(
+                delegate_task(
+                    tasks=[
+                        {"goal": "First review", "preset": "reviewer"},
+                        {"goal": "Second review", "preset": "typo"},
+                    ],
+                    parent_agent=parent,
+                )
+            )
+
+        self.assertIn("Unknown delegation preset", result["error"])
+        mock_build.assert_not_called()
+
+    @patch("tools.delegate_tool._load_config")
+    def test_invalid_preset_reasoning_effort_fails_closed(self, mock_cfg):
+        mock_cfg.return_value = {
+            "max_iterations": 50,
+            "presets": {
+                "broken": {
+                    "model": "gpt-5.6-sol",
+                    "reasoning_effort": "banana",
+                }
+            },
+        }
+        parent = _make_mock_parent()
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build:
+            result = json.loads(
+                delegate_task(goal="Review", preset="broken", parent_agent=parent)
+            )
+
+        self.assertIn("invalid reasoning_effort", result["error"])
+        mock_build.assert_not_called()
+
+
+def test_preset_config_propagates_from_real_yaml(tmp_path, monkeypatch):
+    """Exercise config.yaml -> loader -> schema/resolver without config mocks."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """\
+delegation:
+  presets:
+    explorer:
+      description: Fast source exploration
+      model: gpt-5.6-luna
+      reasoning_effort: low
+    reviewer:
+      description: Deep independent review
+      model: gpt-5.6-sol
+      reasoning_effort: high
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from hermes_cli import config as config_module
+    from tools.delegate_tool import (
+        _build_dynamic_schema_overrides,
+        _resolve_delegation_preset_config,
+    )
+
+    config_module._LOAD_CONFIG_CACHE.clear()
+    try:
+        schema = _build_dynamic_schema_overrides()["parameters"]
+        loaded = _load_config()
+        reviewer = _resolve_delegation_preset_config(loaded, "reviewer")
+    finally:
+        config_module._LOAD_CONFIG_CACHE.clear()
+
+    assert schema["properties"]["preset"]["enum"] == ["explorer", "reviewer"]
+    assert reviewer["model"] == "gpt-5.6-sol"
+    assert reviewer["reasoning_effort"] == "high"
 
 
 class TestDelegationCredentialResolution(unittest.TestCase):
@@ -2250,6 +2429,30 @@ class TestDelegationReasoningEffort(unittest.TestCase):
 
     @patch("tools.delegate_tool._load_config")
     @patch("run_agent.AIAgent")
+    def test_per_task_reasoning_override_beats_global_config(self, MockAgent, mock_cfg):
+        mock_cfg.return_value = {"max_iterations": 50, "reasoning_effort": "low"}
+        MockAgent.return_value = MagicMock()
+        parent = _make_mock_parent()
+        parent.reasoning_config = {"enabled": True, "effort": "medium"}
+
+        _build_child_agent(
+            task_index=0,
+            goal="test",
+            context=None,
+            toolsets=None,
+            model=None,
+            max_iterations=50,
+            parent_agent=parent,
+            task_count=1,
+            reasoning_effort_override="high",
+        )
+        call_kwargs = MockAgent.call_args[1]
+        self.assertEqual(
+            call_kwargs["reasoning_config"], {"enabled": True, "effort": "high"}
+        )
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("run_agent.AIAgent")
     def test_override_reasoning_effort_none_disables(self, MockAgent, mock_cfg):
         """delegation.reasoning_effort: 'none' disables thinking for subagents."""
         mock_cfg.return_value = {"max_iterations": 50, "reasoning_effort": "none"}
@@ -2323,6 +2526,27 @@ class TestDispatchDelegateTask(unittest.TestCase):
         self.assertEqual(captured["goal"], "test")
         self.assertNotIn("acp_command", captured["tasks"][0])
         self.assertNotIn("acp_args", captured["tasks"][0])
+
+    def test_operator_preset_is_forwarded_without_raw_model_settings(self):
+        import run_agent
+
+        captured = {}
+
+        def fake_delegate_task(**kwargs):
+            captured.update(kwargs)
+            return "{}"
+
+        parent = _make_mock_parent(depth=0)
+        with patch("tools.delegate_tool.delegate_task", fake_delegate_task):
+            run_agent.AIAgent._dispatch_delegate_task(
+                parent,
+                {"goal": "Review", "preset": "reviewer"},
+            )
+
+        self.assertEqual(captured["preset"], "reviewer")
+        self.assertNotIn("model", captured)
+        self.assertNotIn("reasoning_effort", captured)
+
 
 class TestDelegateEventEnum(unittest.TestCase):
     """Tests for DelegateEvent enum and back-compat aliases."""

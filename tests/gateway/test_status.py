@@ -416,6 +416,41 @@ class TestGatewayRuntimeStatus:
             )
         ]
 
+    def test_write_runtime_status_prunes_inactive_platforms_on_restart(self, tmp_path, monkeypatch):
+        """A restarted gateway must not retain failures for now-disabled platforms."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        state_path = tmp_path / "gateway_state.json"
+        state_path.write_text(json.dumps({
+            "gateway_state": "running",
+            "platforms": {
+                "telegram": {
+                    "state": "connected",
+                    "updated_at": "2025-01-01T00:00:00Z",
+                },
+                "whatsapp": {
+                    "state": "fatal",
+                    "error_code": "not_paired",
+                    "error_message": "WhatsApp is not paired",
+                    "updated_at": "2025-01-01T00:00:00Z",
+                },
+            },
+        }))
+
+        status.write_runtime_status(
+            gateway_state="starting",
+            exit_reason=None,
+            active_platforms={"telegram"},
+        )
+
+        payload = status.read_runtime_status()
+        assert payload["gateway_state"] == "starting"
+        assert payload["platforms"] == {
+            "telegram": {
+                "state": "connected",
+                "updated_at": "2025-01-01T00:00:00Z",
+            }
+        }
+
     def test_write_runtime_status_overwrites_stale_pid_on_restart(self, tmp_path, monkeypatch):
         """Regression: setdefault() preserved stale PID from previous process (#1631)."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

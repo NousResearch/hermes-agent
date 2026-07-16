@@ -6917,7 +6917,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             pass
         try:
             from gateway.status import write_runtime_status
-            write_runtime_status(gateway_state="starting", exit_reason=None)
+            active_platforms = {
+                platform.value
+                for platform, platform_config in self.config.platforms.items()
+                if platform_config.enabled
+            }
+            write_runtime_status(
+                gateway_state="starting",
+                exit_reason=None,
+                active_platforms=active_platforms,
+            )
         except Exception:
             pass
 

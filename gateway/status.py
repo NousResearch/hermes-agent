@@ -805,8 +805,15 @@ def write_runtime_status(
     error_code: Any = _UNSET,
     error_message: Any = _UNSET,
     served_profiles: Any = _UNSET,
+    active_platforms: Any = _UNSET,
 ) -> None:
-    """Persist gateway runtime health information for diagnostics/status."""
+    """Persist gateway runtime health information for diagnostics/status.
+
+    ``active_platforms`` is a startup/reconfiguration boundary. When supplied,
+    entries not present in that iterable are removed before the record is
+    written, so failures from platforms disabled since the previous run cannot
+    survive in runtime state.
+    """
     path = _get_runtime_status_path()
     payload = _read_json_file(path) or _build_runtime_status_record()
     current_record = _build_pid_record()
@@ -816,6 +823,17 @@ def write_runtime_status(
     payload["argv"] = current_record["argv"]
     payload["start_time"] = current_record["start_time"]
     payload["updated_at"] = _utc_now_iso()
+
+    if active_platforms is not _UNSET:
+        active_names = {
+            str(getattr(active_platform, "value", active_platform))
+            for active_platform in active_platforms
+        }
+        payload["platforms"] = {
+            name: platform_payload
+            for name, platform_payload in payload["platforms"].items()
+            if name in active_names
+        }
 
     if gateway_state is not _UNSET:
         payload["gateway_state"] = gateway_state

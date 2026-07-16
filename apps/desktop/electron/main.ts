@@ -9870,8 +9870,22 @@ async function startHermes() {
 
   const connectionPromise = (async () => {
     const connectRemote = async remote => {
+      // resolveRemote() may take arbitrarily long (settings resolve / ws-ticket
+      // mint). If a newer attempt started meanwhile (e.g. the user switched
+      // remotes and Apply invalidated this attempt), bail before probing.
+      if (!backendConnectionState.isCurrentAttempt(connectionAttempt)) {
+        throw new Error('Hermes backend start was superseded by a newer connection attempt.')
+      }
+
       await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
       await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode)
+
+      // Second async boundary: the health probe itself can outlive the
+      // attempt. A late success here must not publish a stale descriptor.
+      if (!backendConnectionState.isCurrentAttempt(connectionAttempt)) {
+        throw new Error('Hermes backend start was superseded by a newer connection attempt.')
+      }
+
       updateBootProgress({
         phase: 'backend.ready',
         message: 'Remote Hermes backend is ready',

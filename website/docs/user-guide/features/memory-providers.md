@@ -633,7 +633,7 @@ Multi-agent memory engine with hybrid retrieval (vector + full-text + reranking)
 pip install hermes-nexusyn
 hermes-nexusyn install     # copies the plugin into $HERMES_HOME/plugins/nexusyn/
 hermes config set memory.provider nexusyn
-hermes memory setup        # or: echo "NEXUSYN_API_KEY=your-token" >> ~/.hermes/.env
+hermes memory setup
 ```
 
 **Config reference:** [nexusyn/hermes-nexusyn](https://github.com/nexusyn/hermes-nexusyn) (standalone plugin repo)

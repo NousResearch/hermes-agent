@@ -3521,19 +3521,37 @@ def _strip_model_hidden_task_fields(tasks: Any) -> Any:
     return stripped_tasks if changed else tasks
 
 
-registry.register(
-    name="delegate_task",
-    toolset="delegation",
-    schema=DELEGATE_TASK_SCHEMA,
-    handler=lambda args, **kw: delegate_task(
+def _handle_delegate_call(args: dict, **kwargs):
+    """Use the structured Beta flow for top-level goal delegation only."""
+    parent_agent = kwargs.get("parent_agent")
+    identity = getattr(parent_agent, "_resolved_identity", None)
+    if (
+        getattr(identity, "mode", None) == "beta"
+        and args.get("goal")
+        and not args.get("tasks")
+    ):
+        from agent.beta.orchestrator import orchestrate_request
+
+        run = orchestrate_request(args["goal"], parent_agent)
+        if run.decision.delegation_needed:
+            return run.model_dump_json()
+
+    return delegate_task(
         goal=args.get("goal"),
         context=args.get("context"),
         tasks=_strip_model_hidden_task_fields(args.get("tasks")),
         max_iterations=args.get("max_iterations"),
         role=args.get("role"),
-        background=_model_background_value(args, kw.get("parent_agent")),
-        parent_agent=kw.get("parent_agent"),
-    ),
+        background=_model_background_value(args, parent_agent),
+        parent_agent=parent_agent,
+    )
+
+
+registry.register(
+    name="delegate_task",
+    toolset="delegation",
+    schema=DELEGATE_TASK_SCHEMA,
+    handler=_handle_delegate_call,
     check_fn=check_delegate_requirements,
     emoji="🔀",
     dynamic_schema_overrides=_build_dynamic_schema_overrides,

@@ -971,6 +971,93 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, 
     return output_path
 
 
+class _EdgeTTSDeadlineExceeded(TimeoutError):
+    """Raised only when Hermes' Edge TTS caller deadline expires."""
+
+
+def _edge_tts_timeout_seconds() -> float:
+    """Return the Edge TTS caller timeout (a narrow test seam)."""
+    return 60
+
+
+def _run_edge_tts_with_timeout(
+    text: str,
+    output_path: str,
+    tts_config: Dict[str, Any],
+    timeout: float = 60,
+) -> None:
+    """Run Edge TTS with a hard caller deadline and atomic output publish."""
+    import concurrent.futures
+
+    worker_loop = None
+    loop_ready = threading.Event()
+    cancel_requested = threading.Event()
+    staging_path = f"{output_path}.edge-pending-{uuid.uuid4().hex}"
+
+    def remove_staging(_future=None):
+        try:
+            os.unlink(staging_path)
+        except FileNotFoundError:
+            pass
+
+    def run_in_worker():
+        nonlocal worker_loop
+        worker_loop = asyncio.new_event_loop()
+        loop_ready.set()
+        try:
+            asyncio.set_event_loop(worker_loop)
+            provider_task = worker_loop.create_task(
+                _generate_edge_tts(text, staging_path, tts_config)
+            )
+            if cancel_requested.is_set():
+                provider_task.cancel()
+            return worker_loop.run_until_complete(provider_task)
+        finally:
+            try:
+                pending = asyncio.all_tasks(worker_loop)
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    worker_loop.run_until_complete(
+                        asyncio.gather(*pending, return_exceptions=True)
+                    )
+            except Exception:
+                pass
+            worker_loop.close()
+
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(run_in_worker)
+    try:
+        try:
+            future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError as exc:
+            # A provider may itself raise TimeoutError. A completed future means
+            # that exception came from the provider, not from our caller wait.
+            if future.done():
+                future.result()
+            cancel_requested.set()
+            future.cancel()
+            if loop_ready.is_set() and worker_loop is not None:
+                try:
+                    for task in asyncio.all_tasks(worker_loop):
+                        worker_loop.call_soon_threadsafe(task.cancel)
+                except RuntimeError:
+                    pass
+            raise _EdgeTTSDeadlineExceeded(
+                f"Edge TTS timed out after {timeout:g} seconds"
+            ) from exc
+        os.replace(staging_path, output_path)
+    except Exception:
+        # Register first: add_done_callback invokes immediately if completion
+        # won the race, and otherwise guarantees cleanup after a late write.
+        future.add_done_callback(remove_staging)
+        remove_staging()
+        raise
+    finally:
+        # Cancellation is cooperative. Never join a provider that suppresses it.
+        pool.shutdown(wait=False)
+
+
 # ===========================================================================
 # Provider: ElevenLabs (premium)
 # ===========================================================================
@@ -2507,13 +2594,14 @@ def text_to_speech_tool(
             if edge_available:
                 logger.info("Generating speech with Edge TTS...")
                 try:
-                    import concurrent.futures
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                        pool.submit(
-                            lambda: asyncio.run(_generate_edge_tts(text, file_str, tts_config))
-                        ).result(timeout=60)
-                except RuntimeError:
-                    asyncio.run(_generate_edge_tts(text, file_str, tts_config))
+                    _run_edge_tts_with_timeout(
+                        text,
+                        file_str,
+                        tts_config,
+                        timeout=_edge_tts_timeout_seconds(),
+                    )
+                except _EdgeTTSDeadlineExceeded as e:
+                    return tool_error(str(e), success=False)
             elif _check_neutts_available():
                 logger.info("Edge TTS not available, falling back to NeuTTS (local)...")
                 provider = "neutts"

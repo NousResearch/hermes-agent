@@ -178,6 +178,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectAttemptRef = useRef(0);
   const forceFreshPtyRef = useRef(false);
+  // Tracks the resume target of the currently connected PTY. When ``resumeParam``
+  // changes to a different value at runtime (user picked a different history
+  // session in the sidebar), the old attach token would let the server hand back
+  // the still-alive PTY for the previous session — effectively "every sidebar
+  // pick reattaches to the same PTY". Force a fresh spawn so the new resume
+  // parameter actually reaches HERMES_TUI_RESUME and hydrates the new history.
+  const lastConnectedResumeRef = useRef<string | null>(null);
   const blockedInputNoticeRef = useRef(false);
   const lastResumeReconnectAtRef = useRef(0);
   // True from the moment the connect effect begins until the socket resolves
@@ -872,8 +879,24 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     let unmounting = false;
     let onDataDisposable: { dispose(): void } | null = null;
     let onResizeDisposable: { dispose(): void } | null = null;
+    // NS-XXX: sidebar picked a different session — the still-alive PTY for the
+    // previous session must NOT be reattached (that's the "every pick shows the
+    // same PTY" bug). Rotate the attach token so ``attach_or_spawn`` misses and
+    // spawns a fresh PTY with the new HERMES_TUI_RESUME. Do NOT also send
+    // ``fresh=1`` — the server treats that as "clear resume", which cancels the
+    // whole point (see hermes_cli/web_server.py:15716-15727).
+    const resumeChanged =
+      lastConnectedResumeRef.current !== null &&
+      (resumeParam ?? "") !== lastConnectedResumeRef.current;
+    if (resumeChanged) {
+      // Reserve a NEW attach token for this connect without touching the
+      // caller-driven `forceFreshPtyRef` flag (which controls the fresh=1
+      // query param and is meant for explicit "start new session" clicks).
+      ptyAttachToken(true);
+    }
     const forceFresh = forceFreshPtyRef.current;
     forceFreshPtyRef.current = false;
+    lastConnectedResumeRef.current = resumeParam ?? "";
     // A connect attempt is now in flight — set synchronously (before the async
     // socket-open IIFE below awaits its ticket URL) so a page-resume event in
     // that gap doesn't fire a redundant reconnect (wsRef isn't assigned yet).

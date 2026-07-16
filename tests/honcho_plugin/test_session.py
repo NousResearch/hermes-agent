@@ -987,6 +987,28 @@ class TestBaseContextSummary:
         formatted = provider._format_first_turn_context(ctx)
         assert "Session Summary" not in formatted
 
+    def test_ai_self_representation_has_provenance_label(self):
+        """AI Self-Representation should include a provenance caveat."""
+        provider = HonchoMemoryProvider()
+        ctx = {
+            "representation": "User likes tea.",
+            "ai_representation": "The assistant likes tea.",
+        }
+        formatted = provider._format_first_turn_context(ctx)
+        assert "Auto-derived from observed conversations" in formatted
+        # Provenance label must appear before the actual content
+        assert formatted.index("Auto-derived") < formatted.index("The assistant likes tea.")
+
+    def test_ai_identity_card_no_provenance_label(self):
+        """AI Identity Card (curated peer card) should NOT have provenance caveat."""
+        provider = HonchoMemoryProvider()
+        ctx = {
+            "ai_card": "Name: Hermes\nRole: Assistant",
+        }
+        formatted = provider._format_first_turn_context(ctx)
+        assert "## AI Identity Card" in formatted
+        assert "Auto-derived" not in formatted
+
 
 class TestDialecticDepth:
     """Tests for the dialecticDepth multi-pass system."""

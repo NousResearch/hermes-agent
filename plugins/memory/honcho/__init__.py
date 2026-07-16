@@ -578,7 +578,12 @@ class HonchoMemoryProvider(MemoryProvider):
 
         ai_rep = ctx.get("ai_representation", "")
         if ai_rep:
-            parts.append(f"## AI Self-Representation\n{ai_rep}")
+            parts.append(
+                "## AI Self-Representation\n"
+                "[Auto-derived from observed conversations; may contain "
+                "echoed user facts. Cross-check before relying on this.]\n"
+                f"{ai_rep}"
+            )
 
         ai_card = ctx.get("ai_card", "")
         if ai_card:

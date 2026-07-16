@@ -280,6 +280,14 @@ export const $resumeFailedSessionId = atom<string | null>(null)
 export const $resumeExhaustedSessionId = atom<string | null>(null)
 export const $currentModel = atom(storedString(COMPOSER_MODEL_KEY) ?? '')
 export const $currentProvider = atom(storedString(COMPOSER_PROVIDER_KEY) ?? '')
+
+// Backed by an atom (not a bare localStorage read) so it survives the same
+// lifecycle as $currentModel/$currentProvider and is observable in tests where
+// storage is a no-op. Seeded from persistence, coerced to a known variant.
+const coerceModelSource = (raw: null | string): ComposerModelSource =>
+  raw === 'default' || raw === 'manual' ? raw : ''
+
+export const $currentModelSource = atom<ComposerModelSource>(coerceModelSource(storedString(COMPOSER_MODEL_SOURCE_KEY)))
 export const $currentReasoningEffort = atom(storedString(COMPOSER_EFFORT_KEY) ?? '')
 export const $currentServiceTier = atom('')
 export const $currentFastMode = atom(storedBoolean(COMPOSER_FAST_KEY, false))
@@ -349,13 +357,10 @@ export const setCurrentProvider = (next: Updater<string>) => {
   persistString(COMPOSER_PROVIDER_KEY, $currentProvider.get() || null)
 }
 
-export const getCurrentModelSource = (): ComposerModelSource => {
-  const source = storedString(COMPOSER_MODEL_SOURCE_KEY)
-
-  return source === 'default' || source === 'manual' ? source : ''
-}
+export const getCurrentModelSource = (): ComposerModelSource => $currentModelSource.get()
 
 export const setCurrentModelSource = (source: ComposerModelSource) => {
+  updateAtom($currentModelSource, source)
   persistString(COMPOSER_MODEL_SOURCE_KEY, source || null)
 }
 

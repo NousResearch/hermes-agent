@@ -60,6 +60,12 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
   runtimeIdRef.current = runtimeId
   const storedIdRef = useRef(storedSessionId)
   storedIdRef.current = storedSessionId
+  // A tile IS its session (see the comment on the useSubmitPrompt call below)
+  // — there is no route/reselect divergence for the entry-time ownership
+  // check in submit.ts to catch, so an empty, stable cache is correct here:
+  // the check only ever blocks on a PROVEN mismatch, never on an absent
+  // entry, so this is a no-op that preserves existing tile submit behavior.
+  const runtimeIdByStoredSessionIdRef = useRef(new Map<string, string>())
 
   // Tile busy tracks the SESSION state, never the global $busy — and it must
   // read LIVE. A render-time snapshot goes stale (this hook's host doesn't
@@ -139,6 +145,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
     // token is a stable constant (the guard never trips for a tile).
     getRouteToken: () => runtimeId,
     requestGateway,
+    runtimeIdByStoredSessionIdRef,
     selectedStoredSessionIdRef: storedIdRef,
     syncAttachmentsForSubmit,
     updateSessionState: (sessionId, updater) => sessionTileDelegate()!.updateSession(sessionId, updater),

@@ -371,7 +371,7 @@ def register(ctx):
 
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
 - If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
-- Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
+- Three hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, [`pre_llm_call`](#pre_llm_call) can **inject ephemeral context** into the LLM call, and [`pre_persist_user_message`](#pre_persist_user_message) can **inject durable context** that is written to the persisted user-message row. All other hooks are fire-and-forget observers.
 - Observer callbacks receive `telemetry_schema_version` automatically. When present, `turn_id`, `api_request_id`, `task_id`, `session_id`, and `api_call_count` are separate correlation fields. Treat `api_request_id` as an opaque identifier; do not parse its string format.
 
 ### Quick reference
@@ -380,7 +380,8 @@ def register(ctx):
 |------|-----------|---------|
 | [`pre_tool_call`](#pre_tool_call) | Before any tool executes | `{"action": "block", "message": str}` to veto the call |
 | [`post_tool_call`](#post_tool_call) | After any tool returns | ignored |
-| [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str}` to prepend context to the user message |
+| [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str}` to prepend **ephemeral** context to the user message |
+| [`pre_persist_user_message`](#pre_persist_user_message) | Once per turn, before the inbound user message is persisted | `{"context": str}` / `{"user_message": str, ...}` to fold **durable** context into the persisted row |
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
 | [`pre_verify`](#pre_verify) | Once per turn when the agent edited code, before it verifies/finishes | `{"action": "continue", "message": str}` to keep going |
 | [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
@@ -510,7 +511,7 @@ def register(ctx):
 
 ### `pre_llm_call`
 
-Fires **once per turn**, before the tool-calling loop begins. This is the **only hook whose return value is used** — it can inject context into the current turn's user message.
+Fires **once per turn**, before the tool-calling loop begins. Its return value injects **ephemeral** context into the current turn's user message — added at API call time only, never persisted (contrast [`pre_persist_user_message`](#pre_persist_user_message), which injects **durable** context into the persisted row).
 
 **Callback signature:**
 
@@ -586,6 +587,84 @@ def guardrails(**kwargs):
 
 def register(ctx):
     ctx.register_hook("pre_llm_call", guardrails)
+```
+
+---
+
+### `pre_persist_user_message`
+
+Fires **once per turn**, on the agent path, just before the inbound user message is appended and persisted to the session store. Where [`pre_llm_call`](#pre_llm_call) injects **ephemeral** context (added at API-call time only, never written to disk), `pre_persist_user_message` injects **durable** context: its returns are folded into the user message that is written to the session-database row, so the injected block **replays as part of the conversation on later turns and after a restart**.
+
+This is the agent-path analogue of the gateway's [`pre_gateway_dispatch`](#pre_gateway_dispatch) `rewrite`, which mutates the inbound event text before it is dispatched and persisted. Use it when a plugin's context must survive into the durable transcript (e.g. memory recall that should remain visible in replayed history), not just this turn's prompt.
+
+**Callback signature:**
+
+```python
+def my_callback(session_id: str, turn_id: str, user_message: str,
+                conversation_history: list, platform: str,
+                sender_id: str, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `session_id` | `str` | Unique identifier for the current session |
+| `turn_id` | `str` | Unique identifier for this turn |
+| `task_id` | `str` | The effective task identifier for this turn |
+| `user_message` | `str` | The user's message for this turn, before this hook's composition |
+| `conversation_history` | `list` | Copy of the message list **before** this turn's user message (OpenAI format) |
+| `platform` | `str` | Where the session is running: `"cli"`, `"telegram"`, `"discord"`, etc. |
+| `sender_id` | `str` | The sender's identifier, when the host knows it (else empty) |
+
+**Fires:** In `agent/turn_context.py`, inside `build_turn_context()`, after the staged user message is resolved but before the turn's crash-resilience persist and first API call.
+
+**Return value:** Two composable shapes (see `_compose_pre_persist_returns`):
+
+- **Append** — a dict with a `"context"` key, or a plain non-empty string, is appended to the user message (highest-priority replace body first, then appends). This is the common case, symmetric with `pre_llm_call`.
+- **Replace** — a dict `{"user_message": str, "data": {"priority": int}}` replaces the body outright; the highest `priority` wins, ties resolve to the first plugin in discovery order. A winning replace and any appends both apply.
+
+Return `None` for no change. Injected context reaches **both** this turn's prompt and the persisted row.
+
+```python
+# Append durable recall (most common)
+return {"context": "Recalled context:\n- User prefers Python"}
+
+# Plain string (equivalent append)
+return "Recalled context:\n- User prefers Python"
+
+# Replace the persisted body (highest priority wins)
+return {"user_message": "[redacted]", "data": {"priority": 100}}
+
+# No change
+return None
+```
+
+When **multiple plugins** return context, appends are joined with double newlines in plugin discovery order (alphabetical by directory name), after any winning replace.
+
+**Use cases:** Durable memory recall, inbound message normalization/redaction that must persist, agent-path ingress enrichment mirroring gateway `rewrite`.
+
+**Example — durable memory recall:**
+
+```python
+import httpx
+
+MEMORY_API = "https://your-memory-api.example.com"
+
+def recall(session_id, user_message, **kwargs):
+    try:
+        resp = httpx.post(f"{MEMORY_API}/recall", json={
+            "session_id": session_id,
+            "query": user_message,
+        }, timeout=3)
+        memories = resp.json().get("results", [])
+        if not memories:
+            return None
+        text = "Recalled context:\n" + "\n".join(f"- {m['text']}" for m in memories)
+        return {"context": text}
+    except Exception:
+        return None
+
+def register(ctx):
+    ctx.register_hook("pre_persist_user_message", recall)
 ```
 
 ---

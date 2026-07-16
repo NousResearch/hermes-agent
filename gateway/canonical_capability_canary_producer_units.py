@@ -31,6 +31,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 
 from gateway import canonical_capability_canary_e2e as evidence_contract
+from gateway.posix_identity import effective_gid, effective_uid
 from gateway.canonical_capability_canary_producers import (
     BITRIX_OPERATIONAL_EDGE_SERVICE_UNIT,
     BITRIX_OPERATIONAL_EDGE_SOCKET_GROUP,
@@ -1073,8 +1074,8 @@ def ensure_producer_role_identities(
     """Create only exact fixed producer principals and publish their receipt."""
 
     if (
-        sys.platform != "linux" or os.geteuid() != 0
-    ):  # windows-footgun: ok — Linux production/canary boundary
+        sys.platform != "linux" or effective_uid() != 0
+    ):
         _fail("producer_root_linux_required")
     if plan_publication_receipt is None:
         from gateway.canonical_capability_canary_runtime import (
@@ -3013,8 +3014,8 @@ def publish_role_native_publication(
     if (
         role not in ENDPOINT_ROLES
         or SLOT_ROLE.get(slot) != role
-        or os.geteuid() != uid  # windows-footgun: ok — Linux production/canary boundary
-        or os.getegid() != gid  # windows-footgun: ok — Linux production/canary boundary
+        or effective_uid() != uid
+        or effective_gid() != gid
         or not isinstance(payload, Mapping)
     ):
         _fail("native_publication_invalid")
@@ -7067,8 +7068,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         if (
-            sys.platform != "linux" or os.geteuid() != 0
-        ):  # windows-footgun: ok — Linux production/canary boundary
+            sys.platform != "linux" or effective_uid() != 0
+        ):
             _fail("producer_root_linux_required")
         from gateway.canonical_capability_canary_runtime import (
             load_capability_plan,

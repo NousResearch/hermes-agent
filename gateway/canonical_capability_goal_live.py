@@ -38,6 +38,7 @@ from gateway.canonical_projection_export import (
     validate_projection_export,
 )
 from gateway.discord_connector_protocol import DiscordConnectorEvent
+from gateway.posix_identity import effective_uid, real_gid, real_uid
 from plugins.muncho_canary_evidence import (
     ACK_SCHEMA,
     DEFAULT_CONFIG_PATH as DEFAULT_API_OBSERVER_CONFIG_PATH,
@@ -773,8 +774,8 @@ def read_collector_process_identity(
         _fail("goal_collector_process_identity_invalid")
     return {
         "collector_pid": os.getpid(),
-        "collector_uid": os.getuid(),
-        "collector_gid": os.getgid(),
+        "collector_uid": real_uid(),
+        "collector_gid": real_gid(),
         "module_origin_sha256": _sha256_bytes(str(module_path).encode("utf-8")),
         "module_sha256": _sha256_bytes(module_raw),
         "boot_id_sha256": _sha256_bytes(boot_id.encode("ascii")),
@@ -1045,8 +1046,8 @@ class SegmentedGoalEvidenceCollector:
             not isinstance(process_identity, Mapping)
             or set(process_identity) != self._PROCESS_IDENTITY_FIELDS
             or process_identity.get("collector_pid") != os.getpid()
-            or process_identity.get("collector_uid") != os.getuid()
-            or process_identity.get("collector_gid") != os.getgid()
+            or process_identity.get("collector_uid") != real_uid()
+            or process_identity.get("collector_gid") != real_gid()
             or any(
                 _SHA256.fullmatch(str(process_identity.get(field) or "")) is None
                 for field in (
@@ -1092,7 +1093,7 @@ class SegmentedGoalEvidenceCollector:
                 "socket_path": str(self.socket_path),
                 "expected_pid": os.getpid(),
                 "expected_uid": 0,
-                "expected_gid": os.getgid(),
+                "expected_gid": real_gid(),
                 "socket_owner_uid": 0,
                 "socket_owner_gid": self.gateway_gid,
                 "socket_mode": "0660",
@@ -1220,8 +1221,8 @@ class SegmentedGoalEvidenceCollector:
             "release_sha": self.revision,
             "fixture_sha256": self.fixture_sha256,
             "collector_pid": os.getpid(),
-            "collector_uid": os.getuid(),
-            "collector_gid": os.getgid(),
+            "collector_uid": real_uid(),
+            "collector_gid": real_gid(),
             "collector_service_identity_sha256": (
                 self._collector_service_identity_sha256
             ),
@@ -1251,7 +1252,7 @@ class SegmentedGoalEvidenceCollector:
         )
 
     def start(self) -> None:
-        if os.geteuid() != 0 or self._thread is not None:
+        if effective_uid() != 0 or self._thread is not None:
             _fail("goal_collector_start_invalid")
         self._prepare_paths()
         self._bind()

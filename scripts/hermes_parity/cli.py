@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
-from . import __version__, bisect as bisect_mod, buckets, forkdelta, gates, gitops, state
+from . import __version__, bisect as bisect_mod, buckets, catchup, forkdelta, gates, gitops, lint_manifest, state
 
 
 DEFAULT_WORKTREE_ROOT = Path.home() / ".hermes" / "worktrees"
@@ -109,11 +110,14 @@ def cmd_gates(args: argparse.Namespace) -> int:
         base=args.base,
         fork_ref=args.fork_ref,
         tests=args.tests,
+        full=args.full,
     )
     print(gates.format_table(results))
     print()
     for reminder in gates.ci_reminders(repo):
         print(f"reminder: {reminder}")
+    if any(result.status == "SKIP" for result in results):
+        return 2
     return 0 if all(result.passed for result in results) else 1
 
 
@@ -159,15 +163,39 @@ def cmd_bisect(args: argparse.Namespace) -> int:
         print("error: no pytest node ids supplied", file=sys.stderr)
         return 2
     jobs = bisect_mod.bounded_jobs(args.jobs)
+    dep_runner = None
+    try:
+        baseline_ref = gitops.rev_parse(baseline, "HEAD")
+        if bisect_mod.requirements_changed(merge, baseline_ref):
+            merge_python = bisect_mod._python_for_repo(merge)
+
+            def dep_runner(repo: Path, tests: Sequence[str]) -> bisect_mod.PytestRun:
+                proc = subprocess.run(
+                    [str(merge_python), "-m", "pytest", *tests, "-q", "-o", "addopts=", "-p", "no:randomly"],
+                    cwd=repo,
+                    env=bisect_mod.clean_pytest_env(repo, merge_python),
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    check=False,
+                )
+                return bisect_mod.PytestRun(bisect_mod.parse_pytest_outcome(proc.returncode, proc.stdout), proc.stdout)
+    except Exception:
+        dep_runner = None
     results = bisect_mod.classify_many(
         baseline_repo=baseline,
         merge_repo=merge,
         tests=tests,
         runner=bisect_mod.pytest_runner,
         jobs=jobs,
+        dep_runner=dep_runner,
     )
     print(bisect_mod.format_table(results))
-    return 1 if any(result.classification == bisect_mod.Classification.REGRESSION for result in results) else 0
+    with (merge / "gates.jsonl").open("a", encoding="utf-8") as fh:
+        for result in results:
+            fh.write(json.dumps({"gate": "bisect", **bisect_mod.jsonable_result(result)}, sort_keys=True) + "\n")
+    red = {bisect_mod.Classification.REGRESSION, bisect_mod.Classification.REGRESSION_FLAKY, bisect_mod.Classification.REGRESSION_DEP, bisect_mod.Classification.NONDETERMINISTIC}
+    return 1 if any(result.classification in red for result in results) else 0
 
 
 def _fork_main_unchanged(repo: Path, loaded: state.ParityState) -> bool:
@@ -241,6 +269,7 @@ def cmd_finish(args: argparse.Namespace) -> int:
         base=args.base,
         fork_ref=args.fork_ref,
         tests=args.tests,
+        full=args.full,
     )
     print(gates.format_table(results))
     failures = [result for result in results if not result.passed]
@@ -275,11 +304,107 @@ def cmd_finish(args: argparse.Namespace) -> int:
 def cmd_ack(args: argparse.Namespace) -> int:
     repo = Path(args.worktree).resolve() if args.worktree else _repo(args)
     _load_required_state(repo)
+    if args.vacuous_ok:
+        if not args.reason:
+            print("error: --vacuous-ok requires --reason", file=sys.stderr)
+            return 2
+        state.record_vacuous_ack(repo, args.reason)
+        print(f"acknowledged vacuous coverage: {args.reason}")
+        return 0
+    entries: list[tuple[str, str]] = []
     for path in args.paths:
-        state.record_ack(repo, path, args.reason)
-        print(f"acknowledged: {path} — {args.reason}")
+        entries.append((path, args.reason or ""))
+    for source in args.from_file or []:
+        for raw in Path(source).read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "\t" in line:
+                path, reason = line.split("\t", 1)
+                entries.append((path.strip(), reason.strip()))
+            else:
+                if not args.reason:
+                    print("error: --reason is required for bare paths in --from-file", file=sys.stderr)
+                    return 2
+                entries.append((line, args.reason))
+    if not entries:
+        print("error: no paths supplied", file=sys.stderr)
+        return 2
+    for path, reason in entries:
+        if not reason:
+            print(f"error: missing reason for {path}", file=sys.stderr)
+            return 2
+        state.record_ack(repo, path, reason)
+        print(f"acknowledged: {path} — {reason}")
     print("note: re-run gates; the manifest+forkdelta stage treats acknowledged paths as reviewed-and-intentional.")
     return 0
+
+
+def cmd_forkdelta(args: argparse.Namespace) -> int:
+    repo = Path(args.worktree).resolve() if args.worktree else _repo(args)
+    base = args.base or gitops.merge_base(repo, "origin/main", args.fork_ref)
+    touched = set(gitops.worktree_changed_files(repo, args.fork_ref)) | set(gitops.changed_files(repo, args.fork_ref, "HEAD"))
+    report = forkdelta.compute_fork_delta(repo, base=base, fork_ref=args.fork_ref, touched_paths=touched or None)
+    if args.emit_uncovered:
+        for path in report.uncovered_paths:
+            print(path)
+    else:
+        print(f"covered: {len(report.covered_paths)}")
+        print(f"uncovered: {len(report.uncovered_paths)}")
+    return 0
+
+
+def cmd_lint_manifest(args: argparse.Namespace) -> int:
+    repo = Path(args.worktree).resolve() if args.worktree else _repo(args)
+    touched = set(gitops.worktree_changed_files(repo, args.fork_ref)) | set(gitops.changed_files(repo, args.fork_ref, "HEAD"))
+    base = args.base or gitops.merge_base(repo, "origin/main", args.fork_ref)
+    result = lint_manifest.lint_manifest(repo, base=base, fork_ref=args.fork_ref, touched_paths=touched, vacuous_ok=args.vacuous_ok)
+    for error in result.errors:
+        print(error)
+    return 0 if result.ok else 1
+
+
+def cmd_catchup(args: argparse.Namespace) -> int:
+    repo = _repo(args)
+    pre_merge = gitops.rev_parse(repo, "HEAD")
+    state.save_state(
+        repo,
+        state.ParityState(
+            tree_sha=gitops.tree_sha(repo),
+            data={
+                "created": datetime.now(timezone.utc).isoformat(),
+                "target_sha": gitops.rev_parse(repo, args.upstream),
+                "merge_base": gitops.merge_base(repo, args.fork, args.upstream),
+                "fork_main_at_start": pre_merge,
+                "branch": gitops.current_branch(repo),
+                "remote": args.remote,
+                "upstream": args.upstream,
+                "fork": args.fork,
+                "gates": {},
+            },
+        ),
+    )
+    report = catchup.run_catchup(repo, max_commits=args.max_commits, upstream=args.upstream, fork_ref=args.fork)
+    loaded = state.load_state(repo, invalidate_on_tree_change=False)
+    data = dict(loaded.data if loaded else {})
+    data["catchup"] = {
+        "changed_files": list(report.changed_files),
+        "selected_tests": list(report.selected_tests),
+        "coverage_map": {path: list(tests) for path, tests in report.coverage_map.items()},
+        "untested": list(report.untested),
+    }
+    state.save_state(
+        repo,
+        state.ParityState(
+            tree_sha=gitops.tree_sha(repo),
+            data=data,
+        ),
+    )
+    print(catchup.format_report(report))
+    print(gates.format_table(report.gate_results))
+    if any(result.status == "SKIP" for result in report.gate_results):
+        return 2
+    return 0 if all(result.passed for result in report.gate_results) and not report.untested else 1
 
 
 def cmd_clean(args: argparse.Namespace) -> int:
@@ -317,6 +442,7 @@ def build_parser() -> argparse.ArgumentParser:
     gate_cmd.add_argument("--stage", choices=gates.ORDERED_STAGE_NAMES)
     gate_cmd.add_argument("--resume", action="store_true")
     gate_cmd.add_argument("--strict", action="store_true")
+    gate_cmd.add_argument("--full", action="store_true", help="run scripts/run_tests.sh when --stage tests has no explicit corpus")
     gate_cmd.add_argument("--base")
     gate_cmd.add_argument("--fork-ref", default="fork/main")
     gate_cmd.add_argument("tests", nargs="*")
@@ -335,6 +461,7 @@ def build_parser() -> argparse.ArgumentParser:
     finish.add_argument("--fast", action="store_true")
     finish.add_argument("--resume", action="store_true")
     finish.add_argument("--strict", action="store_true")
+    finish.add_argument("--full", action="store_true")
     finish.add_argument("--force", action="store_true")
     finish.add_argument("--force-reason")
     finish.add_argument("--remote")
@@ -345,10 +472,33 @@ def build_parser() -> argparse.ArgumentParser:
     finish.add_argument("tests", nargs="*")
     finish.set_defaults(func=cmd_finish)
 
+    lint = sub.add_parser("lint-manifest", help="lint docs/sync/fork-features.json")
+    lint.add_argument("--worktree", type=Path)
+    lint.add_argument("--base")
+    lint.add_argument("--fork-ref", default="fork/main")
+    lint.add_argument("--vacuous-ok", action="store_true")
+    lint.set_defaults(func=cmd_lint_manifest)
+
+    catch = sub.add_parser("catchup", help="fast catch-up merge with manifest and closure-selected tests")
+    catch.add_argument("--max-commits", type=int, default=50)
+    catch.add_argument("--upstream", default="origin/main")
+    catch.add_argument("--fork", default="fork/main")
+    catch.add_argument("--remote", default="origin")
+    catch.set_defaults(func=cmd_catchup)
+
+    forkdelta_cmd = sub.add_parser("forkdelta", help="inspect fork-delta coverage")
+    forkdelta_cmd.add_argument("--worktree", type=Path)
+    forkdelta_cmd.add_argument("--base")
+    forkdelta_cmd.add_argument("--fork-ref", default="fork/main")
+    forkdelta_cmd.add_argument("--emit-uncovered", action="store_true")
+    forkdelta_cmd.set_defaults(func=cmd_forkdelta)
+
     ack = sub.add_parser("ack", help="acknowledge an intentionally dropped/renamed fork file (fork-delta gate clearance)")
     ack.add_argument("--worktree", type=Path)
-    ack.add_argument("--reason", required=True, help="why this fork-only path is intentionally not surviving the merge")
-    ack.add_argument("paths", nargs="+")
+    ack.add_argument("--reason", help="why this fork-only path is intentionally not surviving the merge")
+    ack.add_argument("--from-file", action="append", default=[])
+    ack.add_argument("--vacuous-ok", action="store_true")
+    ack.add_argument("paths", nargs="*")
     ack.set_defaults(func=cmd_ack)
 
     clean = sub.add_parser("clean", help="remove a parity worktree")

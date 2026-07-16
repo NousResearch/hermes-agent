@@ -1,0 +1,5 @@
+name: llmrouter-provider
+kind: model-provider
+version: 1.0.0
+description: LLMRouter — OpenAI-compatible smart router (model="auto")
+author: Nous Research

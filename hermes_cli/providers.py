@@ -54,6 +54,13 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         is_aggregator=True,
         base_url_env_var="OPENROUTER_BASE_URL",
     ),
+    "llmrouter": HermesOverlay(
+        transport="openai_chat",
+        is_aggregator=True,
+        extra_env_vars=("LLMROUTER_API_KEY",),
+        base_url_override="https://llmrouter.sh/v1",
+        base_url_env_var="LLMROUTER_BASE_URL",
+    ),
     "nous": HermesOverlay(
         transport="openai_chat",
         auth_type="oauth_device_code",
@@ -252,6 +259,11 @@ ALIASES: Dict[str, str] = {
     # openrouter
     "openai": "openrouter",     # bare "openai" → route through aggregator
 
+    # llmrouter
+    "llm-router": "llmrouter",
+    "llm_router": "llmrouter",
+    "llmr": "llmrouter",
+
     # zai
     "glm": "zai",
     "z-ai": "zai",
@@ -379,6 +391,7 @@ ALIASES: Dict[str, str] = {
 
 _LABEL_OVERRIDES: Dict[str, str] = {
     "moa": "Mixture of Agents",
+    "llmrouter": "LLMRouter",
     "nous": "Nous Portal",
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",

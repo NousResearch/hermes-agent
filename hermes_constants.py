@@ -742,7 +742,8 @@ def get_real_home(env: dict[str, str] | None = None) -> str:
         seen.add(key)
         if not _is_profile_home(candidate, profile_home):
             return candidate
-    return "/tmp"
+    import tempfile
+    return tempfile.gettempdir()
 
 
 def get_subprocess_home(env: dict[str, str] | None = None) -> str | None:

@@ -815,6 +815,14 @@ class UpdateTaskBody(BaseModel):
     # complete --summary ... --metadata ...``.
     summary: Optional[str] = None
     metadata: Optional[dict] = None
+    # Optional typed request for a one-shot protected-merge-verifier
+    # respawn-guard bypass, forwarded to unblock_task() when status
+    # transitions to 'ready' from 'blocked'/'scheduled'. Must be a
+    # structured object matching
+    # kanban_db.ProtectedMergeVerifierIntent's shape (pydantic itself
+    # rejects a non-object JSON value here with a 422); free-text claims
+    # are never parsed. See kanban_db.parse_protected_merge_verifier_intent.
+    intent: Optional[dict] = None
 
 
 @router.patch("/tasks/{task_id}")
@@ -856,7 +864,21 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 # Re-open a blocked/scheduled task, or just an explicit status set.
                 current = kanban_db.get_task(conn, task_id)
                 if current and current.status in ("blocked", "scheduled"):
-                    ok = kanban_db.unblock_task(conn, task_id)
+                    parsed_intent = None
+                    if payload.intent is not None:
+                        # Validate (never free-text parsed) BEFORE any DB
+                        # mutation -- a malformed intent must reject
+                        # outright, leaving the task exactly as blocked as
+                        # it was.
+                        try:
+                            parsed_intent = kanban_db.parse_protected_merge_verifier_intent(
+                                payload.intent
+                            )
+                        except ValueError as e:
+                            raise HTTPException(
+                                status_code=400, detail=f"intent: {e}",
+                            )
+                    ok = kanban_db.unblock_task(conn, task_id, intent=parsed_intent)
                 else:
                     # Direct status write for drag-drop (todo -> ready etc).
                     ok = _set_status_direct(conn, task_id, "ready")

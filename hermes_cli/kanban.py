@@ -600,6 +600,22 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         default=None,
         help="Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons.",
     )
+    p_unblock.add_argument(
+        "--intent",
+        default=None,
+        help=(
+            "JSON object requesting a one-shot protected-merge-verifier "
+            "respawn-guard bypass, e.g. "
+            '\'{"kind":"protected_merge_verifier","pr_url":"...",'
+            '"approved_head":"...","approved_base":"...",'
+            '"readiness_evidence":{"ready":true}}\'. Only takes effect when '
+            "it matches the evidence recorded when the task was blocked "
+            "with --kind needs_input; otherwise the unblock still proceeds "
+            "normally with no bypass granted. Malformed or unrecognized "
+            "intents are rejected outright — never parsed as free text. "
+            "Applies to a single task_id only (per-task evidence)."
+        ),
+    )
     p_unblock.add_argument("task_ids", nargs="+")
 
     p_promote = sub.add_parser(
@@ -2102,13 +2118,40 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     reason = getattr(args, "reason", None)
     if reason is not None:
         reason = reason.strip() or None
+    raw_intent = getattr(args, "intent", None)
+    # Per-task evidence (one PR's head/base) — bulk-unblocking with the SAME
+    # intent applied to every id would be a footgun, so refuse it outright
+    # rather than silently granting (or silently failing to grant) bypasses
+    # for tasks the intent was never actually verified against. Mirrors the
+    # existing --summary/--metadata bulk guard on `complete`.
+    if len(ids) > 1 and raw_intent:
+        print(
+            "kanban: --intent is per-task and can't be used with multiple "
+            "ids (a merge-verifier bypass is scoped to one task's PR). "
+            "Unblock tasks one at a time, or drop the flag for the bulk "
+            "unblock.",
+            file=sys.stderr,
+        )
+        return 2
+    intent = None
+    if raw_intent:
+        try:
+            data = json.loads(raw_intent)
+        except json.JSONDecodeError as exc:
+            print(f"kanban: --intent: invalid JSON: {exc}", file=sys.stderr)
+            return 2
+        try:
+            intent = kb.parse_protected_merge_verifier_intent(data)
+        except ValueError as exc:
+            print(f"kanban: --intent: {exc}", file=sys.stderr)
+            return 2
     author = _profile_author() if reason else None
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
             if reason:
                 kb.add_comment(conn, tid, author, f"UNBLOCK: {reason}")
-            if not kb.unblock_task(conn, tid):
+            if not kb.unblock_task(conn, tid, intent=intent):
                 failed.append(tid)
                 print(f"cannot unblock {tid} (not blocked/scheduled?)", file=sys.stderr)
             else:

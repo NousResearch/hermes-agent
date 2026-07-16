@@ -1335,6 +1335,188 @@ def test_unblock_rejects_non_blocked_task(monkeypatch, worker_env):
     assert json.loads(out).get("error")
 
 
+# ---------------------------------------------------------------------------
+# kanban_unblock intent — protected-merge-verifier bypass plumbing
+# ---------------------------------------------------------------------------
+
+_PR_URL = "https://github.com/acme/repo/pull/42"
+_HEAD_SHA = "abc123def456abc123def456abc123def456abc"
+_BASE_BRANCH = "main"
+
+
+def _explicit_tmp_db(tmp_path, name="kanban.db"):
+    """Resolve an explicit DB path under ``tmp_path`` and assert
+    containment BEFORE any ``kb.connect()``/``init_db()`` call.
+
+    ``Path.resolve()`` collapses ``..``/symlink tricks before the
+    containment check runs, so a pathological ``name`` can't escape the
+    sandbox either.
+    """
+    root = tmp_path.resolve()
+    candidate = (tmp_path / name).resolve()
+    assert candidate == root or root in candidate.parents, (
+        f"refusing to touch a DB path outside the tmp sandbox: "
+        f"{candidate} not under {root}"
+    )
+    return candidate
+
+
+@pytest.fixture
+def merge_verifier_env(monkeypatch, tmp_path):
+    """Orchestrator-mode env (no HERMES_KANBAN_TASK — kanban_unblock is
+    board-routing, not worker-scoped) pointed at an explicit,
+    containment-checked temp DB. Returns the DB path.
+    """
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    db_path = _explicit_tmp_db(tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+
+    from hermes_cli import kanban_db as kb
+    kb._INITIALIZED_PATHS.discard(str(db_path))
+    kb.init_db(db_path=db_path)
+    return db_path
+
+
+def _seed_merge_verifier_blocked_task(conn, kb, assignee="worker") -> str:
+    tid = kb.create_task(conn, title="merge task", assignee=assignee)
+    kb.claim_task(conn, tid)
+    assert kb.block_task(
+        conn, tid, reason="verify merge", kind="needs_input",
+        evidence={"pr_url": _PR_URL, "head": _HEAD_SHA, "base": _BASE_BRANCH},
+    )
+    kb.add_comment(conn, tid, "worker", f"Opened {_PR_URL}")
+    return tid
+
+
+def _valid_intent_payload(**overrides) -> dict:
+    payload = {
+        "kind": "protected_merge_verifier",
+        "pr_url": _PR_URL,
+        "approved_head": _HEAD_SHA,
+        "approved_base": _BASE_BRANCH,
+        "readiness_evidence": {"ready": True},
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_unblock_with_valid_intent_reaches_unblock_task(merge_verifier_env):
+    """A structured protected_merge_verifier intent forwarded through the
+    tool must reach kb.unblock_task and actually grant + consume the
+    respawn-guard bypass — not just return ok."""
+    db_path = merge_verifier_env
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect(db_path=db_path)
+    try:
+        tid = _seed_merge_verifier_blocked_task(conn, kb)
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_unblock({"task_id": tid, "intent": _valid_intent_payload()})
+    d = json.loads(out)
+    assert d.get("ok") is True
+    assert d["status"] == "ready"
+
+    conn = kb.connect(db_path=db_path)
+    try:
+        assert kb.get_task(conn, tid).status == "ready"
+        assert kb.check_respawn_guard(conn, tid) is None  # bypass consumed
+        kinds = [e.kind for e in kb.list_events(conn, tid)]
+        assert "guard_bypass_granted" in kinds
+        assert "guard_bypass_consumed" in kinds
+    finally:
+        conn.close()
+
+
+def test_unblock_omitted_intent_preserves_default_behavior(merge_verifier_env):
+    """Default compatibility: omitting `intent` entirely behaves exactly
+    as before this feature existed."""
+    db_path = merge_verifier_env
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect(db_path=db_path)
+    try:
+        tid = kb.create_task(conn, title="plain block", assignee="worker")
+        assert kb.block_task(conn, tid, reason="waiting")
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_unblock({"task_id": tid})
+    d = json.loads(out)
+    assert d.get("ok") is True
+    assert d["status"] == "ready"
+
+    conn = kb.connect(db_path=db_path)
+    try:
+        assert kb.get_task(conn, tid).status == "ready"
+        assert not any(
+            e.kind == "guard_bypass_granted" for e in kb.list_events(conn, tid)
+        )
+    finally:
+        conn.close()
+
+
+def test_unblock_rejects_unknown_intent_kind(merge_verifier_env):
+    """Invalid enum value for the intent's `kind` discriminator is
+    rejected — the task must NOT be unblocked or granted a bypass."""
+    db_path = merge_verifier_env
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect(db_path=db_path)
+    try:
+        tid = _seed_merge_verifier_blocked_task(conn, kb)
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_unblock(
+        {"task_id": tid, "intent": _valid_intent_payload(kind="not_a_real_kind")}
+    )
+    d = json.loads(out)
+    assert d.get("error")
+    assert "intent" in d["error"].lower()
+
+    conn = kb.connect(db_path=db_path)
+    try:
+        assert kb.get_task(conn, tid).status == "blocked"
+        assert not any(
+            e.kind == "guard_bypass_granted" for e in kb.list_events(conn, tid)
+        )
+    finally:
+        conn.close()
+
+
+def test_unblock_rejects_free_text_intent(merge_verifier_env):
+    """A free-text claim must NEVER be parsed/accepted as an intent — only
+    a structured object with the exact typed contract shape."""
+    db_path = merge_verifier_env
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect(db_path=db_path)
+    try:
+        tid = _seed_merge_verifier_blocked_task(conn, kb)
+    finally:
+        conn.close()
+
+    from tools import kanban_tools as kt
+    out = kt._handle_unblock(
+        {"task_id": tid, "intent": f"PR {_PR_URL} was merged, go ahead"}
+    )
+    d = json.loads(out)
+    assert d.get("error")
+    assert "intent" in d["error"].lower()
+
+    conn = kb.connect(db_path=db_path)
+    try:
+        assert kb.get_task(conn, tid).status == "blocked"
+    finally:
+        conn.close()
+
+
 def test_worker_lifecycle_through_tools(worker_env):
     """Drive the full claim -> heartbeat -> comment -> complete lifecycle
     exclusively through the tools, then verify the DB state matches what

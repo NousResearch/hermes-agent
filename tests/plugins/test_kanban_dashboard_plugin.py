@@ -431,6 +431,184 @@ def test_patch_block_then_unblock(client):
     assert r.json()["task"]["status"] == "ready"
 
 
+# ---------------------------------------------------------------------------
+# PATCH /tasks/:id status=ready + intent — protected-merge-verifier bypass
+# ---------------------------------------------------------------------------
+
+_PR_URL = "https://github.com/acme/repo/pull/42"
+_HEAD_SHA = "abc123def456abc123def456abc123def456abc"
+_BASE_BRANCH = "main"
+
+
+def _explicit_tmp_db(tmp_path, name="kanban.db"):
+    """Resolve an explicit DB path under ``tmp_path`` and assert
+    containment BEFORE any ``kb.init_db()``/``connect()`` call.
+
+    ``Path.resolve()`` collapses ``..``/symlink tricks before the
+    containment check runs, so a pathological ``name`` can't escape the
+    sandbox either.
+    """
+    root = tmp_path.resolve()
+    candidate = (tmp_path / name).resolve()
+    assert candidate == root or root in candidate.parents, (
+        f"refusing to touch a DB path outside the tmp sandbox: "
+        f"{candidate} not under {root}"
+    )
+    return candidate
+
+
+@pytest.fixture
+def merge_verifier_client(tmp_path, monkeypatch):
+    """Dashboard TestClient pointed at an explicit, containment-checked
+    temp DB (via HERMES_KANBAN_DB, the highest-precedence path override —
+    see kanban_db.kanban_db_path), rather than relying on the shared
+    HERMES_HOME-resolved ``kanban_home``/``client`` fixtures. Returns
+    ``(client, db_path)``.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    db_path = _explicit_tmp_db(tmp_path)
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb._INITIALIZED_PATHS.discard(str(db_path))
+    kb.init_db(db_path=db_path)
+
+    app = FastAPI()
+    app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
+    return TestClient(app), db_path
+
+
+def _seed_merge_verifier_blocked_task(db_path, assignee="alice") -> str:
+    conn = kb.connect(db_path=db_path)
+    try:
+        tid = kb.create_task(conn, title="merge task", assignee=assignee)
+        kb.claim_task(conn, tid)
+        assert kb.block_task(
+            conn, tid, reason="verify merge", kind="needs_input",
+            evidence={"pr_url": _PR_URL, "head": _HEAD_SHA, "base": _BASE_BRANCH},
+        )
+        kb.add_comment(conn, tid, "worker", f"Opened {_PR_URL}")
+        return tid
+    finally:
+        conn.close()
+
+
+def _valid_intent_payload(**overrides) -> dict:
+    payload = {
+        "kind": "protected_merge_verifier",
+        "pr_url": _PR_URL,
+        "approved_head": _HEAD_SHA,
+        "approved_base": _BASE_BRANCH,
+        "readiness_evidence": {"ready": True},
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_patch_unblock_with_valid_intent_grants_bypass(merge_verifier_client):
+    client, db_path = merge_verifier_client
+    tid = _seed_merge_verifier_blocked_task(db_path)
+
+    conn = kb.connect(db_path=db_path)
+    try:
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+    finally:
+        conn.close()
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{tid}",
+        json={"status": "ready", "intent": _valid_intent_payload()},
+    )
+    assert r.status_code == 200
+    assert r.json()["task"]["status"] == "ready"
+
+    conn = kb.connect(db_path=db_path)
+    try:
+        assert kb.check_respawn_guard(conn, tid) is None  # bypass consumed
+        kinds = [e.kind for e in kb.list_events(conn, tid)]
+        assert "guard_bypass_granted" in kinds
+        assert "guard_bypass_consumed" in kinds
+    finally:
+        conn.close()
+
+
+def test_patch_unblock_omitted_intent_preserves_default_behavior(merge_verifier_client):
+    """Default compatibility: PATCH status=ready without an `intent` field
+    behaves exactly as before this feature existed."""
+    client, db_path = merge_verifier_client
+    conn = kb.connect(db_path=db_path)
+    try:
+        tid = kb.create_task(conn, title="plain block")
+        assert kb.block_task(conn, tid, reason="need input")
+    finally:
+        conn.close()
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{tid}",
+        json={"status": "ready"},
+    )
+    assert r.status_code == 200
+    assert r.json()["task"]["status"] == "ready"
+
+    conn = kb.connect(db_path=db_path)
+    try:
+        assert not any(
+            e.kind == "guard_bypass_granted" for e in kb.list_events(conn, tid)
+        )
+    finally:
+        conn.close()
+
+
+def test_patch_unblock_rejects_unknown_intent_kind(merge_verifier_client):
+    """Invalid enum value for the intent's `kind` discriminator is
+    rejected before any DB mutation — the task must stay blocked."""
+    client, db_path = merge_verifier_client
+    tid = _seed_merge_verifier_blocked_task(db_path)
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{tid}",
+        json={
+            "status": "ready",
+            "intent": _valid_intent_payload(kind="not_a_real_kind"),
+        },
+    )
+    assert r.status_code == 400
+    assert "intent" in r.json()["detail"].lower()
+
+    conn = kb.connect(db_path=db_path)
+    try:
+        assert kb.get_task(conn, tid).status == "blocked"
+        assert not any(
+            e.kind == "guard_bypass_granted" for e in kb.list_events(conn, tid)
+        )
+    finally:
+        conn.close()
+
+
+def test_patch_unblock_rejects_free_text_intent(merge_verifier_client):
+    """A free-text claim must NEVER be parsed/accepted as an intent — only
+    a structured object with the exact typed contract shape. Rejected
+    before any DB mutation."""
+    client, db_path = merge_verifier_client
+    tid = _seed_merge_verifier_blocked_task(db_path)
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{tid}",
+        json={"status": "ready", "intent": f"PR {_PR_URL} was merged, go ahead"},
+    )
+    assert r.status_code in (400, 422)
+
+    conn = kb.connect(db_path=db_path)
+    try:
+        assert kb.get_task(conn, tid).status == "blocked"
+        assert not any(
+            e.kind == "guard_bypass_granted" for e in kb.list_events(conn, tid)
+        )
+    finally:
+        conn.close()
+
+
 def test_patch_schedule_then_unblock(client):
     t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
     r = client.patch(

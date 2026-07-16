@@ -1176,7 +1176,17 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- JSON evidence recorded by ``block_task`` for a ``needs_input`` block
+    -- (e.g. {"pr_url":..., "head":..., "base":...}). Consulted by
+    -- ``unblock_task``'s ``protected_merge_verifier`` intent validation so a
+    -- respawn-guard bypass can only be granted against the SAME PR/head/base
+    -- that actually triggered the block. NULL when no evidence was supplied.
+    block_evidence       TEXT,
+    -- One-shot respawn-guard bypass token (JSON: {"guard":..., "contract":...}),
+    -- granted by ``unblock_task`` and consumed by the very next matching
+    -- ``check_respawn_guard`` call. NULL when no bypass is pending.
+    guard_bypass         TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1986,6 +1996,19 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences",
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
+
+    if "block_evidence" not in cols:
+        # JSON evidence recorded by block_task for a needs_input block.
+        # NULL on legacy rows — no bypass can ever validate against them,
+        # which is the correct fail-closed default (see the column comment
+        # in SCHEMA_SQL).
+        _add_column_if_missing(conn, "tasks", "block_evidence", "block_evidence TEXT")
+
+    if "guard_bypass" not in cols:
+        # One-shot respawn-guard bypass token. NULL on legacy rows means no
+        # bypass is pending — the guard behaves exactly as it did before
+        # this column existed.
+        _add_column_if_missing(conn, "tasks", "guard_bypass", "guard_bypass TEXT")
 
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
@@ -4880,8 +4903,26 @@ def block_task(
     reason: Optional[str] = None,
     kind: Optional[str] = None,
     expected_run_id: Optional[int] = None,
+    evidence: Optional[dict] = None,
 ) -> bool:
     """Transition ``running``/``ready`` → ``blocked`` (or route elsewhere).
+
+    ``evidence`` is an optional JSON-serializable dict recorded verbatim
+    (e.g. ``{"pr_url": ..., "head": ..., "base": ...}``) when the task lands
+    in the plain ``blocked`` bucket. It has no effect on routing; it exists
+    so a later :func:`unblock_task` call carrying a
+    :class:`ProtectedMergeVerifierIntent` can validate that the caller is
+    unblocking against the SAME PR/head/base that actually triggered the
+    block, rather than trusting an unrelated approval. Ignored (not stored)
+    for the ``dependency`` and loop-detected/``triage`` routes.
+
+    Every routing branch below also clears any pending ``guard_bypass``
+    token. A bypass granted by a prior ``unblock_task(intent=...)`` call
+    that was never consumed (e.g. the task got re-blocked for an unrelated
+    reason before the dispatcher's next tick reached the ``active_pr``
+    check) must not silently carry over and get spent against a LATER,
+    unrelated ``active_pr`` hit -- re-blocking always invalidates a stale,
+    not-yet-consumed grant.
 
     ``kind`` (one of :data:`VALID_BLOCK_KINDS`, or ``None`` for a legacy
     un-typed block) drives routing instead of every block landing in one
@@ -4941,7 +4982,8 @@ def block_task(
                        claim_lock    = NULL,
                        claim_expires = NULL,
                        worker_pid    = NULL,
-                       block_kind    = ?
+                       block_kind    = ?,
+                       guard_bypass  = NULL
                  WHERE id = ?
                    AND status IN ('running', 'ready')
                 """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
@@ -4995,7 +5037,8 @@ def block_task(
                        claim_expires = NULL,
                        worker_pid    = NULL,
                        block_kind    = ?,
-                       block_recurrences = ?
+                       block_recurrences = ?,
+                       guard_bypass  = NULL
                  WHERE id = ?
                    AND status IN ('running', 'ready')
                 """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
@@ -5034,7 +5077,8 @@ def block_task(
                            claim_expires = NULL,
                            worker_pid    = NULL,
                            block_kind    = ?,
-                           block_recurrences = ?
+                           block_recurrences = ?,
+                           guard_bypass  = NULL
                      WHERE id = ?
                        AND status IN ('running', 'ready')
                     """,
@@ -5049,7 +5093,8 @@ def block_task(
                            claim_expires = NULL,
                            worker_pid    = NULL,
                            block_kind    = ?,
-                           block_recurrences = ?
+                           block_recurrences = ?,
+                           guard_bypass  = NULL
                      WHERE id = ?
                        AND status IN ('running', 'ready')
                        AND current_run_id = ?
@@ -5058,6 +5103,11 @@ def block_task(
                 )
             if cur.rowcount != 1:
                 return False
+            if evidence:
+                conn.execute(
+                    "UPDATE tasks SET block_evidence = ? WHERE id = ?",
+                    (json.dumps(evidence, sort_keys=True), task_id),
+                )
             run_id = _end_run(
                 conn, task_id,
                 outcome="blocked", status="blocked",
@@ -5073,7 +5123,10 @@ def block_task(
                 )
             _append_event(
                 conn, task_id, "blocked",
-                {"reason": reason, "kind": kind, "recurrences": recurrences},
+                {
+                    "reason": reason, "kind": kind, "recurrences": recurrences,
+                    **({"evidence": evidence} if evidence else {}),
+                },
                 run_id=run_id,
             )
         _blocked_task = get_task(conn, task_id)
@@ -5159,7 +5212,287 @@ def promote_task(
     return True, None
 
 
-def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
+# ---------------------------------------------------------------------------
+# Protected-merge-verifier respawn-guard bypass
+#
+# ``check_respawn_guard``'s ``active_pr`` reason is intentionally sticky: a
+# GitHub PR URL in a recent comment defers every respawn attempt for
+# ``_RESPAWN_GUARD_PR_WINDOW`` seconds, no matter how many dispatcher ticks
+# pass, because re-spawning would risk a duplicate PR on the same task.
+# ``active_pr`` remains that way by default — there is no ambient way to
+# lift it.
+#
+# The ONE exception: a human who actually verified the PR was reviewed and
+# is ready to merge/land can grant a single-use bypass via
+# ``unblock_task(..., intent=ProtectedMergeVerifierIntent(...))``. The
+# bypass only validates when ALL of the following hold — anything else
+# leaves ``active_pr`` exactly as protective as before:
+#
+#   * the intent is a well-formed ``ProtectedMergeVerifierIntent`` (typed
+#     contract) with a truthy ``pr_url`` / ``approved_head`` /
+#     ``approved_base`` and ``readiness_evidence`` that actually says
+#     ``ready`` (a wrong/missing contract is rejected silently);
+#   * the task's current ``block_kind`` is ``"needs_input"`` (a
+#     ``capability``/``dependency``/``transient``/legacy block is rejected —
+#     "wrong block kind");
+#   * a terminal ``blocked`` task_runs row exists for the task (a task
+#     flipped to ``blocked`` by direct writes rather than ``block_task``
+#     has no attempt history to audit against — "missing blocked run");
+#   * the intent's ``pr_url`` / ``approved_head`` / ``approved_base`` match
+#     the evidence ``block_task`` recorded at block time exactly — a
+#     mismatched head (e.g. the PR was force-pushed after approval) is
+#     rejected ("head mismatch").
+#
+# A granted bypass is consumed by the very next ``check_respawn_guard`` call
+# that would otherwise return ``active_pr`` — one bypass, one respawn. A
+# later ``active_pr`` hit (e.g. after the resulting claim/run posts a fresh
+# PR comment) finds nothing pending and reverts to the default, protective
+# behavior.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ProtectedMergeVerifierIntent:
+    """Typed ``unblock_task`` intent requesting a one-shot guard bypass.
+
+    Carries the evidence a human (or an automated verifier acting on a
+    human's behalf) collected before confirming a PR is ready: which PR,
+    which head commit and base branch were reviewed, and machine-checkable
+    readiness evidence (CI status, review state, etc). All four identity
+    fields plus a truthy ``readiness_evidence["ready"]`` are required for
+    the bypass to validate — see the module comment above for the full
+    rejection matrix.
+    """
+
+    pr_url: str
+    approved_head: str
+    approved_base: str
+    readiness_evidence: dict = field(default_factory=dict)
+    kind: str = "protected_merge_verifier"
+
+
+def parse_protected_merge_verifier_intent(
+    data: Any,
+) -> "ProtectedMergeVerifierIntent":
+    """Parse and validate an untrusted dict into a typed intent.
+
+    This is the ONLY supported way external surfaces (the CLI's
+    ``unblock --intent``, the ``kanban_unblock`` tool, the dashboard's
+    unblock endpoint) may construct a :class:`ProtectedMergeVerifierIntent`
+    -- always from a structured JSON object carrying an explicit
+    discriminator (``"kind": "protected_merge_verifier"``, or omitted,
+    which defaults to it), never by parsing free text. Raises
+    ``ValueError`` with an actionable message on anything malformed;
+    callers translate that into their own surface-appropriate error
+    response (CLI stderr + exit code, tool_error JSON, HTTP 400).
+
+    Note this only validates STRUCTURE (the typed contract's shape). The
+    deeper semantic checks -- does ``readiness_evidence`` actually say
+    ready, does the task's recorded block evidence match -- happen later,
+    inside ``unblock_task`` via :func:`_validate_merge_verifier_bypass`. A
+    structurally valid intent that fails those checks still parses fine
+    here; it simply won't grant a bypass (see the module comment above
+    ``ProtectedMergeVerifierIntent``).
+    """
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"intent must be a JSON object, got {type(data).__name__}"
+        )
+    kind = data.get("kind", "protected_merge_verifier")
+    if kind != "protected_merge_verifier":
+        raise ValueError(
+            f"unknown intent kind {kind!r}; only 'protected_merge_verifier' "
+            "is supported"
+        )
+    missing = [
+        f for f in ("pr_url", "approved_head", "approved_base")
+        if not (isinstance(data.get(f), str) and data.get(f).strip())
+    ]
+    if missing:
+        raise ValueError(
+            f"intent missing required field(s): {', '.join(missing)}"
+        )
+    readiness_evidence = data.get("readiness_evidence")
+    if not isinstance(readiness_evidence, dict):
+        raise ValueError(
+            f"intent.readiness_evidence must be a JSON object, got "
+            f"{type(readiness_evidence).__name__}"
+        )
+    return ProtectedMergeVerifierIntent(
+        pr_url=data["pr_url"].strip(),
+        approved_head=data["approved_head"].strip(),
+        approved_base=data["approved_base"].strip(),
+        readiness_evidence=readiness_evidence,
+    )
+
+
+def _validate_merge_verifier_bypass(
+    conn: sqlite3.Connection,
+    task_id: str,
+    intent: Optional["ProtectedMergeVerifierIntent"],
+) -> Optional[dict]:
+    """Return the contract dict to grant, or ``None`` to reject silently.
+
+    Rejection never raises and never blocks the ordinary unblock — it just
+    withholds the bypass side effect, leaving ``active_pr`` as sticky as it
+    was before this feature existed.
+    """
+    if intent is None or not isinstance(intent, ProtectedMergeVerifierIntent):
+        return None
+    if intent.kind != "protected_merge_verifier":
+        return None
+    if not (intent.pr_url and intent.approved_head and intent.approved_base):
+        return None
+    if (
+        not isinstance(intent.readiness_evidence, dict)
+        or intent.readiness_evidence.get("ready") is not True
+    ):
+        return None
+
+    row = conn.execute(
+        "SELECT block_kind, block_evidence FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    if row["block_kind"] != "needs_input":
+        return None
+
+    terminal_blocked_run = conn.execute(
+        "SELECT 1 FROM task_runs WHERE task_id = ? "
+        "AND status = 'blocked' AND outcome = 'blocked' "
+        "AND ended_at IS NOT NULL LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if terminal_blocked_run is None:
+        return None
+
+    raw_evidence = row["block_evidence"]
+    if not raw_evidence:
+        return None
+    try:
+        evidence = json.loads(raw_evidence)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(evidence, dict):
+        return None
+    if (
+        evidence.get("pr_url") != intent.pr_url
+        or evidence.get("head") != intent.approved_head
+        or evidence.get("base") != intent.approved_base
+    ):
+        return None
+
+    return {
+        "pr_url": intent.pr_url,
+        "approved_head": intent.approved_head,
+        "approved_base": intent.approved_base,
+        "readiness_evidence": intent.readiness_evidence,
+    }
+
+
+def _grant_guard_bypass(
+    conn: sqlite3.Connection, task_id: str, *, guard: str, contract: dict
+) -> None:
+    """Persist a one-shot bypass token for ``guard``, called within an
+    already-open txn (mirrors ``_append_event``'s calling convention).
+
+    Coalesces: granting the SAME (guard, contract) pair while an identical
+    bypass is already pending updates the token in place without appending
+    a second ``guard_bypass_granted`` event — an operator double-submitting
+    the same verified intent should not spam the audit log.
+    """
+    payload = {"guard": guard, "contract": contract}
+    row = conn.execute(
+        "SELECT guard_bypass FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    already_pending = False
+    if row and row["guard_bypass"]:
+        try:
+            prev = json.loads(row["guard_bypass"])
+        except (TypeError, ValueError):
+            prev = None
+        already_pending = prev == payload
+    conn.execute(
+        "UPDATE tasks SET guard_bypass = ? WHERE id = ?",
+        (json.dumps(payload, sort_keys=True), task_id),
+    )
+    if not already_pending:
+        _append_event(conn, task_id, "guard_bypass_granted", payload)
+
+
+def _has_pending_guard_bypass(
+    conn: sqlite3.Connection, task_id: str, *, guard: str
+) -> bool:
+    """Read-only check: is a pending, guard-matching bypass token present?
+
+    Never mutates state -- safe to call from a dry-run preview. Used both
+    as the cheap pre-check inside :func:`_consume_guard_bypass` (skip
+    opening a write lock for the overwhelmingly common "nothing pending"
+    case) and directly by :func:`check_respawn_guard`'s ``dry_run`` path.
+    """
+    row = conn.execute(
+        "SELECT guard_bypass FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if row is None or not row["guard_bypass"]:
+        return False
+    try:
+        payload = json.loads(row["guard_bypass"])
+    except (TypeError, ValueError):
+        return False
+    return isinstance(payload, dict) and payload.get("guard") == guard
+
+
+def _consume_guard_bypass(
+    conn: sqlite3.Connection, task_id: str, *, guard: str
+) -> bool:
+    """Consume a pending bypass for ``guard`` if one is pending; return
+    whether one was consumed.
+
+    Opens its own txn: unlike ``_grant_guard_bypass`` (called from within
+    ``unblock_task``'s existing txn), this is called from
+    ``check_respawn_guard``, which runs standalone -- and can run
+    concurrently across multiple dispatcher/gateway processes hitting the
+    same shared board. Single-use is a hard guarantee, not best-effort, so
+    the read-check-clear sequence must be atomic: the initial pre-check
+    below is read-only (skip opening a write lock for the overwhelmingly
+    common "nothing pending" case); the AUTHORITATIVE read happens again
+    inside ``write_txn``, after ``BEGIN IMMEDIATE`` has already serialized
+    against any concurrent consumer. Without that inner re-check, two
+    racing callers could both observe the token as pending before either
+    cleared it and both return ``True`` -- a double-spend of a supposedly
+    one-shot bypass.
+
+    Callers that must not mutate state (dry-run previews) should call
+    :func:`_has_pending_guard_bypass` instead -- never this function.
+    """
+    if not _has_pending_guard_bypass(conn, task_id, guard=guard):
+        return False
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT guard_bypass FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if row is None or not row["guard_bypass"]:
+            return False
+        try:
+            payload = json.loads(row["guard_bypass"])
+        except (TypeError, ValueError):
+            payload = None
+        if not isinstance(payload, dict) or payload.get("guard") != guard:
+            return False
+        conn.execute(
+            "UPDATE tasks SET guard_bypass = NULL WHERE id = ?", (task_id,),
+        )
+        _append_event(conn, task_id, "guard_bypass_consumed", payload)
+    return True
+
+
+def unblock_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    intent: Optional["ProtectedMergeVerifierIntent"] = None,
+) -> bool:
     """Transition ``blocked``/``scheduled`` -> ready or todo.
 
     Defensively closes any stale ``current_run_id`` pointer before flipping
@@ -5168,6 +5501,14 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     the leaked run is closed as ``reclaimed`` inside the same txn so the
     runs invariant (``current_run_id IS NULL`` ⇔ run row in terminal
     state) holds for the rest of this function's lifetime.
+
+    ``intent``: an optional typed :class:`ProtectedMergeVerifierIntent`
+    requesting a single-use bypass of the ``active_pr`` respawn guard. It
+    only takes effect when it validates against this task's recorded
+    ``needs_input`` block evidence (see the module comment above
+    :class:`ProtectedMergeVerifierIntent`); a missing, malformed, or
+    mismatched intent changes nothing — the ordinary unblock below still
+    proceeds and ``active_pr`` remains the default.
     """
     now = int(time.time())
     with write_txn(conn):
@@ -5222,6 +5563,9 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             conn, task_id, "unblocked",
             {"status": new_status} if new_status != "ready" else None,
         )
+        contract = _validate_merge_verifier_bypass(conn, task_id, intent)
+        if contract is not None:
+            _grant_guard_bypass(conn, task_id, guard="active_pr", contract=contract)
         return True
 
 
@@ -7244,12 +7588,23 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
-def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+def check_respawn_guard(
+    conn: sqlite3.Connection, task_id: str, *, dry_run: bool = False,
+) -> Optional[str]:
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
     Called per ready task in ``dispatch_once`` before any claim attempt.
     Returning a reason defers the spawn this tick; the task stays in
     ``ready`` and gets another chance on the next dispatcher tick.
+
+    ``dry_run=True`` makes this call read-only: a preview dispatch pass
+    must be able to report whether a task WOULD be spawned without any
+    side effect. Without this, a pending one-shot
+    ``protected_merge_verifier`` bypass (see the module comment above
+    :class:`ProtectedMergeVerifierIntent`) would be silently consumed by
+    the mere act of previewing -- burning the single grant on a dry run
+    that never actually spawns anything, so the following REAL dispatch
+    tick would see ``active_pr`` again with nothing left to lift it.
 
     Checks in priority order:
 
@@ -7286,6 +7641,13 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         A GitHub PR URL appears in a recent task comment (within
         ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
         opened a PR; re-spawning risks a duplicate PR on the same task.
+        ``active_pr`` is the default here with ONE exception: a pending,
+        validated respawn-guard bypass (granted by ``unblock_task`` via a
+        :class:`ProtectedMergeVerifierIntent` — see the module comment
+        above that class) is consumed right here and lifts the guard for
+        this single call only. Every other call, including the very next
+        one after a subsequent claim/run, sees the unmodified ``active_pr``
+        guard again.
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
@@ -7374,6 +7736,16 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         (task_id, pr_cutoff),
     ).fetchall():
         if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
+            # A validated protected-merge-verifier bypass gets exactly one
+            # free pass here, then is gone — see the module comment above
+            # ProtectedMergeVerifierIntent. dry_run previews whether the
+            # bypass WOULD lift the guard without spending it.
+            if dry_run:
+                if _has_pending_guard_bypass(conn, task_id, guard="active_pr"):
+                    return None
+                return "active_pr"
+            if _consume_guard_bypass(conn, task_id, guard="active_pr"):
+                return None
             return "active_pr"
 
     return None
@@ -7735,18 +8107,39 @@ def _dispatch_once_locked(
         # still trips the auto-block circuit breaker after failure_limit
         # consecutive failures, so a persistent auth error eventually
         # blocks via the normal path rather than on first occurrence.
-        guard_reason = check_respawn_guard(conn, row["id"])
+        guard_reason = check_respawn_guard(conn, row["id"], dry_run=dry_run)
         if guard_reason is not None:
             result.respawn_guarded.append((row["id"], guard_reason))
             # Emit an event so operators can see why the task was
             # skipped when reading `hermes kanban tail` — without
             # this the task appears stuck in ready with no diagnosis.
+            # Coalesced: a guard reason that's unchanged since the last
+            # recorded ``respawn_guarded`` event is NOT re-appended, so a
+            # task parked under the same guard for hours of dispatcher
+            # ticks gets one event, not one per tick. A reason CHANGE
+            # (e.g. active_pr -> blocker_auth) still records a fresh event
+            # — only exact repeats coalesce. This changes audit-log volume
+            # only; the guard_reason computed above (and therefore which
+            # tasks get skipped) is unaffected.
             if not dry_run:
                 with write_txn(conn):
-                    _append_event(
-                        conn, row["id"], "respawn_guarded",
-                        {"reason": guard_reason},
-                    )
+                    last_evt = conn.execute(
+                        "SELECT kind, payload FROM task_events "
+                        "WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+                        (row["id"],),
+                    ).fetchone()
+                    already_recorded = False
+                    if last_evt is not None and last_evt["kind"] == "respawn_guarded":
+                        try:
+                            prev_payload = json.loads(last_evt["payload"] or "{}")
+                        except (TypeError, ValueError):
+                            prev_payload = {}
+                        already_recorded = prev_payload.get("reason") == guard_reason
+                    if not already_recorded:
+                        _append_event(
+                            conn, row["id"], "respawn_guarded",
+                            {"reason": guard_reason},
+                        )
             continue
         if dry_run:
             result.spawned.append((row["id"], row_assignee, ""))

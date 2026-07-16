@@ -565,3 +565,124 @@ def test_run_slash_board_override_does_not_change_boards_show_current(kanban_hom
     out = kc.run_slash("--board beta boards show")
 
     assert "Current board: alpha" in out
+
+
+# ---------------------------------------------------------------------------
+# unblock --intent — protected-merge-verifier bypass plumbing
+# ---------------------------------------------------------------------------
+
+_PR_URL = "https://github.com/acme/repo/pull/42"
+_HEAD_SHA = "abc123def456abc123def456abc123def456abc"
+_BASE_BRANCH = "main"
+
+
+def _seed_merge_verifier_blocked_task(conn, tid: str) -> None:
+    kb.claim_task(conn, tid)
+    assert kb.block_task(
+        conn, tid, reason="verify merge", kind="needs_input",
+        evidence={"pr_url": _PR_URL, "head": _HEAD_SHA, "base": _BASE_BRANCH},
+    )
+    kb.add_comment(conn, tid, "worker", f"Opened {_PR_URL}")
+
+
+def _intent_json(**overrides) -> str:
+    payload = {
+        "kind": "protected_merge_verifier",
+        "pr_url": _PR_URL,
+        "approved_head": _HEAD_SHA,
+        "approved_base": _BASE_BRANCH,
+        "readiness_evidence": {"ready": True},
+    }
+    payload.update(overrides)
+    return json.dumps(payload)
+
+
+def test_run_slash_unblock_no_intent_preserves_default_behavior(kanban_home):
+    """Default compatibility: omitting --intent is unchanged from before
+    this feature existed."""
+    out = kc.run_slash("create 'x' --assignee alice")
+    import re
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    kc.run_slash(f"claim {tid}")
+    kc.run_slash(f"block {tid} 'need decision'")
+    assert "Unblocked" in kc.run_slash(f"unblock {tid}")
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "ready"
+
+
+def test_run_slash_unblock_with_valid_intent_grants_bypass(kanban_home):
+    import re
+    import shlex
+
+    out = kc.run_slash("create 'merge task' --assignee alice")
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    with kb.connect() as conn:
+        _seed_merge_verifier_blocked_task(conn, tid)
+        assert kb.check_respawn_guard(conn, tid) == "active_pr"
+
+    out = kc.run_slash(f"unblock {tid} --intent {shlex.quote(_intent_json())}")
+    assert "Unblocked" in out
+
+    with kb.connect() as conn:
+        assert kb.check_respawn_guard(conn, tid) is None  # bypass consumed
+
+
+def test_run_slash_unblock_rejects_unknown_intent_kind(kanban_home):
+    import re
+    import shlex
+
+    out = kc.run_slash("create 'merge task 2' --assignee alice")
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    with kb.connect() as conn:
+        _seed_merge_verifier_blocked_task(conn, tid)
+
+    bad_json = shlex.quote(_intent_json(kind="not_a_real_kind"))
+    result = kc.run_slash(f"unblock {tid} --intent {bad_json}")
+    assert "intent" in result.lower()
+
+    # Rejected intent must not have unblocked the task or granted a bypass.
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_run_slash_unblock_rejects_free_text_intent(kanban_home):
+    import re
+    import shlex
+
+    out = kc.run_slash("create 'merge task 3' --assignee alice")
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    with kb.connect() as conn:
+        _seed_merge_verifier_blocked_task(conn, tid)
+
+    result = kc.run_slash(
+        f"unblock {tid} --intent {shlex.quote('PR was merged, go ahead')}"
+    )
+    assert "intent" in result.lower()
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_run_slash_unblock_intent_rejected_with_multiple_ids(kanban_home):
+    """--intent is scoped to one task's PR evidence; bulk unblock + intent
+    is refused rather than silently applying the same intent to every id
+    (mirrors the existing --summary/--metadata bulk guard on complete)."""
+    import re
+    import shlex
+
+    out_a = kc.run_slash("create 'a' --assignee alice")
+    out_b = kc.run_slash("create 'b' --assignee alice")
+    tid_a = re.search(r"(t_[a-f0-9]+)", out_a).group(1)
+    tid_b = re.search(r"(t_[a-f0-9]+)", out_b).group(1)
+    with kb.connect() as conn:
+        kb.claim_task(conn, tid_a)
+        kb.block_task(conn, tid_a, reason="x")
+        kb.claim_task(conn, tid_b)
+        kb.block_task(conn, tid_b, reason="x")
+
+    result = kc.run_slash(
+        f"unblock {tid_a} {tid_b} --intent {shlex.quote(_intent_json())}"
+    )
+    assert "intent" in result.lower()
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid_a).status == "blocked"
+        assert kb.get_task(conn, tid_b).status == "blocked"

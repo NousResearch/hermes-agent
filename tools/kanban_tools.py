@@ -1287,10 +1287,24 @@ def _handle_unblock(args: dict, **kw) -> str:
     if ownership_err:
         return ownership_err
     board = args.get("board")
+    # Optional typed request for a one-shot protected-merge-verifier
+    # respawn-guard bypass. Must be a structured object matching
+    # kanban_db.ProtectedMergeVerifierIntent's shape -- validated (never
+    # free-text parsed) BEFORE connecting, so a malformed request fails
+    # fast without touching the DB. Omitted entirely (the default)
+    # preserves the plain-unblock behavior this tool always had.
+    raw_intent = args.get("intent")
+    intent = None
+    if raw_intent is not None:
+        from hermes_cli import kanban_db as _kb
+        try:
+            intent = _kb.parse_protected_merge_verifier_intent(raw_intent)
+        except ValueError as e:
+            return tool_error(f"kanban_unblock: intent: {e}")
     try:
         kb, conn = _connect(board=board)
         try:
-            ok = kb.unblock_task(conn, str(tid))
+            ok = kb.unblock_task(conn, str(tid), intent=intent)
             if not ok:
                 return tool_error(f"could not unblock {tid} (not blocked or unknown)")
             return _ok(task_id=str(tid), status="ready")
@@ -1884,6 +1898,33 @@ KANBAN_UNBLOCK_SCHEMA = {
             "task_id": {
                 "type": "string",
                 "description": "Blocked task id to return to ready.",
+            },
+            "intent": {
+                "type": "object",
+                "description": (
+                    "Optional typed request for a one-shot "
+                    "protected-merge-verifier respawn-guard bypass. Must be "
+                    "a structured object: "
+                    "{\"kind\": \"protected_merge_verifier\", \"pr_url\": "
+                    "..., \"approved_head\": ..., \"approved_base\": ..., "
+                    "\"readiness_evidence\": {\"ready\": true}}. Free-text "
+                    "claims (e.g. \"PR was merged\") are never parsed or "
+                    "accepted — pass the structured object or omit this "
+                    "field entirely. Only takes effect when it matches the "
+                    "evidence recorded when the task was blocked with "
+                    "kind='needs_input'; otherwise the unblock still "
+                    "proceeds normally with no bypass granted."
+                ),
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["protected_merge_verifier"],
+                    },
+                    "pr_url": {"type": "string"},
+                    "approved_head": {"type": "string"},
+                    "approved_base": {"type": "string"},
+                    "readiness_evidence": {"type": "object"},
+                },
             },
             "board": _board_schema_prop(),
         },

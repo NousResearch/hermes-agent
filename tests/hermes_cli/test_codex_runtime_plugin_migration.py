@@ -821,6 +821,31 @@ class TestHermesHomeLeakGuard:
         assert not _looks_like_test_tempdir("/opt/hermes")
         assert not _looks_like_test_tempdir("")
 
+    def test_hermes_tools_entry_inherits_only_worker_context(self):
+        """Codex forwards the worker context, never credentials, to MCP."""
+        entry = _build_hermes_tools_mcp_entry()
+
+        assert set(entry["env_vars"]) == {
+            "HERMES_HOME",
+            "HERMES_PROFILE",
+            "HERMES_KANBAN_TASK",
+            "HERMES_KANBAN_DB",
+            "HERMES_KANBAN_WORKSPACES_ROOT",
+            "HERMES_KANBAN_BOARD",
+            "HERMES_KANBAN_WORKSPACE",
+            "HERMES_KANBAN_BRANCH",
+            "HERMES_KANBAN_RUN_ID",
+            "HERMES_KANBAN_CLAIM_LOCK",
+            "HERMES_TENANT",
+            "HERMES_SESSION_ID",
+            "TERMINAL_CWD",
+        }
+        assert not any(
+            sensitive in name.lower()
+            for name in entry["env_vars"]
+            for sensitive in ("secret", "token", "key", "password", "auth")
+        )
+
     def test_pytest_tempdir_not_burned_into_mcp_env(self, monkeypatch):
         """The headline regression: even when HERMES_HOME points at a pytest
         tempdir, _build_hermes_tools_mcp_entry() must NOT propagate it."""

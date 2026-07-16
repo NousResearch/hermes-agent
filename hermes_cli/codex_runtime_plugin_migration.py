@@ -596,6 +596,23 @@ def _build_hermes_tools_mcp_entry() -> dict:
     out: dict[str, Any] = {
         "command": sys.executable,
         "args": ["-m", "agent.transports.hermes_tools_mcp_server"],
+        # Codex inherits only the task context that its MCP subprocess needs.
+        # Do not widen this to HERMES_*: that would also forward credentials.
+        "env_vars": [
+            "HERMES_HOME",
+            "HERMES_PROFILE",
+            "HERMES_KANBAN_TASK",
+            "HERMES_KANBAN_DB",
+            "HERMES_KANBAN_WORKSPACES_ROOT",
+            "HERMES_KANBAN_BOARD",
+            "HERMES_KANBAN_WORKSPACE",
+            "HERMES_KANBAN_BRANCH",
+            "HERMES_KANBAN_RUN_ID",
+            "HERMES_KANBAN_CLAIM_LOCK",
+            "HERMES_TENANT",
+            "HERMES_SESSION_ID",
+            "TERMINAL_CWD",
+        ],
     }
     if env:
         out["env"] = env

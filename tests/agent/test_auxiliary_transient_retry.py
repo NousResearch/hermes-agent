@@ -15,9 +15,12 @@ meaningful recovery):
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import os
+import threading
 import types
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -80,3 +83,71 @@ def test_missing_model_key_is_stable():
     a = _client_cache_key("openrouter", async_mode=False, base_url="u", api_key="k")
     b = _client_cache_key("openrouter", async_mode=False, base_url="u", api_key="k")
     assert a == b
+
+
+def test_concurrent_cache_miss_closes_losing_client():
+    """A client built after another thread fills the cache is not leaked."""
+    from agent import auxiliary_client as ac
+
+    barrier = threading.Barrier(2)
+    built_clients = [MagicMock(name="client-a"), MagicMock(name="client-b")]
+    available_clients = list(built_clients)
+    client_lock = threading.Lock()
+
+    def build_client(*_args, **_kwargs):
+        with client_lock:
+            client = available_clients.pop()
+        barrier.wait(timeout=5)
+        return client, "model"
+
+    with ac._client_cache_lock:
+        ac._client_cache.clear()
+    try:
+        with patch.object(ac, "resolve_provider_client", side_effect=build_client), \
+             patch.object(ac, "_peek_pool_entry", return_value=None):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(
+                    lambda _: ac._get_cached_client("custom", "model"),
+                    range(2),
+                ))
+
+        assert results[0][0] is results[1][0]
+        returned = results[0][0]
+        losing = next(client for client in built_clients if client is not returned)
+        losing.close.assert_called_once_with()
+    finally:
+        with ac._client_cache_lock:
+            ac._client_cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_async_transient_retry_awaits_jittered_backoff():
+    """Async retry yields for the sync retry base delay plus jitter."""
+    from agent import auxiliary_client as ac
+
+    client = MagicMock()
+    client.base_url = "https://openrouter.ai/api/v1"
+    client.chat.completions.create = AsyncMock(
+        side_effect=[ConnectionError("connection reset"), {"ok": True}],
+    )
+
+    with patch.object(
+        ac,
+        "_resolve_task_provider_model",
+        return_value=("openrouter", "model", None, None, None),
+    ), patch.object(
+        ac, "_get_cached_client", return_value=(client, "model"),
+    ), patch.object(
+        ac, "_validate_llm_response", side_effect=lambda response, _task: response,
+    ), patch.object(
+        ac.random, "uniform", return_value=1.25,
+    ), patch.object(
+        asyncio, "sleep", new_callable=AsyncMock,
+    ) as sleep_mock:
+        result = await ac.async_call_llm(
+            task="title_generation",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+    assert result == {"ok": True}
+    sleep_mock.assert_awaited_once_with(1.25)

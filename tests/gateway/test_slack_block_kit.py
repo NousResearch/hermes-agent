@@ -159,10 +159,7 @@ class TestTables:
         )
         blocks = render_blocks(md)
         cs = blocks[0]["column_settings"]
-        # left is default -> null; center/right emitted
-        assert cs[0] is None
-        assert cs[1] == {"align": "center"}
-        assert cs[2] == {"align": "right"}
+        assert cs == [{}, {"align": "center"}, {"align": "right"}]
 
     def test_inline_formatting_inside_cells(self):
         md = (

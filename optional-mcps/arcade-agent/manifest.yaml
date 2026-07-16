@@ -5,21 +5,27 @@ manifest_version: 1
 name: arcade-agent
 description: Parse codebases, recover architecture, detect smells, and compute quality metrics.
 source: https://github.com/lemduc/arcade-agent
+platforms: [linux, macos]
 
 transport:
   type: stdio
+  # Safe because the top-level platform gate rejects native Windows before
+  # installation; this pinned Arcade revision has no cross-platform launcher.
   command: "${INSTALL_DIR}/.venv/bin/arcade-mcp"
-  version: 3d7f6130b22050979d2d18084a63bc6a932b9789
+  version: d6956936fdb985116b101f51bfbd84d6fe221c07
 
 install:
   type: git
   url: https://github.com/lemduc/arcade-agent.git
-  # Pin the currently supported main commit. Catalog installs never float with
-  # a branch, so reinstalling produces the same tested tool surface.
-  ref: 3d7f6130b22050979d2d18084a63bc6a932b9789
+  # Pin a reviewed main commit from 2026-06-08, beyond the catalog's two-week
+  # supply-chain cooldown while retaining the advertised analysis tool surface.
+  ref: d6956936fdb985116b101f51bfbd84d6fe221c07
+  requires:
+    - python3.12
   bootstrap:
-    - "python3 -m venv .venv"
-    - ".venv/bin/pip install '.[mcp]'"
+    - "python3.12 -m venv .venv"
+    - ".venv/bin/python -m ensurepip --upgrade"
+    - ".venv/bin/python -m pip install '.[mcp]'"
 
 auth:
   type: none
@@ -40,6 +46,7 @@ post_install: |
   Arcade Agent runs locally and needs no credentials. The default tool set
   covers codebase summary, architecture recovery, smell detection, metrics,
   and result retrieval using the stable tools currently supported on main.
+  It requires Python 3.12 or newer exposed as python3.12 on Linux or macOS.
 
   Start a new Hermes session, then ask it to analyze a local repository. Pass
   the session ID returned by parse into recover, then reuse both session IDs

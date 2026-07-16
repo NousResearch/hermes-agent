@@ -135,6 +135,11 @@ bootstrap commands, and setup notes — with the `source:` rendered as a
 clickable link, so you can inspect exactly what an entry connects to or runs
 before clicking Install.
 
+Entries may declare `platforms` and `install.requires`. Hermes rejects an
+unsupported platform or missing prerequisite before cloning the upstream
+repository or changing `config.yaml`, with an error naming the supported
+platforms or required executable.
+
 ### Manifest version compatibility
 
 Manifests pin a `manifest_version`. The catalog is forward-compatible: if a

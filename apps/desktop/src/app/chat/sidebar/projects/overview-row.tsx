@@ -118,7 +118,13 @@ export function ProjectOverviewRow({
         actions={
           <>
             {onNewSession && (
-              <WorkspaceAddButton label={s.newSessionIn(project.label)} onClick={() => onNewSession(project.path)} />
+              <WorkspaceAddButton
+                label={s.newSessionIn(project.label)}
+                onClick={() => {
+                  onEnter?.(project.id)
+                  onNewSession(project.path)
+                }}
+              />
             )}
             <ProjectMenu anchorRef={rowRef} isActive={isActive} project={project} />
           </>

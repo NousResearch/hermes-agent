@@ -94,6 +94,7 @@ class TestDelegateRequirements(unittest.TestCase):
             "presets": {
                 "reviewer": {
                     "description": "Deep independent review",
+                    "provider": "openai-codex",
                     "model": "gpt-5.6-sol",
                     "reasoning_effort": "high",
                 },
@@ -116,6 +117,7 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("explorer: Fast source exploration", top_level["description"])
         self.assertIn("reviewer: Deep independent review", top_level["description"])
         self.assertNotIn("gpt-5.6-sol", top_level["description"])
+        self.assertNotIn("openai-codex", top_level["description"])
         self.assertIn("operator-configured preset", description)
         self.assertNotIn("NOT selectable per call", description)
 
@@ -1226,6 +1228,7 @@ delegation:
       reasoning_effort: low
     reviewer:
       description: Deep independent review
+      provider: openai-codex
       model: gpt-5.6-sol
       reasoning_effort: high
 """,
@@ -1249,6 +1252,7 @@ delegation:
 
     assert schema["properties"]["preset"]["enum"] == ["explorer", "reviewer"]
     assert reviewer["model"] == "gpt-5.6-sol"
+    assert reviewer["provider"] == "openai-codex"
     assert reviewer["reasoning_effort"] == "high"
 
 

@@ -168,10 +168,12 @@ delegation:
   presets:
     explorer:
       description: "Fast source exploration"
+      provider: "openai-codex"
       model: "gpt-5.6-luna"
       reasoning_effort: low
     reviewer:
       description: "Deep independent review"
+      provider: "openai-codex"
       model: "gpt-5.6-sol"
       reasoning_effort: high
 ```
@@ -188,10 +190,12 @@ delegate_task(
 )
 ```
 
-Preset values override the global delegation `model` and `reasoning_effort`
-keys for that child only. Provider and credential routing remain controlled by
-the global delegation config. Omitted values continue to inherit the global
-delegation config and then the parent.
+Preset values override the global delegation `provider`, `model`, and
+`reasoning_effort` keys for that child only. The provider name is trusted
+operator config and never becomes a free-form model-facing argument; Hermes
+still resolves credentials through that provider's registered credential pool.
+Omitted values continue to inherit the global delegation config and then the
+parent.
 Unknown preset names fail before any child starts. `role` remains independent:
 it controls whether a child can delegate, while `preset` controls its trusted
 execution route.

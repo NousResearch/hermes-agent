@@ -1995,6 +1995,7 @@ delegation:
   presets:
     # explorer:
     #   description: "Fast source exploration"
+    #   provider: "openai-codex"
     #   model: "gpt-5.6-luna"
     #   reasoning_effort: low
     # reviewer:
@@ -2011,7 +2012,7 @@ delegation:
 
 **Subagent provider:model override:** By default, subagents inherit the parent agent's provider and model. Set `delegation.provider` and `delegation.model` to route subagents to a different provider:model pair — e.g., use a cheap/fast model for narrowly-scoped subtasks while your primary agent runs an expensive reasoning model.
 
-**Per-task presets:** `delegation.presets` defines trusted named routes that the model may select through `delegate_task(preset=...)` or each item in `tasks`. Only names and optional descriptions enter the tool schema; model and reasoning values remain config-controlled. A preset may override `model` and `reasoning_effort`; provider and credential routing remain global. Unset values inherit the global delegation config and then the parent. Unknown names or unsupported preset keys fail before any child is constructed. `preset` is independent of `role`: presets select execution routes, while `leaf`/`orchestrator` controls nested delegation.
+**Per-task presets:** `delegation.presets` defines trusted named routes that the model may select through `delegate_task(preset=...)` or each item in `tasks`. Only names and optional descriptions enter the tool schema; provider, model, and reasoning values remain config-controlled. A preset may override `provider`, `model`, and `reasoning_effort`; Hermes resolves credentials through the selected registered provider's credential pool. Unset values inherit the global delegation config and then the parent. Unknown names or unsupported preset keys fail before any child is constructed. `preset` is independent of `role`: presets select execution routes, while `leaf`/`orchestrator` controls nested delegation.
 
 **Direct endpoint override:** If you want the obvious custom-endpoint path, set `delegation.base_url`, `delegation.api_key`, and `delegation.model`. That sends subagents directly to that OpenAI-compatible endpoint and takes precedence over `delegation.provider`. If `delegation.api_key` is omitted, Hermes falls back to `OPENAI_API_KEY` only.
 

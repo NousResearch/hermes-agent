@@ -3279,7 +3279,7 @@ def _build_preset_param_schema(presets: Dict[str, dict]) -> Dict[str, Any]:
     }
 
 
-_PRESET_OVERRIDE_KEYS = frozenset({"model", "reasoning_effort"})
+_PRESET_OVERRIDE_KEYS = frozenset({"model", "provider", "reasoning_effort"})
 
 
 def _resolve_delegation_preset_config(cfg: dict, preset_name: Optional[str]) -> dict:

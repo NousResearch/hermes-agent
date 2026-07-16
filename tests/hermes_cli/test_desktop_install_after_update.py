@@ -6,6 +6,7 @@ installed copy is stale, and skips when hashes already match.
 """
 
 import hashlib
+import shutil
 import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -42,6 +43,12 @@ def fake_installed_app(tmp_path):
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def _copy_ditto_bundle(command, **_kwargs):
+    """Emulate ``ditto SOURCE DEST`` with an ordinary directory copy."""
+    shutil.copytree(Path(command[1]), Path(command[2]))
+    return MagicMock(returncode=0)
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS .app bundle test")
@@ -202,3 +209,135 @@ def test_app_asar_hash_none_for_missing(tmp_path):
     fake_app = tmp_path / "Fake.app"
     fake_app.mkdir()
     assert _app_asar_hash(fake_app) is None
+
+
+def test_backup_rename_failure_leaves_installed_bundle_untouched(
+    fake_desktop_dir, fake_installed_app, monkeypatch
+):
+    """Failure to park the old bundle must not delete or replace it."""
+    from hermes_cli import main as hermes_main
+
+    rebuilt_exe = (
+        fake_desktop_dir
+        / "release"
+        / "mac-arm64"
+        / "Hermes.app"
+        / "Contents"
+        / "MacOS"
+        / "Hermes"
+    )
+    original_rename = Path.rename
+
+    def fail_backup_rename(path, target):
+        if path == fake_installed_app:
+            raise OSError("cannot move installed bundle aside")
+        return original_rename(path, target)
+
+    monkeypatch.setattr(Path, "rename", fail_backup_rename)
+    with (
+        patch.object(hermes_main.sys, "platform", "darwin"),
+        patch.object(
+            hermes_main,
+            "_desktop_packaged_executable",
+            return_value=rebuilt_exe,
+        ),
+        patch(
+            "hermes_cli.gui_uninstall.packaged_gui_app_paths",
+            return_value=[fake_installed_app],
+        ),
+        patch.object(hermes_main.shutil, "which", return_value="/usr/bin/ditto"),
+        patch.object(hermes_main.subprocess, "run", side_effect=_copy_ditto_bundle),
+        patch.object(hermes_main, "_macos_adhoc_sign_bundle") as mock_sign,
+    ):
+        result = hermes_main._install_rebuilt_desktop_app(fake_desktop_dir)
+
+    assert result is None
+    assert (
+        fake_installed_app / "Contents" / "Resources" / "app.asar"
+    ).read_bytes() == b"stale-asar-content"
+    assert not fake_installed_app.with_name("Hermes.app.hermes-update-new").exists()
+    assert not fake_installed_app.with_name("Hermes.app.hermes-update-old").exists()
+    mock_sign.assert_not_called()
+
+
+def test_new_bundle_rename_failure_restores_installed_bundle(
+    fake_desktop_dir, fake_installed_app, monkeypatch
+):
+    """Failure to install the staged bundle must roll the old bundle back."""
+    from hermes_cli import main as hermes_main
+
+    rebuilt_exe = (
+        fake_desktop_dir
+        / "release"
+        / "mac-arm64"
+        / "Hermes.app"
+        / "Contents"
+        / "MacOS"
+        / "Hermes"
+    )
+    tmp = fake_installed_app.with_name("Hermes.app.hermes-update-new")
+    old = fake_installed_app.with_name("Hermes.app.hermes-update-old")
+    original_rename = Path.rename
+
+    def fail_new_bundle_rename(path, target):
+        if path == tmp and target == fake_installed_app:
+            raise OSError("cannot move staged bundle into place")
+        return original_rename(path, target)
+
+    monkeypatch.setattr(Path, "rename", fail_new_bundle_rename)
+    with (
+        patch.object(hermes_main.sys, "platform", "darwin"),
+        patch.object(
+            hermes_main,
+            "_desktop_packaged_executable",
+            return_value=rebuilt_exe,
+        ),
+        patch(
+            "hermes_cli.gui_uninstall.packaged_gui_app_paths",
+            return_value=[fake_installed_app],
+        ),
+        patch.object(hermes_main.shutil, "which", return_value="/usr/bin/ditto"),
+        patch.object(hermes_main.subprocess, "run", side_effect=_copy_ditto_bundle),
+        patch.object(hermes_main, "_macos_adhoc_sign_bundle") as mock_sign,
+    ):
+        result = hermes_main._install_rebuilt_desktop_app(fake_desktop_dir)
+
+    assert result is None
+    assert (
+        fake_installed_app / "Contents" / "Resources" / "app.asar"
+    ).read_bytes() == b"stale-asar-content"
+    assert not tmp.exists()
+    assert not old.exists()
+    mock_sign.assert_not_called()
+
+
+def test_linux_desktop_launchers_are_not_install_payloads(fake_desktop_dir, tmp_path):
+    """Linux .desktop launchers must never be copytree destinations."""
+    from hermes_cli import main as hermes_main
+
+    rebuilt_exe = fake_desktop_dir / "release" / "linux-unpacked" / "hermes"
+    rebuilt_exe.parent.mkdir(parents=True)
+    rebuilt_exe.write_bytes(b"linux executable")
+    launcher = tmp_path / "share" / "applications" / "hermes.desktop"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("[Desktop Entry]\nExec=hermes\n", encoding="utf-8")
+
+    with (
+        patch.object(hermes_main.sys, "platform", "linux"),
+        patch.object(
+            hermes_main,
+            "_desktop_packaged_executable",
+            return_value=rebuilt_exe,
+        ),
+        patch(
+            "hermes_cli.gui_uninstall.packaged_gui_app_paths",
+            return_value=[launcher],
+        ) as mock_paths,
+        patch.object(hermes_main.shutil, "copytree") as mock_copytree,
+    ):
+        result = hermes_main._install_rebuilt_desktop_app(fake_desktop_dir)
+
+    assert result is None
+    assert launcher.read_text(encoding="utf-8") == "[Desktop Entry]\nExec=hermes\n"
+    mock_paths.assert_not_called()
+    mock_copytree.assert_not_called()

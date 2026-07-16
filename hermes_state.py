@@ -1754,7 +1754,7 @@ class SessionDB:
         model_config: Dict[str, Any] = None,
         system_prompt: str = None,
         user_id: str = None,
-        session_key: str = None,
+        session_key: Optional[str] = None,
         chat_id: str = None,
         chat_type: str = None,
         thread_id: str = None,
@@ -1834,6 +1834,7 @@ class SessionDB:
         thread_id: str = None,
         display_name: str = None,
         origin_json: str = None,
+        include_compression_ancestors: bool = False,
     ) -> None:
         """Persist the gateway routing peer for an existing session row.
 
@@ -1842,18 +1843,43 @@ class SessionDB:
         channel directory) can read routing data from state.db instead of
         sessions.json.  They are COALESCE'd only in the sense that ``None``
         leaves the existing value untouched.
+
+        ``include_compression_ancestors`` keeps a logical compression lineage
+        on one routing peer when an explicit gateway resume moves its tip to a
+        different lane. Normal per-turn metadata refreshes update only the
+        supplied row.
         """
         if not session_id or not session_key:
             return
 
         def _do(conn):
-            conn.execute(
-                """UPDATE sessions
-                   SET session_key = ?, source = ?, user_id = ?, chat_id = ?,
-                       chat_type = ?, thread_id = ?,
-                       display_name = COALESCE(?, display_name),
-                       origin_json = COALESCE(?, origin_json)
-                   WHERE id = ?""",
+            lineage_cte = ""
+            target_clause = "WHERE id = ?"
+            query_params = []
+            if include_compression_ancestors:
+                lineage_cte = """
+                    WITH RECURSIVE compression_lineage(id) AS (
+                        SELECT ?
+                        UNION
+                        SELECT parent.id
+                        FROM compression_lineage lineage
+                        JOIN sessions child ON child.id = lineage.id
+                        JOIN sessions parent ON parent.id = child.parent_session_id
+                        WHERE parent.end_reason = 'compression'
+                          AND json_extract(
+                              COALESCE(child.model_config, '{}'),
+                              '$._branched_from'
+                          ) IS NULL
+                          AND json_extract(
+                              COALESCE(child.model_config, '{}'),
+                              '$._delegate_from'
+                          ) IS NULL
+                          AND COALESCE(child.source, '') != 'tool'
+                    )
+                """
+                target_clause = "WHERE id IN (SELECT id FROM compression_lineage)"
+                query_params.append(session_id)
+            query_params.extend(
                 (
                     session_key,
                     source,
@@ -1863,8 +1889,19 @@ class SessionDB:
                     thread_id,
                     display_name,
                     origin_json,
-                    session_id,
-                ),
+                )
+            )
+            if not include_compression_ancestors:
+                query_params.append(session_id)
+            conn.execute(
+                f"""{lineage_cte}
+                   UPDATE sessions
+                   SET session_key = ?, source = ?, user_id = ?, chat_id = ?,
+                       chat_type = ?, thread_id = ?,
+                       display_name = COALESCE(?, display_name),
+                       origin_json = COALESCE(?, origin_json)
+                   {target_clause}""",
+                query_params,
             )
 
         self._execute_write(_do)
@@ -3360,6 +3397,7 @@ class SessionDB:
         id_query: str = None,
         search_query: str = None,
         compact_rows: bool = False,
+        session_key: str = None,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -3399,6 +3437,10 @@ class SessionDB:
         the SELECT so SQLite never copies it out of the B-tree page — a
         significant I/O saving on large databases where the blob routinely
         runs to tens of kilobytes per row.
+
+        Pass ``session_key`` to restrict results to one stable gateway
+        conversation scope (DM, group, channel, or thread, including the
+        configured per-user isolation policy).
         """
         where_clauses = []
         params = []
@@ -3424,6 +3466,9 @@ class SessionDB:
         if source:
             where_clauses.append("s.source = ?")
             params.append(source)
+        if session_key:
+            where_clauses.append("s.session_key = ?")
+            params.append(session_key)
         if exclude_sources:
             placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({placeholders})")

@@ -4038,6 +4038,77 @@ class TestListSessionsRich:
         assert len(sessions) == 1
         assert sessions[0]["id"] == "s1"
 
+    def test_rich_list_session_key_filter_precedes_limit(self, db):
+        lane_key = "agent:main:telegram:dm:lane"
+        db.create_session(
+            "lane_oldest", "telegram", session_key=lane_key,
+            user_id="lane-user", chat_id="lane",
+        )
+        db.create_session(
+            "lane_newest", "telegram", session_key=lane_key,
+            user_id="lane-user", chat_id="lane",
+        )
+        for i in range(60):
+            db.create_session(
+                f"foreign_{i}", "telegram",
+                session_key=f"agent:main:telegram:dm:foreign-{i}",
+                user_id=f"foreign-user-{i}", chat_id=f"foreign-{i}",
+            )
+        db.create_session(
+            "legacy_null_key", "telegram", user_id="lane-user", chat_id="lane"
+        )
+
+        sessions = db.list_sessions_rich(
+            source="telegram", session_key=lane_key, limit=2
+        )
+
+        assert [session["id"] for session in sessions] == [
+            "lane_newest", "lane_oldest",
+        ]
+
+    def test_rich_list_session_key_scopes_search_and_projects_compression(self, db):
+        lane_key = "agent:main:telegram:dm:lane"
+        db.create_session(
+            "lane_root", "telegram", session_key=lane_key,
+            user_id="lane-user", chat_id="lane",
+        )
+        db.set_session_title("lane_root", "Needle root")
+        db.end_session("lane_root", "compression")
+        db.create_session(
+            "lane_tip", "telegram", session_key=lane_key,
+            user_id="lane-user", chat_id="lane", parent_session_id="lane_root",
+        )
+        db.set_session_title("lane_tip", "Needle continuation")
+        db.append_message("lane_tip", "user", "latest lane activity")
+        db.create_session(
+            "foreign_match", "telegram",
+            session_key="agent:main:telegram:dm:foreign",
+            user_id="foreign-user", chat_id="foreign",
+        )
+        db.set_session_title("foreign_match", "Needle foreign")
+
+        sessions = db.list_sessions_rich(
+            source="telegram",
+            session_key=lane_key,
+            search_query="needle",
+            order_by_last_active=True,
+            limit=1,
+        )
+
+        assert [session["id"] for session in sessions] == ["lane_tip"]
+        assert sessions[0]["_lineage_root_id"] == "lane_root"
+
+    def test_session_key_predicate_can_use_session_key_index(self, db):
+        plan = db._conn.execute(
+            "EXPLAIN QUERY PLAN "
+            "SELECT s.id FROM sessions s WHERE s.session_key = ? "
+            "ORDER BY s.started_at DESC LIMIT 10",
+            ("agent:main:telegram:dm:lane",),
+        ).fetchall()
+
+        detail = " ".join(row[-1] for row in plan)
+        assert "idx_sessions_session_key" in detail, detail
+
     def test_rich_list_cwd_prefix_filter(self, db):
         db.create_session("s1", "cli", cwd="/repo")
         db.create_session("s2", "cli", cwd="/repo/subdir")

@@ -783,6 +783,57 @@ class TestSessionStoreSwitchSession:
         assert resumed["end_reason"] is None
         db.close()
 
+    def test_switch_session_rebinds_full_compression_lineage(self, tmp_path):
+        from hermes_state import SessionDB
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+        db = SessionDB(db_path=tmp_path / "state.db")
+        store._db = db
+        store._loaded = True
+
+        destination = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="destination-chat",
+            chat_type="dm",
+            user_id="destination-user",
+        )
+        current_entry = store.get_or_create_session(destination)
+        destination_key = current_entry.session_key
+        original_key = "agent:main:telegram:dm:original-chat"
+
+        db.create_session(
+            "compressed_root", "telegram", session_key=original_key,
+            user_id="original-user", chat_id="original-chat",
+        )
+        db.end_session("compressed_root", "compression")
+        db.create_session(
+            "compressed_tip", "telegram", session_key=original_key,
+            user_id="original-user", chat_id="original-chat",
+            parent_session_id="compressed_root",
+        )
+        db.end_session("compressed_tip", "session_reset")
+
+        switched = store.switch_session(destination_key, "compressed_tip")
+
+        assert switched is not None
+        assert db.get_session("compressed_root")["session_key"] == destination_key
+        assert db.get_session("compressed_tip")["session_key"] == destination_key
+        assert [
+            row["id"] for row in db.list_sessions_rich(
+                source="telegram", session_key=destination_key, limit=10
+            )
+            if row["id"] == "compressed_tip"
+        ] == ["compressed_tip"]
+        assert not any(
+            row["id"] == "compressed_tip"
+            for row in db.list_sessions_rich(
+                source="telegram", session_key=original_key, limit=10
+            )
+        )
+        db.close()
+
 
 class TestSessionStoreLookupBySessionId:
     @pytest.fixture()

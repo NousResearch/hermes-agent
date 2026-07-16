@@ -3558,7 +3558,9 @@ class GatewaySlashCommandsMixin:
             from hermes_state import format_session_db_unavailable
             return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
 
-        source = event.source
+        source = await asyncio.to_thread(
+            self._normalize_source_for_session_key, event.source
+        )
         session_key = self._session_key_for_source(source)
         raw_args = event.get_command_args().strip()
         try:
@@ -3581,7 +3583,12 @@ class GatewaySlashCommandsMixin:
 
         async def _list_titled_sessions() -> list[dict]:
             user_source = source.platform.value if source.platform else None
-            sessions = await self._session_db.list_sessions_rich(source=user_source, limit=10)
+            widen = allow_all and self._resume_caller_is_admin(source)
+            sessions = await self._session_db.list_sessions_rich(
+                source=user_source,
+                session_key=None if widen else session_key,
+                limit=10,
+            )
             return [s for s in sessions if s.get("title")][:10]
 
         if not name:
@@ -3740,7 +3747,6 @@ class GatewaySlashCommandsMixin:
             query_session_listing,
         )
 
-        source = event.source
         raw_args = event.get_command_args().strip()
         try:
             include_all, include_unnamed, target, search_query = (
@@ -3756,6 +3762,11 @@ class GatewaySlashCommandsMixin:
             resume_event = dataclasses.replace(event, text=f"/resume {target}")
             return await self._handle_resume_command(resume_event)
 
+        source = await asyncio.to_thread(
+            self._normalize_source_for_session_key, event.source
+        )
+        session_key = self._session_key_for_source(source)
+
         # A cross-origin listing (`/sessions all`) is honored only for an
         # admin, mirroring the `/resume --all` override. `all` is just a parsed
         # user argument, so without this gate any caller could run
@@ -3767,6 +3778,7 @@ class GatewaySlashCommandsMixin:
             query_session_listing,
             getattr(self._session_db, "_db", self._session_db),
             source=source.platform.value if source.platform else None,
+            session_key=None if cross_origin else session_key,
             current_session_id=current_entry.session_id,
             include_all_sources=cross_origin,
             include_unnamed=include_unnamed,

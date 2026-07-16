@@ -1511,6 +1511,7 @@ class SessionStore:
         session_key: str,
         source: Optional[SessionSource],
         display_name: Optional[str] = None,
+        include_compression_ancestors: bool = False,
     ) -> None:
         """Persist the routing peer for an existing gateway session row."""
         if not self._db or not source:
@@ -1534,6 +1535,7 @@ class SessionStore:
                 thread_id=source.thread_id,
                 display_name=display_name or source.chat_name,
                 origin_json=origin_json,
+                include_compression_ancestors=include_compression_ancestors,
             )
         except TypeError:
             # Older SessionDB without display_name/origin_json kwargs.
@@ -2376,6 +2378,7 @@ class SessionStore:
                 session_key,
                 new_entry.origin if new_entry else None,
                 display_name=new_entry.display_name if new_entry else None,
+                include_compression_ancestors=True,
             )
 
         return new_entry

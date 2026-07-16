@@ -387,6 +387,7 @@ The adapter validates incoming webhook signatures using the appropriate method f
 
 - **GitHub**: `X-Hub-Signature-256` header — HMAC-SHA256 hex digest prefixed with `sha256=`
 - **GitLab**: `X-Gitlab-Token` header — plain secret string match
+- **Notion**: `X-Notion-Signature` header — `sha256=` + HMAC-SHA256 hex digest of the raw body. Set the route `secret` to your Notion webhook subscription **verification token**.
 - **Generic**: `X-Webhook-Signature` header — raw HMAC-SHA256 hex digest
 
 If a secret is configured but no recognized signature header is present, the request is rejected.
@@ -454,6 +455,7 @@ This is the same trust model that applies to everything the agent reads: web pag
 - Ensure the secret in your route config exactly matches the secret configured in the webhook source
 - For GitHub, the secret is HMAC-based — check `X-Hub-Signature-256`
 - For GitLab, the secret is a plain token match — check `X-Gitlab-Token`
+- For Notion, set the route secret to the subscription verification token and check `X-Notion-Signature` (`sha256=<HMAC-SHA256 of the raw body>`)
 - Check gateway logs for `Invalid signature` warnings
 
 ### Event being ignored

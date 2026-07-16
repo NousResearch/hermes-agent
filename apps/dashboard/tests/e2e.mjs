@@ -122,6 +122,7 @@ const WIDGET_PAGES = {
   Markets: ["markets", "stocks"],
   Feeds: ["news", "reading", "socials", "gaming"],
   Sports: ["scores"],
+  Intel: ["worldclock", "quakes", "fx"],
 };
 const pageOf = (type) => Object.keys(WIDGET_PAGES).find((p) => WIDGET_PAGES[p].includes(type)) || "Main";
 const gotoPage = async (name) => {
@@ -583,6 +584,20 @@ check("standings table renders", (await page.locator(".detail-pop .stand-row").c
 await page.keyboard.press("Escape");
 await page.waitForSelector(".detail-pop", { state: "detached" });
 
+// ---- intel widgets (world clock, seismic, currency) ------------------------------
+await gotoWidget("worldclock");
+check("world clock shows zones", (await page.locator(".widget-worldclock .wc-row").count()) >= 3);
+check("world clock shows a time", /\d\d:\d\d/.test(await page.locator(".widget-worldclock .wc-time").first().innerText()));
+await gotoWidget("quakes");
+check("seismic monitor lists quakes", (await page.locator(".widget-quakes .quake-row").count()) >= 3);
+check("quake magnitude shown", /\d\.\d/.test(await page.locator(".widget-quakes .quake-mag").first().innerText()));
+await gotoWidget("fx");
+check("currency rows render", (await page.locator(".widget-fx .fx-row").count()) >= 3);
+await page.locator(".widget-fx .fx-amount").fill("200");
+await page.waitForTimeout(100);
+check("currency recomputes on amount change",
+  parseFloat((await page.locator(".widget-fx .fx-val").first().innerText()).replace(/,/g, "")) > 0);
+
 // ---- crypto global bar + trending -----------------------------------------------
 await gotoWidget("markets");
 await page.waitForSelector(".global-bar");
@@ -707,7 +722,7 @@ check("focus break mode styled", (await page.locator(".widget-focus .focus-clock
 await page.locator("#edit-toggle").click();
 await page.waitForSelector(".add-gallery");
 const widgetCountBefore = await page.locator(".widget:not(.add-gallery)").count();
-await page.locator(".gallery-item", { hasText: "Clock" }).click();
+await page.getByRole("button", { name: "Clock", exact: true }).click();
 check("gallery adds widget", (await page.locator(".widget:not(.add-gallery)").count()) === widgetCountBefore + 1);
 await page.locator(".widget-remove").last().click();
 check("remove widget works", (await page.locator(".widget:not(.add-gallery)").count()) === widgetCountBefore);

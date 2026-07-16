@@ -937,6 +937,46 @@ a { color: inherit; }
 .score-final { color: var(--muted); }
 .score-pre { color: var(--ink-2); }
 
+/* ---------- world clock ---------- */
+.wc-list { display: flex; flex-direction: column; }
+.wc-row { display: flex; align-items: center; gap: 10px; padding: 8px 2px; border-bottom: 1px solid var(--hairline); }
+.wc-row:last-child { border-bottom: none; }
+.wc-place { flex: 1; min-width: 0; }
+.wc-label { font-weight: 550; }
+.wc-time { font-family: ui-monospace, Menlo, monospace; font-size: 20px; font-variant-numeric: tabular-nums; }
+
+/* ---------- seismic monitor ---------- */
+.quake-list { display: flex; flex-direction: column; }
+.quake-row {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  background: none; border: none; border-bottom: 1px solid var(--hairline);
+  color: inherit; font: inherit; padding: 8px 2px; cursor: pointer;
+}
+.quake-row:last-of-type { border-bottom: none; }
+.quake-row:hover { background: var(--surface-2); }
+.quake-mag {
+  flex: 0 0 auto; width: 40px; text-align: center; font-family: ui-monospace, Menlo, monospace;
+  font-weight: 700; font-size: 15px; border-radius: 3px; padding: 4px 0;
+}
+.q-light { color: var(--status-warning); border: 1px solid color-mix(in srgb, var(--status-warning) 40%, transparent); }
+.q-strong { color: var(--status-serious); border: 1px solid color-mix(in srgb, var(--status-serious) 45%, transparent); }
+.q-major { color: var(--accent-ink); background: var(--status-critical); }
+.quake-main { min-width: 0; flex: 1; }
+.quake-place { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.quake-tsunami { color: var(--status-critical); font-weight: 700; }
+.quake-note { margin-top: 8px; letter-spacing: 0.08em; }
+
+/* ---------- currency converter ---------- */
+.fx-head { display: flex; gap: 8px; margin-bottom: 10px; }
+.fx-amount { flex: 1; font-size: 16px; }
+.fx-rows { display: flex; flex-direction: column; }
+.fx-row { display: flex; align-items: baseline; gap: 10px; padding: 6px 2px; border-bottom: 1px solid var(--hairline); }
+.fx-row:last-child { border-bottom: none; }
+.fx-cur { flex: 0 0 auto; width: 44px; font-family: ui-monospace, Menlo, monospace; font-weight: 700; }
+.fx-val { flex: 1; font-variant-numeric: tabular-nums; font-size: 15px; }
+.fx-rate { flex: 0 0 auto; }
+.fx-note { margin-top: 8px; }
+
 /* ---------- at-a-glance hero ---------- */
 .glance-grid {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px;

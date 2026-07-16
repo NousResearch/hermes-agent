@@ -1212,6 +1212,58 @@ def sample_steam_deals() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Intel / utility feeds — earthquakes (USGS) and FX rates (Frankfurter/ECB)
+# ---------------------------------------------------------------------------
+QUAKES_TTL = 10 * 60
+FX_TTL = 60 * 60
+FX_DEFAULT = ["EUR", "GBP", "JPY", "CAD", "AUD", "CHF"]
+
+
+def live_quakes() -> dict:
+    raw = json.loads(fetch_url(
+        "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/2.5_day.geojson"))
+    quakes = []
+    for f in raw.get("features", [])[:20]:
+        p = f.get("properties") or {}
+        if p.get("mag") is None:
+            continue
+        quakes.append({
+            "mag": round(p["mag"], 1), "place": p.get("place") or "—",
+            "time": p.get("time"), "url": p.get("url"),
+            "tsunami": bool(p.get("tsunami")),
+        })
+    quakes.sort(key=lambda q: q["time"] or 0, reverse=True)
+    return {"source": "live", "quakes": quakes}
+
+
+def sample_quakes() -> dict:
+    now = int(datetime.now(timezone.utc).timestamp() * 1000)
+    demo = [(5.8, "120km SW of Tokyo, Japan", 0), (4.2, "20km E of Ridgecrest, CA", 1),
+            (6.1, "Off the coast of Chile", 2), (3.7, "10km N of Reykjavík, Iceland", 3),
+            (4.9, "Aegean Sea", 5)]
+    return {"source": "sample", "quakes": [
+        {"mag": m, "place": pl, "time": now - h * 3600000,
+         "url": "https://earthquake.usgs.gov/", "tsunami": m >= 6}
+        for m, pl, h in demo]}
+
+
+def live_fx(base: str, symbols: list[str]) -> dict:
+    q = urllib.parse.urlencode({"from": base, "to": ",".join(symbols)})
+    raw = json.loads(fetch_url(f"https://api.frankfurter.app/latest?{q}"))
+    return {"source": "live", "base": raw.get("base", base),
+            "date": raw.get("date"), "rates": raw.get("rates", {})}
+
+
+def sample_fx(base: str, symbols: list[str]) -> dict:
+    table = {"EUR": 0.92, "GBP": 0.79, "JPY": 157.2, "CAD": 1.36,
+             "AUD": 1.51, "CHF": 0.89, "USD": 1.0, "CNY": 7.25, "INR": 83.4}
+    b = table.get(base, 1.0)
+    rates = {s: round(table.get(s, 1.0) / b, 4) for s in symbols if s != base}
+    return {"source": "sample", "base": base,
+            "date": datetime.now(timezone.utc).date().isoformat(), "rates": rates}
+
+
+# ---------------------------------------------------------------------------
 # Socials hub — read-only, no-account feeds (Hacker News, Lobsters, Reddit)
 # ---------------------------------------------------------------------------
 SOCIAL_TTL = 5 * 60
@@ -1861,6 +1913,17 @@ class Api:
     def gaming_deals(self, params: dict) -> dict:
         return self._cached("gaming:deals", GAMING_TTL, live_steam_deals, sample_steam_deals)
 
+    def quakes(self, params: dict) -> dict:
+        return self._cached("quakes", QUAKES_TTL, live_quakes, sample_quakes)
+
+    def fx(self, params: dict) -> dict:
+        base = re.sub(r"[^A-Za-z]", "", params.get("base", ["USD"])[0].upper())[:3] or "USD"
+        raw = params.get("symbols", [""])[0]
+        syms = [s for s in (re.sub(r"[^A-Za-z]", "", p.upper())[:3] for p in raw.split(",")) if s][:12]
+        syms = syms or FX_DEFAULT
+        return self._cached(f"fx:{base}:{','.join(syms)}", FX_TTL,
+                            lambda: live_fx(base, syms), lambda: sample_fx(base, syms))
+
     def standings(self, params: dict) -> dict:
         league = params.get("league", ["nba"])[0].lower()
         if league not in SPORT_LEAGUES:
@@ -2316,6 +2379,8 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/crypto/trending": "crypto_trending",
         "/api/scores": "scores",
         "/api/standings": "standings",
+        "/api/quakes": "quakes",
+        "/api/fx": "fx",
         "/api/social": "social",
         "/api/gaming/free": "gaming_free",
         "/api/gaming/deals": "gaming_deals",

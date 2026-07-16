@@ -596,6 +596,31 @@ class MarketsWatchlistTests(unittest.TestCase):
         self.assertIn("wins", keys)
         self.assertNotIn("randomstat", keys)  # unknown stat filtered out
 
+    def test_quakes_sample_shape(self):
+        d = self.api.quakes({})
+        self.assertTrue(d["quakes"])
+        q = d["quakes"][0]
+        for k in ("mag", "place", "time"):
+            self.assertIn(k, q)
+
+    def test_quakes_normalizer_from_fixture(self):
+        raw = {"features": [
+            {"properties": {"mag": 5.4, "place": "Somewhere", "time": 1000, "url": "u", "tsunami": 1}},
+            {"properties": {"mag": None, "place": "bad"}},
+        ]}
+        import unittest.mock as mock
+        with mock.patch.object(server, "fetch_url", return_value=json.dumps(raw).encode()):
+            out = server.live_quakes()
+        self.assertEqual(len(out["quakes"]), 1)     # mag-less dropped
+        self.assertTrue(out["quakes"][0]["tsunami"])
+
+    def test_fx_sample_and_base(self):
+        d = self.api.fx({"base": ["EUR"], "symbols": ["USD,GBP"]})
+        self.assertEqual(d["base"], "EUR")
+        self.assertIn("USD", d["rates"])
+        self.assertNotIn("EUR", d["rates"])          # base excluded
+        self.assertGreater(d["rates"]["USD"], 0)
+
     def test_social_sample_shapes(self):
         for net in ("hn", "lobsters", "reddit"):
             d = self.api.social({"network": [net]})

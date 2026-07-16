@@ -18,6 +18,9 @@ function defaultPages() {
       w("news", "l"), w("reading", "m"), w("socials", "m"), w("gaming", "m"),
     ] },
     { id: uid(), name: "Sports", layout: [w("scores", "l")] },
+    { id: uid(), name: "Intel", layout: [
+      w("worldclock", "m"), w("quakes", "m"), w("fx", "m"),
+    ] },
   ];
 }
 

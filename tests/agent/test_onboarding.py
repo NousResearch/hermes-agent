@@ -309,3 +309,94 @@ class TestProfileBuildConfigDefault:
         from hermes_cli.config import DEFAULT_CONFIG
 
         assert DEFAULT_CONFIG["onboarding"]["profile_build"] == "ask"
+
+
+class TestSethomeNoticeGate:
+    """Gate for the '📬 No home channel is set…' onboarding notice.
+
+    Incident 2026-07-07 (multi-user Feishu deployment): the notice fired in
+    every chat whose session history was empty, so end users/customers kept
+    seeing a staff-facing setup prompt. Default mode is now "once" — at most
+    one showing per platform per install.
+    """
+
+    def test_default_mode_is_once(self):
+        from agent.onboarding import sethome_notice_mode
+
+        assert sethome_notice_mode({}) == "once"
+        assert sethome_notice_mode({"onboarding": {}}) == "once"
+        assert sethome_notice_mode({"onboarding": {"sethome_notice": "once"}}) == "once"
+
+    def test_off_and_always_modes(self):
+        from agent.onboarding import sethome_notice_mode
+
+        assert sethome_notice_mode({"onboarding": {"sethome_notice": "off"}}) == "off"
+        assert sethome_notice_mode({"onboarding": {"sethome_notice": "OFF"}}) == "off"
+        assert sethome_notice_mode({"onboarding": {"sethome_notice": "always"}}) == "always"
+
+    def test_unknown_value_falls_back_to_once(self):
+        from agent.onboarding import sethome_notice_mode
+
+        assert sethome_notice_mode({"onboarding": {"sethome_notice": "banana"}}) == "once"
+        assert sethome_notice_mode("not a dict") == "once"  # type: ignore[arg-type]
+
+    def test_gate_once_shows_then_marks(self):
+        from agent.onboarding import sethome_notice_gate
+
+        show, flag = sethome_notice_gate({}, "feishu")
+        assert show is True
+        assert flag == "sethome_notice_feishu"
+
+    def test_gate_once_suppresses_after_seen(self):
+        from agent.onboarding import sethome_notice_gate
+
+        cfg = {"onboarding": {"seen": {"sethome_notice_feishu": True}}}
+        show, flag = sethome_notice_gate(cfg, "feishu")
+        assert show is False
+        assert flag is None
+        # Other platforms are independent.
+        show, flag = sethome_notice_gate(cfg, "telegram")
+        assert show is True
+        assert flag == "sethome_notice_telegram"
+
+    def test_gate_off_never_shows(self):
+        from agent.onboarding import sethome_notice_gate
+
+        show, flag = sethome_notice_gate(
+            {"onboarding": {"sethome_notice": "off"}}, "feishu"
+        )
+        assert show is False
+        assert flag is None
+
+    def test_gate_always_shows_without_marking(self):
+        from agent.onboarding import sethome_notice_gate
+
+        cfg = {
+            "onboarding": {
+                "sethome_notice": "always",
+                "seen": {"sethome_notice_feishu": True},
+            }
+        }
+        show, flag = sethome_notice_gate(cfg, "feishu")
+        assert show is True
+        assert flag is None  # legacy mode: never persist, never suppress
+
+    def test_gate_roundtrip_with_mark_seen(self, tmp_path):
+        import yaml
+
+        from agent.onboarding import mark_seen, sethome_notice_gate
+
+        cfg_path = tmp_path / "config.yaml"
+        show, flag = sethome_notice_gate({}, "feishu")
+        assert show and flag
+        assert mark_seen(cfg_path, flag) is True
+        loaded = yaml.safe_load(cfg_path.read_text())
+        show, flag = sethome_notice_gate(loaded, "feishu")
+        assert show is False and flag is None
+
+
+class TestSethomeNoticeConfigDefault:
+    def test_default_config_carries_once(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["onboarding"]["sethome_notice"] == "once"

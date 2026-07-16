@@ -368,6 +368,27 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "to skip the brief running-to-blocked transition.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
 
+    # Trusted argv-only control plane for bounded orchestration roots.  This is
+    # intentionally separate from both ordinary create and the model tool.
+    p_program = sub.add_parser("program", help="Manage bounded orchestration programs")
+    program_sub = p_program.add_subparsers(dest="program_action", required=True)
+    p_program_create = program_sub.add_parser("create", help="Create a bounded policy root")
+    p_program_create.add_argument("--title", required=True)
+    p_program_create.add_argument("--body", default=None)
+    p_program_create.add_argument("--assignee", required=True)
+    p_program_create.add_argument("--allowed-assignee", action="append", required=True)
+    p_program_create.add_argument("--orchestrator", action="append", required=True)
+    p_program_create.add_argument("--max-depth", type=int, required=True)
+    p_program_create.add_argument("--max-tasks", type=int, required=True)
+    p_program_create.add_argument("--max-concurrency", type=int, required=True)
+    p_program_create.add_argument("--max-runtime-seconds", type=int, required=True)
+    p_program_create.add_argument("--max-wall-clock-seconds", type=int, required=True)
+    p_program_create.add_argument("--goal-max-turns", type=int, required=True)
+    p_program_create.add_argument("--tenant", default=None)
+    p_program_create.add_argument("--project", default=None)
+    p_program_create.add_argument("--idempotency-key", default=None)
+    p_program_create.add_argument("--json", action="store_true")
+
     # --- swarm ---
     p_swarm = sub.add_parser(
         "swarm",
@@ -938,6 +959,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         handlers = {
             "init":     _cmd_init,
             "create":   _cmd_create,
+            "program":  _cmd_program_create,
             "swarm":    _cmd_swarm,
             "list":     _cmd_list,
             "ls":       _cmd_list,
@@ -1365,6 +1387,42 @@ def _cmd_create(args: argparse.Namespace) -> int:
             running, message = _check_dispatcher_presence()
             if not running and message:
                 print(f"\n⚠  {message}", file=sys.stderr)
+    return 0
+
+
+def _cmd_program_create(args: argparse.Namespace) -> int:
+    try:
+        policy = kb.OrchestrationPolicy(
+            allowed_assignees=tuple(args.allowed_assignee),
+            orchestrator_assignees=tuple(args.orchestrator),
+            max_depth=args.max_depth,
+            max_tasks=args.max_tasks,
+            max_runtime_seconds=args.max_runtime_seconds,
+            max_concurrency=args.max_concurrency,
+            max_wall_clock_seconds=args.max_wall_clock_seconds,
+            goal_max_turns=args.goal_max_turns,
+        )
+        with kb.connect_closing() as conn:
+            task_id = kb.create_task(
+                conn, title=args.title, body=args.body, assignee=args.assignee,
+                tenant=args.tenant, project_id=args.project,
+                idempotency_key=args.idempotency_key,
+                orchestration_policy=policy, created_by=_profile_author(),
+            )
+            task = kb.get_task(conn, task_id)
+    except ValueError as exc:
+        print(f"kanban program create: {exc}", file=sys.stderr)
+        return 2
+    safe = {
+        "id": task.id,
+        "status": task.status,
+        "orchestration_root_id": task.orchestration_root_id,
+        "policy": json.loads(task.orchestration_policy.to_json()),
+    }
+    if args.json:
+        print(json.dumps(safe, sort_keys=True, separators=(",", ":")))
+    else:
+        print(f"Created program {task.id} ({task.status})")
     return 0
 
 

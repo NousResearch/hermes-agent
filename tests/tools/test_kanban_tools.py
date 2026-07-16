@@ -61,6 +61,19 @@ def test_kanban_tools_visible_with_env_var(monkeypatch, tmp_path):
     assert kanban == expected, f"expected {expected}, got {kanban}"
 
 
+def test_kanban_create_schema_has_no_program_authority_arguments():
+    from tools.kanban_tools import KANBAN_CREATE_SCHEMA
+
+    properties = KANBAN_CREATE_SCHEMA["parameters"]["properties"]
+    assert not {
+        "orchestration_policy", "allowed_assignees", "orchestrator_assignees",
+        "max_depth", "max_tasks", "max_concurrency", "max_wall_clock_seconds",
+    } & set(properties)
+    # Existing per-task goal controls remain part of the legacy schema; the DB
+    # clamps this value when the caller is inside a bounded program.
+    assert "goal_max_turns" in properties
+
+
 def test_kanban_worker_env_overrides_profile_toolset_filter(monkeypatch, tmp_path):
     """Dispatcher-spawned workers must get lifecycle tools even when the
     assignee profile restricts enabled toolsets and does not list kanban.

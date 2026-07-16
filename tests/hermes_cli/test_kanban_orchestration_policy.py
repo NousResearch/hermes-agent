@@ -5,6 +5,272 @@ import json
 import pytest
 
 
+def _policy(**overrides):
+    values = {
+        "allowed_assignees": ("planner", "worker"),
+        "orchestrator_assignees": ("planner",),
+        "max_depth": 2,
+        "max_tasks": 8,
+        "max_runtime_seconds": 60,
+        "max_concurrency": 2,
+        "max_wall_clock_seconds": 300,
+        "goal_max_turns": 5,
+    }
+    values.update(overrides)
+    return kb.OrchestrationPolicy(**values)
+
+
+def test_policy_v2_added_fields_are_strict_and_canonical():
+    policy = _policy()
+    encoded = json.loads(policy.to_json())
+    assert encoded == {
+        "version": 2,
+        "allowed_assignees": ["planner", "worker"],
+        "orchestrator_assignees": ["planner"],
+        "max_depth": 2,
+        "max_tasks": 8,
+        "max_runtime_seconds": 60,
+        "max_concurrency": 2,
+        "max_wall_clock_seconds": 300,
+        "goal_max_turns": 5,
+    }
+    assert kb.OrchestrationPolicy.from_json(policy.to_json()) == policy
+
+    for field, bad in (
+        ("max_concurrency", True),
+        ("max_concurrency", 1.0),
+        ("max_concurrency", "1"),
+        ("max_wall_clock_seconds", False),
+        ("goal_max_turns", 2.0),
+    ):
+        payload = dict(encoded)
+        payload[field] = bad
+        with pytest.raises(ValueError, match="malformed orchestration policy"):
+            kb.OrchestrationPolicy.from_json(json.dumps(payload))
+
+    for field, bad in (
+        ("max_concurrency", 0), ("max_concurrency", 33),
+        ("max_wall_clock_seconds", 0), ("max_wall_clock_seconds", 86401),
+        ("goal_max_turns", 0), ("goal_max_turns", 21),
+    ):
+        with pytest.raises(ValueError):
+            _policy(**{field: bad})
+
+
+def test_policy_a1_json_has_deliberate_bounded_upgrade():
+    a1 = json.dumps({
+        "allowed_assignees": ["planner"],
+        "orchestrator_assignees": ["planner"],
+        "max_depth": 1,
+        "max_tasks": 2,
+        "max_runtime_seconds": 3,
+    })
+    upgraded = kb.OrchestrationPolicy.from_json(a1)
+    assert upgraded.max_concurrency == 1
+    assert upgraded.max_wall_clock_seconds == 86400
+    assert upgraded.goal_max_turns == 20
+    assert json.loads(upgraded.to_json())["version"] == 2
+
+
+def test_policy_a1_root_replay_compares_upgraded_policy_semantics(tmp_path):
+    a1 = json.dumps(
+        {
+            "allowed_assignees": ["planner"],
+            "orchestrator_assignees": ["planner"],
+            "max_depth": 1,
+            "max_tasks": 2,
+            "max_runtime_seconds": 3,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    upgraded = kb.OrchestrationPolicy.from_json(a1)
+    conn = kb.connect(tmp_path / "kanban.db")
+    try:
+        root = kb.create_task(
+            conn,
+            title="root",
+            assignee="planner",
+            idempotency_key="a1-root",
+            orchestration_policy=upgraded,
+        )
+        conn.execute("UPDATE tasks SET orchestration_policy = ? WHERE id = ?", (a1, root))
+        replay = kb.create_task(
+            conn,
+            title="root replay",
+            assignee="planner",
+            idempotency_key="a1-root",
+            orchestration_policy=upgraded,
+        )
+        assert replay == root
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_policy_child_inherits_goal_turn_budget(tmp_path):
+    conn = kb.connect(tmp_path / "kanban.db")
+    try:
+        root = kb.create_task(conn, title="root", assignee="planner", orchestration_policy=_policy())
+        authority = _claim_authority(conn, root)
+        child = _bounded_create(
+            conn, authority, title="child", assignee="worker", goal_mode=True,
+            goal_max_turns=20,
+        )
+        assert kb.get_task(conn, child).goal_max_turns == 5
+    finally:
+        conn.close()
+
+
+def test_policy_root_assignee_must_be_an_orchestrator(tmp_path):
+    conn = kb.connect(tmp_path / "kanban.db")
+    try:
+        with pytest.raises(ValueError, match="root assignee"):
+            kb.create_task(
+                conn,
+                title="unusable root",
+                assignee="worker",
+                orchestration_policy=_policy(),
+            )
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_program_deadline_rejects_create_and_claim_but_allows_exact_replay(tmp_path, monkeypatch):
+    now = 1_700_000_000
+    monkeypatch.setattr(kb.time, "time", lambda: now)
+    conn = kb.connect(tmp_path / "kanban.db")
+    try:
+        root = kb.create_task(conn, title="root", assignee="planner", orchestration_policy=_policy(max_wall_clock_seconds=10))
+        authority = _claim_authority(conn, root)
+        child = _bounded_create(conn, authority, title="child", assignee="worker", idempotency_key="child-key")
+        monkeypatch.setattr(kb.time, "time", lambda: now + 11)
+        assert _bounded_create(conn, authority, title="replay", assignee="worker", idempotency_key="child-key") == child
+        before = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+        with pytest.raises(ValueError, match="deadline"):
+            _bounded_create(conn, authority, title="late", assignee="worker", idempotency_key="new-key")
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == before
+        kb.complete_task(conn, root, result="delegated", expected_run_id=authority.run_id)
+        assert kb.claim_task(conn, child) is None
+        expired_child = kb.get_task(conn, child)
+        assert expired_child is not None
+        assert expired_child.status == "blocked"
+        assert kb.recompute_ready(conn) == 0
+        expired_child = kb.get_task(conn, child)
+        assert expired_child is not None
+        assert expired_child.status == "blocked"
+    finally:
+        conn.close()
+
+
+def test_program_deadline_terminates_running_worker_without_requeue(tmp_path, monkeypatch):
+    now = 1_700_000_000
+    monkeypatch.setattr(kb.time, "time", lambda: now)
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+    conn = kb.connect(tmp_path / "kanban.db")
+    try:
+        root = kb.create_task(
+            conn,
+            title="root",
+            assignee="planner",
+            orchestration_policy=_policy(
+                max_runtime_seconds=3600,
+                max_wall_clock_seconds=10,
+            ),
+        )
+        claimed = kb.claim_task(conn, root, claimer=f"{kb._claimer_id().split(':', 1)[0]}:deadline")
+        assert claimed is not None
+        conn.execute("UPDATE tasks SET worker_pid = ? WHERE id = ?", (999999, root))
+        conn.execute(
+            "UPDATE task_runs SET worker_pid = ? WHERE id = ?",
+            (999999, claimed.current_run_id),
+        )
+        monkeypatch.setattr(kb.time, "time", lambda: now + 11)
+        signals = []
+        assert kb.enforce_max_runtime(
+            conn,
+            signal_fn=lambda pid, sig: signals.append((pid, sig)),
+        ) == [root]
+        assert signals
+        task = kb.get_task(conn, root)
+        assert task is not None
+        assert task.status == "blocked"
+        run = kb.latest_run(conn, root)
+        assert run is not None
+        assert run.status == "timed_out"
+        assert run.outcome == "timed_out"
+        assert kb.recompute_ready(conn) == 0
+        task = kb.get_task(conn, root)
+        assert task is not None
+        assert task.status == "blocked"
+    finally:
+        conn.close()
+
+
+def test_program_max_concurrency_is_atomic_and_ignores_ended_runs(tmp_path):
+    path = tmp_path / "kanban.db"
+    conn = kb.connect(path)
+    try:
+        root = kb.create_task(conn, title="root", assignee="planner", orchestration_policy=_policy(max_concurrency=1))
+        authority = _claim_authority(conn, root)
+        first = _bounded_create(conn, authority, title="first", assignee="worker")
+        second = _bounded_create(conn, authority, title="second", assignee="worker")
+        kb.complete_task(conn, root, result="delegated", expected_run_id=authority.run_id)
+    finally:
+        conn.close()
+
+    barrier = threading.Barrier(2)
+    def claim(task_id):
+        c = kb.connect(path)
+        try:
+            barrier.wait()
+            return kb.claim_task(c, task_id)
+        finally:
+            c.close()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(claim, (first, second)))
+    assert sum(result is not None for result in results) == 1
+
+    winner = next(result for result in results if result is not None)
+    loser = second if winner.id == first else first
+    conn = kb.connect(path)
+    try:
+        # Expired-but-not-ended runs are stale and must not hold a slot.
+        conn.execute(
+            "UPDATE task_runs SET claim_expires=? WHERE id=?",
+            (int(kb.time.time()) - 1, winner.current_run_id),
+        )
+        assert kb.claim_task(conn, loser) is not None
+        loser_task = kb.get_task(conn, loser)
+        assert kb.complete_task(
+            conn, loser, result="done", expected_run_id=loser_task.current_run_id
+        )
+        # Ended history is likewise free, even while the stale winner row
+        # remains marked running for a later reclamation pass.
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, claim_lock=NULL WHERE id=?",
+            (loser,),
+        )
+        assert kb.claim_task(conn, loser) is not None
+    finally:
+        conn.close()
+
+
+def test_legacy_unmanaged_claim_and_create_remain_unbounded(tmp_path, monkeypatch):
+    now = 1_700_000_000
+    monkeypatch.setattr(kb.time, "time", lambda: now)
+    conn = kb.connect(tmp_path / "kanban.db")
+    try:
+        parent = kb.create_task(conn, title="legacy", assignee="planner")
+        monkeypatch.setattr(kb.time, "time", lambda: now + 100_000)
+        assert kb.claim_task(conn, parent) is not None
+        child = kb.create_task(conn, title="legacy child", assignee="worker", current_orchestrator_task_id=parent)
+        assert kb.get_task(conn, child).orchestration_policy is None
+    finally:
+        conn.close()
+
+
 def _claim_authority(conn, task_id):
     claimed = kb.claim_task(conn, task_id, ttl_seconds=300)
     assert claimed is not None

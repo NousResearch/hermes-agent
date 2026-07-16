@@ -838,13 +838,23 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
 
 @dataclass(frozen=True)
 class OrchestrationPolicy:
-    """Immutable, bounded authority for one dynamically expanded program."""
+    """Immutable, bounded authority for one dynamically expanded program.
+
+    Version 2 adds execution budgets.  A1 was never released, but persisted
+    development databases may contain its exact five-key JSON document;
+    ``from_json`` deliberately upgrades that shape to conservative bounded
+    defaults.  Every new serialization is an exact, explicitly-versioned v2
+    document so future compatibility cannot emerge from accidental parsing.
+    """
 
     allowed_assignees: tuple[str, ...]
     orchestrator_assignees: tuple[str, ...]
     max_depth: int
     max_tasks: int
     max_runtime_seconds: int
+    max_concurrency: int = 1
+    max_wall_clock_seconds: int = 86_400
+    goal_max_turns: int = 20
 
     def __post_init__(self) -> None:
         if (
@@ -858,6 +868,9 @@ class OrchestrationPolicy:
                     self.max_depth,
                     self.max_tasks,
                     self.max_runtime_seconds,
+                    self.max_concurrency,
+                    self.max_wall_clock_seconds,
+                    self.goal_max_turns,
                 )
             )
         ):
@@ -868,6 +881,10 @@ class OrchestrationPolicy:
         orchestrators = tuple(
             dict.fromkeys(_canonical_assignee(a) for a in self.orchestrator_assignees)
         )
+        if len(assignees) != len(self.allowed_assignees):
+            raise ValueError("allowed_assignees must not contain duplicates")
+        if len(orchestrators) != len(self.orchestrator_assignees):
+            raise ValueError("orchestrator_assignees must not contain duplicates")
         if not assignees or any(not a for a in assignees) or len(assignees) > 64:
             raise ValueError("allowed_assignees must contain 1 to 64 profile names")
         if not orchestrators or any(not a for a in orchestrators):
@@ -880,17 +897,27 @@ class OrchestrationPolicy:
             raise ValueError("max_tasks must be between 1 and 10000")
         if not 1 <= self.max_runtime_seconds <= 604_800:
             raise ValueError("max_runtime_seconds must be between 1 and 604800")
+        if not 1 <= self.max_concurrency <= 32:
+            raise ValueError("max_concurrency must be between 1 and 32")
+        if not 1 <= self.max_wall_clock_seconds <= 86_400:
+            raise ValueError("max_wall_clock_seconds must be between 1 and 86400")
+        if not 1 <= self.goal_max_turns <= 20:
+            raise ValueError("goal_max_turns must be between 1 and 20")
         object.__setattr__(self, "allowed_assignees", assignees)
         object.__setattr__(self, "orchestrator_assignees", orchestrators)
 
     def to_json(self) -> str:
         return json.dumps(
             {
+                "version": 2,
                 "allowed_assignees": list(self.allowed_assignees),
                 "orchestrator_assignees": list(self.orchestrator_assignees),
                 "max_depth": self.max_depth,
                 "max_tasks": self.max_tasks,
                 "max_runtime_seconds": self.max_runtime_seconds,
+                "max_concurrency": self.max_concurrency,
+                "max_wall_clock_seconds": self.max_wall_clock_seconds,
+                "goal_max_turns": self.goal_max_turns,
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -900,13 +927,21 @@ class OrchestrationPolicy:
     def from_json(cls, value: str) -> "OrchestrationPolicy":
         try:
             data = json.loads(value)
-            if not isinstance(data, dict) or set(data) != {
+            a1_keys = {
                 "allowed_assignees",
                 "orchestrator_assignees",
                 "max_depth",
                 "max_tasks",
                 "max_runtime_seconds",
-            }:
+            }
+            v2_keys = a1_keys | {
+                "version", "max_concurrency", "max_wall_clock_seconds",
+                "goal_max_turns",
+            }
+            if not isinstance(data, dict) or set(data) not in (a1_keys, v2_keys):
+                raise ValueError
+            is_a1 = set(data) == a1_keys
+            if not is_a1 and (type(data["version"]) is not int or data["version"] != 2):
                 raise ValueError
             if (
                 not isinstance(data["allowed_assignees"], list)
@@ -916,6 +951,9 @@ class OrchestrationPolicy:
                 or any(type(data[key]) is not int for key in (
                     "max_depth", "max_tasks", "max_runtime_seconds"
                 ))
+                or (not is_a1 and any(type(data[key]) is not int for key in (
+                    "max_concurrency", "max_wall_clock_seconds", "goal_max_turns"
+                )))
             ):
                 raise ValueError
             return cls(
@@ -924,6 +962,9 @@ class OrchestrationPolicy:
                 max_depth=data["max_depth"],
                 max_tasks=data["max_tasks"],
                 max_runtime_seconds=data["max_runtime_seconds"],
+                max_concurrency=1 if is_a1 else data["max_concurrency"],
+                max_wall_clock_seconds=86_400 if is_a1 else data["max_wall_clock_seconds"],
+                goal_max_turns=20 if is_a1 else data["goal_max_turns"],
             )
         except (TypeError, ValueError, json.JSONDecodeError, KeyError) as exc:
             raise ValueError("malformed orchestration policy") from exc
@@ -2797,12 +2838,14 @@ def create_task(
                     project_id = authority.project_id
                     parents = requested_parents or (authority.id,)
                     max_runtime_seconds = policy.max_runtime_seconds
+                    goal_max_turns = policy.goal_max_turns
                 elif policy is not None:
                     if project_resolution_failed:
                         raise ValueError("project does not match orchestration program")
                     orchestration_root_id = task_id
                     orchestration_depth = 0
                     max_runtime_seconds = policy.max_runtime_seconds
+                    goal_max_turns = policy.goal_max_turns
 
                 # Re-check under the write lock so concurrent replay cannot
                 # spend quota twice. A key already owned by another program is
@@ -2826,7 +2869,10 @@ def create_task(
                                 existing["id"] == existing["orchestration_root_id"]
                                 and existing["orchestration_depth"] == 0
                                 and existing["orchestration_parent_id"] is None
-                                and existing["orchestration_policy"] == orchestration_policy.to_json()
+                                and existing["orchestration_policy"] is not None
+                                and OrchestrationPolicy.from_json(
+                                    existing["orchestration_policy"]
+                                ) == orchestration_policy
                                 and existing["assignee"] == assignee
                                 and existing["tenant"] == tenant
                                 and existing["project_id"] == project_id
@@ -2840,6 +2886,25 @@ def create_task(
                         return existing["id"]
 
                 if policy is not None:
+                    root_created_at = conn.execute(
+                        "SELECT created_at FROM tasks WHERE id = ?",
+                        (orchestration_root_id,),
+                    ).fetchone()
+                    # A new root has no row yet, so its immutable creation
+                    # instant is the boundary's own ``now`` value.
+                    created_at = (
+                        int(root_created_at["created_at"])
+                        if root_created_at is not None else now
+                    )
+                    if now > created_at + policy.max_wall_clock_seconds:
+                        raise ValueError("orchestration program deadline exceeded")
+                    if (
+                        orchestration_depth == 0
+                        and assignee not in policy.orchestrator_assignees
+                    ):
+                        raise ValueError(
+                            "root assignee must be allowed to orchestrate"
+                        )
                     if assignee not in policy.allowed_assignees:
                         raise ValueError("assignee is not allowed by orchestration policy")
                     if (
@@ -3667,6 +3732,46 @@ def claim_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        program = conn.execute(
+            "SELECT orchestration_root_id, orchestration_policy FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if program and program["orchestration_policy"]:
+            try:
+                policy = OrchestrationPolicy.from_json(program["orchestration_policy"])
+            except ValueError:
+                policy = None
+            root = conn.execute(
+                "SELECT created_at FROM tasks WHERE id = ?",
+                (program["orchestration_root_id"],),
+            ).fetchone()
+            deadline_reason = (
+                "program_authority_invalid"
+                if policy is None or root is None
+                else "program_deadline"
+            )
+            if (
+                policy is None
+                or root is None
+                or now > int(root["created_at"]) + policy.max_wall_clock_seconds
+            ):
+                parked = conn.execute(
+                    "UPDATE tasks SET status = 'blocked' "
+                    "WHERE id = ? AND status = 'ready'",
+                    (task_id,),
+                )
+                if parked.rowcount == 1:
+                    _append_event(conn, task_id, "blocked", {"reason": deadline_reason})
+                return None
+            active = conn.execute(
+                "SELECT COUNT(*) FROM task_runs r "
+                "JOIN tasks t ON t.id = r.task_id "
+                "WHERE t.orchestration_root_id = ? AND r.status = 'running' "
+                "AND r.ended_at IS NULL AND r.claim_expires >= ?",
+                (program["orchestration_root_id"], now),
+            ).fetchone()[0]
+            if active >= policy.max_concurrency:
+                return None
         # Structural invariant: never transition ready -> running while any
         # parent is not yet 'done'. This is the single enforcement point
         # regardless of which writer (create_task, link_tasks, unblock_task,
@@ -6592,13 +6697,12 @@ def enforce_max_runtime(
     *,
     signal_fn=None,
 ) -> list[str]:
-    """Terminate workers whose per-task ``max_runtime_seconds`` has elapsed.
+    """Terminate workers whose task runtime or program wall-clock has elapsed.
 
     Sends SIGTERM, waits a short grace window, then SIGKILL. Emits a
-    ``timed_out`` event and drops the task back to ``ready`` so the next
-    dispatcher tick re-spawns it — unless the spawn-failure circuit
-    breaker has already given up, in which case the task stays blocked
-    where ``_record_spawn_failure`` parked it.
+    ``timed_out`` event. Per-task runtime exhaustion returns the task to
+    ``ready`` for bounded retry; whole-program deadline exhaustion parks it
+    ``blocked`` so an expired program cannot enter a requeue loop.
 
     Runs host-local: only tasks claimed by this host are candidates
     (same reasoning as ``detect_crashed_workers``). ``signal_fn`` is a
@@ -6612,9 +6716,11 @@ def enforce_max_runtime(
     rows = conn.execute(
         "SELECT t.id, t.worker_pid, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
-        "       t.max_runtime_seconds, t.claim_lock "
+        "       t.max_runtime_seconds, t.claim_lock, t.orchestration_policy, "
+        "       root.created_at AS root_created_at "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
+        "LEFT JOIN tasks root ON root.id = t.orchestration_root_id "
         "WHERE t.status = 'running' AND t.max_runtime_seconds IS NOT NULL "
         "  AND COALESCE(r.started_at, t.started_at) IS NOT NULL "
         "  AND t.worker_pid IS NOT NULL"
@@ -6627,8 +6733,32 @@ def enforce_max_runtime(
         # intentionally records the first time a task ever started, so retries
         # must be measured from the active task_runs row when present.
         elapsed = now - int(row["active_started_at"])
-        if elapsed < int(row["max_runtime_seconds"]):
+        runtime_exceeded = elapsed >= int(row["max_runtime_seconds"])
+        program_deadline_exceeded = False
+        program_elapsed = 0
+        program_limit = 0
+        if row["orchestration_policy"]:
+            try:
+                policy = OrchestrationPolicy.from_json(row["orchestration_policy"])
+                if row["root_created_at"] is None:
+                    program_deadline_exceeded = True
+                else:
+                    program_elapsed = now - int(row["root_created_at"])
+                    program_limit = policy.max_wall_clock_seconds
+                    program_deadline_exceeded = program_elapsed > program_limit
+            except ValueError:
+                # Malformed persisted authority must not leave a worker
+                # running outside enforceable bounds.
+                program_deadline_exceeded = True
+        if not runtime_exceeded and not program_deadline_exceeded:
             continue
+
+        deadline_reason = "program_deadline" if program_deadline_exceeded else "task_runtime"
+        effective_elapsed = program_elapsed if program_deadline_exceeded else elapsed
+        effective_limit = (
+            program_limit if program_deadline_exceeded
+            else int(row["max_runtime_seconds"])
+        )
 
         pid = int(row["worker_pid"])
         tid = row["id"]
@@ -6659,37 +6789,50 @@ def enforce_max_runtime(
                     pass
 
         with write_txn(conn):
+            next_status = "blocked" if program_deadline_exceeded else "ready"
             cur = conn.execute(
-                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                "UPDATE tasks SET status = ?, claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
                 "  AND worker_pid = ? AND claim_lock IS ?",
-                (tid, pid, row["claim_lock"]),
+                (next_status, tid, pid, row["claim_lock"]),
             )
             if cur.rowcount == 1:
                 payload = {
                     "pid": pid,
-                    "elapsed_seconds": int(elapsed),
-                    "limit_seconds": int(row["max_runtime_seconds"]),
+                    "reason": deadline_reason,
+                    "elapsed_seconds": int(effective_elapsed),
+                    "limit_seconds": int(effective_limit),
                     "sigkill": killed,
                 }
                 run_id = _end_run(
                     conn, tid,
                     outcome="timed_out", status="timed_out",
-                    error=f"elapsed {int(elapsed)}s > limit {int(row['max_runtime_seconds'])}s",
+                    error=(
+                        f"{deadline_reason}: elapsed {int(effective_elapsed)}s "
+                        f"> limit {int(effective_limit)}s"
+                    ),
                     metadata=payload,
                 )
                 _append_event(
                     conn, tid, "timed_out", payload, run_id=run_id,
                 )
+                if program_deadline_exceeded:
+                    _append_event(
+                        conn,
+                        tid,
+                        "blocked",
+                        {"reason": "program_deadline"},
+                        run_id=run_id,
+                    )
                 timed_out.append(tid)
         # Increment the unified failure counter. Outside the write_txn
         # above because ``_record_task_failure`` opens its own. If the
         # breaker trips, this flips the task ``ready → blocked`` and
         # emits a ``gave_up`` event on top of the ``timed_out`` we
         # already emitted.
-        if cur.rowcount == 1:
+        if cur.rowcount == 1 and not program_deadline_exceeded:
             _record_task_failure(
                 conn, tid,
                 error=f"elapsed {int(elapsed)}s > limit {int(row['max_runtime_seconds'])}s",

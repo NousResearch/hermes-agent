@@ -9726,7 +9726,8 @@ async def get_session_latest_descendant(
     session_id: str,
     profile: Optional[str] = None,
 ):
-    db = _open_session_db_for_profile(profile)
+    _effective_profile = profile or getattr(app.state, "open_profile", "")
+    db = _open_session_db_for_profile(_effective_profile or None)
     try:
         latest, path = _session_latest_descendant(session_id, db)
         if not latest:
@@ -9911,8 +9912,8 @@ async def prune_sessions_endpoint(body: SessionPrune):
     _effective_older_than = body.older_than_days
     if has_window or (_attr_filters_set and not _older_than_explicit):
         _effective_older_than = None
-    profile_home = _cron_profile_home(body.profile)[1] if body.profile else get_hermes_home()
     _effective_profile = body.profile or getattr(app.state, "open_profile", "")
+    profile_home = _cron_profile_home(_effective_profile)[1] if _effective_profile else get_hermes_home()
     db = _open_session_db_for_profile(_effective_profile or None)
     try:
         filters = dict(

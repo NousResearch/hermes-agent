@@ -513,6 +513,30 @@ def board_exists(board: Optional[str] = None) -> bool:
     return (d / "board.json").exists() or (d / "kanban.db").exists()
 
 
+def _is_db_only_archived_residue(slug: str, directory: Path) -> bool:
+    """Return whether ``directory`` is a pre-fix ghost of an archived board.
+
+    Named boards created through the supported API always have ``board.json``.
+    Older gateway watchers could race ``remove_board()`` after enumerating a
+    slug and recreate only ``kanban.db`` at the active path. Keep supporting
+    legacy DB-only boards unless an archived directory for the same slug proves
+    this active directory is residue from that race.
+    """
+    if (directory / "board.json").exists() or not (
+        directory / "kanban.db"
+    ).exists():
+        return False
+    archive_root = boards_root() / "_archived"
+    archived_name = re.compile(rf"^{re.escape(slug)}-\d+(?:-\d+)?$")
+    try:
+        return any(
+            child.is_dir() and archived_name.fullmatch(child.name)
+            for child in archive_root.iterdir()
+        )
+    except OSError:
+        return False
+
+
 def kanban_db_path(board: Optional[str] = None) -> Path:
     """Return the path to the ``kanban.db`` for ``board``.
 
@@ -776,6 +800,8 @@ def list_boards(*, include_archived: bool = True) -> list[dict]:
             has_db = (child / "kanban.db").exists()
             has_meta = (child / "board.json").exists()
             if not (has_db or has_meta):
+                continue
+            if _is_db_only_archived_residue(normed, child):
                 continue
             meta = read_board_metadata(normed)
             if meta.get("archived") and not include_archived:
@@ -1313,13 +1339,26 @@ def _resolve_busy_timeout_ms() -> int:
     return DEFAULT_BUSY_TIMEOUT_MS
 
 
-def _sqlite_connect(path: Path) -> sqlite3.Connection:
+def _sqlite_connect(
+    path: Path,
+    *,
+    create_if_missing: bool = True,
+) -> sqlite3.Connection:
     """Open a Kanban SQLite connection with consistent lock waiting."""
     busy_timeout_ms = _resolve_busy_timeout_ms()
+    target = str(path)
+    connect_kwargs: dict[str, Any] = {}
+    if not create_if_missing:
+        # SQLite's default open mode creates a missing file. Watchers operate
+        # on a snapshot returned by list_boards(); mode=rw makes a concurrent
+        # archive fail closed instead of resurrecting that stale slug.
+        target = path.resolve().as_uri() + "?mode=rw"
+        connect_kwargs["uri"] = True
     conn = sqlite3.connect(
-        str(path),
+        target,
         isolation_level=None,
         timeout=busy_timeout_ms / 1000.0,
+        **connect_kwargs,
     )
     # ``sqlite3.connect(timeout=...)`` normally maps to busy_timeout, but set
     # the PRAGMA explicitly so it is observable and survives future wrapper
@@ -1329,7 +1368,7 @@ def _sqlite_connect(path: Path) -> sqlite3.Connection:
 
 
 @contextlib.contextmanager
-def _cross_process_init_lock(path: Path):
+def _cross_process_init_lock(path: Path, *, create_if_missing: bool = True):
     """Serialize first-connect WAL/schema/integrity setup across processes.
 
     ``_INIT_LOCK`` only protects threads inside one Python process. During a
@@ -1352,7 +1391,8 @@ def _cross_process_init_lock(path: Path):
     is redundant work, not corruption. A bounded "proceed anyway" beats an
     unbounded hang that silently stops the board.
     """
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if create_if_missing:
+        path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_name(path.name + ".init.lock")
     handle = lock_path.open("a+b")
     acquired = False
@@ -1661,7 +1701,7 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
         return
     reason: Optional[str] = None
     try:
-        probe = _sqlite_connect(resolved)
+        probe = _sqlite_connect(resolved, create_if_missing=False)
         try:
             row = probe.execute("PRAGMA integrity_check").fetchone()
         finally:
@@ -1683,6 +1723,7 @@ def connect(
     db_path: Optional[Path] = None,
     *,
     board: Optional[str] = None,
+    create_if_missing: bool = True,
 ) -> sqlite3.Connection:
     """Open (and initialize if needed) the kanban DB.
 
@@ -1701,12 +1742,19 @@ def connect(
     * Neither → :func:`kanban_db_path` resolves via
       ``HERMES_KANBAN_DB`` env → ``HERMES_KANBAN_BOARD`` env →
       ``<root>/kanban/current`` → ``default``.
+
+    ``create_if_missing=False`` opens SQLite in ``mode=rw`` and never creates
+    the parent directory. Long-lived watchers use this after enumerating named
+    boards so an archive racing their stale snapshot cannot resurrect a slug.
     """
     if db_path is not None:
         path = db_path
     else:
         path = kanban_db_path(board=board)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if create_if_missing:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    elif not path.is_file():
+        raise FileNotFoundError(path)
 
     # Fast path: once THIS process has initialized this path, the expensive
     # first-open work (header validation, integrity probe, schema + additive
@@ -1720,7 +1768,7 @@ def connect(
     # connection with WAL/pragmas under the cheap in-process _INIT_LOCK.
     resolved = str(path.resolve())
     if resolved in _INITIALIZED_PATHS:
-        conn = _sqlite_connect(path)
+        conn = _sqlite_connect(path, create_if_missing=create_if_missing)
         try:
             conn.row_factory = sqlite3.Row
             with _INIT_LOCK:
@@ -1736,7 +1784,7 @@ def connect(
             raise
         return conn
 
-    with _cross_process_init_lock(path):
+    with _cross_process_init_lock(path, create_if_missing=create_if_missing):
         # Cheap byte-level check first — catches the #29507 TLS-overwrite shape
         # and other invalid-header cases without opening a sqlite connection.
         _validate_sqlite_header(path)
@@ -1745,7 +1793,7 @@ def connect(
         # via _INITIALIZED_PATHS so it only runs once per process per path.
         _guard_existing_db_is_healthy(path)
         resolved = str(path.resolve())
-        conn = _sqlite_connect(path)
+        conn = _sqlite_connect(path, create_if_missing=create_if_missing)
         try:
             conn.row_factory = sqlite3.Row
             with _INIT_LOCK:

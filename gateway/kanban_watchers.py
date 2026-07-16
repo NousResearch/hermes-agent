@@ -231,7 +231,10 @@ class GatewayKanbanWatchersMixin:
                             continue
                         seen_db_paths.add(resolved_db_path)
                         try:
-                            conn = _kb.connect(board=slug)
+                            conn = _kb.connect(
+                                board=slug,
+                                create_if_missing=(slug == _kb.DEFAULT_BOARD),
+                            )
                         except Exception as exc:
                             logger.debug("kanban notifier: cannot open board %s: %s", slug, exc)
                             continue
@@ -582,7 +585,10 @@ class GatewayKanbanWatchersMixin:
         subscription. Unsub cursors in one board can't touch another's.
         """
         from hermes_cli import kanban_db as _kb
-        conn = _kb.connect(board=board)
+        conn = _kb.connect(
+            board=board,
+            create_if_missing=(not board or board == _kb.DEFAULT_BOARD),
+        )
         try:
             _kb.advance_notify_cursor(
                 conn,
@@ -597,7 +603,10 @@ class GatewayKanbanWatchersMixin:
 
     def _kanban_unsub(self, sub: dict, board: Optional[str] = None) -> None:
         from hermes_cli import kanban_db as _kb
-        conn = _kb.connect(board=board)
+        conn = _kb.connect(
+            board=board,
+            create_if_missing=(not board or board == _kb.DEFAULT_BOARD),
+        )
         try:
             _kb.remove_notify_sub(
                 conn,
@@ -618,7 +627,10 @@ class GatewayKanbanWatchersMixin:
     ) -> None:
         """Sync helper: undo a claimed notification cursor after send failure."""
         from hermes_cli import kanban_db as _kb
-        conn = _kb.connect(board=board)
+        conn = _kb.connect(
+            board=board,
+            create_if_missing=(not board or board == _kb.DEFAULT_BOARD),
+        )
         try:
             _kb.rewind_notify_cursor(
                 conn,
@@ -1006,7 +1018,10 @@ class GatewayKanbanWatchersMixin:
                     )
                 disabled_corrupt_boards.pop(slug, None)
             try:
-                conn = _kb.connect(board=slug)
+                conn = _kb.connect(
+                    board=slug,
+                    create_if_missing=(slug == _kb.DEFAULT_BOARD),
+                )
                 # `connect()` runs the schema + idempotent migration on
                 # first open per process; the previous explicit
                 # `init_db()` call here busted the per-process cache and
@@ -1097,7 +1112,10 @@ class GatewayKanbanWatchersMixin:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
                 conn = None
                 try:
-                    conn = _kb.connect(board=slug)
+                    conn = _kb.connect(
+                        board=slug,
+                        create_if_missing=(slug == _kb.DEFAULT_BOARD),
+                    )
                     if _kb.has_spawnable_ready(conn):
                         return True
                     if _kb.has_spawnable_review(conn):

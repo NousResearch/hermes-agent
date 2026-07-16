@@ -105,6 +105,30 @@ def test_kanban_notifier_claim_prevents_second_watcher_send(tmp_path, monkeypatc
     assert adapter2.sent == []
 
 
+def test_kanban_notifier_stale_snapshot_does_not_recreate_archived_board(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path))
+    kb.create_board("notifier-race")
+    stale_meta = kb.read_board_metadata("notifier-race")
+    kb.remove_board("notifier-race")
+    active_dir = kb.board_dir("notifier-race")
+
+    # Simulate archive occurring immediately after this notifier tick took its
+    # list_boards() snapshot. The stale slug must fail closed on connect.
+    monkeypatch.setattr(
+        kb,
+        "list_boards",
+        lambda include_archived=False: [stale_meta],
+    )
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert adapter.sent == []
+    assert not active_dir.exists()
+
+
 def test_kanban_notifier_rewinds_claim_if_adapter_disconnects(tmp_path, monkeypatch):
     db_path = tmp_path / "adapter-disconnect.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))

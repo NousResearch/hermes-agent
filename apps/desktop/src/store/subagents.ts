@@ -18,6 +18,11 @@ export interface SubagentProgress {
   /** Durable parent-session id used by history/sidebar surfaces. The store map
    *  itself stays keyed by the live runtime id for stream routing. */
   ownerSessionId?: string
+  /** Still running after its parent turn completed; detached work survives a
+   *  later foreground interrupt and reports back in a new parent turn. */
+  detached?: boolean
+  /** Terminal detached result awaiting the parent completion turn's start. */
+  handoff?: boolean
   goal: string
   /** The child's own stored session id — lets UIs open its session window. */
   sessionId?: string
@@ -176,7 +181,9 @@ function toProgress(
   return {
     id: prev?.id ?? idOf(payload),
     parentId: str(payload.parent_id) || prev?.parentId || null,
-    ownerSessionId: ownerSessionId || prev?.ownerSessionId,
+    ownerSessionId: prev?.ownerSessionId || ownerSessionId,
+    detached: prev?.detached,
+    handoff: TERMINAL.has(status) && prev?.detached ? true : prev?.handoff,
     goal: str(payload.goal) || prev?.goal || 'Subagent',
     sessionId: str(payload.child_session_id) || prev?.sessionId,
     model: str(payload.model) || prev?.model,
@@ -239,6 +246,55 @@ export function pruneSettledSessionSubagents(sid: string): boolean {
   return true
 }
 
+/** Parent completion while children are still active proves they were
+ * dispatched asynchronously; synchronous delegation cannot finish its parent
+ * turn before joining every child. */
+export function markSessionSubagentsDetached(sid: string): boolean {
+  const map = $subagentsBySession.get()
+  const list = map[sid]
+
+  if (!list?.some(item => !TERMINAL.has(item.status) && !item.detached)) {
+    return false
+  }
+
+  $subagentsBySession.set({
+    ...map,
+    [sid]: list.map(item => (!TERMINAL.has(item.status) ? { ...item, detached: true } : item))
+  })
+
+  return true
+}
+
+/** Stop owns the foreground turn, not detached reviewers. Keep only those
+ * children so their late progress/completion remains visible and routable. */
+export function preserveDetachedSessionSubagents(sid: string): boolean {
+  const map = $subagentsBySession.get()
+  const list = map[sid]
+
+  if (!list?.length) {
+    return false
+  }
+
+  const detached = list.filter(item => item.detached && !TERMINAL.has(item.status))
+
+  if (detached.length === 0) {
+    const { [sid]: _drop, ...rest } = map
+    $subagentsBySession.set(rest)
+
+    return false
+  }
+
+  if (detached.length !== list.length) {
+    $subagentsBySession.set({ ...map, [sid]: detached })
+  }
+
+  return true
+}
+
+export function hasDetachedSessionSubagents(sid: string): boolean {
+  return Boolean($subagentsBySession.get()[sid]?.some(item => item.detached && !TERMINAL.has(item.status)))
+}
+
 export function pruneDelegateFallbackSubagents(sid: string) {
   const map = $subagentsBySession.get()
   const list = map[sid]
@@ -269,19 +325,21 @@ export function upsertSubagent(
   const idx = list.findIndex(item => item.id === id)
 
   if (idx < 0 && !createIfMissing) {
-    return
+    return undefined
   }
 
   const prev = idx >= 0 ? list[idx] : undefined
 
   if (prev && TERMINAL.has(prev.status)) {
-    return
+    return prev
   }
 
   const next = toProgress(payload, prev, eventType, ownerSessionId)
   const nextList = idx >= 0 ? list.map(item => (item.id === id ? next : item)) : [...list, next]
 
   $subagentsBySession.set({ ...map, [sid]: nextList })
+
+  return next
 }
 
 export function buildSubagentTree(items: readonly SubagentProgress[]): SubagentNode[] {

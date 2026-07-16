@@ -7,6 +7,9 @@ import {
   buildSubagentTree,
   clearSessionSubagents,
   failedSubagentCount,
+  hasDetachedSessionSubagents,
+  markSessionSubagentsDetached,
+  preserveDetachedSessionSubagents,
   pruneDelegateFallbackSubagents,
   pruneSettledSessionSubagents,
   upsertSubagent
@@ -112,6 +115,35 @@ describe('subagent store', () => {
     upsertSubagent('s1', { goal: 'active', status: 'completed', subagent_id: 'active' })
 
     expect(pruneSettledSessionSubagents('s1')).toBe(false)
+    expect($subagentsBySession.get().s1).toBeUndefined()
+  })
+
+  it('preserves detached reviewers across stop and leases their terminal handoff', () => {
+    upsertSubagent('s1', { goal: 'async review', status: 'running', subagent_id: 'async' })
+    upsertSubagent('s1', { goal: 'foreground child', status: 'completed', subagent_id: 'done' })
+
+    expect(markSessionSubagentsDetached('s1')).toBe(true)
+    expect(hasDetachedSessionSubagents('s1')).toBe(true)
+    expect(preserveDetachedSessionSubagents('s1')).toBe(true)
+    expect(listFor('s1').map(item => item.id)).toEqual(['async'])
+
+    const completed = upsertSubagent(
+      's1',
+      { goal: 'async review', status: 'completed', subagent_id: 'async' },
+      false,
+      'subagent.complete'
+    )
+
+    expect(completed?.handoff).toBe(true)
+    expect(hasDetachedSessionSubagents('s1')).toBe(false)
+    expect(pruneSettledSessionSubagents('s1')).toBe(false)
+    expect($subagentsBySession.get().s1).toBeUndefined()
+  })
+
+  it('drops non-detached children when a foreground turn is stopped', () => {
+    upsertSubagent('s1', { goal: 'foreground child', status: 'running', subagent_id: 'sync' })
+
+    expect(preserveDetachedSessionSubagents('s1')).toBe(false)
     expect($subagentsBySession.get().s1).toBeUndefined()
   })
 

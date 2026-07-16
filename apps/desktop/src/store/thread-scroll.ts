@@ -11,6 +11,68 @@ import { atom, type WritableAtom } from 'nanostores'
 export const $threadScrolledUp = atom(false)
 export const $threadJumpButtonVisible = atom(false)
 
+// Every mounted transcript surface (primary or tile) registers its durable
+// session key and own bottom state. Pane tabs unmount inactive content, so this
+// is also the source of truth for whether a transcript is genuinely painted.
+// Keep tokens per mount: split layouts may show the same session more than once.
+const transcriptSurfaces = new Map<string, Map<symbol, boolean>>()
+
+export const $visibleTranscriptSessionIds = atom<string[]>([])
+
+function publishVisibleTranscriptSessions(): void {
+  const visible = [...transcriptSurfaces]
+    .filter(([, surfaces]) => [...surfaces.values()].some(Boolean))
+    .map(([sessionId]) => sessionId)
+
+  const current = $visibleTranscriptSessionIds.get()
+
+  if (current.length !== visible.length || current.some((sessionId, index) => sessionId !== visible[index])) {
+    $visibleTranscriptSessionIds.set(visible)
+  }
+}
+
+export interface TranscriptSurfaceRegistration {
+  dispose: () => void
+  setAtBottom: (atBottom: boolean) => void
+}
+
+export function registerTranscriptSurface(sessionId: string, atBottom: boolean): TranscriptSurfaceRegistration {
+  const token = Symbol(sessionId)
+  const surfaces = transcriptSurfaces.get(sessionId) ?? new Map<symbol, boolean>()
+
+  surfaces.set(token, atBottom)
+  transcriptSurfaces.set(sessionId, surfaces)
+  publishVisibleTranscriptSessions()
+
+  return {
+    dispose: () => {
+      const current = transcriptSurfaces.get(sessionId)
+
+      current?.delete(token)
+
+      if (current?.size === 0) {
+        transcriptSurfaces.delete(sessionId)
+      }
+
+      publishVisibleTranscriptSessions()
+    },
+    setAtBottom: next => {
+      const current = transcriptSurfaces.get(sessionId)
+
+      if (!current || current.get(token) === next) {
+        return
+      }
+
+      current.set(token, next)
+      publishVisibleTranscriptSessions()
+    }
+  }
+}
+
+export function transcriptIsVisibleAtBottom(sessionId: string | null | undefined): boolean {
+  return Boolean(sessionId && $visibleTranscriptSessionIds.get().includes(sessionId))
+}
+
 // Skip no-op writes so subscribers don't churn on every scroll tick.
 const setter = (target: WritableAtom<boolean>) => (value: boolean) => {
   if (target.get() !== value) {

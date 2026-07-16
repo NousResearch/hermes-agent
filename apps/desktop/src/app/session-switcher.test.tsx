@@ -2,7 +2,7 @@ import { cleanup, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $attentionSessionIds, $sessions, $workingSessionIds } from '@/store/session'
+import { $attentionSessionIds, $sessions, $unreadFinishedSessionIds, $workingSessionIds } from '@/store/session'
 import { $switcherIndex, $switcherOpen, $switcherSessions } from '@/store/session-switcher'
 import { $subagentsBySession, upsertSubagent } from '@/store/subagents'
 import type { SessionInfo } from '@/types/hermes'
@@ -16,6 +16,7 @@ describe('SessionSwitcher background review activity', () => {
     Element.prototype.scrollIntoView = vi.fn()
     $attentionSessionIds.set([])
     $sessions.set([])
+    $unreadFinishedSessionIds.set([])
     $workingSessionIds.set([])
     $subagentsBySession.set({})
     $switcherSessions.set([session('parent', 'Parent session')])
@@ -27,6 +28,7 @@ describe('SessionSwitcher background review activity', () => {
     cleanup()
     $switcherOpen.set(false)
     $switcherSessions.set([])
+    $unreadFinishedSessionIds.set([])
     $subagentsBySession.set({})
     vi.restoreAllMocks()
   })
@@ -46,6 +48,30 @@ describe('SessionSwitcher background review activity', () => {
       </MemoryRouter>
     )
 
-    expect(screen.getByText('Parent session').closest('[data-working]')?.getAttribute('data-working')).toBe('true')
+    const row = screen.getByText('Parent session').closest('[data-working]')
+    const dot = row?.querySelector('[aria-hidden="true"]')
+
+    expect(row?.getAttribute('data-working')).toBe('true')
+    expect(screen.getByText('Session running').classList.contains('sr-only')).toBe(true)
+    expect(dot?.classList.contains('rounded-full')).toBe(true)
+    expect(dot?.classList.contains('border')).toBe(true)
+  })
+
+  it('announces needs-input priority and keeps a non-color diamond signal', () => {
+    $attentionSessionIds.set(['parent'])
+    $unreadFinishedSessionIds.set(['parent'])
+
+    render(
+      <MemoryRouter>
+        <SessionSwitcher />
+      </MemoryRouter>
+    )
+
+    const row = screen.getByText('Parent session').closest('.row-hover')
+    const dot = row?.querySelector('[aria-hidden="true"]')
+
+    expect(screen.getByText('Needs input').classList.contains('sr-only')).toBe(true)
+    expect(dot?.classList.contains('rotate-45')).toBe(true)
+    expect(screen.queryByText('New result, not viewed')).toBeNull()
   })
 })

@@ -20,8 +20,10 @@ import {
   onScrollToBottomRequest,
   onThreadEditClose,
   onThreadEditOpen,
+  registerTranscriptSurface,
   resetThreadScroll,
-  setThreadAtBottom
+  setThreadAtBottom,
+  type TranscriptSurfaceRegistration
 } from '@/store/thread-scroll'
 import { isSecondaryWindow } from '@/store/windows'
 
@@ -54,6 +56,7 @@ interface ThreadMessageListProps {
   emptyPlaceholder?: ReactNode
   loadingIndicator?: ReactNode
   sessionKey?: string | null
+  transcriptVisible?: boolean
 }
 
 // Group each user message with the assistant turn(s) that follow it so the
@@ -118,7 +121,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   components,
   emptyPlaceholder,
   loadingIndicator,
-  sessionKey
+  sessionKey,
+  transcriptVisible = true
 }) => {
   const messageSignature = useAuiState(s =>
     s.thread.messages
@@ -195,6 +199,9 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   const hiddenCount = firstVisibleGroupIndex(groups, renderBudget)
   const visibleGroups = hiddenCount > 0 ? groups.slice(hiddenCount) : groups
   const restoreFromBottomRef = useRef<number | null>(null)
+  const transcriptSurfaceRef = useRef<null | TranscriptSurfaceRegistration>(null)
+  const atBottomRef = useRef(isAtBottom)
+  atBottomRef.current = isAtBottom
   // Secondary windows (new-session scratch, subagent watch, cmd-click pop-out)
   // hide the titlebar tool cluster + session header, but the OS traffic lights
   // still sit in the top-left, so reserve the titlebar gap above the transcript.
@@ -213,6 +220,25 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
   useEffect(() => setThreadAtBottom(isAtBottom), [isAtBottom])
   useEffect(() => () => resetThreadScroll(), [])
+
+  useEffect(() => {
+    if (!sessionKey || !transcriptVisible) {
+      return
+    }
+
+    const registration = registerTranscriptSurface(sessionKey, atBottomRef.current)
+    transcriptSurfaceRef.current = registration
+
+    return () => {
+      registration.dispose()
+
+      if (transcriptSurfaceRef.current === registration) {
+        transcriptSurfaceRef.current = null
+      }
+    }
+  }, [sessionKey, transcriptVisible])
+
+  useEffect(() => transcriptSurfaceRef.current?.setAtBottom(isAtBottom), [isAtBottom])
 
   // Floating jump button (outside this subtree) → return to the bottom.
   useEffect(() => onScrollToBottomRequest(() => void scrollToBottom()), [scrollToBottom])

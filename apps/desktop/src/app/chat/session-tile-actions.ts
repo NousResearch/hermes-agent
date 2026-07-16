@@ -26,7 +26,7 @@ import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearAllPrompts } from '@/store/prompts'
 import { $connection } from '@/store/session'
 import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
-import { clearSessionSubagents } from '@/store/subagents'
+import { preserveDetachedSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
 
 import { uploadComposerAttachment } from '../session/hooks/use-prompt-actions'
@@ -206,7 +206,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
     }))
 
     clearSessionTodos(sessionId)
-    clearSessionSubagents(sessionId)
+    preserveDetachedSessionSubagents(sessionId)
     resetSessionBackground(sessionId)
     clearAllPrompts(sessionId)
     clearClarifyRequest(undefined, sessionId)

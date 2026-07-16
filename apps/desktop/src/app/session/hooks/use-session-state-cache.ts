@@ -9,6 +9,7 @@ import { setMutableRef } from '@/lib/mutable-ref'
 import {
   $busy,
   $messages,
+  sessionLineageIds,
   setCurrentFastMode,
   setCurrentModel,
   setCurrentPersonality,
@@ -19,6 +20,7 @@ import {
   setYoloActive
 } from '@/store/session'
 import { publishSessionState, setWatchdogClearFn } from '@/store/session-states'
+import { $visibleTranscriptSessionIds, transcriptIsVisibleAtBottom } from '@/store/thread-scroll'
 
 import type { ClientSessionState } from '../../types'
 
@@ -54,10 +56,9 @@ interface SessionStateCacheOptions {
   setMessages: (messages: ChatMessage[]) => void
 }
 
-function transcriptIsVisible(currentView: AppView, threadScrolledUp: boolean): boolean {
+function transcriptWindowIsVisible(currentView: AppView): boolean {
   return (
     currentView === 'chat' &&
-    !threadScrolledUp &&
     typeof document !== 'undefined' &&
     !document.hidden &&
     typeof document.hasFocus === 'function' &&
@@ -85,7 +86,7 @@ export function useSessionStateCache({
   setMessages
 }: SessionStateCacheOptions) {
   const busy = useStore($busy)
-  const threadScrolledUp = useStore($threadScrolledUp)
+  const visibleTranscriptSessionIds = useStore($visibleTranscriptSessionIds)
   const activeSessionIdRef = useRef<string | null>(null)
   const selectedStoredSessionIdRef = useRef<string | null>(null)
   const sessionStateByRuntimeIdRef = useRef(new Map<string, ClientSessionState>())
@@ -202,10 +203,14 @@ export function useSessionStateCache({
     // time intact on focus instead of zeroing it (the "timer restarts" bug).
     setTurnStartedAt(pending.state.turnStartedAt)
 
-    if (transcriptIsVisible(currentView, threadScrolledUp)) {
+    if (
+      pending.state.storedSessionId &&
+      transcriptWindowIsVisible(currentView) &&
+      sessionLineageIds(pending.state.storedSessionId).some(transcriptIsVisibleAtBottom)
+    ) {
       setSessionUnread(pending.state.storedSessionId, false)
     }
-  }, [busyRef, currentView, setAwaitingResponse, setBusy, setMessages, threadScrolledUp])
+  }, [busyRef, currentView, setAwaitingResponse, setBusy, setMessages])
 
   const syncSessionStateToView = useCallback(
     (sessionId: string, state: ClientSessionState) => {
@@ -281,17 +286,16 @@ export function useSessionStateCache({
   // person actually returns even if no further gateway event repaints it.
   useEffect(() => {
     const clearViewedUnread = () => {
-      if (!transcriptIsVisible(currentView, threadScrolledUp)) {
+      if (!transcriptWindowIsVisible(currentView)) {
         return
       }
 
-      const runtimeId = activeSessionIdRef.current
-
-      const storedSessionId = runtimeId
-        ? sessionStateByRuntimeIdRef.current.get(runtimeId)?.storedSessionId
-        : selectedStoredSessionIdRef.current
-
-      setSessionUnread(storedSessionId, false)
+      // Mounted pane content is the visibility boundary: inactive stacked tabs
+      // are unmounted, while split tiles can expose several transcripts at once.
+      $visibleTranscriptSessionIds
+        .get()
+        .flatMap(sessionLineageIds)
+        .forEach(sessionId => setSessionUnread(sessionId, false))
     }
 
     clearViewedUnread()
@@ -302,7 +306,7 @@ export function useSessionStateCache({
       window.removeEventListener('focus', clearViewedUnread)
       document.removeEventListener('visibilitychange', clearViewedUnread)
     }
-  }, [activeSessionId, currentView, selectedStoredSessionId, threadScrolledUp])
+  }, [currentView, visibleTranscriptSessionIds])
 
   const updateSessionState = useCallback(
     (

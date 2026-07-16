@@ -104,6 +104,8 @@ describe('useMessageStream subagent session activity', () => {
 
     expect($workingSessionIds.get()).toEqual([])
     expect($sessionActivityIds.get()).toEqual([LINEAGE_ROOT_ID, CHILD_ID, STORED_ID])
+    expect($subagentsBySession.get()[RUNTIME_ID]?.[0]?.detached).toBe(true)
+    $unreadFinishedSessionIds.set([])
 
     act(() =>
       handleEvent!({
@@ -122,6 +124,18 @@ describe('useMessageStream subagent session activity', () => {
     expect($sessionActivityIds.get()).toEqual([LINEAGE_ROOT_ID, CHILD_ID, 'second-continuation'])
 
     act(() => handleEvent!(subagentEvent('completed')))
+
+    expect($subagentsBySession.get()[RUNTIME_ID]?.[0]?.handoff).toBe(true)
+    expect($sessionActivityIds.get()).toEqual([LINEAGE_ROOT_ID, CHILD_ID, 'second-continuation'])
+    expect($unreadFinishedSessionIds.get()).toEqual([LINEAGE_ROOT_ID])
+
+    act(() =>
+      handleEvent!({
+        payload: {},
+        session_id: RUNTIME_ID,
+        type: 'message.start'
+      })
+    )
 
     expect($sessionActivityIds.get()).toEqual([])
   })

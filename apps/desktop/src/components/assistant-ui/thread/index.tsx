@@ -102,6 +102,7 @@ export const Thread: FC<{
         emptyPlaceholder={emptyPlaceholder}
         loadingIndicator={loading === 'response' ? <ResponseLoadingIndicator /> : <BackgroundResumeNotice />}
         sessionKey={sessionKey}
+        transcriptVisible={loading !== 'session'}
       />
       {loading === 'session' && <CenteredThreadSpinner />}
       <ThreadTimeline />

@@ -28,6 +28,7 @@ const session = (id: string, owner: string): SessionInfo =>
 
 const defaultProfiles = [profile('default', true), profile('claire'), profile('wallace')]
 let profiles = defaultProfiles
+let activeProfile = 'default'
 
 function renderRail() {
   return render(
@@ -42,6 +43,7 @@ function renderRail() {
 describe('ProfileRail activity indicators', () => {
   beforeEach(() => {
     profiles = defaultProfiles
+    activeProfile = 'default'
     $profiles.set(profiles)
     $activeGatewayProfile.set('default')
     $showAllProfiles.set(false)
@@ -61,7 +63,7 @@ describe('ProfileRail activity indicators', () => {
       configurable: true,
       value: {
         api: vi.fn(async ({ path }: { path: string }) =>
-          path === '/api/profiles/active' ? { current: 'default' } : { profiles }
+          path === '/api/profiles/active' ? { current: activeProfile } : { profiles }
         )
       }
     })
@@ -133,7 +135,9 @@ describe('ProfileRail activity indicators', () => {
 
   it('surfaces the strongest hidden profile activity on the condensed trigger', () => {
     profiles = [profile('default', true), ...Array.from({ length: 14 }, (_, index) => profile(`p${index + 1}`))]
+    activeProfile = 'p1'
     $profiles.set(profiles)
+    $activeGatewayProfile.set(activeProfile)
     $sessions.set([session('p12-waiting', 'p12'), session('p13-finished', 'p13')])
     $workingSessionIds.set(['p12-waiting'])
     $attentionSessionIds.set(['p12-waiting'])
@@ -141,7 +145,10 @@ describe('ProfileRail activity indicators', () => {
 
     renderRail()
 
-    const trigger = screen.getByRole('combobox', { name: 'p12 · Needs input' })
+    const trigger = screen.getByRole('combobox', { name: 'p1' })
+    const description = globalThis.document.getElementById(trigger.getAttribute('aria-describedby') ?? '')
+
+    expect(description?.textContent).toBe('p12 · Needs input')
     expect(trigger.getAttribute('data-profile-activity')).toBe('needs-input')
     expect(trigger.querySelector('[data-profile-activity-pip="needs-input"]')).toBeTruthy()
   })

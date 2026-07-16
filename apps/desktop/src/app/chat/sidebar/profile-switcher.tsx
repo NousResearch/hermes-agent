@@ -19,7 +19,7 @@ import {
 } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useStore } from '@nanostores/react'
-import { type CSSProperties, useEffect, useMemo, useRef, useState } from 'react'
+import { type CSSProperties, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { CodeEditor } from '@/components/chat/code-editor'
@@ -542,6 +542,7 @@ function ProfileDropdown({
 }) {
   const { t } = useI18n()
   const p = t.profiles
+  const activityDescriptionId = useId()
 
   const activeProfile = activeKey
     ? profiles.find(profile => normalizeProfileKey(profile.name) === activeKey)
@@ -574,14 +575,15 @@ function ProfileDropdown({
     ? (resolveProfileColor(triggerSignalProfile.name, colors) ?? 'var(--ui-accent)')
     : 'var(--ui-accent)'
 
-  const triggerLabel = triggerSignalProfile
+  const activityDescription = triggerSignalProfile
     ? (profileActivityLabel(p, triggerSignalProfile.name, triggerActivity) ?? triggerSignalProfile.name)
-    : (activeProfile?.name ?? p.title)
+    : null
 
   return (
     <Select onValueChange={name => name && onSelect(name)} value={value}>
       <SelectTrigger
-        aria-label={triggerLabel}
+        aria-describedby={activityDescription ? activityDescriptionId : undefined}
+        aria-label={activeProfile?.name ?? p.title}
         className="relative min-w-0 flex-1 overflow-visible"
         data-profile-activity={triggerActivity === 'idle' ? undefined : triggerActivity}
         size="xs"
@@ -589,6 +591,11 @@ function ProfileDropdown({
         <SelectValue placeholder={p.title} />
         <ProfileActivityBorder activity={triggerActivity} hue={triggerHue} />
       </SelectTrigger>
+      {activityDescription && (
+        <span className="sr-only" id={activityDescriptionId}>
+          {activityDescription}
+        </span>
+      )}
       <SelectContent collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }} side="top">
         {profiles.map(profile => {
           const color = resolveProfileColor(profile.name, colors)

@@ -6,8 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AppView } from '@/app/routes'
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $unreadFinishedSessionIds } from '@/store/session'
-import { $threadScrolledUp } from '@/store/thread-scroll'
+import { $sessions, $unreadFinishedSessionIds } from '@/store/session'
+import { registerTranscriptSurface, type TranscriptSurfaceRegistration } from '@/store/thread-scroll'
 import type { RpcEvent } from '@/types/hermes'
 
 import { useMessageStream } from './index'
@@ -21,6 +21,7 @@ let focused = true
 let hidden = false
 let currentView: AppView = 'chat'
 let handleEvent: ((event: RpcEvent) => void) | null = null
+let activeSurface: TranscriptSurfaceRegistration | null = null
 
 function storedIdForRuntime(sessionId: string): null | string {
   if (sessionId === ACTIVE_RUNTIME_ID) {
@@ -84,16 +85,19 @@ describe('useMessageStream unread completion tracking', () => {
     hidden = false
     currentView = 'chat'
     handleEvent = null
+    $sessions.set([])
     $unreadFinishedSessionIds.set([])
-    $threadScrolledUp.set(false)
+    activeSurface = registerTranscriptSurface(ACTIVE_STORED_ID, true)
     vi.spyOn(globalThis.document, 'hasFocus').mockImplementation(() => focused)
     vi.spyOn(globalThis.document, 'hidden', 'get').mockImplementation(() => hidden)
   })
 
   afterEach(() => {
     cleanup()
+    activeSurface?.dispose()
+    activeSurface = null
+    $sessions.set([])
     $unreadFinishedSessionIds.set([])
-    $threadScrolledUp.set(false)
     vi.restoreAllMocks()
   })
 
@@ -111,6 +115,37 @@ describe('useMessageStream unread completion tracking', () => {
     complete(BACKGROUND_RUNTIME_ID)
 
     expect($unreadFinishedSessionIds.get()).toEqual([BACKGROUND_STORED_ID])
+  })
+
+  it('acknowledges a completion rendered in a visible session tile', async () => {
+    const tile = registerTranscriptSurface(BACKGROUND_STORED_ID, true)
+    await mountStream()
+
+    complete(BACKGROUND_RUNTIME_ID)
+
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+    tile.dispose()
+  })
+
+  it('treats a visible compression continuation as the same viewed lineage', async () => {
+    activeSurface?.dispose()
+    $sessions.set([{ _lineage_root_id: ACTIVE_STORED_ID, id: 'active-tip' } as never])
+    activeSurface = registerTranscriptSurface('active-tip', true)
+    await mountStream()
+
+    complete(ACTIVE_RUNTIME_ID)
+
+    expect($unreadFinishedSessionIds.get()).toEqual([])
+  })
+
+  it('marks the primary completion unread when its stacked pane is unmounted', async () => {
+    activeSurface?.dispose()
+    activeSurface = null
+    await mountStream()
+
+    complete(ACTIVE_RUNTIME_ID)
+
+    expect($unreadFinishedSessionIds.get()).toEqual([ACTIVE_STORED_ID])
   })
 
   it('marks the active session unread when it completes while the window is unfocused', async () => {
@@ -132,7 +167,7 @@ describe('useMessageStream unread completion tracking', () => {
   })
 
   it('keeps the active completion unread while the transcript is scrolled up', async () => {
-    $threadScrolledUp.set(true)
+    activeSurface?.setAtBottom(false)
     await mountStream()
 
     complete(ACTIVE_RUNTIME_ID)

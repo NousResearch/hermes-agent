@@ -3,7 +3,7 @@ import { atom } from 'nanostores'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { resetSessionsLimit } from '@/store/layout'
 import {
-  $unreadFinishedSessionIds,
+  clearAllSessionUnread,
   setActiveSessionId,
   setCronSessions,
   setFreshDraftReady,
@@ -46,10 +46,10 @@ export function wipeSessionListsForGatewaySwitch(): void {
   setMessagingPlatformTotals({})
   setMessagingTruncated(false)
   // Clearing $sessionStates automatically clears $workingSessionIds and
-  // $attentionSessionIds (they're computed from it). $unreadFinishedSessionIds
-  // is separate (transient, not computable) so wipe it explicitly.
+  // $attentionSessionIds (they're computed from it). Unread state is separate,
+  // revisioned cross-window state, so reset it through its owning API.
   clearAllSessionStates()
-  $unreadFinishedSessionIds.set([])
+  clearAllSessionUnread()
   clearAllSubagents()
   setSessionsLoading(true)
   resetSessionsLimit()

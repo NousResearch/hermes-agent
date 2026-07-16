@@ -7,7 +7,17 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
-import { broadcastSessionUnreadChanged, onSessionUnreadChanged } from './session-sync'
+import {
+  broadcastSessionUnreadChanged,
+  broadcastSessionUnreadReset,
+  broadcastSessionUnreadSnapshot,
+  compareSessionUnreadVersions,
+  nextSessionUnreadVersion,
+  onSessionUnreadSync,
+  requestSessionUnreadSnapshot,
+  type SessionUnreadEntry,
+  type SessionUnreadVersion
+} from './session-sync'
 
 type Updater<T> = T | ((current: T) => T)
 export type ComposerModelSource = '' | 'default' | 'manual'
@@ -217,6 +227,14 @@ export function mergeSessionPage(
 export const $connection = atom<HermesConnection | null>(null)
 export const $gatewayState = atom('idle')
 export const $sessions = atom<SessionInfo[]>([])
+
+/** All durable ids currently known to represent one compression lineage. */
+export function sessionLineageIds(sessionId: string): string[] {
+  const match = $sessions.get().find(session => sessionMatchesStoredId(session, sessionId))
+
+  return [...new Set([sessionId, match?.id, match?._lineage_root_id].filter((id): id is string => Boolean(id)))]
+}
+
 export const $sessionsTotal = atom<number>(0)
 // Cron-job sessions (source === 'cron') are fetched as their own list so the
 // scheduler's always-newest sessions never crowd recents out of the page
@@ -340,28 +358,103 @@ export const setActiveSessionStoredIdRotation = (next: Updater<ActiveSessionStor
 // Written by terminal message producers and cleared once the transcript is
 // visibly acknowledged.
 export const $unreadFinishedSessionIds = atom<string[]>([])
+export const setUnreadFinishedSessionIds = (next: Updater<string[]>) => updateAtom($unreadFinishedSessionIds, next)
+
+const unreadEntries = new Map<string, SessionUnreadEntry>()
+let unreadResetVersion: null | SessionUnreadVersion = null
 
 export const setSelectedStoredSessionId = (next: Updater<string | null>) => updateAtom($selectedStoredSessionId, next)
 
-const setSessionUnreadLocal = (sessionId: string, unread: boolean): boolean => {
-  const current = $unreadFinishedSessionIds.get()
-  const present = current.includes(sessionId)
-
-  if (present === unread) {
+function setSessionUnreadLocal(sessionId: string | null | undefined, unread: boolean): boolean {
+  if (!sessionId || $unreadFinishedSessionIds.get().includes(sessionId) === unread) {
     return false
   }
 
-  $unreadFinishedSessionIds.set(unread ? [...current, sessionId] : current.filter(id => id !== sessionId))
+  setUnreadFinishedSessionIds(current =>
+    unread ? [...current, sessionId] : current.filter(existingId => existingId !== sessionId)
+  )
 
   return true
 }
 
-onSessionUnreadChanged(setSessionUnreadLocal)
+function applySessionUnreadEntry(entry: SessionUnreadEntry): boolean {
+  if (unreadResetVersion && compareSessionUnreadVersions(entry, unreadResetVersion) <= 0) {
+    return false
+  }
+
+  const previous = unreadEntries.get(entry.sessionId)
+
+  if (previous && compareSessionUnreadVersions(entry, previous) <= 0) {
+    return false
+  }
+
+  unreadEntries.set(entry.sessionId, entry)
+  setSessionUnreadLocal(entry.sessionId, entry.unread)
+
+  return true
+}
+
+function applySessionUnreadReset(version: SessionUnreadVersion): boolean {
+  if (unreadResetVersion && compareSessionUnreadVersions(version, unreadResetVersion) <= 0) {
+    return false
+  }
+
+  unreadResetVersion = version
+
+  for (const [sessionId, entry] of unreadEntries) {
+    if (compareSessionUnreadVersions(entry, version) <= 0) {
+      unreadEntries.delete(sessionId)
+    }
+  }
+
+  const unread = [...unreadEntries.values()].filter(entry => entry.unread).map(entry => entry.sessionId)
+  setUnreadFinishedSessionIds(current =>
+    current.length === unread.length && current.every((sessionId, index) => sessionId === unread[index])
+      ? current
+      : unread
+  )
+
+  return true
+}
+
+onSessionUnreadSync({
+  onChange: applySessionUnreadEntry,
+  onReset: applySessionUnreadReset,
+  onSnapshot: (entries, reset) => {
+    if (reset) {
+      applySessionUnreadReset(reset)
+    }
+
+    entries.forEach(applySessionUnreadEntry)
+  },
+  onSnapshotRequest: source => {
+    broadcastSessionUnreadSnapshot(source, [...unreadEntries.values()], unreadResetVersion)
+  }
+})
+requestSessionUnreadSnapshot()
 
 export function setSessionUnread(sessionId: string | null | undefined, unread: boolean) {
-  if (sessionId && setSessionUnreadLocal(sessionId, unread)) {
-    broadcastSessionUnreadChanged(sessionId, unread)
+  if (!sessionId) {
+    return
   }
+
+  // Duplicate completion events must not revive an acknowledgement, while an
+  // acknowledgement is always transmitted — even when this renderer was
+  // already clear — so another window cannot retain or replay stale unread.
+  if (unread && $unreadFinishedSessionIds.get().includes(sessionId)) {
+    return
+  }
+
+  const entry = { ...nextSessionUnreadVersion(), sessionId, unread }
+  applySessionUnreadEntry(entry)
+  broadcastSessionUnreadChanged(entry)
+}
+
+export function clearAllSessionUnread(): void {
+  const version = nextSessionUnreadVersion()
+
+  applySessionUnreadReset(version)
+  broadcastSessionUnreadReset(version)
 }
 
 export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($messages, next)

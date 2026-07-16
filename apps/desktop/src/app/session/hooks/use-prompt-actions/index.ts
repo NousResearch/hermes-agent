@@ -31,7 +31,7 @@ import {
   setMessages,
   setTurnStartedAt
 } from '@/store/session'
-import { clearSessionSubagents } from '@/store/subagents'
+import { preserveDetachedSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
 
 import type {
@@ -558,7 +558,7 @@ export function usePromptActions({
     })
 
     clearSessionTodos(sessionId)
-    clearSessionSubagents(sessionId)
+    preserveDetachedSessionSubagents(sessionId)
     resetSessionBackground(sessionId)
     // Stop ends the turn, so the gateway is no longer blocked on any prompt it
     // raised. Drop this session's pending clarify / approval / sudo / secret so

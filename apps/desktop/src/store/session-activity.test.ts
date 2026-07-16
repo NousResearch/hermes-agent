@@ -41,6 +41,16 @@ describe('session activity ids', () => {
     expect(deriveSessionActivityIds([], { 'stored-parent': [child()] })).toEqual(['stored-parent'])
   })
 
+  it('holds a detached terminal result active until its parent handoff starts', () => {
+    expect(
+      deriveSessionActivityIds([], {
+        'runtime-parent': [
+          child({ handoff: true, ownerSessionId: 'stored-parent', sessionId: 'stored-review', status: 'completed' })
+        ]
+      })
+    ).toEqual(['stored-parent', 'stored-review'])
+  })
+
   it('projects an active parent lineage root onto its current continuation row', () => {
     expect(
       deriveSessionActivityIds(

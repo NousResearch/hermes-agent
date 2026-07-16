@@ -42,7 +42,12 @@ import {
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
-import { pruneDelegateFallbackSubagents, pruneSettledSessionSubagents, upsertSubagent } from '@/store/subagents'
+import {
+  hasDetachedSessionSubagents,
+  pruneDelegateFallbackSubagents,
+  pruneSettledSessionSubagents,
+  upsertSubagent
+} from '@/store/subagents'
 import { clearActiveSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
 import { reportInstallMethodWarning } from '@/store/updates'
@@ -81,6 +86,7 @@ interface GatewayEventDeps {
   sessionInterrupted: (sessionId: string) => boolean
   sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
   ownerSessionIdForRuntime: (sessionId: string) => string | undefined
+  onDetachedSubagentComplete: (ownerSessionId: string) => void
   updateSessionState: (
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState,
@@ -111,6 +117,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
     sessionInterrupted,
     sessionStateByRuntimeIdRef,
     ownerSessionIdForRuntime,
+    onDetachedSubagentComplete,
     updateSessionState,
     upsertToolCall
   } = deps
@@ -364,7 +371,6 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         flushQueuedDeltas(sessionId)
-        const reviewersStillRunning = pruneSettledSessionSubagents(sessionId)
         setSessionCompacting(sessionId, false)
         compactedTurnRef.current.delete(sessionId)
 
@@ -397,6 +403,20 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             turnStartedAt: Date.now()
           }
         })
+
+        // Establish foreground activity before retiring a detached completion's
+        // handoff lease. Secondary-gateway retention observes both stores
+        // synchronously, so the reverse order can close the socket between the
+        // parent message.start and its first delta.
+        const reviewersStillRunning = pruneSettledSessionSubagents(sessionId)
+
+        if (!reviewersStillRunning) {
+          nativeSubagentSessionsRef.current.delete(sessionId)
+        }
+
+        if (isActiveEvent) {
+          triggerHaptic('streamStart')
+        }
 
         if (isActiveEvent) {
           setTurnStartedAt(Date.now())
@@ -562,19 +582,24 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           notifyWorkspaceChanged()
         }
       } else if (SUBAGENT_EVENT_TYPES.has(event.type)) {
-        if (sessionId && payload && !sessionInterrupted(sessionId)) {
+        if (sessionId && payload && (!sessionInterrupted(sessionId) || hasDetachedSessionSubagents(sessionId))) {
           if (!nativeSubagentSessionsRef.current.has(sessionId)) {
             pruneDelegateFallbackSubagents(sessionId)
           }
 
           nativeSubagentSessionsRef.current.add(sessionId)
-          upsertSubagent(
+
+          const subagent = upsertSubagent(
             sessionId,
             payload as Record<string, unknown>,
             event.type === 'subagent.spawn_requested' || event.type === 'subagent.start',
             event.type,
             ownerSessionIdForRuntime(sessionId)
           )
+
+          if (event.type === 'subagent.complete' && subagent?.detached && subagent.ownerSessionId) {
+            onDetachedSubagentComplete(subagent.ownerSessionId)
+          }
         }
       } else if (event.type === 'clarify.request') {
         // Surface the clarify tool's overlay. The Python side is blocked on
@@ -820,6 +845,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       sessionInterrupted,
       sessionStateByRuntimeIdRef,
       ownerSessionIdForRuntime,
+      onDetachedSubagentComplete,
       updateSessionState,
       upsertToolCall
     ]

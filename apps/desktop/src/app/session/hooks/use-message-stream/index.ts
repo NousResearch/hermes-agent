@@ -22,10 +22,10 @@ import {
 } from '@/lib/generated-images'
 import { parseTodos } from '@/lib/todos'
 import { dispatchNativeNotification } from '@/store/native-notifications'
-import { $sessions, setSessionUnread } from '@/store/session'
+import { $sessions, sessionLineageIds, setSessionUnread } from '@/store/session'
 import { broadcastSessionsChanged } from '@/store/session-sync'
-import { upsertSubagent } from '@/store/subagents'
-import { $threadScrolledUp } from '@/store/thread-scroll'
+import { markSessionSubagentsDetached, upsertSubagent } from '@/store/subagents'
+import { transcriptIsVisibleAtBottom } from '@/store/thread-scroll'
 import { setSessionTodos } from '@/store/todos'
 
 import type { ClientSessionState } from '../../../types'
@@ -55,6 +55,18 @@ interface MessageStreamOptions {
 interface QueuedStreamDeltas {
   assistant: string
   reasoning: string
+}
+
+function transcriptViewedNow(currentView: AppView, storedSessionId: string | null | undefined): boolean {
+  return (
+    currentView === 'chat' &&
+    !!storedSessionId &&
+    sessionLineageIds(storedSessionId).some(transcriptIsVisibleAtBottom) &&
+    typeof document !== 'undefined' &&
+    !document.hidden &&
+    typeof document.hasFocus === 'function' &&
+    document.hasFocus()
+  )
 }
 
 export function useMessageStream({
@@ -512,17 +524,11 @@ export function useMessageStream({
       // Store the durable id so the profile rail can join it to $sessions even
       // though gateway events themselves are keyed by runtime id.
       if (!completedState.interrupted) {
-        const viewedNow =
-          activeSessionIdRef.current === sessionId &&
-          typeof window !== 'undefined' &&
-          currentView === 'chat' &&
-          !$threadScrolledUp.get() &&
-          typeof document !== 'undefined' &&
-          !document.hidden &&
-          typeof document.hasFocus === 'function' &&
-          document.hasFocus()
-
-        setSessionUnread(completedState.storedSessionId, !viewedNow)
+        markSessionSubagentsDetached(sessionId)
+        setSessionUnread(
+          completedState.storedSessionId,
+          !transcriptViewedNow(currentView, completedState.storedSessionId)
+        )
       }
 
       scheduleSessionsRefresh()
@@ -542,7 +548,7 @@ export function useMessageStream({
         title: translateNow('notifications.native.turnDoneTitle')
       })
     },
-    [hydrateFromStoredSession, scheduleSessionsRefresh, updateSessionState]
+    [currentView, hydrateFromStoredSession, scheduleSessionsRefresh, updateSessionState]
   )
 
   const failAssistantMessage = useCallback(
@@ -589,20 +595,15 @@ export function useMessageStream({
       })
 
       if (!failedState.interrupted) {
-        const viewedNow =
-          activeSessionIdRef.current === sessionId &&
-          typeof window !== 'undefined' &&
-          currentView === 'chat' &&
-          !$threadScrolledUp.get() &&
-          typeof document !== 'undefined' &&
-          !document.hidden &&
-          typeof document.hasFocus === 'function' &&
-          document.hasFocus()
-
-        setSessionUnread(failedState.storedSessionId, !viewedNow)
+        setSessionUnread(failedState.storedSessionId, !transcriptViewedNow(currentView, failedState.storedSessionId))
       }
     },
-    [activeSessionIdRef, currentView, updateSessionState]
+    [currentView, updateSessionState]
+  )
+
+  const onDetachedSubagentComplete = useCallback(
+    (ownerSessionId: string) => setSessionUnread(ownerSessionId, !transcriptViewedNow(currentView, ownerSessionId)),
+    [currentView]
   )
 
   const handleGatewayEvent = useGatewayEventHandler({
@@ -612,6 +613,7 @@ export function useMessageStream({
     compactedTurnRef,
     lastCwdInfoSessionRef,
     nativeSubagentSessionsRef,
+    onDetachedSubagentComplete,
     completeAssistantMessage,
     failAssistantMessage,
     flushQueuedDeltas,

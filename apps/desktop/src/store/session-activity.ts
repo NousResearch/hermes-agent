@@ -3,7 +3,8 @@ import { computed } from 'nanostores'
 import { $sessions, $workingSessionIds } from './session'
 import { $subagentsBySession, type SubagentProgress } from './subagents'
 
-const RUNNING = (subagent: SubagentProgress) => subagent.status === 'running' || subagent.status === 'queued'
+const RUNNING = (subagent: SubagentProgress) =>
+  subagent.status === 'running' || subagent.status === 'queued' || subagent.handoff === true
 
 interface SessionActivityRow {
   _lineage_root_id?: null | string

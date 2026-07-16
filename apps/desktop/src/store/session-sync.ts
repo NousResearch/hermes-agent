@@ -1,23 +1,88 @@
 // Cross-window session-list sync. Each desktop window is its own renderer
 // process with its own gateway socket and session store, so a mutation in one
-// (e.g. a new chat started in the compact pop-out) never reaches another
-// window. This bus pings every window to re-pull the shared session list; the
-// data already lives in the backend, the other window just doesn't know to look.
+// never reaches another unless it is mirrored over this bus.
 const CHANNEL = 'hermes:sessions'
 
 const channel = typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel(CHANNEL)
 
-interface SessionUnreadChangedMessage {
+export interface SessionUnreadVersion {
+  revision: number
+  source: string
+}
+
+export interface SessionUnreadEntry extends SessionUnreadVersion {
   sessionId: string
+  unread: boolean
+}
+
+interface SessionUnreadChangedMessage {
+  revision?: number
+  sessionId: string
+  source?: string
   type: 'session-unread-changed'
   unread: boolean
+}
+
+interface SessionUnreadResetMessage extends SessionUnreadVersion {
+  type: 'session-unread-reset'
+}
+
+interface SessionUnreadSnapshotRequestMessage {
+  source: string
+  type: 'session-unread-snapshot-request'
+}
+
+interface SessionUnreadSnapshotMessage {
+  entries: SessionUnreadEntry[]
+  reset: null | SessionUnreadVersion
+  target: string
+  type: 'session-unread-snapshot'
 }
 
 interface SessionsChangedMessage {
   type: 'sessions-changed'
 }
 
-type SessionSyncMessage = SessionUnreadChangedMessage | SessionsChangedMessage
+type SessionSyncMessage =
+  | SessionUnreadChangedMessage
+  | SessionUnreadResetMessage
+  | SessionUnreadSnapshotMessage
+  | SessionUnreadSnapshotRequestMessage
+  | SessionsChangedMessage
+
+const sourceId =
+  typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+const wallClockRevision = () =>
+  Math.floor((typeof performance === 'undefined' ? Date.now() : performance.timeOrigin + performance.now()) * 1_000)
+
+let logicalClock = wallClockRevision()
+
+function isSessionUnreadVersion(value: unknown): value is SessionUnreadVersion {
+  if (!value || typeof value !== 'object') {
+    return false
+  }
+
+  const candidate = value as Record<string, unknown>
+
+  return (
+    typeof candidate.revision === 'number' &&
+    Number.isFinite(candidate.revision) &&
+    typeof candidate.source === 'string'
+  )
+}
+
+function isSessionUnreadEntry(value: unknown): value is SessionUnreadEntry {
+  if (!isSessionUnreadVersion(value)) {
+    return false
+  }
+
+  const candidate = value as unknown as Record<string, unknown>
+
+  return typeof candidate.sessionId === 'string' && typeof candidate.unread === 'boolean'
+}
 
 function isSessionSyncMessage(value: unknown): value is SessionSyncMessage {
   if (!value || typeof value !== 'object' || !('type' in value)) {
@@ -30,11 +95,46 @@ function isSessionSyncMessage(value: unknown): value is SessionSyncMessage {
     return true
   }
 
+  if (candidate.type === 'session-unread-changed') {
+    // revision/source are optional for rolling-update compatibility with an
+    // older Desktop window. The receiver assigns legacy messages a local
+    // observed revision before applying them.
+    return typeof candidate.sessionId === 'string' && typeof candidate.unread === 'boolean'
+  }
+
+  if (candidate.type === 'session-unread-reset') {
+    return isSessionUnreadVersion(candidate)
+  }
+
+  if (candidate.type === 'session-unread-snapshot-request') {
+    return typeof candidate.source === 'string'
+  }
+
   return (
-    candidate.type === 'session-unread-changed' &&
-    typeof candidate.sessionId === 'string' &&
-    typeof candidate.unread === 'boolean'
+    candidate.type === 'session-unread-snapshot' &&
+    typeof candidate.target === 'string' &&
+    Array.isArray(candidate.entries) &&
+    candidate.entries.every(isSessionUnreadEntry) &&
+    (candidate.reset === null || isSessionUnreadVersion(candidate.reset))
   )
+}
+
+function observeRevision(revision: number): void {
+  logicalClock = Math.max(logicalClock, revision)
+}
+
+export function nextSessionUnreadVersion(): SessionUnreadVersion {
+  logicalClock = Math.max(logicalClock + 1, wallClockRevision())
+
+  return { revision: logicalClock, source: sourceId }
+}
+
+export function compareSessionUnreadVersions(left: SessionUnreadVersion, right: SessionUnreadVersion): number {
+  if (left.revision !== right.revision) {
+    return left.revision - right.revision
+  }
+
+  return left.source.localeCompare(right.source)
 }
 
 // A window that mutated the session list (created / titled a chat) tells the
@@ -62,18 +162,73 @@ export function onSessionsChanged(handler: () => void): () => void {
   return () => channel.removeEventListener('message', listener)
 }
 
-export function broadcastSessionUnreadChanged(sessionId: string, unread: boolean): void {
-  channel?.postMessage({ sessionId, type: 'session-unread-changed', unread } satisfies SessionUnreadChangedMessage)
+export function broadcastSessionUnreadChanged(entry: SessionUnreadEntry): void {
+  channel?.postMessage({ ...entry, type: 'session-unread-changed' } satisfies SessionUnreadChangedMessage)
 }
 
-export function onSessionUnreadChanged(handler: (sessionId: string, unread: boolean) => void): () => void {
+export function broadcastSessionUnreadReset(version: SessionUnreadVersion): void {
+  channel?.postMessage({ ...version, type: 'session-unread-reset' } satisfies SessionUnreadResetMessage)
+}
+
+export function broadcastSessionUnreadSnapshot(
+  target: string,
+  entries: SessionUnreadEntry[],
+  reset: null | SessionUnreadVersion
+): void {
+  channel?.postMessage({
+    entries,
+    reset,
+    target,
+    type: 'session-unread-snapshot'
+  } satisfies SessionUnreadSnapshotMessage)
+}
+
+export function requestSessionUnreadSnapshot(): void {
+  channel?.postMessage({
+    source: sourceId,
+    type: 'session-unread-snapshot-request'
+  } satisfies SessionUnreadSnapshotRequestMessage)
+}
+
+interface SessionUnreadSyncHandlers {
+  onChange: (entry: SessionUnreadEntry) => void
+  onReset: (version: SessionUnreadVersion) => void
+  onSnapshot: (entries: SessionUnreadEntry[], reset: null | SessionUnreadVersion) => void
+  onSnapshotRequest: (source: string) => void
+}
+
+export function onSessionUnreadSync(handlers: SessionUnreadSyncHandlers): () => void {
   if (!channel) {
     return () => {}
   }
 
   const listener = (event: MessageEvent<unknown>) => {
-    if (isSessionSyncMessage(event.data) && event.data.type === 'session-unread-changed') {
-      handler(event.data.sessionId, event.data.unread)
+    if (!isSessionSyncMessage(event.data)) {
+      return
+    }
+
+    const message = event.data
+
+    if (message.type === 'session-unread-changed') {
+      const entry = isSessionUnreadEntry(message)
+        ? message
+        : { ...nextSessionUnreadVersion(), sessionId: message.sessionId, unread: message.unread }
+
+      observeRevision(entry.revision)
+      handlers.onChange(entry)
+    } else if (message.type === 'session-unread-reset') {
+      observeRevision(message.revision)
+      handlers.onReset(message)
+    } else if (message.type === 'session-unread-snapshot-request') {
+      handlers.onSnapshotRequest(message.source)
+    } else if (message.type === 'session-unread-snapshot' && message.target === sourceId) {
+      message.entries.forEach(entry => observeRevision(entry.revision))
+
+      if (message.reset) {
+        observeRevision(message.reset.revision)
+      }
+
+      handlers.onSnapshot(message.entries, message.reset)
     }
   }
 

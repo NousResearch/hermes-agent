@@ -3,6 +3,7 @@ import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 
+import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { cn } from '@/lib/utils'
 import { $unreadFinishedSessionIds } from '@/store/session'
@@ -22,6 +23,7 @@ export function SessionSwitcher() {
   const working = useStore($sessionActivityIds)
   const attention = useStore($attentionSessionIds)
   const unread = useStore($unreadFinishedSessionIds)
+  const { t } = useI18n()
   const navigate = useNavigate()
 
   const activeRef = useRef<HTMLDivElement>(null)
@@ -63,6 +65,16 @@ export function SessionSwitcher() {
         {sessions.map((session, i) => {
           const selected = i === index
           const sessionWorking = workingIds.has(session.id)
+          const sessionAttention = attentionIds.has(session.id)
+          const sessionUnread = unreadIds.has(session.id)
+
+          const activityText = sessionAttention
+            ? t.profiles.activityNeedsInput
+            : sessionWorking
+              ? t.profiles.activityRunning
+              : sessionUnread
+                ? t.profiles.activityUnread
+                : null
 
           return (
             <div
@@ -80,12 +92,9 @@ export function SessionSwitcher() {
               }}
               ref={selected ? activeRef : undefined}
             >
-              <SwitcherDot
-                attention={attentionIds.has(session.id)}
-                unread={unreadIds.has(session.id)}
-                working={sessionWorking}
-              />
+              <SwitcherDot attention={sessionAttention} unread={sessionUnread} working={sessionWorking} />
               <span className="min-w-0 flex-1 truncate">{sessionTitle(session)}</span>
+              {activityText && <span className="sr-only">{activityText}</span>}
               {i < 9 && (
                 <span
                   className={cn(
@@ -108,15 +117,16 @@ export function SessionSwitcher() {
 function SwitcherDot({ attention, working, unread }: { attention: boolean; working: boolean; unread: boolean }) {
   return (
     <span
+      aria-hidden="true"
       className={cn(
-        'size-1 shrink-0 rounded-full',
+        'size-1.5 shrink-0',
         attention
-          ? 'bg-amber-400'
+          ? 'rotate-45 rounded-[1px] bg-amber-400'
           : working
-            ? 'animate-pulse bg-(--ui-accent) motion-reduce:animate-none'
+            ? 'animate-pulse rounded-full border border-(--ui-accent) bg-transparent motion-reduce:animate-none'
             : unread
-              ? 'bg-emerald-500'
-              : 'bg-(--ui-text-quaternary)/50'
+              ? 'rounded-[1px] bg-emerald-500'
+              : 'rounded-full bg-(--ui-text-quaternary)/50'
       )}
     />
   )

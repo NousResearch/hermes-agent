@@ -617,10 +617,18 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 and getattr(agent, "_codex_stream_last_event_ts", None) is None
             ):
                 _deadline = min(_deadline, _ttfb_timeout)
+            # Local / ACP endpoints disable stale detection with +inf; int(inf)
+            # raises OverflowError and aborts an otherwise healthy long call.
+            if _deadline != float("inf"):
+                _wait_suffix = (
+                    f"provider may be slow or overloaded; "
+                    f"auto-reconnect at {int(_deadline)}s"
+                )
+            else:
+                _wait_suffix = "provider may be slow or overloaded"
             agent._emit_wait_notice(
                 f"⏳ waiting on {api_kwargs.get('model', 'the provider')} — "
-                f"{int(_elapsed)}s with no response yet (provider may be slow "
-                f"or overloaded; auto-reconnect at {int(_deadline)}s)"
+                f"{int(_elapsed)}s with no response yet ({_wait_suffix})"
             )
 
         _elapsed = time.time() - _call_start

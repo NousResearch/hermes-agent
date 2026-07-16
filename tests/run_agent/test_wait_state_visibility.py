@@ -121,3 +121,67 @@ def test_nonstream_wait_loop_emits_explained_notice(tmp_path, monkeypatch):
     reconnect_notices = [s for s in seen if "reconnecting" in s]
     assert reconnect_notices, f"expected a reconnect wait-notice, saw: {seen}"
     assert "no response from provider" in reconnect_notices[0]
+
+
+def test_nonstream_wait_notice_survives_infinite_stale_timeout(tmp_path, monkeypatch):
+    """Local/ACP endpoints use stale_timeout=+inf; the 30s wait notice must not
+    crash with OverflowError from int(inf) (seen with cursor-acp / acp://cursor)."""
+    import threading
+
+    from agent import chat_completion_helpers as h
+
+    seen: list = []
+    agent = _make_agent(tmp_path, monkeypatch, thinking_callback=seen.append)
+    agent.api_mode = "chat_completions"
+    monkeypatch.setattr(
+        agent, "_compute_non_stream_stale_timeout", lambda *a, **k: float("inf")
+    )
+
+    dummy_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=None))
+    )
+
+    # Drive the poll loop: hang long enough for ~100 × 0.3s cadence, but shrink
+    # join timeout so the test finishes quickly while still hitting % 100 == 0.
+    real_join = threading.Thread.join
+    poll_state = {"joins": 0}
+
+    def fast_join(self, timeout=None):
+        poll_state["joins"] += 1
+        if timeout is not None:
+            return real_join(self, timeout=0.001)
+        return real_join(self, timeout=timeout)
+
+    hang_until = {"n": 105}  # >100 polls so the notice fires once
+
+    def fake_create(**kwargs):
+        while poll_state["joins"] < hang_until["n"] and not agent._interrupt_requested:
+            time.sleep(0.001)
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="ok", tool_calls=None),
+                    finish_reason="stop",
+                )
+            ],
+            usage=SimpleNamespace(
+                prompt_tokens=1,
+                completion_tokens=1,
+                total_tokens=2,
+                prompt_tokens_details=SimpleNamespace(cached_tokens=0),
+            ),
+            model="agent",
+        )
+
+    dummy_client.chat.completions.create = fake_create
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(agent, "_abort_request_openai_client", lambda c, reason=None: None)
+    monkeypatch.setattr(agent, "_close_request_openai_client", lambda c, reason=None: None)
+    monkeypatch.setattr(threading.Thread, "join", fast_join)
+
+    result = h.interruptible_api_call(agent, {"model": "agent", "messages": []})
+    assert result is not None
+    wait_notices = [s for s in seen if "with no response yet" in s]
+    assert wait_notices, f"expected wait notice, saw: {seen}"
+    assert "auto-reconnect" not in wait_notices[0]
+    assert "slow or overloaded" in wait_notices[0]

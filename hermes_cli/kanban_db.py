@@ -9907,11 +9907,22 @@ def _windows_peek_pipe(fd: int) -> Optional[int]:
     return int(available.value)
 
 
+def _verifier_proc_has_exited(proc: Any) -> bool:
+    poll = getattr(proc, "poll", None)
+    if poll is None:
+        return False
+    try:
+        return poll() is not None
+    except Exception:
+        return False
+
+
 def _read_verifier_result_pipe(
     read_fd: int,
     *,
     deadline_seconds: Optional[int] = None,
     max_bytes: int = VERIFIER_RESULT_MAX_BYTES,
+    proc: Any = None,
 ) -> Optional[bytes]:
     """Read the one-shot result channel, requiring EOF before the deadline.
 
@@ -9921,6 +9932,13 @@ def _read_verifier_result_pipe(
     closed instead of treating an unfinished channel as a complete result.
     Never issues a blocking ``os.read``: POSIX gates reads on ``select``,
     Windows on a non-blocking pipe peek.
+
+    When ``proc`` is given (Windows), the drain loop also polls child
+    liveness: a Windows child blocks in ``os.write`` once its frame exceeds
+    the anonymous-pipe buffer and cannot exit until the supervisor drains,
+    so draining must never be gated on exit. Once the child has exited, any
+    frame is either fully buffered or will never arrive, so the deadline
+    shrinks to a short EOF grace instead of the full result deadline.
     """
     if deadline_seconds is None:
         deadline_seconds = VERIFIER_RESULT_DEADLINE_SECONDS
@@ -9939,6 +9957,12 @@ def _read_verifier_result_pipe(
                     eof_observed = True
                     break
                 if available <= 0:
+                    if proc is not None and _verifier_proc_has_exited(proc):
+                        deadline = min(
+                            deadline,
+                            time.monotonic() + _VERIFIER_RESULT_EOF_GRACE_SECONDS,
+                        )
+                        proc = None
                     time.sleep(min(0.05, remaining))
                     continue
                 read_len = min(available, 4096, max(1, int(max_bytes) + 1 - total))
@@ -10364,56 +10388,34 @@ def _start_verifier_supervisor_waiter(
 ) -> None:
     def _waiter() -> None:
         try:
-            rc = None
-            if _IS_WINDOWS:
+            # Drain the result channel before observing exit status on every
+            # platform. A Windows child blocks in os.write once its frame
+            # exceeds the anonymous-pipe buffer and stays alive until the
+            # supervisor drains, so waiting for exit first deadlocks; the
+            # reader instead polls child liveness itself under one strict
+            # total deadline and shrinks to a short EOF grace once the child
+            # is gone. The exit wait below shares that same total deadline:
+            # it gets only the budget the drain left over (capped at a short
+            # grace), never a fresh allowance past the deadline.
+            deadline = time.monotonic() + max(
+                1, int(VERIFIER_RESULT_DEADLINE_SECONDS)
+            )
+            raw = _read_verifier_result_pipe(
+                read_fd,
+                deadline_seconds=VERIFIER_RESULT_DEADLINE_SECONDS,
+                proc=proc if _IS_WINDOWS else None,
+            )
+            wait_budget = min(5.0, max(0.0, deadline - time.monotonic()))
+            try:
+                rc = proc.wait(timeout=wait_budget)
+            except AttributeError:
+                rc = None
+            except subprocess.TimeoutExpired:
                 try:
-                    rc = proc.wait(timeout=VERIFIER_RESULT_DEADLINE_SECONDS)
-                except AttributeError:
-                    rc = None
-                except subprocess.TimeoutExpired:
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
-                    rc = "timeout"
-                if rc not in (None, 0):
-                    _close_fd_quietly(read_fd)
-                    failure_reason = "timeout" if rc == "timeout" else f"exit:{rc}"
-                    _reconcile_verifier_authorization_failure(
-                        db_path=db_path,
-                        authorization_id=authorization_id,
-                        binding=binding,
-                        reason=failure_reason,
-                    )
-                    _verifier_failure_reblock(
-                        db_path=db_path,
-                        task_id=str(binding["task_id"]),
-                        run_id=int(binding["run_id"]),
-                        reason=failure_reason,
-                    )
-                    return
-                # The child has already exited: any frame is either fully in
-                # the pipe buffer or will never arrive, so drain with a short
-                # bounded EOF grace rather than the full result deadline.
-                raw = _read_verifier_result_pipe(
-                    read_fd,
-                    deadline_seconds=_VERIFIER_RESULT_EOF_GRACE_SECONDS,
-                )
-            else:
-                raw = _read_verifier_result_pipe(
-                    read_fd,
-                    deadline_seconds=VERIFIER_RESULT_DEADLINE_SECONDS,
-                )
-                try:
-                    rc = proc.wait(timeout=5)
-                except AttributeError:
-                    rc = None
-                except subprocess.TimeoutExpired:
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
-                    rc = "timeout"
+                    proc.kill()
+                except Exception:
+                    pass
+                rc = "timeout"
             if rc not in (None, 0):
                 failure_reason = "timeout" if rc == "timeout" else f"exit:{rc}"
                 _reconcile_verifier_authorization_failure(

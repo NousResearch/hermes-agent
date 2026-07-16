@@ -634,38 +634,61 @@ def test_reconcile_root_retry_rejects_outside_same_named_parent(
     assert "refusing" in row["cleanup_error"]
 
 
-def test_windows_supervisor_timeout_does_not_block_on_pipe_read(
+def test_windows_supervisor_deadline_kills_stuck_child_without_blocking_read(
     kanban_home, monkeypatch,
 ):
+    """A child that never exits and never writes must be killed and failed
+    closed once the strict total deadline expires — the concurrent drain loop
+    must never issue a blocking os.read without peeked data."""
     monkeypatch.setattr(kb, "_IS_WINDOWS", True)
+    monkeypatch.setattr(kb, "VERIFIER_RESULT_DEADLINE_SECONDS", 1)
     with kb.connect() as conn:
         claim, binding, authorization_id = _claim_with_authorization(conn)
     read_fd, writer_fd = os.pipe()
-    os.close(writer_fd)
     killed = {"value": False}
+    real_read = os.read
 
-    def fake_read(read_fd_arg, **kwargs):
-        raise AssertionError("windows timeout path must not read before waiting")
+    def guarded_read(fd, n):
+        if fd == read_fd:
+            raise AssertionError(
+                "windows supervisor must not issue a blocking os.read "
+                "without peeked data"
+            )
+        return real_read(fd, n)
+
+    monkeypatch.setattr(kb, "_windows_peek_pipe", lambda fd: 0, raising=False)
+    monkeypatch.setattr(os, "read", guarded_read)
 
     class FakeProc:
+        def poll(self):
+            return None
+
         def wait(self, timeout=None):
             raise subprocess.TimeoutExpired("verifier", timeout)
 
         def kill(self):
             killed["value"] = True
 
-    monkeypatch.setattr(kb, "_read_verifier_result_pipe", fake_read)
+    try:
+        kb._start_verifier_supervisor_waiter(
+            read_fd=read_fd,
+            proc=FakeProc(),
+            db_path=kb.kanban_db_path(),
+            authorization_id=authorization_id,
+            binding=binding,
+        )
+        _wait_for_status(claim.id, "blocked", timeout=10)
+        with kb.connect() as conn:
+            row = conn.execute(
+                "SELECT state, reason_code FROM verifier_result_authorizations WHERE id = ?",
+                (authorization_id,),
+            ).fetchone()
+    finally:
+        os.close(writer_fd)
 
-    kb._start_verifier_supervisor_waiter(
-        read_fd=read_fd,
-        proc=FakeProc(),
-        db_path=kb.kanban_db_path(),
-        authorization_id=authorization_id,
-        binding=binding,
-    )
-
-    _wait_for_status(claim.id, "blocked")
     assert killed["value"] is True
+    assert row["state"] == "reconciled"
+    assert row["reason_code"] == "timeout"
 
 
 def test_valid_frame_losing_live_claim_race_does_not_apply(kanban_home):
@@ -1607,22 +1630,167 @@ def test_supervisor_complete_frame_with_held_open_writer_fails_closed(
     assert "verifier result channel failed: result_no_eof" in summary
 
 
+def test_supervisor_process_wait_shares_strict_total_deadline(
+    kanban_home, monkeypatch,
+):
+    """Pipe draining and process liveness share ONE strict total deadline:
+    when the drain consumes the full budget (writer held open, no EOF),
+    ``proc.wait`` must receive only the remaining budget — not a fresh
+    multi-second allowance stacked on top of the expired deadline."""
+    monkeypatch.setattr(kb, "VERIFIER_RESULT_DEADLINE_SECONDS", 1)
+    with kb.connect() as conn:
+        claim, binding, authorization_id = _claim_with_authorization(conn)
+    read_fd, writer_fd = os.pipe()  # writer held open: drain runs to deadline
+    wait_timeouts = []
+
+    class FakeProc:
+        def wait(self, timeout=None):
+            wait_timeouts.append(timeout)
+            raise subprocess.TimeoutExpired("verifier", timeout)
+
+        def kill(self):
+            pass
+
+    try:
+        kb._start_verifier_supervisor_waiter(
+            read_fd=read_fd,
+            proc=FakeProc(),
+            db_path=kb.kanban_db_path(),
+            authorization_id=authorization_id,
+            binding=binding,
+        )
+        _wait_for_status(claim.id, "blocked", timeout=10)
+    finally:
+        os.close(writer_fd)
+
+    assert wait_timeouts, "supervisor never observed process liveness"
+    assert all(
+        timeout is not None and timeout <= 0.5 for timeout in wait_timeouts
+    ), f"process wait granted budget past the shared deadline: {wait_timeouts}"
+
+
+def test_windows_supervisor_drains_frame_exceeding_pipe_buffer_before_child_exit(
+    kanban_home, monkeypatch,
+):
+    """A child emitting a valid <=16KiB frame larger than the anonymous-pipe
+    buffer blocks in ``os.write`` until the supervisor drains, and stays alive
+    until that write completes. The supervisor must drain the result channel
+    concurrently with liveness polling — waiting for child exit first
+    deadlocks, then falls closed on a result the child emitted correctly."""
+    monkeypatch.setattr(kb, "_IS_WINDOWS", True)
+    monkeypatch.setattr(kb, "VERIFIER_RESULT_DEADLINE_SECONDS", 2)
+    with kb.connect() as conn:
+        claim, binding, authorization_id = _claim_with_authorization(conn)
+
+    frame = _frame(binding, summary="verified and complete " + "x" * 4000)
+    capacity = 1024  # simulated Windows anonymous-pipe buffer
+    assert capacity < len(frame) <= kb.VERIFIER_RESULT_MAX_BYTES
+
+    cond = threading.Condition()
+    state = {"buf": b"", "writer_closed": False, "killed": False}
+    write_completed = threading.Event()
+
+    def child_blocking_write() -> None:
+        # os.write semantics on a full anonymous pipe: block until the
+        # reader drains enough room, return only once fully written.
+        remaining = frame
+        with cond:
+            while remaining and not state["killed"]:
+                while len(state["buf"]) >= capacity and not state["killed"]:
+                    cond.wait(timeout=0.1)
+                if state["killed"]:
+                    return
+                room = capacity - len(state["buf"])
+                state["buf"] += remaining[:room]
+                remaining = remaining[room:]
+                cond.notify_all()
+            state["writer_closed"] = True
+            cond.notify_all()
+        write_completed.set()
+
+    def fake_peek(fd):
+        with cond:
+            if state["buf"]:
+                return len(state["buf"])
+            return None if state["writer_closed"] else 0
+
+    read_fd, writer_fd = os.pipe()
+    real_read = os.read
+
+    def fake_os_read(fd, n):
+        if fd != read_fd:
+            return real_read(fd, n)
+        with cond:
+            chunk = state["buf"][:n]
+            state["buf"] = state["buf"][len(chunk):]
+            cond.notify_all()
+            return chunk
+
+    monkeypatch.setattr(kb, "_windows_peek_pipe", fake_peek, raising=False)
+    monkeypatch.setattr(os, "read", fake_os_read)
+
+    class FakeProc:
+        # Alive until os.write completes; exits 0 immediately afterwards.
+        def poll(self):
+            return 0 if write_completed.is_set() else None
+
+        def wait(self, timeout=None):
+            if not write_completed.wait(timeout=timeout):
+                raise subprocess.TimeoutExpired("verifier", timeout)
+            return 0
+
+        def kill(self):
+            with cond:
+                state["killed"] = True
+                cond.notify_all()
+
+    writer = threading.Thread(target=child_blocking_write, daemon=True)
+    writer.start()
+    try:
+        kb._start_verifier_supervisor_waiter(
+            read_fd=read_fd,
+            proc=FakeProc(),
+            db_path=kb.kanban_db_path(),
+            authorization_id=authorization_id,
+            binding=binding,
+        )
+        task = _wait_for_status(claim.id, "done", timeout=10)
+        writer.join(timeout=2)
+        with kb.connect() as conn:
+            row = conn.execute(
+                "SELECT state FROM verifier_result_authorizations WHERE id = ?",
+                (authorization_id,),
+            ).fetchone()
+            summary = kb.latest_summary(conn, claim.id) or ""
+    finally:
+        os.close(writer_fd)
+
+    assert write_completed.is_set()
+    assert task.status == "done"
+    assert row["state"] == "applied"
+    assert summary.startswith("verified and complete")
+
+
 def test_windows_supervisor_bounded_read_after_exit_fails_closed_without_eof(
     kanban_home, monkeypatch,
 ):
+    """Once the child has exited, any frame is either fully buffered or will
+    never arrive: the concurrent drain must shrink to the short EOF grace
+    instead of holding the full result deadline, then fail closed when the
+    writer handle is still held open (no EOF)."""
     monkeypatch.setattr(kb, "_IS_WINDOWS", True)
+    monkeypatch.setattr(kb, "VERIFIER_RESULT_DEADLINE_SECONDS", 60)
+    monkeypatch.setattr(kb, "_VERIFIER_RESULT_EOF_GRACE_SECONDS", 1)
     with kb.connect() as conn:
         claim, binding, authorization_id = _claim_with_authorization(conn)
     read_fd, writer_fd = os.pipe()
-    captured = {}
-
-    def fake_read(read_fd_arg, **kwargs):
-        captured.update(kwargs)
-        return None
-
-    monkeypatch.setattr(kb, "_read_verifier_result_pipe", fake_read)
+    # Writer handle leaked open elsewhere: no data ever arrives, no EOF.
+    monkeypatch.setattr(kb, "_windows_peek_pipe", lambda fd: 0, raising=False)
 
     class FakeProc:
+        def poll(self):
+            return 0
+
         def wait(self, timeout=None):
             return 0
 
@@ -1634,7 +1802,7 @@ def test_windows_supervisor_bounded_read_after_exit_fails_closed_without_eof(
             authorization_id=authorization_id,
             binding=binding,
         )
-        task = _wait_for_status(claim.id, "blocked")
+        task = _wait_for_status(claim.id, "blocked", timeout=10)
         with kb.connect() as conn:
             row = conn.execute(
                 "SELECT state, reason_code FROM verifier_result_authorizations WHERE id = ?",
@@ -1642,14 +1810,9 @@ def test_windows_supervisor_bounded_read_after_exit_fails_closed_without_eof(
             ).fetchone()
             summary = kb.latest_summary(conn, claim.id) or ""
     finally:
-        for fd in (read_fd, writer_fd):
-            try:
-                os.close(fd)
-            except OSError:
-                pass
+        os.close(writer_fd)
 
     assert task.block_kind == "needs_input"
-    assert captured.get("deadline_seconds") == kb._VERIFIER_RESULT_EOF_GRACE_SECONDS
     assert row["state"] == "reconciled"
     assert row["reason_code"] == "result_no_eof"
     assert "verifier result channel failed: result_no_eof" in summary

@@ -650,6 +650,19 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"and either drop these ids from created_cards, or pass "
                     f"created_cards=[] to skip the card-claim check entirely."
                 )
+            except kb.PRNotReadyError as pr_err:
+                # PR merge-readiness gate blocked completion. Surface the
+                # PR details so the worker/human knows what to fix. The
+                # task is still in-flight and the audit event + comment
+                # already landed in the DB.
+                return tool_error(
+                    f"kanban_complete blocked: PR {pr_err.pr_url} is not "
+                    f"ready for merge (state={pr_err.pr_state}, "
+                    f"mergeable={pr_err.mergeable}, "
+                    f"commits={pr_err.commit_count}): {pr_err.reason}. "
+                    f"Your task is still in-flight (no state change). "
+                    f"Fix the PR and retry kanban_complete."
+                )
             if not ok:
                 return tool_error(
                     f"could not complete {tid} (unknown id or already terminal)"
@@ -864,6 +877,7 @@ def _handle_create(args: dict, **kw) -> str:
     workspace_kind = args.get("workspace_kind")
     workspace_path = args.get("workspace_path")
     project_id = args.get("project") or args.get("project_id")
+    pr_url = args.get("pr_url")
     _inherit_workspace = workspace_kind is None and workspace_path is None
     if workspace_kind is None:
         workspace_kind = "scratch"
@@ -933,6 +947,7 @@ def _handle_create(args: dict, **kw) -> str:
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
+                pr_url=pr_url,
             )
             new_task = kb.get_task(conn, new_tid)
             subscribed = _maybe_auto_subscribe(conn, new_tid)
@@ -1097,6 +1112,38 @@ def _handle_link(args: dict, **kw) -> str:
     except Exception as e:
         logger.exception("kanban_link failed")
         return tool_error(f"kanban_link: {e}")
+
+
+def _handle_set_pr_url(args: dict, **kw) -> str:
+    """Attach or update a GitHub PR URL on a task.
+
+    Orchestrator-only: the PR URL is a routing/planning artifact, not
+    something a dispatcher-spawned task worker should mutate mid-run.
+    """
+    guard = _require_orchestrator_tool("kanban_set_pr_url")
+    if guard:
+        return guard
+    tid = args.get("task_id")
+    if not tid:
+        return tool_error("task_id is required")
+    pr_url = args.get("pr_url")
+    if pr_url is not None and not str(pr_url).strip():
+        return tool_error("pr_url must be a non-empty URL or omitted")
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            if not kb.get_task(conn, str(tid)):
+                return tool_error(f"task {tid} not found")
+            kb.set_pr_url(conn, str(tid), pr_url)
+            return _ok(task_id=str(tid), pr_url=pr_url)
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_set_pr_url: {e}")
+    except Exception as e:
+        logger.exception("kanban_set_pr_url failed")
+        return tool_error(f"kanban_set_pr_url: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -1541,6 +1588,15 @@ KANBAN_CREATE_SCHEMA = {
                     "true. Defaults to the goal-engine default (20)."
                 ),
             },
+            "pr_url": {
+                "type": "string",
+                "description": (
+                    "Optional GitHub pull-request URL. When set, "
+                    "kanban_complete will verify the PR is merged or "
+                    "open+mergeable with commits before allowing the task "
+                    "to transition to done."
+                ),
+            },
             "board": _board_schema_prop(),
         },
         "required": ["title", "assignee"],
@@ -1582,6 +1638,31 @@ KANBAN_LINK_SCHEMA = {
             "board": _board_schema_prop(),
         },
         "required": ["parent_id", "child_id"],
+    },
+}
+
+KANBAN_SET_PR_URL_SCHEMA = {
+    "name": "kanban_set_pr_url",
+    "description": (
+        "Attach or update a GitHub PR URL on a task. When set, "
+        "kanban_complete will check that the PR is merged or "
+        "open+mergeable with commits before the task can transition "
+        "to done. Orchestrator-only."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Task id to attach the PR URL to.",
+            },
+            "pr_url": {
+                "type": "string",
+                "description": "GitHub pull-request URL (e.g. https://github.com/owner/repo/pull/42).",
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id", "pr_url"],
     },
 }
 
@@ -1668,5 +1749,14 @@ registry.register(
     schema=KANBAN_LINK_SCHEMA,
     handler=_handle_link,
     check_fn=_check_kanban_mode,
+    emoji="🔗",
+)
+
+registry.register(
+    name="kanban_set_pr_url",
+    toolset="kanban",
+    schema=KANBAN_SET_PR_URL_SCHEMA,
+    handler=_handle_set_pr_url,
+    check_fn=_check_kanban_orchestrator_mode,
     emoji="🔗",
 )

@@ -2659,7 +2659,12 @@ class TestWebServerEndpoints:
         telegram = next(platform for platform in platforms if platform["id"] == "telegram")
         assert telegram["name"] == "Telegram"
         assert telegram["enabled"] is False
-        assert any(field["key"] == "TELEGRAM_BOT_TOKEN" and field["required"] for field in telegram["env_vars"])
+        fields = {field["key"]: field for field in telegram["env_vars"]}
+        assert fields["TELEGRAM_BOT_TOKEN"]["required"] is True
+        assert fields["TELEGRAM_BOT_TOKEN"]["url"] == "https://t.me/BotFather"
+        assert "Complete Telegram bot token" in fields["TELEGRAM_BOT_TOKEN"]["description"]
+        assert fields["TELEGRAM_ALLOWED_USERS"]["url"] == "https://t.me/userinfobot"
+        assert "DM pairing" in fields["TELEGRAM_ALLOWED_USERS"]["description"]
 
     def test_slack_messaging_platform_exposes_user_allowlist(self):
         resp = self.client.get("/api/messaging/platforms")
@@ -2771,17 +2776,35 @@ class TestWebServerEndpoints:
             "/api/messaging/platforms/telegram",
             json={
                 "enabled": False,
-                "env": {"TELEGRAM_BOT_TOKEN": "1234567890abcdef"},
+                "env": {"TELEGRAM_BOT_TOKEN": "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_1234"},
             },
         )
 
         assert resp.status_code == 200
-        assert load_env()["TELEGRAM_BOT_TOKEN"] == "1234567890abcdef"
+        assert load_env()["TELEGRAM_BOT_TOKEN"] == "123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZ_1234"
         assert load_config()["platforms"]["telegram"]["enabled"] is False
 
         status = self.client.get("/api/messaging/platforms").json()["platforms"]
         telegram = next(platform for platform in status if platform["id"] == "telegram")
         assert telegram["enabled"] is False
+
+    def test_update_messaging_platform_rejects_invalid_telegram_bot_token(self):
+        resp = self.client.put(
+            "/api/messaging/platforms/telegram",
+            json={"env": {"TELEGRAM_BOT_TOKEN": "not-a-botfather-token"}},
+        )
+
+        assert resp.status_code == 400
+        assert "@BotFather" in resp.json()["detail"]
+
+    def test_update_messaging_platform_rejects_invalid_telegram_allowed_users(self):
+        resp = self.client.put(
+            "/api/messaging/platforms/telegram",
+            json={"env": {"TELEGRAM_ALLOWED_USERS": "123456,@username"}},
+        )
+
+        assert resp.status_code == 400
+        assert "numeric user IDs" in resp.json()["detail"]
 
     def test_update_messaging_platform_saves_slack_allowed_users(self):
         from hermes_cli.config import load_env
@@ -4792,6 +4815,8 @@ class TestNewEndpoints:
                 "name": "web",
                 "label": "Web Search & Scraping",
                 "description": "web_search, web_extract",
+                "platform": "cli",
+                "platform_label": "CLI",
                 "enabled": True,
                 "available": True,
                 "configured": False,
@@ -4801,6 +4826,8 @@ class TestNewEndpoints:
                 "name": "skills",
                 "label": "Skills",
                 "description": "list, view, manage",
+                "platform": "cli",
+                "platform_label": "CLI",
                 "enabled": True,
                 "available": True,
                 "configured": True,
@@ -4810,6 +4837,8 @@ class TestNewEndpoints:
                 "name": "memory",
                 "label": "Memory",
                 "description": "persistent memory across sessions",
+                "platform": "cli",
+                "platform_label": "CLI",
                 "enabled": False,
                 "available": False,
                 "configured": True,
@@ -4837,6 +4866,41 @@ class TestNewEndpoints:
 
         listing = {t["name"]: t for t in self.client.get("/api/tools/toolsets").json()}
         assert listing["x_search"]["enabled"] is False
+
+    def test_discord_toolsets_read_and_write_discord_platform(self):
+        """Platform-restricted toolsets must not be saved as successful CLI no-ops."""
+        from hermes_cli.config import load_config
+
+        listing = {t["name"]: t for t in self.client.get("/api/tools/toolsets").json()}
+        assert listing["discord"]["platform"] == "discord"
+        assert listing["discord"]["platform_label"] == "Discord"
+        assert listing["discord"]["enabled"] is False
+
+        resp = self.client.put("/api/tools/toolsets/discord", json={"enabled": True})
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "ok": True,
+            "name": "discord",
+            "platform": "discord",
+            "enabled": True,
+        }
+
+        config = load_config()
+        assert "discord" in config["platform_toolsets"]["discord"]
+        assert "discord" not in config["platform_toolsets"].get("cli", [])
+
+        listing = {t["name"]: t for t in self.client.get("/api/tools/toolsets").json()}
+        assert listing["discord"]["enabled"] is True
+        assert listing["discord_admin"]["enabled"] is False
+
+        resp = self.client.put(
+            "/api/tools/toolsets/discord_admin", json={"enabled": True}
+        )
+        assert resp.status_code == 200
+        config = load_config()
+        assert {"discord", "discord_admin"} <= set(
+            config["platform_toolsets"]["discord"]
+        )
 
     def test_toggle_toolset_unknown_returns_400(self):
         resp = self.client.put(

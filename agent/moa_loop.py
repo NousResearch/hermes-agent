@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from agent.auxiliary_client import call_llm
+from agent.message_content import flatten_message_text
 from agent.transports import get_transport
 
 logger = logging.getLogger(__name__)
@@ -119,11 +120,54 @@ _REFERENCE_SYSTEM_PROMPT = (
 
 
 
-def _slot_label(slot: dict[str, str]) -> str:
-    return f"{slot.get('provider', '').strip()}:{slot.get('model', '').strip()}"
+def _slot_label(slot: dict[str, Any]) -> str:
+    label = f"{(slot.get('provider') or '').strip()}:{(slot.get('model') or '').strip()}"
+    effort = str(slot.get("reasoning_effort") or "").strip()
+    return f"{label}[reasoning={effort}]" if effort else label
 
 
-def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
+def _slot_reasoning_config(slot: dict[str, Any]) -> dict[str, Any] | None:
+    """Translate optional per-MoA-slot reasoning_effort into runtime config."""
+    effort = slot.get("reasoning_effort")
+    try:
+        from hermes_constants import parse_reasoning_effort
+
+        return parse_reasoning_effort(effort)
+    except Exception:  # pragma: no cover - defensive; bad config must not break MoA
+        return None
+
+
+def _aggregator_reasoning_config(aggregator: dict[str, Any]) -> dict[str, Any] | None:
+    """Resolve the aggregator's reasoning config: slot > per-model > global.
+
+    The aggregator is MoA's ACTING model, so when its slot doesn't pin a
+    reasoning_effort it must resolve exactly like any other acting model:
+    through the shared chokepoint (``resolve_reasoning_config``), which
+    applies ``agent.reasoning_overrides`` for the slot's model first, then
+    the global ``agent.reasoning_effort``. Without this the main loop's
+    reasoning gates (keyed to the virtual ``moa://local`` identity) never
+    fire, so the aggregator silently ran at the backend default (#64187).
+
+    Reference advisors intentionally do NOT get this fallback: they are side
+    calls (like auxiliary tasks), and inheriting a global ``xhigh`` into every
+    advisor fan-out would silently multiply cost. Their depth is slot-or-
+    provider-default only.
+    """
+    cfg = _slot_reasoning_config(aggregator)
+    if cfg is not None:
+        return cfg
+    try:
+        from hermes_cli.config import load_config
+        from hermes_constants import resolve_reasoning_config
+
+        return resolve_reasoning_config(
+            load_config() or {}, str(aggregator.get("model") or "")
+        )
+    except Exception:  # pragma: no cover - defensive; bad config must not break MoA
+        return None
+
+
+def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
     """Resolve a reference/aggregator slot to real runtime call kwargs.
 
     A MoA slot is just a model selection — it must be called the same way any
@@ -173,18 +217,19 @@ def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
     return out
 
 
-def _maybe_apply_advisor_cache_control(
+def _maybe_apply_moa_cache_control(
     messages: list[dict[str, Any]],
     runtime: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    """Decorate an advisor request with cache_control when its route honors it.
+    """Decorate an advisor or aggregator request with cache_control when its
+    route honors it.
 
     Reuses the SAME policy function as the main agent loop
-    (``anthropic_prompt_cache_policy``) resolved against the advisor slot's
-    own provider/base_url/api_mode/model, and the SAME breakpoint layout
-    (``apply_anthropic_cache_control``, system_and_3). This keeps advisor
-    calls decorated exactly like an acting agent on that provider would be —
-    no MoA-specific caching logic to drift.
+    (``anthropic_prompt_cache_policy``) resolved against the slot's own
+    provider/base_url/api_mode/model, and the SAME breakpoint layout
+    (``apply_anthropic_cache_control``, system_and_3). This keeps advisor and
+    aggregator calls decorated exactly like an acting agent on that provider
+    would be — no MoA-specific caching logic to drift.
 
     Returns the messages unchanged on any resolution error or when the
     policy says the route doesn't honor markers.
@@ -196,8 +241,8 @@ def _maybe_apply_advisor_cache_control(
         from agent.prompt_caching import apply_anthropic_cache_control
 
         # The policy function reads agent.* only as fallbacks for kwargs we
-        # don't pass; provide a stub so an advisor slot is judged purely on
-        # its own resolved runtime.
+        # don't pass; provide a stub so the slot is judged purely on its own
+        # resolved runtime.
         stub = SimpleNamespace(provider="", base_url="", api_mode="", model="")
         should_cache, native_layout = anthropic_prompt_cache_policy(
             stub,
@@ -212,7 +257,7 @@ def _maybe_apply_advisor_cache_control(
             messages, native_anthropic=native_layout
         )
     except Exception as exc:  # pragma: no cover - decoration must never break a call
-        logger.debug("advisor cache_control decoration skipped: %s", exc)
+        logger.debug("MoA cache_control decoration skipped: %s", exc)
         return messages
 
 
@@ -268,12 +313,13 @@ def _run_reference(
         # caching is opt-in per request. OpenAI-family advisors are untouched
         # (their caching is automatic; markers are ignored harmlessly, but we
         # only decorate when the policy says the route honors them).
-        messages = _maybe_apply_advisor_cache_control(messages, runtime)
+        messages = _maybe_apply_moa_cache_control(messages, runtime)
         response = call_llm(
             task="moa_reference",
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
+            reasoning_config=_slot_reasoning_config(slot),
             **runtime,
         )
         usage = CanonicalUsage()
@@ -358,6 +404,12 @@ def _run_references_parallel(
     results: list[tuple[str, str, Any] | None] = [None] * len(reference_models)
     futures = {}
     workers = min(_MAX_REFERENCE_WORKERS, len(reference_models))
+    # Reference slots run on bare executor threads, which start with an empty
+    # contextvars.Context — propagate the parent turn's context (approval
+    # callbacks + the Nous Portal conversation tag) into each worker so
+    # advisor calls attribute to the same conversation as the acting turn.
+    from tools.thread_context import propagate_context_to_thread
+
     with ThreadPoolExecutor(max_workers=workers) as executor:
         for idx, slot in enumerate(reference_models):
             if slot.get("provider") == "moa":
@@ -369,7 +421,7 @@ def _run_references_parallel(
                 continue
             futures[
                 executor.submit(
-                    _run_reference,
+                    propagate_context_to_thread(_run_reference),
                     slot,
                     ref_messages,
                     temperature=temperature,
@@ -469,13 +521,52 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for msg in messages:
         role = msg.get("role")
         content = msg.get("content")
-        text = content if isinstance(content, str) else ""
+        # Flatten structured content (lists of parts) to visible text. Content
+        # arrives as a list — not a string — in two common cases:
+        #   1. Anthropic prompt-cache decoration: conversation_loop runs
+        #      apply_anthropic_cache_control BEFORE the MoA facade, converting
+        #      string content to [{"type": "text", "text": ..., "cache_control":
+        #      ...}]. A str-only read here flattened the user's ENTIRE prompt to
+        #      "" — Claude references then 400'd ("messages: at least one
+        #      message is required") while tolerant models answered "no user
+        #      request is present".
+        #   2. Multimodal turns (pasted image → text + image_url parts) and
+        #      multimodal tool results (screenshots).
+        # flatten_message_text extracts the text parts and skips image parts,
+        # and returns strings unchanged — so a decorated and an undecorated
+        # transcript produce a byte-identical advisory view (which keeps the
+        # advisory prefix stable across iterations for advisor prompt caching).
+        text = flatten_message_text(content)
 
         if role == "system":
             continue
         if role == "user":
-            if text.strip():
-                last_user_content = text
+            if not text.strip() and isinstance(content, list) and content:
+                # Structured content with no extractable text (e.g. an
+                # image-only turn). Emitting an empty user message would be
+                # dropped/rejected by strict providers (Anthropic 400s on
+                # empty text blocks — the original "closed" preset failure
+                # mode), and silently skipping the turn would break
+                # user/assistant alternation in the advisory view. Substitute
+                # a placeholder so the reference knows a non-text turn
+                # happened. Only structured content qualifies — an empty or
+                # whitespace-only STRING turn carries nothing and is dropped
+                # below instead.
+                text = "[user sent non-text content (e.g. an image attachment)]"
+            if not text.strip():
+                # Genuinely empty user turn (content="" / None). It carries
+                # nothing advisory, and strict providers (Kimi/Moonshot, ZAI,
+                # and others that enforce non-empty user content) reject it
+                # with 400 "message ... with role 'user' must not be empty" —
+                # the same way the assistant branch below drops turns with no
+                # parts. Lenient providers (DeepSeek) accept the empty turn,
+                # which is why a MoA fan-out would fail on one reference and
+                # pass on another for the identical rendered view. The
+                # advisory view is already not strictly alternating (adjacent
+                # assistant turns occur in every tool loop), so dropping a
+                # contentless turn is safe.
+                continue
+            last_user_content = text
             rendered.append({"role": "user", "content": text})
         elif role == "assistant":
             parts: list[str] = []
@@ -516,8 +607,10 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if last_user_content is not None:
             return [{"role": "user", "content": last_user_content}]
         for msg in reversed(messages):
-            if msg.get("role") == "user" and isinstance(msg.get("content"), str):
-                return [{"role": "user", "content": msg["content"]}]
+            if msg.get("role") == "user":
+                fallback_text = flatten_message_text(msg.get("content"))
+                if fallback_text.strip():
+                    return [{"role": "user", "content": fallback_text}]
     return rendered
 
 
@@ -617,13 +710,28 @@ def aggregate_moa_context(
     )
 
     agg_label = _slot_label(aggregator)
+    agg_runtime = _slot_runtime(aggregator)
     try:
+        # Same cache_control decoration as _run_reference's advisor calls
+        # (see _maybe_apply_moa_cache_control) — this synthesis call is a
+        # third, independent MoA call path that 22c5048d9 did not cover (it
+        # only restored caching for the acting-aggregator turn in the
+        # persistent `provider: moa` model and for advisor fan-out). Without
+        # it, the one-shot `/moa <prompt>` command's synthesis call re-bills
+        # its full input (system-less prompt containing every joined
+        # reference output) on every invocation with zero cache_control
+        # breakpoints, even when the resolved aggregator slot is a
+        # cache-honoring route (e.g. Claude on OpenRouter/native Anthropic).
+        agg_messages = _maybe_apply_moa_cache_control(
+            [{"role": "user", "content": synth_prompt}], agg_runtime
+        )
         response = call_llm(
             task="moa_aggregator",
-            messages=[{"role": "user", "content": synth_prompt}],
+            messages=agg_messages,
             temperature=aggregator_temperature,
             max_tokens=max_tokens,
-            **_slot_runtime(aggregator),
+            reasoning_config=_aggregator_reasoning_config(aggregator),
+            **agg_runtime,
         )
         synthesis = _extract_text(response)
     except Exception as exc:
@@ -656,13 +764,28 @@ def _attach_reference_guidance(agg_messages: list[dict[str, Any]], guidance: str
     Appending at the very end keeps the ``[system][task][tool-history]`` prefix
     stable and cache-reusable (only the new block re-prefills), and gives the
     aggregator the references with recency. Merge into the last message only when
-    it is already a trailing string ``user`` turn (plain chat — still at the end).
+    it is already a trailing ``user`` turn (plain chat — still at the end).
+
+    A trailing user turn's content may be a STRING or a LIST of content parts —
+    Anthropic prompt-cache decoration (which runs before the MoA facade)
+    converts string content to ``[{"type": "text", ..., "cache_control": ...}]``,
+    and multimodal turns are lists natively. Both shapes are merged in place:
+    appending a new text part AFTER the cache_control-marked part keeps the
+    cached prefix byte-stable (the marker still terminates it) while the
+    turn-varying guidance rides outside the cached span. Appending a SEPARATE
+    user message here instead would produce two consecutive user turns —
+    strict providers reject that.
     """
     last = agg_messages[-1] if agg_messages else None
-    if last is not None and last.get("role") == "user" and isinstance(last.get("content"), str):
-        last["content"] = last["content"] + "\n\n" + guidance
-    else:
-        agg_messages.append({"role": "user", "content": guidance})
+    if last is not None and last.get("role") == "user":
+        last_content = last.get("content")
+        if isinstance(last_content, str):
+            last["content"] = last_content + "\n\n" + guidance
+            return
+        if isinstance(last_content, list):
+            last["content"] = [*last_content, {"type": "text", "text": "\n\n" + guidance}]
+            return
+    agg_messages.append({"role": "user", "content": guidance})
 
 
 class MoAChatCompletions:
@@ -1002,6 +1125,7 @@ class MoAChatCompletions:
             max_tokens=agg_kwargs.get("max_tokens"),
             tools=agg_kwargs.get("tools"),
             extra_body=agg_kwargs.get("extra_body"),
+            reasoning_config=_aggregator_reasoning_config(aggregator),
             **stream_kwargs,
             **_slot_runtime(aggregator),
         )

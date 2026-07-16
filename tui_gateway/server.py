@@ -4374,6 +4374,7 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
     session["agent"] = new_agent
     session["config_model_seen"] = _config_model_target()
     session["attached_images"] = []
+    session["attached_documents"] = []
     session["edit_snapshots"] = {}
     session["image_counter"] = 0
     session["running"] = False
@@ -4695,6 +4696,7 @@ def _init_session(
             "last_active": now,
             "running": False,
             "attached_images": [],
+            "attached_documents": [],
             "image_counter": 0,
             "cwd": cwd or _completion_cwd(),
             "cols": cols,
@@ -5262,6 +5264,7 @@ def _(rid, params: dict) -> dict:
             "agent_error": None,
             "agent_ready": ready,
             "attached_images": [],
+            "attached_documents": [],
             "close_on_disconnect": is_truthy_value(params.get("close_on_disconnect", False)),
             "active_session_lease": lease,
             "cols": cols,
@@ -5293,11 +5296,6 @@ def _(rid, params: dict) -> dict:
         _register_session_cwd(_sessions[sid])
 
     # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop
-    # launch (and every "New agent" / draft) opens a session here just to paint
-    # the composer, so eagerly creating a row left an "Untitled" empty session
-    # behind for every launch the user never typed into. The row is now created
-    # lazily on the first prompt (see _ensure_session_db_row + prompt.submit),
-    # and the AIAgent's own INSERT-OR-IGNORE persists it on the first turn too.
 
     # Return the lightweight session immediately so Ink can paint the composer
     # + skeleton panel, then build the real AIAgent just after this response is
@@ -8943,7 +8941,9 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
         images = list(session.get("attached_images", []))
+        documents = list(session.get("attached_documents", []))
         session["attached_images"] = []
+        session["attached_documents"] = []
         if not isinstance(session.get("inflight_turn"), dict):
             _start_inflight_turn(session, text)
     agent = session["agent"]
@@ -9074,6 +9074,39 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         run_message = _enrich_with_attached_images(prompt, images)
                 else:
                     run_message = _enrich_with_attached_images(prompt, images)
+
+            # ── Inject attached document content ──────────────────
+            if documents:
+                doc_parts = []
+                for doc_meta in documents:
+                    doc_name = doc_meta.get("name", "document")
+                    doc_text = doc_meta.get("extracted_text", "")
+                    if not doc_text:
+                        doc_parts.append(
+                            f"[The user attached a document: {doc_name} — "
+                            f"no text could be extracted. The file is at {doc_meta.get('path', 'unknown')}]"
+                        )
+                        continue
+                    # Truncate very large documents to avoid context overflow
+                    # (most models handle ~200K tokens, ~800KB of text)
+                    max_chars = 500_000
+                    truncated = False
+                    if len(doc_text) > max_chars:
+                        doc_text = doc_text[:max_chars]
+                        truncated = True
+                    doc_parts.append(
+                        f"[The user attached a document: {doc_name}]\n"
+                        f"[Content" + (" (truncated)" if truncated else "") + ":\n"
+                        f"{doc_text}\n"
+                        f"]"
+                    )
+                doc_prefix = "\n\n".join(doc_parts)
+                if isinstance(run_message, str):
+                    run_message = f"{doc_prefix}\n\n{run_message}" if run_message else doc_prefix
+                # If run_message is a content-parts list (native image mode),
+                # prepend the document text as a separate text part at the front.
+                elif isinstance(run_message, list):
+                    run_message = [{"type": "text", "text": doc_prefix}] + list(run_message)
 
             def _stream(delta):
                 with session["history_lock"]:
@@ -10010,6 +10043,58 @@ def _(rid, params: dict) -> dict:
         {
             "detached": len(session["attached_images"]) != before,
             "count": len(session["attached_images"]),
+        },
+    )
+
+
+# ── Document Attachment RPC ──────────────────────────────────────
+
+@method("document.attach")
+def _(rid, params: dict) -> dict:
+    """Attach a document to the session. Expects path + extracted_text."""
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    path = str(params.get("path", "") or "").strip()
+    if not path:
+        return _err(rid, 4015, "path required")
+
+    doc = {
+        "path": path,
+        "name": str(params.get("name", Path(path).name)),
+        "mime_type": str(params.get("mime_type", "")),
+        "extracted_text": str(params.get("extracted_text", "")),
+        "size": int(params.get("size", 0)),
+    }
+    session.setdefault("attached_documents", []).append(doc)
+    return _ok(
+        rid,
+        {
+            "attached": True,
+            "path": path,
+            "name": doc["name"],
+            "count": len(session["attached_documents"]),
+        },
+    )
+
+
+@method("document.detach")
+def _(rid, params: dict) -> dict:
+    """Remove a document from the session by path."""
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    path = str(params.get("path", "") or "").strip()
+    if not path:
+        return _err(rid, 4015, "path required")
+    docs = session.setdefault("attached_documents", [])
+    before = len(docs)
+    session["attached_documents"] = [d for d in docs if d["path"] != path]
+    return _ok(
+        rid,
+        {
+            "detached": len(session["attached_documents"]) != before,
+            "count": len(session["attached_documents"]),
         },
     )
 

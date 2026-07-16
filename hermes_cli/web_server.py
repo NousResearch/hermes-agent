@@ -3942,6 +3942,241 @@ async def speak_text(payload: TTSSpeakRequest):
     }
 
 
+class ImageUploadRequest(BaseModel):
+    data_url: str  # "data:image/png;base64,..."
+
+
+@app.post("/api/upload-image")
+async def upload_image(payload: ImageUploadRequest, request: Request):
+    """Accept a base64-encoded image and save it to disk.
+
+    Returns the absolute path and metadata so the frontend can call
+    ``image.attach`` via the gateway WebSocket.
+    """
+    _require_token(request)
+
+    data_url = (payload.data_url or "").strip()
+    if not data_url.startswith("data:image/") or "," not in data_url:
+        raise HTTPException(status_code=400, detail="Payload must be a data:image/... URL")
+
+    header, encoded = data_url.split(",", 1)
+    if ";base64" not in header:
+        raise HTTPException(status_code=400, detail="Image must be base64 encoded")
+
+    # Extract mime type (e.g. "image/png")
+    mime = header[5:].split(";", 1)[0]
+    ext = mime.split("/")[-1]
+    if ext == "jpeg":
+        ext = "jpg"
+    if ext not in ("png", "jpg", "jpeg", "gif", "webp"):
+        raise HTTPException(status_code=400, detail=f"Unsupported image format: {ext}")
+
+    try:
+        raw = base64.b64decode(encoded)
+    except binascii.Error:
+        raise HTTPException(status_code=400, detail="Invalid base64 encoding")
+
+    # Cap at 20 MB to prevent abuse
+    if len(raw) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Image too large (max 20 MB)")
+
+    img_dir = get_hermes_home() / "images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+
+    from datetime import datetime
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    fname = f"web_{ts}.{ext}"
+    fpath = img_dir / fname
+
+    fpath.write_bytes(raw)
+
+    return {
+        "ok": True,
+        "path": str(fpath),
+        "name": fname,
+        "size": len(raw),
+        "mime_type": mime,
+    }
+
+
+# ── Document Upload ──────────────────────────────────────────────
+
+# Allowed document mime types and their extensions
+_DOCUMENT_MIME_MAP: dict[str, str] = {
+    "application/pdf": "pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+    "text/plain": "txt",
+    "text/markdown": "md",
+    "text/csv": "csv",
+    "application/json": "json",
+    "text/x-python": "py",
+    "text/x-yaml": "yaml",
+    "application/x-yaml": "yaml",
+    "application/xml": "xml",
+    "text/xml": "xml",
+    "text/html": "html",
+    "application/x-shellscript": "sh",
+    "text/x-sh": "sh",
+}
+
+# Additional extensions (derived from common filenames)
+_DOCUMENT_EXT_FALLBACK: dict[str, str] = {
+    ".md": "text/markdown",
+    ".py": "text/x-python",
+    ".yaml": "application/x-yaml",
+    ".yml": "application/x-yaml",
+    ".sh": "application/x-shellscript",
+    ".bash": "application/x-shellscript",
+    ".html": "text/html",
+    ".htm": "text/html",
+}
+
+
+class DocumentUploadRequest(BaseModel):
+    data_url: str = ""  # "data:application/pdf;base64,..." — preferred
+    filename: str = ""  # optional, used to determine extension
+    mime_type: str = ""  # optional, explicit mime type override
+
+
+def _extract_document_text(file_path: Path, mime_type: str) -> str:
+    """Extract text from a document. Returns empty string on failure."""
+    ext = file_path.suffix.lower()
+    try:
+        if mime_type == "application/pdf" or ext == ".pdf":
+            import pymupdf
+            doc = pymupdf.open(str(file_path))
+            text_parts = []
+            for page in doc:
+                t = page.get_text()
+                if t:
+                    text_parts.append(t)
+            doc.close()
+            return "\n\n".join(text_parts)
+
+        if mime_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" or ext == ".docx":
+            try:
+                import docx
+                doc = docx.Document(str(file_path))
+                return "\n".join(p.text for p in doc.paragraphs if p.text)
+            except ImportError:
+                _log.warning("python-docx not installed, skipping DOCX extraction")
+                return ""
+
+        # Plain text formats — just read
+        text_formats = {
+            ".txt", ".md", ".csv", ".json", ".py", ".yaml", ".yml",
+            ".sh", ".bash", ".html", ".htm", ".xml", ".toml", ".ini",
+            ".cfg", ".conf", ".log", ".env", ".ts", ".js", ".jsx",
+            ".tsx", ".css", ".rs", ".go", ".java", ".c", ".cpp", ".h",
+        }
+        if ext in text_formats:
+            return file_path.read_text(encoding="utf-8", errors="replace")
+
+        return ""
+    except Exception as e:
+        _log.warning(f"Document text extraction failed for {file_path}: {e}")
+        return ""
+
+
+@app.post("/api/upload-document")
+async def upload_document(payload: DocumentUploadRequest, request: Request):
+    """Accept a base64-encoded document, save it, and extract text.
+
+    Returns path, metadata, and extracted text so the frontend can call
+    ``document.attach`` via the gateway WebSocket.
+    """
+    _require_token(request)
+
+    data_url = (payload.data_url or "").strip()
+    mime_type = (payload.mime_type or "").strip()
+    filename = (payload.filename or "").strip()
+
+    if not data_url:
+        raise HTTPException(status_code=400, detail="data_url required")
+
+    # Parse data URL
+    if not data_url.startswith("data:") or "," not in data_url:
+        raise HTTPException(status_code=400, detail="Payload must be a data:... URL")
+
+    header, encoded = data_url.split(",", 1)
+    if ";base64" not in header:
+        raise HTTPException(status_code=400, detail="Document must be base64 encoded")
+
+    # Determine mime type
+    declared_mime = header[5:].split(";", 1)[0] if header.startswith("data:") else ""
+    if not mime_type and declared_mime:
+        mime_type = declared_mime
+
+    # Determine extension
+    if mime_type and mime_type in _DOCUMENT_MIME_MAP:
+        ext = _DOCUMENT_MIME_MAP[mime_type]
+    elif filename:
+        # Try to get extension from filename
+        p = Path(filename)
+        ext = p.suffix.lstrip(".").lower()
+        if not ext:
+            ext = "bin"
+        # Resolve mime from extension if not set
+        if not mime_type:
+            mime_type = _DOCUMENT_EXT_FALLBACK.get(f".{ext}", "application/octet-stream")
+    else:
+        raise HTTPException(status_code=400, detail="Cannot determine document type — provide mime_type or filename")
+
+    # Validate extension
+    valid_exts = set(_DOCUMENT_MIME_MAP.values()) | {".md".lstrip("."), ".py", ".yaml",
+                                                      ".yml", ".sh", ".bash", ".html",
+                                                      ".htm", ".toml", ".ini", ".cfg",
+                                                      ".conf", ".log", ".env", ".ts",
+                                                      ".js", ".jsx", ".tsx", ".css",
+                                                      ".rs", ".go", ".java", ".c", ".cpp",
+                                                      ".h", ".xml", ".rst", ".tex"}
+    if ext not in valid_exts:
+        raise HTTPException(status_code=400, detail=f"Unsupported document type: .{ext}")
+
+    try:
+        raw = base64.b64decode(encoded)
+    except binascii.Error:
+        raise HTTPException(status_code=400, detail="Invalid base64 encoding")
+
+    # Cap at 50 MB for documents (larger than images since PDFs can be big)
+    if len(raw) > 50 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Document too large (max 50 MB)")
+
+    # Generate a clean filename
+    doc_dir = get_hermes_home() / "documents"
+    doc_dir.mkdir(parents=True, exist_ok=True)
+
+    from datetime import datetime
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    safe_name = filename or f"document_{ts}.{ext}"
+    # Sanitize filename
+    safe_name = "".join(c for c in safe_name if c.isalnum() or c in ".-_ ()")
+    if not safe_name.endswith(f".{ext}"):
+        safe_name = f"document_{ts}.{ext}"
+    fpath = doc_dir / safe_name
+
+    fpath.write_bytes(raw)
+
+    # Extract text
+    extracted_text = _extract_document_text(fpath, mime_type)
+
+    # Truncate extracted text to a reasonable preview size for the UI
+    # (full text is always available server-side for agent consumption)
+    preview = extracted_text[:2000] if len(extracted_text) > 2000 else extracted_text
+
+    return {
+        "ok": True,
+        "path": str(fpath),
+        "name": safe_name,
+        "size": len(raw),
+        "mime_type": mime_type,
+        "extension": ext,
+        "extracted_text": extracted_text,
+        "preview": preview,
+        "text_length": len(extracted_text),
+    }
+
+
 @app.get("/api/actions/{name}/status")
 async def get_action_status(name: str, lines: int = 200):
     """Tail an action log and report whether the process is still running."""

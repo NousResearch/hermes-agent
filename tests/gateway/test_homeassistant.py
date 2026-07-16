@@ -17,6 +17,7 @@ from gateway.config import (
 from plugins.platforms.homeassistant.adapter import (
     HomeAssistantAdapter,
     check_ha_requirements,
+    validate_ha_config,
 )
 
 
@@ -26,18 +27,28 @@ from plugins.platforms.homeassistant.adapter import (
 
 
 class TestCheckRequirements:
-    def test_returns_false_without_token(self, monkeypatch):
+    def test_returns_true_when_aiohttp_present(self, monkeypatch):
         monkeypatch.delenv("HASS_TOKEN", raising=False)
-        assert check_ha_requirements() is False
-
-    def test_returns_true_with_token(self, monkeypatch):
-        monkeypatch.setenv("HASS_TOKEN", "test-token")
         assert check_ha_requirements() is True
 
     @patch("plugins.platforms.homeassistant.adapter.AIOHTTP_AVAILABLE", False)
     def test_returns_false_without_aiohttp(self, monkeypatch):
         monkeypatch.setenv("HASS_TOKEN", "test-token")
         assert check_ha_requirements() is False
+
+
+class TestValidateConfig:
+    def test_returns_false_without_token_in_config_or_env(self, monkeypatch):
+        monkeypatch.delenv("HASS_TOKEN", raising=False)
+        assert validate_ha_config(PlatformConfig(enabled=True)) is False
+
+    def test_returns_true_with_token_in_env(self, monkeypatch):
+        monkeypatch.setenv("HASS_TOKEN", "test-token")
+        assert validate_ha_config(PlatformConfig(enabled=True)) is True
+
+    def test_returns_true_with_token_in_config(self, monkeypatch):
+        monkeypatch.delenv("HASS_TOKEN", raising=False)
+        assert validate_ha_config(PlatformConfig(enabled=True, token="cfg-token")) is True
 
 
 # ---------------------------------------------------------------------------

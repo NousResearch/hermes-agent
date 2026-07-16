@@ -176,7 +176,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           }
 
           if (busyRef.current) {
-            renderSlashOutput('session busy — /interrupt the current turn before sending this command')
+            renderSlashOutput('session busy — use the Stop button or Esc to interrupt the current turn')
 
             return
           }

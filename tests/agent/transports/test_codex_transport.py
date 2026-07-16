@@ -1607,12 +1607,22 @@ class TestTextVerbosity:
     # -- Precedence: text_verbosity merges with request_overrides --
 
     def test_verbosity_merges_with_request_overrides(self, transport):
+        from copy import deepcopy
+
+        overrides = {"text": {"format": {"type": "json_schema"}, "verbosity": "high"}}
+        before = deepcopy(overrides)
         kw = self._build(
-            transport, "gpt-5.5", text_verbosity="low",
-            request_overrides={"text": {"format": {"type": "json_schema"}}},
+            transport, "gpt-5.5", text_verbosity="low", request_overrides=overrides,
         )
         assert kw["text"]["verbosity"] == "low"
         assert kw["text"]["format"] == {"type": "json_schema"}
+        assert overrides == before
+        assert kw["text"] is not overrides["text"]
+
+    def test_empty_verbosity_preserves_explicit_text_override(self, transport):
+        overrides = {"text": {"format": {"type": "json_schema"}, "verbosity": "high"}}
+        kw = self._build(transport, "gpt-5.5", text_verbosity="", request_overrides=overrides)
+        assert kw["text"] == overrides["text"]
 
     # -- Vendor-prefixed model names --
 

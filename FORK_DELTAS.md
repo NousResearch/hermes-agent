@@ -43,6 +43,7 @@ the *Retired* section at the bottom with the upstream PR/commit reference.
 | [D10](#d-10) | feat(gateway) | `X-Hermes-User-Id` header → agent `user_id` on the api_server platform (interlocutor identity) | candidate-upstream |
 | [D11](#d-11) | fix(agent) | Allow ZWJ inside emoji grapheme clusters in context/memory/skills scanners | **pending upstream** — NousResearch/hermes-agent#12673 |
 | [D12](#d-12) | feat(gateway) | `GroupContext` sidecar — unified group context injection for all platforms | **pending upstream** — candidate for NousResearch |
+| [D14](#d-14) | fix(mcp) | Carry `EmbeddedResource` content blocks (MCP-UI `UIResource`) through the MCP client instead of dropping them | **pending upstream** — stepping stone; candidate for NousResearch |
 
 ---
 
@@ -368,3 +369,40 @@ that became redundant.
 - **Upstream disposition:** Strong candidate for upstream once proven. A cleaner
   approach might unify voice handling across adapters via a shared base.py hook,
   but that belongs in a dedicated PR with broader platform coverage.
+
+---
+
+<a id="d-14"></a>
+### D14 — fix(mcp): carry `EmbeddedResource` content blocks through the MCP client
+
+- **Files:** `tools/mcp_tool.py` (result-assembly loop in `_make_tool_handler`'s
+  `_call`), `tests/tools/test_mcp_embedded_resource.py` (new).
+- **Status:** active — introduced 2026-07-16.
+- **What this is (bug fix, general):** Hermes' native MCP client assembled a
+  tool result by extracting only `block.text` and `ImageContent` blocks from
+  the `CallToolResult`. An **`EmbeddedResource`** block (MCP `type: "resource"`)
+  carries its payload under `block.resource` and has **no top-level `.text`**,
+  so it matched neither branch and was **silently dropped** — the model *and*
+  any `post_tool_call` hook received an empty result. This delta adds an
+  `EmbeddedResource` branch: the resource's `text` flows into the model-facing
+  `result` (so the content is visible), and the structured resource surfaces
+  under a new `resources: [{uri, mimeType, text|blob, _meta}]` key so plugins
+  can consume it without re-parsing prose. Existing text + image +
+  `structuredContent` handling is unchanged (5 prior structured-content tests
+  stay green; 232 MCP tests pass).
+- **Why it matters:** This is the MCP-UI card path. The [mcp-ui](https://github.com/idosal/mcp-ui)
+  standard ships a UI card as a `UIResource` — an `EmbeddedResource` whose
+  `resource.text` is HTML, `resource.uri` is a `ui://` handle, and
+  `resource.mimeType` is `text/html;profile=mcp-app`, with MCP-UI metadata under
+  `resource._meta`. Before this fix, **any** MCP-UI server on Hermes would have
+  its cards silently dropped by the transport, making MCP-UI unusable. (In the
+  Spire/Janus stack this is the foundational fix that lets a research specialist
+  return a real `UIResource` for the canvas instead of a bespoke side-channel.)
+- **Upstream disposition:** **pending upstream — stepping stone.** This is a
+  general Hermes MCP-client correctness fix (not Janus-specific): it restores a
+  content-block type the client was dropping, per the MCP spec's
+  `EmbeddedResource`. Strong candidate for a clean NousResearch PR. **Retirement
+  condition:** when an equivalent fix merges upstream, drop this delta and retire
+  the entry with the upstream PR reference. Until then it stays fork-local so
+  MCP-UI works on the fleet.
+

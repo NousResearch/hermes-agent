@@ -714,6 +714,42 @@ def _cache_mcp_image_block(block) -> str:
     return f"MEDIA:{image_path}"
 
 
+def _extract_mcp_resource_block(block) -> Optional[Dict[str, Any]]:
+    """Extract an ``EmbeddedResource`` (MCP ``type: "resource"``) into a plain
+    ``{uri, mimeType, text|blob, _meta}`` dict, or ``None`` if not a resource.
+
+    An ``EmbeddedResource`` carries its payload under ``block.resource`` with no
+    top-level ``.text``, so the generic text-extraction path in the tool-result
+    loop misses it and it would otherwise be silently dropped. This is the
+    MCP-UI card shape: a ``UIResource`` whose ``resource.text`` is HTML and
+    ``resource.uri`` a ``ui://`` handle (mimeType ``text/html;profile=mcp-app``,
+    MCP-UI metadata under ``resource._meta`` — exposed as ``.meta`` in the mcp
+    python types, aliased to ``_meta`` on the wire).
+    """
+    if getattr(block, "type", None) != "resource":
+        return None
+    resource = getattr(block, "resource", None)
+    if resource is None:
+        return None
+    entry: Dict[str, Any] = {}
+    uri = getattr(resource, "uri", None)
+    if uri is not None:
+        entry["uri"] = str(uri)
+    mime = getattr(resource, "mimeType", None)
+    if mime:
+        entry["mimeType"] = mime
+    text = getattr(resource, "text", None)
+    blob = getattr(resource, "blob", None)
+    if text is not None:
+        entry["text"] = text
+    elif blob is not None:
+        entry["blob"] = blob
+    meta = getattr(resource, "meta", None)
+    if meta:
+        entry["_meta"] = meta
+    return entry or None
+
+
 # ---------------------------------------------------------------------------
 # Remote MCP URL validation
 # ---------------------------------------------------------------------------
@@ -3967,28 +4003,41 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             # Hermes' MEDIA tag + cache_image_from_bytes) was the cleaner of
             # the two — plugs into existing infrastructure.
             parts: List[str] = []
+            embedded_resources: List[Dict[str, Any]] = []
             for block in (result.content or []):
                 if hasattr(block, "text") and block.text:
                     parts.append(block.text)
+                    continue
+                # EmbeddedResource blocks (MCP-UI cards etc.) carry their
+                # payload under `block.resource`, so the top-level `.text`
+                # check above misses them — extract explicitly or they drop.
+                resource = _extract_mcp_resource_block(block)
+                if resource is not None:
+                    embedded_resources.append(resource)
+                    if resource.get("text"):  # text resources also feed the model
+                        parts.append(resource["text"])
                     continue
                 image_tag = _cache_mcp_image_block(block)
                 if image_tag:
                     parts.append(image_tag)
             text_result = "\n".join(parts) if parts else ""
 
-            # Combine content + structuredContent when both are present.
-            # MCP spec: content is model-oriented (text), structuredContent
-            # is machine-oriented (JSON metadata).  For an AI agent, content
-            # is the primary payload; structuredContent supplements it.
+            # MCP result channels: `content` is model-oriented (text),
+            # `structuredContent` is machine-oriented JSON, and embedded
+            # `resources` (UIResource cards) surface the structured
+            # {uri, mimeType, text|blob, _meta} for plugins to consume without
+            # re-parsing prose. Prior contract: with structuredContent and no
+            # text, `result` IS the structured content.
             structured = getattr(result, "structuredContent", None)
+            payload: Dict[str, Any] = {"result": text_result}
             if structured is not None:
                 if text_result:
-                    return json.dumps({
-                        "result": text_result,
-                        "structuredContent": structured,
-                    }, ensure_ascii=False)
-                return json.dumps({"result": structured}, ensure_ascii=False)
-            return json.dumps({"result": text_result}, ensure_ascii=False)
+                    payload["structuredContent"] = structured
+                else:
+                    payload = {"result": structured}
+            if embedded_resources:
+                payload["resources"] = embedded_resources
+            return json.dumps(payload, ensure_ascii=False)
 
         def _call_once():
             return _run_on_mcp_loop(_call, timeout=tool_timeout)

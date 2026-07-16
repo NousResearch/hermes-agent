@@ -221,8 +221,9 @@ delegate_task(
 ```
 
 - `role="leaf"` (default): child cannot delegate further — identical to the flat-delegation behavior.
-- `role="orchestrator"`: child retains the `delegation` toolset. Gated by `delegation.max_spawn_depth` (default **1** = flat, so `role="orchestrator"` is a no-op at defaults). Raise `max_spawn_depth` to 2 to allow orchestrator children to spawn leaf grandchildren; 3+ for deeper trees. There is no upper ceiling — cost is the practical limit.
-- `delegation.orchestrator_enabled: false`: global kill switch that forces every child to `leaf` regardless of the `role` parameter.
+- `role="orchestrator"`: child retains the `delegation` toolset only when nesting is enabled; otherwise it becomes a leaf.
+- `max_spawn_depth`: `0` disables delegation entirely; `1` is flat (the default); `2+` allows nested orchestration. There is no upper ceiling — cost is the practical limit.
+- `orchestrator_enabled` independently controls whether an otherwise eligible `role="orchestrator"` child keeps the delegation toolset. Set it to `false` to force every child to `leaf` regardless of the role parameter.
 
 **Cost warning:** With `max_spawn_depth: 3` and `max_concurrent_children: 3`, the tree can reach 3×3×3 = 27 concurrent leaf agents. Each extra level multiplies spend — raise `max_spawn_depth` intentionally.
 
@@ -274,8 +275,8 @@ For **durable execution** that must survive session closure or process restart, 
 delegation:
   max_iterations: 50                        # Max turns per child (default: 50)
   # max_concurrent_children: 3              # Parallel children per batch (default: 3)
-  # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.
-  # orchestrator_enabled: true              # Disable to force all children to leaf role.
+  # max_spawn_depth: 1                      # 0 disables delegation; 1 is flat (default); 2+ enables nesting. No upper ceiling.
+  # orchestrator_enabled: true              # Independently disable nesting by forcing all children to leaf role.
   model: "google/gemini-3-flash-preview"             # Optional provider/model override
   provider: "openrouter"                             # Optional built-in provider
   api_mode: anthropic_messages                       # optional; auto-detected from base_url for anthropic_messages endpoints

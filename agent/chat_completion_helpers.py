@@ -1750,7 +1750,10 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     messages.append({"role": "user", "content": summary_request})
 
     try:
-        from agent.fast_mode import effective_fast_mode_overrides
+        from agent.fast_mode import (
+            effective_fast_mode_overrides,
+            revalidate_fast_mode_request,
+        )
 
         # Build API messages, stripping internal-only fields
         # (finish_reason, reasoning) that strict APIs like Mistral reject with 422
@@ -1841,6 +1844,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         if agent.api_mode == "codex_responses":
             codex_kwargs = agent._build_api_kwargs(api_messages)
             codex_kwargs.pop("tools", None)
+            codex_kwargs = revalidate_fast_mode_request(agent, codex_kwargs)
             summary_response = agent._run_codex_stream(codex_kwargs)
             _ct_sum = agent._get_transport()
             _cnr_sum = _ct_sum.normalize_response(summary_response)
@@ -1940,6 +1944,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             if agent.api_mode == "codex_responses":
                 codex_kwargs = agent._build_api_kwargs(api_messages)
                 codex_kwargs.pop("tools", None)
+                codex_kwargs = revalidate_fast_mode_request(agent, codex_kwargs)
                 retry_response = agent._run_codex_stream(codex_kwargs)
                 _ct_retry = agent._get_transport()
                 _cnr_retry = _ct_retry.normalize_response(retry_response)

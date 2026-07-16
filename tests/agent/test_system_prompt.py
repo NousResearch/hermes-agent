@@ -34,8 +34,10 @@ def _captured_context_cwd(agent):
     def fake_context_files(
         cwd=None, skip_soul=False, context_length=None,
         allow_install_tree_fallback=False,
+        use_hermes_home_agents_fallback=False,
     ):
         captured["cwd"] = cwd
+        captured["use_hermes_home_agents_fallback"] = use_hermes_home_agents_fallback
         return ""
 
     with (
@@ -58,6 +60,50 @@ class TestContextFileCwd:
     def test_configured_dir_when_terminal_cwd_set(self, monkeypatch, tmp_path):
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         assert _captured_context_cwd(_make_agent()) == tmp_path
+
+    def test_gateway_platform_enables_hermes_home_agents_fallback(self, monkeypatch):
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        captured = {}
+
+        def fake_context_files(
+            cwd=None, skip_soul=False, context_length=None,
+            allow_install_tree_fallback=False,
+            use_hermes_home_agents_fallback=False,
+        ):
+            captured["use_hermes_home_agents_fallback"] = use_hermes_home_agents_fallback
+            return ""
+
+        with (
+            patch("run_agent.load_soul_md", return_value=""),
+            patch("run_agent.build_nous_subscription_prompt", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("run_agent.build_context_files_prompt", side_effect=fake_context_files),
+        ):
+            build_system_prompt_parts(_make_agent(platform="telegram"))
+
+        assert captured["use_hermes_home_agents_fallback"] is True
+
+    def test_cli_platform_keeps_hermes_home_agents_fallback_off(self, monkeypatch):
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        captured = {}
+
+        def fake_context_files(
+            cwd=None, skip_soul=False, context_length=None,
+            allow_install_tree_fallback=False,
+            use_hermes_home_agents_fallback=False,
+        ):
+            captured["use_hermes_home_agents_fallback"] = use_hermes_home_agents_fallback
+            return ""
+
+        with (
+            patch("run_agent.load_soul_md", return_value=""),
+            patch("run_agent.build_nous_subscription_prompt", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("run_agent.build_context_files_prompt", side_effect=fake_context_files),
+        ):
+            build_system_prompt_parts(_make_agent(platform="cli"))
+
+        assert captured["use_hermes_home_agents_fallback"] is False
 
 
 def _stable_prompt(agent):

@@ -1905,6 +1905,18 @@ def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str
     return ""
 
 
+def _load_hermes_home_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
+    """Load AGENTS.md from HERMES_HOME when gateway cwd has no project context."""
+    try:
+        hermes_home = get_hermes_home().expanduser().resolve()
+        if hermes_home == cwd_path.resolve():
+            return ""
+    except Exception as e:
+        logger.debug("Could not resolve HERMES_HOME for AGENTS.md fallback: %s", e)
+        return ""
+    return _load_agents_md(hermes_home, context_length)
+
+
 def _load_claude_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
     """CLAUDE.md / claude.md — cwd only."""
     for name in ["CLAUDE.md", "claude.md"]:
@@ -1962,6 +1974,7 @@ def build_context_files_prompt(
     skip_soul: bool = False,
     context_length: Optional[int] = None,
     allow_install_tree_fallback: bool = False,
+    use_hermes_home_agents_fallback: bool = False,
 ) -> str:
     """Discover and load context files for the system prompt.
 
@@ -1970,6 +1983,7 @@ def build_context_files_prompt(
       2. AGENTS.md / agents.md   (cwd only)
       3. CLAUDE.md / claude.md   (cwd only)
       4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
+      5. AGENTS.md / agents.md from HERMES_HOME when the gateway fallback is enabled
 
     SOUL.md from HERMES_HOME is independent and always included when present.
 
@@ -2020,6 +2034,8 @@ def build_context_files_prompt(
             or _load_claude_md(cwd_path, context_length)
             or _load_cursorrules(cwd_path, context_length)
         )
+        if not project_context and use_hermes_home_agents_fallback:
+            project_context = _load_hermes_home_agents_md(cwd_path, context_length)
     if project_context:
         sections.append(project_context)
 

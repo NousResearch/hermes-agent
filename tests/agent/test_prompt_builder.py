@@ -708,6 +708,52 @@ class TestBuildContextFilesPrompt:
         assert "Ruff for linting" in result
         assert "Project Context" in result
 
+    def test_gateway_agents_md_falls_back_to_hermes_home(self, tmp_path, monkeypatch):
+        gateway_cwd = tmp_path / "gateway-home"
+        gateway_cwd.mkdir()
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        (hermes_home / "AGENTS.md").write_text("Gateway project instructions.", encoding="utf-8")
+
+        result = build_context_files_prompt(
+            cwd=str(gateway_cwd),
+            skip_soul=True,
+            use_hermes_home_agents_fallback=True,
+        )
+
+        assert "Gateway project instructions." in result
+        assert "## AGENTS.md" in result
+
+    def test_cli_default_does_not_use_hermes_home_agents_fallback(self, tmp_path, monkeypatch):
+        project = tmp_path / "project"
+        project.mkdir()
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        (project / "CLAUDE.md").write_text("Project-local Claude rules.", encoding="utf-8")
+        (hermes_home / "AGENTS.md").write_text("Global gateway rules.", encoding="utf-8")
+
+        result = build_context_files_prompt(cwd=str(project), skip_soul=True)
+
+        assert "Project-local Claude rules." in result
+        assert "Global gateway rules." not in result
+
+    def test_missing_hermes_home_agents_fallback_is_silent(self, tmp_path, monkeypatch):
+        gateway_cwd = tmp_path / "gateway-home"
+        gateway_cwd.mkdir()
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        result = build_context_files_prompt(
+            cwd=str(gateway_cwd),
+            skip_soul=True,
+            use_hermes_home_agents_fallback=True,
+        )
+
+        assert result == ""
+
     def test_skips_agents_md_in_install_tree_on_fallback(self, monkeypatch, tmp_path):
         # A backend that FALLS BACK into the install tree (cwd=None → getcwd,
         # the desktop default) must not load that tree's contributor AGENTS.md

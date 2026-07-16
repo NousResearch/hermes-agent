@@ -12,7 +12,12 @@ import time
 
 import pytest
 
-from agent.context_compressor import SUMMARY_PREFIX, _MERGED_SUMMARY_DELIMITER
+import tools.session_search_tool as session_search_tool
+from agent.context_compressor import (
+    SUMMARY_PREFIX,
+    _MERGED_PRIOR_CONTEXT_HEADER,
+    _MERGED_SUMMARY_DELIMITER,
+)
 from hermes_state import SessionDB
 from tools.session_search_tool import (
     SESSION_SEARCH_SCHEMA,
@@ -380,7 +385,10 @@ class TestRecallPayloadSafety:
     def test_discovery_omits_structured_merged_compaction_summary(self, db):
         db.create_session("s_structured_summary", source="cli")
         structured_summary = [
-            {"type": "text", "text": "prior tail"},
+            {
+                "type": "text",
+                "text": f"{_MERGED_PRIOR_CONTEXT_HEADER}\nprior tail",
+            },
             {
                 "type": "text",
                 "text": (
@@ -418,6 +426,57 @@ class TestRecallPayloadSafety:
         hit = result["results"][0]
         assert hit["snippet_omitted"] == "context_compaction_summary"
         assert "stale deep task" not in hit["snippet"]
+
+    def test_discovery_prefers_source_hit_over_higher_ranked_summary(self, db, monkeypatch):
+        db.create_session("s_source_preference", source="cli")
+        db.append_message(
+            "s_source_preference",
+            role="user",
+            content="needle source decision",
+        )
+        for index in range(12):
+            db.append_message(
+                "s_source_preference",
+                role="assistant",
+                content=f"middle context {index}",
+            )
+        db.append_message(
+            "s_source_preference",
+            role="assistant",
+            content=f"{SUMMARY_PREFIX}\nneedle needle stale summary task",
+        )
+        rows = db.get_messages("s_source_preference")
+        source_id = rows[0]["id"]
+        summary_id = rows[-1]["id"]
+        monkeypatch.setattr(
+            db,
+            "search_messages",
+            lambda **_kwargs: [
+                {
+                    "session_id": "s_source_preference",
+                    "id": summary_id,
+                    "role": "assistant",
+                    "snippet": "needle needle stale summary task",
+                    "source": "cli",
+                },
+                {
+                    "session_id": "s_source_preference",
+                    "id": source_id,
+                    "role": "user",
+                    "snippet": "needle source decision",
+                    "source": "cli",
+                },
+            ],
+        )
+
+        result = json.loads(session_search(query="needle", limit=1, db=db))
+
+        hit = result["results"][0]
+        assert hit["match_message_id"] == source_id
+        assert hit["snippet"] == "needle source decision"
+        assert "snippet_omitted" not in hit
+        anchor = next(message for message in hit["messages"] if message.get("anchor"))
+        assert anchor["content"] == "needle source decision"
 
     def test_context_compaction_lookalike_is_not_omitted(self, db):
         db.create_session("s_lookalike", source="cli")
@@ -622,6 +681,24 @@ class TestRecallPayloadSafety:
         assert result["response_truncated"] is True
         assert result["original_response_chars"] > _RESPONSE_MAX_CHARS
         assert len(result["messages"]) == 30
+
+    def test_read_structural_overflow_fails_closed(self, db):
+        db.create_session("s_structural_overflow", source="cli")
+        for _ in range(30):
+            db.append_message(
+                "s_structural_overflow",
+                role="assistant",
+                content=list(range(1000)),
+            )
+        db._conn.commit()
+
+        raw = session_search(session_id="s_structural_overflow", db=db)
+        result = json.loads(raw)
+
+        assert len(raw) <= _RESPONSE_MAX_CHARS
+        assert result["success"] is False
+        assert result["response_truncated"] is True
+        assert result["error"] == "session_recall_response_too_large"
 
     def test_read_bounds_large_metadata_below_aggregate_budget(self, db):
         db.create_session("s_large_metadata", source="cli")
@@ -926,6 +1003,43 @@ class TestCrossProfileRead:
         result = json.loads(session_search(session_id="x", profile="ghost", db=db))
         assert result["success"] is False
         assert "ghost" in result.get("error", "")
+
+    def test_owned_profile_db_closes_on_error_response(self, db, tmp_path, monkeypatch):
+        owned = SessionDB(tmp_path / "owned.db")
+        closed = []
+        real_close = owned.close
+
+        def track_close():
+            closed.append(True)
+            real_close()
+
+        monkeypatch.setattr(owned, "close", track_close)
+        monkeypatch.setattr(
+            session_search_tool,
+            "_resolve_profile_db",
+            lambda _profile: owned,
+        )
+
+        result = json.loads(
+            session_search(
+                session_id="missing",
+                around_message_id=1,
+                profile="other",
+                db=db,
+            )
+        )
+
+        assert result["success"] is False
+        assert closed == [True]
+
+    def test_caller_supplied_db_is_not_closed(self, db, monkeypatch):
+        close_calls = []
+        monkeypatch.setattr(db, "close", lambda: close_calls.append(True))
+
+        result = json.loads(session_search(db=db))
+
+        assert result["success"] is True
+        assert close_calls == []
 
     def test_combined_value_autosplits(self, db, tmp_path, monkeypatch):
         # Agent passed the raw "@session:<profile>/<id>" value as session_id with

@@ -805,7 +805,7 @@ def _title_match_result(
         return None
 
     try:
-        messages = db.get_messages(session_id)
+        messages = db.get_messages(session_id, limit=1)
     except Exception:
         logging.debug("get_messages failed for title match %s", session_id, exc_info=True)
         messages = []
@@ -820,6 +820,14 @@ def _title_match_result(
     else:
         view = {}
 
+    message_count = session_meta.get("message_count")
+    if (
+        not isinstance(message_count, int)
+        or isinstance(message_count, bool)
+        or message_count < 0
+    ):
+        message_count = len(messages)
+
     entry = {
         "session_id": session_id,
         "when": _format_timestamp(session_meta.get("started_at")),
@@ -833,12 +841,42 @@ def _title_match_result(
         "messages": [_shape_message(m, anchor_id=anchor_id) for m in (view.get("window") or messages[:5])],
         "bookend_end": [_shape_message(m) for m in (view.get("bookend_end") or messages[-3:])],
         "messages_before": view.get("messages_before", 0),
-        "messages_after": view.get("messages_after", max(len(messages) - 5, 0)),
+        "messages_after": view.get(
+            "messages_after",
+            max(message_count - 5, 0),
+        ),
         "_lineage_root": lineage_root,
     }
     if lineage_root and lineage_root != session_id:
         entry["parent_session_id"] = lineage_root
     return entry
+
+
+def _search_match_is_context_summary(db, match: Dict[str, Any]) -> bool:
+    """Classify the full anchored FTS row without trusting its short snippet."""
+    session_id = match.get("session_id")
+    message_id = match.get("id")
+    if not session_id or message_id is None:
+        return False
+    try:
+        view = db.get_messages_around(session_id, message_id, window=0)
+    except Exception:
+        logging.debug(
+            "get_messages_around failed while classifying %s/%s",
+            session_id,
+            message_id,
+            exc_info=True,
+        )
+        return False
+    anchor = next(
+        (
+            message
+            for message in (view.get("window") or [])
+            if message.get("id") == message_id
+        ),
+        None,
+    )
+    return bool(anchor) and _is_compaction_summary_content(anchor.get("content"))
 
 
 def _discover(
@@ -898,8 +936,6 @@ def _discover(
         results.append(title_result)
 
     for r in raw_results:
-        if len(seen_sessions) >= limit:
-            break
         raw_sid = r["session_id"]
         resolved_sid = _resolve_to_parent(db, raw_sid)
         # Skip the current session lineage
@@ -907,12 +943,24 @@ def _discover(
             continue
         if current_session_id and raw_sid == current_session_id:
             continue
-        if resolved_sid not in seen_sessions:
+
+        existing = seen_sessions.get(resolved_sid)
+        if existing is None:
+            if len(seen_sessions) >= limit:
+                continue
             row = dict(r)
             row["_lineage_root"] = resolved_sid
+            row["_is_summary_match"] = _search_match_is_context_summary(db, row)
             seen_sessions[resolved_sid] = row
-        if len(seen_sessions) >= limit:
-            break
+            continue
+
+        # A generated summary can outrank the real source row in FTS. Prefer the
+        # first non-summary hit in the same lineage so discovery remains useful.
+        if existing.get("_is_summary_match") and not _search_match_is_context_summary(db, r):
+            row = dict(r)
+            row["_lineage_root"] = resolved_sid
+            row["_is_summary_match"] = False
+            seen_sessions[resolved_sid] = row
 
     for lineage_root, match_info in seen_sessions.items():
         if match_info.get("_title_only"):
@@ -974,7 +1022,7 @@ def _discover(
     }, ensure_ascii=False)
 
 
-def _session_search_impl(
+def _session_search_with_db(
     query: str = "",
     role_filter: Optional[str] = None,
     limit: int = 3,
@@ -986,53 +1034,8 @@ def _session_search_impl(
     window: int = 5,
     # Discovery shape
     sort: Optional[str] = None,
-    # Cross-profile (any shape)
-    profile: Optional[str] = None,
 ) -> str:
-    """Single-shape tool. Mode inferred from which args are set.
-
-    Discovery: pass ``query``.
-    Scroll:    pass ``session_id`` + ``around_message_id``.
-    Read:      pass ``session_id`` (no anchor) — dumps the whole session.
-    Browse:    pass nothing.
-
-    Pass ``profile`` to read another profile's sessions (e.g. resolving an
-    ``@session:<profile>/<id>`` link). Scroll wins over read/discovery when an
-    anchor is set — the agent has asked for a specific slice.
-    """
-    if db is None:
-        try:
-            from hermes_state import SessionDB
-            db = SessionDB()
-        except Exception:
-            logging.debug("SessionDB unavailable for session_search", exc_info=True)
-            from hermes_state import format_session_db_unavailable
-            return tool_error(format_session_db_unavailable(), success=False)
-
-    # Normalise a raw `@session:<profile>/<id>` link value passed as session_id.
-    # Session ids never contain "/", so a slash unambiguously means profile/id —
-    # always strip the prefix off the id, and adopt the embedded profile only
-    # when one wasn't passed explicitly. Handles every permutation the model
-    # might send (full value as id, with or without a separate profile=).
-    if isinstance(session_id, str) and "/" in session_id:
-        emb_profile, _, emb_id = session_id.partition("/")
-        if emb_id:
-            session_id = emb_id
-            if emb_profile and (profile is None or not str(profile).strip()):
-                profile = emb_profile
-
-    # Cross-profile read: swap in the named profile's DB (read-only) for every
-    # shape below. The current-session-lineage guards no longer apply across
-    # profiles, but they key off ids that won't collide, so they stay inert.
-    if profile is not None and str(profile).strip():
-        try:
-            profile_db = _resolve_profile_db(profile)
-        except Exception as e:
-            return tool_error(f"profile '{profile}': {e}", success=False)
-        if profile_db is not None:
-            db = profile_db
-            current_session_id = None
-
+    """Dispatch one inferred recall shape against an already-selected DB."""
     # Scroll shape takes precedence — explicit anchor beats any query.
     if (isinstance(session_id, str) and session_id.strip()) and around_message_id is not None:
         return _scroll(
@@ -1096,6 +1099,71 @@ def _session_search_impl(
         sort=sort_norm,
         current_session_id=current_session_id,
     )
+
+
+def _session_search_impl(
+    query: str = "",
+    role_filter: Optional[str] = None,
+    limit: int = 3,
+    db=None,
+    current_session_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    around_message_id: Optional[int] = None,
+    window: int = 5,
+    sort: Optional[str] = None,
+    profile: Optional[str] = None,
+) -> str:
+    """Select and own DB handles, then dispatch one recall shape."""
+    owned_dbs = []
+
+    # Session ids never contain "/", so a raw profile/id link is unambiguous.
+    if isinstance(session_id, str) and "/" in session_id:
+        embedded_profile, _, embedded_id = session_id.partition("/")
+        if embedded_id:
+            session_id = embedded_id
+            if embedded_profile and (profile is None or not str(profile).strip()):
+                profile = embedded_profile
+
+    try:
+        if profile is not None and str(profile).strip():
+            try:
+                profile_db = _resolve_profile_db(profile)
+            except Exception as e:
+                return tool_error(f"profile '{profile}': {e}", success=False)
+            if profile_db is not None:
+                owned_dbs.append(profile_db)
+                db = profile_db
+                current_session_id = None
+
+        if db is None:
+            try:
+                from hermes_state import SessionDB
+
+                db = SessionDB()
+                owned_dbs.append(db)
+            except Exception:
+                logging.debug("SessionDB unavailable for session_search", exc_info=True)
+                from hermes_state import format_session_db_unavailable
+
+                return tool_error(format_session_db_unavailable(), success=False)
+
+        return _session_search_with_db(
+            query=query,
+            role_filter=role_filter,
+            limit=limit,
+            db=db,
+            current_session_id=current_session_id,
+            session_id=session_id,
+            around_message_id=around_message_id,
+            window=window,
+            sort=sort,
+        )
+    finally:
+        for owned_db in reversed(owned_dbs):
+            try:
+                owned_db.close()
+            except Exception:
+                logging.debug("Failed to close session-search DB", exc_info=True)
 
 
 def session_search(

@@ -376,6 +376,9 @@ def _content_text_for_contains(content: Any) -> str:
         return ""
     if isinstance(content, str):
         return content
+    if isinstance(content, dict):
+        text = content.get("text")
+        return text if isinstance(text, str) else str(content)
     if isinstance(content, list):
         parts: list[str] = []
         for item in content:
@@ -389,6 +392,32 @@ def _content_text_for_contains(content: Any) -> str:
     return str(content)
 
 
+def _context_summary_prefix_start(text: str) -> Optional[int]:
+    """Return the exact summary-prefix offset for a supported persisted shape."""
+    prefixes = (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES)
+    stripped = text.lstrip()
+    leading = len(text) - len(stripped)
+    if any(stripped.startswith(prefix) for prefix in prefixes):
+        return leading
+
+    # Merged summaries are generated with the full prior-context wrapper. The
+    # preserved tail is arbitrary and may itself quote the delimiter, so scan
+    # every occurrence and accept only one immediately followed by a real prefix.
+    if not stripped.startswith(_MERGED_PRIOR_CONTEXT_HEADER):
+        return None
+    search_from = len(_MERGED_PRIOR_CONTEXT_HEADER)
+    while True:
+        delimiter_at = stripped.find(_MERGED_SUMMARY_DELIMITER, search_from)
+        if delimiter_at < 0:
+            return None
+        after_at = delimiter_at + len(_MERGED_SUMMARY_DELIMITER)
+        after = stripped[after_at:]
+        summary = after.lstrip()
+        if any(summary.startswith(prefix) for prefix in prefixes):
+            return leading + after_at + (len(after) - len(summary))
+        search_from = after_at
+
+
 def is_context_summary_content(content: Any) -> bool:
     """Return whether content is a persisted context-compaction summary.
 
@@ -397,12 +426,8 @@ def is_context_summary_content(content: Any) -> bool:
     summaries are neither reactivated nor confused with ordinary discussion
     that merely mentions context compaction.
     """
-    text = _content_text_for_contains(content).lstrip()
-    if _MERGED_SUMMARY_DELIMITER in text:
-        text = text.split(_MERGED_SUMMARY_DELIMITER, 1)[1].lstrip()
-    if text.startswith(SUMMARY_PREFIX) or text.startswith(LEGACY_SUMMARY_PREFIX):
-        return True
-    return any(text.startswith(prefix) for prefix in _HISTORICAL_SUMMARY_PREFIXES)
+    text = _content_text_for_contains(content)
+    return _context_summary_prefix_start(text) is not None
 
 
 def _append_text_to_content(content: Any, text: str, *, prepend: bool = False) -> Any:
@@ -2455,13 +2480,11 @@ This compaction should PRIORITISE preserving all information related to the focu
         stale directive it carried stays embedded in the body.
         """
         text = (summary or "").strip()
-        # Merge-into-tail summaries wrap prior tail content before the summary
-        # body. Drop everything up to and including the delimiter so only the
-        # real summary body is carried forward on re-compaction — otherwise the
-        # [PRIOR CONTEXT] header and stale tail content leak into the next
-        # summarizer prompt.
-        if _MERGED_SUMMARY_DELIMITER in text:
-            text = text.split(_MERGED_SUMMARY_DELIMITER, 1)[1].strip()
+        # Reuse the canonical parser so stripping and detection cannot disagree
+        # on repeated delimiters or ordinary text that merely quotes markers.
+        prefix_at = _context_summary_prefix_start(text)
+        if prefix_at is not None:
+            text = text[prefix_at:]
         for prefix in (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES):
             if text.startswith(prefix):
                 text = text[len(prefix):].lstrip()

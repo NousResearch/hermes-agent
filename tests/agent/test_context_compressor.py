@@ -2229,6 +2229,28 @@ class TestCompressWithClient:
         assert ContextCompressor._is_context_summary_content(standalone) is True
         assert ContextCompressor._strip_summary_prefix(standalone) == "STANDALONE_BODY"
 
+    def test_summary_parser_handles_repeated_delimiters_mapping_and_quoted_markers(self):
+        from agent.context_compressor import (
+            SUMMARY_PREFIX,
+            _MERGED_PRIOR_CONTEXT_HEADER,
+            _MERGED_SUMMARY_DELIMITER,
+        )
+
+        merged = (
+            f"{_MERGED_PRIOR_CONTEXT_HEADER}\n"
+            f"quoted marker: {_MERGED_SUMMARY_DELIMITER}\nnot a summary\n"
+            f"{_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}\nREAL_BODY"
+        )
+        assert ContextCompressor._is_context_summary_content(merged) is True
+        assert ContextCompressor._strip_summary_prefix(merged) == "REAL_BODY"
+
+        mapping = {"type": "text", "text": f"{SUMMARY_PREFIX}\nMAPPING_BODY"}
+        assert ContextCompressor._is_context_summary_content(mapping) is True
+
+        ordinary = f"Discussion quote: {_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}"
+        assert ContextCompressor._is_context_summary_content(ordinary) is False
+        assert ContextCompressor._strip_summary_prefix(ordinary) == ordinary
+
     def test_double_collision_user_head_assistant_tail(self):
         """Reverse double collision: head ends with 'user', tail starts with 'assistant'.
         summary='assistant' collides with tail, 'user' collides with head → merge."""

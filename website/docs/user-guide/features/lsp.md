@@ -66,6 +66,7 @@ agent sees a syntax-clean file with semantic problems as
 | Svelte | `svelte-language-server` | npm |
 | Astro | `@astrojs/language-server` | npm |
 | Go | `gopls` | `go install` |
+| C# | `csharp-ls` | `dotnet tool install` |
 | Rust | `rust-analyzer` | manual (rustup) |
 | C / C++ | `clangd` | manual (LLVM) |
 | Bash / Zsh | `bash-language-server` | npm |
@@ -189,7 +190,8 @@ When `install_strategy: auto`, Hermes installs binaries into
 `<HERMES_HOME>/lsp/bin/`. NPM packages land in
 `<HERMES_HOME>/lsp/node_modules/` with bin symlinks one level up.
 Go binaries come from `go install` with `GOBIN` pointed at the
-staging dir.
+staging dir. .NET tools come from `dotnet tool install` with
+`--tool-path` pointed at the staging dir.
 
 Nothing is ever installed to `/usr/local/`, `~/.local/`, or any other
 shared location — the staging dir is fully Hermes-owned and is

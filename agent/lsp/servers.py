@@ -594,6 +594,22 @@ def _spawn_prisma(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     )
 
 
+def _spawn_csharp_ls(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
+    bin_path = _resolve_override(ctx, "csharp-ls") or _which("csharp-ls")
+    if bin_path is None:
+        from agent.lsp.install import try_install
+        bin_path = try_install("csharp-ls", ctx.install_strategy)
+        if bin_path is None:
+            return None
+    return SpawnSpec(
+        command=[bin_path],
+        workspace_root=root,
+        cwd=root,
+        env=ctx.env_overrides.get("csharp-ls", {}),
+        initialization_options=ctx.init_overrides.get("csharp-ls", {}),
+    )
+
+
 def _spawn_kotlin_ls(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     bin_path = _resolve_override(ctx, "kotlin-language-server") or _which(
         "kotlin-language-server"
@@ -935,6 +951,40 @@ def _root_prisma(file_path: str, workspace: str) -> Optional[str]:
     )
 
 
+def _root_csharp(file_path: str, workspace: str) -> Optional[str]:
+    # .sln/.csproj have project-specific names, so nearest_root's
+    # exact-name matching can't find them — walk up with globs.
+    # Unity projects are gated off: their .csproj files are generated
+    # by the Unity editor and are stale/absent in headless checkouts,
+    # so csharp-ls would resolve nothing useful.
+    try:
+        cur = os.path.dirname(os.path.abspath(file_path))
+    except (OSError, ValueError):
+        return None
+    ceiling = os.path.dirname(workspace) if workspace else None
+    fallback: Optional[str] = None
+    for _ in range(64):
+        if os.path.exists(os.path.join(cur, "ProjectSettings", "ProjectVersion.txt")):
+            return None  # Unity project
+        try:
+            entries = os.listdir(cur)
+        except OSError:
+            entries = []
+        if any(
+            e.endswith((".sln", ".slnx")) and not e.startswith("._") for e in entries
+        ):
+            return cur
+        if fallback is None and (
+            any(e.endswith(".csproj") for e in entries) or "global.json" in entries
+        ):
+            fallback = cur
+        parent = os.path.dirname(cur)
+        if parent == cur or (ceiling and cur == ceiling):
+            break
+        cur = parent
+    return fallback or (workspace or None)
+
+
 def _root_kotlin(file_path: str, workspace: str) -> Optional[str]:
     return _root_or_workspace(
         file_path,
@@ -1137,6 +1187,13 @@ SERVERS: List[ServerDef] = [
         resolve_root=_root_prisma,
         build_spawn=_spawn_prisma,
         description="Prisma — built-in language server",
+    ),
+    ServerDef(
+        server_id="csharp-ls",
+        extensions=(".cs", ".csx"),
+        resolve_root=_root_csharp,
+        build_spawn=_spawn_csharp_ls,
+        description="C# — csharp-ls (Roslyn-based)",
     ),
     ServerDef(
         server_id="kotlin-language-server",

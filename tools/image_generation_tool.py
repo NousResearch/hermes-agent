@@ -527,23 +527,25 @@ def _submit_fal_request(model: str, arguments: Dict[str, Any]):
 # ---------------------------------------------------------------------------
 # Model resolution + payload construction
 # ---------------------------------------------------------------------------
-def _resolve_fal_model() -> tuple:
+def _resolve_fal_model(explicit: Optional[str] = None) -> tuple:
     """Resolve the active FAL model from config.yaml (primary) or default.
 
     Returns (model_id, metadata_dict). Falls back to DEFAULT_MODEL if the
     configured model is unknown (logged as a warning).
     """
-    model_id = ""
-    try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
-        img_cfg = cfg.get("image_gen") if isinstance(cfg, dict) else None
-        if isinstance(img_cfg, dict):
-            raw = img_cfg.get("model")
-            if isinstance(raw, str):
-                model_id = raw.strip()
-    except Exception as exc:
-        logger.debug("Could not load image_gen.model from config: %s", exc)
+    model_id = explicit.strip() if isinstance(explicit, str) else ""
+    if not model_id:
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            img_cfg = cfg.get("image_gen") if isinstance(cfg, dict) else None
+            if isinstance(img_cfg, dict):
+                scoped = img_cfg.get("fal")
+                raw = scoped.get("model") if isinstance(scoped, dict) else img_cfg.get("model")
+                if isinstance(raw, str):
+                    model_id = raw.strip()
+        except Exception as exc:
+            logger.debug("Could not load image_gen model from config: %s", exc)
 
     # Env var escape hatch (undocumented; backward-compat for tests/scripts).
     if not model_id:
@@ -845,6 +847,7 @@ def image_generate_tool(
     seed: Optional[int] = None,
     image_url: Optional[str] = None,
     reference_image_urls: Optional[list] = None,
+    model: Optional[str] = None,
 ) -> str:
     """Generate an image from a text prompt, or edit a source image, via FAL.
 
@@ -861,7 +864,7 @@ def image_generate_tool(
     Returns a JSON string with ``{"success": bool, "image": url | None,
     "modality": "text" | "image", "error": str, "error_type": str}``.
     """
-    model_id, meta = _resolve_fal_model()
+    model_id, meta = _resolve_fal_model(model)
 
     # Collect any source images (primary + references) into one ordered list.
     source_images: list = []

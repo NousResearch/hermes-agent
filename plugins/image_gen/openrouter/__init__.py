@@ -226,6 +226,8 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
         return {
             "modalities": ["text", "image"],
             "max_reference_images": _MAX_REFERENCE_IMAGES,
+            "supports_seed": True,
+            "supports_model_override": True,
         }
 
     def list_models(self) -> List[Dict[str, Any]]:
@@ -348,6 +350,9 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
                 "messages": [{"role": "user", "content": content}],
                 "image_config": {"aspect_ratio": or_aspect},
             }
+            seed = kwargs.get("seed")
+            if isinstance(seed, int):
+                payload["seed"] = seed
             is_last = i == len(model_chain) - 1
             try:
                 response = requests.post(

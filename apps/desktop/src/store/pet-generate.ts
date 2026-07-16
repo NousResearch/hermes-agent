@@ -5,7 +5,7 @@ import { capitalize } from '@/lib/text'
 import { $gateway } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
-import { type PetInfo } from '@/store/pet'
+import { type PetInfo, petProfile } from '@/store/pet'
 import { applyAdoptedPet, type GatewayRequest } from '@/store/pet-gallery'
 /**
  * Feature store for the "generate a pet" flow (Cmd-K → Pets → Generate).
@@ -23,9 +23,9 @@ import { applyAdoptedPet, type GatewayRequest } from '@/store/pet-gallery'
  */
 
 // Generation is many grounded image calls — far longer than the default 30s RPC
-// timeout. Drafts fan out 4 base looks; hatch fans out ~8 animation rows. The
-// quality-first default (OpenAI image via OpenRouter) is slow, and each hatch
-// row can retry up to 3x (300s/call) across 2 parallel waves, so the absolute
+// timeout. Drafts fan out 4 base looks; hatch fans out 25 strict pose segments.
+// The quality-first default (OpenAI image via OpenRouter) is slow, and each
+// segment can retry up to 3x (300s/call) across parallel waves, so the absolute
 // backend worst case is ~30 min. The hatch ceiling sits above that (1h) so the
 // frontend never throws "request timed out" before the backend has actually
 // exhausted its own retries — the background-resumable notify path is the real
@@ -81,9 +81,9 @@ export interface PetDraft {
 
 export type PetGenStatus = 'idle' | 'generating' | 'ready' | 'hatching' | 'preview' | 'adopting' | 'error' | 'stale'
 
-/** Live hatch step for the egg screen — which row is being drawn, then compose/save. */
+/** Live hatch step for the egg screen — pose-segment progress, then compose/save. */
 export interface PetHatchStage {
-  phase: 'row' | 'compose' | 'save'
+  phase: 'pose' | 'compose' | 'save'
   state?: string
   done?: number
   total?: number
@@ -104,6 +104,15 @@ export interface PetGenProvider {
   label: string
   /** Whether this is the backend's default pick (no override needed). */
   default: boolean
+  models?: PetGenModel[]
+  defaultModel?: string
+  supportsSeed?: boolean
+}
+
+export interface PetGenModel {
+  id: string
+  display?: string
+  supportsSeed?: boolean
 }
 
 const PROVIDER_KEY = 'hermes.desktop.petgen.provider'
@@ -113,10 +122,22 @@ const REMIX_CONFIRMED_KEY = 'hermes.desktop.petgen.remixConfirmed'
 export const $petGenProviders = atom<PetGenProvider[]>([])
 /** The picked provider name; `''` means "use the backend default". Persisted. */
 export const $petGenProvider = atom(storedString(PROVIDER_KEY) ?? '')
+export const $petGenModel = atom('')
+export const $petGenStyle = atom('auto')
+export const $petGenSeed = atom('')
+export const $petGenDraftCount = atom(4)
+export const $petGenConcurrency = atom(4)
+export const $petGenPoseAttempts = atom(2)
+/** Compatibility alias for extensions built against the former row generator. */
+export const $petGenRowAttempts = $petGenPoseAttempts
 
 /** Set (and persist) the pet-gen provider override. `''` clears it. */
 export function setPetGenProvider(name: string): void {
   $petGenProvider.set(name)
+  const providers = $petGenProviders.get()
+  const selected = providers.find(provider => provider.name === name) ?? providers.find(provider => provider.default)
+
+  $petGenModel.set(selected?.defaultModel ?? '')
   persistString(PROVIDER_KEY, name || null)
 }
 
@@ -132,7 +153,10 @@ export function markRemixConfirmed(): void {
 /** Probe whether generation is possible (a reference-capable backend exists). */
 export async function checkPetGenAvailable(request: GatewayRequest): Promise<void> {
   try {
-    const res = await request<{ available: boolean; providers?: PetGenProvider[] }>('pet.generate.status')
+    const res = await request<{ available: boolean; providers?: PetGenProvider[] }>('pet.generate.status', {
+      profile: petProfile()
+    })
+
     $petGenAvailable.set(Boolean(res?.available))
     const providers = res?.providers ?? []
     $petGenProviders.set(providers)
@@ -141,6 +165,15 @@ export async function checkPetGenAvailable(request: GatewayRequest): Promise<voi
 
     if (picked && !providers.some(p => p.name === picked)) {
       setPetGenProvider('')
+    } else {
+      const selected = providers.find(p => p.name === picked) ?? providers.find(p => p.default) ?? providers[0]
+      const currentModel = $petGenModel.get()
+
+      if (currentModel && !selected?.models?.some(item => item.id === currentModel)) {
+        $petGenModel.set(selected?.defaultModel ?? '')
+      } else if (!currentModel && selected?.defaultModel) {
+        $petGenModel.set(selected.defaultModel)
+      }
     }
   } catch {
     // Unknown (old backend / transient) — don't gate the UI on a failed probe.
@@ -150,8 +183,10 @@ export async function checkPetGenAvailable(request: GatewayRequest): Promise<voi
 
 /** Whether the dedicated "Generate a pet" Pokédex overlay is open. */
 export const $petGenerateOpen = atom(false)
+/** Allow an explicitly nested launch (Appearance → Generate) above its route overlay. */
+export const $petGenerateAboveRouteOverlay = atom(false)
 
-export function openPetGenerate(): void {
+export function openPetGenerate(options?: { aboveRouteOverlay?: boolean }): void {
   // Resume an in-flight or finished-but-unadopted run (so a Stop-free close, or
   // a "done" notification click, lands back on the right step); only start on a
   // clean slate when nothing is going on.
@@ -159,11 +194,18 @@ export function openPetGenerate(): void {
     resetPetGen()
   }
 
+  $petGenerateAboveRouteOverlay.set(Boolean(options?.aboveRouteOverlay))
   $petGenerateOpen.set(true)
 }
 
 export function closePetGenerate(): void {
   $petGenerateOpen.set(false)
+  $petGenerateAboveRouteOverlay.set(false)
+}
+
+/** Temporarily reveal a route overlay opened from the generator without losing its run state. */
+export function yieldPetGenerateToRouteOverlay(): void {
+  $petGenerateAboveRouteOverlay.set(false)
 }
 
 export const $petGenToken = atom<string | null>(null)
@@ -200,6 +242,20 @@ export function resetPetGen(): void {
   $petGenInput.set('')
   $petGenRefImage.set(null)
   $petGenRefName.set('')
+
+  const providers = $petGenProviders.get()
+
+  const selected =
+    providers.find(provider => provider.name === $petGenProvider.get()) ??
+    providers.find(provider => provider.default) ??
+    providers[0]
+
+  $petGenModel.set(selected?.defaultModel ?? '')
+  $petGenStyle.set('auto')
+  $petGenSeed.set('')
+  $petGenDraftCount.set(4)
+  $petGenConcurrency.set(4)
+  $petGenPoseAttempts.set(2)
 }
 
 /**
@@ -212,7 +268,7 @@ export function cleanupPetGenOnClose(request: GatewayRequest): void {
   const preview = $petGenPreview.get()
 
   if ((status === 'preview' || status === 'adopting') && preview?.slug) {
-    void request('pet.remove', { slug: preview.slug }).catch(() => {})
+    void request('pet.remove', { slug: preview.slug, profile: petProfile() }).catch(() => {})
     resetPetGen()
   }
 }
@@ -238,6 +294,9 @@ interface GenerateOptions {
   count?: number
   /** Optional data-URL reference image — every draft is grounded on it. */
   referenceImage?: string
+  model?: string
+  seed?: number
+  concurrency?: number
 }
 
 // A Stop (or a fresh round) must invalidate the in-flight call. This primitive
@@ -346,7 +405,7 @@ export async function generateDrafts(request: GatewayRequest, options: GenerateO
     const token = $petGenToken.get()
 
     if (token) {
-      void request('pet.cancel', { token }).catch(() => {})
+      void request('pet.cancel', { token, profile: petProfile() }).catch(() => {})
     }
   })
 
@@ -354,7 +413,7 @@ export async function generateDrafts(request: GatewayRequest, options: GenerateO
   const preview = $petGenPreview.get()
 
   if (preview?.slug) {
-    await request('pet.remove', { slug: preview.slug }).catch(() => {})
+    await request('pet.remove', { slug: preview.slug, profile: petProfile() }).catch(() => {})
   }
 
   $petGenStatus.set('generating')
@@ -409,8 +468,12 @@ export async function generateDrafts(request: GatewayRequest, options: GenerateO
         prompt,
         style: options.style ?? 'auto',
         count: options.count ?? 4,
+        ...(options.model ? { model: options.model } : {}),
+        ...(typeof options.seed === 'number' ? { seed: options.seed } : {}),
+        ...(options.concurrency ? { concurrency: options.concurrency } : {}),
         ...(referenceImage ? { referenceImage } : {}),
-        ...($petGenProvider.get() ? { provider: $petGenProvider.get() } : {})
+        ...($petGenProvider.get() ? { provider: $petGenProvider.get() } : {}),
+        profile: petProfile()
       },
       GENERATE_TIMEOUT_MS,
       controller.signal
@@ -426,7 +489,7 @@ export async function generateDrafts(request: GatewayRequest, options: GenerateO
     }
 
     $petGenToken.set(result.token)
-    // Keep a concept for the hatch row prompts even on an image-only generate.
+    // Keep a concept for the hatch pose prompts even on an image-only generate.
     $petGenPrompt.set(prompt || 'a custom pet')
     $petGenDrafts.set(result.drafts)
     $petGenSelected.set(result.drafts[0]?.index ?? 0)
@@ -459,6 +522,12 @@ interface HatchOptions {
   description?: string
   prompt?: string
   style?: string
+  model?: string
+  seed?: number
+  concurrency?: number
+  poseAttempts?: number
+  /** Legacy alias accepted while older Desktop bundles remain in circulation. */
+  rowAttempts?: number
 }
 
 /**
@@ -485,28 +554,34 @@ export async function hatchSelected(request: GatewayRequest, options: HatchOptio
   const controller = new AbortController()
   hatch.arm(() => {
     controller.abort()
-    void request('pet.cancel', { token: cancelToken }).catch(() => {})
+    void request('pet.cancel', { token: cancelToken, profile: petProfile() }).catch(() => {})
   })
 
   $petGenStatus.set('hatching')
   $petGenStage.set(null)
   $petGenError.set(null)
 
-  // Stream the hatch steps (which row is drawing, then compose/save) to the egg
+  // Stream the hatch steps (pose segments, then compose/save) to the egg
   // screen so a multi-minute hatch shows live progress instead of a black box.
   const offProgress =
     $gateway
       .get()
-      ?.on<{ event: string; state?: string; done?: string; total?: string }>('pet.hatch.progress', event => {
+      ?.on<{
+        token?: string
+        event: string
+        state?: string
+        done?: string
+        total?: string
+      }>('pet.hatch.progress', event => {
         const p = event.payload
 
-        if (!p || !hatch.isCurrent(hatchRunId) || $petGenStatus.get() !== 'hatching') {
+        if (!p || p.token !== cancelToken || !hatch.isCurrent(hatchRunId) || $petGenStatus.get() !== 'hatching') {
           return
         }
 
-        if (p.event === 'row' && p.state) {
+        if ((p.event === 'pose' || p.event === 'row') && p.state) {
           $petGenStage.set({
-            phase: 'row',
+            phase: 'pose',
             state: p.state,
             done: Number(p.done) || undefined,
             total: Number(p.total) || undefined
@@ -529,7 +604,14 @@ export async function hatchSelected(request: GatewayRequest, options: HatchOptio
         description: options.description ?? '',
         prompt: concept,
         style: options.style ?? 'auto',
-        ...($petGenProvider.get() ? { provider: $petGenProvider.get() } : {})
+        ...(options.model ? { model: options.model } : {}),
+        ...(typeof options.seed === 'number' ? { seed: options.seed } : {}),
+        ...(options.concurrency ? { concurrency: options.concurrency } : {}),
+        ...(options.poseAttempts || options.rowAttempts
+          ? { poseAttempts: options.poseAttempts ?? options.rowAttempts }
+          : {}),
+        ...($petGenProvider.get() ? { provider: $petGenProvider.get() } : {}),
+        profile: petProfile()
       },
       HATCH_TIMEOUT_MS,
       controller.signal
@@ -538,7 +620,7 @@ export async function hatchSelected(request: GatewayRequest, options: HatchOptio
     // Stopped mid-hatch: the server created the pet anyway, so delete it.
     if (!hatch.isCurrent(hatchRunId)) {
       if (result?.slug) {
-        void request('pet.remove', { slug: result.slug }).catch(() => {})
+        void request('pet.remove', { slug: result.slug, profile: petProfile() }).catch(() => {})
       }
 
       return false
@@ -605,7 +687,8 @@ export async function adoptHatched(request: GatewayRequest, name?: string): Prom
     if (finalName && finalName !== preview.displayName) {
       const renamed = await request<{ ok: boolean; slug: string }>('pet.rename', {
         slug: preview.slug,
-        name: finalName
+        name: finalName,
+        profile: petProfile()
       }).catch(() => null)
 
       if (renamed?.slug) {
@@ -614,7 +697,8 @@ export async function adoptHatched(request: GatewayRequest, name?: string): Prom
     }
 
     const result = await request<{ ok: boolean; slug: string; displayName: string }>('pet.select', {
-      slug: adoptSlug
+      slug: adoptSlug,
+      profile: petProfile()
     })
 
     if (!result?.ok) {
@@ -643,7 +727,7 @@ export async function discardHatched(request: GatewayRequest): Promise<void> {
   const preview = $petGenPreview.get()
 
   if (preview?.slug) {
-    await request('pet.remove', { slug: preview.slug }).catch(() => {})
+    await request('pet.remove', { slug: preview.slug, profile: petProfile() }).catch(() => {})
   }
 
   $petGenPreview.set(null)

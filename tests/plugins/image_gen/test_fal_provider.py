@@ -120,11 +120,15 @@ class TestFalImageGenProviderGenerate:
             "a serene mountain landscape",
             aspect_ratio="square",
             seed=42,
+            model="fal-ai/flux-2/klein/9b",
         )
 
         assert captured["prompt"] == "a serene mountain landscape"
         assert captured["aspect_ratio"] == "square"
-        assert captured["kwargs"] == {"seed": 42}
+        assert captured["kwargs"] == {
+            "seed": 42,
+            "model": "fal-ai/flux-2/klein/9b",
+        }
         assert result["success"] is True
         assert result["image"] == "https://fake/image.png"
         # Stamped fields for the unified response shape

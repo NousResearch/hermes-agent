@@ -108,6 +108,12 @@ class TestConfig:
         model_id, meta = _resolve_model()
         assert model_id == "grok-imagine-image"
 
+    def test_explicit_model_override(self):
+        from plugins.image_gen.xai import _resolve_model
+
+        model_id, _meta = _resolve_model("grok-imagine-image-quality")
+        assert model_id == "grok-imagine-image-quality"
+
     def test_default_resolution(self):
         from plugins.image_gen.xai import _resolve_resolution
 

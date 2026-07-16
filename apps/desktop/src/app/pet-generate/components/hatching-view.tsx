@@ -7,14 +7,14 @@ interface HatchingViewProps {
 }
 
 // The hatch progress screen — a beating egg with a phase-tracking subtitle
-// (per-row → composing → saving).
+// (per-pose segment → composing → saving).
 export function HatchingView({ stage }: HatchingViewProps) {
   const { t } = useI18n()
   const copy = t.commandCenter.generatePet
 
   const subtitle = stage
-    ? stage.phase === 'row'
-      ? copy.hatchRow(stage.state ?? '', stage.done ?? 0, stage.total ?? 0)
+    ? stage.phase === 'pose'
+      ? copy.hatchPose(stage.state ?? '', stage.done ?? 0, stage.total ?? 0)
       : stage.phase === 'compose'
         ? copy.hatchComposing
         : copy.hatchSaving

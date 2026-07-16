@@ -5,13 +5,10 @@ two things sprite generation needs that the agent-facing ``image_generate`` tool
 doesn't expose: **N variants** (loop) and **reference-image grounding** (so each
 animation row stays the same character as the chosen base).
 
-Reference grounding only works on providers that support it. A provider
-advertises that by including ``"image"`` in ``capabilities()["modalities"]``
-(image-to-image / editing), so user plugins qualify automatically; the built-in
-names in :data:`_REF_CAPABLE` are additionally trusted as a fallback and set the
-preference order. We resolve to a reference-capable provider and surface a
-clear, actionable error otherwise rather than silently producing an ungrounded,
-drifting pet.
+Reference grounding only works on providers and models that advertise image
+input/editing support. We resolve against that capability contract, including
+third-party providers, and surface a clear error rather than silently producing
+an ungrounded, drifting pet.
 """
 
 from __future__ import annotations
@@ -20,18 +17,25 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Built-in providers known to ground generation on a reference image, in
-# preference order (Nous Portal → OpenAI → OpenRouter → …). OpenRouter/Nous run
-# a quality-first model chain and may fall back depending on account access and
-# endpoint behavior, so fidelity can vary by configured backend + model
-# availability. This tuple is an ordering hint plus a fallback for providers
-# that don't override ``capabilities()`` — any other registered provider that
-# declares the ``"image"`` modality (e.g. a local img2img plugin) is
-# reference-capable too; see :func:`_supports_references`.
-_REF_CAPABLE = ("nous", "openai", "openai-codex", "openrouter", "krea")
+# Stable fallback preference after the user's configured/explicit provider.
+# Capability checks, not this tuple, decide whether a provider is usable; names
+# absent here are appended alphabetically so third-party providers work too.
+_PROVIDER_PREFERENCE = (
+    "nous",
+    "openai",
+    "openai-codex",
+    "openrouter",
+    "xai",
+    "fal",
+    "krea",
+)
+# Backward-compatible preference export. Capability checks remain authoritative;
+# callers must not treat this tuple as an allowlist.
+_REF_CAPABLE = _PROVIDER_PREFERENCE
 
 # Friendly display label per reference-capable provider, surfaced in the desktop
 # pet-gen picker.
@@ -40,80 +44,15 @@ _PROVIDER_LABELS: dict[str, str] = {
     "openrouter": "OpenRouter",
     "openai": "OpenAI",
     "openai-codex": "OpenAI (Codex)",
+    "xai": "xAI Grok Imagine",
+    "fal": "FAL.ai",
     "krea": "Krea",
 }
 
 
-def _supports_references(name: str, provider: object) -> bool:
-    """True when *provider* can ground generation on reference images.
-
-    Primary signal: the provider's own ``capabilities()`` declares the
-    ``"image"`` modality (image-to-image / editing) — this is what lets user
-    plugins participate without being hardcoded here. Fallback: the name is in
-    :data:`_REF_CAPABLE`, which keeps built-ins working even if a provider
-    doesn't override ``capabilities()`` (the base-class default is text-only).
-    """
-    caps = getattr(provider, "capabilities", None)
-    if callable(caps):
-        try:
-            modalities = (caps() or {}).get("modalities") or ()
-        except Exception as exc:  # noqa: BLE001 - a broken override shouldn't break resolution
-            logger.debug("capabilities() failed for image provider '%s': %s", name, exc)
-        else:
-            if "image" in modalities:
-                return True
-    return name in _REF_CAPABLE
-
-
-def _ref_capable_names() -> list[str]:
-    """Names of reference-capable providers, in preference order.
-
-    The built-ins from :data:`_REF_CAPABLE` come first (their tuple order is
-    the preference order), followed by any other registered provider that
-    declares itself reference-capable, in the registry's name-sorted order.
-    """
-    from agent.image_gen_registry import list_providers
-
-    names = list(_REF_CAPABLE)
-    try:
-        registered = list_providers()
-    except Exception as exc:  # noqa: BLE001 - registry hiccups shouldn't break resolution
-        logger.debug("image provider listing failed: %s", exc)
-        registered = []
-    for provider in registered:
-        name = getattr(provider, "name", "")
-        if name and name not in names and _supports_references(name, provider):
-            names.append(name)
-    return names
-
-
-def _provider_label(name: str, provider: object) -> str:
-    """Display label for the desktop pet-gen picker."""
-    label = _PROVIDER_LABELS.get(name)
-    if label:
-        return label
-    return str(getattr(provider, "display_name", "") or name)
-
-
 def _forced_provider_from_env() -> str | None:
-    """Optional QA override to force a pet-gen backend.
-
-    `HERMES_PET_IMAGE_PROVIDER=<name>` (e.g. `openrouter`) bypasses the normal
-    active/default provider resolution for pet generation only. Any registered
-    reference-capable provider qualifies, including user plugins. Unknown values
-    are ignored so existing users are unaffected.
-    """
-    forced = os.environ.get("HERMES_PET_IMAGE_PROVIDER", "").strip().lower()
-    if not forced:
-        return None
-    if forced in _REF_CAPABLE:
-        return forced
-    from agent.image_gen_registry import get_provider
-
-    provider = get_provider(forced)
-    if provider is not None and _supports_references(forced, provider):
-        return forced
-    return None
+    """Return the existing QA-only pet provider override, if set."""
+    return os.environ.get("HERMES_PET_IMAGE_PROVIDER", "").strip().lower() or None
 
 
 class GenerationError(RuntimeError):
@@ -127,6 +66,9 @@ class SpriteProvider:
     name: str
     provider: object
     supports_references: bool
+    supports_seed: bool = False
+    supports_model_override: bool = False
+    model: str | None = None
 
 
 def _discover() -> None:
@@ -138,7 +80,90 @@ def _discover() -> None:
         logger.debug("image-gen plugin discovery failed: %s", exc)
 
 
-def resolve_provider(*, require_references: bool = True, prefer: str | None = None) -> SpriteProvider:
+def _capabilities(provider: object, model: str | None = None) -> dict[str, Any]:
+    """Return model-specific capabilities, falling back to provider-wide data."""
+    base: dict[str, Any] = {}
+    try:
+        raw = provider.capabilities()
+        if isinstance(raw, dict):
+            base.update(raw)
+    except Exception as exc:  # noqa: BLE001 - a provider cannot break discovery
+        logger.debug("image provider capabilities failed: %s", exc)
+
+    # Compatibility for pre-capability providers shipped before the unified
+    # image contract. New/third-party providers must advertise capabilities;
+    # this only preserves the historically-known built-ins.
+    if not base and getattr(provider, "name", "") in _REF_CAPABLE:
+        base.update({"modalities": ["text", "image"], "max_reference_images": 1})
+
+    if model:
+        try:
+            for entry in provider.list_models() or []:
+                if isinstance(entry, dict) and entry.get("id") == model:
+                    for key in (
+                        "modalities",
+                        "max_reference_images",
+                        "supports_seed",
+                        "supports_model_override",
+                    ):
+                        if key in entry:
+                            base[key] = entry[key]
+                    break
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("image provider model catalog failed: %s", exc)
+    return base
+
+
+def _model_entries(provider: object) -> list[dict[str, Any]]:
+    """Return the provider's normalized model catalog, best-effort."""
+    try:
+        return [
+            dict(entry)
+            for entry in (provider.list_models() or [])
+            if isinstance(entry, dict) and entry.get("id")
+        ]
+    except Exception as exc:  # noqa: BLE001 - a provider cannot break discovery
+        logger.debug("image provider model catalog failed: %s", exc)
+        return []
+
+
+def _model_entry(provider: object, model: str) -> dict[str, Any] | None:
+    return next((entry for entry in _model_entries(provider) if str(entry.get("id")) == model), None)
+
+
+def _is_available(provider: object) -> bool:
+    try:
+        return bool(provider.is_available())
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("image provider availability failed: %s", exc)
+        return False
+
+
+def _sprite(provider: object, *, model: str | None = None) -> SpriteProvider:
+    caps = _capabilities(provider, model)
+    modalities = set(caps.get("modalities") or ["text"])
+    catalogued = bool(model and _model_entry(provider, model))
+    return SpriteProvider(
+        name=str(getattr(provider, "name", "") or ""),
+        provider=provider,
+        supports_references="image" in modalities and int(caps.get("max_reference_images") or 0) > 0,
+        supports_seed=bool(caps.get("supports_seed")),
+        supports_model_override=bool(caps.get("supports_model_override")) or catalogued,
+        model=model,
+    )
+
+
+def _ordered_providers(providers: list[object]) -> list[object]:
+    rank = {name: index for index, name in enumerate(_PROVIDER_PREFERENCE)}
+    return sorted(providers, key=lambda p: (rank.get(getattr(p, "name", ""), len(rank)), getattr(p, "name", "")))
+
+
+def resolve_provider(
+    *,
+    require_references: bool = True,
+    prefer: str | None = None,
+    model: str | None = None,
+) -> SpriteProvider:
     """Pick the image provider to use for sprite work.
 
     Preference: an explicit *prefer* choice (the desktop pet-gen picker) when it's
@@ -148,22 +173,66 @@ def resolve_provider(*, require_references: bool = True, prefer: str | None = No
     prompt-only base drafts).
     """
     _discover()
-    from agent.image_gen_registry import get_active_provider, get_provider
+    from agent.image_gen_registry import get_active_provider, get_provider, list_providers
 
-    # QA override: force one provider for pet-gen iteration regardless of the
-    # globally active image_gen backend.
+    def acceptable(candidate: object | None, candidate_model: str | None = None) -> SpriteProvider | None:
+        if candidate is None or not _is_available(candidate):
+            return None
+
+        if candidate_model:
+            entries = _model_entries(candidate)
+            entry = next((item for item in entries if str(item.get("id")) == candidate_model), None)
+            if entries and entry is None:
+                return None
+            resolved = _sprite(candidate, model=candidate_model)
+            if not resolved.supports_model_override:
+                return None
+            if require_references and not resolved.supports_references:
+                return None
+            return resolved
+
+        resolved = _sprite(candidate)
+        if not require_references or resolved.supports_references:
+            return resolved
+
+        # Some providers (notably FAL) have a text-only configured default but
+        # expose reference-capable models in the same catalog. Pick a compatible
+        # model explicitly instead of declaring the whole provider unavailable.
+        for entry in _model_entries(candidate):
+            candidate_id = str(entry["id"])
+            model_resolved = _sprite(candidate, model=candidate_id)
+            if model_resolved.supports_references and model_resolved.supports_model_override:
+                return model_resolved
+        return None
+
+    # Preserve the long-standing QA override. Invalid/unavailable overrides are
+    # intentionally ignored because this is an internal test knob, not a
+    # user-facing persisted selection.
     forced = _forced_provider_from_env()
     if forced:
-        chosen = get_provider(forced)
-        if chosen is not None and chosen.is_available():
-            return SpriteProvider(name=forced, provider=chosen, supports_references=True)
+        resolved = acceptable(get_provider(forced), model)
+        if resolved is not None:
+            return resolved
 
-    # An explicit user pick wins when it's reference-capable and has credentials;
-    # otherwise we ignore it and fall through to the normal resolution.
+    # Explicit choices are contracts, not hints. A typo, missing credential, or
+    # incompatible model must never spend money on a different provider.
     if prefer:
         chosen = get_provider(prefer)
-        if chosen is not None and _supports_references(prefer, chosen) and chosen.is_available():
-            return SpriteProvider(name=prefer, provider=chosen, supports_references=True)
+        if chosen is None:
+            raise GenerationError(f"Unknown image provider '{prefer}'.")
+        if not _is_available(chosen):
+            raise GenerationError(f"Image provider '{prefer}' is not configured or available.")
+        resolved = acceptable(chosen, model)
+        if resolved is not None:
+            return resolved
+        if model:
+            raise GenerationError(
+                f"Image model '{model}' is not available for provider '{prefer}'"
+                + (" with reference-image editing." if require_references else ".")
+            )
+        raise GenerationError(
+            f"Image provider '{prefer}' has no available model that supports reference-image editing."
+        )
 
     # Configured / active provider first.
     active = None
@@ -171,27 +240,32 @@ def resolve_provider(*, require_references: bool = True, prefer: str | None = No
         active = get_active_provider()
     except Exception:  # noqa: BLE001
         active = None
-    if active is not None:
-        name = getattr(active, "name", "")
-        if _supports_references(name, active) and active.is_available():
-            return SpriteProvider(name=name, provider=active, supports_references=True)
-
-    # Any available reference-capable provider.
-    for name in _ref_capable_names():
-        provider = get_provider(name)
-        if provider is not None and provider.is_available():
-            return SpriteProvider(name=name, provider=provider, supports_references=True)
-
-    if not require_references and active is not None and active.is_available():
-        return SpriteProvider(
-            name=getattr(active, "name", "unknown"), provider=active, supports_references=False
+    if model:
+        if active is None or not _is_available(active):
+            raise GenerationError("A model override requires an available active image provider or --provider.")
+        resolved = acceptable(active, model)
+        if resolved is not None:
+            return resolved
+        active_name = str(getattr(active, "name", "active provider"))
+        raise GenerationError(
+            f"Image model '{model}' is not available for provider '{active_name}'"
+            + (" with reference-image editing." if require_references else ".")
         )
 
+    if active is not None:
+        resolved = acceptable(active)
+        if resolved is not None:
+            return resolved
+
+    # Any available reference-capable provider.
+    for provider in _ordered_providers(list_providers()):
+        resolved = acceptable(provider)
+        if resolved is not None:
+            return resolved
+
     raise GenerationError(
-        "Pet generation needs an image backend that supports reference images. "
-        "Open `hermes tools` → Image Generation and configure Nous Portal, "
-        "OpenRouter, or OpenAI (gpt-image-2) with an API key. Any image-gen "
-        "plugin that supports image-to-image works too."
+        "Pet generation needs an image backend/model that supports reference images. "
+        "Open `hermes tools` → Image Generation and configure a compatible provider."
     )
 
 
@@ -205,7 +279,15 @@ def list_sprite_providers() -> list[dict]:
     yield an empty list.
     """
     _discover()
-    from agent.image_gen_registry import get_provider
+    from agent.image_gen_registry import get_provider, list_providers
+
+    discovered = {str(getattr(provider, "name", "")): provider for provider in list_providers()}
+    # Compatibility with registries/tests that only implement name lookup;
+    # capability-based third-party providers still enter through list_providers.
+    for name in _PROVIDER_PREFERENCE:
+        provider = get_provider(name)
+        if provider is not None:
+            discovered.setdefault(name, provider)
 
     try:
         default_name = resolve_provider(require_references=True).name
@@ -213,15 +295,44 @@ def list_sprite_providers() -> list[dict]:
         default_name = ""
 
     out: list[dict] = []
-    for name in _ref_capable_names():
-        provider = get_provider(name)
-        if provider is None or not provider.is_available():
+    for provider in _ordered_providers(list(discovered.values())):
+        if not _is_available(provider):
             continue
+        name = str(getattr(provider, "name", "") or "")
+        models: list[dict[str, Any]] = []
+        for entry in _model_entries(provider):
+            candidate = _sprite(provider, model=str(entry["id"]))
+            if not candidate.supports_references or not candidate.supports_model_override:
+                continue
+            models.append(
+                {
+                    "id": str(entry["id"]),
+                    "display": str(entry.get("display") or entry.get("name") or entry["id"]),
+                    "supportsSeed": candidate.supports_seed,
+                }
+            )
+
+        resolved = _sprite(provider)
+        if not resolved.supports_references and not models:
+            continue
+        default_model = ""
+        try:
+            provider_default = str(provider.default_model() or "")
+        except Exception:  # noqa: BLE001
+            provider_default = ""
+        if provider_default and any(item["id"] == provider_default for item in models):
+            default_model = provider_default
+        elif not resolved.supports_references and models:
+            default_model = str(models[0]["id"])
+        default_sprite = _sprite(provider, model=default_model or None)
         out.append(
             {
                 "name": name,
-                "label": _provider_label(name, provider),
+                "label": _PROVIDER_LABELS.get(name, getattr(provider, "display_name", name)),
                 "default": name == default_name,
+                "models": models,
+                "defaultModel": default_model,
+                "supportsSeed": default_sprite.supports_seed,
             }
         )
     return out
@@ -256,14 +367,15 @@ def generate(
     provider: SpriteProvider | None = None,
     prefix: str = "pet_gen",
     aspect_ratio: str = "square",
+    model: str | None = None,
+    seed: int | None = None,
 ) -> list[Path]:
     """Generate *n* sprite images and return their local paths.
 
-    *reference_images* grounds the output on a base image (required for rows).
+    *reference_images* grounds the output on a base image (required for poses).
     *aspect_ratio* picks the canvas: ``"square"`` for single-character base
-    drafts, ``"landscape"`` for multi-frame row strips (the wider 1536px canvas
-    gives every frame real horizontal room so winged poses don't have to be
-    shrunk to avoid touching their neighbors).
+    drafts and one-pose edits, ``"landscape"`` for two-pose edits (the wider
+    canvas gives both complete bodies room around a clean center gutter).
     We *ask* for a transparent background, but fall back to an opaque generation
     (cleaned up downstream by the chroma-key pass) on models that reject the
     flag. Raises :class:`GenerationError` if nothing usable comes back.
@@ -272,17 +384,36 @@ def generate(
     if reference_images and not sprite.supports_references:
         raise GenerationError(
             f"image backend '{sprite.name}' cannot use reference images; "
-            "configure OpenAI gpt-image-2 or Krea for pet generation"
+            "choose a model that supports image editing"
+        )
+
+    effective_model = model or sprite.model
+    if model and sprite.model and model != sprite.model:
+        raise GenerationError(
+            f"Image model '{model}' does not match resolved model '{sprite.model}' for provider '{sprite.name}'."
+        )
+    if effective_model and not sprite.supports_model_override:
+        raise GenerationError(f"Image provider '{sprite.name}' does not support per-run model overrides.")
+    if seed is not None and not sprite.supports_seed:
+        raise GenerationError(
+            f"Image provider '{sprite.name}'"
+            + (f" model '{effective_model}'" if effective_model else "")
+            + " does not support deterministic seeds."
         )
 
     refs = [str(p) for p in (reference_images or [])]
 
     def _run(extra: dict) -> tuple[Path | None, str]:
         kwargs: dict = {"aspect_ratio": aspect_ratio, **extra}
+        if effective_model:
+            kwargs["model"] = effective_model
+        if seed is not None:
+            kwargs["seed"] = seed
         if refs:
             # Providers disagree on the ref kwarg name: our OpenRouter/Nous
             # backends read ``reference_images``, OpenAI's gpt-image-2 reads
             # ``reference_image_urls``. Send both; each ignores the other.
+            kwargs["image_url"] = refs[0]
             kwargs["reference_images"] = refs
             kwargs["reference_image_urls"] = refs
         try:

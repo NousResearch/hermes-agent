@@ -443,6 +443,9 @@ export const en: Translations = {
           'Adopt an animated petdex mascot that floats over the app and reacts to what Hermes is doing — running while tools execute, celebrating on success, sulking on errors.',
         restartHint:
           'Pets need a quick restart — the running app started before this feature was added. Quit and reopen Hermes, then come back here.',
+        createTitle: 'Create a pet',
+        createDesc: 'Generate a custom animated pet with your configured image provider.',
+        generatePet: 'Generate',
         on: 'On',
         off: 'Off',
         scaleTitle: 'Size',
@@ -1040,7 +1043,7 @@ export const en: Translations = {
       hatching: 'Hatching your pet…',
       hatchingSub: 'Bringing it to life…',
       hatched: 'It hatched!',
-      hatchRow: (_state, done, total) => `Sketching frame ${done} of ${total}…`,
+      hatchPose: (_state, done, total) => `Sketching pose ${done} of ${total}…`,
       hatchComposing: 'Piecing it together…',
       hatchSaving: 'Almost there…',
       namePlaceholder: 'Name your pet',
@@ -1055,7 +1058,16 @@ export const en: Translations = {
       referenceImageTooLarge: 'Reference image is too large. Use one under 16 MB.',
       referenceImageInvalid: 'Could not read that reference image. Try a PNG, JPG, WebP, or GIF.',
       adopt: 'Adopt',
-      startOver: 'Start over'
+      startOver: 'Start over',
+      advanced: 'Advanced generation options',
+      style: 'Style',
+      model: 'Model',
+      seed: 'Seed',
+      drafts: 'Drafts',
+      concurrency: 'Parallel jobs',
+      poseAttempts: 'Pose attempts',
+      auto: 'Auto',
+      random: 'Random'
     },
     installTheme: {
       title: 'Install theme…',

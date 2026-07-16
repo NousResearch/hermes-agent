@@ -22,9 +22,21 @@ class _Provider:
     plugins that declare capabilities and bare objects that don't.
     """
 
-    def __init__(self, name, modalities=None, available=True, display_name=None):
+    def __init__(
+        self,
+        name,
+        modalities=None,
+        available=True,
+        display_name=None,
+        models=None,
+        default_model=None,
+        supports_seed=False,
+    ):
         self.name = name
         self._available = available
+        self._models = list(models or [])
+        self._default_model = default_model
+        self._supports_seed = supports_seed
         if display_name is not None:
             self.display_name = display_name
         if modalities is not None:
@@ -32,10 +44,21 @@ class _Provider:
             self.capabilities = self._capabilities
 
     def _capabilities(self):
-        return {"modalities": list(self._modalities), "max_reference_images": 4}
+        return {
+            "modalities": list(self._modalities),
+            "max_reference_images": 4 if "image" in self._modalities else 0,
+            "supports_seed": self._supports_seed,
+            "supports_model_override": bool(self._models),
+        }
 
     def is_available(self):
         return self._available
+
+    def list_models(self):
+        return list(self._models)
+
+    def default_model(self):
+        return self._default_model
 
 
 class _BrokenCapsProvider(_Provider):
@@ -124,6 +147,65 @@ def test_text_only_plugin_is_not_reference_capable(registry):
     assert not sprite.supports_references
 
 
+def test_explicit_provider_never_falls_back(registry):
+    registry.add(_Provider("openai", modalities=["text", "image"]), active=True)
+    registry.add(_Provider("offline", modalities=["text", "image"], available=False))
+
+    with pytest.raises(imagegen.GenerationError, match="Unknown image provider"):
+        imagegen.resolve_provider(prefer="missing")
+    with pytest.raises(imagegen.GenerationError, match="not configured or available"):
+        imagegen.resolve_provider(prefer="offline")
+
+
+def test_explicit_model_never_falls_back(registry):
+    models = [
+        {
+            "id": "edit-model",
+            "modalities": ["text", "image"],
+            "max_reference_images": 1,
+        }
+    ]
+    registry.add(_Provider("fal", modalities=["text"], models=models), active=True)
+    registry.add(_Provider("openai", modalities=["text", "image"]))
+
+    with pytest.raises(imagegen.GenerationError, match="not available for provider 'fal'"):
+        imagegen.resolve_provider(prefer="fal", model="typo")
+
+
+def test_text_default_provider_selects_reference_capable_model(registry):
+    models = [
+        {"id": "text-model", "modalities": ["text"], "max_reference_images": 0},
+        {
+            "id": "edit-model",
+            "display": "Edit Model",
+            "modalities": ["text", "image"],
+            "max_reference_images": 1,
+            "supports_seed": True,
+        },
+    ]
+    registry.add(
+        _Provider("fal", modalities=["text"], models=models, default_model="text-model"),
+        active=True,
+    )
+
+    resolved = imagegen.resolve_provider(require_references=True)
+    assert resolved.name == "fal"
+    assert resolved.model == "edit-model"
+    assert resolved.supports_seed is True
+
+    listed = imagegen.list_sprite_providers()
+    assert listed == [
+        {
+            "name": "fal",
+            "label": "FAL.ai",
+            "default": True,
+            "models": [{"id": "edit-model", "display": "Edit Model", "supportsSeed": True}],
+            "defaultModel": "edit-model",
+            "supportsSeed": True,
+        }
+    ]
+
+
 def test_ref_capable_tuple_is_fallback_for_missing_capabilities(registry):
     """Builtins without a capabilities() override keep working (tuple fallback)."""
     registry.add(_Provider("openai"), active=True)  # no capabilities() at all
@@ -187,3 +269,35 @@ def test_list_sprite_providers_includes_capable_plugin(registry):
     assert by_name["comfyui"]["label"] == "ComfyUI"
     assert by_name["openai"]["default"] is True
     assert by_name["comfyui"]["default"] is False
+
+
+def test_generate_rejects_unsupported_seed_before_provider_call():
+    class Provider:
+        def generate(self, _prompt, **_kwargs):
+            raise AssertionError("provider must not be called")
+
+    sprite = imagegen.SpriteProvider(
+        name="no-seed",
+        provider=Provider(),
+        supports_references=True,
+        supports_seed=False,
+    )
+
+    with pytest.raises(imagegen.GenerationError, match="does not support deterministic seeds"):
+        imagegen.generate("pet", provider=sprite, seed=7)
+
+
+def test_generate_rejects_unsupported_model_override_before_provider_call():
+    class Provider:
+        def generate(self, _prompt, **_kwargs):
+            raise AssertionError("provider must not be called")
+
+    sprite = imagegen.SpriteProvider(
+        name="fixed-model",
+        provider=Provider(),
+        supports_references=True,
+        supports_model_override=False,
+    )
+
+    with pytest.raises(imagegen.GenerationError, match="does not support per-run model overrides"):
+        imagegen.generate("pet", provider=sprite, model="other-model")

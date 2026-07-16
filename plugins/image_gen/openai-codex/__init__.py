@@ -140,8 +140,10 @@ def _load_image_gen_config() -> Dict[str, Any]:
         return {}
 
 
-def _resolve_model() -> Tuple[str, Dict[str, Any]]:
+def _resolve_model(explicit: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
     """Decide which tier to use and return ``(model_id, meta)``."""
+    if explicit and explicit in _MODELS:
+        return explicit, _MODELS[explicit]
     import os
 
     env_override = os.environ.get("OPENAI_IMAGE_MODEL")
@@ -494,7 +496,11 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
         # images as `input_image` message content parts. Keep this capability
         # honest so the dynamic `image_generate` schema encourages identity-
         # preserving edits instead of unrelated text-to-image redraws.
-        return {"modalities": ["text", "image"], "max_reference_images": _MAX_REFERENCE_IMAGES}
+        return {
+            "modalities": ["text", "image"],
+            "max_reference_images": _MAX_REFERENCE_IMAGES,
+            "supports_model_override": True,
+        }
 
     def generate(
         self,
@@ -537,7 +543,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
                 aspect_ratio=aspect,
             )
 
-        tier_id, meta = _resolve_model()
+        tier_id, meta = _resolve_model(kwargs.get("model"))
         size = _SIZES.get(aspect, _SIZES["square"])
 
         token = _read_codex_access_token()

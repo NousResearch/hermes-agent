@@ -96,6 +96,12 @@ class TestModelResolution:
         assert model_id == "gpt-image-2-high"
         assert meta["quality"] == "high"
 
+    def test_explicit_override_wins_over_environment(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_IMAGE_MODEL", "gpt-image-2-high")
+        model_id, meta = openai_plugin._resolve_model("gpt-image-2-low")
+        assert model_id == "gpt-image-2-low"
+        assert meta["quality"] == "low"
+
     def test_env_var_unknown_falls_back(self, monkeypatch):
         monkeypatch.setenv("OPENAI_IMAGE_MODEL", "bogus-tier")
         model_id, _ = openai_plugin._resolve_model()

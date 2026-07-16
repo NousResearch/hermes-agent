@@ -469,3 +469,197 @@ class TestDirectDeliverUnit:
             )
             assert result.success is True
             mock_gh.assert_awaited_once()
+
+
+# ===================================================================
+# platform:chat_id inline format — _direct_deliver (deliver_only mode)
+# ===================================================================
+
+class TestDirectDeliverInlineChatId:
+    """Regression tests for platform:chat_id format in deliver_only mode.
+
+    Sweeper review (teknium1) found that ``_direct_deliver()`` bypassed
+    the parser added to ``send()``, so ``deliver: "telegram:-100..."``
+    still reached ``Platform(platform_name)`` and failed.
+    """
+
+    @pytest.mark.asyncio
+    async def test_inline_chat_id_routed_correctly(self):
+        """deliver_only with telegram:<chat_id> delivers to that chat."""
+        adapter = _make_adapter({})
+        mock_target = _wire_mock_target(adapter, "telegram")
+
+        result = await adapter._direct_deliver(
+            "alert!",
+            {"deliver": "telegram:-1003774178835", "deliver_extra": {}},
+        )
+        assert result.success is True
+        mock_target.send.assert_awaited_once()
+        chat_id_arg = mock_target.send.await_args.args[0]
+        assert chat_id_arg == "-1003774178835"
+
+    @pytest.mark.asyncio
+    async def test_inline_chat_id_takes_precedence_over_deliver_extra(self):
+        """target_chat_id wins over deliver_extra.chat_id."""
+        adapter = _make_adapter({})
+        mock_target = _wire_mock_target(adapter, "telegram")
+
+        result = await adapter._direct_deliver(
+            "alert!",
+            {
+                "deliver": "telegram:-1003774178835",
+                "deliver_extra": {"chat_id": "should-be-ignored"},
+            },
+        )
+        assert result.success is True
+        chat_id_arg = mock_target.send.await_args.args[0]
+        assert chat_id_arg == "-1003774178835"
+
+    @pytest.mark.asyncio
+    async def test_bare_platform_falls_back_to_deliver_extra(self):
+        """deliver_only with bare 'telegram' still uses deliver_extra.chat_id."""
+        adapter = _make_adapter({})
+        mock_target = _wire_mock_target(adapter, "telegram")
+
+        result = await adapter._direct_deliver(
+            "hello",
+            {"deliver": "telegram", "deliver_extra": {"chat_id": "c-1"}},
+        )
+        assert result.success is True
+        chat_id_arg = mock_target.send.await_args.args[0]
+        assert chat_id_arg == "c-1"
+
+    @pytest.mark.asyncio
+    async def test_bare_platform_falls_back_to_home_channel(self):
+        """deliver_only with bare 'telegram' and no deliver_extra uses home channel."""
+        adapter = _make_adapter({})
+        mock_target = _wire_mock_target(adapter, "telegram")
+
+        # Configure mock home channel
+        mock_home = MagicMock()
+        mock_home.chat_id = "home-chat-99"
+        adapter.gateway_runner.config.get_home_channel.return_value = mock_home
+
+        result = await adapter._direct_deliver(
+            "hello",
+            {"deliver": "telegram", "deliver_extra": {}},
+        )
+        assert result.success is True
+        chat_id_arg = mock_target.send.await_args.args[0]
+        assert chat_id_arg == "home-chat-99"
+
+
+# ===================================================================
+# platform:chat_id inline format — send() (agent mode)
+# ===================================================================
+
+class TestSendInlineChatId:
+    """Regression tests for platform:chat_id format in agent-mode send()."""
+
+    @pytest.mark.asyncio
+    async def test_inline_chat_id_routed_correctly(self):
+        """Agent-mode send() with telegram:<chat_id> delivers to that chat."""
+        adapter = _make_adapter({})
+        mock_target = _wire_mock_target(adapter, "telegram")
+
+        # Populate _delivery_info as the webhook handler would
+        chat_id = "webhook:route:delivery-1"
+        adapter._delivery_info[chat_id] = {
+            "deliver": "telegram:-1003774178835",
+            "deliver_extra": {},
+        }
+
+        result = await adapter.send(chat_id, "agent response")
+        assert result.success is True
+        mock_target.send.assert_awaited_once()
+        target_chat_id = mock_target.send.await_args.args[0]
+        assert target_chat_id == "-1003774178835"
+
+    @pytest.mark.asyncio
+    async def test_inline_chat_id_takes_precedence_over_deliver_extra(self):
+        """In agent mode, target_chat_id wins over deliver_extra.chat_id."""
+        adapter = _make_adapter({})
+        mock_target = _wire_mock_target(adapter, "telegram")
+
+        chat_id = "webhook:route:delivery-2"
+        adapter._delivery_info[chat_id] = {
+            "deliver": "telegram:-1003774178835",
+            "deliver_extra": {"chat_id": "should-be-ignored"},
+        }
+
+        result = await adapter.send(chat_id, "agent response")
+        assert result.success is True
+        target_chat_id = mock_target.send.await_args.args[0]
+        assert target_chat_id == "-1003774178835"
+
+    @pytest.mark.asyncio
+    async def test_bare_platform_falls_back_to_deliver_extra(self):
+        """Agent-mode send() with bare 'telegram' uses deliver_extra.chat_id."""
+        adapter = _make_adapter({})
+        mock_target = _wire_mock_target(adapter, "telegram")
+
+        chat_id = "webhook:route:delivery-3"
+        adapter._delivery_info[chat_id] = {
+            "deliver": "telegram",
+            "deliver_extra": {"chat_id": "c-extra"},
+        }
+
+        result = await adapter.send(chat_id, "agent response")
+        assert result.success is True
+        target_chat_id = mock_target.send.await_args.args[0]
+        assert target_chat_id == "c-extra"
+
+    @pytest.mark.asyncio
+    async def test_bare_platform_falls_back_to_home_channel(self):
+        """Agent-mode send() with bare 'telegram' and no extra uses home channel."""
+        adapter = _make_adapter({})
+        mock_target = _wire_mock_target(adapter, "telegram")
+
+        mock_home = MagicMock()
+        mock_home.chat_id = "home-chat-42"
+        adapter.gateway_runner.config.get_home_channel.return_value = mock_home
+
+        chat_id = "webhook:route:delivery-4"
+        adapter._delivery_info[chat_id] = {
+            "deliver": "telegram",
+            "deliver_extra": {},
+        }
+
+        result = await adapter.send(chat_id, "agent response")
+        assert result.success is True
+        target_chat_id = mock_target.send.await_args.args[0]
+        assert target_chat_id == "home-chat-42"
+
+
+# ===================================================================
+# _parse_deliver_target unit tests
+# ===================================================================
+
+class TestParseDeliverTarget:
+    """Unit tests for the shared parser used by send() and _direct_deliver()."""
+
+    def test_bare_platform(self):
+        p, c = WebhookAdapter._parse_deliver_target("telegram")
+        assert p == "telegram"
+        assert c is None
+
+    def test_platform_with_chat_id(self):
+        p, c = WebhookAdapter._parse_deliver_target("telegram:-1003774178835")
+        assert p == "telegram"
+        assert c == "-1003774178835"
+
+    def test_platform_uppercase_normalized(self):
+        p, c = WebhookAdapter._parse_deliver_target("Telegram:-100123")
+        assert p == "telegram"
+        assert c == "-100123"
+
+    def test_platform_with_empty_chat_id(self):
+        """'telegram:' → platform='telegram', chat_id=None (falls back)."""
+        p, c = WebhookAdapter._parse_deliver_target("telegram:")
+        assert p == "telegram"
+        assert c is None
+
+    def test_discord_with_chat_id(self):
+        p, c = WebhookAdapter._parse_deliver_target("discord:123456789")
+        assert p == "discord"
+        assert c == "123456789"

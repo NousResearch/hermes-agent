@@ -262,14 +262,7 @@ class WebhookAdapter(BasePlatformAdapter):
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
 
-        # Parse platform:chat_id format (e.g. "telegram:-1003774178835")
-        # so webhook subscriptions can target a specific channel/chat.
-        target_platform = deliver_type
-        target_chat_id = None
-        if ":" in deliver_type:
-            parts = deliver_type.split(":", 2)
-            target_platform = parts[0].lower()
-            target_chat_id = parts[1] if len(parts) > 1 else None
+        target_platform, target_chat_id = self._parse_deliver_target(deliver_type)
 
         # Cross-platform delivery — any platform with a gateway adapter.
         _is_known_platform = target_platform in _BUILTIN_DELIVER_PLATFORMS
@@ -902,6 +895,23 @@ class WebhookAdapter(BasePlatformAdapter):
     # Response delivery
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _parse_deliver_target(deliver_type: str) -> tuple[str, Optional[str]]:
+        """Parse a deliver config value into (platform_name, chat_id).
+
+        Supports both bare platform names (``"telegram"``) and the
+        ``platform:chat_id`` format (``"telegram:-1003774178835"``).
+
+        Returns ``(platform, None)`` when no colon is present, or
+        ``(platform, chat_id)`` when the inline chat_id format is used.
+        """
+        if ":" not in deliver_type:
+            return deliver_type, None
+        parts = deliver_type.split(":", 2)
+        platform_name = parts[0].lower()
+        chat_id = parts[1] if len(parts) > 1 and parts[1] else None
+        return platform_name, chat_id
+
     async def _direct_deliver(
         self, content: str, delivery: dict
     ) -> SendResult:
@@ -924,10 +934,12 @@ class WebhookAdapter(BasePlatformAdapter):
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
 
+        target_platform, target_chat_id = self._parse_deliver_target(deliver_type)
+
         # Fall through to the cross-platform dispatcher, which validates the
         # target name and routes via the gateway runner.
         return await self._deliver_cross_platform(
-            deliver_type, content, delivery
+            target_platform, content, delivery, target_chat_id
         )
 
     async def _deliver_github_comment(

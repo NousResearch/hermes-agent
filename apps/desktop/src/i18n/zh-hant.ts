@@ -1371,6 +1371,18 @@ export const zhHant = defineLocale({
     promptPlaceholder: '代理每次執行時應做什麼？',
     frequencyLabel: '頻率',
     deliverLabel: '傳遞至',
+    reasoningLabel: '推理強度',
+    reasoningLabels: {
+      inherit: '繼承模型或全域設定',
+      none: '關閉',
+      minimal: '最少',
+      low: '低',
+      medium: '中',
+      high: '高',
+      xhigh: '特高',
+      max: '最大',
+      ultra: '超強'
+    },
     customScheduleLabel: '自訂排程',
     customPlaceholder: '0 9 * * * 或 weekdays at 9am',
     customHint: 'Cron 表達式，或類似「每小時」「工作日上午 9 點」的短語。',

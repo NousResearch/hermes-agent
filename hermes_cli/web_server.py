@@ -10314,6 +10314,7 @@ class CronJobCreate(BaseModel):
     model: Optional[str] = None
     provider: Optional[str] = None
     base_url: Optional[str] = None
+    reasoning_effort: Any = None
     script: Optional[str] = None
     context_from: Optional[Any] = None
     enabled_toolsets: Optional[List[str]] = None
@@ -10636,6 +10637,7 @@ def _create_cron_job_sync(body: CronJobCreate, profile: str = "default"):
             model=_cron_optional_text(body.model),
             provider=_cron_optional_text(body.provider),
             base_url=_cron_optional_text(body.base_url, strip_trailing_slash=True),
+            reasoning_effort=body.reasoning_effort,
             script=script,
             context_from=context_from,
             enabled_toolsets=_cron_string_list(body.enabled_toolsets),

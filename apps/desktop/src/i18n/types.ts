@@ -1226,6 +1226,8 @@ export interface Translations {
     promptPlaceholder: string
     frequencyLabel: string
     deliverLabel: string
+    reasoningLabel: string
+    reasoningLabels: Record<string, string>
     customScheduleLabel: string
     customPlaceholder: string
     customHint: string

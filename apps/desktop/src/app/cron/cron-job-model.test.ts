@@ -35,12 +35,13 @@ describe('cronEditorUpdates', () => {
   it('omits prompt when saving a script-only job with an empty prompt', () => {
     expect(
       cronEditorUpdates(
-        { deliver: 'local', name: 'Weekly', prompt: '', schedule: '0 9 * * 1' },
+        { deliver: 'local', name: 'Weekly', prompt: '', reasoningEffort: 'inherit', schedule: '0 9 * * 1' },
         { scriptOnlyJob: true }
       )
     ).toEqual({
       deliver: 'local',
       name: 'Weekly',
+      reasoning_effort: null,
       schedule: '0 9 * * 1'
     })
   })
@@ -48,9 +49,25 @@ describe('cronEditorUpdates', () => {
   it('includes prompt when the user typed one on a script-only job', () => {
     expect(
       cronEditorUpdates(
-        { deliver: 'email', name: 'Weekly', prompt: 'note', schedule: '0 9 * * 1' },
+        { deliver: 'email', name: 'Weekly', prompt: 'note', reasoningEffort: 'high', schedule: '0 9 * * 1' },
         { scriptOnlyJob: true }
       ).prompt
     ).toBe('note')
+  })
+
+  it('sets and clears a per-job reasoning override explicitly', () => {
+    expect(
+      cronEditorUpdates(
+        { deliver: 'local', name: 'Daily', prompt: 'run', reasoningEffort: 'xhigh', schedule: '0 9 * * *' },
+        { scriptOnlyJob: false }
+      ).reasoning_effort
+    ).toBe('xhigh')
+
+    expect(
+      cronEditorUpdates(
+        { deliver: 'local', name: 'Daily', prompt: 'run', reasoningEffort: 'inherit', schedule: '0 9 * * *' },
+        { scriptOnlyJob: false }
+      ).reasoning_effort
+    ).toBeNull()
   })
 })

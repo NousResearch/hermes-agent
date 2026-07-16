@@ -61,6 +61,18 @@ const DEFAULT_DELIVER = 'local'
 
 const DELIVERY_VALUES: readonly string[] = ['local', 'telegram', 'discord', 'slack', 'email']
 
+const REASONING_VALUES: readonly string[] = [
+  'inherit',
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'ultra'
+]
+
 const SCHEDULE_OPTIONS: ReadonlyArray<ScheduleOption> = [
   { expr: '0 9 * * *', value: 'daily' },
   { expr: '0 9 * * 1-5', value: 'weekdays' },
@@ -101,6 +113,14 @@ function jobScheduleExpr(job: CronJob): string {
 
 function jobDeliver(job: CronJob): string {
   return asText(job.deliver) || DEFAULT_DELIVER
+}
+
+function jobReasoningEffort(job: CronJob): string {
+  if (job.reasoning_effort === false) {
+    return 'none'
+  }
+
+  return asText(job.reasoning_effort).trim()
 }
 
 function cronParts(expr: string): null | string[] {
@@ -391,7 +411,8 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
         prompt: values.prompt,
         schedule: values.schedule,
         name: values.name || undefined,
-        deliver: values.deliver || DEFAULT_DELIVER
+        deliver: values.deliver || DEFAULT_DELIVER,
+        reasoning_effort: values.reasoningEffort === 'inherit' ? null : values.reasoningEffort
       })
 
       updateCronJobs(rows => [...rows, created])
@@ -550,6 +571,7 @@ function CronJobDetail({
   const isPaused = state === 'paused'
   const deliver = jobDeliver(job)
   const prompt = jobPrompt(job)
+  const reasoningEffort = jobReasoningEffort(job)
 
   return (
     <PanelDetail>
@@ -574,7 +596,10 @@ function CronJobDetail({
             { label: c.frequencyLabel, value: jobScheduleDisplay(job) },
             { label: c.last.replace(/:$/, ''), value: formatTime(job.last_run_at) },
             { label: c.next.replace(/:$/, ''), value: formatTime(job.next_run_at) },
-            { label: c.deliverLabel, value: c.deliveryLabels[deliver] ?? deliver }
+            { label: c.deliverLabel, value: c.deliveryLabels[deliver] ?? deliver },
+            ...(reasoningEffort
+              ? [{ label: c.reasoningLabel, value: c.reasoningLabels[reasoningEffort] ?? reasoningEffort }]
+              : [])
           ]}
         />
 
@@ -717,6 +742,7 @@ function CronEditorDialog({
   const [schedule, setSchedule] = useState('')
   const [schedulePreset, setSchedulePreset] = useState('daily')
   const [deliver, setDeliver] = useState(DEFAULT_DELIVER)
+  const [reasoningEffort, setReasoningEffort] = useState('inherit')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
 
@@ -730,6 +756,7 @@ function CronEditorDialog({
     setSchedule(initial ? jobScheduleExpr(initial) : (SCHEDULE_OPTIONS[0].expr ?? ''))
     setSchedulePreset(initial ? scheduleOptionForExpr(jobScheduleExpr(initial)).value : 'daily')
     setDeliver(initial ? jobDeliver(initial) : DEFAULT_DELIVER)
+    setReasoningEffort(initial ? jobReasoningEffort(initial) || 'inherit' : 'inherit')
     setError(null)
     setSaving(false)
   }, [initial, open])
@@ -781,6 +808,7 @@ function CronEditorDialog({
         deliver,
         name: name.trim(),
         prompt: prompt.trim(),
+        reasoningEffort,
         schedule: schedule.trim()
       })
     } catch (err) {
@@ -857,6 +885,21 @@ function CronEditorDialog({
             </Field>
           </div>
 
+          <Field htmlFor="cron-reasoning" label={c.reasoningLabel}>
+            <Select onValueChange={setReasoningEffort} value={reasoningEffort}>
+              <SelectTrigger className="h-9 rounded-md" id="cron-reasoning">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {REASONING_VALUES.map(value => (
+                  <SelectItem key={value} value={value}>
+                    {c.reasoningLabels[value] ?? value}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </Field>
+
           {schedulePreset === 'custom' ? (
             <Field htmlFor="cron-schedule" label={c.customScheduleLabel}>
               <Input
@@ -932,6 +975,7 @@ interface EditorValues {
   deliver: string
   name: string
   prompt: string
+  reasoningEffort: string
   schedule: string
 }
 

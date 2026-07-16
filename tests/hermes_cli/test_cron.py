@@ -19,6 +19,73 @@ def tmp_cron_dir(tmp_path, monkeypatch):
 
 
 class TestCronCommandLifecycle:
+    def test_create_list_edit_and_clear_reasoning(self, tmp_cron_dir, capsys):
+        cron_command(
+            Namespace(
+                cron_command="create",
+                schedule="every 1h",
+                prompt="Produce a synthetic result",
+                name="Synthetic CLI job",
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                script=None,
+                workdir=None,
+                no_agent=False,
+                reasoning_effort="high",
+            )
+        )
+        job = list_jobs()[0]
+        assert job["reasoning_effort"] == "high"
+
+        cron_command(Namespace(cron_command="list", all=True))
+        assert "Reasoning: high" in capsys.readouterr().out
+
+        cron_command(
+            Namespace(
+                cron_command="edit",
+                job_id=job["id"],
+                schedule=None,
+                prompt=None,
+                name=None,
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                clear_skills=False,
+                add_skills=None,
+                remove_skills=None,
+                script=None,
+                workdir=None,
+                no_agent=None,
+                reasoning_effort="none",
+            )
+        )
+        assert get_job(job["id"])["reasoning_effort"] is False
+
+        cron_command(
+            Namespace(
+                cron_command="edit",
+                job_id=job["id"],
+                schedule=None,
+                prompt=None,
+                name=None,
+                deliver=None,
+                repeat=None,
+                skill=None,
+                skills=None,
+                clear_skills=False,
+                add_skills=None,
+                remove_skills=None,
+                script=None,
+                workdir=None,
+                no_agent=None,
+                reasoning_effort="inherit",
+            )
+        )
+        assert get_job(job["id"])["reasoning_effort"] is None
+
     def test_pause_resume_run(self, tmp_cron_dir, capsys):
         job = create_job(prompt="Check server status", schedule="every 1h")
 

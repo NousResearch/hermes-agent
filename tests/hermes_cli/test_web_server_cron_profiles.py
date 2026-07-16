@@ -265,6 +265,7 @@ async def test_create_cron_job_normalizes_representative_core_fields(
             schedule="every 1h",
             name="full-core-mapping",
             base_url="https://example.invalid/v1/",
+            reasoning_effort="high",
             script=str(scripts_dir / "collect-status.py"),
             no_agent=True,
         ),
@@ -273,6 +274,7 @@ async def test_create_cron_job_normalizes_representative_core_fields(
 
     assert job["name"] == "full-core-mapping"
     assert job["base_url"] == "https://example.invalid/v1"
+    assert job["reasoning_effort"] == "high"
     assert job["script"] == "collect-status.py"
     assert job["no_agent"] is True
 
@@ -376,6 +378,7 @@ async def test_update_cron_job_normalizes_dashboard_core_fields(isolated_profile
         web_server.CronJobUpdate(
             updates={
                 "base_url": "https://example.invalid/v1/",
+                "reasoning_effort": False,
                 "script": str(scripts_dir / "collect.py"),
                 "context_from": "",
                 "no_agent": True,
@@ -385,9 +388,17 @@ async def test_update_cron_job_normalizes_dashboard_core_fields(isolated_profile
     )
 
     assert updated["base_url"] == "https://example.invalid/v1"
+    assert updated["reasoning_effort"] is False
     assert updated["script"] == "collect.py"
     assert updated["context_from"] is None
     assert updated["no_agent"] is True
+
+    cleared = await web_server.update_cron_job(
+        job["id"],
+        web_server.CronJobUpdate(updates={"reasoning_effort": None}),
+        profile="worker_alpha",
+    )
+    assert cleared["reasoning_effort"] is None
 
 
 @pytest.mark.asyncio

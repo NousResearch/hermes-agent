@@ -59,9 +59,16 @@ Jobs are stored in `~/.hermes/cron/jobs.json` with atomic write semantics (write
   "created_at": "2025-01-01T00:00:00Z",
   "model": null,
   "provider": null,
+  "reasoning_effort": "high",
   "script": null
 }
 ```
+
+`reasoning_effort` is optional. Missing or `null` inherits the existing
+per-model/global reasoning configuration, while `false` means reasoning is
+explicitly disabled. Older records need no migration. The scheduler passes the
+effective value into the newly constructed agent for each run, which prevents
+one job's override from affecting another job.
 
 ### Job Lifecycle States
 

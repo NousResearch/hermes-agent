@@ -63,6 +63,12 @@ def _resolve_local_initial_cwd(cwd: str) -> str:
     expanded = os.path.expanduser(cwd) if cwd else os.getcwd()
     if _IS_WINDOWS:
         expanded = _msys_to_windows_path(expanded)
+        # Use the Windows-aware check explicitly: when _IS_WINDOWS is
+        # patched in tests on a POSIX host, os.path.isabs would reject
+        # ``C:\Users\x`` and mangle it through the relative branch.
+        import ntpath
+        if ntpath.isabs(expanded):
+            return expanded
     if os.path.isabs(expanded):
         return expanded
 

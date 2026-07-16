@@ -15,6 +15,26 @@ class _Completed:
         self.returncode = returncode
 
 
+def _spawns(captured, *needles):
+    """Captured ``subprocess.run`` calls whose argv contains every needle.
+
+    These tests patch ``<module>.subprocess.run``, which is the shared
+    ``subprocess`` module singleton — so the patch is process-wide. Importing
+    ``tui_gateway.server`` kicks off ``prefetch_update_check`` (a daemon thread
+    that shells out to ``git ... origin`` with ``text=True, timeout=5``), and
+    that call can land in ``captured`` mid-test. Matching the distinctive argv
+    tokens of the call under test (e.g. ``--show-toplevel``, ``ls-files``) keeps
+    each assertion scoped to its own contract and immune to that cross-talk —
+    otherwise a stray ``git`` spawn trips a bare ``KeyError: 'creationflags'``
+    or a call-count / full-list mismatch.
+    """
+    return [
+        (cmd, kwargs)
+        for cmd, kwargs in captured
+        if cmd and all(n in cmd for n in needles)
+    ]
+
+
 def test_tui_gateway_git_probe_hides_git_windows(monkeypatch):
     from tui_gateway import git_probe
 
@@ -30,7 +50,8 @@ def test_tui_gateway_git_probe_hides_git_windows(monkeypatch):
 
     assert git_probe.run_git("C:/repo", "branch", "--show-current") == "main"
 
-    assert captured == [
+    git_calls = _spawns(captured, "branch", "--show-current")
+    assert git_calls == [
         (
             ["git", "-C", "C:/repo", "branch", "--show-current"],
             {
@@ -66,10 +87,11 @@ def test_tui_gateway_fuzzy_file_listing_hides_git_windows(monkeypatch):
 
     assert server._list_repo_files("C:/repo") == ["src/main.py", "README.md"]
 
-    assert [kwargs["creationflags"] for _, kwargs in captured] == [
-        _CREATE_NO_WINDOW,
-        _CREATE_NO_WINDOW,
-    ]
+    toplevel = _spawns(captured, "rev-parse", "--show-toplevel")
+    ls_files = _spawns(captured, "ls-files")
+    assert len(toplevel) == 1 and len(ls_files) == 1, captured
+    assert toplevel[0][1].get("creationflags") == _CREATE_NO_WINDOW
+    assert ls_files[0][1].get("creationflags") == _CREATE_NO_WINDOW
 
 
 def test_coding_context_git_hides_git_windows(monkeypatch):
@@ -124,10 +146,11 @@ def test_context_reference_git_and_rg_hide_windows(monkeypatch):
         Path("src/main.py")
     ]
 
-    assert [kwargs["creationflags"] for _, kwargs in captured] == [
-        _CREATE_NO_WINDOW,
-        _CREATE_NO_WINDOW,
-    ]
+    git_calls = _spawns(captured, "diff")
+    rg_calls = _spawns(captured, "rg")
+    assert len(git_calls) == 1 and len(rg_calls) == 1, captured
+    assert git_calls[0][1].get("creationflags") == _CREATE_NO_WINDOW
+    assert rg_calls[0][1].get("creationflags") == _CREATE_NO_WINDOW
 
 
 def test_copilot_gh_cli_probe_hides_gh_windows(monkeypatch):
@@ -168,7 +191,21 @@ def test_gateway_pid_scan_hides_wmic_and_powershell_windows(monkeypatch):
     monkeypatch.setattr(gateway.subprocess, "run", fake_run)
 
     assert gateway._scan_gateway_pids(set()) == [123]
-    assert [kwargs["creationflags"] for _, kwargs in captured] == [
+    # The wmic probe and the PowerShell fallback are the two console spawns
+    # this scan makes on Windows; both must hide the window via
+    # ``creationflags``. Filter to those two commands (rather than indexing a
+    # positional list) so the contract — "every Windows pid-scan spawn is
+    # windowless" — is asserted directly and can't be tripped by an unrelated
+    # captured call leaking in from prior module-state churn in the same
+    # process. ``.get`` keeps a stray non-windowed call from masking the real
+    # assertion behind a bare KeyError.
+    scan_spawns = [
+        kwargs
+        for cmd, kwargs in captured
+        if cmd and cmd[0] in {"wmic", "powershell", "pwsh"}
+    ]
+    assert len(scan_spawns) == 2, captured
+    assert [kwargs.get("creationflags") for kwargs in scan_spawns] == [
         _CREATE_NO_WINDOW,
         _CREATE_NO_WINDOW,
     ]
@@ -210,7 +247,8 @@ def test_gateway_force_kill_hides_taskkill_window(monkeypatch):
 
     status.terminate_pid(123, force=True)
 
-    assert captured == [
+    kill_calls = _spawns(captured, "taskkill")
+    assert kill_calls == [
         (
             ["taskkill", "/PID", "123", "/T", "/F"],
             {

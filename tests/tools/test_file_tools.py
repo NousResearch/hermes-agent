@@ -275,6 +275,104 @@ class TestPatchHandler:
         assert "traversal" in result["error"].lower()
 
 
+class TestPatchSensitivePathExtraction:
+    """Regression tests for patch_tool sensitive-path extraction.
+
+    The sensitive path check relies on a regex that parses V4A patch
+    headers. These tests cover:
+
+    1. ``*** Move File:`` operations (previously missed — the regex only
+       matched Update/Add/Delete, so Move could target /etc/* without
+       hitting the check).
+    2. ``***Keyword File:`` with no space after ``***`` (previously missed —
+       the regex required ``\\s+`` even though patch_parser accepts ``\\s*``).
+    3. ``..`` traversal in Move headers (the Move endpoints run through the
+       same traversal rejection as the other V4A headers).
+    """
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_move_to_sensitive_dst_blocked(self, mock_get):
+        from tools.file_tools import patch_tool
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Move File: /tmp/work.txt -> /etc/crontab\n"
+            "*** End Patch\n"
+        )
+        result = json.loads(patch_tool(mode="patch", patch=patch_text))
+        assert "error" in result
+        assert "sensitive" in result["error"].lower()
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_move_from_sensitive_src_blocked(self, mock_get):
+        from tools.file_tools import patch_tool
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Move File: /etc/hosts -> /tmp/leak.txt\n"
+            "*** End Patch\n"
+        )
+        result = json.loads(patch_tool(mode="patch", patch=patch_text))
+        assert "error" in result
+        assert "sensitive" in result["error"].lower()
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_update_no_space_after_asterisks_blocked(self, mock_get):
+        """``***Update File:`` (no space after asterisks) must also be caught.
+
+        patch_parser.py accepts this form (``\\s*`` in its regex), so the
+        sensitive path check must be at least as lenient or the check
+        is bypassed.
+        """
+        from tools.file_tools import patch_tool
+        patch_text = (
+            "*** Begin Patch\n"
+            "***Update File: /etc/resolv.conf\n"
+            "@@ @@\n"
+            "-old\n"
+            "+new\n"
+            "*** End Patch\n"
+        )
+        result = json.loads(patch_tool(mode="patch", patch=patch_text))
+        assert "error" in result
+        assert "sensitive" in result["error"].lower()
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_move_rejects_traversal_endpoint(self, mock_get):
+        """A Move endpoint with ``..`` traversal is rejected, same as the
+        Update/Add/Delete headers."""
+        from tools.file_tools import patch_tool
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Move File: /tmp/work.txt -> ../../../etc/shadow\n"
+            "*** End Patch\n"
+        )
+        result = json.loads(patch_tool(mode="patch", patch=patch_text))
+        assert "error" in result
+        assert "traversal" in result["error"].lower()
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_patch_move_safe_paths_not_blocked(self, mock_get):
+        """Safe Move operations should still reach the file_ops dispatch."""
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {"status": "ok"}
+        mock_ops.patch_v4a.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import patch_tool
+        patch_text = (
+            "*** Begin Patch\n"
+            "*** Move File: /tmp/a.txt -> /tmp/b.txt\n"
+            "*** End Patch\n"
+        )
+        result = json.loads(patch_tool(mode="patch", patch=patch_text))
+        assert "error" not in result
+        mock_ops.patch_v4a.assert_called_once()
+
+
 class TestSearchHandler:
     @patch("tools.file_tools._get_file_ops")
     def test_search_calls_file_ops(self, mock_get):
@@ -327,6 +425,69 @@ class TestSearchHandler:
         from tools.file_tools import search_tool
         result = json.loads(search_tool(pattern="x"))
         assert "error" in result
+
+
+# ---------------------------------------------------------------------------
+# Windows MSYS path resolution (salvage of #50488 / #46995)
+# ---------------------------------------------------------------------------
+
+class TestWindowsMsysPathResolution:
+    """File tools must translate Git Bash drive paths before Path resolution."""
+
+    def test_absolute_msys_path_normalized_before_windows_resolve(self, monkeypatch):
+        import tools.environments.local as local_mod
+        import tools.file_tools as file_tools
+
+        monkeypatch.setattr(file_tools.sys, "platform", "win32")
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(file_tools, "_uses_container_paths", lambda task_id="default": False)
+
+        resolved = file_tools._resolve_path_for_task("/c/Users/Mark/project/app.py")
+        assert str(resolved) == r"C:\Users\Mark\project\app.py"
+
+    def test_cygdrive_path_normalized(self, monkeypatch):
+        import tools.environments.local as local_mod
+        import tools.file_tools as file_tools
+
+        monkeypatch.setattr(file_tools.sys, "platform", "win32")
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(file_tools, "_uses_container_paths", lambda task_id="default": False)
+
+        resolved = file_tools._resolve_path_for_task("/cygdrive/d/code/main.py")
+        assert str(resolved) == r"D:\code\main.py"
+
+    def test_relative_path_uses_normalized_msys_cwd(self, monkeypatch):
+        import tools.environments.local as local_mod
+        import tools.file_tools as file_tools
+
+        monkeypatch.setattr(file_tools.sys, "platform", "win32")
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(file_tools, "_uses_container_paths", lambda task_id="default": False)
+        monkeypatch.setattr(
+            file_tools,
+            "_authoritative_workspace_root",
+            lambda task_id="default": "/c/Users/Mark/project",
+        )
+
+        resolved = file_tools._resolve_path_for_task("src/app.py", task_id="msys")
+        assert str(resolved) == r"C:\Users\Mark\project\src\app.py"
+
+    def test_container_paths_skip_msys_translation(self, monkeypatch):
+        """WSL/docker Linux paths must not be rewritten as Windows drives."""
+        import tools.environments.local as local_mod
+        import tools.file_tools as file_tools
+
+        monkeypatch.setattr(file_tools.sys, "platform", "win32")
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.setattr(file_tools, "_uses_container_paths", lambda task_id="default": True)
+        monkeypatch.setattr(
+            file_tools,
+            "_authoritative_workspace_root",
+            lambda task_id="default": "/home/don/project",
+        )
+
+        resolved = file_tools._resolve_path_for_task("/home/don/.env")
+        assert str(resolved) == "/home/don/.env"
 
 
 # ---------------------------------------------------------------------------

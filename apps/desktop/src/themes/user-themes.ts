@@ -10,12 +10,19 @@
  * React mounts) can resolve a user theme synchronously, same as built-ins.
  */
 
-import { atom } from 'nanostores'
+import { atom, computed } from 'nanostores'
+
+import { registry } from '@/contrib/registry'
 
 import { BUILTIN_THEMES } from './presets'
 import type { DesktopTheme, DesktopThemeColors } from './types'
 
 const USER_THEMES_KEY = 'hermes-desktop-user-themes-v1'
+
+// Marketplace imports stamp their description "VS Code · <publisher.extension>"
+// (see `convertVscodeColorTheme`). This is the one place that convention is read
+// back out, so every install surface can tell what's already installed.
+const MARKETPLACE_DESC_PREFIX = 'VS Code · '
 
 // The minimal set of color keys a stored theme must carry to be usable. We keep
 // this loose — `applyTheme` tolerates missing optionals via fallbacks — but a
@@ -111,12 +118,67 @@ export function removeUserTheme(name: string): void {
 
 export const isUserTheme = (name: string): boolean => Boolean($userThemes.get()[name])
 
-/** Resolve a theme by name across the merged registry (built-in + user). */
-export function resolveTheme(name: string): DesktopTheme | undefined {
-  return BUILTIN_THEMES[name] ?? $userThemes.get()[name]
+/** The Marketplace extension id an installed theme came from, or null. */
+export function marketplaceIdOf(theme: DesktopTheme): string | null {
+  return theme.description.startsWith(MARKETPLACE_DESC_PREFIX)
+    ? theme.description.slice(MARKETPLACE_DESC_PREFIX.length)
+    : null
 }
 
-/** Built-ins first (stable order), then user themes by install order. */
+/**
+ * Reactive `extensionId → installed theme` map, so the install UIs can mark
+ * Marketplace rows you already have (and re-activate them without re-downloading)
+ * from one memoized source instead of re-deriving the set on every render.
+ */
+export const $marketplaceInstalls = computed($userThemes, themes => {
+  const map = new Map<string, DesktopTheme>()
+
+  for (const theme of Object.values(themes)) {
+    const id = marketplaceIdOf(theme)
+
+    if (id) {
+      map.set(id, theme)
+    }
+  }
+
+  return map
+})
+
+// ── Contributed themes — the `themes` registry area ─────────────────────────
+// A data contribution IS a DesktopTheme. Same validity bar as an installed
+// theme; built-in names can't be shadowed, and user-installed themes win over
+// contributed ones of the same name (the user's explicit install is intent).
+
+export const THEMES_AREA = 'themes'
+
+export function contributedThemes(): DesktopTheme[] {
+  const seen = new Set<string>()
+  const out: DesktopTheme[] = []
+
+  for (const c of registry.getArea(THEMES_AREA)) {
+    const theme = c.data as DesktopTheme | undefined
+
+    if (theme && isValidTheme(theme) && !BUILTIN_THEMES[theme.name] && !seen.has(theme.name)) {
+      seen.add(theme.name)
+      out.push(theme)
+    }
+  }
+
+  return out
+}
+
+/** Resolve a theme by name across the merged set (built-in + user + contributed). */
+export function resolveTheme(name: string): DesktopTheme | undefined {
+  return BUILTIN_THEMES[name] ?? $userThemes.get()[name] ?? contributedThemes().find(theme => theme.name === name)
+}
+
+/** Built-ins first (stable order), then contributed, then user installs. */
 export function listAllThemes(): DesktopTheme[] {
-  return [...Object.values(BUILTIN_THEMES), ...Object.values($userThemes.get())]
+  const user = $userThemes.get()
+
+  return [
+    ...Object.values(BUILTIN_THEMES),
+    ...contributedThemes().filter(theme => !user[theme.name]),
+    ...Object.values(user)
+  ]
 }

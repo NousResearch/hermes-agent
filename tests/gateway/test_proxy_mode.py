@@ -267,6 +267,16 @@ class TestRunAgentViaProxy:
         # Verify session ID header
         assert session.captured_headers["X-Hermes-Session-Id"] == "session-abc"
 
+        # Verify SessionSource identity headers forwarded so remote
+        # api_server can reconstruct per-user peer scoping
+        assert session.captured_headers["X-Hermes-User-Id"] == "@user:server.org"
+        assert session.captured_headers["X-Hermes-User-Name"] == "testuser"
+        assert session.captured_headers["X-Hermes-Chat-Id"] == "!room:server.org"
+        assert session.captured_headers["X-Hermes-Chat-Name"] == "Test Room"
+        assert session.captured_headers["X-Hermes-Chat-Type"] == "group"
+        # thread_id is None in the fixture source, must NOT be in headers
+        assert "X-Hermes-Thread-Id" not in session.captured_headers
+
         # Verify messages include system, history, and current message
         messages = session.captured_json["messages"]
         assert messages[0] == {"role": "system", "content": "You are helpful."}

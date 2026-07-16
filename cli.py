@@ -12738,6 +12738,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 pending_message = result.get("interrupt_message") or interrupt_msg
                 # Add indicator that we were interrupted
                 if response and pending_message:
+                    if getattr(self, '_response_ever_streamed', False):
+                        # Content was already streamed live — the Rich Panel
+                        # will be skipped (already_streamed=True), so print
+                        # the interrupt marker directly via _cprint instead
+                        # of only appending to response (which would be
+                        # invisible). See issue #65666.
+                        _cprint(f"\n{_DIM}---{_RST}")
+                        _cprint(f"{_DIM}_[Interrupted - processing new message]_{_RST}")
                     response = response + "\n\n---\n_[Interrupted - processing new message]_"
             elif interrupt_msg:
                 # We fired agent.interrupt(interrupt_msg) but the turn result

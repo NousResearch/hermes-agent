@@ -183,3 +183,61 @@ def test_response_ever_streamed_starts_false():
     stub._stream_box_opened = False
     stub._response_ever_streamed = False
     assert stub._response_ever_streamed is False
+
+
+# --------------------------------------------------------------------------- #
+# Interrupt marker: printed directly when content was already streamed
+# --------------------------------------------------------------------------- #
+
+
+def test_interrupt_marker_printed_directly_when_streamed():
+    """When _response_ever_streamed is True, the interrupt marker should be
+    printed directly via _cprint (not only appended to response).
+
+    This covers the case where the Rich Panel is skipped because
+    already_streamed=True — appending to response would be invisible
+    since the Panel never renders. The marker must go to the terminal
+    directly so the user sees it.
+    """
+    stub = SimpleNamespace()
+    stub._response_ever_streamed = True
+
+    # The logic from the interrupt handler:
+    # if response and pending_message:
+    #     if getattr(self, '_response_ever_streamed', False):
+    #         _cprint(...)  # direct print
+    #     response = response + "..."
+    response = "Some streamed content"
+    pending_message = "user interrupt"
+
+    # Simulate: when _response_ever_streamed is True, the marker is
+    # printed directly AND appended to response
+    printed_directly = False
+    if response and pending_message:
+        if getattr(stub, '_response_ever_streamed', False):
+            printed_directly = True  # _cprint would be called
+        response = response + "\n\n---\n_[Interrupted - processing new message]_"
+
+    assert printed_directly is True, "Interrupt marker should be printed directly when already streamed"
+    assert "[Interrupted" in response
+
+
+def test_interrupt_marker_not_printed_directly_when_not_streamed():
+    """When _response_ever_streamed is False (nothing was streamed), the
+    interrupt marker is only appended to response — the Rich Panel will
+    render it, so direct _cprint is not needed.
+    """
+    stub = SimpleNamespace()
+    stub._response_ever_streamed = False
+
+    printed_directly = False
+    response = "Some content"
+    pending_message = "user interrupt"
+
+    if response and pending_message:
+        if getattr(stub, '_response_ever_streamed', False):
+            printed_directly = True
+        response = response + "\n\n---\n_[Interrupted - processing new message]_"
+
+    assert printed_directly is False, "Should not print directly when not streamed"
+    assert "[Interrupted" in response

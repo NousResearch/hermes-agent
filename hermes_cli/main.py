@@ -5496,6 +5496,43 @@ def _macos_adhoc_sign_bundle(app: Path) -> None:
         logger.debug("macOS ad-hoc signing of %s skipped: %s", app, exc)
 
 
+def _desktop_bundle_install_supported() -> bool:
+    """Return whether the current platform has a copyable installed bundle."""
+    platform = sys.platform
+    return platform == "darwin" or platform == "win32"
+
+
+def _swap_in_new_macos_bundle(tmp: Path, target: Path, old: Path) -> None:
+    """Move a staged macOS bundle into place without losing the old bundle."""
+    moved_old = False
+    if target.exists():
+        try:
+            target.rename(old)
+        except OSError:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise
+        moved_old = True
+
+    try:
+        tmp.rename(target)
+    except OSError as install_error:
+        rollback_error: OSError | None = None
+        if moved_old:
+            try:
+                old.rename(target)
+            except OSError as exc:
+                rollback_error = exc
+        shutil.rmtree(tmp, ignore_errors=True)
+        if rollback_error is not None:
+            raise OSError(
+                f"installing the staged bundle failed and rollback remains at {old}: "
+                f"{rollback_error}"
+            ) from install_error
+        raise
+
+    shutil.rmtree(old, ignore_errors=True)
+
+
 def _install_rebuilt_desktop_app(desktop_dir: Path) -> Path | None:
     """Install the freshly rebuilt desktop app to the system install location.
 
@@ -5506,15 +5543,23 @@ def _install_rebuilt_desktop_app(desktop_dir: Path) -> Path | None:
     this function covers the CLI ``hermes update`` path so the installed app
     does not go stale.
 
-    Only installs when:
-    - a rebuilt packaged app exists in ``release/``
-    - an installed copy already exists at a standard location
+    Only installs when the current platform has a copyable installed bundle
+    (a macOS ``.app`` or Windows NSIS directory), a rebuilt package exists,
+    and an installed copy already exists at a standard location. Linux
+    AppImage/deb/rpm installs remain owned by their original package mechanism;
+    ``packaged_gui_app_paths`` only returns ``.desktop`` launchers there.
 
-    Compares the ``app.asar`` SHA-256 to avoid unnecessary copies.  On macOS,
-    clears quarantine and re-applies ad-hoc signing via
-    ``_desktop_macos_relaunchable_fixup``.  Returns the installed path on
-    success, or ``None`` when no install was needed/possible.
+    Compares the macOS ``app.asar`` SHA-256 to avoid unnecessary copies, then
+    clears quarantine and re-applies ad-hoc signing. Returns the installed path
+    on success, or ``None`` when no install was needed or possible.
     """
+    if not _desktop_bundle_install_supported():
+        logger.debug(
+            "Skipping post-update Desktop bundle install on unsupported platform %s",
+            sys.platform,
+        )
+        return None
+
     rebuilt_exe = _desktop_packaged_executable(desktop_dir)
     if rebuilt_exe is None:
         return None
@@ -5529,8 +5574,7 @@ def _install_rebuilt_desktop_app(desktop_dir: Path) -> Path | None:
         # win-unpacked is a directory, not a .app bundle
         rebuilt_app = rebuilt_exe.parent
     else:
-        # Linux unpacked is a directory too
-        rebuilt_app = rebuilt_exe.parent
+        return None
 
     if rebuilt_app is None or not rebuilt_app.is_dir():
         return None
@@ -5538,7 +5582,12 @@ def _install_rebuilt_desktop_app(desktop_dir: Path) -> Path | None:
     # Find existing installed copies at standard locations
     from hermes_cli.gui_uninstall import packaged_gui_app_paths
 
-    installed_apps = [p for p in packaged_gui_app_paths() if p.exists()]
+    installed_apps = [
+        path
+        for path in packaged_gui_app_paths()
+        if path.is_dir()
+        and (sys.platform == "win32" or path.suffix.casefold() == ".app")
+    ]
     if not installed_apps:
         return None  # nothing installed → nothing to update
 
@@ -5551,29 +5600,22 @@ def _install_rebuilt_desktop_app(desktop_dir: Path) -> Path | None:
             if installed_hash and installed_hash == rebuilt_hash:
                 continue  # already up to date
 
-        # On macOS, use ditto for metadata-preserving copy.  The running
-        # app's binary is memory-mapped, so replacing the bundle in place
-        # is safe — the old process keeps its mapped pages.  On other
-        # platforms, shutil.copytree handles the replacement.
+        # On macOS, use ditto for a metadata-preserving staged copy, then move
+        # the installed bundle aside and atomically-as-possible swap the staged
+        # copy in. The old bundle is restored if either rename fails. Windows
+        # installs are directories, so copytree replaces their contents.
         try:
             if sys.platform == "darwin":
                 ditto = shutil.which("ditto")
                 if not ditto:
                     continue
-                # Atomic-ish swap: ditto to temp, move old aside, move new in.
                 tmp = installed_app.parent / f"{installed_app.name}.hermes-update-new"
                 old = installed_app.parent / f"{installed_app.name}.hermes-update-old"
-                subprocess.run([ditto, str(rebuilt_app), str(tmp)], check=True, capture_output=True)
-                if old.exists():
-                    shutil.rmtree(old, ignore_errors=True)
-                try:
-                    installed_app.rename(old)
-                except OSError:
-                    shutil.rmtree(installed_app, ignore_errors=True)
-                tmp.rename(installed_app)
+                shutil.rmtree(tmp, ignore_errors=True)
                 shutil.rmtree(old, ignore_errors=True)
+                subprocess.run([ditto, str(rebuilt_app), str(tmp)], check=True, capture_output=True)
+                _swap_in_new_macos_bundle(tmp, installed_app, old)
             else:
-                # Linux/Windows: replace the directory contents.
                 if installed_app.is_dir():
                     shutil.rmtree(installed_app, ignore_errors=True)
                 shutil.copytree(rebuilt_app, installed_app, dirs_exist_ok=True)
@@ -10136,11 +10178,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # backend-ready.cjs regex, boot timeout).  Install the
                 # rebuilt bundle when an installed copy already exists so
                 # CLI updates stay self-contained.
-                installed = _install_rebuilt_desktop_app(desktop_dir)
-                if installed:
-                    print(f"  ✓ Desktop app updated at {installed}")
+                if _desktop_bundle_install_supported():
+                    installed = _install_rebuilt_desktop_app(desktop_dir)
+                    if installed:
+                        print(f"  ✓ Desktop app updated at {installed}")
+                    else:
+                        print("  ✓ Desktop app up to date")
                 else:
-                    print("  ✓ Desktop app up to date")
+                    print(
+                        "  ✓ Desktop app rebuilt; automatic installed-package "
+                        f"replacement is unsupported on {sys.platform}"
+                    )
 
         print()
         print("✓ Code updated!")

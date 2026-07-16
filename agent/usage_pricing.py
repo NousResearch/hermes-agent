@@ -884,15 +884,18 @@ def _normalize_bedrock_model_name(model: str) -> str:
     """Normalize a Bedrock model id to its bare foundation-model form.
 
     Bedrock cross-region inference profiles prefix the foundation model id
-    with a region scope (``us.`` / ``global.`` / ``eu.`` / ``ap.`` / ``jp.``),
-    e.g. ``us.anthropic.claude-opus-4-7``.  The pricing table is keyed on the
-    bare ``anthropic.claude-*`` id, so the prefix must be stripped before the
-    lookup or every cross-region session prices as unknown.  Mirrors the
-    prefix list in ``bedrock_adapter.is_anthropic_bedrock_model``.  Also
-    normalizes dot-notation version numbers (``4.7`` → ``4-7``).
+    with a region scope (``us.`` / ``global.`` / ``eu.`` / ``apac.`` / ``au.``),
+    e.g. ``us.anthropic.claude-opus-4-7`` or ``apac.anthropic.claude-*``.  The
+    pricing table is keyed on the bare ``anthropic.claude-*`` id, so the prefix
+    must be stripped before the lookup or every cross-region session prices as
+    unknown.  Asia-Pacific uses ``apac.`` (not ``ap.``) and Australia ``au.`` —
+    a bare ``ap.`` never matches an ``apac.*`` id, so those geographies priced
+    as unknown.  Mirrors the prefix list in
+    ``bedrock_adapter.is_anthropic_bedrock_model``.  Also normalizes
+    dot-notation version numbers (``4.7`` → ``4-7``).
     """
     name = model.lower().strip()
-    for prefix in ("us.", "global.", "eu.", "ap.", "jp."):
+    for prefix in ("us.", "global.", "eu.", "apac.", "ap.", "au.", "jp."):
         if name.startswith(prefix):
             name = name[len(prefix):]
             break

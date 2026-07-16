@@ -4134,3 +4134,59 @@ class TestModelRoutesAgentCreation:
         assert adapter._session_model_override_for("chan-1") == {"model": "user/model"}
         assert adapter._session_model_override_for("chan-2") is None
         assert adapter._session_model_override_for(None) is None
+
+
+class TestListSessionsRoute:
+    """GET /api/sessions serializes rows through _session_response."""
+
+    @staticmethod
+    def _app_with_sessions_route(adapter):
+        app = _create_app(adapter)
+        app.router.add_get("/api/sessions", adapter._handle_list_sessions)
+        return app
+
+    @pytest.mark.asyncio
+    async def test_list_sessions_exposes_gateway_binding(self, adapter, tmp_path):
+        """The list envelope is {object, data, ...} and each row carries the
+        session binding fields (session_key/chat_id/chat_type/thread_id) —
+        null for rows created without a gateway origin — while sensitive
+        snapshots stay reduced to existence flags."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(
+            session_id="keyed-session",
+            source="telegram",
+            session_key="agent:main:telegram:group:-1001234567890:1",
+            chat_id="-1001234567890",
+            chat_type="group",
+            thread_id="1",
+            system_prompt="secret prompt",
+        )
+        db.create_session(session_id="unkeyed-session", source="cli")
+        adapter._session_db = db
+
+        try:
+            app = self._app_with_sessions_route(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/api/sessions?limit=20&offset=0")
+                assert resp.status == 200
+                body = await resp.json()
+        finally:
+            db.close()
+
+        assert body["object"] == "list"
+        rows = {s["id"]: s for s in body["data"]}
+
+        keyed = rows["keyed-session"]
+        assert keyed["session_key"] == "agent:main:telegram:group:-1001234567890:1"
+        assert keyed["chat_id"] == "-1001234567890"
+        assert keyed["chat_type"] == "group"
+        assert keyed["thread_id"] == "1"
+        assert "system_prompt" not in keyed
+        assert keyed["has_system_prompt"] is True
+
+        unkeyed = rows["unkeyed-session"]
+        for key in ("session_key", "chat_id", "chat_type", "thread_id"):
+            assert key in unkeyed
+            assert unkeyed[key] is None

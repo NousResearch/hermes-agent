@@ -347,6 +347,24 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 
 `/v1/capabilities` advertises the full surface via `session_*` feature flags and `endpoints.session_*` entries so external UIs can detect support and fall back safely. Inline images are supported in `chat` and `chat/stream` payloads (multimodal-aware path).
 
+Each session object returned by `GET /api/sessions` includes its gateway binding: `session_key` (the stable routing key, e.g. `agent:main:telegram:group:<chat_id>:<thread_id>`) plus the structured `chat_id`, `chat_type`, and `thread_id` fields. All four are `null` for sessions created without a gateway origin (plain CLI sessions, or rows predating the fields). Use them to map a live session back to the exact channel it came from instead of inferring from `user_id` alone — for Telegram in particular, `user_id` is the sender's personal ID and is identical across DMs and group messages. `session_key` is the same value callers can set on inbound requests via the [`X-Hermes-Session-Key`](#long-term-memory-scoping-x-hermes-session-key) header.
+
+```bash
+# list sessions, including each session's gateway binding
+curl "http://localhost:8642/api/sessions?limit=20" \
+  -H "Authorization: Bearer $API_SERVER_KEY"
+# → {"object": "list",
+#    "data": [
+#      {"id": "abc123", "source": "telegram", "user_id": "456",
+#       "session_key": "agent:main:telegram:group:<chat_id>:1",
+#       "chat_id": "<chat_id>", "chat_type": "group", "thread_id": "1", ...},
+#      {"id": "def456", "source": "cli", "user_id": null,
+#       "session_key": null, "chat_id": null, "chat_type": null,
+#       "thread_id": null, ...}
+#    ],
+#    "limit": 20, "offset": 0, "has_more": false}
+```
+
 ```bash
 # fork a session and run one turn
 curl -X POST http://localhost:8642/api/sessions/$ID/fork \

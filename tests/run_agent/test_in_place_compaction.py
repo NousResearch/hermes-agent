@@ -186,9 +186,7 @@ class TestInPlaceCompaction:
 
 class TestRotationFallbackWhenFlagOff:
     def test_rotation_when_flag_off(self):
-        """Rotation is now the OPT-OUT fallback (default flipped to in-place in
-        #38763). With in_place=False explicitly set, legacy rotation is
-        unchanged — forks a renamed continuation session."""
+        """Legacy rotation may change the session ID, but not the logical title."""
         from hermes_state import SessionDB
         from agent.conversation_compression import compress_context
 
@@ -206,17 +204,45 @@ class TestRotationFallbackWhenFlagOff:
 
             # Identity rotated to a fresh id.
             assert agent.session_id != sid
-            # Old session ended via compression; continuation forked + renamed.
+            # Old session ended via compression; the continuation owns the exact
+            # logical title so a refresh cannot make the conversation look renamed.
             assert db.get_session(sid)["end_reason"] == "compression"
+            assert db.get_session(sid)["title"] is None
             child = db._conn.execute(
                 "SELECT id, title FROM sessions WHERE parent_session_id = ?", (sid,)
             ).fetchall()
             assert len(child) == 1
-            assert child[0]["title"] == "my-research #2"
+            assert child[0]["title"] == "my-research"
             # Flush cursor reset for the new row.
             assert agent._last_flushed_db_idx == 0
             # Rotation mode does NOT set the in-place signal.
             assert getattr(agent, "_last_compaction_in_place", False) is False
+            db.close()
+
+    def test_rotation_preserves_a_manual_rename_that_lands_during_rotation(self):
+        from hermes_state import SessionDB
+        from agent.conversation_compression import compress_context
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            sid = "20260619_130000_manual"
+            _seed(db, sid, "Captured Before Rename")
+            messages = [{"role": "user", "content": f"m{i}"} for i in range(8)]
+            agent = _make_agent(db, sid, in_place=False)
+            original_rotate = db.rotate_session_for_compression
+
+            def rename_then_rotate(*args, **kwargs):
+                db.set_session_title(sid, "Manual Rename During Rotation")
+                return original_rotate(*args, **kwargs)
+
+            db.rotate_session_for_compression = rename_then_rotate
+            compress_context(
+                agent, messages, approx_tokens=100_000, system_message="sys"
+            )
+
+            assert db.get_session_title(sid) is None
+            assert db.get_session_title(agent.session_id) == "Manual Rename During Rotation"
+            db.close()
 
 
 class TestInPlaceSignalForGateway:

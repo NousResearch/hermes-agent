@@ -216,9 +216,19 @@ def _auto_title_session(
         return
 
     try:
-        session_db.set_session_title(session_id, title)
+        updated = session_db.set_session_title_if_untitled(session_id, title)
+        if not updated:
+            logger.debug("Skipped auto-generated title because the session was already named")
+            return
         logger.debug("Auto-generated session title: %s", title)
         if title_callback is not None:
+            authoritative_title = session_db.get_logical_session_title(session_id)
+            if authoritative_title != title:
+                logger.debug(
+                    "Skipped stale title callback; authoritative title is %r",
+                    authoritative_title,
+                )
+                return
             try:
                 title_callback(title)
             except Exception:
@@ -246,12 +256,11 @@ def maybe_auto_title(
     if not session_db or not session_id or not user_message or not assistant_response:
         return
 
-    # Count user messages in history to detect first exchange.
-    # conversation_history includes the exchange that just happened,
-    # so for a first exchange we expect exactly 1 user message
-    # (or 2 counting system). Be generous: generate on first 2 exchanges.
+    # Only the first completed exchange may start an automatic title worker.
+    # Allowing the second exchange creates a second in-flight writer when the
+    # first title model call is still running.
     user_msg_count = sum(1 for m in (conversation_history or []) if m.get("role") == "user")
-    if user_msg_count > 2:
+    if user_msg_count != 1:
         return
 
     thread = threading.Thread(

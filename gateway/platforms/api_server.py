@@ -2268,21 +2268,50 @@ class APIServerAdapter(BasePlatformAdapter):
         body, err = await self._read_json_body(request)
         if err:
             return err
-        allowed = {"title", "end_reason"}
+        allowed = {"title", "end_reason", "if_untitled"}
         unknown = sorted(set(body) - allowed)
         if unknown:
             return web.json_response(_openai_error(f"Unsupported session fields: {', '.join(unknown)}", code="unsupported_session_field"), status=400)
+        if_untitled = body.get("if_untitled", False)
+        if not isinstance(if_untitled, bool):
+            return web.json_response(
+                _openai_error("if_untitled must be a boolean", code="invalid_if_untitled"),
+                status=400,
+            )
+        if if_untitled and "title" not in body:
+            return web.json_response(
+                _openai_error("if_untitled requires title", code="invalid_if_untitled"),
+                status=400,
+            )
 
         db = self._ensure_session_db()
+        title_updated = None
+        response_session = session
         if "title" in body:
             try:
-                db.set_session_title(session_id, "" if body["title"] is None else str(body["title"]))
+                title = "" if body["title"] is None else str(body["title"])
+                if if_untitled:
+                    title_result = db.set_session_title_if_untitled_result(
+                        session_id, title
+                    )
+                else:
+                    title_result = db.set_logical_session_title_result(
+                        session_id, title
+                    )
+                title_updated = bool(title_result.get("updated")) if if_untitled else None
+                if isinstance(title_result.get("session"), dict):
+                    response_session = title_result["session"]
             except ValueError as exc:
                 return web.json_response(_openai_error(str(exc), code="invalid_title"), status=400)
         if body.get("end_reason"):
-            db.end_session(session_id, str(body["end_reason"]))
-        session = db.get_session(session_id) or session
-        return web.json_response({"object": "hermes.session", "session": self._session_response(session)})
+            response_id = str(response_session.get("id") or session_id)
+            end_session_id = db.get_compression_tip(session_id) or response_id
+            db.end_session(end_session_id, str(body["end_reason"]))
+            response_session = db.get_session(end_session_id) or response_session
+        payload = {"object": "hermes.session", "session": self._session_response(response_session)}
+        if title_updated is not None:
+            payload["title_updated"] = bool(title_updated)
+        return web.json_response(payload)
 
     async def _handle_delete_session(self, request: "web.Request") -> "web.Response":
         """DELETE /api/sessions/{session_id}."""
@@ -2343,6 +2372,7 @@ class APIServerAdapter(BasePlatformAdapter):
             fork_id,
             "api_server",
             model=source.get("model"),
+            model_config={"_branched_from": source_id},
             system_prompt=source.get("system_prompt"),
             parent_session_id=source_id,
         )

@@ -14813,8 +14813,11 @@ def main():
                 return
             title = " ".join(args.title)
             try:
-                if db.set_session_title(resolved_session_id, title):
-                    print(f"Session '{resolved_session_id}' renamed to: {title}")
+                renamed_session_id = db.set_logical_session_title(
+                    resolved_session_id, title
+                )
+                if renamed_session_id:
+                    print(f"Session '{renamed_session_id}' renamed to: {title}")
                 else:
                     print(f"Session '{args.session_id}' not found.")
             except ValueError as e:

@@ -863,9 +863,6 @@ def compress_context(
                         agent._flush_messages_to_session_db(messages)
                     except Exception:
                         pass  # best-effort — don't block compression on a flush error
-                    # Propagate title to the new session with auto-numbering
-                    old_title = agent._session_db.get_session_title(agent.session_id)
-                    agent._session_db.end_session(agent.session_id, "compression")
                     old_session_id = agent.session_id
                     agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
                     # Ordering contract: the agent thread updates the contextvar here;
@@ -893,25 +890,18 @@ def compress_context(
                         pass
                     agent._session_db_created = False
                     try:
-                        agent._session_db.create_session(
-                            session_id=agent.session_id,
+                        agent._session_db.rotate_session_for_compression(
+                            parent_session_id=old_session_id,
+                            child_session_id=agent.session_id,
                             source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
                             model=agent.model,
                             model_config=agent._session_init_model_config,
-                            parent_session_id=old_session_id,
                         )
                     except Exception as _cs_err:
-                        # The child row could not be created (e.g. FK constraint,
-                        # contended write). Previously the outer handler simply
-                        # warned and let the agent continue on the NEW id — which
-                        # has no row in state.db, producing an orphan: the parent
-                        # is ended, the child is never indexed, and every
-                        # subsequent message is attributed to a session that
-                        # doesn't exist (#33906/#33907). Roll the live id back to
-                        # the parent so the conversation stays attached to a real,
-                        # indexed session instead of a phantom.
+                        # The atomic rotation rolled back, so the parent remains
+                        # open and no child/title state was committed.
                         logger.warning(
-                            "Compression child session create failed (%s) — "
+                            "Atomic compression rotation failed (%s) — "
                             "rolling back to parent session %s to avoid an orphan.",
                             _cs_err, old_session_id,
                         )
@@ -926,8 +916,8 @@ def compress_context(
                             set_session_context(agent.session_id)
                         except Exception:
                             pass
-                        # Re-open the parent: it was ended above, but we're
-                        # continuing on it, so it must not stay closed.
+                        # Defensive no-op for an atomically rolled-back parent;
+                        # retained for compatibility with custom SessionDB backends.
                         try:
                             agent._session_db.reopen_session(old_session_id)
                         except Exception:
@@ -948,13 +938,6 @@ def compress_context(
                         migrate_goal_to_session(old_session_id, agent.session_id, reason="compression")
                     except Exception as _goal_err:
                         logger.debug("Could not migrate goal on compression: %s", _goal_err)
-                    # Auto-number the title for the continuation session
-                    if old_title:
-                        try:
-                            new_title = agent._session_db.get_next_title_in_lineage(old_title)
-                            agent._session_db.set_session_title(agent.session_id, new_title)
-                        except (ValueError, Exception) as e:
-                            logger.debug("Could not propagate title on compression: %s", e)
 
                 # Shared post-write steps (both modes target agent.session_id, which
                 # in-place keeps and rotation has already reassigned to the new id):

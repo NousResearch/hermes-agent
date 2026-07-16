@@ -10197,13 +10197,16 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
             )
         if body.title is not None:
             try:
-                db.set_session_title(sid, body.title or "")
+                title_session_id = db.set_logical_session_title(sid, body.title or "")
+                if not title_session_id:
+                    raise HTTPException(status_code=404, detail="Session not found")
             except ValueError as e:
                 # Title too long, invalid characters, or already in use.
                 raise HTTPException(status_code=400, detail=str(e))
         if body.archived is not None:
             db.set_session_archived(sid, body.archived)
-        result = {"ok": True, "title": db.get_session_title(sid) or ""}
+        result_session_id = db.get_compression_tip(sid) or sid
+        result = {"ok": True, "title": db.get_session_title(result_session_id) or ""}
         if body.archived is not None:
             result["archived"] = bool(body.archived)
         return result

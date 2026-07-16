@@ -34,6 +34,7 @@ from agent.model_metadata import (
 )
 from agent.redact import redact_sensitive_text
 from agent.turn_context import drop_stale_api_content
+from tools.todo_tool import TODO_INJECTION_HEADER
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +135,15 @@ COMPRESSED_SUMMARY_HAS_USER_TURN_KEY = "_compressed_summary_has_user_turn"
 _DB_PERSISTED_MARKER = "_db_persisted"
 
 _NO_USER_TASK_SENTINEL = "None. This session contains no user-authored turns."
+COMPRESSION_CONTINUATION_USER_CONTENT = (
+    "Continue from the compressed conversation context above. "
+    "This marker exists because no human user turn was available."
+)
+_LEGACY_COMPRESSION_CONTINUATION_USER_CONTENT = (
+    "Continue from the compressed conversation context above. "
+    "This marker exists because the compacted transcript contained "
+    "no preserved user turn."
+)
 
 
 def _fresh_compaction_message_copy(msg: Dict[str, Any]) -> Dict[str, Any]:
@@ -1999,6 +2009,9 @@ class ContextCompressor(ContextEngine):
             role = msg.get("role", "unknown")
             text = _compact_fallback_turn(msg.get("content"))
             _collect_path_mentions(text, relevant_files)
+            synthetic_user = (
+                role == "user" and self._is_synthetic_compression_user_turn(msg)
+            )
 
             turn_text = text
             turn_tool_names: list[str] = []
@@ -2009,12 +2022,13 @@ class ContextCompressor(ContextEngine):
                 if turn_tool_names:
                     prefix = "tool calls: " + ", ".join(turn_tool_names[:6])
                     turn_text = f"{prefix}; {turn_text}" if turn_text else prefix
-            _remember_dropped_turn(str(role).upper(), turn_text)
+            turn_label = "INTERNAL CONTEXT" if synthetic_user else str(role).upper()
+            _remember_dropped_turn(turn_label, turn_text)
 
             if len(text) > 600:
                 text = text[:420].rstrip() + " ... " + text[-160:].lstrip()
 
-            if role == "user" and text:
+            if role == "user" and text and not synthetic_user:
                 user_asks.append(text)
             elif role == "assistant":
                 tool_names: list[str] = []
@@ -2745,12 +2759,32 @@ This compaction should PRIORITISE preserving all information related to the focu
         for message in messages:
             if not isinstance(message, dict) or message.get("role") != "user":
                 continue
-            if cls._has_compressed_summary_metadata(message):
-                continue
-            if cls._is_context_summary_content(message.get("content")):
+            if cls._is_synthetic_compression_user_turn(message):
                 continue
             return True
         return False
+
+    @classmethod
+    def _is_synthetic_compression_user_turn(cls, message: Any) -> bool:
+        """Recognize internal user-role rows after SessionDB projection.
+
+        SessionDB preserves role/content but not underscore-prefixed metadata,
+        so the stable todo and continuation content markers are authoritative.
+        """
+        if not isinstance(message, dict) or message.get("role") != "user":
+            return False
+        if cls._has_compressed_summary_metadata(message):
+            return True
+        content = message.get("content")
+        if cls._is_context_summary_content(content):
+            return True
+        text = _content_text_for_contains(content).strip()
+        return text in {
+            COMPRESSION_CONTINUATION_USER_CONTENT,
+            _LEGACY_COMPRESSION_CONTINUATION_USER_CONTENT,
+        } or text.startswith(
+            TODO_INJECTION_HEADER + "\n"
+        )
 
     @staticmethod
     def _validate_summary_user_provenance(summary: str, has_user_turn: bool) -> None:
@@ -2782,9 +2816,9 @@ This compaction should PRIORITISE preserving all information related to the focu
             msg = messages[idx]
             if msg.get("role") != "user":
                 continue
-            content = msg.get("content")
-            if cls._is_context_summary_content(content):
+            if cls._is_synthetic_compression_user_turn(msg):
                 continue
+            content = msg.get("content")
             text = redact_sensitive_text(_content_text_for_contains(content).strip())
             if not text:
                 continue
@@ -3065,8 +3099,9 @@ This compaction should PRIORITISE preserving all information related to the focu
         """
         for i in range(len(messages) - 1, head_end - 1, -1):
             msg = messages[i]
-            if msg.get("role") == "user" and not self._is_context_summary_content(
-                msg.get("content")
+            if (
+                msg.get("role") == "user"
+                and not self._is_synthetic_compression_user_turn(msg)
             ):
                 return i
         return -1

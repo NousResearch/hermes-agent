@@ -1998,6 +1998,12 @@ class MCPServerTask:
         transport connection so a server that gains ping support after a
         reconnect is re-probed with the cheap path.
 
+        The ``list_tools`` fallback uses a longer timeout (60s) than ``ping``
+        (30s) because servers with hundreds of tools can take >30s to serialize
+        and transfer the full tool list.  Using the same short timeout as
+        ``ping`` caused a guaranteed timeout + reconnect loop on large servers
+        that don't implement ``ping``.  See issue #65787.
+
         Raises on a genuine connection failure so the caller triggers a
         reconnect; returns normally when the session is alive.
         """
@@ -2023,7 +2029,18 @@ class MCPServerTask:
                 )
 
         # Fallback probe for servers without ping support.
-        await asyncio.wait_for(self.session.list_tools(), timeout=30.0)
+        # Use a generous timeout: list_tools transfers the full tool catalog,
+        # which can be large (900+ tools = multi-MB payload).  The ping path
+        # uses 30s; the list_tools fallback needs more headroom.  See #65787.
+        try:
+            await asyncio.wait_for(self.session.list_tools(), timeout=60.0)
+        except asyncio.TimeoutError:
+            raise asyncio.TimeoutError(
+                f"list_tools keepalive timed out after 60s — server "
+                f"'{self.name}' may expose too many tools for the available "
+                f"bandwidth. Consider implementing the optional MCP 'ping' "
+                f"utility to avoid the expensive list_tools fallback."
+            )
 
     async def _wait_for_lifecycle_event(self) -> str:
         """Block until either _shutdown_event or _reconnect_event fires.
@@ -2107,7 +2124,7 @@ class MCPServerTask:
                         logger.warning(
                             "MCP server '%s' keepalive failed, "
                             "triggering reconnect: %s",
-                            self.name, exc,
+                            self.name, exc or type(exc).__name__,
                         )
                         self._reconnect_event.set()
                         break

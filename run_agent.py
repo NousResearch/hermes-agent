@@ -5452,7 +5452,12 @@ class AIAgent:
         if base_url_host_matches(self._base_url_lower, "ollama.com"):
             return self._ollama_supports_thinking_cached()
         if "openrouter" not in self._base_url_lower:
-            return False
+            # Direct, non-OpenRouter providers that support reasoning_effort.
+            direct_reasoning_hosts = (
+                "api.deepseek.com",
+            )
+            if not any(h in self._base_url_lower for h in direct_reasoning_hosts):
+                return False
         if "api.mistral.ai" in self._base_url_lower:
             return False
 

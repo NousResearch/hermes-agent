@@ -564,16 +564,15 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     Extract category from skill path based on directory structure.
 
     For paths like: ~/.hermes/skills/mlops/axolotl/SKILL.md -> "mlops"
-    Also works for external skill dirs configured via skills.external_dirs.
+    Also works for explicitly included default-profile and external roots.
     """
-    # Try the active profile skills dir first (respects monkeypatching in tests),
-    # then fall back to external dirs from config.
-    dirs_to_check = [_skills_dir()]
+    # Try visible skill roots in precedence order while preserving the live
+    # active-profile directory (and explicit test monkeypatches).
     try:
-        from agent.skill_utils import get_external_skills_dirs
-        dirs_to_check.extend(get_external_skills_dirs())
+        from agent.skill_utils import get_all_skills_dirs
+        dirs_to_check = list(get_all_skills_dirs(_skills_dir()))
     except Exception:
-        pass
+        dirs_to_check = [_skills_dir()]
     for skills_dir in dirs_to_check:
         try:
             rel_path = skill_path.relative_to(skills_dir)
@@ -667,7 +666,7 @@ def _is_skill_disabled(name: str, platform: str = None) -> bool:
 
 
 def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
-    """Recursively find all skills in ~/.hermes/skills/ and external dirs.
+    """Recursively find all skills visible to the active profile.
 
     Args:
         skip_disabled: If True, return ALL skills regardless of disabled
@@ -681,7 +680,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     signature changes (dir/category mtimes or the disabled-set) and expires
     after a short TTL to bound staleness from in-place SKILL.md edits.
     """
-    from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+    from agent.skill_utils import get_all_skills_dirs, iter_skill_index_files
 
     cache_key = _SKILLS_CACHE_KEY_DISABLED if skip_disabled else _SKILLS_CACHE_KEY_FILTERED
 
@@ -692,11 +691,8 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     # Collect directories to scan — same resolution as the scan loop below
     # (_skills_dir() resolves the LIVE profile HERMES_HOME; the module-level
     # SKILLS_DIR can be stale in long-lived runtimes).
-    dirs_to_scan: list = []
     active_skills_dir = _skills_dir()
-    if active_skills_dir.exists():
-        dirs_to_scan.append(active_skills_dir)
-    dirs_to_scan.extend(get_external_skills_dirs())
+    dirs_to_scan = list(get_all_skills_dirs(active_skills_dir))
 
     signature = _skills_scan_signature(dirs_to_scan, disabled)
     now = time.monotonic()
@@ -715,7 +711,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     skills = []
     seen_names: set = set()
 
-    # Scan local dir first, then external dirs (local takes precedence) —
+    # Scan visible roots in precedence order —
     # dirs_to_scan already resolved above for the signature.
     for scan_dir in dirs_to_scan:
         for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
@@ -1063,7 +1059,7 @@ def skill_view(
             if bare:
                 local_category_name = f"{namespace}/{bare}"
 
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_all_skills_dirs
 
         # The categorized fall-through form (namespace/bare) joins onto each
         # search dir too; re-validate it since `bare` is not namespace-checked.
@@ -1080,13 +1076,10 @@ def skill_view(
                 )
 
         # Build list of all skill directories to search
-        all_dirs = []
         active_skills_dir = _skills_dir()
-        if active_skills_dir.exists():
-            all_dirs.append(active_skills_dir)
-        all_dirs.extend(get_external_skills_dirs())
+        all_dirs = list(get_all_skills_dirs(active_skills_dir))
 
-        if not all_dirs:
+        if not any(directory.is_dir() for directory in all_dirs):
             return json.dumps(
                 {
                     "success": False,
@@ -1190,7 +1183,7 @@ def skill_view(
                     "success": False,
                     "error": (
                         f"Ambiguous skill name '{name}': {len(candidates)} skills "
-                        "match across your local skills dir and external_dirs. "
+                        "match across your configured skill directories. "
                         "Refusing to guess — load one explicitly by its categorized path."
                     ),
                     "matches": paths,
@@ -1230,8 +1223,7 @@ def skill_view(
                 ensure_ascii=False,
             )
 
-        # Security: warn if skill is loaded from outside trusted directories
-        # (local skills dir + configured external_dirs are all trusted)
+        # Security: warn if skill is loaded from outside visible skill roots.
         _outside_skills_dir = True
         _trusted_dirs = [active_skills_dir.resolve()]
         try:

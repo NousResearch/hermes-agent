@@ -1465,10 +1465,9 @@ def build_skills_system_prompt(
 
     Falls back to a full filesystem scan when both layers miss.
 
-    External skill directories (``skills.external_dirs`` in config.yaml) are
-    scanned alongside the local ``~/.hermes/skills/`` directory.  External dirs
-    are read-only — they appear in the index but new skills are always created
-    in the local dir.  Local skills take precedence when names collide.
+    Additional visible skill directories — the explicitly included default
+    profile and ``skills.external_dirs`` — are scanned after the active
+    profile's local directory. Local skills take precedence when names collide.
 
     ``compact_categories`` (e.g. from the coding posture — see
     agent/coding_context.py) demotes whole categories to a names-only line in
@@ -1477,9 +1476,9 @@ def build_skills_system_prompt(
     descriptions are dropped, and a footer note explains the demotion.
     """
     skills_dir = get_skills_dir()
-    external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
+    additional_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
 
-    if not skills_dir.exists() and not external_dirs:
+    if not skills_dir.exists() and not additional_dirs:
         return ""
 
     # ── Layer 1: in-process LRU cache ─────────────────────────────────
@@ -1489,7 +1488,7 @@ def build_skills_system_prompt(
     disabled = get_disabled_skill_names(_platform_hint or None)
     cache_key = (
         str(skills_dir),
-        tuple(str(d) for d in external_dirs),
+        tuple(str(d) for d in additional_dirs),
         tuple(sorted(str(t) for t in (available_tools or set()))),
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
@@ -1577,16 +1576,15 @@ def build_skills_system_prompt(
             category_descriptions,
         )
 
-    # ── External skill directories ─────────────────────────────────────
-    # Scan external dirs directly (no snapshot caching — they're read-only
-    # and typically small).  Local skills already in skills_by_category take
-    # precedence: we track seen names and skip duplicates from external dirs.
+    # ── Additional skill directories ───────────────────────────────────
+    # Scan additional roots directly. Local skills already in
+    # skills_by_category take precedence: track seen names and skip duplicates.
     seen_skill_names: set[str] = set()
     for cat_skills in skills_by_category.values():
         for name, _desc in cat_skills:
             seen_skill_names.add(name)
 
-    for ext_dir in external_dirs:
+    for ext_dir in additional_dirs:
         if not ext_dir.exists():
             continue
         for skill_file in iter_skill_index_files(ext_dir, "SKILL.md"):

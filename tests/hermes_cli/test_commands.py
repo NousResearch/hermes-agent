@@ -1,5 +1,7 @@
 """Tests for the central command registry and autocomplete."""
 
+from pathlib import Path
+
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
@@ -1523,6 +1525,40 @@ class TestTelegramMenuCommands:
         assert "lookalike_skill" not in menu_names, (
             "prefix-match sibling directories must not be admitted"
         )
+
+    def test_opted_in_default_profile_skill_appears_in_telegram_menu(
+        self, tmp_path, monkeypatch
+    ):
+        from unittest.mock import patch
+
+        hermes_root = tmp_path / ".hermes"
+        profile_home = hermes_root / "profiles" / "coder"
+        local_dir = profile_home / "skills"
+        default_dir = hermes_root / "skills"
+        local_dir.mkdir(parents=True)
+        default_dir.mkdir(parents=True)
+        (profile_home / "config.yaml").write_text(
+            "skills:\n  include_default_profile: true\n",
+            encoding="utf-8",
+        )
+        fake_cmds = {
+            "/shared-runbook": {
+                "name": "shared-runbook",
+                "description": "Default profile skill",
+                "skill_md_path": f"{default_dir}/shared-runbook/SKILL.md",
+                "skill_dir": f"{default_dir}/shared-runbook",
+            }
+        }
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        with (
+            patch("agent.skill_commands.get_skill_commands", return_value=fake_cmds),
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+        ):
+            menu, _ = telegram_menu_commands(max_commands=100)
+
+        assert "shared_runbook" in {name for name, _ in menu}
 
     def test_special_chars_in_skill_names_sanitized(self, tmp_path, monkeypatch):
         """Skills with +, /, or other special chars produce valid Telegram names."""

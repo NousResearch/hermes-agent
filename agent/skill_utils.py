@@ -12,7 +12,12 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from hermes_constants import get_config_path, get_skills_dir, is_termux
+from hermes_constants import (
+    get_config_path,
+    get_default_hermes_root,
+    get_skills_dir,
+    is_termux,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -500,14 +505,39 @@ def get_external_skills_dirs() -> List[Path]:
     return result
 
 
-def get_all_skills_dirs() -> List[Path]:
-    """Return all skill directories: local ``~/.hermes/skills/`` first, then external.
+def get_all_skills_dirs(local_skills_dir: Path | None = None) -> List[Path]:
+    """Return configured skill directories in precedence order.
 
-    The local dir is always first (and always included even if it doesn't exist
-    yet — callers handle that).  External dirs follow in config order.
+    The active profile's local directory is always first.  A named profile can
+    explicitly include the default profile's skills by setting
+    ``skills.include_default_profile: true``.  External dirs follow in config
+    order.  Resolved duplicate paths are included only once.
     """
-    dirs = [get_skills_dir()]
-    dirs.extend(get_external_skills_dirs())
+    local_skills = (
+        Path(local_skills_dir)
+        if local_skills_dir is not None
+        else get_skills_dir()
+    )
+    dirs = [local_skills]
+    seen = {local_skills.resolve()}
+
+    parsed = _load_raw_config()
+    skills_cfg = parsed.get("skills") if isinstance(parsed, dict) else None
+    if (
+        isinstance(skills_cfg, dict)
+        and skills_cfg.get("include_default_profile") is True
+    ):
+        default_skills = get_default_hermes_root() / "skills"
+        resolved_default = default_skills.resolve()
+        if resolved_default not in seen:
+            dirs.append(default_skills)
+            seen.add(resolved_default)
+
+    for external_dir in get_external_skills_dirs():
+        resolved_external = external_dir.resolve()
+        if resolved_external not in seen:
+            dirs.append(external_dir)
+            seen.add(resolved_external)
     return dirs
 
 
@@ -515,10 +545,10 @@ def normalize_skill_lookup_name(identifier: str) -> str:
     """Normalize a skill identifier to a ``skill_view()``-safe relative path.
 
     Slash commands and cron jobs may store absolute paths to skills that live
-    under ``~/.hermes/skills/`` (including via symlinks) or configured
-    ``skills.external_dirs``. ``skill_view()`` rejects absolute names for
-    security, so callers must translate trusted absolute paths to their
-    relative form first.
+    under the active profile, its explicitly included default-profile root, or
+    configured ``skills.external_dirs``. ``skill_view()`` rejects absolute
+    names for security, so callers must translate trusted absolute paths to
+    their relative form first.
     """
     raw_identifier = (identifier or "").strip()
     if not raw_identifier:
@@ -540,11 +570,10 @@ def normalize_skill_lookup_name(identifier: str) -> str:
     except Exception:
         primary_root = get_skills_dir()
 
-    trusted_roots = [primary_root]
     try:
-        trusted_roots.extend(get_external_skills_dirs())
+        trusted_roots = list(get_all_skills_dirs(primary_root))
     except Exception:
-        pass
+        trusted_roots = [primary_root]
 
     # Prefer the lexical path under a trusted skill root before resolving
     # symlinks. Slash-command discovery can legitimately find a skill via
@@ -577,16 +606,16 @@ def _resolve_for_skill_ownership(path) -> Path:
 
 
 def is_external_skill_path(path) -> bool:
-    """Return True when ``path`` lives under a configured external skills dir.
+    """Return True when ``path`` lives under a non-local skills root.
 
-    ``skills.external_dirs`` are externally owned: Hermes can discover and view
-    their skills, and foreground user-directed tool calls may still edit them,
-    but autonomous lifecycle maintenance must treat them as read-only. This
-    helper centralizes the ownership boundary so curator/reporting/tool paths do
-    not each need to re-interpret the config.
+    Configured external dirs and an explicitly included default-profile skills
+    dir are not owned by the active profile. Hermes can discover and view their
+    skills, and foreground user-directed tool calls may still edit them, but
+    autonomous lifecycle maintenance must treat them as read-only. This helper
+    centralizes that ownership boundary.
     """
     candidate = _resolve_for_skill_ownership(path)
-    for root in get_external_skills_dirs():
+    for root in get_all_skills_dirs()[1:]:
         resolved_root = _resolve_for_skill_ownership(root)
         try:
             candidate.relative_to(resolved_root)

@@ -8,9 +8,15 @@ description: "On-demand knowledge documents — progressive disclosure, agent-ma
 
 Skills are on-demand knowledge documents the agent can load when needed. They follow a **progressive disclosure** pattern to minimize token usage and are compatible with the [agentskills.io](https://agentskills.io/specification) open standard.
 
-All skills live in **`~/.hermes/skills/`** — the primary directory and source of truth. On fresh install, bundled skills are copied from the repo. Hub-installed and agent-created skills also go here. The agent can modify or delete any skill.
+Each profile has its own local skills directory. The default profile uses
+**`~/.hermes/skills/`**; named profiles use
+**`~/.hermes/profiles/<name>/skills/`**. On fresh install, bundled skills are
+copied into the active profile. Hub-installed and agent-created skills also go
+there.
 
-You can also point Hermes at **external skill directories** — additional folders scanned alongside the local one. See [External Skill Directories](#external-skill-directories) below.
+Named profiles keep their own skills isolated by default. They can explicitly
+reuse the default profile's skills, or point Hermes at **external skill
+directories**. See the sharing options below.
 
 See also:
 
@@ -311,6 +317,38 @@ and `examples/`. Unreferenced repository files are not copied. Hermes scans the
 complete quarantined bundle and records the source URL, exact content hash,
 scanner version, findings, timestamp, and fresh-or-cached status in
 `skills/.hub/lock.json`.
+
+## Reusing Default Profile Skills
+
+Named profiles normally scan only their own directory:
+`~/.hermes/profiles/<name>/skills/`. Skills installed in the default profile at
+`~/.hermes/skills/` stay hidden.
+
+To let one named profile also use the default profile's skills, enable the
+option in that profile's `config.yaml`:
+
+```yaml
+skills:
+  include_default_profile: true
+```
+
+This is opt-in and does not weaken isolation for any other profile. The search
+order becomes:
+
+1. The active profile's local skills
+2. The default profile's skills
+3. `skills.external_dirs`, in configured order
+
+The additional skills appear in the system prompt index, `skills_list`,
+`skill_view`, and generated slash-command menus. Listings and the prompt index
+prefer the first matching name. Direct `skill_view` calls retain the normal
+collision check and may require a distinct categorized path or renaming when
+multiple skills match.
+
+The included default-profile directory follows the same foreground editing
+semantics as `external_dirs`: an explicit `skill_manage` edit updates the skill
+where it is found. Autonomous lifecycle maintenance treats it as non-local and
+does not modify it.
 
 ## External Skill Directories
 

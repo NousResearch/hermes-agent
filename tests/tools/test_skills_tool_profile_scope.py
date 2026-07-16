@@ -77,6 +77,61 @@ def test_skills_list_uses_live_profile_home_after_module_import(tmp_path, monkey
     assert "default-only" not in names
 
 
+def test_skills_list_can_include_default_profile_when_enabled(tmp_path, monkeypatch):
+    """A named profile may explicitly opt into the default profile's skills."""
+    hermes_root = tmp_path / ".hermes"
+    profile_home = hermes_root / "profiles" / "orchestrator"
+    _write_skill(hermes_root, "autonomous-ai-agents", "default-only", "default home")
+    _write_skill(
+        profile_home,
+        "software-development",
+        "kanban-orchestrator-operations",
+        "orchestrator profile",
+    )
+    (profile_home / "config.yaml").write_text(
+        "skills:\n  include_default_profile: true\n",
+        encoding="utf-8",
+    )
+
+    skills_tool = _reload_skills_tool(hermes_root, monkeypatch)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+    result = json.loads(skills_tool.skills_list())
+    names = {skill["name"] for skill in result["skills"]}
+
+    assert result["success"] is True
+    assert "kanban-orchestrator-operations" in names
+    assert "default-only" in names
+
+
+def test_skill_view_can_load_default_profile_when_enabled(tmp_path, monkeypatch):
+    """The opt-in applies to direct skill loading as well as discovery."""
+    hermes_root = tmp_path / ".hermes"
+    profile_home = hermes_root / "profiles" / "orchestrator"
+    default_skill_dir = _write_skill(
+        hermes_root,
+        "autonomous-ai-agents",
+        "default-only",
+        "default home",
+    )
+    profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text(
+        "skills:\n  include_default_profile: true\n",
+        encoding="utf-8",
+    )
+
+    skills_tool = _reload_skills_tool(hermes_root, monkeypatch)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+
+    result = json.loads(skills_tool.skill_view("default-only", preprocess=False))
+
+    assert result["success"] is True
+    assert Path(result["skill_dir"]) == default_skill_dir
+    assert "default home" in result["content"]
+
+
 def test_explicit_skills_dir_monkeypatch_still_wins(tmp_path, monkeypatch):
     """Existing tests can still override tools.skills_tool.SKILLS_DIR directly."""
     default_home = tmp_path / "default-home"

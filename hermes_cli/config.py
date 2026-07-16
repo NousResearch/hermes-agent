@@ -2360,10 +2360,13 @@ DEFAULT_CONFIG = {
         },
     },
 
-    # Skills — external skill directories for sharing skills across tools/agents.
-    # Each path is expanded (~, ${VAR}) and resolved.  Read-only — skill creation
-    # always goes to ~/.hermes/skills/.
+    # Skills — profile sharing and external skill directories.
+    # External paths are expanded (~, ${VAR}) and resolved. New skills are
+    # created locally; foreground edits update an existing skill where found.
     "skills": {
+        # Named profiles remain isolated by default. Opt in to also scan the
+        # default profile's skills after the active profile's local skills.
+        "include_default_profile": False,
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
         # Substitute ${HERMES_SKILL_DIR} and ${HERMES_SESSION_ID} in SKILL.md
         # content with the absolute skill directory and the active session id

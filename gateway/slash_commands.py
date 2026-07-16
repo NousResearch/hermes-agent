@@ -203,6 +203,32 @@ class GatewaySlashCommandsMixin:
         # Reset the session
         new_entry = await self.async_session_store.reset_session(session_key)
 
+        if old_entry is not None:
+            try:
+                from agent.runtime_cwd import resolve_agent_cwd
+                from gateway.run import (
+                    _cleanup_gateway_session_worktrees,
+                    _load_gateway_config,
+                )
+
+                try:
+                    cleanup_config = _load_gateway_config()
+                except Exception:
+                    cleanup_config = {}
+                await asyncio.to_thread(
+                    _cleanup_gateway_session_worktrees,
+                    base_cwd=str(resolve_agent_cwd()),
+                    user_config=cleanup_config if isinstance(cleanup_config, dict) else {},
+                    session_key=session_key,
+                    session_id=old_entry.session_id,
+                )
+            except Exception as cleanup_exc:
+                logger.warning(
+                    "Gateway auto-worktree cleanup failed during /new reset for %s: %s",
+                    old_entry.session_id,
+                    cleanup_exc,
+                )
+
         # Clear any session-scoped model/reasoning overrides so the next agent
         # picks up configured defaults instead of previous session switches.
         self._session_model_overrides.pop(session_key, None)

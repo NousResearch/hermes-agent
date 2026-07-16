@@ -459,7 +459,12 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
 
     p = Path(expanded)
     if p.is_absolute():
-        return p.resolve()
+        try:
+            from agent.runtime_cwd import map_session_path_to_worktree
+
+            return map_session_path_to_worktree(p)
+        except Exception:
+            return p.resolve()
     resolved = _resolve_base_dir(task_id, container_paths=False) / p
     return resolved.resolve()
 

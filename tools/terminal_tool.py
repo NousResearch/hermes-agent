@@ -2006,23 +2006,33 @@ def _resolve_command_cwd(
     guard file_tools uses for the same shared-env problem.
     """
     if workdir:
-        return workdir
+        candidate = workdir
+    else:
+        live_cwd = getattr(env, "cwd", None)
+        if isinstance(live_cwd, str) and live_cwd.strip():
+            candidate = live_cwd
+            # The env is shared (collapsed to "default"); its cwd tracks the
+            # LAST session that ran a command.  If a different session owned
+            # the env before this call claimed it, env.cwd is that session's
+            # leftover `cd` — not ours.  Don't use it.
+            if prev_owner is not None:
+                session_key = getattr(env, "cwd_owner", "")
+                # cwd_owner was already overwritten to the current session at
+                # the call site, so compare against the captured previous
+                # owner.
+                if prev_owner and prev_owner != "default" and session_key != prev_owner:
+                    candidate = default_cwd
+        else:
+            candidate = default_cwd
 
-    live_cwd = getattr(env, "cwd", None)
-    if isinstance(live_cwd, str) and live_cwd.strip():
-        # The env is shared (collapsed to "default"); its cwd tracks the LAST
-        # session that ran a command.  If a different session owned the env
-        # before this call claimed it, env.cwd is that session's leftover `cd`
-        # — not ours.  Don't use it.
-        if prev_owner is not None:
-            session_key = getattr(env, "cwd_owner", "")
-            # cwd_owner was already overwritten to the current session at the
-            # call site, so compare against the captured previous owner.
-            if prev_owner and prev_owner != "default" and session_key != prev_owner:
-                return default_cwd
-        return live_cwd
+    try:
+        from agent.runtime_cwd import _session_worktree_map, map_session_path_to_worktree
 
-    return default_cwd
+        if not _session_worktree_map():
+            return candidate
+        return str(map_session_path_to_worktree(candidate))
+    except Exception:
+        return candidate
 
 
 def terminal_tool(

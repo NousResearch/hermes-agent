@@ -367,7 +367,7 @@ class TestSecondaryProfileConfigHandling:
         runner._handle_active_session_busy_message = object()
         runner._recover_telegram_topic_thread_id = object()
         runner._busy_text_mode = "queue"
-        runner._make_adapter_auth_check = lambda platform: object()
+        runner._make_adapter_auth_check = lambda platform, profile_name=None: object()
 
         reviewer_cfg = GatewayConfig(multiplex_profiles=True)
         reviewer_cfg.platforms = {
@@ -441,7 +441,7 @@ class TestSecondaryProfileConfigHandling:
         runner._handle_active_session_busy_message = object()
         runner._recover_telegram_topic_thread_id = object()
         runner._busy_text_mode = "queue"
-        runner._make_adapter_auth_check = lambda platform: object()
+        runner._make_adapter_auth_check = lambda platform, profile_name=None: object()
 
         profile_cfg = GatewayConfig(multiplex_profiles=False)
         profile_cfg.platforms = {

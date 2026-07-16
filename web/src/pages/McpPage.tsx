@@ -147,10 +147,15 @@ export default function McpPage() {
         command,
         args,
         env,
+      }, {
+        nameRequired: copy.nameRequired,
+        urlRequired: copy.urlRequired,
+        bearerTokenRequired: copy.bearerTokenRequired,
+        commandRequired: copy.commandRequired,
       });
     } catch (error) {
       showToast(
-        error instanceof Error ? error.message : "Invalid MCP server",
+        error instanceof Error ? error.message : copy.invalidServer,
         "error",
       );
       return;
@@ -161,8 +166,8 @@ export default function McpPage() {
       await api.addMcpServer(body);
       showToast(
         transport === "http" && httpAuth === "oauth"
-          ? "Added — authenticate with OAuth"
-          : "Add ✓",
+          ? copy.addedAuthenticate
+          : copy.added,
         "success",
       );
       setName("");
@@ -218,9 +223,12 @@ export default function McpPage() {
         ...prev,
         [server.name]: { ok: true, tools: result.tools ?? [] },
       }));
-      showToast(`${server.name}: OAuth authentication complete`, "success");
+      showToast(
+        interpolate(copy.oauthComplete, { name: server.name }),
+        "success",
+      );
     } catch (e) {
-      showToast(`OAuth error: ${e}`, "error");
+      showToast(interpolate(copy.oauthError, { error: String(e) }), "error");
     } finally {
       setAuthenticating(null);
     }
@@ -233,9 +241,6 @@ export default function McpPage() {
       await api.setMcpServerEnabled(server.name, next);
       setServers((prev) =>
         prev.map((s) => (s.name === server.name ? { ...s, enabled: next } : s)),
-      );
-      setRestartNote(
-        "Enable/disable takes effect on the next gateway restart.",
       );
       setRestartNote(copy.restartNote);
     } catch (e) {
@@ -448,7 +453,7 @@ export default function McpPage() {
               {transport === "http" ? (
                 <>
                   <div className="grid gap-2">
-                    <Label htmlFor="mcp-url">URL</Label>
+                    <Label htmlFor="mcp-url">{copy.url}</Label>
                     <Input
                       id="mcp-url"
                       placeholder="https://example.com/mcp"
@@ -457,7 +462,7 @@ export default function McpPage() {
                     />
                   </div>
                   <div className="grid gap-2">
-                    <Label htmlFor="mcp-auth">Authentication</Label>
+                    <Label htmlFor="mcp-auth">{copy.authentication}</Label>
                     <Select
                       id="mcp-auth"
                       value={httpAuth}
@@ -467,33 +472,34 @@ export default function McpPage() {
                         if (nextAuth !== "header") setBearerToken("");
                       }}
                     >
-                      <SelectOption value="none">None</SelectOption>
-                      <SelectOption value="header">Bearer token</SelectOption>
-                      <SelectOption value="oauth">OAuth</SelectOption>
+                      <SelectOption value="none">{copy.authNone}</SelectOption>
+                      <SelectOption value="header">
+                        {copy.authBearer}
+                      </SelectOption>
+                      <SelectOption value="oauth">{copy.authOAuth}</SelectOption>
                     </Select>
                   </div>
                   {httpAuth === "header" && (
                     <div className="grid gap-2">
-                      <Label htmlFor="mcp-bearer-token">Bearer token</Label>
+                      <Label htmlFor="mcp-bearer-token">
+                        {copy.authBearer}
+                      </Label>
                       <Input
                         id="mcp-bearer-token"
                         type="password"
                         autoComplete="new-password"
-                        placeholder="Token or Bearer token"
+                        placeholder={copy.bearerTokenPlaceholder}
                         value={bearerToken}
                         onChange={(e) => setBearerToken(e.target.value)}
                       />
                       <p className="text-xs text-muted-foreground">
-                        Stored in this profile&apos;s .env; config.yaml keeps
-                        only an environment-variable reference.
+                        {copy.bearerStoredHint}
                       </p>
                     </div>
                   )}
                   {httpAuth === "oauth" && (
                     <p className="text-xs text-muted-foreground">
-                      Add the server, then use Authenticate. Hermes opens the
-                      OAuth browser on the machine running the Dashboard
-                      backend.
+                      {copy.oauthHint}
                     </p>
                   )}
                 </>
@@ -676,11 +682,13 @@ export default function McpPage() {
                     </Badge>
                     {server.auth && (
                       <Badge tone="outline">
-                        auth:{" "}
+                        {copy.authLabel}{" "}
                         {server.auth === "header" ? "bearer" : server.auth}
                       </Badge>
                     )}
-                    {!server.enabled && <Badge tone="outline">disabled</Badge>}
+                    {!server.enabled && (
+                      <Badge tone="outline">{copy.disabled}</Badge>
+                    )}
                   </div>
                   <div className="flex items-center gap-4 text-xs text-muted-foreground">
                     {server.transport === "http" ? (
@@ -726,7 +734,7 @@ export default function McpPage() {
                     <Button
                       ghost
                       size="sm"
-                      title="Authenticate with OAuth"
+                      title={copy.authenticateWithOAuth}
                       onClick={() => handleAuthenticate(server)}
                       disabled={authenticating === server.name}
                       prefix={
@@ -737,7 +745,7 @@ export default function McpPage() {
                         )
                       }
                     >
-                      Authenticate
+                      {copy.authenticate}
                     </Button>
                   )}
 
@@ -900,7 +908,7 @@ export default function McpPage() {
                           count: entry.bootstrap.length,
                         })}
                       </summary>
-                      <ul className="mt-1 ml-3 list-disc space-y-0.5">
+                      <ul className="mt-1 ms-3 list-disc space-y-0.5">
                         {entry.bootstrap.map((cmd, i) => (
                           <li
                             key={`${entry.name}-bs-${i}`}

@@ -855,6 +855,11 @@ export const ar: Translations = {
     back: "السابق",
     creating: "جارٍ الإنشاء…",
     createProfile: "إنشاء الملف الشخصي",
+    serverNamePlaceholder: "أدخل اسم الخادم",
+    bearerStoredHint:
+      "يُخزَّن في ملف ‎.env للملف الشخصي الجديد؛ ولا يحتفظ config.yaml إلا بإشارة إلى متغيّر بيئة.",
+    oauthHint:
+      "بعد إنشاء الملف الشخصي، افتح صفحة MCP الخاصة به واستخدم «مصادقة» لإكمال OAuth.",
     next: "التالي",
   },
 
@@ -913,6 +918,23 @@ export const ar: Translations = {
     installsFrom: "يُثبّت من",
     bootstrapCommands: "أوامر التهيئة ({count})",
     setupNotes: "ملاحظات الإعداد",
+    bearerTokenRequired: "رمز Bearer مطلوب",
+    invalidServer: "خادم MCP غير صالح",
+    addedAuthenticate: "أُضيف — أكمل المصادقة عبر OAuth",
+    authentication: "المصادقة",
+    authNone: "بدون",
+    authBearer: "رمز Bearer",
+    authOAuth: "OAuth",
+    bearerTokenPlaceholder: "الرمز أو رمز Bearer",
+    bearerStoredHint:
+      "يُخزَّن في ملف ‎.env الخاص بهذا الملف الشخصي؛ ولا يحتفظ config.yaml إلا بإشارة إلى متغيّر بيئة.",
+    oauthHint:
+      "أضف الخادم ثم استخدم «مصادقة». يفتح هرمس متصفح OAuth على الجهاز الذي يشغّل خلفية اللوحة.",
+    authenticate: "مصادقة",
+    authenticateWithOAuth: "المصادقة عبر OAuth",
+    oauthComplete: "{name}: اكتملت مصادقة OAuth",
+    oauthFailed: "فشلت مصادقة OAuth",
+    oauthError: "خطأ OAuth: {error}",
   },
 
   modelsPage: {

@@ -68,6 +68,7 @@ export default function ProfileBuilderPage() {
   const { toast, showToast } = useToast();
   const { t } = useI18n();
   const copy = t.profileBuilderPage ?? en.profileBuilderPage!;
+  const mcpCopy = t.mcpPage ?? en.mcpPage!;
   const steps = [
     { id: "identity" as const, label: copy.identity },
     { id: "model" as const, label: copy.model },
@@ -187,10 +188,15 @@ export default function ProfileBuilderPage() {
   const addMcpDraft = () => {
     let entry: McpServerCreate;
     try {
-      entry = buildMcpServerCreate(mcpDraft);
+      entry = buildMcpServerCreate(mcpDraft, {
+        nameRequired: mcpCopy.nameRequired,
+        urlRequired: mcpCopy.urlRequired,
+        bearerTokenRequired: mcpCopy.bearerTokenRequired,
+        commandRequired: mcpCopy.commandRequired,
+      });
     } catch (error) {
       showToast(
-        error instanceof Error ? error.message : "Invalid MCP server",
+        error instanceof Error ? error.message : mcpCopy.invalidServer,
         "error",
       );
       return;
@@ -556,14 +562,14 @@ export default function ProfileBuilderPage() {
               </div>
 
               <div className="space-y-4 border border-border bg-background/20 p-4 md:p-5">
-                <h4 className="font-medium">Add server</h4>
+                <h4 className="font-medium">{copy.addServer}</h4>
 
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="grid gap-1.5">
-                    <Label htmlFor="pb-mcp-name">Server name</Label>
+                    <Label htmlFor="pb-mcp-name">{copy.serverName}</Label>
                     <Input
                       id="pb-mcp-name"
-                      placeholder="Enter server name"
+                      placeholder={copy.serverNamePlaceholder}
                       value={mcpDraft.name}
                       onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                         setMcpDraft({ ...mcpDraft, name: e.target.value })
@@ -571,11 +577,11 @@ export default function ProfileBuilderPage() {
                     />
                   </div>
                   <div className="grid gap-1.5">
-                    <Label>Transport</Label>
+                    <Label>{mcpCopy.transport}</Label>
                     <div
                       className="grid grid-cols-2 border border-border bg-background/30 p-0.5"
                       role="group"
-                      aria-label="MCP transport"
+                      aria-label={mcpCopy.transport}
                     >
                       {(
                         [
@@ -605,7 +611,7 @@ export default function ProfileBuilderPage() {
                 {mcpDraft.transport === "http" ? (
                   <>
                     <div className="grid gap-1.5">
-                      <Label htmlFor="pb-mcp-url">URL</Label>
+                      <Label htmlFor="pb-mcp-url">{mcpCopy.url}</Label>
                       <Input
                         id="pb-mcp-url"
                         placeholder="https://example.com/mcp"
@@ -616,17 +622,17 @@ export default function ProfileBuilderPage() {
                       />
                     </div>
                     <div className="grid gap-1.5">
-                      <Label>Authentication</Label>
+                      <Label>{mcpCopy.authentication}</Label>
                       <div
                         className="grid grid-cols-3 border border-border bg-background/30 p-0.5 md:max-w-md"
                         role="group"
-                        aria-label="HTTP authentication"
+                        aria-label={mcpCopy.authentication}
                       >
                         {(
                           [
-                            ["none", "None"],
-                            ["header", "Bearer token"],
-                            ["oauth", "OAuth"],
+                            ["none", mcpCopy.authNone],
+                            ["header", mcpCopy.authBearer],
+                            ["oauth", mcpCopy.authOAuth],
                           ] as const
                         ).map(([value, label]) => (
                           <button
@@ -649,13 +655,13 @@ export default function ProfileBuilderPage() {
                     {mcpDraft.httpAuth === "header" && (
                       <div className="grid gap-1.5">
                         <Label htmlFor="pb-mcp-bearer-token">
-                          Bearer token
+                          {mcpCopy.authBearer}
                         </Label>
                         <Input
                           id="pb-mcp-bearer-token"
                           type="password"
                           autoComplete="new-password"
-                          placeholder="Token or Bearer token"
+                          placeholder={mcpCopy.bearerTokenPlaceholder}
                           value={mcpDraft.bearerToken}
                           onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                             setMcpDraft({
@@ -665,15 +671,13 @@ export default function ProfileBuilderPage() {
                           }
                         />
                         <p className="text-xs text-muted-foreground">
-                          Stored in the new profile&apos;s .env; config.yaml
-                          keeps only an environment-variable reference.
+                          {copy.bearerStoredHint}
                         </p>
                       </div>
                     )}
                     {mcpDraft.httpAuth === "oauth" && (
                       <p className="text-xs text-muted-foreground">
-                        After creating the profile, open its MCP page and use
-                        Authenticate to complete OAuth.
+                        {copy.oauthHint}
                       </p>
                     )}
                   </>
@@ -681,7 +685,7 @@ export default function ProfileBuilderPage() {
                   <>
                     <div className="grid gap-4 md:grid-cols-2">
                       <div className="grid gap-1.5">
-                        <Label htmlFor="pb-mcp-command">Command</Label>
+                        <Label htmlFor="pb-mcp-command">{mcpCopy.command}</Label>
                         <Input
                           id="pb-mcp-command"
                           placeholder="npx"
@@ -695,7 +699,7 @@ export default function ProfileBuilderPage() {
                         />
                       </div>
                       <div className="grid gap-1.5">
-                        <Label htmlFor="pb-mcp-args">Arguments</Label>
+                        <Label htmlFor="pb-mcp-args">{mcpCopy.args}</Label>
                         <Input
                           id="pb-mcp-args"
                           placeholder="-y @modelcontextprotocol/server"
@@ -708,7 +712,7 @@ export default function ProfileBuilderPage() {
                     </div>
                     <div className="grid gap-1.5">
                       <Label htmlFor="pb-mcp-env">
-                        Environment (KEY=VALUE per line)
+                        {mcpCopy.environment}
                       </Label>
                       <textarea
                         id="pb-mcp-env"
@@ -724,7 +728,7 @@ export default function ProfileBuilderPage() {
                 )}
 
                 <div className="flex justify-end">
-                  <Button onClick={addMcpDraft}>Add server</Button>
+                  <Button onClick={addMcpDraft}>{copy.addServer}</Button>
                 </div>
               </div>
 
@@ -743,7 +747,8 @@ export default function ProfileBuilderPage() {
                           </Badge>
                           {s.auth && (
                             <Badge tone="outline">
-                              auth: {s.auth === "header" ? "bearer" : s.auth}
+                              {mcpCopy.authLabel}{" "}
+                              {s.auth === "header" ? "bearer" : s.auth}
                             </Badge>
                           )}
                         </span>
@@ -770,7 +775,7 @@ export default function ProfileBuilderPage() {
             <div className="space-y-3 text-sm">
               <ReviewRow label={copy.name} value={name.trim() || "—"} />
               <ReviewRow
-                label="Description"
+                label={copy.description}
                 value={description.trim() || "—"}
               />
               <ReviewRow

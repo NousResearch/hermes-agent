@@ -782,6 +782,11 @@ export const en: Translations = {
     back: "Back",
     creating: "Creating…",
     createProfile: "Create profile",
+    serverNamePlaceholder: "Enter server name",
+    bearerStoredHint:
+      "Stored in the new profile's .env; config.yaml keeps only an environment-variable reference.",
+    oauthHint:
+      "After creating the profile, open its MCP page and use Authenticate to complete OAuth.",
     next: "Next",
   },
 
@@ -842,6 +847,23 @@ export const en: Translations = {
     installsFrom: "Installs from",
     bootstrapCommands: "Bootstrap commands ({count})",
     setupNotes: "Setup notes",
+    bearerTokenRequired: "Bearer token required",
+    invalidServer: "Invalid MCP server",
+    addedAuthenticate: "Added — authenticate with OAuth",
+    authentication: "Authentication",
+    authNone: "None",
+    authBearer: "Bearer token",
+    authOAuth: "OAuth",
+    bearerTokenPlaceholder: "Token or Bearer token",
+    bearerStoredHint:
+      "Stored in this profile's .env; config.yaml keeps only an environment-variable reference.",
+    oauthHint:
+      "Add the server, then use Authenticate. Hermes opens the OAuth browser on the machine running the Dashboard backend.",
+    authenticate: "Authenticate",
+    authenticateWithOAuth: "Authenticate with OAuth",
+    oauthComplete: "{name}: OAuth authentication complete",
+    oauthFailed: "OAuth failed",
+    oauthError: "OAuth error: {error}",
   },
 
   modelsPage: {

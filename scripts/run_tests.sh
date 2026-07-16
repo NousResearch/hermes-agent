@@ -37,7 +37,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# ── Activate venv ───────────────────────────────────────────────────────────
+# ── Locate python ───────────────────────────────────────────────────────────
+# Probe local venvs first; fall back to the Nix devShell's editable venv
+# (HERMES_PYTHON is exported by the devShell hook and ships [dev] extras:
+# pytest, pytest-asyncio, pytest-timeout, ruff, ty).
 VENV=""
 for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
   if [ -f "$candidate/bin/activate" ]; then
@@ -46,12 +49,20 @@ for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agen
   fi
 done
 
-if [ -z "$VENV" ]; then
-  echo "error: no virtualenv found in $REPO_ROOT/.venv or $REPO_ROOT/venv" >&2
+if [ -n "$VENV" ]; then
+  PYTHON="$VENV/bin/python"
+elif [ -n "${HERMES_PYTHON:-}" ] && [ -x "$HERMES_PYTHON" ] \
+    && "$HERMES_PYTHON" -c 'import pytest' 2>/dev/null; then
+  # Guard with an import check: HERMES_PYTHON may point at the RELEASE
+  # venv (no pytest) when inherited from a wrapped `hermes` binary rather
+  # than the devShell hook.
+  PYTHON="$HERMES_PYTHON"
+  echo "▶ no local venv — using Nix dev venv via HERMES_PYTHON: $PYTHON"
+else
+  echo "error: no virtualenv found in $REPO_ROOT/.venv or $REPO_ROOT/venv," >&2
+  echo "       and HERMES_PYTHON is not a python with pytest (enter the Nix devShell or create a venv)" >&2
   exit 1
 fi
-
-PYTHON="$VENV/bin/python"
 
 
 # ── Live-gateway plugin (computed before we drop env) ───────────────────────

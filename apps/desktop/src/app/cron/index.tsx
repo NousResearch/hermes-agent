@@ -399,10 +399,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
     } else if (editor.mode === 'edit') {
       const scriptOnlyJob = jobIsScriptOnly(editor.job)
 
-      const updated = await updateCronJob(
-        editor.job.id,
-        cronEditorUpdates(values, { scriptOnlyJob })
-      )
+      const updated = await updateCronJob(editor.job.id, cronEditorUpdates(values, { scriptOnlyJob }))
 
       updateCronJobs(rows => rows.map(row => (row.id === updated.id ? updated : row)))
       notify({ kind: 'success', title: c.updated, message: truncate(jobTitle(updated), 60) })
@@ -818,12 +815,7 @@ function CronEditorDialog({
             />
           </Field>
 
-          <Field
-            htmlFor="cron-prompt"
-            label={c.promptLabel}
-            optional={scriptOnlyJob}
-            optionalLabel={c.optional}
-          >
+          <Field htmlFor="cron-prompt" label={c.promptLabel} optional={scriptOnlyJob} optionalLabel={c.optional}>
             <Textarea
               className="min-h-24 font-mono"
               id="cron-prompt"

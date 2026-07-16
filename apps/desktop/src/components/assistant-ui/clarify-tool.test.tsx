@@ -103,7 +103,11 @@ describe('ClarifyTool settled view', () => {
   it('labels an empty response as Skipped', () => {
     renderClarify(
       <ClarifyTool
-        {...settledClarifyProps({ question: 'Anything else?' }, { question: 'Anything else?', user_response: '' }, 'clarify-2')}
+        {...settledClarifyProps(
+          { question: 'Anything else?' },
+          { question: 'Anything else?', user_response: '' },
+          'clarify-2'
+        )}
       />
     )
 

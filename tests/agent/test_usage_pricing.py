@@ -322,3 +322,96 @@ def test_bedrock_claude_cached_session_estimates_cost_not_unknown():
     )
     assert result.status == "estimated"
     assert result.amount_usd is not None
+
+def test_fireworks_kimi_k2p6_resolves_with_full_model_path():
+    """Fireworks model ids look like accounts/fireworks/models/<name>;
+    the routing layer must strip the prefix so the dict lookup succeeds."""
+    entry = get_pricing_entry(
+        "accounts/fireworks/models/kimi-k2p6",
+        provider="fireworks",
+        base_url="https://api.fireworks.ai/inference/v1",
+    )
+
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 0.95
+    assert float(entry.output_cost_per_million) == 4.00
+    assert float(entry.cache_read_cost_per_million) == 0.16
+    assert entry.source == "official_docs_snapshot"
+
+
+def test_fireworks_base_url_host_match_alone_routes_to_pricing():
+    """Provider not explicitly passed; routing infers fireworks from the host."""
+    entry = get_pricing_entry(
+        "accounts/fireworks/models/deepseek-v4-pro",
+        base_url="https://api.fireworks.ai/inference/v1",
+    )
+
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 1.74
+    assert float(entry.output_cost_per_million) == 3.48
+
+
+def test_fireworks_qwen3p7_plus_estimate_usage_cost():
+    """End-to-end: Fireworks Qwen3.7-Plus sessions report a dollar estimate."""
+    result = estimate_usage_cost(
+        "accounts/fireworks/models/qwen3p7-plus",
+        CanonicalUsage(input_tokens=1_000_000, output_tokens=500_000),
+        provider="fireworks",
+        base_url="https://api.fireworks.ai/inference/v1",
+    )
+
+    assert result.status == "estimated"
+    assert result.amount_usd is not None
+    # 1M input × $0.40/M + 500K output × $1.60/M = $0.40 + $0.80 = $1.20
+    assert float(result.amount_usd) == 1.20
+
+
+def test_fireworks_router_fast_tier_prices_distinctly():
+    """Fast serving tiers live under accounts/fireworks/routers/<name>-fast and
+    bill at higher rates than the standard model — the routing layer's
+    rsplit("/", 1) must land on the distinct fast-tier entry."""
+    standard = get_pricing_entry(
+        "accounts/fireworks/models/kimi-k2p6",
+        provider="fireworks",
+        base_url="https://api.fireworks.ai/inference/v1",
+    )
+    fast = get_pricing_entry(
+        "accounts/fireworks/routers/kimi-k2p6-fast",
+        provider="fireworks",
+        base_url="https://api.fireworks.ai/inference/v1",
+    )
+    assert standard is not None and fast is not None
+    assert fast.input_cost_per_million > standard.input_cost_per_million
+    assert fast.output_cost_per_million > standard.output_cost_per_million
+
+
+def test_fireworks_plugin_fallback_models_all_have_pricing():
+    """Invariant: every model in the Fireworks provider plugin's
+    fallback_models (the picker's curated safety net) must resolve to a
+    pricing entry — otherwise the default picker choices bill as unknown."""
+    from providers import get_provider_profile
+
+    profile = get_provider_profile("fireworks")
+    assert profile is not None
+    for mid in profile.fallback_models:
+        entry = get_pricing_entry(
+            mid,
+            provider="fireworks",
+            base_url="https://api.fireworks.ai/inference/v1",
+        )
+        assert entry is not None, f"no pricing entry for fallback model {mid}"
+        assert entry.input_cost_per_million is not None, mid
+
+
+def test_fireworks_rows_all_carry_cache_read_pricing():
+    """Invariant: Fireworks publishes cached-input rates for every serverless
+    model, and Hermes prompt caching is active on Fireworks sessions — every
+    snapshot row must carry a cache_read rate cheaper than fresh input."""
+    from agent.usage_pricing import _OFFICIAL_DOCS_PRICING
+
+    fw_rows = [k for k in _OFFICIAL_DOCS_PRICING if k[0] == "fireworks"]
+    assert fw_rows, "expected at least one fireworks pricing row"
+    for key in fw_rows:
+        entry = _OFFICIAL_DOCS_PRICING[key]
+        assert entry.cache_read_cost_per_million is not None, key
+        assert entry.cache_read_cost_per_million < entry.input_cost_per_million, key

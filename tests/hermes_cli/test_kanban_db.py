@@ -1903,6 +1903,27 @@ def test_respawn_guard_recent_success_bypassed_by_requeue(kanban_home):
         assert kb.check_respawn_guard(conn, t) is None
 
 
+def test_respawn_guard_recent_success_bypassed_by_manual_promote(kanban_home):
+    """promote_task logs 'promoted_manual'; the guard must honor it the same
+    as auto-DAG 'promoted', or every batch re-take of a recently completed
+    task silently parks until the success window elapses."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="rerun-me-manual", assignee="alice")
+        now = int(time.time())
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+            "VALUES (?, 'done', 'completed', ?, ?)",
+            (t, now - 120, now - 60),
+        )
+        assert kb.check_respawn_guard(conn, t) == "recent_success"
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, created_at) "
+            "VALUES (?, 'promoted_manual', ?)",
+            (t, now - 10),
+        )
+        assert kb.check_respawn_guard(conn, t) is None
+
+
 def test_respawn_guard_stale_success_not_guarded(kanban_home):
     """A completed run outside the guard window does not block re-spawn."""
     with kb.connect() as conn:

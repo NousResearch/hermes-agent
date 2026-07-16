@@ -27,8 +27,11 @@ security command scans staged, unstaged, and untracked files with redacted-only
 findings. It fails closed on binary or undecodable additions and refuses to read
 untracked files through symlink, reparse/junction, hardlink, or out-of-repository
 paths. Tracked scans disable external diff, textconv, color, and customized diff
-indicators before parsing Git output. Executing that suggested command is a
-separate explicit verification step.
+indicators before parsing Git output. The generated scanner binds sanitized Git
+discovery to the current repository root, while `--from-git` explicitly decodes
+Git path output as UTF-8 and ignores repository-selection environment overrides.
+Run generated commands from the repository root. Executing the suggested scan is
+a separate explicit verification step.
 
 ## ULW evidence ledger scaffold
 

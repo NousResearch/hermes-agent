@@ -232,6 +232,153 @@ def test_cli_from_git_collects_changed_paths_from_base_ref(tmp_path):
     assert any(cmd["id"] == "gateway-restart-drain-pytest" for cmd in data["commands"])
 
 
+def test_cli_from_git_decodes_utf8_paths_when_platform_utf8_mode_is_disabled(tmp_path):
+    if not shutil.which("git"):
+        pytest.skip("git is required for --from-git Unicode coverage")
+    _init_git_repo(tmp_path)
+    readme = tmp_path / "README.md"
+    readme.write_text("baseline\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "--", readme.name],
+        cwd=tmp_path,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "baseline"],
+        cwd=tmp_path,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "branch", "base"],
+        cwd=tmp_path,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "core.quotepath", "false"],
+        cwd=tmp_path,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    gateway = tmp_path / "gateway"
+    gateway.mkdir()
+    unicode_path = gateway / "😀.py"
+    unicode_path.write_text("safe = True\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "--", str(unicode_path.relative_to(tmp_path))],
+        cwd=tmp_path,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "unicode path"],
+        cwd=tmp_path,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    env = os.environ.copy()
+    env["PYTHONUTF8"] = "0"
+
+    proc = subprocess.run(
+        [sys.executable, str(CLI_PATH), "--from-git", "--base", "base", "--format", "json"],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stderr == ""
+    assert json.loads(proc.stdout)["changed_paths"] == ["gateway/😀.py"]
+
+
+def test_cli_from_git_ignores_repository_selection_environment(tmp_path):
+    candidate = tmp_path / "candidate"
+    shadow = tmp_path / "shadow"
+    _init_git_repo(candidate)
+    _init_git_repo(shadow)
+    for repo in (candidate, shadow):
+        readme = repo / "README.md"
+        readme.write_text("baseline\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "--", readme.name],
+            cwd=repo,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "baseline"],
+            cwd=repo,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "branch", "base"],
+            cwd=repo,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    gateway = candidate / "gateway"
+    gateway.mkdir()
+    (gateway / "run.py").write_text("safe = True\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "--", "gateway/run.py"],
+        cwd=candidate,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "candidate change"],
+        cwd=candidate,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    env = os.environ.copy()
+    env["GIT_DIR"] = str(shadow / ".git")
+    env["GIT_WORK_TREE"] = str(shadow)
+
+    proc = subprocess.run(
+        [sys.executable, str(CLI_PATH), "--from-git", "--base", "base", "--format", "json"],
+        cwd=candidate,
+        env=env,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout)["changed_paths"] == ["gateway/run.py"]
+
+
 def test_suggested_shell_commands_quote_changed_paths():
     mod = _load_bundle()
     py_path = "gateway/weird name;$(touch nope)'quote.py"
@@ -625,6 +772,56 @@ def test_generated_security_scan_disables_textconv_bypass(tmp_path):
         capture_output=True,
         check=False,
     )
+    assert scanned.returncode == 1
+    assert "redacted-hit" in scanned.stdout
+    assert marker not in scanned.stdout
+    assert marker not in scanned.stderr
+
+
+def test_generated_security_scan_ignores_repository_selection_environment(tmp_path):
+    mod = _load_bundle()
+    bash = _bash_or_skip()
+    command = mod._added_line_security_scan_command()
+    candidate_repo = tmp_path / "candidate"
+    shadow_repo = tmp_path / "shadow"
+    _init_git_repo(candidate_repo)
+    _init_git_repo(shadow_repo)
+    sample = candidate_repo / "sample.py"
+    sample.write_text("safe = True\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "--", sample.name],
+        cwd=candidate_repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "baseline"],
+        cwd=candidate_repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    term = "api" + "_key"
+    marker = "shadow-repo-dummy-value"
+    sample.write_text(f'{term} = "{marker}"\n', encoding="utf-8")
+    env = os.environ.copy()
+    env["GIT_DIR"] = str(shadow_repo / ".git")
+    env["GIT_WORK_TREE"] = str(shadow_repo)
+
+    scanned = subprocess.run(
+        [bash, "-lc", command],
+        cwd=candidate_repo,
+        env=env,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+
     assert scanned.returncode == 1
     assert "redacted-hit" in scanned.stdout
     assert marker not in scanned.stdout

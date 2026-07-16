@@ -8,6 +8,7 @@ stdout at the shell if a report file is needed.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -20,6 +21,59 @@ if str(CI_DIR) not in sys.path:
     sys.path.insert(0, str(CI_DIR))
 
 from verification_bundle import format_json, format_markdown, suggest_bundle  # noqa: E402
+
+
+_GIT_REPOSITORY_ENV_NAMES = {
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_DIR",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_NAMESPACE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_PREFIX",
+    "GIT_WORK_TREE",
+}
+
+
+def _sanitized_git_environment() -> dict[str, str]:
+    env = os.environ.copy()
+    for name in list(env):
+        if name in _GIT_REPOSITORY_ENV_NAMES or name == "GIT_CONFIG" or name.startswith("GIT_CONFIG_"):
+            env.pop(name, None)
+    env["GIT_OPTIONAL_LOCKS"] = "0"
+    return env
+
+
+def _decode_git_utf8(data: bytes, label: str) -> str:
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RuntimeError(f"{label} was not valid UTF-8") from exc
+
+
+def _run_git_bytes(args: list[str], *, cwd: Path, env: dict[str, str]) -> bytes:
+    try:
+        proc = subprocess.run(
+            args,
+            cwd=cwd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("git command timed out while collecting changed paths") from exc
+    except OSError as exc:
+        raise RuntimeError(f"unable to execute git while collecting changed paths: {exc}") from exc
+    if proc.returncode != 0:
+        raw_detail = proc.stderr or proc.stdout
+        detail = raw_detail.decode("utf-8", errors="replace").strip() or "git command failed"
+        raise RuntimeError(detail)
+    return proc.stdout
 
 
 def _validate_base_ref(base: str) -> str:
@@ -35,23 +89,31 @@ def _validate_base_ref(base: str) -> str:
 
 def _paths_from_git(base: str) -> list[str]:
     safe_base = _validate_base_ref(base)
+    start_dir = Path.cwd().resolve()
+    git_env = _sanitized_git_environment()
+    raw_top = _run_git_bytes(["git", "rev-parse", "--show-toplevel"], cwd=start_dir, env=git_env)
+    top_text = _decode_git_utf8(raw_top, "git repository root").strip()
+    if not top_text or "\x00" in top_text:
+        raise RuntimeError("git repository root was invalid")
+    repo_root = Path(top_text).resolve()
     try:
-        proc = subprocess.run(
-            ["git", "diff", "--no-ext-diff", "--name-only", "--end-of-options", f"{safe_base}...HEAD"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-            timeout=30,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError("git diff timed out while collecting changed paths") from exc
-    except OSError as exc:
-        raise RuntimeError(f"unable to execute git while collecting changed paths: {exc}") from exc
-    if proc.returncode != 0:
-        detail = proc.stderr.strip() or proc.stdout.strip() or "git diff failed"
-        raise RuntimeError(detail)
-    return proc.stdout.splitlines()
+        start_dir.relative_to(repo_root)
+    except ValueError as exc:
+        raise RuntimeError("git repository root does not contain the current directory") from exc
+    raw_paths = _run_git_bytes(
+        [
+            "git",
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--name-only",
+            "--end-of-options",
+            f"{safe_base}...HEAD",
+        ],
+        cwd=repo_root,
+        env=git_env,
+    )
+    return _decode_git_utf8(raw_paths, "git changed paths").splitlines()
 
 
 def _collect_paths(args: argparse.Namespace) -> list[str]:

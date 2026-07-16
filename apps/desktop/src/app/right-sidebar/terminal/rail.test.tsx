@@ -10,10 +10,7 @@ describe('TerminalRail', () => {
   beforeEach(() => {
     $terminals.set([{ auto: true, cwd: 'C:\\repo', id: 'term-1', kind: 'user', title: 'PowerShell' }])
     $activeTerminalId.set('term-1')
-    $bindings.set({
-      ...$bindings.get(),
-      'view.showTerminal': ['ctrl+`']
-    })
+    $bindings.set({ ...$bindings.get(), 'view.showTerminal': ['ctrl+`'] })
   })
 
   afterEach(() => {
@@ -26,8 +23,10 @@ describe('TerminalRail', () => {
     const view = render(<TerminalRail />)
 
     fireEvent.pointerMove(screen.getByRole('tab', { name: '1. PowerShell' }), { pointerType: 'mouse' })
-    const content = await screen.findByRole('tooltip')
-    const label = content.querySelector<HTMLElement>('.inline-flex')
+    await screen.findByRole('tooltip')
+
+    const content = document.querySelector<HTMLElement>('[data-slot="tooltip-content"]')
+    const label = content?.firstElementChild?.firstElementChild
 
     expect(content).not.toBeNull()
     expect(view.container.contains(content)).toBe(false)

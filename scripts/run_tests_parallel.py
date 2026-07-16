@@ -378,6 +378,7 @@ def _run_one_file(
         cmd,
         repo_root,
         file_timeout,
+        timeout_note=f"per-file timeout ({file})",
     )
 
     # pytest exit 4 = "file or directory not found" at exec time. On loaded

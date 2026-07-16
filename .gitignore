@@ -147,15 +147,19 @@ environments/benchmarks/evals/
 hermes_cli/web_dist/
 apps/desktop/build/
 apps/desktop/dist/
-apps/desktop/release/
-apps/desktop/*.tsbuildinfo
-# One-off Electron bundle emitted when esbuild is run from the repository root.
-/main.cjs
-# `tsc -b` emits workspace JavaScript beside TypeScript sources before Vite
-# and esbuild create the packaged output. These files are reproducible build
-# artifacts; the source trees contain no tracked JavaScript.
+
+# tsc-emitted artifacts (a stray `tsc -b` compiles into src/, and vite then
+# resolves the stale .js OVER the .tsx — never track these)
 apps/desktop/src/**/*.js
+apps/desktop/src/**/*.js.map
+apps/desktop/src/**/*.d.ts
+!apps/desktop/src/global.d.ts
+!apps/desktop/src/vite-env.d.ts
 apps/shared/src/**/*.js
+apps/shared/src/**/*.js.map
+apps/shared/src/**/*.d.ts
+apps/desktop/release/
+*.tsbuildinfo
 
 # Web UI assets — synced from @nous-research/ui at build time via
 # `npm run sync-assets` (see web/package.json).
@@ -202,6 +206,9 @@ docs/superpowers/*
 # ignore it so `hermes update`'s `git stash push --include-untracked` does not
 # treat it as a local edit and autostash it on every run (#38529).
 .hermes-bootstrap-complete
+
+# Persistent dev sandbox dir (scripts/dev-sandbox.sh --persistent)
+.hermes-sandbox/
 
 # Interrupted-update breadcrumb + recovery lock written next to the shared venv
 # by `hermes update` / launch-time self-heal. Runtime state, never a code change

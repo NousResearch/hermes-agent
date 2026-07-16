@@ -50,7 +50,7 @@ import threading
 import uuid
 from pathlib import Path
 from typing import Callable, Dict, Any, Optional
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_constants import display_hermes_home
@@ -205,6 +205,8 @@ DEFAULT_GEMINI_TTS_VOICE = "Kore"
 DEFAULT_GEMINI_TTS_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
 DEFAULT_GEMINI_AUDIO_TAGS = False
 GEMINI_AUDIO_TAG_REWRITE_TASK = "tts_audio_tags"
+# Base URL now resolved via hermes_cli.models.deepinfra_base_url (shared).
+DEFAULT_DEEPINFRA_TTS_VOICE = "default"
 # PCM output specs for Gemini TTS (fixed by the API)
 GEMINI_TTS_SAMPLE_RATE = 24000
 GEMINI_TTS_CHANNELS = 1
@@ -351,7 +353,12 @@ def _load_tts_config() -> Dict[str, Any]:
 
 
 def _get_provider(tts_config: Dict[str, Any]) -> str:
-    """Get the configured TTS provider name."""
+    """Get the explicitly configured TTS provider or the free default.
+
+    Inference credentials do not imply consent to paid speech generation.
+    Users opt into cloud TTS by setting ``tts.provider`` (normally through
+    ``hermes tools``); otherwise the historical Edge backend remains active.
+    """
     return (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
 
 
@@ -397,6 +404,7 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "neutts",
     "kittentts",
     "piper",
+    "deepinfra",
 })
 
 DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = 120
@@ -1009,36 +1017,92 @@ def _generate_elevenlabs(text: str, output_path: str, tts_config: Dict[str, Any]
     return output_path
 
 
+def _tts_response_format_from_path(output_path: str) -> str:
+    """Pick an OpenAI-compatible TTS response format from the output extension."""
+    if output_path.endswith(".ogg"):
+        return "opus"
+    if output_path.endswith(".wav"):
+        return "wav"
+    if output_path.endswith(".flac"):
+        return "flac"
+    return "mp3"
+
+
 # ===========================================================================
-# Provider: OpenAI TTS
+# Provider: OpenAI TTS (also used by every OpenAI-compatible TTS endpoint —
+# DeepInfra delegates here via _generate_deepinfra_tts).
 # ===========================================================================
-def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
-    """
-    Generate audio using OpenAI TTS.
+def _generate_openai_tts(
+    text: str,
+    output_path: str,
+    tts_config: Dict[str, Any],
+    *,
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    model: Optional[str] = None,
+    voice: Optional[str] = None,
+    speed: Optional[float] = None,
+) -> str:
+    """Generate audio via the OpenAI ``audio.speech.create`` SDK shape.
+
+    Optional kwargs let OpenAI-compatible backends (DeepInfra etc.) reuse
+    this function — they resolve credentials/model themselves and pass
+    them through, skipping the OpenAI-only ``_resolve_openai_audio_client_config``.
 
     Args:
         text: Text to convert.
         output_path: Where to save the audio file.
-        tts_config: TTS config dict.
+        tts_config: TTS config dict (used for ``tts.openai`` sub-block
+            and the global ``speed`` default).
+        api_key: Bearer token. When None, resolved from the OpenAI auth
+            chain (config → env → managed gateway).
+        base_url: API base URL. When None, falls back to
+            ``tts.openai.base_url`` then the OpenAI default.
+        model: Model id. When None, reads ``tts.openai.model``.
+        voice: Voice id. When None, reads ``tts.openai.voice``.
+        speed: Playback speed. When None, reads ``tts.openai.speed`` /
+            ``tts.speed``.
 
     Returns:
         Path to the saved audio file.
     """
-    api_key, base_url, is_managed = _resolve_openai_audio_client_config()
+    # Only resolve the OpenAI auth chain when the caller didn't pass explicit
+    # credentials. OpenAI-compatible backends (DeepInfra) pass api_key /
+    # base_url / model / voice through and never hit the managed-gateway path.
+    fallback_base: Optional[str] = None
+    is_managed = False
+    explicit_base_url = base_url is not None
+    if api_key is None:
+        api_key, fallback_base, is_managed = _resolve_openai_audio_client_config()
 
-    oai_config = tts_config.get("openai") or {}
-    model = oai_config.get("model", DEFAULT_OPENAI_MODEL)
-    voice = oai_config.get("voice", DEFAULT_OPENAI_VOICE)
-    custom_base_url = oai_config.get("base_url")
-    if custom_base_url:
-        base_url = custom_base_url
-    speed = float(oai_config.get("speed", tts_config.get("speed", 1.0)))
+    # ``tts.openai: null`` in YAML yields None — coalesce so .get() is safe.
+    oai_config = (tts_config.get("openai") if isinstance(tts_config, dict) else None) or {}
+    if model is None:
+        model = oai_config.get("model", DEFAULT_OPENAI_MODEL)
+    if voice is None:
+        voice = oai_config.get("voice", DEFAULT_OPENAI_VOICE)
+    config_base_url = oai_config.get("base_url")
+    if base_url is None:
+        # Config override wins over the auth-chain fallback (restores the
+        # pre-refactor precedence, where tts.openai.base_url beat the resolved
+        # default); the auth-chain value is the last-resort default. An
+        # explicit base_url arg from an OpenAI-compatible caller (DeepInfra)
+        # skips this block entirely and always wins.
+        base_url = config_base_url or fallback_base or DEFAULT_OPENAI_BASE_URL
+    if speed is None:
+        speed_default = tts_config.get("speed", 1.0) if isinstance(tts_config, dict) else 1.0
+        speed = float(oai_config.get("speed", speed_default))
 
     # The managed OpenAI audio gateway only proxies MANAGED_OPENAI_TTS_MODELS.
     # A model set for direct OpenAI (e.g. "tts-1-hd") 400s there with
     # "Unsupported managed OpenAI speech model", so coerce it — unless the user
     # redirected base_url to their own endpoint, in which case respect it.
-    if is_managed and not custom_base_url and model not in MANAGED_OPENAI_TTS_MODELS:
+    if (
+        is_managed
+        and not explicit_base_url
+        and not config_base_url
+        and model not in MANAGED_OPENAI_TTS_MODELS
+    ):
         logger.warning(
             "TTS: managed OpenAI audio gateway does not support model %r; "
             "falling back to %s. Set VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY "
@@ -1047,16 +1111,12 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         )
         model = DEFAULT_OPENAI_MODEL
 
-    # Determine response format from extension
-    if output_path.endswith(".ogg"):
-        response_format = "opus"
-    else:
-        response_format = "mp3"
+    response_format = _tts_response_format_from_path(output_path)
 
     OpenAIClient = _import_openai_client()
     client = OpenAIClient(api_key=api_key, base_url=base_url)
     try:
-        create_kwargs = {
+        create_kwargs: Dict[str, Any] = {
             "model": model,
             "voice": voice,
             "input": text,
@@ -1073,6 +1133,64 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         close = getattr(client, "close", None)
         if callable(close):
             close()
+
+
+# ===========================================================================
+# Provider: DeepInfra TTS
+# ===========================================================================
+#
+# DeepInfra serves TTS over an OpenAI-compatible /v1/openai/audio/speech
+# endpoint. Models are discovered live via the shared catalog helper
+# (filtered by the ``tts`` surface tag) — no hardcoded model ids in this
+# file, so retired models disappear from hermes the next time the
+# catalog is fetched without a patch.
+
+
+def _generate_deepinfra_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Resolve DeepInfra credentials/model, then delegate to the OpenAI handler.
+
+    DeepInfra's audio endpoint is OpenAI-compatible, so there's no need
+    to duplicate the SDK call — we just pass an explicit api_key /
+    base_url / model / voice through. Model ids and the base URL come from
+    the shared ``hermes_cli.models`` helpers so every DeepInfra surface
+    resolves them identically.
+    """
+    api_key = (get_env_value("DEEPINFRA_API_KEY") or "").strip()
+    if not api_key:
+        raise ValueError(
+            "DEEPINFRA_API_KEY not set. Run `hermes setup` to configure, "
+            "or set the env var directly."
+        )
+
+    # ``tts.deepinfra: null`` in YAML yields None, not {} — coalesce so the
+    # ``.get`` calls below don't raise AttributeError (there is no
+    # tts.deepinfra block in DEFAULT_CONFIG to deep-merge over the null).
+    di_config = tts_config.get("deepinfra") if isinstance(tts_config, dict) else None
+    if not isinstance(di_config, dict):
+        di_config = {}
+
+    from hermes_cli.models import deepinfra_base_url, deepinfra_model_ids
+
+    model = di_config.get("model")
+    if not isinstance(model, str) or not model.strip():
+        candidates = deepinfra_model_ids("tts")
+        if not candidates:
+            raise ValueError(
+                "No DeepInfra TTS model available. Pin one in config.yaml "
+                "under tts.deepinfra.model, or check connectivity to "
+                "api.deepinfra.com so the live catalog can be fetched."
+            )
+        model = candidates[0]
+    return _generate_openai_tts(
+        text,
+        output_path,
+        tts_config,
+        api_key=api_key,
+        base_url=deepinfra_base_url(di_config),
+        model=model,
+        voice=di_config.get("voice", DEFAULT_DEEPINFRA_TTS_VOICE),
+        speed=float(di_config.get("speed", tts_config.get("speed", 1.0))),
+    )
 
 
 # ===========================================================================
@@ -1732,11 +1850,24 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         },
     }
 
+    headers = {"Content-Type": "application/json"}
+    if urlparse(base_url).hostname == "generativelanguage.googleapis.com":
+        try:
+            import hermes_cli as _hermes_cli
+
+            _hermes_version = str(_hermes_cli.__version__)
+        except Exception:
+            _hermes_version = "0.0.0"
+        # Include Hermes client context following Gemini's partner
+        # integration guidance:
+        # https://ai.google.dev/gemini-api/docs/partner-integration
+        headers["X-Goog-Api-Client"] = f"hermes-agent/{_hermes_version}"
+
     endpoint = f"{base_url}/models/{model}:generateContent"
     response = requests.post(
         endpoint,
         params={"key": api_key},
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         json=payload,
         timeout=60,
     )
@@ -2294,6 +2425,17 @@ def text_to_speech_tool(
             logger.info("Generating speech with OpenAI TTS...")
             _generate_openai_tts(text, file_str, tts_config)
 
+        elif provider == "deepinfra":
+            try:
+                _import_openai_client()
+            except ImportError:
+                return json.dumps({
+                    "success": False,
+                    "error": "DeepInfra TTS uses the 'openai' SDK but it isn't installed."
+                }, ensure_ascii=False)
+            logger.info("Generating speech with DeepInfra TTS...")
+            _generate_deepinfra_tts(text, file_str, tts_config)
+
         elif provider == "minimax":
             logger.info("Generating speech with MiniMax TTS...")
             _generate_minimax_tts(text, file_str, tts_config)
@@ -2466,60 +2608,75 @@ def text_to_speech_tool(
 # Requirements check
 # ===========================================================================
 def check_tts_requirements() -> bool:
+    """Return whether the explicitly resolved TTS provider can run.
+
+    Availability must mirror :func:`text_to_speech_tool` dispatch. Unrelated
+    cloud credentials do not make the default Edge backend usable, and an
+    explicitly selected backend is checked on its own requirements.
     """
-    Check if at least one TTS provider is available.
-
-    Edge TTS needs no API key and is the default, so if the package
-    is installed, TTS is available. A user-declared command provider
-    also satisfies the requirement.
-
-    Returns:
-        bool: True if at least one provider can work.
-    """
-    # Any configured command provider counts as available.
-    if _has_any_command_tts_provider():
+    tts_config = _load_tts_config()
+    provider = _get_provider(tts_config)
+    command_config = _resolve_command_provider_config(provider, tts_config)
+    if command_config is not None:
         return True
-    try:
-        _import_edge_tts()
-        return True
-    except ImportError:
-        pass
-    try:
-        _import_elevenlabs()
-        if get_env_value("ELEVENLABS_API_KEY"):
-            return True
-    except ImportError:
-        pass
-    try:
-        _import_openai_client()
-        if _has_openai_audio_backend():
-            return True
-    except ImportError:
-        pass
-    if get_env_value("MINIMAX_API_KEY"):
-        return True
-    try:
-        from tools.xai_http import resolve_xai_http_credentials
 
-        if resolve_xai_http_credentials().get("api_key"):
+    if provider == "edge":
+        try:
+            _import_edge_tts()
             return True
+        except ImportError:
+            return _check_neutts_available()
+    if provider == "elevenlabs":
+        try:
+            _import_elevenlabs()
+        except ImportError:
+            return False
+        return bool(get_env_value("ELEVENLABS_API_KEY"))
+    if provider == "openai":
+        try:
+            _import_openai_client()
+        except ImportError:
+            return False
+        return _has_openai_audio_backend()
+    if provider == "deepinfra":
+        try:
+            _import_openai_client()
+        except ImportError:
+            return False
+        return bool(get_env_value("DEEPINFRA_API_KEY"))
+    if provider == "minimax":
+        return bool(get_env_value("MINIMAX_API_KEY"))
+    if provider == "xai":
+        try:
+            from tools.xai_http import resolve_xai_http_credentials
+
+            return bool(resolve_xai_http_credentials().get("api_key"))
+        except Exception:
+            return False
+    if provider == "gemini":
+        return bool(get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY"))
+    if provider == "mistral":
+        try:
+            _import_mistral_client()
+        except ImportError:
+            return False
+        return bool(get_env_value("MISTRAL_API_KEY"))
+    if provider == "neutts":
+        return _check_neutts_available()
+    if provider == "kittentts":
+        return _check_kittentts_available()
+    if provider == "piper":
+        return _check_piper_available()
+
+    try:
+        from agent.tts_registry import get_provider
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        plugin = get_provider(provider)
+        return bool(plugin and plugin.is_available())
     except Exception:
-        pass
-    if get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY"):
-        return True
-    try:
-        _import_mistral_client()
-        if get_env_value("MISTRAL_API_KEY"):
-            return True
-    except ImportError:
-        pass
-    if _check_neutts_available():
-        return True
-    if _check_kittentts_available():
-        return True
-    if _check_piper_available():
-        return True
-    return False
+        return False
 
 
 def _resolve_openai_audio_client_config() -> tuple[str, str, bool]:

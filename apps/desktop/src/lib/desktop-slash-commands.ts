@@ -221,6 +221,7 @@ const NO_DESKTOP_SURFACE: Record<DesktopUnavailableReason, readonly string[]> = 
   settings: ['/skills', '/pets'],
   advanced: [
     '/auth',
+    '/billing',
     '/bundles',
     '/codex-runtime',
     '/credits',

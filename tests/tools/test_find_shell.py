@@ -13,9 +13,10 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.environments.local import _find_bash, _find_shell
+from tools.environments.local import _find_bash, _find_shell, _is_wsl_bash_stub
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX-specific $SHELL behavior")
 class TestFindShellPrefersUserShell:
     """_find_shell should prefer $SHELL over bash on POSIX."""
 
@@ -114,6 +115,45 @@ class TestFindBashUnchanged:
         # over bash the way _find_shell does.
         assert isinstance(result, str)
         assert len(result) > 0
+
+
+class TestWslBashLauncher:
+    def test_rejects_windows_wsl_launchers(self, monkeypatch):
+        windir = r"C:\Windows"
+        local_appdata = r"C:\Users\operator\AppData\Local"
+        monkeypatch.setenv("WINDIR", windir)
+        monkeypatch.setenv("LOCALAPPDATA", local_appdata)
+
+        assert _is_wsl_bash_stub(os.path.join(windir, "System32", "bash.exe"))
+        assert _is_wsl_bash_stub(os.path.join(local_appdata, "Microsoft", "WindowsApps", "bash.exe"))
+        assert not _is_wsl_bash_stub(r"C:\Program Files\Git\bin\bash.exe")
+
+
+class TestFindBashSkipsBrokenCustomPath:
+    """Stale HERMES_GIT_BASH_PATH must not brick Windows terminal startup."""
+
+    def test_falls_through_to_portable_when_custom_fails_probe(self, tmp_path, monkeypatch):
+        import tools.environments.local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        local_mod._bash_starts_cache.clear()
+
+        broken = tmp_path / "broken" / "bash.exe"
+        broken.parent.mkdir()
+        broken.write_text("", encoding="utf-8")
+        portable = tmp_path / "hermes" / "git" / "bin" / "bash.exe"
+        portable.parent.mkdir(parents=True)
+        portable.write_text("", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_GIT_BASH_PATH", str(broken))
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+
+        def fake_starts(path: str) -> bool:
+            return path == str(portable)
+
+        monkeypatch.setattr(local_mod, "_bash_starts", fake_starts)
+
+        assert _find_bash() == str(portable)
 
 
 @pytest.mark.skipif(

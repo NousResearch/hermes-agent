@@ -378,6 +378,28 @@ def _format_untrusted_prompt_value(value: Any, *, max_chars: int = _MAX_PROMPT_M
     return json.dumps(text, ensure_ascii=False)
 
 
+def neutralize_untrusted_inline_text(value: Any, *, max_chars: int = _MAX_PROMPT_METADATA_CHARS) -> str:
+    """Collapse untrusted text to a single inert line, unquoted.
+
+    Sibling of :func:`_format_untrusted_prompt_value` for call sites that must
+    preserve the surrounding format (e.g. an inline ``[Name] message turn``
+    prefix) instead of a standalone ``**Label:** "value"`` line — JSON-quoting
+    would visibly change a well-behaved value's rendering there.
+
+    Embedded newlines are the injection vector both helpers guard against:
+    they let an untrusted display name masquerade as a new markdown section
+    (a fake heading, an "## Override" block) inside content the model reads
+    every turn. Collapsing them to a single space keeps a normal value
+    byte-identical while making a hostile one visually inert.
+    """
+    text = str(value).replace("\r\n", "\n").replace("\r", "\n").replace("\n", " ")
+    text = "".join(ch if ch >= " " or ch == "\t" else " " for ch in text)
+    text = " ".join(text.split())
+    if max_chars and len(text) > max_chars:
+        text = text[: max_chars - 3] + "..."
+    return text
+
+
 def build_session_context_prompt(
     context: SessionContext,
     *,
@@ -1904,9 +1926,10 @@ class SessionStore:
                     # Stale routing self-heal (#54878): the in-memory entry
                     # points at a session that has ALREADY been ended in
                     # state.db.  Drop it and fall through to recovery/create.
-                    # Recovery finder reopens ``agent_close`` rows (preserving
-                    # the transcript) but returns None for other end_reasons
-                    # (e.g. /new), starting a fresh session.
+                    # Recovery finder reopens ``agent_close`` and mistaken
+                    # ``ws_orphan_reap`` rows (preserving the transcript) but
+                    # returns None for other end_reasons (e.g. /new), starting
+                    # a fresh session.
                     logger.warning(
                         "gateway.session: routing key %r -> %s is ended in "
                         "state.db but still live in sessions.json; dropping "
@@ -1992,6 +2015,7 @@ class SessionStore:
                     "chat_id": source.chat_id,
                     "chat_type": source.chat_type,
                     "thread_id": source.thread_id,
+                    "profile_name": source.profile,
                 }
 
         if _needs_save:
@@ -2178,6 +2202,10 @@ class SessionStore:
                             "has_active_processes_fn raised during prune for %s: %s",
                             entry.session_key, exc,
                         )
+                        # Fail safe: if we can't tell whether a background
+                        # process is attached, keep the entry rather than
+                        # risk orphaning live work.
+                        continue
                 if entry.updated_at < cutoff:
                     removed_keys.append(key)
             for key in removed_keys:
@@ -2268,6 +2296,7 @@ class SessionStore:
                 "chat_id": old_entry.origin.chat_id if old_entry.origin else None,
                 "chat_type": old_entry.origin.chat_type if old_entry.origin else None,
                 "thread_id": old_entry.origin.thread_id if old_entry.origin else None,
+                "profile_name": old_entry.origin.profile if old_entry.origin else None,
             }
 
         if self._db and db_end_session_id:

@@ -20,29 +20,18 @@ from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
 
-def _parse_gemma_tool_marker(content: Any) -> tuple[str, str] | None:
-    if not isinstance(content, str):
-        return None
-    match = re.match(
-        r"^\s*(?:<\|tool\|>|<\|call:)(?P<name>[A-Za-z_][A-Za-z0-9_.-]*)"
-        r"\((?P<arguments>[^)]*)\)"
-        r"(?:\s*(?:>|<\|turn\|>|<\|end\|>).*)?$",
-        content,
-        flags=re.DOTALL,
-    )
-    if match is None:
-        return None
-    raw_arguments = match.group("arguments").strip()
-    if not raw_arguments:
-        arguments = {}
-    else:
-        try:
-            arguments = json.loads(raw_arguments)
-        except json.JSONDecodeError:
-            return None
-        if not isinstance(arguments, dict):
-            return None
-    return match.group("name"), json.dumps(arguments, separators=(",", ":"))
+def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> dict | None:
+    """Return the model's wire-compatible reasoning config."""
+    if not isinstance(reasoning_config, dict):
+        return reasoning_config
+    if (
+        "gpt-5.6" in (model or "").lower()
+        and str(reasoning_config.get("effort") or "").strip().lower() == "ultra"
+    ):
+        normalized = dict(reasoning_config)
+        normalized["effort"] = "max"
+        return normalized
+    return reasoning_config
 
 
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
@@ -79,7 +68,7 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
     if normalized_model.startswith("gemini-2.5-"):
         return thinking_config
 
-    if effort not in {"minimal", "low", "medium", "high", "xhigh"}:
+    if effort not in {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}:
         effort = "medium"
 
     # Gemini 3 Flash documents low/medium/high thinking levels; Gemini 3 Pro
@@ -89,13 +78,13 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
         if "flash" in normalized_model:
             if effort in {"minimal", "low"}:
                 thinking_config["thinkingLevel"] = "low"
-            elif effort in {"high", "xhigh"}:
+            elif effort in {"high", "xhigh", "max", "ultra"}:
                 thinking_config["thinkingLevel"] = "high"
             else:
                 thinking_config["thinkingLevel"] = "medium"
         elif "pro" in normalized_model:
             thinking_config["thinkingLevel"] = (
-                "high" if effort in {"high", "xhigh"} else "low"
+                "high" if effort in {"high", "xhigh", "max", "ultra"} else "low"
             )
 
     return thinking_config
@@ -198,6 +187,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 "codex_reasoning_items" in msg
                 or "codex_message_items" in msg
                 or "tool_name" in msg
+                or "effect_disposition" in msg
                 or "timestamp" in msg  # #47868 — strict providers reject this
             ):
                 needs_sanitize = True
@@ -239,12 +229,14 @@ class ChatCompletionsTransport(ProviderTransport):
                 "codex_reasoning_items" in msg
                 or "codex_message_items" in msg
                 or "tool_name" in msg
+                or "effect_disposition" in msg
                 or "timestamp" in msg  # #47868 — leak into strict providers
             ):
                 out_msg = mutable_msg()
                 out_msg.pop("codex_reasoning_items", None)
                 out_msg.pop("codex_message_items", None)
                 out_msg.pop("tool_name", None)
+                out_msg.pop("effect_disposition", None)
                 out_msg.pop("timestamp", None)  # #47868 — leak into strict providers
 
 
@@ -388,7 +380,7 @@ class ChatCompletionsTransport(ProviderTransport):
         is_nvidia_nim = params.get("is_nvidia_nim", False)
         is_kimi = params.get("is_kimi", False)
         is_tokenhub = params.get("is_tokenhub", False)
-        reasoning_config = params.get("reasoning_config")
+        reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"))
 
         if ephemeral is not None and max_tokens_fn:
             api_kwargs.update(max_tokens_fn(ephemeral))
@@ -587,7 +579,7 @@ class ChatCompletionsTransport(ProviderTransport):
             api_kwargs["max_tokens"] = anthropic_max
 
         # Provider-specific api_kwargs extras (reasoning_effort, metadata, etc.)
-        reasoning_config = params.get("reasoning_config")
+        reasoning_config = _reasoning_config_for_model(model, params.get("reasoning_config"))
         extra_body_from_profile, top_level_from_profile = (
             profile.build_api_kwargs_extras(
                 reasoning_config=reasoning_config,

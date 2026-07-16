@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import test from 'node:test'
+import { test } from 'vitest'
 
 import { installStdioPipeErrorGuards, isIgnorablePipeError } from './stdio-pipe-guards'
 

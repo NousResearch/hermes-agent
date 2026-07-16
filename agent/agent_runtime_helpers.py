@@ -1208,7 +1208,42 @@ def restore_primary_runtime(agent) -> bool:
             api_mode=rt.get("compressor_api_mode", ""),
         )
 
-        # ── Re-select from the credential pool if one is available ──
+        # ── Rebind and re-select the primary credential pool ──
+        # A cross-provider fallback attaches the fallback provider's pool. The
+        # runtime fields above restore the primary, but leaving that pool in
+        # place makes the next primary 401/429 hit the provider-mismatch guard
+        # and disables credential rotation. Reload the primary pool first; if
+        # auth storage is temporarily unreadable, clear the mismatched pool.
+        primary_provider = str(rt.get("provider") or "").strip().lower()
+        pool = getattr(agent, "_credential_pool", None)
+        pool_provider = str(getattr(pool, "provider", "") or "").strip().lower()
+        pool_matches_primary = pool_provider == primary_provider
+        if (
+            primary_provider == "custom"
+            and pool_provider.startswith("custom:")
+        ):
+            try:
+                from agent.credential_pool import get_custom_provider_pool_key
+
+                primary_key = (
+                    get_custom_provider_pool_key(str(rt.get("base_url") or "")) or ""
+                ).strip().lower()
+                pool_matches_primary = bool(primary_key) and primary_key == pool_provider
+            except Exception:
+                pool_matches_primary = False
+        if pool is not None and pool_provider and not pool_matches_primary:
+            agent._credential_pool = None
+            try:
+                from agent.credential_pool import load_pool
+
+                agent._credential_pool = load_pool(primary_provider)
+            except Exception as exc:
+                logger.warning(
+                    "Restore could not reload primary credential pool for %s: %s",
+                    primary_provider,
+                    exc,
+                )
+
         # The snapshot's api_key was captured at construction time.  Across
         # turns the pool may have rotated (token revocation, billing/rate-limit
         # exhaustion, cooldown), leaving the snapshot key stale.  Restoring it
@@ -1222,7 +1257,6 @@ def restore_primary_runtime(agent) -> bool:
             entry = pool.select()
             if entry is not None:
                 entry_provider = str(getattr(entry, "provider", "") or "").strip().lower()
-                primary_provider = str(rt.get("provider") or "").strip().lower()
                 entry_matches_primary = entry_provider == primary_provider
                 # Custom endpoints all carry the generic ``custom`` provider on
                 # the agent while the pool entry is keyed ``custom:<name>`` (see
@@ -1270,6 +1304,13 @@ def restore_primary_runtime(agent) -> bool:
                         entry_provider or "?",
                         primary_provider or "?",
                     )
+
+        # ── Restore reasoning_config if it was saved ──
+        # switch_model saves reasoning_config in _primary_runtime. If the
+        # snapshot predates that (older sessions), keep the current value.
+        saved_reasoning = rt.get("reasoning_config")
+        if saved_reasoning is not None:
+            agent.reasoning_config = dict(saved_reasoning)
 
         # ── Reset fallback chain for the new turn ──
         agent._fallback_activated = False
@@ -1862,6 +1903,9 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         old_norm = (old_provider or "").strip().lower()
         new_norm = (new_provider or "").strip().lower()
         if old_norm != new_norm or getattr(agent, "_credential_pool", None) is None:
+            # A pool bound to the old provider is worse than no pool: the
+            # recovery guard rejects it and every later 401/429 skips rotation.
+            agent._credential_pool = None
             try:
                 from agent.credential_pool import load_pool
                 agent._credential_pool = load_pool(new_provider)
@@ -2032,6 +2076,24 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             api_mode=agent.api_mode,
         )
 
+    # ── Re-resolve reasoning_config from per-model override ──
+    # The new model may have a different reasoning_effort override. Re-read
+    # config so the override takes effect immediately on /model switch —
+    # resolved through the shared chokepoint (per-model > global; YAML
+    # boolean False = disabled).
+    try:
+        from hermes_constants import resolve_reasoning_config
+        from hermes_cli.config import load_config as _sm_load_config
+
+        _reasoning_cfg = _sm_load_config() or {}
+        agent.reasoning_config = resolve_reasoning_config(_reasoning_cfg, agent.model)
+        logger.info(
+            "switch_model: reasoning_config resolved for %s: %s",
+            agent.model, agent.reasoning_config,
+        )
+    except Exception as _reasoning_err:
+        logger.debug("switch_model: could not re-resolve reasoning_config: %s", _reasoning_err)
+
     # ── Invalidate cached system prompt so it rebuilds next turn ──
     agent._cached_system_prompt = None
 
@@ -2054,6 +2116,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
+        "reasoning_config": dict(agent.reasoning_config) if getattr(agent, "reasoning_config", None) else None,
         "compressor_model": getattr(_cc, "model", agent.model) if _cc else agent.model,
         "compressor_base_url": getattr(_cc, "base_url", agent.base_url) if _cc else agent.base_url,
         "compressor_api_key": getattr(_cc, "api_key", "") if _cc else "",
@@ -3165,20 +3228,21 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
 
 
 
-def force_close_tcp_sockets(client: Any, *, release_fds: bool = False) -> int:
-    """Abort in-flight TCP I/O by shutting down pool sockets.
+def force_close_tcp_sockets(client: Any) -> int:
+    """Abort in-flight TCP I/O by shutting down sockets WITHOUT closing FDs.
 
     When a provider drops a connection mid-stream — or the user issues an
     interrupt — we want to unblock httpx's reader/writer immediately rather
     than waiting for the kernel's per-connection timeout. ``shutdown(SHUT_RDWR)``
     achieves that: it sends FIN, breaks any pending ``recv``/``send`` with EOF
-    or ``EPIPE``.
+    or ``EPIPE``, but does NOT release the file descriptor.
 
-    By default (``release_fds=False``) this helper does **not** call
-    ``socket.close()`` / release the FD. That default is load-bearing for
-    cross-thread abort paths (#29507):
+    Historically this helper also called ``socket.close()`` so the FD got
+    released immediately, but that's unsafe when (as is the case for both the
+    interrupt-abort path and stale-call kill path) the helper runs on a
+    different thread than the one driving the request:
 
-      * The Python ``socket.socket`` we close is the SAME object held by
+      * The Python ``socket.socket`` we close here is the SAME object held by
         httpx's pool, so closing it via Python sets its ``_fd`` to -1 and
         future operations on that Python object fail safely.
       * BUT the SSL wrapper (``ssl.SSLSocket``'s underlying OpenSSL ``BIO``)
@@ -3190,20 +3254,15 @@ def force_close_tcp_sockets(client: Any, *, release_fds: bool = False) -> int:
         wrong file (issue #29507: 24-byte TLS application-data record
         clobbering SQLite header bytes 5..28).
 
-    ``shutdown()`` from any thread is FD-safe; ``close()`` is not when a
-    stranger thread still has the BIO holding the raw FD.
+    The fix is to let the owning thread own the close. ``shutdown()`` from any
+    thread is FD-safe; ``close()`` is not. The httpx connection's own close
+    path — which runs from the worker thread when it unwinds — will release
+    the FD via the same ``socket.socket`` object, and because Python's socket
+    close atomically swaps ``_fd`` to -1 *before* issuing ``os.close``, there
+    is no FD-aliasing window when only one thread closes.
 
-    When the **owning** thread is disposing of a client that is no longer
-    shared (``_close_openai_client`` after replace / request-complete), pass
-    ``release_fds=True``. httpx's own ``client.close()`` does not reliably
-    ``os.close()`` sockets that were already ``shutdown()``'d, so without an
-    explicit ``sock.close()`` those FDs stay in kernel CLOSED state forever
-    and accumulate under long-lived gateways (issue #61979 — ~1 CLOSED fd
-    per ~6 minutes through a local proxy path).
-
-    Returns the number of sockets shut down (and optionally closed). Field
-    kept as ``tcp_force_closed=N`` in log lines for backwards-compatible
-    parsing.
+    Returns the number of sockets shut down. (Field kept as
+    ``tcp_force_closed=N`` in the log line for backwards-compatible parsing.)
     """
     import socket as _socket
 
@@ -3215,13 +3274,7 @@ def force_close_tcp_sockets(client: Any, *, release_fds: bool = False) -> int:
             except OSError:
                 # Already shut down / not connected / FD invalid — all benign.
                 pass
-            # IMPORTANT (#29507): never release FDs from stranger-thread
-            # abort paths. Only the owning-thread close path may opt in.
-            if release_fds:
-                try:
-                    sock.close()
-                except OSError:
-                    pass
+            # IMPORTANT (#29507): do NOT call sock.close() here. See docstring.
             shutdown_count += 1
     except Exception as exc:
         _ra().logger.debug("Force-close TCP sockets sweep error: %s", exc)

@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS projects (
     color         TEXT,
     board_slug    TEXT,
     primary_path  TEXT,
+    executor      TEXT NOT NULL DEFAULT 'hermes-worker',
     created_at    INTEGER NOT NULL,
     archived      INTEGER NOT NULL DEFAULT 0
 );
@@ -200,7 +201,17 @@ def connect_closing(db_path: Optional[Path] = None):
 
 # TEXT columns added to `projects` after v1; re-applied idempotently on every
 # open so a legacy DB upgrades in place.
-_OPTIONAL_PROJECT_COLUMNS = ("board_slug", "primary_path", "icon", "color")
+_OPTIONAL_PROJECT_COLUMNS = ("board_slug", "primary_path", "icon", "color", "executor")
+
+VALID_EXECUTORS = frozenset({"hermes-worker", "claude-code", "codex"})
+
+
+def normalize_executor(executor: object | None) -> str:
+    """Validate a project task executor and return its canonical name."""
+    value = str(executor or "hermes-worker").strip().lower()
+    if value not in VALID_EXECUTORS:
+        raise ValueError("executor must be hermes-worker, claude-code, or codex")
+    return value
 
 
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
@@ -208,7 +219,12 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(projects)")}
     for col in _OPTIONAL_PROJECT_COLUMNS:
         if col not in cols:
-            _add_column_if_missing(conn, "projects", col, f"{col} TEXT")
+            column_sql = (
+                "executor TEXT NOT NULL DEFAULT 'hermes-worker'"
+                if col == "executor"
+                else f"{col} TEXT"
+            )
+            _add_column_if_missing(conn, "projects", col, column_sql)
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +259,7 @@ class Project:
     color: Optional[str] = None
     board_slug: Optional[str] = None
     primary_path: Optional[str] = None
+    executor: str = "hermes-worker"
     archived: bool = False
     folders: List[ProjectFolder] = field(default_factory=list)
 
@@ -256,6 +273,7 @@ class Project:
             "color": self.color,
             "board_slug": self.board_slug,
             "primary_path": self.primary_path,
+            "executor": self.executor,
             "archived": bool(self.archived),
             "created_at": self.created_at,
             "folders": [f.to_dict() for f in self.folders],
@@ -274,6 +292,7 @@ def _project_from_row(row: sqlite3.Row) -> Project:
         color=row["color"] if "color" in keys else None,
         board_slug=row["board_slug"] if "board_slug" in keys else None,
         primary_path=row["primary_path"] if "primary_path" in keys else None,
+        executor=normalize_executor(row["executor"] if "executor" in keys else None),
         archived=bool(row["archived"]) if "archived" in keys else False,
     )
 
@@ -330,6 +349,7 @@ def create_project(
     icon: Optional[str] = None,
     color: Optional[str] = None,
     board_slug: Optional[str] = None,
+    executor: Optional[str] = None,
 ) -> str:
     """Create a project and return its id.
 
@@ -362,8 +382,8 @@ def create_project(
         conn.execute(
             "INSERT INTO projects "
             "(id, slug, name, description, icon, color, board_slug, "
-            " primary_path, created_at, archived) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+            " primary_path, executor, created_at, archived) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
             (
                 pid,
                 unique,
@@ -373,6 +393,7 @@ def create_project(
                 color,
                 normalize_slug(board_slug) if board_slug else None,
                 primary,
+                normalize_executor(executor),
                 now,
             ),
         )
@@ -422,6 +443,7 @@ def update_project(
     icon: Optional[str] = None,
     color: Optional[str] = None,
     board_slug: Optional[str] = None,
+    executor: Optional[str] = None,
 ) -> bool:
     """Patch top-level project fields. Only provided fields change.
 
@@ -449,6 +471,9 @@ def update_project(
     if board_slug is not None:
         sets.append("board_slug = ?")
         params.append(normalize_slug(board_slug) if board_slug.strip() else None)
+    if executor is not None:
+        sets.append("executor = ?")
+        params.append(normalize_executor(executor))
     if not sets:
         return False
     params.append(project_id)

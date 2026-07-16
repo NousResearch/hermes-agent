@@ -211,9 +211,17 @@ The task-specific chain is most precise and wins when present. The top-level `fa
 **Built-in text discovery chain (compression, web extract, title generation, etc.):**
 
 ```text
-OpenRouter → Nous Portal → Custom endpoint → Codex OAuth →
-API-key providers (z.ai, Kimi, MiniMax, Xiaomi MiMo, Hugging Face, Anthropic) → give up
+OpenRouter → Nous Portal → Custom endpoint → give up
 ```
+
+Direct API-key providers are not implicit fallbacks because they can incur
+provider billing. To append configured API-key providers (z.ai, Kimi,
+MiniMax, Xiaomi MiMo, Hugging Face, Anthropic, and others) to this chain,
+set `auxiliary.allow_api_key_fallback: true` globally or set
+`auxiliary.<task>.allow_api_key_fallback: true` for a specific task. Explicit
+`provider` and `fallback_chain` entries continue to work without this opt-in.
+Codex OAuth is used when it is the main or explicitly configured provider,
+not as a guessed built-in fallback.
 
 **Built-in vision discovery chain:**
 

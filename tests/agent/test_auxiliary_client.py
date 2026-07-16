@@ -2076,6 +2076,49 @@ class TestTryPaymentFallback:
         assert client is None
         assert label == ""
 
+    def test_api_key_fallback_is_denied_by_default(self):
+        api_key_client = MagicMock()
+        with patch("agent.auxiliary_client._try_nous", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
+             patch(
+                 "agent.auxiliary_client._resolve_api_key_provider",
+                 return_value=(api_key_client, "gemini-3.5-flash"),
+             ) as api_key_try, \
+             patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
+             patch("hermes_cli.config.load_config", return_value={"auxiliary": {}}):
+            client, model, label = _try_payment_fallback(
+                "openrouter", task="compression"
+            )
+
+        assert (client, model, label) == (None, None, "")
+        api_key_try.assert_not_called()
+
+    def test_api_key_fallback_can_be_task_opted_in(self):
+        api_key_client = MagicMock()
+        with patch("agent.auxiliary_client._try_nous", return_value=(None, None)), \
+             patch("agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)), \
+             patch(
+                 "agent.auxiliary_client._resolve_api_key_provider",
+                 return_value=(api_key_client, "gemini-3.5-flash"),
+             ) as api_key_try, \
+             patch("agent.auxiliary_client._read_main_provider", return_value="openrouter"), \
+             patch(
+                 "hermes_cli.config.load_config",
+                 return_value={
+                     "auxiliary": {
+                         "compression": {"allow_api_key_fallback": True}
+                     }
+                 },
+             ):
+            client, model, label = _try_payment_fallback(
+                "openrouter", task="compression"
+            )
+
+        assert client is api_key_client
+        assert model == "gemini-3.5-flash"
+        assert label == "api-key"
+        api_key_try.assert_called_once_with()
+
     def test_codex_alias_maps_to_chain_label(self):
         """'codex' should map to 'openai-codex' in the skip set."""
         mock_client = MagicMock()
@@ -2159,6 +2202,98 @@ class TestCallLlmPaymentFallback:
             )
         # Fallback client should have been used
         assert fallback_client.chat.completions.create.called
+
+    def test_sync_auto_capacity_fallback_does_not_use_api_key_by_default(self):
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = (
+            self._make_429_rate_limit_error()
+        )
+        api_key_client = MagicMock()
+
+        with patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(primary_client, "primary-model"),
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", "primary-model", None, None, None),
+        ), patch(
+            "agent.auxiliary_client._try_configured_fallback_chain",
+            return_value=(None, None, ""),
+        ), patch(
+            "agent.auxiliary_client._try_main_fallback_chain",
+            return_value=(None, None, ""),
+        ), patch(
+            "agent.auxiliary_client._try_openrouter", return_value=(None, None)
+        ), patch(
+            "agent.auxiliary_client._try_nous", return_value=(None, None)
+        ), patch(
+            "agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)
+        ), patch(
+            "agent.auxiliary_client._resolve_api_key_provider",
+            return_value=(api_key_client, "gemini-3.5-flash"),
+        ) as api_key_try, patch(
+            "hermes_cli.config.load_config", return_value={"auxiliary": {}}
+        ):
+            with pytest.raises(Exception, match="Rate limit exceeded"):
+                call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "hello"}],
+                )
+
+        api_key_try.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_async_auto_capacity_fallback_uses_api_key_when_opted_in(self):
+        primary_client = MagicMock()
+        primary_client.chat.completions.create = AsyncMock(
+            side_effect=self._make_429_rate_limit_error()
+        )
+        api_key_client = MagicMock()
+        async_api_key_client = MagicMock()
+        async_api_key_client.chat.completions.create = AsyncMock(
+            return_value=_DummyResponse("opted-in fallback")
+        )
+
+        with patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(primary_client, "primary-model"),
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", "primary-model", None, None, None),
+        ), patch(
+            "agent.auxiliary_client._try_configured_fallback_chain",
+            return_value=(None, None, ""),
+        ), patch(
+            "agent.auxiliary_client._try_main_fallback_chain",
+            return_value=(None, None, ""),
+        ), patch(
+            "agent.auxiliary_client._try_openrouter", return_value=(None, None)
+        ), patch(
+            "agent.auxiliary_client._try_nous", return_value=(None, None)
+        ), patch(
+            "agent.auxiliary_client._try_custom_endpoint", return_value=(None, None)
+        ), patch(
+            "agent.auxiliary_client._resolve_api_key_provider",
+            return_value=(api_key_client, "gemini-3.5-flash"),
+        ) as api_key_try, patch(
+            "agent.auxiliary_client._to_async_client",
+            return_value=(async_api_key_client, "gemini-3.5-flash"),
+        ), patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "auxiliary": {
+                    "compression": {"allow_api_key_fallback": True}
+                }
+            },
+        ):
+            result = await async_call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result.choices[0].message.content == "opted-in fallback"
+        api_key_try.assert_called_once_with()
+        async_api_key_client.chat.completions.create.assert_awaited_once()
 
     def test_401_auth_error_triggers_fallback_in_auto_mode(self, monkeypatch):
         """401 auth errors should trigger fallback in auto mode (#21165).

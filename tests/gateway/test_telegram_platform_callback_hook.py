@@ -87,6 +87,26 @@ async def test_authorized_unknown_callback_is_handled_by_plugin_hook(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_media_callback_passes_caption_to_plugin_hook(monkeypatch):
+    """Plugin callbacks keep correlation markers from photo captions."""
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "999")
+    adapter = _make_adapter()
+    update, query = _make_update()
+    query.message.text = None
+    query.message.caption = (
+        "VISUAL BRIEF\n"
+        "[zoon-brain:output:visual-brief:2026-07-16:harness-staleness-01]"
+    )
+    hook_result = {"handled": True, "answer": "Gespeichert"}
+
+    with patch("hermes_cli.plugins.invoke_hook", return_value=[hook_result]) as invoke:
+        await adapter._handle_callback_query(update, MagicMock())
+
+    assert invoke.call_args.kwargs["message_text"] == query.message.caption
+    query.answer.assert_awaited_once_with(text="Gespeichert", show_alert=False)
+
+
+@pytest.mark.asyncio
 async def test_send_attaches_normalized_keyboard_to_final_chunk(monkeypatch):
     """Callers can add actions without taking over Telegram delivery."""
     from plugins.platforms.telegram import adapter as telegram_adapter

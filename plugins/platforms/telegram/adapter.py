@@ -6076,7 +6076,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     if getattr(message, "message_id", None) is not None
                     else None
                 ),
-                message_text=str(getattr(message, "text", "") or ""),
+                message_text=str(
+                    getattr(message, "text", None)
+                    or getattr(message, "caption", "")
+                    or ""
+                ),
             )
         except Exception:
             logger.warning("[%s] platform callback hook dispatch failed", self.name, exc_info=True)

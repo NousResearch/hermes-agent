@@ -29,6 +29,7 @@ name: auto-fix lint issues & formatting
 #      bot/js-autofix branch, creates/updates a PR, and enables auto-merge.
 #      This job never runs npm, never installs anything, never executes any
 #      repo code. The only input it trusts is the patch artifact.
+#      Skipped entirely when generate-patch reports no fixes (has-fixes != true).
 #      The PR auto-merges (squash) once CI passes. If CI fails or main moves,
 #      the PR is auto-closed and the branch deleted — the next run re-applies
 #      on the current state.
@@ -58,6 +59,8 @@ jobs:
     name: Generate eslint --fix patch
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    outputs:
+      has-fixes: ${{ steps.produce-patch.outputs.has-fixes }}
     # No permissions override → inherits workflow-level contents: read.
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -80,13 +83,16 @@ jobs:
         run: npm run fix
 
       - name: Produce patch
+        id: produce-patch
         run: |
           if git diff --quiet; then
             echo "No fixes needed."
+            echo "has-fixes=false" >> "$GITHUB_OUTPUT"
             # Empty patch signals "nothing to do" to apply-patch.
             : > js-fix.patch
           else
             git diff > js-fix.patch
+            echo "has-fixes=true" >> "$GITHUB_OUTPUT"
             echo "Patch size: $(wc -c < js-fix.patch) bytes"
 
             # Reject patches that touch anything outside JS/TS/JSON sources.
@@ -111,6 +117,9 @@ jobs:
   apply-patch:
     name: Apply patch
     needs: generate-patch
+    # Skip entirely when generate-patch found no fixes — saves a runner,
+    # avoids a redundant checkout/download, and keeps the job graph honest.
+    if: needs.generate-patch.outputs.has-fixes == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

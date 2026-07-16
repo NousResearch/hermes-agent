@@ -57,7 +57,15 @@ class CLIAgentSetupMixin:
                     if not _fb_provider or not _fb_model:
                         continue
                     try:
-                        runtime = resolve_runtime_provider(requested=_fb_provider)
+                        from hermes_cli.fallback_config import resolve_entry_api_key
+
+                        _fb_kwargs = {"requested": _fb_provider}
+                        if _fb.get("base_url"):
+                            _fb_kwargs["explicit_base_url"] = _fb["base_url"]
+                        _fb_api_key = resolve_entry_api_key(_fb)
+                        if _fb_api_key:
+                            _fb_kwargs["explicit_api_key"] = _fb_api_key
+                        runtime = resolve_runtime_provider(**_fb_kwargs)
                         logger.warning(
                             "Primary provider auth failed (%s). Falling through to fallback: %s/%s",
                             _primary_exc, _fb_provider, _fb_model,

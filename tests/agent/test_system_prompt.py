@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from agent.system_prompt import build_system_prompt_parts
+from agent.beta_identity import BETA_AGENT_IDENTITY, BETA_MODE, ResolvedIdentity
 
 
 def _make_agent(**overrides):
@@ -55,6 +56,23 @@ class TestContextFileCwd:
     def test_configured_dir_when_terminal_cwd_set(self, monkeypatch, tmp_path):
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         assert _captured_context_cwd(_make_agent()) == tmp_path
+
+
+class TestResolvedIdentity:
+    def test_beta_identity_remains_primary_with_soul(self):
+        agent = _make_agent(
+            _resolved_identity=ResolvedIdentity(BETA_MODE, BETA_AGENT_IDENTITY)
+        )
+        with (
+            patch("run_agent.load_soul_md", return_value="Custom SOUL"),
+            patch("run_agent.build_nous_subscription_prompt", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("run_agent.build_context_files_prompt", return_value=""),
+        ):
+            stable = build_system_prompt_parts(agent)["stable"]
+
+        assert stable.startswith(BETA_AGENT_IDENTITY)
+        assert stable.count("Custom SOUL") == 1
 
 
 def _stable_prompt(agent):

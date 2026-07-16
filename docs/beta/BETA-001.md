@@ -18,18 +18,20 @@ Supported values:
 
 Unknown or malformed values fall back to `hermes` so a configuration error cannot prevent startup.
 
-## Current scope
+## Runtime integration
 
-This milestone changes the top-level identity and operating policy only. It does not yet remove tools from the parent agent or implement the dynamic specialist registry. Beta uses the existing Hermes delegation and Kanban foundations.
+`AIAgent` resolves identity once from the active profile's `config.yaml` and `agent/system_prompt.py` consumes that session-stable result. This path is part of the packaged `agent` module, so editable installs, wheels, and official installers use the same behavior; `sitecustomize.py` is not required.
 
-The next milestone must move activation from the source/editable-install bootstrap into the packaged runtime initialization, then add the specialist registry and role-aware tool restrictions.
+In Hermes mode, `SOUL.md` keeps its original behavior and replaces the built-in Hermes identity. In Beta mode, the Beta identity remains first and `SOUL.md` is appended as user customization. Identity is not re-resolved during a session, preserving prompt-cache stability.
+
+This milestone changes the top-level identity and operating policy only. It does not remove tools from the parent agent or implement the specialist registry. Beta reuses the existing Hermes delegation and Kanban foundations.
 
 ## Validation
 
 Run:
 
 ```bash
-pytest -q tests/test_beta_identity.py
+pytest -q tests/test_beta_identity.py tests/agent/test_system_prompt.py
 ```
 
 Manual smoke test:

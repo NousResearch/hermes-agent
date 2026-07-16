@@ -7,6 +7,7 @@ orchestrator only when ``agent.mode: beta`` is present in config.yaml.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any, Mapping
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,22 @@ Operating rules:
 - Keep the Chief's preferences, goals, decisions, and operating rules in your memory. Detailed technical knowledge belongs to the relevant specialist.
 
 Your success is not doing everything yourself. Your success is making the Chief feel that a coordinated team is working through one trusted interface."""
+
+
+@dataclass(frozen=True)
+class ResolvedIdentity:
+    """Session-stable identity plus its SOUL.md compatibility policy."""
+
+    mode: str
+    prompt: str
+
+    def compose(self, soul: str | None) -> str:
+        """Keep legacy Hermes SOUL replacement; append SOUL under Beta."""
+        if not soul:
+            return self.prompt
+        if self.mode == HERMES_MODE:
+            return soul
+        return f"{self.prompt}\n\n{soul}"
 
 
 def normalize_agent_mode(value: Any) -> str:
@@ -66,6 +83,14 @@ def resolve_agent_mode(config: Mapping[str, Any] | None = None) -> str:
 
 def identity_for_mode(default_identity: str, config: Mapping[str, Any] | None = None) -> str:
     """Return the identity selected by ``agent.mode``."""
-    if resolve_agent_mode(config) == BETA_MODE:
-        return BETA_AGENT_IDENTITY
-    return default_identity
+    return resolve_agent_identity(default_identity, config).prompt
+
+
+def resolve_agent_identity(
+    default_identity: str,
+    config: Mapping[str, Any] | None = None,
+) -> ResolvedIdentity:
+    """Resolve identity and SOUL policy once for an agent session."""
+    mode = resolve_agent_mode(config)
+    prompt = BETA_AGENT_IDENTITY if mode == BETA_MODE else default_identity
+    return ResolvedIdentity(mode=mode, prompt=prompt)

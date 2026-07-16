@@ -1,10 +1,9 @@
 """Tests for inbound Telegram message reactions → agent actions.
 
 When a user reacts to one of the bot's messages with an emoji mapped in
-``platforms.telegram.extra.reaction_actions`` (or registered by a plugin via
-``ctx.register_reaction``), the adapter synthesizes an agent turn. Unconfigured
-reactions, removed reactions, and unmapped emoji are ignored, so the feature is
-backward-compatible by default.
+``platforms.telegram.extra.reaction_actions``, the adapter synthesizes an agent
+turn. Unconfigured reactions, removed reactions, unmapped emoji, and unauthorized
+reactors are ignored, so the feature is backward-compatible by default.
 """
 
 import importlib
@@ -94,9 +93,9 @@ def _make_adapter(telegram_adapter_cls, extra=None):
     )
 
 
-def _make_reaction_update(emoji, *, chat_type="private", old=()):
+def _make_reaction_update(emoji, *, chat_type="private", old=(), user_id=7409767798):
     chat = SimpleNamespace(id=7409767798, type=chat_type, title=None, full_name="Sean")
-    user = SimpleNamespace(id=7409767798, full_name="Sean")
+    user = SimpleNamespace(id=user_id, full_name="Sean")
     new = tuple(SimpleNamespace(emoji=e) for e in ([emoji] if emoji else []))
     old_reaction = tuple(SimpleNamespace(emoji=e) for e in old)
     mr = SimpleNamespace(
@@ -186,3 +185,42 @@ async def test_only_newly_added_emoji_trigger(telegram_adapter_cls):
     adapter.handle_message.assert_awaited_once()
     event = adapter.handle_message.await_args.args[0]
     assert "done" in event.text  # 👍 action, not 🔥
+
+
+@pytest.mark.asyncio
+async def test_unauthorized_reactor_is_rejected(telegram_adapter_cls):
+    """Reaction from a user not in allow_from must not dispatch an agent turn."""
+    adapter = _make_adapter(
+        telegram_adapter_cls,
+        extra={
+            "reaction_actions": {"👍": "mark done"},
+            "allow_from": ["999"],  # only user 999 allowed
+        },
+    )
+    adapter.handle_message = AsyncMock()
+
+    # user_id=7409767798 is NOT in allow_from → should be rejected.
+    await adapter._handle_message_reaction(
+        _make_reaction_update("👍", user_id=7409767798), MagicMock()
+    )
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_authorized_reactor_dispatches(telegram_adapter_cls):
+    """Reaction from a user in allow_from dispatches normally."""
+    adapter = _make_adapter(
+        telegram_adapter_cls,
+        extra={
+            "reaction_actions": {"👍": "mark done"},
+            "allow_from": ["7409767798"],
+        },
+    )
+    adapter.handle_message = AsyncMock()
+
+    await adapter._handle_message_reaction(
+        _make_reaction_update("👍", user_id=7409767798), MagicMock()
+    )
+
+    adapter.handle_message.assert_awaited_once()

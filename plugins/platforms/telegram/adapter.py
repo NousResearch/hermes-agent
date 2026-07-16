@@ -735,6 +735,48 @@ class TelegramAdapter(BasePlatformAdapter):
         allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
         return "*" in allowed_ids or user_id in allowed_ids
 
+    def _is_reaction_user_authorized(self, user, chat) -> bool:
+        """Authorize the reactor before dispatching a reaction-driven agent event.
+
+        Mirrors the prefilter logic of :meth:`_is_user_authorized_from_message`
+        for the case where no full ``Message`` object is available (reaction
+        updates carry a ``user`` directly instead). Anonymous reactions (no
+        ``user``) are allowed through; the chat-level ``_should_process_reaction``
+        gate still applies.
+        """
+        user_id = str(user.id) if user else None
+        if not user_id:
+            return True  # anonymous reaction — no user-level auth possible
+
+        adapter_allow_from = self.config.extra.get("allow_from") if self.config and self.config.extra else None
+        if adapter_allow_from is not None:
+            allowed = {str(u).strip() for u in adapter_allow_from if str(u).strip()}
+            return user_id in allowed or "*" in allowed
+
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        auth_fn = getattr(runner, "_is_user_authorized", None)
+        if callable(auth_fn) and self._telegram_auth_env_configured():
+            try:
+                # Build a minimal source compatible with the runner's auth signature.
+                from gateway import MessageSource as _MS  # type: ignore[import]
+                chat_type_raw = str(getattr(chat, "type", "")).split(".")[-1].lower()
+                chat_type = "private" if chat_type_raw == "private" else chat_type_raw
+                source = _MS(
+                    chat_id=str(chat.id) if chat else user_id,
+                    user_id=user_id,
+                    chat_type=chat_type,
+                    user_name=None,
+                )
+                return bool(auth_fn(source))
+            except Exception:
+                logger.debug("[Telegram] reaction auth fell back to env for user %s", user_id, exc_info=True)
+
+        allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
+        if not allowed_csv:
+            return True
+        allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
+        return "*" in allowed_ids or user_id in allowed_ids
+
     @classmethod
     def _metadata_thread_id(cls, metadata: Optional[Dict[str, Any]]) -> Optional[str]:
         if not metadata:
@@ -7191,14 +7233,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return  # reaction removed, or no genuinely new emoji
 
         actions = self._reaction_actions_map()
-        plugin_reactions: dict = {}
-        try:
-            from hermes_cli.plugins import get_plugin_reactions
-            plugin_reactions = get_plugin_reactions() or {}
-        except Exception:
-            plugin_reactions = {}
-
-        matched = next((e for e in added if e in actions or e in plugin_reactions), None)
+        matched = next((e for e in added if e in actions), None)
         if matched is None:
             return  # unrecognized emoji — ignore
 
@@ -7207,23 +7242,13 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         user = getattr(mr, "user", None)
 
-        # A plugin-registered handler takes precedence (programmatic control).
-        if matched in plugin_reactions:
-            try:
-                handler = plugin_reactions[matched].get("handler")
-                if handler is not None:
-                    result = handler({
-                        "emoji": matched,
-                        "chat_id": str(chat.id),
-                        "message_id": str(mr.message_id),
-                        "user_id": str(user.id) if user else None,
-                    })
-                    if asyncio.iscoroutine(result):
-                        await result
-                    return
-            except Exception as e:
-                logger.warning("[%s] plugin reaction handler for %s failed: %s", self.name, matched, e)
-                return
+        if not self._is_reaction_user_authorized(user, chat):
+            logger.debug(
+                "[%s] reaction from unauthorized user %s ignored",
+                self.name,
+                getattr(user, "id", "?"),
+            )
+            return
 
         chat_type_raw = str(getattr(chat, "type", "")).split(".")[-1].lower()
         chat_type = "group" if chat_type_raw in ("group", "supergroup") else (

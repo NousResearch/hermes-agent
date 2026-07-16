@@ -774,7 +774,7 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, subject=None):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -1096,6 +1096,26 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 return result
             last_result = result
         return last_result
+
+    # --- Email: send one MIME message with optional attachments and subject ---
+    # The generic fallback would either drop MEDIA attachments or send text and
+    # media as separate messages. Email needs a single multipart message so a
+    # cron PDF brief arrives as one email with the correct Subject header.
+    if platform == Platform.EMAIL:
+        from gateway.platform_registry import platform_registry as _pr_email
+        from hermes_cli.plugins import discover_plugins as _dp_email
+        _dp_email()
+        _email_entry = _pr_email.get("email")
+        if _email_entry is None or _email_entry.standalone_sender_fn is None:
+            return {"error": "Email plugin not registered or missing standalone_sender_fn"}
+        return await _email_entry.standalone_sender_fn(
+            pconfig,
+            chat_id,
+            message,
+            thread_id=thread_id,
+            media_files=media_files,
+            subject=subject,
+        )
 
     # --- Non-media platforms ---
     if media_files and not message.strip():

@@ -736,6 +736,141 @@ class TestDeliverResultWrapping:
         # Media files should be forwarded separately
         assert kwargs["media_files"] == [(str(media_path), False)]
 
+    def test_email_delivery_passes_subject_and_media_to_standalone_sender(self, tmp_path, monkeypatch):
+        """Email cron delivery should strip Subject/MEDIA directives and pass
+        subject + attachments to the standalone email sender in one call."""
+        from gateway.config import Platform
+
+        media_path = self._safe_media_path(tmp_path, monkeypatch, "daily-brief.pdf", b"%PDF-1.4\n")
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.EMAIL: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}):
+            job = {
+                "id": "brief-job",
+                "deliver": "origin",
+                "origin": {"platform": "email", "chat_id": "austin@example.com"},
+            }
+            _deliver_result(
+                job,
+                f"Subject: Daily Meeting Prep — Tuesday, July 14, 2026\n\nAttached.\nMEDIA:{media_path}",
+            )
+
+        send_mock.assert_called_once()
+        args, kwargs = send_mock.call_args
+        assert "Subject:" not in args[3]
+        assert "MEDIA:" not in args[3]
+        assert kwargs["subject"] == "Daily Meeting Prep — Tuesday, July 14, 2026"
+        assert kwargs["media_files"] == [(str(media_path), False)]
+
+    def test_live_email_adapter_receives_subject_and_media_metadata(self, tmp_path, monkeypatch):
+        """The live gateway email path must receive subject/media metadata so
+        it can send one multipart MIME email instead of split/default-subject mail."""
+        from concurrent.futures import Future
+        from gateway.config import Platform
+
+        media_path = self._safe_media_path(tmp_path, monkeypatch, "daily-brief.pdf", b"%PDF-1.4\n")
+
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.EMAIL: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            import asyncio as _asyncio
+            future = Future()
+            try:
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
+            return future
+
+        job = {
+            "id": "brief-job",
+            "deliver": "origin",
+            "origin": {"platform": "email", "chat_id": "austin@example.com"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            _deliver_result(
+                job,
+                f"Subject: Daily Meeting Prep — Tuesday, July 14, 2026\n\nAttached.\nMEDIA:{media_path}",
+                adapters={Platform.EMAIL: adapter},
+                loop=loop,
+            )
+
+        adapter.send.assert_called_once()
+        args, kwargs = adapter.send.call_args
+        assert "Subject:" not in args[1]
+        assert "MEDIA:" not in args[1]
+        metadata = kwargs["metadata"]
+        assert metadata["subject"] == "Daily Meeting Prep — Tuesday, July 14, 2026"
+        assert metadata["media_files"] == [(str(media_path), False)]
+
+    def test_live_email_attachment_only_output_uses_adapter_send(self, tmp_path, monkeypatch):
+        """Email cron output with only Subject + MEDIA should still send one
+        multipart email via EmailAdapter.send, even when wrapping is disabled."""
+        from concurrent.futures import Future
+        from gateway.config import Platform
+
+        media_path = self._safe_media_path(tmp_path, monkeypatch, "daily-brief.pdf", b"%PDF-1.4\n")
+
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.EMAIL: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        def fake_run_coro(coro, _loop):
+            import asyncio as _asyncio
+            future = Future()
+            try:
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
+            return future
+
+        job = {
+            "id": "brief-job",
+            "deliver": "origin",
+            "origin": {"platform": "email", "chat_id": "austin@example.com"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            _deliver_result(
+                job,
+                f"Subject: Daily Meeting Prep — Tuesday, July 14, 2026\nMEDIA:{media_path}",
+                adapters={Platform.EMAIL: adapter},
+                loop=loop,
+            )
+
+        adapter.send.assert_called_once()
+        args, kwargs = adapter.send.call_args
+        assert args[1] == ""
+        metadata = kwargs["metadata"]
+        assert metadata["subject"] == "Daily Meeting Prep — Tuesday, July 14, 2026"
+        assert metadata["media_files"] == [(str(media_path), False)]
+
     def test_live_adapter_sends_media_as_attachments(self, tmp_path, monkeypatch):
         """When a live adapter is available, MEDIA files should be sent as native
         platform attachments (e.g., Discord voice, Telegram audio) rather than

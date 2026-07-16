@@ -66,6 +66,33 @@ MAX_MESSAGE_LENGTH = 50_000
 
 SMTP_CONNECT_TIMEOUT = 30
 
+_SUBJECT_DIRECTIVE_RE = re.compile(r"^\s*(?:Subject|Email-Subject)\s*:\s*(.+?)\s*$", re.IGNORECASE)
+
+
+def _extract_subject_directive(body: str) -> tuple[Optional[str], str]:
+    """Return (subject, body_without_directive) for a leading subject line."""
+    lines = (body or "").splitlines()
+    if not lines:
+        return None, body or ""
+    match = _SUBJECT_DIRECTIVE_RE.match(lines[0])
+    if not match:
+        return None, body or ""
+    subject = match.group(1).strip()
+    remainder = "\n".join(lines[1:]).lstrip("\n")
+    return subject or None, remainder
+
+
+def _subject_from_metadata(metadata: Optional[Dict[str, Any]], body: str) -> tuple[Optional[str], str]:
+    """Resolve an explicit email subject from metadata or body directive."""
+    subject = None
+    if metadata:
+        raw = metadata.get("subject") or metadata.get("email_subject")
+        if raw:
+            subject = str(raw).strip()
+    directive_subject, cleaned_body = _extract_subject_directive(body)
+    return subject or directive_subject, cleaned_body
+
+
 
 def _create_ipv4_connection(
     host: str,
@@ -899,10 +926,14 @@ class EmailAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send an email reply to the given address."""
         try:
+            subject_override, cleaned_content = _subject_from_metadata(metadata, content)
+            raw_media_files = (metadata or {}).get("media_files") or []
+            attachment_paths = [str(path) for path, _is_voice in raw_media_files if Path(str(path)).exists()]
             loop = asyncio.get_running_loop()
-            message_id = await loop.run_in_executor(
-                None, self._send_email, chat_id, content, reply_to
-            )
+            if attachment_paths:
+                message_id = await loop.run_in_executor(None, self._send_email_with_attachments, chat_id, cleaned_content, attachment_paths, subject_override, reply_to)
+            else:
+                message_id = await loop.run_in_executor(None, self._send_email, chat_id, cleaned_content, reply_to, subject_override)
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
             logger.error("[Email] Send failed to %s: %s", chat_id, e)
@@ -923,6 +954,7 @@ class EmailAdapter(BasePlatformAdapter):
         to_addr: str,
         body: str,
         reply_to_msg_id: Optional[str] = None,
+        subject_override: Optional[str] = None,
     ) -> str:
         """Send an email via SMTP. Runs in executor thread."""
         msg = MIMEMultipart()
@@ -931,8 +963,8 @@ class EmailAdapter(BasePlatformAdapter):
 
         # Thread context for reply
         ctx = self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
-        if not subject.startswith("Re:"):
+        subject = subject_override or ctx.get("subject", "Hermes Agent")
+        if not subject_override and not subject.startswith("Re:"):
             subject = f"Re: {subject}"
         msg["Subject"] = subject
 
@@ -1038,6 +1070,8 @@ class EmailAdapter(BasePlatformAdapter):
         to_addr: str,
         body: str,
         file_paths: List[str],
+        subject_override: Optional[str] = None,
+        reply_to_msg_id: Optional[str] = None,
     ) -> str:
         """Send an email with multiple file attachments via SMTP."""
         msg = MIMEMultipart()
@@ -1045,12 +1079,12 @@ class EmailAdapter(BasePlatformAdapter):
         msg["To"] = to_addr
 
         ctx = self._thread_context.get(to_addr, {})
-        subject = ctx.get("subject", "Hermes Agent")
-        if not subject.startswith("Re:"):
+        subject = subject_override or ctx.get("subject", "Hermes Agent")
+        if not subject_override and not subject.startswith("Re:"):
             subject = f"Re: {subject}"
         msg["Subject"] = subject
 
-        original_msg_id = ctx.get("message_id")
+        original_msg_id = reply_to_msg_id or ctx.get("message_id")
         if original_msg_id:
             msg["In-Reply-To"] = original_msg_id
             msg["References"] = original_msg_id
@@ -1195,13 +1229,16 @@ async def _standalone_send(
     thread_id=None,
     media_files=None,
     force_document=False,
+    subject=None,
 ):
-    """Out-of-process Email delivery via SMTP (one-shot). Implements the
-    standalone_sender_fn contract; replaces the legacy _send_email helper."""
+    """Out-of-process Email delivery via SMTP (one-shot).
+
+    Supports a caller-provided subject and native MIME attachments so cron jobs
+    can deliver one email with a PDF attached instead of separate text/file
+    messages.
+    """
     import smtplib
     import ssl as _ssl
-    from email.mime.text import MIMEText
-    from email.utils import formatdate
 
     extra = getattr(pconfig, "extra", {}) or {}
     address = extra.get("address") or os.getenv("EMAIL_ADDRESS", "")
@@ -1216,17 +1253,36 @@ async def _standalone_send(
         return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
 
     try:
-        msg = MIMEText(message, "plain", "utf-8")
+        directive_subject, cleaned_message = _extract_subject_directive(message)
+        resolved_subject = (subject or directive_subject or "Hermes Agent").strip()
+        msg = MIMEMultipart()
         msg["From"] = address
         msg["To"] = chat_id
-        msg["Subject"] = "Hermes Agent"
+        msg["Subject"] = resolved_subject
         msg["Date"] = formatdate(localtime=True)
 
+        if cleaned_message.strip():
+            msg.attach(MIMEText(cleaned_message, "plain", "utf-8"))
+
+        for media_path, _is_voice in (media_files or []):
+            p = Path(str(media_path))
+            if not p.exists():
+                logger.warning("[Email] Skipping missing attachment: %s", p)
+                continue
+            with open(p, "rb") as f:
+                part = MIMEBase("application", "octet-stream")
+                part.set_payload(f.read())
+                encoders.encode_base64(part)
+                part.add_header("Content-Disposition", f"attachment; filename={p.name}")
+                msg.attach(part)
+
         server = smtplib.SMTP(smtp_host, smtp_port)
-        server.starttls(context=_ssl.create_default_context())
-        server.login(address, password)
-        server.send_message(msg)
-        server.quit()
+        try:
+            server.starttls(context=_ssl.create_default_context())
+            server.login(address, password)
+            server.send_message(msg)
+        finally:
+            server.quit()
         return {"success": True, "platform": "email", "chat_id": chat_id}
     except Exception as e:
         try:

@@ -1567,85 +1567,100 @@ class HermesACPAgent(acp.Agent):
                 state.current_prompt_text = ""
             return PromptResponse(stop_reason="end_turn")
 
-        if result.get("messages"):
-            state.history = result["messages"]
-            # Persist updated history so sessions survive process restarts.
-            self.session_manager.save_session(session_id)
+        # The whole post-turn tail below runs BEFORE ``state.is_running`` is
+        # reset. If anything in it raises, the exception escapes ``prompt()``
+        # with the session still marked running — permanently bricking it:
+        # every subsequent user message hits the ``state.is_running`` guard
+        # and is appended to ``queued_prompts`` ("Queued for the next turn.
+        # (N queued)") with no turn ever draining the queue. Seen live when
+        # a /stop-style cancel landed mid tool call: the interrupted turn
+        # returned ``final_response=None`` and ``None.startswith(...)`` blew
+        # up here. Guarantee the idle reset with try/finally.
+        try:
+            if result.get("messages"):
+                state.history = result["messages"]
+                # Persist updated history so sessions survive process restarts.
+                self.session_manager.save_session(session_id)
 
-        # Detect a compression-driven internal session rotation. If the agent's
-        # DB head moved during the turn, emit a session_info_update carrying
-        # _meta.hermes.sessionProvenance so ACP clients can render the boundary
-        # and keep old/new ids in lineage. The ACP session_id is unchanged.
-        post_turn_hermes_id = getattr(state.agent, "session_id", None)
-        if (
-            conn
-            and post_turn_hermes_id
-            and pre_turn_hermes_id
-            and post_turn_hermes_id != pre_turn_hermes_id
-        ):
-            try:
-                await self._send_session_info_update(
-                    session_id,
-                    current_hermes_session_id=post_turn_hermes_id,
-                    previous_hermes_session_id=pre_turn_hermes_id,
-                )
-            except Exception:
-                logger.debug(
-                    "Could not emit ACP provenance update after rotation for %s",
-                    session_id,
-                    exc_info=True,
-                )
+            # Detect a compression-driven internal session rotation. If the agent's
+            # DB head moved during the turn, emit a session_info_update carrying
+            # _meta.hermes.sessionProvenance so ACP clients can render the boundary
+            # and keep old/new ids in lineage. The ACP session_id is unchanged.
+            post_turn_hermes_id = getattr(state.agent, "session_id", None)
+            if (
+                conn
+                and post_turn_hermes_id
+                and pre_turn_hermes_id
+                and post_turn_hermes_id != pre_turn_hermes_id
+            ):
+                try:
+                    await self._send_session_info_update(
+                        session_id,
+                        current_hermes_session_id=post_turn_hermes_id,
+                        previous_hermes_session_id=pre_turn_hermes_id,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Could not emit ACP provenance update after rotation for %s",
+                        session_id,
+                        exc_info=True,
+                    )
 
-        final_response = result.get("final_response", "")
-        cancelled = bool(state.cancel_event and state.cancel_event.is_set())
-        interrupted = bool(result.get("interrupted")) or cancelled
-        # Hermes' local "waiting for model response" interrupt status is metadata,
-        # not assistant prose — clients get cancellation from stop_reason instead.
-        from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+            # ``final_response`` is ``None`` (key present) for interrupted /
+            # recovery turns — ``.get()``'s default doesn't apply, so coerce.
+            final_response = result.get("final_response") or ""
+            cancelled = bool(state.cancel_event and state.cancel_event.is_set())
+            interrupted = bool(result.get("interrupted")) or cancelled
+            # Hermes' local "waiting for model response" interrupt status is metadata,
+            # not assistant prose — clients get cancellation from stop_reason instead.
+            from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 
-        suppress_interrupt_response = interrupted and final_response.startswith(
-            INTERRUPT_WAITING_FOR_MODEL_PREFIX
-        )
-        if final_response and not suppress_interrupt_response:
-            try:
-                from agent.title_generator import maybe_auto_title
+            suppress_interrupt_response = interrupted and final_response.startswith(
+                INTERRUPT_WAITING_FOR_MODEL_PREFIX
+            )
+            if final_response and not suppress_interrupt_response:
+                try:
+                    from agent.title_generator import maybe_auto_title
 
-                def _notify_title_update(_title: str) -> None:
-                    if conn:
-                        loop.call_soon_threadsafe(
-                            asyncio.create_task,
-                            self._send_session_info_update(session_id),
-                        )
+                    def _notify_title_update(_title: str) -> None:
+                        if conn:
+                            loop.call_soon_threadsafe(
+                                asyncio.create_task,
+                                self._send_session_info_update(session_id),
+                            )
 
-                maybe_auto_title(
-                    self.session_manager._get_db(),
-                    session_id,
-                    user_text,
-                    final_response,
-                    state.history,
-                    title_callback=_notify_title_update,
-                )
-            except Exception:
-                logger.debug("Failed to auto-title ACP session %s", session_id, exc_info=True)
-        if (
-            final_response
-            and conn
-            and not suppress_interrupt_response
-            and (not streamed_message or result.get("response_transformed"))
-        ):
-            # Deliver the final response when streaming did not already send it,
-            # or when a plugin hook transformed the response after streaming
-            # finished (e.g. transform_llm_output) — otherwise the appended /
-            # rewritten text never reaches the client.
-            update = acp.update_agent_message_text(final_response)
-            await conn.session_update(session_id, update)
+                    maybe_auto_title(
+                        self.session_manager._get_db(),
+                        session_id,
+                        user_text,
+                        final_response,
+                        state.history,
+                        title_callback=_notify_title_update,
+                    )
+                except Exception:
+                    logger.debug("Failed to auto-title ACP session %s", session_id, exc_info=True)
+            if (
+                final_response
+                and conn
+                and not suppress_interrupt_response
+                and (not streamed_message or result.get("response_transformed"))
+            ):
+                # Deliver the final response when streaming did not already send it,
+                # or when a plugin hook transformed the response after streaming
+                # finished (e.g. transform_llm_output) — otherwise the appended /
+                # rewritten text never reaches the client.
+                update = acp.update_agent_message_text(final_response)
+                await conn.session_update(session_id, update)
 
-        # Mark this turn idle before draining queued work so recursive prompt()
-        # calls can acquire the session. Queued turns are intentionally run as
-        # normal follow-up user prompts, preserving role alternation and history.
-        with state.runtime_lock:
-            state.is_running = False
-            state.current_prompt_text = ""
+        finally:
+            # Mark this turn idle before draining queued work so recursive
+            # prompt() calls can acquire the session — and so an exception in
+            # the tail above can never leave the session stuck busy. Queued
+            # turns are intentionally run as normal follow-up user prompts,
+            # preserving role alternation and history.
+            with state.runtime_lock:
+                state.is_running = False
+                state.current_prompt_text = ""
 
         while True:
             with state.runtime_lock:

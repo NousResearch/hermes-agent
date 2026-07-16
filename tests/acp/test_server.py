@@ -1177,6 +1177,83 @@ class TestPrompt:
         assert final_text in agent_texts
 
     @pytest.mark.asyncio
+    async def test_prompt_cancelled_turn_with_none_response_does_not_brick_session(self, agent):
+        """A /stop mid tool call yields ``final_response=None`` (key present).
+
+        Regression: ``result.get("final_response", "")`` kept the ``None``,
+        ``None.startswith(...)`` raised, the exception escaped ``prompt()``
+        before ``state.is_running`` was reset, and every subsequent message
+        was queued forever ("Queued for the next turn. (N queued)")."""
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        def mock_run(*args, **kwargs):
+            state.cancel_event.set()
+            return {
+                "final_response": None,
+                "messages": [],
+                "interrupted": True,
+                "completed": False,
+            }
+
+        state.agent.run_conversation = mock_run
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        prompt = [TextContentBlock(type="text", text="do something slow")]
+        resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        assert resp.stop_reason == "cancelled"
+        # The session must be released — not stuck busy queueing forever.
+        assert state.is_running is False
+        assert state.queued_prompts == []
+
+        # A follow-up prompt must run as a normal turn, not get queued.
+        state.cancel_event.clear()
+        follow_up_ran = []
+
+        def mock_run_ok(*args, **kwargs):
+            follow_up_ran.append(True)
+            return {"final_response": "done", "messages": [], "completed": True}
+
+        state.agent.run_conversation = mock_run_ok
+        resp2 = await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="follow up")],
+            session_id=new_resp.session_id,
+        )
+        assert resp2.stop_reason == "end_turn"
+        assert follow_up_ran, "follow-up prompt was queued instead of running"
+
+    @pytest.mark.asyncio
+    async def test_prompt_tail_exception_still_releases_session(self, agent):
+        """Any exception in the post-turn tail must not leave is_running set."""
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        def mock_run(*args, **kwargs):
+            return {"final_response": "ok", "messages": [{"role": "user", "content": "x"}], "completed": True}
+
+        state.agent.run_conversation = mock_run
+
+        # Force a failure inside the guarded tail (history persistence).
+        agent.session_manager.save_session = MagicMock(side_effect=RuntimeError("disk full"))
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        with pytest.raises(RuntimeError):
+            await agent.prompt(
+                prompt=[TextContentBlock(type="text", text="hi")],
+                session_id=new_resp.session_id,
+            )
+
+        assert state.is_running is False
+        assert state.current_prompt_text == ""
+
+    @pytest.mark.asyncio
     async def test_prompt_propagates_hermes_session_id_env(self, agent, monkeypatch):
         """ACP must propagate the originating session id to the agent loop
         via ``HERMES_SESSION_ID`` so tools that want to stamp side-effects

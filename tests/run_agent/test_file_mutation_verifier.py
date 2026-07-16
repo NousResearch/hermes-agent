@@ -296,6 +296,133 @@ class TestRecordFileMutationResult:
         assert agent._turn_failed_file_mutations == {}
 
 
+class TestUnresolvedFileMutationFailures:
+    def test_unchanged_failed_target_remains_unresolved(self, tmp_path):
+        agent = _bare_agent()
+        target = tmp_path / "config.yaml"
+        target.write_text("value: old\n")
+
+        agent._record_file_mutation_result(
+            "patch",
+            {"mode": "replace", "path": str(target), "old_string": "missing", "new_string": "x"},
+            json.dumps({"success": False, "error": "refused"}),
+            is_error=True,
+        )
+
+        unresolved = agent._get_unresolved_file_mutation_failures()
+
+        assert list(unresolved) == [str(target)]
+        assert str(target) in agent._turn_failed_file_mutations
+
+    def test_external_edit_after_failure_suppresses_warning(self, tmp_path):
+        agent = _bare_agent()
+        target = tmp_path / "config.yaml"
+        target.write_text("value: old\n")
+
+        agent._record_file_mutation_result(
+            "patch",
+            {"mode": "replace", "path": str(target), "old_string": "missing", "new_string": "x"},
+            json.dumps({"success": False, "error": "refused"}),
+            is_error=True,
+        )
+        target.write_text("value: changed by cli\n")
+
+        assert agent._get_unresolved_file_mutation_failures() == {}
+        assert str(target) not in agent._turn_failed_file_mutations
+
+    def test_relative_local_target_resolves_against_terminal_cwd(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+        agent = _bare_agent()
+        target = tmp_path / "config.yaml"
+        target.write_text("value: old\n")
+
+        agent._record_file_mutation_result(
+            "patch",
+            {"mode": "replace", "path": "config.yaml", "old_string": "missing", "new_string": "x"},
+            json.dumps({"success": False, "error": "refused"}),
+            is_error=True,
+        )
+        target.write_text("value: changed by effective cwd\n")
+
+        assert agent._get_unresolved_file_mutation_failures() == {}
+        assert "config.yaml" not in agent._turn_failed_file_mutations
+
+    def test_file_created_after_failed_missing_target_suppresses_warning(self, tmp_path):
+        agent = _bare_agent()
+        target = tmp_path / "created.yaml"
+
+        agent._record_file_mutation_result(
+            "write_file",
+            {"path": str(target), "content": "value: new\n"},
+            json.dumps({"success": False, "error": "permission denied"}),
+            is_error=True,
+        )
+        target.write_text("value: new\n")
+
+        assert agent._get_unresolved_file_mutation_failures() == {}
+        assert str(target) not in agent._turn_failed_file_mutations
+
+    def test_file_deleted_after_failed_existing_target_suppresses_warning(self, tmp_path):
+        agent = _bare_agent()
+        target = tmp_path / "deleted.yaml"
+        target.write_text("value: old\n")
+
+        agent._record_file_mutation_result(
+            "patch",
+            {"mode": "replace", "path": str(target), "old_string": "missing", "new_string": "x"},
+            json.dumps({"success": False, "error": "refused"}),
+            is_error=True,
+        )
+        target.unlink()
+
+        assert agent._get_unresolved_file_mutation_failures() == {}
+        assert str(target) not in agent._turn_failed_file_mutations
+
+    def test_repeated_failure_keeps_first_error_but_refreshes_fingerprint(self, tmp_path):
+        agent = _bare_agent()
+        target = tmp_path / "config.yaml"
+        target.write_text("value: old\n")
+
+        agent._record_file_mutation_result(
+            "patch",
+            {"mode": "replace", "path": str(target), "old_string": "missing-1", "new_string": "x"},
+            json.dumps({"success": False, "error": "first error"}),
+            is_error=True,
+        )
+        target.write_text("value: externally changed\n")
+        agent._record_file_mutation_result(
+            "patch",
+            {"mode": "replace", "path": str(target), "old_string": "missing-2", "new_string": "x"},
+            json.dumps({"success": False, "error": "second error"}),
+            is_error=True,
+        )
+
+        unresolved = agent._get_unresolved_file_mutation_failures()
+
+        assert list(unresolved) == [str(target)]
+        assert "first error" in unresolved[str(target)]["error_preview"]
+
+    def test_remote_backend_failure_is_retained_when_local_file_changes(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        agent = _bare_agent()
+        target = tmp_path / "remote.yaml"
+        target.write_text("value: old\n")
+
+        agent._record_file_mutation_result(
+            "patch",
+            {"mode": "replace", "path": str(target), "old_string": "missing", "new_string": "x"},
+            json.dumps({"success": False, "error": "remote refusal"}),
+            is_error=True,
+        )
+        target.write_text("value: changed locally\n")
+
+        unresolved = agent._get_unresolved_file_mutation_failures()
+
+        assert list(unresolved) == [str(target)]
+        assert str(target) in agent._turn_failed_file_mutations
+
+
 # ---------------------------------------------------------------------------
 # _format_file_mutation_failure_footer
 # ---------------------------------------------------------------------------

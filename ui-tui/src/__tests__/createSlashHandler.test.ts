@@ -367,6 +367,25 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.rpc).not.toHaveBeenCalled()
   })
 
+  it('routes the /reset catalog alias through the local fresh-session lifecycle', () => {
+    const ctx = buildCtx({
+      local: {
+        catalog: {
+          canon: {
+            '/new': '/new',
+            '/reset': '/new'
+          }
+        }
+      }
+    })
+
+    createSlashHandler(ctx)('/reset')
+    getOverlayState().confirm?.onConfirm()
+
+    expect(ctx.session.newSession).toHaveBeenCalledWith('new session started', undefined)
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
   it('keeps visible scrollback when branching a TUI session', async () => {
     patchUiState({ sid: 'sid-parent' })
     const rpc = vi.fn(() => Promise.resolve({ session_id: 'sid-branch', title: 'branch title' }))

@@ -3107,6 +3107,68 @@ class TestSubagentApprovalCallback(unittest.TestCase):
         # Parent's callback slot is still empty (TLS isolates threads).
         self.assertIsNone(_get_approval_callback())
 
+    def test_gateway_dangerous_command_honors_worker_callback(self):
+        """Gateway routing must not bypass the subagent worker's safe default."""
+        from tools import approval
+        from tools.delegate_tool import _subagent_auto_deny
+
+        session_key = "test-subagent-gateway-approval"
+        approval._pending.clear()
+        approval._session_approved.clear()
+        approval._permanent_approved.clear()
+        callback = MagicMock(wraps=_subagent_auto_deny)
+
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_GATEWAY_SESSION": "1",
+                "HERMES_SESSION_KEY": session_key,
+                "HERMES_EXEC_ASK": "1",
+            },
+            clear=False,
+        ):
+            os.environ.pop("HERMES_CRON_SESSION", None)
+            result = approval.check_all_command_guards(
+                "rm -rf /tmp/subagent-test",
+                "local",
+                approval_callback=callback,
+            )
+
+        callback.assert_called_once()
+        self.assertFalse(result["approved"])
+        self.assertNotEqual(result.get("status"), "approval_required")
+        self.assertNotIn(session_key, approval._pending)
+
+    def test_gateway_honors_worker_auto_approve_opt_in(self):
+        """The explicit subagent auto-approve policy also bypasses the parent queue."""
+        from tools import approval
+        from tools.delegate_tool import _subagent_auto_approve
+
+        session_key = "test-subagent-gateway-auto-approve"
+        approval._pending.clear()
+        approval._session_approved.clear()
+        approval._permanent_approved.clear()
+        callback = MagicMock(wraps=_subagent_auto_approve)
+
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_GATEWAY_SESSION": "1",
+                "HERMES_SESSION_KEY": session_key,
+                "HERMES_EXEC_ASK": "1",
+            },
+            clear=False,
+        ):
+            os.environ.pop("HERMES_CRON_SESSION", None)
+            result = approval.check_all_command_guards(
+                "rm -rf /tmp/subagent-test",
+                "local",
+                approval_callback=callback,
+            )
+
+        callback.assert_called_once()
+        self.assertTrue(result["approved"])
+        self.assertNotIn(session_key, approval._pending)
 
 class TestFallbackModelInheritance(unittest.TestCase):
     """Subagents must inherit the parent's fallback provider chain."""

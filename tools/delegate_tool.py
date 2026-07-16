@@ -126,10 +126,9 @@ _HIGH_CONCURRENCY_WARNED = False
 MAX_DEPTH = 1  # flat by default: parent (0) -> child (1); grandchild rejected unless max_spawn_depth raised.
 # Configurable depth cap consulted by _get_max_spawn_depth; MAX_DEPTH
 # stays as the default fallback and is still the symbol tests import.
-_MIN_SPAWN_DEPTH = 1
-# No upper ceiling on spawn depth — like max_concurrent_children, depth has a
-# floor of 1 and no ceiling. Deeper trees multiply API cost, so the default
-# stays flat (MAX_DEPTH = 1); raising the config knob is an explicit opt-in.
+_MIN_SPAWN_DEPTH = 0  # Zero disables delegation.
+# Positive values have no upper ceiling. Deeper trees multiply API cost, so the
+# default stays flat (MAX_DEPTH = 1).
 
 
 # ---------------------------------------------------------------------------
@@ -466,7 +465,7 @@ def _get_child_timeout() -> Optional[float]:
 
 
 def _get_max_spawn_depth() -> int:
-    """Read delegation.max_spawn_depth from config, floored at 1 (no ceiling).
+    """Read delegation.max_spawn_depth from config (zero disables delegation).
 
     depth 0 = parent agent.  max_spawn_depth = N means agents at depths
     0..N-1 can spawn; depth N is the leaf floor.  Default 1 is flat:
@@ -474,7 +473,7 @@ def _get_max_spawn_depth() -> int:
     (blocked by this guard AND, for leaf children, by the delegation
     toolset strip in _strip_blocked_tools).
 
-    Raise to 2+ to unlock nested orchestration. role="orchestrator"
+    Set to 0 to disable delegation. Raise to 2+ to unlock nested orchestration. role="orchestrator"
     removes the toolset strip for spawning children when
     max_spawn_depth >= 2, enabling them to spawn their own workers.
     Like max_concurrent_children, there is no upper ceiling — but each
@@ -493,15 +492,14 @@ def _get_max_spawn_depth() -> int:
             MAX_DEPTH,
         )
         return MAX_DEPTH
-    floored = max(_MIN_SPAWN_DEPTH, ival)
-    if floored != ival:
+    if ival < _MIN_SPAWN_DEPTH:
         logger.warning(
-            "delegation.max_spawn_depth=%d below floor %d; using %d",
+            "delegation.max_spawn_depth=%d is negative; using default %d",
             ival,
-            _MIN_SPAWN_DEPTH,
-            floored,
+            MAX_DEPTH,
         )
-    return floored
+        return MAX_DEPTH
+    return ival
 
 
 def _get_orchestrator_enabled() -> bool:
@@ -3292,7 +3290,13 @@ def _build_top_level_description() -> str:
     except Exception:
         orchestrator_on = True
 
-    if max_depth >= 2 and orchestrator_on:
+    if max_depth == 0:
+        nesting_clause = (
+            "Delegation is DISABLED for this user "
+            "(max_spawn_depth=0). Set delegation.max_spawn_depth to 1 or "
+            "higher in config.yaml to enable it."
+        )
+    elif max_depth >= 2 and orchestrator_on:
         nesting_clause = (
             f"Nested delegation IS enabled for this user "
             f"(max_spawn_depth={max_depth}): pass role='orchestrator' on a "
@@ -3398,7 +3402,12 @@ def _build_role_param_description() -> str:
     except Exception:
         orchestrator_on = True
 
-    if max_depth >= 2 and orchestrator_on:
+    if max_depth == 0:
+        nesting_note = (
+            "Delegation is disabled for this user (max_spawn_depth=0); "
+            "no child can be spawned."
+        )
+    elif max_depth >= 2 and orchestrator_on:
         nesting_note = (
             f"Nesting IS enabled for this user (max_spawn_depth={max_depth}): "
             f"orchestrator children can themselves delegate up to {max_depth - 1} "

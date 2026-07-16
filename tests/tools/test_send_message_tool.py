@@ -319,18 +319,24 @@ class TestSendMessageTool:
             force_document=False,
         )
 
-    def test_email_subject_reaches_transport(self):
+    def test_email_subject_reaches_smtp_message(self):
         email_platform = Platform("email")
-        email_cfg = SimpleNamespace(enabled=True, token=None, extra={})
+        email_cfg = SimpleNamespace(
+            enabled=True,
+            token=None,
+            extra={"address": "hermes@example.com", "smtp_host": "smtp.example.com"},
+        )
         config = SimpleNamespace(
             platforms={email_platform: email_cfg},
             get_home_channel=lambda _platform: None,
         )
+        smtp = MagicMock()
 
-        with patch("gateway.config.load_gateway_config", return_value=config), \
+        with patch.dict(os.environ, {"EMAIL_PASSWORD": "secret"}), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
              patch("tools.interrupt.is_interrupted", return_value=False), \
              patch("model_tools._run_async", side_effect=_run_async_immediately), \
-             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("smtplib.SMTP", return_value=smtp), \
              patch("gateway.mirror.mirror_to_session", return_value=True):
             result = json.loads(
                 send_message_tool(
@@ -344,16 +350,9 @@ class TestSendMessageTool:
             )
 
         assert result["success"] is True
-        send_mock.assert_awaited_once_with(
-            email_platform,
-            email_cfg,
-            "andy@example.com",
-            "done",
-            thread_id=None,
-            media_files=[],
-            force_document=False,
-            subject="[Hermes][Test] Subject",
-        )
+        sent_message = smtp.send_message.call_args.args[0]
+        assert sent_message["Subject"] == "[Hermes][Test] Subject"
+        assert sent_message.get_payload(decode=True).decode("utf-8") == "done"
 
     def test_cron_duplicate_target_is_skipped_and_explained(self):
         home = SimpleNamespace(chat_id="-1001")

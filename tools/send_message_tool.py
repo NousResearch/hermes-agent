@@ -86,11 +86,18 @@ _DEFAULT_CAPTION_LIMIT = 4096
 # Plugin enricher registry for send_message
 # ---------------------------------------------------------------------------
 
-SendMessageEnricher = Callable[[dict, str, str, Any], Awaitable[dict]]
-"""Callable receiving (args, chat_id, platform_name, pconfig) -> dict result."""
+SendMessageEnricher = Callable[[dict, str, str, Any], Awaitable[dict] | dict]
+"""Callable receiving (args, chat_id, platform_name, pconfig) -> dict result.
+
+May be sync or async — the dispatcher detects coroutine functions via
+``inspect.iscoroutinefunction`` and awaits as needed.
+"""
 
 _SEND_MESSAGE_ENRICHERS: dict[str, SendMessageEnricher] = {}
 """platform_name -> enricher handler."""
+
+_SEND_MESSAGE_SCHEMA_FRAGMENTS: dict[str, dict] = {}
+"""platform_name -> schema fragment dict (JSON Schema properties)."""
 
 
 def register_send_message_enricher(
@@ -105,8 +112,22 @@ def register_send_message_enricher(
     """
     _SEND_MESSAGE_ENRICHERS[platform_name] = handler
     if schema_fragment:
-        for key, spec in schema_fragment.items():
-            SEND_MESSAGE_SCHEMA["parameters"]["properties"][key] = spec
+        _SEND_MESSAGE_SCHEMA_FRAGMENTS[platform_name] = schema_fragment
+
+
+def get_send_message_schema() -> dict:
+    """Return a fresh copy of the send_message schema with plugin fragments merged.
+
+    Fragments are assembled on demand so deferred plugin registration never
+    mutates the shared ``SEND_MESSAGE_SCHEMA`` dict. Callers that need the
+    current wire schema (e.g. tool-search builders, MCP catalogues) should use
+    this instead of reading ``SEND_MESSAGE_SCHEMA`` directly.
+    """
+    import copy
+    schema = copy.deepcopy(SEND_MESSAGE_SCHEMA)
+    for fragment in _SEND_MESSAGE_SCHEMA_FRAGMENTS.values():
+        schema["parameters"]["properties"].update(fragment)
+    return schema
 
 
 def _media_caption_split(text, media_files, *, max_caption_len):
@@ -1124,7 +1145,12 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 if args is None:
                     args = {}
                 try:
-                    return await enricher(args, chat_id, platform_name, pconfig)
+                    import inspect
+                    if inspect.iscoroutinefunction(enricher):
+                        result = await enricher(args, chat_id, platform_name, pconfig)
+                    else:
+                        result = enricher(args, chat_id, platform_name, pconfig)
+                    return result
                 except Exception as e:
                     return {"error": f"Enricher send failed: {e}"}
             # Plugin platform: route through the gateway's live adapter if

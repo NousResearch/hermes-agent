@@ -942,10 +942,11 @@ class PluginContext:
         Args:
             platform_name: Platform key used in target strings
                 (e.g. ``"myplatform"`` → ``myplatform:chat_id``).
-            handler: Async or sync callable receiving
-                ``(args, chat_id, platform_name, pconfig)`` and returning
-                a dict like ``{"success": True, "message_id": "..."}``
-                or ``{"error": "..."}``.
+            handler: Callable receiving ``(args, chat_id, platform_name, pconfig)``
+                and returning a dict like ``{"success": True, "message_id": "..."}``
+                or ``{"error": "..."}``. May be ``async def`` or a regular
+                function — the dispatcher detects coroutine functions via
+                ``inspect.iscoroutinefunction`` and awaits as needed.
             schema_fragment: Optional dict of JSON-schema properties to merge
                 into ``send_message``'s parameter schema so the LLM sees the
                 custom fields.

@@ -269,9 +269,7 @@ def test_moa_slot_runtime_falls_back_on_resolution_error(monkeypatch):
     def boom(*, requested, target_model=None):
         raise RuntimeError("unknown provider")
 
-    monkeypatch.setattr(
-        "hermes_cli.runtime_provider.resolve_runtime_provider", boom
-    )
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", boom)
 
     rt = moa_loop._slot_runtime({"provider": "mystery", "model": "x"})
     assert rt == {"provider": "mystery", "model": "x"}
@@ -458,7 +456,9 @@ moa:
             {
                 "role": "assistant",
                 "content": "checking",
-                "tool_calls": [{"id": "x", "function": {"name": "lookup", "arguments": "{}"}}],
+                "tool_calls": [
+                    {"id": "x", "function": {"name": "lookup", "arguments": "{}"}}
+                ],
             },
             {"role": "tool", "tool_call_id": "x", "content": "tool output"},
         ],
@@ -517,7 +517,9 @@ moa:
     from agent.moa_loop import MoAChatCompletions
 
     facade = MoAChatCompletions("review")
-    facade.create(messages=[{"role": "user", "content": "question"}], tools=[{"type": "function"}])
+    facade.create(
+        messages=[{"role": "user", "content": "question"}], tools=[{"type": "function"}]
+    )
 
     tasks = [c["task"] for c in calls]
     # No reference fan-out — only the aggregator runs.
@@ -615,8 +617,12 @@ def test_moa_facade_emits_reference_then_aggregating(monkeypatch, tmp_path):
     from agent.moa_loop import MoAChatCompletions
 
     events = []
-    facade = MoAChatCompletions("review", reference_callback=lambda ev, **kw: events.append((ev, kw)))
-    facade.create(messages=[{"role": "user", "content": "q"}], tools=[{"type": "function"}])
+    facade = MoAChatCompletions(
+        "review", reference_callback=lambda ev, **kw: events.append((ev, kw))
+    )
+    facade.create(
+        messages=[{"role": "user", "content": "q"}], tools=[{"type": "function"}]
+    )
 
     ref_events = [e for e in events if e[0] == "moa.reference"]
     agg_events = [e for e in events if e[0] == "moa.aggregating"]
@@ -656,13 +662,19 @@ def test_moa_facade_reruns_references_on_new_tool_result(monkeypatch, tmp_path):
     from agent.moa_loop import MoAChatCompletions
 
     events = []
-    facade = MoAChatCompletions("review", reference_callback=lambda ev, **kw: events.append(ev))
+    facade = MoAChatCompletions(
+        "review", reference_callback=lambda ev, **kw: events.append(ev)
+    )
 
     base_msgs = [{"role": "user", "content": "do the thing"}]
     # Iteration 1: fresh user turn — references run (2 models).
     facade.create(messages=base_msgs, tools=[{"type": "function"}])
     after_tool = base_msgs + [
-        {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "function": {"name": "f", "arguments": "{}"}}]},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "c1", "function": {"name": "f", "arguments": "{}"}}],
+        },
         {"role": "tool", "tool_call_id": "c1", "content": "result"},
     ]
     # Iteration 2: a NEW tool result advanced the state → references re-run.
@@ -728,9 +740,10 @@ def test_slot_runtime_anthropic_oauth_routes_through_provider_branch(monkeypatch
     )
 
     # _slot_runtime forwards the resolved endpoint for anthropic like any slot.
-    anthropic_rt = moa_loop._slot_runtime(
-        {"provider": "anthropic", "model": "claude-opus-4-8"}
-    )
+    anthropic_rt = moa_loop._slot_runtime({
+        "provider": "anthropic",
+        "model": "claude-opus-4-8",
+    })
     assert anthropic_rt["provider"] == "anthropic"
     assert anthropic_rt["base_url"] == "https://resolved.example/v1"
 
@@ -746,9 +759,7 @@ def test_slot_runtime_anthropic_oauth_routes_through_provider_branch(monkeypatch
     assert resolved_provider == "anthropic"
 
     # A generic provider (openrouter) is likewise forwarded and preserved.
-    other_rt = moa_loop._slot_runtime(
-        {"provider": "openrouter", "model": "some-model"}
-    )
+    other_rt = moa_loop._slot_runtime({"provider": "openrouter", "model": "some-model"})
     assert other_rt["provider"] == "openrouter"
     assert other_rt["model"] == "some-model"
     assert other_rt["base_url"] == "https://resolved.example/v1"
@@ -789,7 +800,9 @@ def test_run_reference_captures_usage_and_cost(monkeypatch):
     )
     monkeypatch.setattr(
         "agent.usage_pricing.estimate_usage_cost",
-        lambda *a, **k: SimpleNamespace(amount_usd=0.0123, status="estimated", source="table"),
+        lambda *a, **k: SimpleNamespace(
+            amount_usd=0.0123, status="estimated", source="table"
+        ),
     )
 
     label, text, acct = _run_reference(
@@ -847,7 +860,9 @@ moa:
     )
     monkeypatch.setattr(
         "agent.usage_pricing.estimate_usage_cost",
-        lambda *a, **k: SimpleNamespace(amount_usd=0.01, status="estimated", source="table"),
+        lambda *a, **k: SimpleNamespace(
+            amount_usd=0.01, status="estimated", source="table"
+        ),
     )
 
     from agent.moa_loop import MoAChatCompletions
@@ -924,7 +939,9 @@ moa:
         if kwargs["task"] == "moa_reference":
             # Echo the model so we can prove per-reference output is captured.
             model = kwargs.get("model", "?")
-            return _response_with_usage(content=f"advice from {model}", prompt=500, completion=80)
+            return _response_with_usage(
+                content=f"advice from {model}", prompt=500, completion=80
+            )
         return _response("AGGREGATOR FINAL ANSWER")
 
     monkeypatch.setattr("agent.moa_loop.call_llm", fake_call_llm)
@@ -934,14 +951,18 @@ moa:
     )
     monkeypatch.setattr(
         "agent.usage_pricing.estimate_usage_cost",
-        lambda *a, **k: SimpleNamespace(amount_usd=0.001, status="estimated", source="table"),
+        lambda *a, **k: SimpleNamespace(
+            amount_usd=0.001, status="estimated", source="table"
+        ),
     )
 
     from agent.moa_loop import MoAChatCompletions
 
     facade = MoAChatCompletions("review")
     # Non-streaming create() → aggregator output captured inline.
-    facade.create(messages=[{"role": "user", "content": "please review the plan"}], tools=[])
+    facade.create(
+        messages=[{"role": "user", "content": "please review the plan"}], tools=[]
+    )
     facade.consume_and_save_trace(session_id="sess-xyz")
 
     trace_file = home / "moa-traces" / "sess-xyz.jsonl"
@@ -960,7 +981,9 @@ moa:
         assert ref["model"] in ("adv-a", "adv-b")
         assert ref["provider"] == "openrouter"
         # Full input messages present (system advisory prompt + advisory view).
-        assert isinstance(ref["input_messages"], list) and len(ref["input_messages"]) >= 2
+        assert (
+            isinstance(ref["input_messages"], list) and len(ref["input_messages"]) >= 2
+        )
         assert ref["input_messages"][0]["role"] == "system"
         # Full output present and model-specific.
         assert ref["output"] == f"advice from {ref['model']}"

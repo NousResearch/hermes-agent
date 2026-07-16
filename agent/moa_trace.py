@@ -147,8 +147,7 @@ def save_moa_turn(
             "session_id": session_id,
             "preset": preset_name,
             "references": [
-                _slot_trace(acct, label)
-                for label, _text, acct in reference_outputs
+                _slot_trace(acct, label) for label, _text, acct in reference_outputs
             ],
             "aggregator": {
                 "label": aggregator_label,

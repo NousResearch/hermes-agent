@@ -94,6 +94,7 @@ class _RefAccounting:
         self.ended_at = ended_at
         self.duration_ms = duration_ms
 
+
 # Per-tool-result character budget for the advisory reference view. Tool
 # results can be huge (a full diff, a 5000-line file dump); replaying them
 # verbatim per reference per tool-loop step would blow the reference model's
@@ -130,7 +131,6 @@ _REFERENCE_SYSTEM_PROMPT = (
     "tools or access. Your response is private guidance handed to the "
     "aggregator, not an answer shown to the user."
 )
-
 
 
 def _slot_label(slot: dict[str, str]) -> str:
@@ -183,7 +183,9 @@ def _slot_runtime(slot: dict[str, str]) -> dict[str, Any]:
         if rt.get("api_mode"):
             out["api_mode"] = rt["api_mode"]
     except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("MoA slot runtime resolution failed for %s: %s", _slot_label(slot), exc)
+        logger.debug(
+            "MoA slot runtime resolution failed for %s: %s", _slot_label(slot), exc
+        )
     return out
 
 
@@ -223,9 +225,7 @@ def _maybe_apply_moa_cache_control(
         )
         if not should_cache:
             return messages
-        return apply_anthropic_cache_control(
-            messages, native_anthropic=native_layout
-        )
+        return apply_anthropic_cache_control(messages, native_anthropic=native_layout)
     except Exception as exc:  # pragma: no cover - decoration must never break a call
         logger.debug("MoA cache_control decoration skipped: %s", exc)
         return messages
@@ -282,7 +282,10 @@ def _run_reference(
         # it is analyzing state for an aggregator, not acting on the task. The
         # trimmed view (_reference_messages) already strips the agent's own
         # system prompt, so this is the only system message the reference sees.
-        messages = [{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *ref_messages]
+        messages = [
+            {"role": "system", "content": _REFERENCE_SYSTEM_PROMPT},
+            *ref_messages,
+        ]
         # Apply the same Anthropic-style prompt-caching decoration the main
         # agent loop applies (system_and_3 breakpoints). The advisory view is
         # append-only across iterations (new turns append before the trailing
@@ -363,16 +366,23 @@ def _run_reference(
             if started_at is not None and ended_at is not None
             else None
         )
-        return label, f"[failed: {exc}]", _RefAccounting(
-            CanonicalUsage(),
-            messages=[{"role": "system", "content": _REFERENCE_SYSTEM_PROMPT}, *ref_messages],
-            output=f"[failed: {exc}]",
-            model=slot.get("model"),
-            provider=runtime.get("provider") or slot.get("provider"),
-            temperature=temperature,
-            started_at=started_at,
-            ended_at=ended_at,
-            duration_ms=duration_ms,
+        return (
+            label,
+            f"[failed: {exc}]",
+            _RefAccounting(
+                CanonicalUsage(),
+                messages=[
+                    {"role": "system", "content": _REFERENCE_SYSTEM_PROMPT},
+                    *ref_messages,
+                ],
+                output=f"[failed: {exc}]",
+                model=slot.get("model"),
+                provider=runtime.get("provider") or slot.get("provider"),
+                temperature=temperature,
+                started_at=started_at,
+                ended_at=ended_at,
+                duration_ms=duration_ms,
+            ),
         )
 
 
@@ -430,7 +440,9 @@ def _run_references_parallel(
     return [r for r in results if r is not None]
 
 
-def _truncate_tool_result(text: str, budget: int = _REFERENCE_TOOL_RESULT_BUDGET) -> str:
+def _truncate_tool_result(
+    text: str, budget: int = _REFERENCE_TOOL_RESULT_BUDGET
+) -> str:
     """Head+tail preview of a tool result for the advisory view.
 
     Keeps the first and last halves of the budget with a ``[... N chars
@@ -454,7 +466,9 @@ def _render_tool_calls(tool_calls: Any) -> str:
     lines: list[str] = []
     for tc in tool_calls or []:
         fn = (tc.get("function") or {}) if isinstance(tc, dict) else {}
-        name = fn.get("name") or (tc.get("name") if isinstance(tc, dict) else "") or "tool"
+        name = (
+            fn.get("name") or (tc.get("name") if isinstance(tc, dict) else "") or "tool"
+        )
         args = fn.get("arguments")
         if isinstance(args, str):
             args_text = args
@@ -467,7 +481,11 @@ def _render_tool_calls(tool_calls: Any) -> str:
                 args_text = str(args)
         else:
             args_text = ""
-        lines.append(f"[called tool: {name}({args_text})]" if args_text else f"[called tool: {name}]")
+        lines.append(
+            f"[called tool: {name}({args_text})]"
+            if args_text
+            else f"[called tool: {name}]"
+        )
     return "\n".join(lines)
 
 
@@ -565,7 +583,6 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if msg.get("role") == "user" and isinstance(msg.get("content"), str):
                 return [{"role": "user", "content": msg["content"]}]
     return rendered
-
 
 
 def _extract_text(response: Any) -> str:
@@ -703,7 +720,9 @@ def aggregate_moa_context(
     )
 
 
-def _attach_reference_guidance(agg_messages: list[dict[str, Any]], guidance: str) -> None:
+def _attach_reference_guidance(
+    agg_messages: list[dict[str, Any]], guidance: str
+) -> None:
     """Attach the per-turn reference block at the END of the aggregator prompt.
 
     The reference text differs on every tool-loop iteration. In an agentic loop
@@ -719,7 +738,11 @@ def _attach_reference_guidance(agg_messages: list[dict[str, Any]], guidance: str
     it is already a trailing string ``user`` turn (plain chat — still at the end).
     """
     last = agg_messages[-1] if agg_messages else None
-    if last is not None and last.get("role") == "user" and isinstance(last.get("content"), str):
+    if (
+        last is not None
+        and last.get("role") == "user"
+        and isinstance(last.get("content"), str)
+    ):
         last["content"] = last["content"] + "\n\n" + guidance
     else:
         agg_messages.append({"role": "user", "content": guidance})
@@ -922,7 +945,10 @@ class MoAChatCompletions:
             last_user_idx = None
             for _i in range(len(ref_messages) - 1, -1, -1):
                 _m = ref_messages[_i]
-                if _m.get("role") == "user" and _m.get("content") != _ADVISORY_INSTRUCTION:
+                if (
+                    _m.get("role") == "user"
+                    and _m.get("content") != _ADVISORY_INSTRUCTION
+                ):
                     last_user_idx = _i
                     break
             if last_user_idx is not None:
@@ -938,8 +964,14 @@ class MoAChatCompletions:
                 f"{m.get('role')}:{m.get('content')}" for m in sig_messages
             ).encode("utf-8", "replace")
         ).hexdigest()
-        _cache_key = (self.preset_name, _sig, tuple(_slot_label(s) for s in reference_models))
-        _refs_from_cache = _cache_key == self._ref_cache_key and bool(self._ref_cache_outputs)
+        _cache_key = (
+            self.preset_name,
+            _sig,
+            tuple(_slot_label(s) for s in reference_models),
+        )
+        _refs_from_cache = _cache_key == self._ref_cache_key and bool(
+            self._ref_cache_outputs
+        )
 
         if _refs_from_cache:
             reference_outputs = list(self._ref_cache_outputs)
@@ -1064,9 +1096,9 @@ class MoAChatCompletions:
         stream_kwargs: dict[str, Any] = {}
         if stream:
             stream_kwargs["stream"] = True
-            stream_kwargs["stream_options"] = (
-                api_kwargs.get("stream_options") or {"include_usage": True}
-            )
+            stream_kwargs["stream_options"] = api_kwargs.get("stream_options") or {
+                "include_usage": True
+            }
             # Forward the consumer's per-request (stream read) timeout so it
             # actually governs the aggregator stream, not just call_llm's default.
             if api_kwargs.get("timeout") is not None:
@@ -1094,7 +1126,9 @@ class MoAChatCompletions:
             else:
                 self._pending_trace["aggregator_streamed"] = False
                 try:
-                    self._pending_trace["aggregator_output"] = _extract_text(_agg_response)
+                    self._pending_trace["aggregator_output"] = _extract_text(
+                        _agg_response
+                    )
                 except Exception:  # pragma: no cover - defensive
                     self._pending_trace["aggregator_output"] = None
                 if self._pending_trace.get("trace_enabled"):
@@ -1116,7 +1150,9 @@ class MoAChatCompletions:
 class MoAClient:
     def __init__(self, preset_name: str, reference_callback: Any = None):
         self.chat = type("_MoAChat", (), {})()
-        self.chat.completions = MoAChatCompletions(preset_name, reference_callback=reference_callback)
+        self.chat.completions = MoAChatCompletions(
+            preset_name, reference_callback=reference_callback
+        )
 
     def consume_reference_usage(self) -> Any:
         """Pop the pending reference-fan-out usage from the completions facade.

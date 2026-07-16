@@ -392,6 +392,123 @@ class TestVoiceMessagePrefix:
 
 
 # ============================================================================
+# Voice input provenance (#65827) — exercises the real cli.py code
+# ============================================================================
+
+class TestVoiceInputProvenance:
+    """Only a real speech-to-text transcript may be labelled voice input.
+
+    Voice mode stays on while the user types, so the mode flag alone cannot
+    tell the model where a message came from (#65827).
+    """
+
+    @patch("cli._cprint")
+    @patch("cli.os.unlink")
+    @patch("cli.os.path.isfile", return_value=True)
+    @patch("hermes_cli.config.load_config", return_value={"stt": {}})
+    @patch("tools.voice_mode.transcribe_recording",
+           return_value={"success": True, "transcript": "hello world"})
+    @patch("tools.voice_mode.play_beep")
+    def test_transcript_is_queued_tagged_as_voice(
+        self, _beep, _tr, _cfg, _isf, _unl, _cp
+    ):
+        """The STT path tags what it queues so process_loop can tell it apart."""
+        from cli import VoiceTranscript
+
+        recorder = MagicMock()
+        recorder.stop.return_value = "/tmp/test.wav"
+        cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
+
+        cli._voice_stop_and_transcribe()
+
+        queued = cli._pending_input.get_nowait()
+        assert isinstance(queued, VoiceTranscript)
+        # Still an ordinary string value to every existing consumer.
+        assert queued == "hello world"
+        assert isinstance(queued, str)
+
+    def test_typed_input_is_not_tagged_as_voice(self):
+        """A plain queued string (what the Enter handler puts) is not voice."""
+        from cli import VoiceTranscript
+
+        cli = _make_voice_cli()
+        cli._pending_input.put("typed by hand")
+
+        assert not isinstance(cli._pending_input.get_nowait(), VoiceTranscript)
+
+    def test_tag_survives_the_pending_input_queue(self):
+        """process_loop reads provenance off the queue item, so it must survive."""
+        from cli import VoiceTranscript
+
+        cli = _make_voice_cli()
+        cli._pending_input.put(VoiceTranscript("spoken"))
+
+        assert isinstance(cli._pending_input.get_nowait(), VoiceTranscript)
+
+    def test_real_transcript_is_marked_voice_input(self):
+        """A genuine transcript keeps the voice-input label."""
+        cli = _make_voice_cli(_voice_mode=True)
+
+        prefix = cli._build_voice_prefix("what's the weather", voice_input=True)
+
+        assert prefix.startswith("[Voice input")
+
+    def test_typed_message_in_voice_mode_is_not_marked_voice_input(self):
+        """Regression for #65827: typing while voice mode is on claimed STT.
+
+        Before the fix the prefix was chosen from ``self._voice_mode`` alone,
+        so a typed message arrived labelled "[Voice input", and the model read
+        it as evidence that transcription had started working.
+        """
+        cli = _make_voice_cli(_voice_mode=True)
+
+        prefix = cli._build_voice_prefix("no, that was typed", voice_input=False)
+
+        assert not prefix.startswith("[Voice input")
+        assert "not transcribed" in prefix
+
+    def test_typed_and_voice_prefixes_are_distinguishable(self):
+        """The model must be able to tell the two provenances apart."""
+        cli = _make_voice_cli(_voice_mode=True)
+
+        spoken = cli._build_voice_prefix("same text", voice_input=True)
+        typed = cli._build_voice_prefix("same text", voice_input=False)
+
+        assert spoken != typed
+
+    def test_typed_message_in_voice_mode_keeps_conciseness_instruction(self):
+        """The reply is still spoken aloud, so brevity guidance must remain."""
+        cli = _make_voice_cli(_voice_mode=True)
+
+        prefix = cli._build_voice_prefix("still spoken back to me", voice_input=False)
+
+        assert "respond concisely and conversationally" in prefix
+        assert "No code blocks or markdown." in prefix
+
+    def test_no_prefix_when_voice_mode_off(self):
+        """Outside voice mode nothing is prepended, transcript or not."""
+        cli = _make_voice_cli(_voice_mode=False)
+
+        assert cli._build_voice_prefix("hello", voice_input=False) == ""
+        assert cli._build_voice_prefix("hello", voice_input=True) == ""
+
+    def test_no_prefix_for_multimodal_content(self):
+        """Multimodal content lists are left alone."""
+        cli = _make_voice_cli(_voice_mode=True)
+        message = [{"type": "text", "text": "describe this"}, {"type": "image_url"}]
+
+        assert cli._build_voice_prefix(message, voice_input=True) == ""
+
+    def test_chat_defaults_to_not_voice(self):
+        """Callers that cannot know provenance must not claim voice input."""
+        import inspect
+
+        from cli import HermesCLI
+
+        assert inspect.signature(HermesCLI.chat).parameters["voice_input"].default is False
+
+
+# ============================================================================
 # _vprint force parameter (Minor fix)
 # ============================================================================
 

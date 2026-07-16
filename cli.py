@@ -2994,6 +2994,17 @@ def _should_auto_attach_clipboard_image_on_paste(pasted_text: str) -> bool:
     return not pasted_text.strip()
 
 
+class VoiceTranscript(str):
+    """A user message produced by speech-to-text rather than typed.
+
+    Subclasses ``str`` so it rides the existing ``_pending_input`` queue and
+    passes every ``isinstance(..., str)`` check unchanged. ``process_loop``
+    must read the provenance off the raw queue item — the sanitizers it runs
+    next (paste-wrapper stripping, file-drop rewrites) all return plain
+    ``str``, so the marker does not survive them.
+    """
+
+
 def _strip_leaked_bracketed_paste_wrappers(text: str) -> str:
     from hermes_cli.input_sanitize import strip_leaked_bracketed_paste_wrappers
 
@@ -11381,7 +11392,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._attached_images.clear()
                 if hasattr(self, '_app') and self._app:
                     self._app.invalidate()
-                self._pending_input.put(transcript)
+                self._pending_input.put(VoiceTranscript(transcript))
                 submitted = True
             elif result.get("success"):
                 _cprint(f"{_DIM}No speech detected.{_RST}")
@@ -12166,7 +12177,27 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             except Exception:
                 pass
 
-    def chat(self, message, images: list = None) -> Optional[str]:
+    def _build_voice_prefix(self, message, voice_input: bool) -> str:
+        """Build the API-call-local prefix for a message sent in voice mode.
+
+        Provenance and conciseness are decided separately. The reply is spoken
+        aloud for as long as voice mode is on, so the conciseness instruction
+        applies to typed messages too — but only a real speech-to-text
+        transcript may claim to be voice input. Labelling typed text "Voice
+        input" let the model read it as proof that transcription was working,
+        masking STT failures (#65827).
+
+        Returns "" when voice mode is off or the message is multimodal.
+        """
+        if not (self._voice_mode and isinstance(message, str)):
+            return ""
+        provenance = "Voice input" if voice_input else "Typed input (not transcribed)"
+        return (
+            f"[{provenance} — respond concisely and conversationally, "
+            "2-3 sentences max. No code blocks or markdown.] "
+        )
+
+    def chat(self, message, images: list = None, voice_input: bool = False) -> Optional[str]:
         """
         Send a message to the agent and get a response.
         
@@ -12181,7 +12212,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         Args:
             message: The user's message (str or multimodal content list)
             images: Optional list of Path objects for attached images
-            
+            voice_input: True only when message came from speech-to-text.
+                Voice mode being active is not sufficient — the user can type
+                while it is on (#65827).
+
         Returns:
             The agent's response, or None on error
         """
@@ -12403,15 +12437,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if text_queue is not None:
                         text_queue.put(delta)
 
-            # When voice mode is active, prepend a brief instruction so the
-            # model responds concisely. The prefix is API-call-local only —
-            # run_conversation persists the original clean user message.
-            _voice_prefix = ""
-            if self._voice_mode and isinstance(message, str):
-                _voice_prefix = (
-                    "[Voice input — respond concisely and conversationally, "
-                    "2-3 sentences max. No code blocks or markdown.] "
-                )
+            # The prefix is API-call-local only — run_conversation persists the
+            # original clean user message.
+            _voice_prefix = self._build_voice_prefix(message, voice_input)
 
             def run_agent():
                 nonlocal result
@@ -15373,6 +15401,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if isinstance(user_input, tuple):
                         user_input, submit_images = user_input
 
+                    # Read speech-to-text provenance before the sanitizers below
+                    # rebuild user_input as a plain str and drop the marker.
+                    _is_voice_input = isinstance(user_input, VoiceTranscript)
+
                     if isinstance(user_input, str):
                         user_input = _strip_leaked_bracketed_paste_wrappers(user_input)
                         user_input, _had_mouse_reports = _strip_leaked_terminal_responses_with_meta(user_input)
@@ -15454,7 +15486,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     app.invalidate()  # Refresh status line
 
                     try:
-                        self.chat(user_input, images=submit_images or None)
+                        self.chat(
+                            user_input,
+                            images=submit_images or None,
+                            voice_input=_is_voice_input,
+                        )
                     finally:
                         self._agent_running = False
                         self._spinner_text = ""

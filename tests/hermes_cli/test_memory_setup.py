@@ -188,7 +188,7 @@ def test_cmd_status_warns_when_inactive_provider_is_configured(monkeypatch, caps
 
     output = capsys.readouterr().out
     assert "configured but not active" in output
-    assert "memory.provider: honcho" in output
+    assert "hermes config set memory.provider honcho" in output
 
 
 def test_cmd_status_silent_for_inactive_unconfigured_provider(monkeypatch, capsys):

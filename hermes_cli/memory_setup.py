@@ -490,8 +490,8 @@ def cmd_status(args) -> None:
                 try:
                     if candidate.is_available():
                         print(
-                            f"      ⚠ configured but not active — add "
-                            f"'memory.provider: {pname}' to config.yaml to enable"
+                            f"      ⚠ configured but not active — run "
+                            f"'hermes config set memory.provider {pname}' to enable"
                         )
                 except Exception:
                     pass

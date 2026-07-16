@@ -19,7 +19,9 @@ function normalizeRemoteSessionList(data: any, profile: string): any {
       is_default_profile: profile === 'default'
     }
   })
-  const total = Number.isFinite(data?.total) ? Number(data.total) : rows.length + (data?.has_more ? 1 : 0)
+  const hasExactTotal = Number.isFinite(data?.total)
+  const offset = Number.isFinite(data?.offset) ? Math.max(0, Number(data.offset)) : 0
+  const total = hasExactTotal ? Number(data.total) : offset + rows.length + (data?.has_more ? 1 : 0)
   const profileTotals =
     data?.profile_totals && typeof data.profile_totals === 'object'
       ? data.profile_totals
@@ -31,6 +33,7 @@ function normalizeRemoteSessionList(data: any, profile: string): any {
     ...data,
     sessions: rows,
     total,
+    total_is_lower_bound: !hasExactTotal && Boolean(data?.has_more),
     profile_totals: profileTotals
   }
 }

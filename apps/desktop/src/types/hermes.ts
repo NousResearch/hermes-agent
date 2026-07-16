@@ -287,10 +287,14 @@ export interface ModelOptionsResponse {
 }
 
 export interface PaginatedSessions {
+  has_more?: boolean
   limit: number
   offset: number
   sessions: SessionInfo[]
   total: number
+  /** True when `total` is only a pagination lower bound because the backend
+   *  exposes `has_more` but not an exact count. */
+  total_is_lower_bound?: boolean
   /** Listable conversation count per profile (children excluded), keyed by
    *  profile name. Lets the sidebar scope its "Load more" footer to the active
    *  profile instead of the global total. Present only on

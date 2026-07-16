@@ -93,6 +93,7 @@ import {
   $sessions,
   $sessionsLoading,
   $sessionsTotal,
+  $sessionsTotalIsLowerBound,
   sessionPinId,
   setCurrentCwd
 } from '@/store/session'
@@ -300,6 +301,7 @@ export function ChatSidebar({
   const messagingTruncated = useStore($messagingTruncated)
   const sessionsLoading = useStore($sessionsLoading)
   const sessionsTotal = useStore($sessionsTotal)
+  const sessionsTotalIsLowerBound = useStore($sessionsTotalIsLowerBound)
   const sessionProfileTotals = useStore($sessionProfileTotals)
   const workingSessionIds = useStore($workingSessionIds)
   const profiles = useStore($profiles)
@@ -967,7 +969,7 @@ export function ChatSidebar({
 
   const hasMoreSessions = knownSessionTotal > loadedSessionCount
 
-  const recentsMeta = countLabel(displayAgentSessions.length, knownSessionTotal)
+  const recentsMeta = countLabel(displayAgentSessions.length, knownSessionTotal, sessionsTotalIsLowerBound)
   const displayRecentsCountRef = useRef(0)
   const loadedRecentsCountRef = useRef(0)
   displayRecentsCountRef.current = displayAgentSessions.length

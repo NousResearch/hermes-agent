@@ -27,7 +27,7 @@ test('normalizes the legacy gateway list shape for the desktop sidebar', () => {
       data: [{ id: 'remote-1', message_count: 2 }],
       has_more: true,
       limit: 40,
-      offset: 0
+      offset: 40
     },
     'health'
   )
@@ -40,8 +40,9 @@ test('normalizes the legacy gateway list shape for the desktop sidebar', () => {
       profile: 'health'
     }
   ])
-  assert.equal(result.total, 2)
-  assert.deepEqual(result.profile_totals, { health: 2 })
+  assert.equal(result.total, 42)
+  assert.equal(result.total_is_lower_bound, true)
+  assert.deepEqual(result.profile_totals, { health: 42 })
 })
 
 test('falls back to /api/sessions only when the aggregate endpoint is missing', async () => {

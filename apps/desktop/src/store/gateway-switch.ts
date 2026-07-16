@@ -15,7 +15,8 @@ import {
   setSessionProfileTotals,
   setSessions,
   setSessionsLoading,
-  setSessionsTotal
+  setSessionsTotal,
+  setSessionsTotalIsLowerBound
 } from '@/store/session'
 import { clearAllSessionStates } from '@/store/session-states'
 
@@ -39,6 +40,7 @@ export const $gatewaySwitching = atom(false)
 export function wipeSessionListsForGatewaySwitch(): void {
   setSessions([])
   setSessionsTotal(0)
+  setSessionsTotalIsLowerBound(false)
   setSessionProfileTotals({})
   setCronSessions([])
   setMessagingSessions([])

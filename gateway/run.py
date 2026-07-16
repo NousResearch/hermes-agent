@@ -14424,16 +14424,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         used_buttons = False
         if adapter is not None:
+            # Build kwargs: only pass allow_always when it is False (non-default).
+            # Legacy adapters without the parameter will use their own default
+            # (True) and won't raise TypeError on an unexpected kwarg.
+            kwargs = dict(
+                chat_id=source.chat_id,
+                title=title,
+                message=message,
+                session_key=session_key,
+                confirm_id=confirm_id,
+                metadata=metadata,
+            )
+            if not allow_always:
+                kwargs["allow_always"] = False
             try:
-                button_result = await adapter.send_slash_confirm(
-                    chat_id=source.chat_id,
-                    title=title,
-                    message=message,
-                    session_key=session_key,
-                    confirm_id=confirm_id,
-                    metadata=metadata,
-                    allow_always=allow_always,
-                )
+                button_result = await adapter.send_slash_confirm(**kwargs)
                 if button_result and getattr(button_result, "success", False):
                     used_buttons = True
             except Exception as exc:

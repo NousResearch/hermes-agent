@@ -1,6 +1,6 @@
 ---
 name: unreal-mcp
-description: "Use when the user wants to do anything in Unreal Engine through Epic's official editor-embedded MCP server (catalog entry: unreal-engine) — build/light/populate scenes, place and transform actors, create material instances, frame cameras, take screenshots, render, import assets, run automation tests, or automate the editor end-to-end from plain-English prompts with no Unreal knowledge required. Covers the tool-search discovery walk (list_toolsets/describe_toolset/call_tool), serial game-thread call discipline, scene-craft numbers (physical light units, exposure, scale conventions), complete build recipes, save/undo hygiene, and extending the tool surface with custom Python toolsets."
+description: "Use when the user wants to do anything in Unreal Engine through Epic's official editor-embedded MCP server (catalog entry: unreal-engine) — build/light/populate scenes, place and transform actors, author Blueprints, animate with Sequencer, create material instances, frame cameras, take screenshots, render, import assets, run PIE test sessions and automation tests, or automate the editor end-to-end from plain-English prompts with no Unreal knowledge required. Covers the tool-search discovery walk (list_toolsets/describe_toolset/call_tool), serial game-thread call discipline, ProgrammaticToolset batching, the Blueprint graph DSL loop, scene-craft numbers (physical light units, exposure, scale conventions), complete build recipes, save/undo hygiene, and extending the tool surface with custom Python toolsets."
 version: 1.0.0
 requires: Unreal Editor 5.8+ with the Unreal MCP plugin enabled and its server running
 author: Hermes Agent
@@ -132,7 +132,10 @@ Every Unreal task follows the same loop:
 2. **Act in small, single-purpose calls.** One logical step per `call_tool`.
    The server executes tools **serially on the game thread** — a big
    monolithic operation freezes the editor UI until it finishes and risks
-   client timeouts.
+   client timeouts. Exception: for loops over 5+ homogeneous operations,
+   ONE `ProgrammaticToolset.execute_tool_script` call batches them
+   server-side without breaking the serial rule
+   (`references/advanced-workflows.md`).
 3. **NEVER issue overlapping calls.** Do not batch multiple
    `mcp_unreal_engine_*` calls in one turn — Hermes runs batched calls
    concurrently, and parallel calls against the game thread deadlock or
@@ -205,6 +208,7 @@ Load on demand; keep SKILL.md-level rules in mind throughout.
 | Reference | Contents |
 |---|---|
 | `references/tool-surface.md` | Shipped toolsets catalog, discovery protocol detail, plugin console commands/CVars/flags, screenshot & capture paths, MCP Inspector debugging, extending with custom Python/C++ toolsets |
+| `references/advanced-workflows.md` | Sophisticated workflows, live-verified: ProgrammaticToolset batching, Blueprint DSL authoring loop (create→DSL→compile→spawn), PIE test sessions, Sequencer orientation (140 tools), LogsToolset self-debugging, automation testing, semantic asset search, config settings, per-situation decision table |
 | `references/scene-craft.md` | Numeric cheat sheet: physical light intensities, color temperatures, exposure/EV100, fog densities, mood recipes (noon/golden hour/overcast/night/interior), scale tables, content path conventions |
 | `references/recipes.md` | End-to-end worked builds with exact call sequences |
 | `references/pitfalls.md` | Setup, runtime, and workflow pitfalls with fixes — read before your first session and whenever something misbehaves |

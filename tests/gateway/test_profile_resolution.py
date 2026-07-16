@@ -17,7 +17,9 @@ from gateway.platforms.base import BasePlatformAdapter
 def mock_runner():
     """Create a minimal mock GatewayRunner with the methods we need."""
     runner = MagicMock(spec=GatewayRunner)
-    runner.config = MagicMock(profile_routes=[])
+    # per_user_profiles must default to a concrete False: a bare MagicMock attr is
+    # truthy, which would flip on per-user derivation in _profile_name_for_source.
+    runner.config = MagicMock(profile_routes=[], per_user_profiles=False)
     # Bind the actual methods to the mock
     runner._profile_name_for_source = GatewayRunner._profile_name_for_source.__get__(runner)
     runner._resolve_profile_home_for_source = GatewayRunner._resolve_profile_home_for_source.__get__(runner)

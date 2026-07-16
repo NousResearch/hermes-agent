@@ -1440,18 +1440,24 @@ def _reload_runtime_env_preserving_config_authority() -> None:
     the default profile's keys to every profile's turns and subprocesses.
     """
     from agent.secret_scope import is_multiplex_active
+    from hermes_constants import get_hermes_home_override
+    # Bridge agent.max_turns from the *scoped* home when a per-turn home override
+    # is active (a routed multiplex profile or a per-user profile) so it honors
+    # that profile's config.yaml budget; otherwise the process base home
+    # (_hermes_home). Single-profile turns have no override → base, unchanged.
+    _scoped_home = Path(get_hermes_home_override() or _hermes_home)
     if is_multiplex_active():
         # Credentials are resolved from the active profile's secret scope, not
-        # os.environ. Still honor config.yaml's agent.max_turns bridge below
-        # using the scoped home, but never reload .env into global env.
-        _bridge_max_turns_from_config(_hermes_home)
+        # os.environ. Still honor config.yaml's agent.max_turns bridge using the
+        # scoped home, but never reload .env into global env.
+        _bridge_max_turns_from_config(_scoped_home)
         return
 
     load_hermes_dotenv(
         hermes_home=_hermes_home,
         project_env=Path(__file__).resolve().parents[1] / '.env',
     )
-    _bridge_max_turns_from_config(_hermes_home)
+    _bridge_max_turns_from_config(_scoped_home)
 
 
 def _bridge_max_turns_from_config(home: "Path") -> None:
@@ -1608,6 +1614,30 @@ def _platform_has_bot_credential(platform: "Platform", platform_config: "Platfor
     if isinstance(api_key, str) and api_key.strip():
         return True
     return False
+
+
+@_contextmanager
+def _profile_home_only_scope(profile_home: "Path"):
+    """Scope config/skills/memory/SOUL/cron to a profile home, but NOT secrets.
+
+    The per-user-profiles variant of :func:`_profile_runtime_scope`. It redirects
+    ``get_hermes_home()`` to the user's profile home (so skills, cron jobs.json,
+    native MEMORY.md/USER.md, config.yaml and SOUL resolve per user) but does NOT
+    install a per-profile secret scope: ``per_user_profiles`` deliberately keeps
+    service credentials shared, so ``get_secret`` keeps reading the process-global
+    ``os.environ`` (``set_multiplex_active`` stays False for this mode). A per-user
+    ``.env`` would otherwise be empty and break every credentialed tool.
+
+    Like :func:`_profile_runtime_scope`, the home override is a contextvar, so it
+    propagates into the agent worker thread via ``copy_context()``.
+    """
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+    home_token = set_hermes_home_override(str(profile_home))
+    try:
+        yield
+    finally:
+        reset_hermes_home_override(home_token)
 
 
 _DOCKER_VOLUME_SPEC_RE = re.compile(r"^(?P<host>.+):(?P<container>/[^:]+?)(?::(?P<options>[^:]+))?$")
@@ -3868,12 +3898,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         config = getattr(self, "config", None)
         # Mirror SessionStore._resolve_profile_for_key so this fallback path
         # produces the same namespace as the primary path: None (legacy
-        # agent:main) unless multiplexing is on, then the active profile.
+        # agent:main) unless multiplex OR per-user profiles are on, in which case
+        # the stamped source.profile wins; multiplex additionally falls back to
+        # the active profile when nothing is stamped (per-user stays None/shared).
         _profile = None
-        if getattr(config, "multiplex_profiles", False):
+        _multiplex = getattr(config, "multiplex_profiles", False)
+        _per_user = getattr(config, "per_user_profiles", False)
+        if _multiplex or _per_user:
             if source.profile:
                 _profile = source.profile
-            else:
+            elif _multiplex:
                 try:
                     from hermes_cli.profiles import get_active_profile_name
                     _profile = get_active_profile_name() or "default"
@@ -11916,9 +11950,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         history: List[Dict[str, Any]],
         session_key: Optional[str] = None,
     ) -> Optional[str]:
-        """Run inbound preprocessing under the routed profile when multiplexed."""
-        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
-            with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+        """Run inbound preprocessing under the routed/per-user profile scope."""
+        cfg = getattr(self, "config", None)
+        if getattr(cfg, "multiplex_profiles", False) or getattr(cfg, "per_user_profiles", False):
+            with self._profile_scope_for_source(source):
                 return await self._prepare_inbound_message_text(
                     event=event,
                     source=source,
@@ -13673,8 +13708,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         inside this method, so contextvars behave correctly in the worker
         thread.
         """
-        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
-            with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+        cfg = getattr(self, "config", None)
+        if getattr(cfg, "multiplex_profiles", False) or getattr(cfg, "per_user_profiles", False):
+            with self._profile_scope_for_source(source):
                 return self._format_session_info()
         return self._format_session_info()
 
@@ -18793,7 +18829,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         multiplexing is off this is a transparent pass-through — zero behavior
         change for single-profile gateways.
         """
-        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+        with self._profile_scope_for_source(source):
             return await self._run_agent_inner(
                 message, context_prompt, history, source, session_id,
                 session_key=session_key, run_generation=run_generation,
@@ -18803,63 +18839,96 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
             )
 
+    def _profile_scope_for_source(self, source: SessionSource):
+        """Return the profile scope context manager for this inbound source.
+
+        - ``multiplex_profiles``: full ``_profile_runtime_scope`` (home override
+          + the profile's own ``.env`` secret scope).
+        - ``per_user_profiles`` (and not multiplex): ``_profile_home_only_scope``
+          (home override only; service credentials stay shared via os.environ).
+        - neither: a no-op ``nullcontext`` — single-profile gateways are unchanged.
+
+        Multiplex takes precedence when both are set, because its per-profile
+        secret isolation is the stronger contract.
+        """
+        from contextlib import nullcontext
+        cfg = getattr(self, "config", None)
+        multiplex = getattr(cfg, "multiplex_profiles", False)
+        per_user = getattr(cfg, "per_user_profiles", False)
+        if not (multiplex or per_user):
+            return nullcontext()
         profile_home = self._resolve_profile_home_for_source(source)
-        with _profile_runtime_scope(profile_home):
-            return await self._run_agent_inner(
-                message, context_prompt, history, source, session_id,
-                session_key=session_key, run_generation=run_generation,
-                _interrupt_depth=_interrupt_depth, event_message_id=event_message_id,
-                channel_prompt=channel_prompt, moa_config=moa_config,
-                persist_user_message=persist_user_message,
-                persist_user_timestamp=persist_user_timestamp,
-            )
+        if multiplex:
+            return _profile_runtime_scope(profile_home)
+        return _profile_home_only_scope(profile_home)
 
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
-        """Resolve the profile name for an inbound source via configured routes.
+        """Resolve the profile name for an inbound source.
 
-        Returns ``None`` when multiplexing is off, no routes are configured, or
-        no route matches. Callers (``build_source``,
-        ``_resolve_profile_home_for_source``) treat ``None`` as "use the
-        default/active profile". When ``gateway.profile_routes`` is configured,
-        the most specific matching route wins (guild < channel < thread). See
-        :mod:`gateway.profile_routing` for matching rules.
+        Two sources, checked in order:
+          1. ``gateway.profile_routes`` — the most specific matching route wins
+             (guild < channel < thread). See :mod:`gateway.profile_routing`.
+          2. ``gateway.per_user_profiles`` — when no route matches, derive a
+             per-user profile from the sender (``<prefix>-<platform>-<uid>``, see
+             :mod:`gateway.user_profiles`).
 
-        Gated on ``gateway.multiplex_profiles``: routing stamps
-        ``source.profile``, which selects the session-key namespace and batch
-        keys — but the profile-scoped agent run only activates under
-        multiplexing. Without this gate, a configured route with multiplexing
-        off would namespace batch/session keys by profile while the agent
-        still runs in ``agent:main``, splitting the two out of agreement.
+        Returns ``None`` when both ``multiplex_profiles`` and
+        ``per_user_profiles`` are off, or when neither a route nor a sender id
+        resolves. Callers (``build_source``, ``_resolve_profile_home_for_source``)
+        treat ``None`` as "use the default/active profile".
+
+        Gated on ``multiplex_profiles`` OR ``per_user_profiles``: stamping
+        ``source.profile`` selects the session-key namespace and the
+        profile-scoped agent run together, so they never split out of agreement
+        (a stamped profile without a scoped run would namespace keys by profile
+        while the agent still ran in ``agent:main``).
         """
         config = getattr(self, "config", None)
-        if not getattr(config, "multiplex_profiles", False):
+        multiplex = getattr(config, "multiplex_profiles", False)
+        per_user = getattr(config, "per_user_profiles", False)
+        if not (multiplex or per_user):
             return None
+
+        # 1) Configured profile_routes win — an operator-pinned guild/channel/thread
+        #    route is more specific than per-user derivation.
         routes = getattr(config, "profile_routes", None)
-        if not routes:
-            return None
-        from gateway.profile_routing import match_profile_route
-        try:
-            matched = match_profile_route(
-                routes,
-                platform=source.platform.value,
-                guild_id=getattr(source, "guild_id", None),
-                chat_id=source.chat_id,
-                thread_id=getattr(source, "thread_id", None),
-                parent_chat_id=getattr(source, "parent_chat_id", None),
+        if routes:
+            from gateway.profile_routing import match_profile_route
+            try:
+                matched = match_profile_route(
+                    routes,
+                    platform=source.platform.value,
+                    guild_id=getattr(source, "guild_id", None),
+                    chat_id=source.chat_id,
+                    thread_id=getattr(source, "thread_id", None),
+                    parent_chat_id=getattr(source, "parent_chat_id", None),
+                )
+            except Exception:
+                logger.warning(
+                    "Profile route matching failed for %s/%s, falling back to default",
+                    source.platform, source.chat_id, exc_info=True,
+                )
+                matched = None
+            if matched:
+                return matched.profile
+            logger.debug(
+                "No profile route matched: platform=%s chat_id=%s thread_id=%s parent_chat_id=%s",
+                source.platform.value, source.chat_id,
+                getattr(source, "thread_id", None), getattr(source, "parent_chat_id", None),
             )
-        except Exception:
-            logger.warning(
-                "Profile route matching failed for %s/%s, falling back to default",
-                source.platform, source.chat_id, exc_info=True,
-            )
-            return None
-        if matched:
-            return matched.profile
-        logger.debug(
-            "No profile route matched: platform=%s chat_id=%s thread_id=%s parent_chat_id=%s",
-            source.platform.value, source.chat_id,
-            getattr(source, "thread_id", None), getattr(source, "parent_chat_id", None),
-        )
+
+        # 2) Per-user derivation: <prefix>-<platform>-<uid>. Returns None when the
+        #    source has no stable sender id (→ shared default namespace).
+        #    Suppressed under multiplex: there the profile is the adapter's own
+        #    (per-credential) identity, and multiplex's secret scope reads the
+        #    profile's .env — a sender-derived name would both mis-key the home
+        #    and (via the home-only convention) leave that scope credential-less.
+        #    This matches the scope precedence in _profile_scope_for_source.
+        if per_user and not multiplex:
+            from gateway.user_profiles import derive_user_profile_name
+            prefix = getattr(config, "per_user_profile_prefix", "u") or "u"
+            return derive_user_profile_name(source, prefix)
+
         return None
 
     def _resolve_profile_home_for_source(self, source: SessionSource) -> "Path":
@@ -18895,6 +18964,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             profile_dir = get_profile_dir(name)
             # Warn if an explicit profile doesn't exist on disk
             if explicit_profile and not profile_exists(name):
+                # Per-user profiles are provisioned on demand: a derived
+                # ``<prefix>-…`` name that doesn't exist yet is this user's first
+                # contact — create it (seeded from the template) rather than
+                # falling back to the shared global home.
+                cfg = getattr(self, "config", None)
+                if getattr(cfg, "per_user_profiles", False):
+                    from gateway.user_profiles import ensure_user_profile, is_user_profile_name
+                    prefix = getattr(cfg, "per_user_profile_prefix", "u") or "u"
+                    if is_user_profile_name(name, prefix):
+                        try:
+                            ensure_user_profile(
+                                name, getattr(cfg, "per_user_profile_template", "") or None
+                            )
+                            return profile_dir
+                        except Exception:
+                            logger.warning(
+                                "per_user_profiles: provisioning %r failed for %s/%s, "
+                                "falling back to global HERMES_HOME",
+                                name, source.platform.value, source.chat_id, exc_info=True,
+                            )
+                            return get_hermes_home()
                 logger.warning(
                     "Profile %r does not exist for source %s/%s (guild_id=%s), "
                     "falling back to global HERMES_HOME",

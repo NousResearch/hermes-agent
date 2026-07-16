@@ -1358,16 +1358,27 @@ class SessionStore:
     def _resolve_profile_for_key(self, source: Optional[SessionSource] = None) -> Optional[str]:
         """Return the profile namespace for session keys, or None when off.
 
-        When ``multiplex_profiles`` is disabled (default), returns ``None`` so
-        keys stay in the legacy ``agent:main`` namespace — byte-identical to
-        before. When enabled, prefers the profile the inbound source was routed
-        to (``source.profile`` — set by the /p/<profile>/ URL prefix or
-        per-credential adapter), falling back to the active profile name.
+        When both ``multiplex_profiles`` and ``per_user_profiles`` are disabled
+        (default), returns ``None`` so keys stay in the legacy ``agent:main``
+        namespace — byte-identical to before. When either is enabled, prefers the
+        profile the inbound source was routed to (``source.profile`` — set by the
+        /p/<profile>/ URL prefix, per-credential adapter, profile_routes, or
+        per-user sender derivation), so each user's sessions namespace to
+        ``agent:<profile>:…``.
+
+        Fallback when no profile is stamped: multiplex falls back to the active
+        profile (its own home); per-user-only stays ``None`` (an unresolved
+        sender — e.g. no user_id — shares the default namespace rather than being
+        bucketed into the active profile).
         """
-        if not getattr(self.config, "multiplex_profiles", False):
+        multiplex = getattr(self.config, "multiplex_profiles", False)
+        per_user = getattr(self.config, "per_user_profiles", False)
+        if not (multiplex or per_user):
             return None
         if source is not None and source.profile:
             return source.profile
+        if not multiplex:
+            return None
         try:
             from hermes_cli.profiles import get_active_profile_name
             return get_active_profile_name() or "default"
@@ -1399,7 +1410,17 @@ class SessionStore:
         requested_session_key: str,
         recovered: Dict[str, Any],
     ) -> bool:
-        """Prevent non-multiplexed gateways from reviving another profile's row."""
+        """Prevent reviving a row from a DIFFERENT profile into this key.
+
+        The peer-tuple recovery fallback can return a row whose stored
+        ``session_key`` differs from the requested one; this guard makes sure it
+        belongs to the SAME profile namespace before adopting it. It compares the
+        recovered row's profile against the profile encoded in the *requested*
+        key (not the operator's active profile), so it is correct for
+        single-profile, multiplex, and per-user gateways alike — a per-user key
+        like ``agent:u-telegram-1:…`` only recovers rows from that same user's
+        namespace.
+        """
         if getattr(self.config, "multiplex_profiles", False):
             return True
 
@@ -1411,7 +1432,7 @@ class SessionStore:
         if recovered_profile is None:
             return True
 
-        return recovered_profile == self._active_profile_name()
+        return recovered_profile == self._profile_from_session_key(requested_session_key)
 
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""

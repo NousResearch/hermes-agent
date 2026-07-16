@@ -900,6 +900,21 @@ class GatewayConfig:
     # dict with: name, platform, profile, and optional guild_id/chat_id/thread_id.
     profile_routes: list = field(default_factory=list)
 
+    # Per-user profile isolation (opt-in; default off). When True, a single bot's
+    # gateway derives the profile from the message SENDER (not the adapter, as
+    # multiplex_profiles does) — ``<prefix>-<platform>-<uid>`` — and runs each
+    # turn under that per-user HERMES_HOME, so skills / cron jobs.json / native
+    # MEMORY.md / workspace files isolate per user. Service credentials stay
+    # shared (per-user turns use a home-only scope; get_secret keeps reading the
+    # process-global os.environ). Profiles are provisioned lazily on first
+    # contact, seeded from ``per_user_profile_template``. See
+    # gateway/user_profiles.py. A configured profile_routes match still wins over
+    # per-user derivation. Independent of multiplex_profiles; if both are set,
+    # multiplex (with its per-profile .env secret scope) takes precedence.
+    per_user_profiles: bool = False
+    per_user_profile_template: str = ""  # profile to seed new user profiles from; "" → active/default
+    per_user_profile_prefix: str = "u"   # derived name = <prefix>-<platform>-<uid|hash>
+
     def __post_init__(self) -> None:
         self.systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
             self.systemd_watchdog_seconds
@@ -1023,6 +1038,9 @@ class GatewayConfig:
                 asdict(r) if is_dataclass(r) and not isinstance(r, type) else r
                 for r in self.profile_routes
             ],
+            "per_user_profiles": self.per_user_profiles,
+            "per_user_profile_template": self.per_user_profile_template,
+            "per_user_profile_prefix": self.per_user_profile_prefix,
         }
     
     @classmethod
@@ -1128,6 +1146,25 @@ class GatewayConfig:
         from gateway.profile_routing import parse_profile_routes
         profile_routes = parse_profile_routes(data.get("profile_routes") or [])
 
+        # Per-user profiles (opt-in). Honor both the top-level key and the nested
+        # gateway.per_user_profiles form, mirroring multiplex_profiles parity.
+        # No env override (unlike GATEWAY_MULTIPLEX_PROFILES): that override exists
+        # for hosted relay-routing deployments that force multiplex on per boot;
+        # per-user isolation is a self-hosted config.yaml choice, so config-only.
+        per_user_profiles = data.get("per_user_profiles")
+        if per_user_profiles is None and isinstance(nested_gateway, dict):
+            per_user_profiles = nested_gateway.get("per_user_profiles")
+        per_user_profile_template = (
+            data.get("per_user_profile_template")
+            if data.get("per_user_profile_template") is not None
+            else (nested_gateway.get("per_user_profile_template") if isinstance(nested_gateway, dict) else None)
+        )
+        per_user_profile_prefix = (
+            data.get("per_user_profile_prefix")
+            if data.get("per_user_profile_prefix") is not None
+            else (nested_gateway.get("per_user_profile_prefix") if isinstance(nested_gateway, dict) else None)
+        )
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
@@ -1152,6 +1189,9 @@ class GatewayConfig:
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
             profile_routes=profile_routes,
+            per_user_profiles=_coerce_bool(per_user_profiles, False),
+            per_user_profile_template=str(per_user_profile_template or ""),
+            per_user_profile_prefix=(str(per_user_profile_prefix).strip() or "u") if per_user_profile_prefix else "u",
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
@@ -1297,10 +1337,19 @@ def load_gateway_config() -> GatewayConfig:
             if isinstance(_pr, list):
                 gw_data["profile_routes"] = _pr
 
+            # Per-user profiles: accept top-level and nested gateway.* forms
+            # (same parity as multiplex_profiles / profile_routes above).
+            for _puk in ("per_user_profiles", "per_user_profile_template", "per_user_profile_prefix"):
+                if _puk in yaml_cfg:
+                    gw_data[_puk] = yaml_cfg[_puk]
+
             if isinstance(gateway_section, dict):
                 if "multiplex_profiles" in gateway_section and "multiplex_profiles" not in gw_data:
                     # gateway.multiplex_profiles written by `hermes config set gateway.multiplex_profiles true`
                     gw_data["multiplex_profiles"] = gateway_section["multiplex_profiles"]
+                for _puk in ("per_user_profiles", "per_user_profile_template", "per_user_profile_prefix"):
+                    if _puk in gateway_section and _puk not in gw_data:
+                        gw_data[_puk] = gateway_section[_puk]
                 if "max_concurrent_sessions" in gateway_section:
                     gw_data["max_concurrent_sessions"] = gateway_section["max_concurrent_sessions"]
                 if "systemd_watchdog_seconds" in gateway_section:

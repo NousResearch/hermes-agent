@@ -66,6 +66,19 @@ class GatewayAuthorizationMixin:
             profile_adapters = getattr(self, "_profile_adapters", None) or {}
             if profile_name in profile_adapters:
                 return profile_adapters[profile_name].get(platform)
+            # Per-user profiles (gateway.per_user_profiles) reuse source.profile to
+            # namespace the WORKSPACE, not to route a bot credential: their derived
+            # ``<prefix>-…`` id is a home-only profile served by the single shared
+            # bot adapter, never a multiplex secondary adapter. Fall through to the
+            # default adapter for those — fail-closing here would drop every reply
+            # on a per-user gateway.
+            cfg = getattr(self, "config", None)
+            if getattr(cfg, "per_user_profiles", False):
+                from gateway.user_profiles import is_user_profile_name
+                prefix = getattr(cfg, "per_user_profile_prefix", "u") or "u"
+                if is_user_profile_name(profile_name, prefix):
+                    adapters = getattr(self, "adapters", None) or {}
+                    return adapters.get(platform)
             # Fail closed: a stamped secondary profile with no registry entry
             # (e.g. its adapter failed to connect) must NOT fall back to the
             # default profile's adapter — that sends replies out the wrong bot.

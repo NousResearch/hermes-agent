@@ -241,6 +241,66 @@ multiplexing off the routes are ignored. If a route names a profile that does
 not exist on disk, the gateway logs a warning naming the profile and source and
 falls back to the default home.
 
+### Per-user isolation on a single bot (`per_user_profiles`)
+
+`multiplex_profiles` and `profile_routes` both select a profile by *where* a
+message comes from (which bot token, which guild/channel). Neither isolates the
+individual **users** of one bot: everyone talking to a single DM bot shares the
+default profile's `HERMES_HOME`, so one user's `skill_manage`, `cronjob`, or
+native `memory` tool calls can read or clobber another user's skills, scheduled
+jobs, and `MEMORY.md`.
+
+`gateway.per_user_profiles` closes that gap by deriving the profile from the
+message **sender** and running each turn under that user's own home:
+
+```yaml
+gateway:
+  per_user_profiles: true            # default false — no change when off
+  per_user_profile_template: default # seed each new user's profile from this one
+  per_user_profile_prefix: u         # derived id = <prefix>-<platform>-<uid>
+```
+
+Each sender is mapped to a profile id like `u-telegram-1271274566` (a
+non-conforming or over-long user id is hashed instead — always a valid,
+collision-safe id, namespaced by platform so a Telegram and a SpaceChat user
+never collide). On a user's **first** message their profile is created lazily,
+seeded from `per_user_profile_template` (falls back to the active profile), so
+they inherit the operator's `config.yaml`, `SOUL.md`, and base skills. From then
+on their turn resolves skills, `cron/jobs.json`, native `MEMORY.md` / `USER.md`,
+and workspace files from `profiles/<their-id>/`, and their sessions namespace to
+`agent:<their-id>:…` — so users cannot see or damage each other's workspace.
+
+**Two things stay shared by design:**
+
+- **Service credentials.** Per-user turns run under a *home-only* scope: the home
+  redirects per user but `get_secret` keeps reading the process-global
+  environment, so every user shares the one set of API keys (no per-user `.env`).
+  The template's `.env`, if any, is dropped at provision time.
+- **Operator config drift.** Because each profile is a self-contained copy seeded
+  once, later edits to the base `config.yaml` / `SOUL.md` / model do **not**
+  reach already-provisioned users. Pin anything that must stay authoritative for
+  everyone with the [managed overlay](configuration.md) (it re-applies every
+  turn regardless of the per-user copy), or re-seed profiles after a base change.
+
+`per_user_profiles` is independent of `multiplex_profiles` (it needs no extra bot
+tokens). A configured `profile_routes` match still wins over per-user derivation,
+so you can pin specific groups to a shared profile while every DM user gets their
+own. If both `per_user_profiles` and `multiplex_profiles` are on, multiplex —
+with its stronger per-profile credential isolation — takes precedence.
+
+This is a workspace-**isolation** primitive, not a permission system: it does not
+by itself stop a user from running the terminal tool or admin slash commands in
+their own sandbox. Pair it with per-platform admin gating
+(`allow_admin_from` / `user_allowed_commands`) and a restricted toolset to bound
+what each user can do.
+
+**Fail-open edges to know:** a sender with no stable user id (some anonymous
+channel posts) and a turn whose profile fails to provision (e.g. disk full) both
+fall back to the operator's shared base home — the gateway logs a warning naming
+the source in the provisioning-failure case. So per-user isolation is best-effort
+under those conditions, not a hard boundary; keep the base home's shared skills
+and `MEMORY.md` free of anything you would not want an unidentified sender to see.
+
 ## Start, stop, or restart all gateways at once
 
 The CLI ships with single-profile lifecycle commands. To act across every

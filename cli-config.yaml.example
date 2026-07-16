@@ -620,6 +620,18 @@ max_concurrent_sessions: null
 # explicitly want one shared "room brain" per group/channel.
 group_sessions_per_user: true
 
+# Per-user profile isolation for a SINGLE bot. When true, the gateway derives a
+# profile from the message sender (`<prefix>-<platform>-<uid>`) and runs each
+# turn under that user's own HERMES_HOME, so skills, cron jobs, and native
+# MEMORY.md isolate per user. Service credentials stay shared. Profiles are
+# provisioned lazily on first contact, seeded from `per_user_profile_template`
+# (empty → the active profile). Independent of multiplex_profiles; a
+# profile_routes match still wins. Default off. See the multi-profile-gateways
+# guide (§ "Per-user isolation on a single bot").
+per_user_profiles: false
+# per_user_profile_template: default
+# per_user_profile_prefix: u
+
 # ─────────────────────────────────────────────────────────────────────────────
 # API Server — per-client model routing
 # ─────────────────────────────────────────────────────────────────────────────

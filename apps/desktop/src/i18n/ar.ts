@@ -216,7 +216,9 @@ export const ar: Translations = {
     unmuteHaptics: 'تشغيل الاستجابة اللمسية',
     openSettings: 'فتح الإعدادات',
     openKeybinds: 'اختصارات لوحة المفاتيح',
-    openStarmap: 'فتح مخطّط الذاكرة'
+    openStarmap: 'فتح مخطّط الذاكرة',
+    layoutEditor: 'محرر التخطيط',
+    layoutEditorTitle: 'محرر التخطيط — النقر مع ⌘ يعيد التخطيط كما كان'
   },
 
   keybinds: {
@@ -247,6 +249,7 @@ export const ar: Translations = {
       'nav.cron': 'فتح المهام المجدولة',
       'nav.agents': 'فتح الوكلاء',
       'session.new': 'جلسة جديدة',
+      'session.newTab': 'تبويب جلسة جديد',
       'session.newWindow': 'جلسة جديدة في نافذة',
       'session.next': 'الجلسة التالية',
       'session.prev': 'الجلسة السابقة',
@@ -275,6 +278,8 @@ export const ar: Translations = {
       'view.prevTerminal': 'الطرفية السابقة',
       'view.closeTerminal': 'إغلاق الطرفية',
       'view.terminalSelection': 'إرسال تحديد الطرفية إلى محرر الرسالة',
+      'view.closeTab': 'إغلاق التبويب',
+      'view.reopenTab': 'إعادة فتح التبويب المغلق',
       'view.closePreviewTab': 'إغلاق تبويب المعاينة',
       'view.flipPanes': 'تبديل جانبي الشريطين',
       'appearance.toggleMode': 'تبديل الوضع الفاتح والداكن',
@@ -342,7 +347,29 @@ export const ar: Translations = {
       mcp: 'بروتوكول سياق النموذج',
       archivedChats: 'المحادثات المؤرشفة',
       about: 'حول',
-      notifications: 'الإشعارات'
+      notifications: 'الإشعارات',
+      plugins: 'الإضافات'
+    },
+    plugins: {
+      title: 'إضافات سطح المكتب',
+      blurb:
+        'امتدادات واجهة تُحمَّل في هذا التطبيق — مضمّنة مع البناء، أو موضوعة في مجلد desktop-plugins (بما فيها ما يكتبه هرمس). التعطيل يُفرغ الإضافة فورًا ويبقى ساريًا بعد إعادة التشغيل.',
+      count: n =>
+        n === 1
+          ? 'إضافة واحدة مثبّتة'
+          : n === 2
+            ? 'إضافتان مثبّتتان'
+            : n >= 3 && n <= 10
+              ? `${n} إضافات مثبّتة`
+              : `${n} إضافة مثبّتة`,
+      openFolder: 'فتح مجلد الإضافات',
+      rescan: 'إعادة الفحص',
+      reveal: 'إظهار في مدير الملفات',
+      enable: 'تفعيل',
+      disable: 'تعطيل',
+      failed: 'فشلت',
+      empty: 'لا توجد إضافات سطح مكتب مثبّتة بعد.',
+      kinds: { bundled: 'مضمّنة', disk: 'على القرص', runtime: 'وقت التشغيل' }
     },
     notifications: {
       title: 'الإشعارات',
@@ -428,6 +455,8 @@ export const ar: Translations = {
         `يضبط حجم النصّ وعناصر التحكّم في التطبيق كلّه. ويمكن استخدام اختصارات التكبير والتصغير وإعادة الضبط. الحالي: ${percent}%.`,
       translucencyTitle: 'شفافية النافذة',
       translucencyDesc: 'شاهد سطح مكتبك عبر النافذة كاملة. لنظامي ماك وويندوز فقط.',
+      backdropTitle: 'خلفية المحادثة',
+      backdropDesc: 'صورة التمثال الباهتة خلف المحادثة.',
       intro:
         'هذه تفضيلات عرض خاصة بسطح المكتب. يتحكم الوضع في السطوع، وتتحكم السمة في ألوان التمييز وأسلوب سطح المحادثة.',
       colorMode: 'وضع الألوان',
@@ -1979,6 +2008,7 @@ export const ar: Translations = {
     goTo: 'انتقال إلى',
     goToSession: 'انتقال إلى الجلسة',
     branches: 'الفروع',
+    commands: 'الأوامر',
     startInBranch: branch => `محادثة جديدة في ${branch}`,
     commandCenter: 'مركز الأوامر',
     appearance: 'المظهر',
@@ -3288,18 +3318,24 @@ export const ar: Translations = {
       rename: 'إعادة التسمية',
       archive: 'أرشفة',
       newWindow: 'نافذة جديدة',
+      hideTabBar: 'إخفاء شريط التبويبات',
+      openInNewTab: 'فتح في تبويب جديد',
+      openInSplit: 'فتح في تقسيم',
       copyIdFailed: 'تعذر نسخ معرّف الجلسة',
       actionsFor: title => `إجراءات ${title}`,
       sessionActions: 'إجراءات الجلسة',
       sessionRunning: 'الجلسة تعمل',
       needsInput: 'تحتاج إدخالك',
       waitingForAnswer: 'في انتظار إجابتك',
+      finishedUnread: 'انتهت — غير مقروءة',
+      backgroundRunning: 'مهمة تعمل في الخلفية',
       handoffOrigin: platform => `محوّلة من ${platform}`,
       renamed: 'أُعيدت التسمية',
       renameFailed: 'فشلت إعادة التسمية',
       renameTitle: 'إعادة تسمية الجلسة',
       renameDesc: 'أعط هذه المحادثة عنوانًا يسهل تذكره. اتركه فارغًا لمسحه.',
       untitledPlaceholder: 'جلسة بلا عنوان',
+      untitledChat: id => `محادثة ${id}`,
       ageNow: 'الآن',
       ageDay: 'ي',
       ageHour: 'س',
@@ -4071,6 +4107,53 @@ export const ar: Translations = {
       openTarget: url => `فتح ${url}`,
       fallbackTitle: 'المعاينة'
     }
+  },
+
+  zones: {
+    showHeader: 'إظهار الترويسة',
+    hideHeader: 'إخفاء الترويسة',
+    minimize: 'تصغير',
+    restore: 'استعادة',
+    closeRunningTitle: 'إغلاق تبويب يعمل؟',
+    closeRunningBody:
+      'هذه المحادثة ما تزال تعمل (أو تنتظر إدخالك). إغلاق التبويب يخفيها — تحتفظ الجلسة بتقدّمها ويمكن إعادة فتحها من الشريط الجانبي.',
+    closeRunningConfirm: 'إغلاق التبويب',
+    closeOthers: 'إغلاق البقية',
+    closeToRight: 'إغلاق ما إلى اليمين',
+    closeAll: 'إغلاق الكل',
+    split: dir => `تقسيم ${dir}`,
+    move: dir => `نقل ${dir}`,
+    dirUp: 'لأعلى',
+    dirDown: 'لأسفل',
+    dirLeft: 'لليسار',
+    dirRight: 'لليمين',
+    pluginDisabled: pluginId => `عُطّلت الإضافة "${pluginId}"`,
+    pluginDisabledBody: 'أعد تفعيلها من الإعدادات ← الإضافات لإرجاع اللوح.',
+    missingPane: paneId => `لوح مفقود: ${paneId}`,
+    editTitle: 'التخطيطات',
+    editHint: 'اختر تخطيطًا، أو اسحب الألواح بين المناطق. انقر منطقة بالزر الأيمن لتقسيمها.',
+    reset: 'إعادة تعيين',
+    templates: 'القوالب',
+    custom: 'مخصّص',
+    newGridLayout: 'تخطيط شبكي جديد',
+    saveCurrentAs: 'حفظ الترتيب الحالي قالبًا',
+    nameLayoutPlaceholder: 'سمِّ هذا التخطيط…',
+    deletePreset: name => `حذف ${name}`,
+    zoneEditorTitle: 'محرر المناطق',
+    editorHintPre: 'انقر للتقسيم · ',
+    editorHintPost: ' يقلب الخط · اسحب عبر المناطق للدمج · اسحب الحواف المشتركة لتغيير الحجم',
+    templateColumns: 'أعمدة',
+    templateRows: 'صفوف',
+    templateGrid: 'شبكة',
+    templatePriority: 'أولوية',
+    zoneTag: index => `منطقة ${index}`,
+    mergeZones: count => (count === 2 ? 'دمج منطقتين' : count <= 10 ? `دمج ${count} مناطق` : `دمج ${count} منطقة`),
+    customZoneName: count => `مخصّص من ${count} مناطق`,
+    layoutNamePlaceholder: fallback => `اسم التخطيط (${fallback})`,
+    saveApply: 'حفظ وتطبيق',
+    notExpressible: 'هذا الترتيب متشابك (كالمروحة) — لا يمكن تمثيله بتقسيمات متداخلة بعد',
+    zoneCount: count =>
+      count === 1 ? 'منطقة واحدة' : count === 2 ? 'منطقتان' : count <= 10 ? `${count} مناطق` : `${count} منطقة`
   },
 
   assistant: {

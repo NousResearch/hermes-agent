@@ -7,11 +7,6 @@ import type { SessionInfo } from '@/types/hermes'
 
 import { SidebarSessionRow } from './session-row'
 
-vi.mock('@/store/windows', () => ({
-  canOpenSessionWindow: () => false,
-  openSessionInNewWindow: vi.fn()
-}))
-
 vi.mock('./session-actions-menu', () => ({
   SessionActionsMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   SessionContextMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>
@@ -42,8 +37,9 @@ function renderRow(props: Partial<React.ComponentProps<typeof SidebarSessionRow>
   const onArchive = vi.fn()
 
   render(
-    <I18nProvider configClient={{ getConfig: async () => ({}), saveConfig: async () => ({ ok: true }) }}>
+    <I18nProvider configClient={null} initialLocale="en">
       <SidebarSessionRow
+        data-testid="session-row"
         isPinned={false}
         isSelected={false}
         isWorking={false}
@@ -69,12 +65,50 @@ describe('SidebarSessionRow archive affordance', () => {
   it('shows the session age by default', () => {
     renderRow()
 
-    expect(screen.getByText('39m')).toBeDefined()
+    expect(screen.getByText('39m').style.opacity).toBe('1')
+    expect(screen.getByRole('button', { name: 'Archive' }).style.opacity).toBe('0')
+  })
+
+  it('swaps the session age for archive actions on pointer hover', () => {
+    renderRow()
+
+    const row = screen.getByTestId('session-row')
+    const age = screen.getByText('39m')
+    const archive = screen.getByRole('button', { name: 'Archive' })
+
+    fireEvent.pointerEnter(row)
+
+    expect(age.style.opacity).toBe('0')
+    expect(archive.style.opacity).toBe('1')
+
+    fireEvent.pointerLeave(row)
+
+    expect(age.style.opacity).toBe('1')
+    expect(archive.style.opacity).toBe('0')
+  })
+
+  it('swaps the session age for archive actions on keyboard focus', () => {
+    renderRow()
+
+    const sessionButton = screen.getByRole('button', { name: 'Fix risky issue' })
+    const age = screen.getByText('39m')
+    const archive = screen.getByRole('button', { name: 'Archive' })
+
+    fireEvent.focus(sessionButton)
+
+    expect(age.style.opacity).toBe('0')
+    expect(archive.style.opacity).toBe('1')
+
+    fireEvent.blur(sessionButton)
+
+    expect(age.style.opacity).toBe('1')
+    expect(archive.style.opacity).toBe('0')
   })
 
   it('archives from the row shortcut button', () => {
     const { onArchive } = renderRow()
 
+    fireEvent.pointerEnter(screen.getByTestId('session-row'))
     fireEvent.click(screen.getByRole('button', { name: 'Archive' }))
 
     expect(onArchive).toHaveBeenCalledTimes(1)

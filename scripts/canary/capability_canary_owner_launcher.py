@@ -52,28 +52,26 @@ from scripts.canary.full_canary_owner_launcher import (
 from gateway.support_ops_team_registry import (
     SKYVISION_LOCKED_NONPUBLIC_CHANNEL_IDS,
 )
+
 RUNTIME_MODULE = "gateway.canonical_capability_canary_runtime"
 LIVE_DRIVER_MODULE = "gateway.canonical_capability_canary_live_driver"
-PRODUCER_FOUNDATION_MODULE = (
-    "gateway.canonical_capability_canary_producer_units"
-)
+PRODUCER_FOUNDATION_MODULE = "gateway.canonical_capability_canary_producer_units"
+PRODUCER_ADMISSION_MODULE = "gateway.canonical_capability_canary_producers"
 PRODUCER_FOUNDATION_BOOTSTRAP_SCHEMA = (
-    "muncho-production-capability-producer-foundation-owner-bootstrap.v1"
+    "muncho-production-capability-producer-foundation-owner-bootstrap.v2"
 )
 FOUNDATION_PREPARE_REQUEST_SCHEMA = (
-    "muncho-capability-producer-foundation-prepare-request.v1"
+    "muncho-capability-producer-foundation-prepare-request.v2"
 )
-FOUNDATION_PREPARATION_SCHEMA = (
-    "muncho-capability-producer-foundation-preparation.v1"
-)
+FOUNDATION_PREPARATION_SCHEMA = "muncho-capability-producer-foundation-preparation.v2"
 FOUNDATION_INSTALL_REQUEST_SCHEMA = (
     "muncho-capability-producer-foundation-install-request.v1"
 )
 FOUNDATION_INSTALL_RECEIPT_SCHEMA = (
-    "muncho-capability-producer-foundation-installation.v1"
+    "muncho-capability-producer-foundation-installation.v2"
 )
 PRODUCER_FOUNDATION_SSHSIG_NAMESPACE = (
-    "muncho-production-capability-canary-producer-foundation-v1"
+    "muncho-production-capability-canary-producer-foundation-v2"
 )
 PRODUCTION_OBSERVATION_SSHSIG_NAMESPACE = (
     "muncho-production-capability-production-observation-v1"
@@ -88,70 +86,122 @@ PRODUCTION_OBSERVATION_STAGE_RECEIPT_SCHEMA = (
     "muncho-production-capability-production-observation-stage.v1"
 )
 FIXTURE_PUBLICATION_RECEIPT_SCHEMA = (
-    "muncho-production-capability-canary-fixture-publication.v1"
+    "muncho-production-capability-canary-fixture-publication.v2"
 )
 REVIEWED_FIXTURE_PATH = "/etc/muncho/capability-canary/reviewed-live-fixture.json"
 FIXTURE_PUBLICATION_ROOT = (
     "/var/lib/muncho-capability-canary-control/fixture-publications"
 )
-CAPABILITY_PREFLIGHT_SCHEMA = "muncho-production-capability-runtime-preflight.v2"
-CAPABILITY_APPROVAL_SCHEMA = "muncho-production-capability-owner-approval.v1"
+CAPABILITY_PREFLIGHT_SCHEMA = "muncho-production-capability-runtime-preflight.v3"
+CAPABILITY_APPROVAL_SCHEMA = "muncho-production-capability-owner-approval.v2"
+CAPABILITY_APPROVAL_SOURCE_SCHEMA = (
+    "muncho-production-capability-owner-approval-source.v2"
+)
 CAPABILITY_BROWSER_HOST_IDENTITY_SCHEMA = (
-    "muncho-production-capability-browser-host-identity.v1"
+    "muncho-production-capability-browser-host-identity.v2"
 )
 CAPABILITY_EXECUTION_HOST_IDENTITY_SCHEMA = (
-    "muncho-production-capability-execution-host-identity.v1"
+    "muncho-production-capability-execution-host-identity.v2"
 )
-CAPABILITY_LEASE_FRAME_SCHEMA = (
-    "muncho-production-capability-secret-lease-frame.v1"
+CAPABILITY_SERVICE_HOST_IDENTITY_SCHEMA = (
+    "muncho-production-capability-service-host-identity.v2"
 )
+CAPABILITY_LEASE_FRAME_SCHEMA = "muncho-production-capability-secret-lease-frame.v1"
 CAPABILITY_PLAN_INPUTS_SCHEMA = (
-    "muncho-production-capability-plan-publication-inputs.v1"
+    "muncho-production-capability-plan-publication-inputs.v2"
 )
 CAPABILITY_PLAN_PUBLICATION_AUTHORITY_SCHEMA = (
-    "muncho-production-capability-plan-publication-authority.v1"
+    "muncho-production-capability-plan-publication-authority.v2"
 )
-CAPABILITY_PLAN_PUBLICATION_SCOPE = (
-    "production_capability_canary_plan_publication"
+CAPABILITY_PLAN_PUBLICATION_SCOPE = "production_capability_canary_plan_publication"
+CAPABILITY_PLAN_PUBLICATION_RECEIPT_SCHEMA = (
+    "muncho-production-capability-plan-publication-receipt.v2"
 )
 CAPABILITY_PLAN_AUTHORING_CONTEXT_SCHEMA = (
-    "muncho-production-capability-plan-authoring-context.v1"
+    "muncho-production-capability-plan-authoring-context.v2"
+)
+CAPABILITY_PLAN_AUTHORING_REQUEST_SCHEMA = (
+    "muncho-production-capability-plan-authoring-request.v2"
 )
 CAPABILITY_PLAN_AUTHORING_RECEIPT_SCHEMA = (
-    "muncho-production-capability-plan-authoring-receipt.v1"
+    "muncho-production-capability-plan-authoring-receipt.v2"
 )
 FULL_CANARY_TERMINAL_RECEIPT_SCHEMA = (
     "muncho-full-canary-session-bound-owner-receipt.v1"
 )
 FULL_CANARY_STAGED_PLAN_SCHEMA = "muncho-full-canary-runtime-plan.v1"
-FULL_CANARY_STAGED_PLAN_PATH = (
-    "/etc/muncho/full-canary/staged/runtime-plan.json"
-)
+FULL_CANARY_STAGED_PLAN_PATH = "/etc/muncho/full-canary/staged/runtime-plan.json"
 CAPABILITY_FIXTURE_AUTHORITY_SCHEMA = (
-    "muncho-production-capability-canary-fixture-authority.v1"
+    "muncho-production-capability-canary-fixture-authority.v2"
 )
 CAPABILITY_FIXTURE_AUTHORING_RECEIPT_SCHEMA = (
-    "muncho-production-capability-canary-fixture-authoring-receipt.v1"
+    "muncho-production-capability-canary-fixture-authoring-receipt.v2"
 )
-CAPABILITY_FIXTURE_SSHSIG_NAMESPACE = (
-    "muncho-production-capability-canary-owner-v1"
+CAPABILITY_FIXTURE_SSHSIG_NAMESPACE = "muncho-production-capability-canary-owner-v1"
+API_ADMISSION_OWNER_CHALLENGE_WAIT_SCHEMA = (
+    "muncho-production-capability-api-admission-owner-challenge-wait.v1"
 )
+API_ADMISSION_OWNER_AUTHORITY_STAGE_REQUEST_SCHEMA = (
+    "muncho-production-capability-api-admission-owner-authority-stage-request.v1"
+)
+API_ADMISSION_OWNER_AUTHORITY_STAGE_SCHEMA = (
+    "muncho-production-capability-api-admission-owner-authority-stage.v1"
+)
+API_ADMISSION_OWNER_AUTHORITY_SCHEMA = (
+    "muncho-production-capability-api-admission-owner-authority.v1"
+)
+SIGNED_RECEIPT_SCHEMA = "muncho-production-capability-canary-signed-receipt.v1"
+PLAN_APPROVAL_SCHEMA = "muncho-production-capability-plan-approval.v2"
 CAPABILITY_PRODUCER_BOOTSTRAP_RECEIPT_SCHEMA = (
-    "muncho-production-capability-producer-foundation-owner-bootstrap.v1"
+    "muncho-production-capability-producer-foundation-owner-bootstrap.v2"
 )
 PRODUCTION_CANARY_PUBLIC_GUILD_ID = "1282725267068157972"
 PRODUCTION_CANARY_PUBLIC_CHANNEL_ID = "1526858760100909066"
 PRODUCTION_OWNER_USER_ID = "1279454038731264061"
+PRODUCTION_DISCORD_BOT_USER_ID = "1501976597455044801"
+CAPABILITY_PLANNED_IDENTITIES = {
+    "mac_ops_uid": 2104,
+    "mac_ops_gid": 2205,
+    "connector_uid": 2105,
+    "connector_gid": 2206,
+    "browser_uid": 2106,
+    "browser_gid": 2207,
+    "worker_uid": 2107,
+    "worker_gid": 2208,
+    "worker_client_gid": 2209,
+    "bitrix_operational_edge_uid": 2108,
+    "bitrix_operational_edge_gid": 2210,
+    "bitrix_operational_edge_client_gid": 2211,
+    "producer_business_edge_uid": 2109,
+    "producer_business_edge_gid": 2212,
+    "producer_canonical_writer_uid": 2110,
+    "producer_canonical_writer_gid": 2213,
+    "producer_discord_edge_uid": 2111,
+    "producer_discord_edge_gid": 2214,
+    "producer_gateway_observer_uid": 2112,
+    "producer_gateway_observer_gid": 2215,
+    "producer_receipt_writer_gid": 2216,
+}
 LOCKED_NONPUBLIC_CHANNEL_IDS = SKYVISION_LOCKED_NONPUBLIC_CHANNEL_IDS
 CAPABILITY_BITRIX_FOUNDATION_INPUTS_SCHEMA = (
-    "muncho-production-capability-bitrix-foundation-inputs.v1"
+    "muncho-production-capability-bitrix-foundation-inputs.v2"
 )
 CAPABILITY_BITRIX_FOUNDATION_AUTHORITY_SCHEMA = (
-    "muncho-production-capability-bitrix-foundation-authority.v1"
+    "muncho-production-capability-bitrix-foundation-authority.v2"
 )
-CAPABILITY_BITRIX_FOUNDATION_SCOPE = (
-    "production_capability_canary_bitrix_foundation"
+CAPABILITY_BITRIX_FOUNDATION_AUTHORING_REQUEST_SCHEMA = (
+    "muncho-production-capability-foundation-authoring-request.v1"
 )
+CAPABILITY_BITRIX_FOUNDATION_AUTHORING_CONTEXT_SCHEMA = (
+    "muncho-production-capability-foundation-authoring-context.v2"
+)
+CAPABILITY_BITRIX_FOUNDATION_AUTHORING_RECEIPT_SCHEMA = (
+    "muncho-production-capability-foundation-authoring-receipt.v1"
+)
+CAPABILITY_BITRIX_FOUNDATION_RECEIPT_SCHEMA = (
+    "muncho-production-capability-bitrix-foundation.v2"
+)
+CAPABILITY_BITRIX_FOUNDATION_SCOPE = "production_capability_canary_bitrix_foundation"
 CODEX_FRAME_MAGIC = b"MCO1"
 MAC_OPS_FRAME_MAGIC = b"MCG1"
 CONNECTOR_FRAME_MAGIC = b"MCD1"
@@ -177,11 +227,10 @@ _MAX_FIXTURE_AUTHORITY_BYTES = 512 * 1024
 _MAX_FULL_CANARY_TERMINAL_RECEIPT_BYTES = 2 * 1024 * 1024
 _MAX_PLAN_AUTHORING_PLAN_BYTES = 1024 * 1024
 _MAX_LEASE_SECONDS = 1_200
+CAPABILITY_MUTATION_MIN_RESERVE_SECONDS = 60
 _BITRIX_FOUNDATION_MAX_SECONDS = 1_200
 _FIXTURE_AUTHORITY_MAX_SECONDS = 900
-RELEASE_STORAGE_PREFLIGHT_SCHEMA = (
-    "muncho-capability-release-storage-preflight.v1"
-)
+RELEASE_STORAGE_PREFLIGHT_SCHEMA = "muncho-capability-release-storage-preflight.v1"
 RELEASE_BASE = "/opt/muncho-canary-releases"
 MINIMUM_PACKAGING_FREE_BYTES = 8 * 1024 * 1024 * 1024
 MAXIMUM_MANAGED_RELEASES = 64
@@ -281,67 +330,73 @@ def _digest(value: str, label: str) -> str:
     return value
 
 
-_PLAN_INPUT_IDENTITY_FIELDS = frozenset(
-    {
-        "mac_ops_uid",
-        "mac_ops_gid",
-        "connector_uid",
-        "connector_gid",
-        "bitrix_operational_edge_uid",
-        "bitrix_operational_edge_gid",
-        "bitrix_operational_edge_client_gid",
-        "browser_uid",
-        "browser_gid",
-        "worker_uid",
-        "worker_gid",
-        "worker_client_gid",
-    }
-)
-_PLAN_INPUT_DISCORD_FIELDS = frozenset(
-    {
-        "connector_bot_user_id",
-        "routeback_bot_user_id",
-        "allowed_guild_ids",
-        "allowed_channel_ids",
-        "allowed_user_ids",
-    }
-)
-_PLAN_INPUT_ARTIFACT_FIELDS = frozenset(
-    {
-        "browser_node_sha256",
-        "browser_wrapper_sha256",
-        "browser_native_sha256",
-        "browser_executable_sha256",
-        "agent_browser_config_sha256",
-        "worker_bwrap_sha256",
-        "worker_shell_sha256",
-        "runtime_dependency_manifest_sha256",
-        "bitrix_operational_edge_asset_manifest_sha256",
-        "bitrix_operational_edge_rendered_unit_sha256",
-        "bitrix_operational_edge_rendered_config_sha256",
-        "bitrix_operational_edge_rendered_trust_sha256",
-        "bitrix_operational_edge_identity_bootstrap_receipt_sha256",
-        "bitrix_operational_edge_receipt_public_key_id",
-        "bitrix_operational_edge_key_bootstrap_receipt_sha256",
-    }
-)
-_PLAN_AUTHORITY_FIELDS = frozenset(
-    {
-        "schema",
-        "scope",
-        "revision",
-        "full_canary_plan_sha256",
-        "plan_sha256",
-        "owner_subject_sha256",
-        "authority_kind",
-        "cryptographic_owner_proof",
-        "inputs",
-        "secret_material_recorded",
-        "secret_digest_recorded",
-        "semantic_content_recorded",
-        "authority_sha256",
-    }
-)
+_PLAN_INPUT_IDENTITY_FIELDS = frozenset({
+    "mac_ops_uid",
+    "mac_ops_gid",
+    "connector_uid",
+    "connector_gid",
+    "bitrix_operational_edge_uid",
+    "bitrix_operational_edge_gid",
+    "bitrix_operational_edge_client_gid",
+    "browser_uid",
+    "browser_gid",
+    "worker_uid",
+    "worker_gid",
+    "worker_client_gid",
+    "producer_business_edge_uid",
+    "producer_business_edge_gid",
+    "producer_canonical_writer_uid",
+    "producer_canonical_writer_gid",
+    "producer_discord_edge_uid",
+    "producer_discord_edge_gid",
+    "producer_gateway_observer_uid",
+    "producer_gateway_observer_gid",
+    "producer_receipt_writer_gid",
+})
+_PLAN_INPUT_DISCORD_FIELDS = frozenset({
+    "connector_bot_user_id",
+    "routeback_bot_user_id",
+    "allowed_guild_ids",
+    "allowed_channel_ids",
+    "allowed_user_ids",
+})
+_PLAN_INPUT_ARTIFACT_FIELDS = frozenset({
+    "browser_node_sha256",
+    "browser_wrapper_sha256",
+    "browser_native_sha256",
+    "browser_executable_sha256",
+    "agent_browser_config_sha256",
+    "worker_bwrap_sha256",
+    "worker_shell_sha256",
+    "runtime_dependency_manifest_sha256",
+    "bitrix_operational_edge_asset_manifest_sha256",
+    "bitrix_operational_edge_rendered_unit_sha256",
+    "bitrix_operational_edge_rendered_config_sha256",
+    "bitrix_operational_edge_rendered_trust_sha256",
+    "bitrix_operational_edge_identity_bootstrap_receipt_sha256",
+    "bitrix_operational_edge_receipt_public_key_id",
+    "bitrix_operational_edge_key_bootstrap_receipt_sha256",
+})
+_PLAN_AUTHORITY_FIELDS = frozenset({
+    "schema",
+    "scope",
+    "revision",
+    "full_canary_terminal_receipt",
+    "full_canary_terminal_receipt_sha256",
+    "original_full_canary_owner_approval_sha256",
+    "plan_authoring_context",
+    "plan_authoring_context_receipt_sha256",
+    "full_canary_plan_sha256",
+    "plan_sha256",
+    "owner_subject_sha256",
+    "authority_kind",
+    "cryptographic_owner_proof",
+    "inputs",
+    "secret_material_recorded",
+    "secret_digest_recorded",
+    "semantic_content_recorded",
+    "authority_sha256",
+})
 
 
 def _snowflake(value: Any, label: str) -> str:
@@ -367,6 +422,8 @@ def _snowflake_list(value: Any, label: str) -> list[str]:
 def validate_plan_publication_inputs(value: Any) -> Mapping[str, Any]:
     if not isinstance(value, Mapping) or set(value) != {
         "schema",
+        "full_canary_terminal_receipt",
+        "full_canary_terminal_receipt_sha256",
         "identities",
         "discord",
         "artifacts",
@@ -376,8 +433,12 @@ def validate_plan_publication_inputs(value: Any) -> Mapping[str, Any]:
     identities = value.get("identities")
     discord = value.get("discord")
     artifacts = value.get("artifacts")
+    terminal = value.get("full_canary_terminal_receipt")
     if (
         value.get("schema") != CAPABILITY_PLAN_INPUTS_SCHEMA
+        or not isinstance(terminal, Mapping)
+        or value.get("full_canary_terminal_receipt_sha256")
+        != terminal.get("receipt_sha256")
         or not isinstance(identities, Mapping)
         or set(identities) != _PLAN_INPUT_IDENTITY_FIELDS
         or not isinstance(discord, Mapping)
@@ -386,19 +447,29 @@ def validate_plan_publication_inputs(value: Any) -> Mapping[str, Any]:
         or set(artifacts) != _PLAN_INPUT_ARTIFACT_FIELDS
     ):
         raise ValueError("capability plan publication inputs are invalid")
+    try:
+        validate_full_canary_terminal_receipt(
+            terminal,
+            revision=str(terminal.get("release_sha", "")),
+        )
+    except OwnerLauncherError:
+        raise ValueError(
+            "capability plan publication terminal receipt is invalid"
+        ) from None
     if any(
-        type(identities[field]) is not int
-        or not 0 < identities[field] < (1 << 31)
+        type(identities[field]) is not int or not 0 < identities[field] < (1 << 31)
         for field in _PLAN_INPUT_IDENTITY_FIELDS
     ):
         raise ValueError("capability plan publication identities are invalid")
+    if dict(identities) != CAPABILITY_PLANNED_IDENTITIES:
+        raise ValueError("capability plan publication identities are not fixed")
     connector_bot = _snowflake(
         discord.get("connector_bot_user_id"), "connector bot identity"
     )
     routeback_bot = _snowflake(
         discord.get("routeback_bot_user_id"), "route-back bot identity"
     )
-    if connector_bot == routeback_bot:
+    if len({connector_bot, routeback_bot, PRODUCTION_DISCORD_BOT_USER_ID}) != 3:
         raise ValueError("capability canary bot identities are not distinct")
     for field in (
         "allowed_guild_ids",
@@ -408,31 +479,24 @@ def validate_plan_publication_inputs(value: Any) -> Mapping[str, Any]:
         _snowflake_list(discord.get(field), field)
     if (
         discord["allowed_guild_ids"] != [PRODUCTION_CANARY_PUBLIC_GUILD_ID]
-        or discord["allowed_channel_ids"]
-        != [PRODUCTION_CANARY_PUBLIC_CHANNEL_ID]
+        or discord["allowed_channel_ids"] != [PRODUCTION_CANARY_PUBLIC_CHANNEL_ID]
         or discord["allowed_user_ids"] != [PRODUCTION_OWNER_USER_ID]
-        or LOCKED_NONPUBLIC_CHANNEL_IDS.intersection(
-            discord["allowed_channel_ids"]
-        )
+        or LOCKED_NONPUBLIC_CHANNEL_IDS.intersection(discord["allowed_channel_ids"])
     ):
         raise ValueError("capability canary public Discord target is invalid")
     for field in _PLAN_INPUT_ARTIFACT_FIELDS:
         _digest(artifacts.get(field), field)
-    unsigned = {
-        key: item for key, item in value.items() if key != "inputs_sha256"
-    }
-    if value.get("inputs_sha256") != hashlib.sha256(
-        _canonical_bytes(unsigned)
-    ).hexdigest():
+    unsigned = {key: item for key, item in value.items() if key != "inputs_sha256"}
+    if (
+        value.get("inputs_sha256")
+        != hashlib.sha256(_canonical_bytes(unsigned)).hexdigest()
+    ):
         raise ValueError("capability plan publication inputs digest drifted")
     return dict(value)
 
 
 def read_plan_publication_inputs(path: Path) -> Mapping[str, Any]:
-    if (
-        not path.is_absolute()
-        or path != Path(os.path.normpath(os.fspath(path)))
-    ):
+    if not path.is_absolute() or path != Path(os.path.normpath(os.fspath(path))):
         raise OwnerLauncherError("capability_plan_input_path_invalid")
     try:
         raw = _stable_owner_file(path, maximum=_MAX_PLAN_INPUT_BYTES)
@@ -447,20 +511,26 @@ def read_plan_publication_inputs(path: Path) -> Mapping[str, Any]:
 def validate_bitrix_foundation_inputs(value: Any) -> Mapping[str, Any]:
     fields = {
         "schema",
+        "full_canary_terminal_receipt",
+        "full_canary_terminal_receipt_sha256",
         "service_uid",
         "service_gid",
         "socket_client_gid",
         "business_edge_uid",
+        "release_artifact_sha256",
         "asset_manifest_sha256",
         "inputs_sha256",
     }
     if not isinstance(value, Mapping) or set(value) != fields:
         raise ValueError("Bitrix foundation inputs are not exact")
+    terminal = value.get("full_canary_terminal_receipt")
     if (
         value.get("schema") != CAPABILITY_BITRIX_FOUNDATION_INPUTS_SCHEMA
+        or not isinstance(terminal, Mapping)
+        or value.get("full_canary_terminal_receipt_sha256")
+        != terminal.get("receipt_sha256")
         or any(
-            type(value.get(field)) is not int
-            or not 0 < value[field] < (1 << 31)
+            type(value.get(field)) is not int or not 0 < value[field] < (1 << 31)
             for field in (
                 "service_uid",
                 "service_gid",
@@ -468,22 +538,29 @@ def validate_bitrix_foundation_inputs(value: Any) -> Mapping[str, Any]:
                 "business_edge_uid",
             )
         )
-        or len(
-            {
-                value["service_uid"],
-                value["service_gid"],
-                value["socket_client_gid"],
-                value["business_edge_uid"],
-            }
-        )
+        or len({
+            value["service_uid"],
+            value["service_gid"],
+            value["socket_client_gid"],
+            value["business_edge_uid"],
+        })
         != 4
     ):
         raise ValueError("Bitrix foundation inputs are invalid")
+    try:
+        validate_full_canary_terminal_receipt(
+            terminal,
+            revision=str(terminal.get("release_sha", "")),
+        )
+    except OwnerLauncherError:
+        raise ValueError("Bitrix foundation terminal receipt is invalid") from None
     _digest(value.get("asset_manifest_sha256"), "Bitrix asset manifest")
+    _digest(value.get("release_artifact_sha256"), "release artifact")
     unsigned = {key: item for key, item in value.items() if key != "inputs_sha256"}
-    if value.get("inputs_sha256") != hashlib.sha256(
-        _canonical_bytes(unsigned)
-    ).hexdigest():
+    if (
+        value.get("inputs_sha256")
+        != hashlib.sha256(_canonical_bytes(unsigned)).hexdigest()
+    ):
         raise ValueError("Bitrix foundation inputs digest drifted")
     return dict(value)
 
@@ -506,17 +583,333 @@ def read_bitrix_foundation_inputs(path: Path) -> Mapping[str, Any]:
         ) from None
 
 
+def build_bitrix_foundation_authoring_request(
+    *,
+    revision: str,
+    terminal_receipt: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    terminal = validate_full_canary_terminal_receipt(
+        terminal_receipt,
+        revision=revision,
+    )
+    unsigned = {
+        "schema": CAPABILITY_BITRIX_FOUNDATION_AUTHORING_REQUEST_SCHEMA,
+        "revision": revision,
+        "full_canary_terminal_receipt": copy.deepcopy(dict(terminal)),
+        "full_canary_terminal_receipt_sha256": terminal["receipt_sha256"],
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+        "semantic_content_recorded": False,
+    }
+    return {
+        **unsigned,
+        "request_sha256": hashlib.sha256(_canonical_bytes(unsigned)).hexdigest(),
+    }
+
+
+def validate_bitrix_foundation_authoring_context(
+    value: Any,
+    *,
+    revision: str,
+    terminal_receipt: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    fields = {
+        "schema",
+        "revision",
+        "staged_plan_path",
+        "staged_plan_file_sha256",
+        "staged_plan_identity",
+        "full_canary_plan_sha256",
+        "release_artifact_sha256",
+        "full_canary_terminal_receipt",
+        "full_canary_terminal_receipt_sha256",
+        "original_full_canary_owner_approval_sha256",
+        "identities",
+        "identity_observation",
+        "asset_manifest_sha256",
+        "mutation_performed",
+        "secret_material_recorded",
+        "secret_digest_recorded",
+        "semantic_content_recorded",
+        "receipt_sha256",
+    }
+    if not isinstance(value, Mapping) or set(value) != fields:
+        raise OwnerLauncherError(
+            "capability_bitrix_foundation_authoring_context_invalid"
+        )
+    raw = dict(value)
+    unsigned = {key: item for key, item in raw.items() if key != "receipt_sha256"}
+    identity = raw.get("staged_plan_identity")
+    identities = raw.get("identities")
+    identity_observation = raw.get("identity_observation")
+    if (
+        raw.get("schema") != CAPABILITY_BITRIX_FOUNDATION_AUTHORING_CONTEXT_SCHEMA
+        or raw.get("revision") != revision
+        or raw.get("staged_plan_path") != FULL_CANARY_STAGED_PLAN_PATH
+        or raw.get("full_canary_terminal_receipt") != terminal_receipt
+        or raw.get("full_canary_terminal_receipt_sha256")
+        != terminal_receipt.get("receipt_sha256")
+        or raw.get("original_full_canary_owner_approval_sha256")
+        != terminal_receipt.get("owner_approval_sha256")
+        or raw.get("full_canary_plan_sha256")
+        != terminal_receipt.get("full_canary_plan_sha256")
+        or identities
+        != {
+            "service_uid": 2108,
+            "service_gid": 2210,
+            "socket_client_gid": 2211,
+            "business_edge_uid": 2104,
+        }
+        or not isinstance(identity_observation, Mapping)
+        or identity_observation.get("service_uid") != 2108
+        or identity_observation.get("service_gid") != 2210
+        or identity_observation.get("socket_client_gid") != 2211
+        or identity_observation.get("state")
+        not in {
+            "absent_create_only_slot",
+            "service_group_present_create_only_slot",
+            "groups_present_user_absent_create_only_slot",
+            "present_exact",
+        }
+        or not isinstance(identity, Mapping)
+        or set(identity)
+        != {"device", "inode", "uid", "gid", "mode", "size", "mtime_ns"}
+        or any(
+            type(identity.get(field)) is not int or identity[field] < 0
+            for field in ("device", "inode", "uid", "gid", "size", "mtime_ns")
+        )
+        or identity.get("uid") != 0
+        or identity.get("gid") != 0
+        or identity.get("mode") != "0400"
+        or identity.get("size", 0) <= 0
+        or raw.get("mutation_performed") is not False
+        or raw.get("secret_material_recorded") is not False
+        or raw.get("secret_digest_recorded") is not False
+        or raw.get("semantic_content_recorded") is not False
+        or raw.get("receipt_sha256")
+        != hashlib.sha256(_canonical_bytes(unsigned)).hexdigest()
+    ):
+        raise OwnerLauncherError(
+            "capability_bitrix_foundation_authoring_context_invalid"
+        )
+    for field in (
+        "staged_plan_file_sha256",
+        "full_canary_plan_sha256",
+        "release_artifact_sha256",
+        "full_canary_terminal_receipt_sha256",
+        "original_full_canary_owner_approval_sha256",
+        "asset_manifest_sha256",
+        "receipt_sha256",
+    ):
+        try:
+            _digest(raw.get(field), field)
+        except ValueError:
+            raise OwnerLauncherError(
+                "capability_bitrix_foundation_authoring_context_invalid"
+            ) from None
+    return raw
+
+
+def _bitrix_foundation_inputs_from_context(
+    context: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    identities = context["identities"]
+    unsigned = {
+        "schema": CAPABILITY_BITRIX_FOUNDATION_INPUTS_SCHEMA,
+        "full_canary_terminal_receipt": copy.deepcopy(
+            dict(context["full_canary_terminal_receipt"])
+        ),
+        "full_canary_terminal_receipt_sha256": context[
+            "full_canary_terminal_receipt_sha256"
+        ],
+        "service_uid": identities["service_uid"],
+        "service_gid": identities["service_gid"],
+        "socket_client_gid": identities["socket_client_gid"],
+        "business_edge_uid": identities["business_edge_uid"],
+        "release_artifact_sha256": context["release_artifact_sha256"],
+        "asset_manifest_sha256": context["asset_manifest_sha256"],
+    }
+    return validate_bitrix_foundation_inputs({
+        **unsigned,
+        "inputs_sha256": hashlib.sha256(_canonical_bytes(unsigned)).hexdigest(),
+    })
+
+
+def author_bitrix_foundation_inputs(
+    transport: "CapabilityCanaryTransport",
+    *,
+    revision: str,
+    terminal_receipt_file: Path,
+    output_file: Path,
+) -> Mapping[str, Any]:
+    terminal = validate_full_canary_terminal_receipt(
+        _read_owner_canonical_json(
+            terminal_receipt_file,
+            maximum=_MAX_FULL_CANARY_TERMINAL_RECEIPT_BYTES,
+            label="full-canary terminal receipt",
+        ),
+        revision=revision,
+    )
+    request = build_bitrix_foundation_authoring_request(
+        revision=revision,
+        terminal_receipt=terminal,
+    )
+    context = validate_bitrix_foundation_authoring_context(
+        transport.invoke(
+            revision,
+            "collect-foundation-authoring-context",
+            frame=_canonical_bytes(request),
+        ),
+        revision=revision,
+        terminal_receipt=terminal,
+    )
+    inputs = _bitrix_foundation_inputs_from_context(context)
+    payload = _canonical_bytes(inputs)
+    file_sha256 = _write_owner_file_no_replace(output_file, payload)
+    unsigned = {
+        "schema": CAPABILITY_BITRIX_FOUNDATION_AUTHORING_RECEIPT_SCHEMA,
+        "revision": revision,
+        "full_canary_terminal_receipt": copy.deepcopy(dict(terminal)),
+        "full_canary_terminal_receipt_sha256": terminal["receipt_sha256"],
+        "original_full_canary_owner_approval_sha256": terminal["owner_approval_sha256"],
+        "full_canary_plan_sha256": terminal["full_canary_plan_sha256"],
+        "release_artifact_sha256": context["release_artifact_sha256"],
+        "foundation_authoring_context": copy.deepcopy(dict(context)),
+        "foundation_authoring_context_receipt_sha256": context["receipt_sha256"],
+        "foundation_inputs_sha256": inputs["inputs_sha256"],
+        "output_file": str(output_file),
+        "output_file_sha256": file_sha256,
+        "output_file_mode": "0600",
+        "mutation_scope": "local_owner_file_create_only",
+        "cloud_mutation_performed": False,
+        "secret_material_recorded": False,
+        "semantic_content_recorded": False,
+    }
+    return {
+        **unsigned,
+        "receipt_sha256": hashlib.sha256(_canonical_bytes(unsigned)).hexdigest(),
+    }
+
+
+_BITRIX_FOUNDATION_AUTHORING_RECEIPT_FIELDS = frozenset({
+    "schema",
+    "revision",
+    "full_canary_terminal_receipt",
+    "full_canary_terminal_receipt_sha256",
+    "original_full_canary_owner_approval_sha256",
+    "full_canary_plan_sha256",
+    "release_artifact_sha256",
+    "foundation_authoring_context",
+    "foundation_authoring_context_receipt_sha256",
+    "foundation_inputs_sha256",
+    "output_file",
+    "output_file_sha256",
+    "output_file_mode",
+    "mutation_scope",
+    "cloud_mutation_performed",
+    "secret_material_recorded",
+    "semantic_content_recorded",
+    "receipt_sha256",
+})
+
+
+def validate_bitrix_foundation_authoring_receipt(
+    value: Any,
+    *,
+    revision: str,
+    terminal_receipt: Mapping[str, Any],
+    foundation_file: Path | None = None,
+) -> Mapping[str, Any]:
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != _BITRIX_FOUNDATION_AUTHORING_RECEIPT_FIELDS
+    ):
+        raise OwnerLauncherError(
+            "capability_bitrix_foundation_authoring_receipt_invalid"
+        )
+    raw = dict(value)
+    unsigned = {key: item for key, item in raw.items() if key != "receipt_sha256"}
+    if (
+        raw.get("schema") != CAPABILITY_BITRIX_FOUNDATION_AUTHORING_RECEIPT_SCHEMA
+        or raw.get("revision") != revision
+        or raw.get("full_canary_terminal_receipt") != terminal_receipt
+        or raw.get("full_canary_terminal_receipt_sha256")
+        != terminal_receipt.get("receipt_sha256")
+        or raw.get("original_full_canary_owner_approval_sha256")
+        != terminal_receipt.get("owner_approval_sha256")
+        or raw.get("full_canary_plan_sha256")
+        != terminal_receipt.get("full_canary_plan_sha256")
+        or raw.get("output_file_mode") != "0600"
+        or raw.get("mutation_scope") != "local_owner_file_create_only"
+        or raw.get("cloud_mutation_performed") is not False
+        or raw.get("secret_material_recorded") is not False
+        or raw.get("semantic_content_recorded") is not False
+        or raw.get("receipt_sha256")
+        != hashlib.sha256(_canonical_bytes(unsigned)).hexdigest()
+    ):
+        raise OwnerLauncherError(
+            "capability_bitrix_foundation_authoring_receipt_invalid"
+        )
+    context = validate_bitrix_foundation_authoring_context(
+        raw.get("foundation_authoring_context"),
+        revision=revision,
+        terminal_receipt=terminal_receipt,
+    )
+    for field in (
+        "full_canary_terminal_receipt_sha256",
+        "original_full_canary_owner_approval_sha256",
+        "full_canary_plan_sha256",
+        "release_artifact_sha256",
+        "foundation_authoring_context_receipt_sha256",
+        "foundation_inputs_sha256",
+        "output_file_sha256",
+        "receipt_sha256",
+    ):
+        try:
+            _digest(raw.get(field), field)
+        except ValueError:
+            raise OwnerLauncherError(
+                "capability_bitrix_foundation_authoring_receipt_invalid"
+            ) from None
+    if (
+        raw["release_artifact_sha256"] != context["release_artifact_sha256"]
+        or raw["foundation_authoring_context_receipt_sha256"]
+        != context["receipt_sha256"]
+    ):
+        raise OwnerLauncherError(
+            "capability_bitrix_foundation_authoring_receipt_invalid"
+        )
+    if foundation_file is not None:
+        inputs = read_bitrix_foundation_inputs(foundation_file)
+        payload = _canonical_bytes(inputs)
+        if (
+            raw.get("output_file") != str(foundation_file)
+            or raw.get("output_file_sha256") != hashlib.sha256(payload).hexdigest()
+            or raw.get("foundation_inputs_sha256") != inputs.get("inputs_sha256")
+            or inputs.get("full_canary_terminal_receipt") != terminal_receipt
+            or inputs.get("release_artifact_sha256")
+            != context.get("release_artifact_sha256")
+        ):
+            raise OwnerLauncherError(
+                "capability_bitrix_foundation_authoring_receipt_invalid"
+            )
+    return raw
+
+
 def build_bitrix_foundation_authority(
     *,
     revision: str,
-    full_canary_plan_sha256: str,
-    release_artifact_sha256: str,
     owner_subject_sha256: str,
     inputs: Mapping[str, Any],
+    foundation_authoring_context_receipt_sha256: str,
     now_unix: int | None = None,
     ttl_seconds: int = 900,
 ) -> Mapping[str, Any]:
     validated = validate_bitrix_foundation_inputs(inputs)
+    terminal = validate_full_canary_terminal_receipt(
+        validated["full_canary_terminal_receipt"],
+        revision=revision,
+    )
     issued = int(time.time()) if now_unix is None else now_unix
     if (
         _REVISION_RE.fullmatch(revision or "") is None
@@ -529,13 +922,16 @@ def build_bitrix_foundation_authority(
         "schema": CAPABILITY_BITRIX_FOUNDATION_AUTHORITY_SCHEMA,
         "scope": CAPABILITY_BITRIX_FOUNDATION_SCOPE,
         "revision": revision,
-        "full_canary_plan_sha256": _digest(
-            full_canary_plan_sha256,
-            "full-canary plan",
-        ),
+        "full_canary_terminal_receipt": copy.deepcopy(dict(terminal)),
+        "full_canary_terminal_receipt_sha256": terminal["receipt_sha256"],
+        "original_full_canary_owner_approval_sha256": terminal["owner_approval_sha256"],
+        "full_canary_plan_sha256": terminal["full_canary_plan_sha256"],
         "release_artifact_sha256": _digest(
-            release_artifact_sha256,
-            "release artifact",
+            validated["release_artifact_sha256"], "release artifact"
+        ),
+        "foundation_authoring_context_receipt_sha256": _digest(
+            foundation_authoring_context_receipt_sha256,
+            "foundation authoring context receipt",
         ),
         "owner_subject_sha256": _digest(owner_subject_sha256, "owner subject"),
         "authority_kind": "trusted_gcloud_owner_explicit_foundation_digest",
@@ -564,21 +960,46 @@ def build_bitrix_foundation_authority(
 def build_plan_publication_authority(
     *,
     revision: str,
-    full_canary_plan_sha256: str,
     plan_sha256: str,
     owner_subject_sha256: str,
     inputs: Mapping[str, Any],
+    plan_authoring_context: Mapping[str, Any],
 ) -> Mapping[str, Any]:
     validated = validate_plan_publication_inputs(inputs)
     if _REVISION_RE.fullmatch(revision or "") is None:
         raise ValueError("capability plan revision is invalid")
+    terminal = validate_full_canary_terminal_receipt(
+        validated["full_canary_terminal_receipt"],
+        revision=revision,
+    )
+    context_unsigned = {
+        key: item
+        for key, item in plan_authoring_context.items()
+        if key != "receipt_sha256"
+    }
+    if (
+        plan_authoring_context.get("schema") != CAPABILITY_PLAN_AUTHORING_CONTEXT_SCHEMA
+        or plan_authoring_context.get("revision") != revision
+        or plan_authoring_context.get("full_canary_terminal_receipt") != terminal
+        or plan_authoring_context.get("plan_inputs") != validated
+        or plan_authoring_context.get("capability_plan_sha256") != plan_sha256
+        or plan_authoring_context.get("receipt_sha256")
+        != hashlib.sha256(_canonical_bytes(context_unsigned)).hexdigest()
+    ):
+        raise ValueError("capability plan authoring context is invalid")
     unsigned = {
         "schema": CAPABILITY_PLAN_PUBLICATION_AUTHORITY_SCHEMA,
         "scope": CAPABILITY_PLAN_PUBLICATION_SCOPE,
         "revision": revision,
-        "full_canary_plan_sha256": _digest(
-            full_canary_plan_sha256, "full-canary plan"
+        "full_canary_terminal_receipt": copy.deepcopy(dict(terminal)),
+        "full_canary_terminal_receipt_sha256": terminal["receipt_sha256"],
+        "original_full_canary_owner_approval_sha256": terminal["owner_approval_sha256"],
+        "plan_authoring_context": copy.deepcopy(dict(plan_authoring_context)),
+        "plan_authoring_context_receipt_sha256": _digest(
+            plan_authoring_context.get("receipt_sha256"),
+            "plan authoring context",
         ),
+        "full_canary_plan_sha256": terminal["full_canary_plan_sha256"],
         "plan_sha256": _digest(plan_sha256, "capability plan"),
         "owner_subject_sha256": _digest(owner_subject_sha256, "owner subject"),
         "authority_kind": "trusted_gcloud_owner_explicit_plan_digest",
@@ -603,6 +1024,7 @@ def build_plan_publication_authority(
 
 def build_plan_publication_inputs(
     *,
+    terminal_receipt: Mapping[str, Any],
     identities: Mapping[str, Any],
     connector_bot_user_id: str,
     routeback_bot_user_id: str,
@@ -612,6 +1034,8 @@ def build_plan_publication_inputs(
 
     unsigned = {
         "schema": CAPABILITY_PLAN_INPUTS_SCHEMA,
+        "full_canary_terminal_receipt": copy.deepcopy(dict(terminal_receipt)),
+        "full_canary_terminal_receipt_sha256": terminal_receipt["receipt_sha256"],
         "identities": dict(identities),
         "discord": {
             "connector_bot_user_id": connector_bot_user_id,
@@ -622,14 +1046,52 @@ def build_plan_publication_inputs(
         },
         "artifacts": dict(artifacts),
     }
-    return validate_plan_publication_inputs(
-        {
-            **unsigned,
-            "inputs_sha256": hashlib.sha256(
-                _canonical_bytes(unsigned)
-            ).hexdigest(),
-        }
+    return validate_plan_publication_inputs({
+        **unsigned,
+        "inputs_sha256": hashlib.sha256(_canonical_bytes(unsigned)).hexdigest(),
+    })
+
+
+def build_plan_authoring_request(
+    *,
+    revision: str,
+    terminal_receipt: Mapping[str, Any],
+    foundation_authoring_receipt: Mapping[str, Any],
+    bitrix_foundation_receipt: Mapping[str, Any],
+    connector_bot_user_id: str,
+    routeback_bot_user_id: str,
+) -> Mapping[str, Any]:
+    terminal = validate_full_canary_terminal_receipt(
+        terminal_receipt,
+        revision=revision,
     )
+    connector = _snowflake(connector_bot_user_id, "connector bot identity")
+    routeback = _snowflake(routeback_bot_user_id, "route-back bot identity")
+    if len({connector, routeback, PRODUCTION_DISCORD_BOT_USER_ID}) != 3:
+        raise ValueError("capability canary bot identities are not distinct")
+    unsigned = {
+        "schema": CAPABILITY_PLAN_AUTHORING_REQUEST_SCHEMA,
+        "revision": revision,
+        "full_canary_terminal_receipt": copy.deepcopy(dict(terminal)),
+        "full_canary_terminal_receipt_sha256": terminal["receipt_sha256"],
+        "foundation_authoring_context": copy.deepcopy(
+            dict(foundation_authoring_receipt["foundation_authoring_context"])
+        ),
+        "foundation_authoring_context_receipt_sha256": (
+            foundation_authoring_receipt["foundation_authoring_context_receipt_sha256"]
+        ),
+        "bitrix_foundation_receipt": copy.deepcopy(dict(bitrix_foundation_receipt)),
+        "bitrix_foundation_receipt_sha256": bitrix_foundation_receipt["receipt_sha256"],
+        "connector_bot_user_id": connector,
+        "routeback_bot_user_id": routeback,
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+        "semantic_content_recorded": False,
+    }
+    return {
+        **unsigned,
+        "request_sha256": hashlib.sha256(_canonical_bytes(unsigned)).hexdigest(),
+    }
 
 
 def validate_plan_authoring_context(
@@ -637,20 +1099,31 @@ def validate_plan_authoring_context(
     *,
     revision: str,
     terminal_receipt: Mapping[str, Any],
-    inputs: Mapping[str, Any],
+    foundation_authoring_receipt: Mapping[str, Any],
+    bitrix_foundation_receipt: Mapping[str, Any],
 ) -> Mapping[str, Any]:
     fields = {
         "schema",
         "revision",
         "staged_plan_path",
-        "staged_plan_b64",
-        "staged_plan_bytes",
         "staged_plan_file_sha256",
         "staged_plan_identity",
         "full_canary_plan_sha256",
+        "full_canary_terminal_receipt",
+        "full_canary_terminal_receipt_sha256",
+        "original_full_canary_owner_approval_sha256",
+        "foundation_authoring_context",
+        "foundation_authoring_context_receipt_sha256",
+        "bitrix_foundation_receipt",
+        "bitrix_foundation_receipt_sha256",
+        "host_identity_observations",
+        "plan_inputs",
         "capability_inputs_sha256",
         "capability_plan_sha256",
         "mutation_performed",
+        "secret_material_recorded",
+        "secret_digest_recorded",
+        "semantic_content_recorded",
         "receipt_sha256",
     }
     if not isinstance(value, Mapping) or set(value) != fields:
@@ -658,17 +1131,52 @@ def validate_plan_authoring_context(
     raw = dict(value)
     unsigned = {key: item for key, item in raw.items() if key != "receipt_sha256"}
     identity = raw.get("staged_plan_identity")
+    host_identities = raw.get("host_identity_observations")
+    foundation_context = foundation_authoring_receipt.get(
+        "foundation_authoring_context"
+    )
     if (
         raw.get("schema") != CAPABILITY_PLAN_AUTHORING_CONTEXT_SCHEMA
         or raw.get("revision") != revision
         or raw.get("staged_plan_path") != FULL_CANARY_STAGED_PLAN_PATH
         or raw.get("full_canary_plan_sha256")
         != terminal_receipt.get("full_canary_plan_sha256")
-        or raw.get("capability_inputs_sha256") != inputs.get("inputs_sha256")
+        or raw.get("full_canary_terminal_receipt") != terminal_receipt
+        or raw.get("full_canary_terminal_receipt_sha256")
+        != terminal_receipt.get("receipt_sha256")
+        or raw.get("original_full_canary_owner_approval_sha256")
+        != terminal_receipt.get("owner_approval_sha256")
+        or raw.get("foundation_authoring_context") != foundation_context
+        or raw.get("foundation_authoring_context_receipt_sha256")
+        != foundation_authoring_receipt.get(
+            "foundation_authoring_context_receipt_sha256"
+        )
+        or raw.get("bitrix_foundation_receipt") != bitrix_foundation_receipt
+        or raw.get("bitrix_foundation_receipt_sha256")
+        != bitrix_foundation_receipt.get("receipt_sha256")
+        or not isinstance(host_identities, Mapping)
+        or set(host_identities)
+        != {"browser", "execution", "mac_ops", "connector", "producer"}
+        or any(
+            not isinstance(host_identities.get(name), Mapping)
+            for name in (
+                "browser",
+                "execution",
+                "mac_ops",
+                "connector",
+                "producer",
+            )
+        )
+        or host_identities["producer"].get("schema")
+        != "muncho-production-capability-producer-host-identity.v2"
+        or host_identities["producer"].get("plan_sha256")
+        != raw.get("capability_plan_sha256")
+        or host_identities["producer"].get("persistent_supplementary_memberships")
+        is not False
         or raw.get("mutation_performed") is not False
-        or not isinstance(raw.get("staged_plan_b64"), str)
-        or type(raw.get("staged_plan_bytes")) is not int
-        or not 0 < raw["staged_plan_bytes"] <= _MAX_PLAN_AUTHORING_PLAN_BYTES
+        or raw.get("secret_material_recorded") is not False
+        or raw.get("secret_digest_recorded") is not False
+        or raw.get("semantic_content_recorded") is not False
         or not isinstance(identity, Mapping)
         or set(identity)
         != {"device", "inode", "uid", "gid", "mode", "size", "mtime_ns"}
@@ -679,40 +1187,42 @@ def validate_plan_authoring_context(
         or identity.get("uid") != 0
         or identity.get("gid") != 0
         or identity.get("mode") != "0400"
-        or identity.get("size") != raw.get("staged_plan_bytes")
+        or not 0 < identity.get("size", 0) <= _MAX_PLAN_AUTHORING_PLAN_BYTES
+        or not isinstance(foundation_context, Mapping)
+        or raw.get("staged_plan_file_sha256")
+        != foundation_context.get("staged_plan_file_sha256")
+        or identity != foundation_context.get("staged_plan_identity")
         or raw.get("receipt_sha256")
         != hashlib.sha256(_canonical_bytes(unsigned)).hexdigest()
     ):
         raise OwnerLauncherError("capability_plan_authoring_context_invalid")
     try:
-        plan_payload = base64.b64decode(
-            raw["staged_plan_b64"].encode("ascii"),
-            validate=True,
-        )
-        plan_value = _decode_json(plan_payload, label="staged full-canary plan")
-    except (ValueError, UnicodeError):
+        inputs = validate_plan_publication_inputs(raw.get("plan_inputs"))
+    except ValueError:
         raise OwnerLauncherError("capability_plan_authoring_context_invalid") from None
-    plan_unsigned = {
-        key: item
-        for key, item in plan_value.items()
-        if key != "full_canary_plan_sha256"
-    }
-    if (
-        len(plan_payload) != raw["staged_plan_bytes"]
-        or plan_payload != _canonical_bytes(plan_value)
-        or hashlib.sha256(plan_payload).hexdigest()
-        != raw.get("staged_plan_file_sha256")
-        or plan_value.get("schema") != FULL_CANARY_STAGED_PLAN_SCHEMA
-        or plan_value.get("revision") != revision
-        or plan_value.get("full_canary_plan_sha256")
-        != raw.get("full_canary_plan_sha256")
-        or hashlib.sha256(_canonical_bytes(plan_unsigned)).hexdigest()
-        != raw.get("full_canary_plan_sha256")
-    ):
+    if inputs.get("full_canary_terminal_receipt") != terminal_receipt or raw.get(
+        "capability_inputs_sha256"
+    ) != inputs.get("inputs_sha256"):
         raise OwnerLauncherError("capability_plan_authoring_context_invalid")
     try:
         _digest(raw.get("staged_plan_file_sha256"), "staged full-canary plan")
         _digest(raw.get("capability_plan_sha256"), "capability plan")
+        _digest(
+            raw.get("full_canary_terminal_receipt_sha256"),
+            "full-canary terminal receipt",
+        )
+        _digest(
+            raw.get("original_full_canary_owner_approval_sha256"),
+            "original full-canary owner approval",
+        )
+        _digest(
+            raw.get("foundation_authoring_context_receipt_sha256"),
+            "foundation authoring context",
+        )
+        _digest(
+            raw.get("bitrix_foundation_receipt_sha256"),
+            "Bitrix foundation receipt",
+        )
         _digest(raw.get("receipt_sha256"), "plan authoring context")
     except ValueError:
         raise OwnerLauncherError("capability_plan_authoring_context_invalid") from None
@@ -724,11 +1234,11 @@ def author_capability_plan_inputs(
     *,
     revision: str,
     terminal_receipt_file: Path,
+    foundation_authoring_receipt_file: Path,
+    bitrix_foundation_receipt_file: Path,
     output_file: Path,
-    identities: Mapping[str, Any],
     connector_bot_user_id: str,
     routeback_bot_user_id: str,
-    artifacts: Mapping[str, Any],
 ) -> Mapping[str, Any]:
     terminal = validate_full_canary_terminal_receipt(
         _read_owner_canonical_json(
@@ -738,31 +1248,61 @@ def author_capability_plan_inputs(
         ),
         revision=revision,
     )
-    inputs = build_plan_publication_inputs(
-        identities=identities,
+    authoring = validate_bitrix_foundation_authoring_receipt(
+        _read_owner_canonical_json(
+            foundation_authoring_receipt_file,
+            maximum=_MAX_FULL_CANARY_TERMINAL_RECEIPT_BYTES,
+            label="Bitrix foundation authoring receipt",
+        ),
+        revision=revision,
+        terminal_receipt=terminal,
+    )
+    bitrix = validate_bitrix_foundation_receipt(
+        _read_owner_canonical_json(
+            bitrix_foundation_receipt_file,
+            maximum=_MAX_FULL_CANARY_TERMINAL_RECEIPT_BYTES,
+            label="Bitrix foundation bootstrap receipt",
+        ),
+        revision=revision,
+        terminal_receipt=terminal,
+        authoring_receipt=authoring,
+    )
+    request = build_plan_authoring_request(
+        revision=revision,
+        terminal_receipt=terminal,
+        foundation_authoring_receipt=authoring,
+        bitrix_foundation_receipt=bitrix,
         connector_bot_user_id=connector_bot_user_id,
         routeback_bot_user_id=routeback_bot_user_id,
-        artifacts=artifacts,
     )
     context = validate_plan_authoring_context(
         transport.invoke(
             revision,
             "collect-plan-authoring-context",
-            frame=_canonical_bytes(inputs),
+            frame=_canonical_bytes(request),
         ),
         revision=revision,
         terminal_receipt=terminal,
-        inputs=inputs,
+        foundation_authoring_receipt=authoring,
+        bitrix_foundation_receipt=bitrix,
     )
+    inputs = context["plan_inputs"]
     payload = _canonical_bytes(inputs)
     file_sha256 = _write_owner_file_no_replace(output_file, payload)
     unsigned = {
         "schema": CAPABILITY_PLAN_AUTHORING_RECEIPT_SCHEMA,
         "revision": revision,
+        "full_canary_terminal_receipt": copy.deepcopy(dict(terminal)),
         "full_canary_terminal_receipt_sha256": terminal["receipt_sha256"],
+        "original_full_canary_owner_approval_sha256": terminal["owner_approval_sha256"],
         "full_canary_plan_sha256": terminal["full_canary_plan_sha256"],
+        "foundation_authoring_context_receipt_sha256": authoring[
+            "foundation_authoring_context_receipt_sha256"
+        ],
+        "bitrix_foundation_receipt_sha256": bitrix["receipt_sha256"],
+        "plan_authoring_context": copy.deepcopy(dict(context)),
+        "plan_authoring_context_receipt_sha256": context["receipt_sha256"],
         "staged_plan_file_sha256": context["staged_plan_file_sha256"],
-        "collector_receipt_sha256": context["receipt_sha256"],
         "capability_inputs_sha256": inputs["inputs_sha256"],
         "capability_plan_sha256": context["capability_plan_sha256"],
         "output_file": str(output_file),
@@ -842,7 +1382,69 @@ def build_secret_lease_frame(
         + encoded
         + payload
     )
-_REMOTE_STORAGE_PREFLIGHT = r'''
+
+
+def _require_expiry_reserve(
+    expires_at_unix: int,
+    *,
+    label: str,
+    now_unix: int | None = None,
+    minimum_seconds: int = CAPABILITY_MUTATION_MIN_RESERVE_SECONDS,
+) -> None:
+    now = int(time.time()) if now_unix is None else now_unix
+    if (
+        type(expires_at_unix) is not int
+        or type(now) is not int
+        or type(minimum_seconds) is not int
+        or minimum_seconds < 1
+        or not now < expires_at_unix
+        or expires_at_unix - now < minimum_seconds
+    ):
+        raise OwnerLauncherError(f"{label}_expiry_reserve_insufficient")
+
+
+def _secret_lease_frame_expiry(frame: bytes | bytearray) -> int:
+    raw = memoryview(frame)
+    if len(raw) < 12 or bytes(raw[:4]) not in set(_SECRET_LEASE_MAGIC_BY_KIND.values()):
+        raise OwnerLauncherError("capability_secret_lease_frame_invalid")
+    metadata_bytes, secret_bytes = struct.unpack(">II", raw[4:12])
+    if (
+        metadata_bytes <= 0
+        or secret_bytes <= 0
+        or 12 + metadata_bytes + secret_bytes != len(raw)
+    ):
+        raise OwnerLauncherError("capability_secret_lease_frame_invalid")
+    encoded = bytes(raw[12 : 12 + metadata_bytes])
+    try:
+        metadata = json.loads(encoded)
+    except Exception as exc:
+        raise OwnerLauncherError("capability_secret_lease_frame_invalid") from exc
+    if (
+        not isinstance(metadata, Mapping)
+        or encoded != _canonical_bytes(metadata)
+        or metadata.get("schema") != CAPABILITY_LEASE_FRAME_SCHEMA
+    ):
+        raise OwnerLauncherError("capability_secret_lease_frame_invalid")
+    expires = metadata.get("expires_at_unix")
+    if type(expires) is not int:
+        raise OwnerLauncherError("capability_secret_lease_frame_invalid")
+    return expires
+
+
+def _invoke_secret_lease(
+    transport: CapabilityCanaryTransport,
+    revision: str,
+    action: str,
+    frame: bytearray,
+) -> Mapping[str, Any]:
+    _require_expiry_reserve(
+        _secret_lease_frame_expiry(frame),
+        label="capability_secret_lease",
+    )
+    return transport.invoke(revision, action, frame=frame)
+
+
+_REMOTE_STORAGE_PREFLIGHT = r"""
 import hashlib,json,os,re,stat,sys
 base="/opt/muncho-canary-releases"
 revision=sys.argv[1]
@@ -904,55 +1506,7 @@ if not blocker and not packaging_allowed:
 unsigned={"schema":"muncho-capability-release-storage-preflight.v1","ok":packaging_allowed,"revision":revision,"release_base":base_record,"capacity":{"available_bytes":available,"minimum_packaging_free_bytes":minimum,"shortfall_bytes":max(0,minimum-available)},"retention":{"maximum_managed_releases":maximum,"protect_target_release":True,"protect_newest_rollback_release":True},"protected_release_paths":protected,"cleanup_candidates":candidates,"cleanup_mutation_performed":False,"cleanup_requires_fresh_owner_approval":True,"arbitrary_path_cleanup_allowed":False,"blocker":blocker}
 result={**unsigned,"receipt_sha256":hashlib.sha256(canonical(unsigned)).hexdigest()}
 sys.stdout.buffer.write(canonical(result)+b"\n")
-'''.strip()
-
-_REMOTE_PLAN_AUTHORING_CONTEXT = r'''
-import base64,hashlib,json,os,stat,sys
-from gateway.canonical_full_canary_runtime import FullCanaryPlan
-from gateway.canonical_capability_canary_runtime import build_capability_plan
-path="/etc/muncho/full-canary/staged/runtime-plan.json"
-revision=sys.argv[1]
-canonical=lambda value:json.dumps(value,ensure_ascii=True,sort_keys=True,separators=(",",":"),allow_nan=False).encode("ascii")
-def pairs(items):
-    value={}
-    for key,item in items:
-        if key in value: raise ValueError("duplicate key")
-        value[key]=item
-    return value
-def decode(raw):
-    return json.loads(raw.decode("utf-8","strict"),object_pairs_hook=pairs,parse_constant=lambda value:(_ for _ in ()).throw(ValueError(value)))
-input_raw=sys.stdin.buffer.read(524289)
-if not input_raw or len(input_raw)>524288: raise ValueError("plan inputs oversized")
-inputs=decode(input_raw)
-if input_raw!=canonical(inputs) or set(inputs)!={"schema","identities","discord","artifacts","inputs_sha256"} or inputs.get("schema")!="muncho-production-capability-plan-publication-inputs.v1": raise ValueError("plan inputs invalid")
-input_unsigned={key:item for key,item in inputs.items() if key!="inputs_sha256"}
-if inputs.get("inputs_sha256")!=hashlib.sha256(canonical(input_unsigned)).hexdigest(): raise ValueError("plan inputs digest invalid")
-before=os.lstat(path)
-if not stat.S_ISREG(before.st_mode) or stat.S_ISLNK(before.st_mode) or before.st_nlink!=1 or before.st_uid!=0 or before.st_gid!=0 or stat.S_IMODE(before.st_mode)!=0o400 or not 0<before.st_size<=1048576: raise ValueError("staged plan identity invalid")
-fd=os.open(path,os.O_RDONLY|getattr(os,"O_CLOEXEC",0)|getattr(os,"O_NOFOLLOW",0))
-try:
-    opened=os.fstat(fd); chunks=[]; total=0
-    while True:
-        chunk=os.read(fd,min(65536,1048577-total))
-        if not chunk: break
-        chunks.append(chunk); total+=len(chunk)
-        if total>1048576: raise ValueError("staged plan oversized")
-    after=os.fstat(fd)
-finally: os.close(fd)
-reachable=os.lstat(path)
-identity=lambda item:(item.st_dev,item.st_ino,item.st_mode,item.st_nlink,item.st_uid,item.st_gid,item.st_size,item.st_mtime_ns,item.st_ctime_ns)
-if identity(before)!=identity(opened) or identity(before)!=identity(after) or identity(before)!=identity(reachable): raise ValueError("staged plan changed")
-plan_raw=b"".join(chunks)
-plan_value=decode(plan_raw)
-if plan_raw!=canonical(plan_value): raise ValueError("staged plan noncanonical")
-full=FullCanaryPlan.from_mapping(plan_value)
-if full.revision!=revision: raise ValueError("staged plan revision mismatch")
-identities=inputs["identities"]; discord=inputs["discord"]; artifacts=inputs["artifacts"]
-capability=build_capability_plan(full_plan=full,**identities,connector_bot_user_id=discord["connector_bot_user_id"],routeback_bot_user_id=discord["routeback_bot_user_id"],connector_allowed_guild_ids=discord["allowed_guild_ids"],connector_allowed_channel_ids=discord["allowed_channel_ids"],connector_allowed_user_ids=discord["allowed_user_ids"],**artifacts)
-unsigned={"schema":"muncho-production-capability-plan-authoring-context.v1","revision":revision,"staged_plan_path":path,"staged_plan_b64":base64.b64encode(plan_raw).decode("ascii"),"staged_plan_bytes":len(plan_raw),"staged_plan_file_sha256":hashlib.sha256(plan_raw).hexdigest(),"staged_plan_identity":{"device":before.st_dev,"inode":before.st_ino,"uid":before.st_uid,"gid":before.st_gid,"mode":format(stat.S_IMODE(before.st_mode),"04o"),"size":before.st_size,"mtime_ns":before.st_mtime_ns},"full_canary_plan_sha256":full.sha256,"capability_inputs_sha256":inputs["inputs_sha256"],"capability_plan_sha256":capability.sha256,"mutation_performed":False}
-result={**unsigned,"receipt_sha256":hashlib.sha256(canonical(unsigned)).hexdigest()}
-sys.stdout.buffer.write(canonical(result)+b"\n")
-'''.strip()
+""".strip()
 
 
 def validate_release_storage_preflight(
@@ -991,11 +1545,13 @@ def validate_release_storage_preflight(
     base = value.get("release_base")
     if (
         not isinstance(base, Mapping)
-        or set(base)
-        != {"path", "state", "device", "inode", "uid", "gid", "mode"}
+        or set(base) != {"path", "state", "device", "inode", "uid", "gid", "mode"}
         or base.get("path") != RELEASE_BASE
         or base.get("state") not in {"absent", "present_exact"}
-        or any(type(base.get(name)) is not int for name in ("device", "inode", "uid", "gid"))
+        or any(
+            type(base.get(name)) is not int
+            for name in ("device", "inode", "uid", "gid")
+        )
         or not isinstance(base.get("mode"), str)
         or re.fullmatch(r"[0-7]{4}", base["mode"]) is None
         or (
@@ -1024,8 +1580,7 @@ def validate_release_storage_preflight(
             type(capacity.get(name)) is not int or capacity[name] < 0
             for name in capacity
         )
-        or capacity["minimum_packaging_free_bytes"]
-        != MINIMUM_PACKAGING_FREE_BYTES
+        or capacity["minimum_packaging_free_bytes"] != MINIMUM_PACKAGING_FREE_BYTES
         or capacity["shortfall_bytes"]
         != max(
             0,
@@ -1049,10 +1604,7 @@ def validate_release_storage_preflight(
         or len(protected) > 2
         or any(
             not isinstance(path, str)
-            or re.fullmatch(
-                rf"{re.escape(RELEASE_BASE)}/[0-9a-f]{{40}}", path
-            )
-            is None
+            or re.fullmatch(rf"{re.escape(RELEASE_BASE)}/[0-9a-f]{{40}}", path) is None
             for path in protected
         )
         or not isinstance(candidates, list)
@@ -1077,8 +1629,7 @@ def validate_release_storage_preflight(
             or set(item) != candidate_fields
             or not isinstance(item.get("revision"), str)
             or _REVISION_RE.fullmatch(item["revision"]) is None
-            or item.get("path")
-            != f"{RELEASE_BASE}/{item['revision']}"
+            or item.get("path") != f"{RELEASE_BASE}/{item['revision']}"
             or item["path"] in protected
             or item["revision"] == revision
             or item.get("uid") != 0
@@ -1089,9 +1640,7 @@ def validate_release_storage_preflight(
                 for name in ("device", "inode", "mtime_ns", "ctime_ns")
             )
         ):
-            raise OwnerLauncherError(
-                "capability_release_storage_preflight_invalid"
-            )
+            raise OwnerLauncherError("capability_release_storage_preflight_invalid")
         candidate_paths.append(item["path"])
     if len(candidate_paths) != len(set(candidate_paths)):
         raise OwnerLauncherError("capability_release_storage_preflight_invalid")
@@ -1105,18 +1654,14 @@ def validate_release_storage_preflight(
     if (
         type(allowed) is not bool
         or allowed is not expected_allowed
-        or (
-            not allowed
-            and not value.get("blocker")
-        )
+        or (not allowed and not value.get("blocker"))
     ):
         raise OwnerLauncherError("capability_release_storage_preflight_invalid")
-    unsigned = {
-        name: item for name, item in value.items() if name != "receipt_sha256"
-    }
-    if value.get("receipt_sha256") != hashlib.sha256(
-        _canonical_bytes(unsigned)
-    ).hexdigest():
+    unsigned = {name: item for name, item in value.items() if name != "receipt_sha256"}
+    if (
+        value.get("receipt_sha256")
+        != hashlib.sha256(_canonical_bytes(unsigned)).hexdigest()
+    ):
         raise OwnerLauncherError("capability_release_storage_preflight_invalid")
     return dict(value)
 
@@ -1133,16 +1678,15 @@ def _stable_owner_file(path: Path, *, maximum: int) -> bytes:
         not stat.S_ISREG(before.st_mode)
         or stat.S_ISLNK(before.st_mode)
         or before.st_nlink != 1
-        or before.st_uid != os.getuid()  # windows-footgun: ok — macOS/Linux owner boundary
+        or before.st_uid
+        != os.getuid()  # windows-footgun: ok — macOS/Linux owner boundary
         or stat.S_IMODE(before.st_mode) != 0o600
         or not 0 < before.st_size <= maximum
     ):
         raise OwnerLauncherError("capability_owner_secret_source_invalid")
     descriptor = os.open(
         path,
-        os.O_RDONLY
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0),
+        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
     )
     try:
         opened = os.fstat(descriptor)
@@ -1152,8 +1696,15 @@ def _stable_owner_file(path: Path, *, maximum: int) -> bytes:
         os.close(descriptor)
     reachable = os.lstat(path)
     identity = lambda item: (
-        item.st_dev, item.st_ino, item.st_mode, item.st_nlink, item.st_uid,
-        item.st_gid, item.st_size, item.st_mtime_ns, item.st_ctime_ns,
+        item.st_dev,
+        item.st_ino,
+        item.st_mode,
+        item.st_nlink,
+        item.st_uid,
+        item.st_gid,
+        item.st_size,
+        item.st_mtime_ns,
+        item.st_ctime_ns,
     )
     if (
         len(raw) > maximum
@@ -1204,7 +1755,8 @@ def _write_owner_file_no_replace(path: Path, payload: bytes) -> str:
     if (
         not stat.S_ISDIR(parent_item.st_mode)
         or stat.S_ISLNK(parent_item.st_mode)
-        or parent_item.st_uid != os.getuid()  # windows-footgun: ok — macOS/Linux owner boundary
+        or parent_item.st_uid
+        != os.getuid()  # windows-footgun: ok — macOS/Linux owner boundary
         or stat.S_IMODE(parent_item.st_mode) & 0o022
         or os.path.lexists(path)
     ):
@@ -1232,7 +1784,8 @@ def _write_owner_file_no_replace(path: Path, payload: bytes) -> str:
         item = os.fstat(descriptor)
         if (
             not stat.S_ISREG(item.st_mode)
-            or item.st_uid != os.getuid()  # windows-footgun: ok — macOS/Linux owner boundary
+            or item.st_uid
+            != os.getuid()  # windows-footgun: ok — macOS/Linux owner boundary
             or stat.S_IMODE(item.st_mode) != 0o600
             or item.st_size != len(payload)
         ):
@@ -1259,29 +1812,27 @@ def _write_owner_file_no_replace(path: Path, payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-_FULL_CANARY_TERMINAL_RECEIPT_FIELDS = frozenset(
-    {
-        "schema",
-        "ok",
-        "state",
-        "release_sha",
-        "coordinator_input_sha256",
-        "full_canary_plan_sha256",
-        "owner_approval_sha256",
-        "phase_b_readiness_anchor_sha256",
-        "api_session_key_sha256",
-        "fixture_sha256",
-        "discord_token_install_receipt_sha256",
-        "coordinator_receipt_sha256",
-        "live_driver_receipt_sha256",
-        "services_stopped",
-        "discord_token_retired",
-        "temporary_admin_created",
-        "bootstrap_credential_created",
-        "completed_at_unix",
-        "receipt_sha256",
-    }
-)
+_FULL_CANARY_TERMINAL_RECEIPT_FIELDS = frozenset({
+    "schema",
+    "ok",
+    "state",
+    "release_sha",
+    "coordinator_input_sha256",
+    "full_canary_plan_sha256",
+    "owner_approval_sha256",
+    "phase_b_readiness_anchor_sha256",
+    "api_session_key_sha256",
+    "fixture_sha256",
+    "discord_token_install_receipt_sha256",
+    "coordinator_receipt_sha256",
+    "live_driver_receipt_sha256",
+    "services_stopped",
+    "discord_token_retired",
+    "temporary_admin_created",
+    "bootstrap_credential_created",
+    "completed_at_unix",
+    "receipt_sha256",
+})
 
 
 def validate_full_canary_terminal_receipt(
@@ -1289,7 +1840,10 @@ def validate_full_canary_terminal_receipt(
     *,
     revision: str,
 ) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping) or set(value) != _FULL_CANARY_TERMINAL_RECEIPT_FIELDS:
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != _FULL_CANARY_TERMINAL_RECEIPT_FIELDS
+    ):
         raise OwnerLauncherError("capability_full_canary_receipt_invalid")
     raw = dict(value)
     unsigned = {key: item for key, item in raw.items() if key != "receipt_sha256"}
@@ -1343,6 +1897,8 @@ def read_codex_access_token(path: Path | None = None) -> bytearray:
 
 def read_mac_ops_env(stream: Any = None) -> bytearray:
     source = sys.stdin.buffer if stream is None else stream
+    if bool(getattr(source, "isatty", lambda: False)()):
+        raise OwnerLauncherError("capability_mac_ops_stdin_is_tty")
     payload = bytearray(source.read(_MAX_SECRET_BYTES + 1))
     if not payload or len(payload) > _MAX_SECRET_BYTES:
         _wipe(payload)
@@ -1353,34 +1909,35 @@ def read_mac_ops_env(stream: Any = None) -> bytearray:
 class CapabilityCanaryTransport(IapStoppedReleaseTransport):
     """Invoke only the fixed packaged capability-canary commands."""
 
-    _ACTIONS = frozenset(
-        {
-            "contract",
-            "storage-preflight",
-            "collect-plan-authoring-context",
-            "bootstrap-bitrix-foundation",
-            "prepare-producer-foundation",
-            "install-producer-foundation",
-            "preflight-producer-foundation",
-            "publish-plan",
-            "preflight-stopped",
-            "preflight-live",
-            "provision-codex",
-            "provision-mac-ops",
-            "provision-discord-connector",
-            "provision-api-control",
-            "provision-discord-routeback",
-            "provision-bitrix-operational-edge",
-            "install-approval",
-            "publish-live-fixture",
-            "wait-production-observation-marker",
-            "stage-production-observation",
-            "start",
-            "run-live",
-            "stop",
-            "retire-secrets",
-        }
-    )
+    _ACTIONS = frozenset({
+        "contract",
+        "storage-preflight",
+        "collect-foundation-authoring-context",
+        "collect-plan-authoring-context",
+        "bootstrap-bitrix-foundation",
+        "prepare-producer-foundation",
+        "install-producer-foundation",
+        "preflight-producer-foundation",
+        "publish-plan",
+        "preflight-stopped",
+        "preflight-live",
+        "provision-codex",
+        "provision-mac-ops",
+        "provision-discord-connector",
+        "provision-api-control",
+        "provision-discord-routeback",
+        "provision-bitrix-operational-edge",
+        "install-approval",
+        "publish-live-fixture",
+        "wait-production-observation-marker",
+        "stage-production-observation",
+        "wait-api-admission-challenge",
+        "stage-api-admission-owner-authority",
+        "start",
+        "run-live",
+        "stop",
+        "retire-secrets",
+    })
 
     def _remote_command(self, revision: str, action: str) -> tuple[str, ...]:
         if _REVISION_RE.fullmatch(revision) is None or action not in self._ACTIONS:
@@ -1395,16 +1952,6 @@ class CapabilityCanaryTransport(IapStoppedReleaseTransport):
                 _REMOTE_STORAGE_PREFLIGHT,
                 revision,
             )
-        if action == "collect-plan-authoring-context":
-            return (
-                *self._fixed_remote_environment(chdir="/"),
-                f"/opt/muncho-canary-releases/{revision}/venv/bin/python",
-                "-B",
-                "-I",
-                "-c",
-                _REMOTE_PLAN_AUTHORING_CONTEXT,
-                revision,
-            )
         interpreter = f"/opt/muncho-canary-releases/{revision}/venv/bin/python"
         live_action = action in {"publish-live-fixture", "run-live"}
         producer_foundation_action = action in {
@@ -1412,11 +1959,17 @@ class CapabilityCanaryTransport(IapStoppedReleaseTransport):
             "install-producer-foundation",
             "preflight-producer-foundation",
         }
+        producer_admission_action = action in {
+            "wait-api-admission-challenge",
+            "stage-api-admission-owner-authority",
+        }
         module = (
             LIVE_DRIVER_MODULE
             if live_action
             else PRODUCER_FOUNDATION_MODULE
             if producer_foundation_action
+            else PRODUCER_ADMISSION_MODULE
+            if producer_admission_action
             else RUNTIME_MODULE
         )
         remote_action = (
@@ -1430,6 +1983,10 @@ class CapabilityCanaryTransport(IapStoppedReleaseTransport):
             if action == "install-producer-foundation"
             else "preflight"
             if action == "preflight-producer-foundation"
+            else "wait-owner-challenge"
+            if action == "wait-api-admission-challenge"
+            else "stage-owner-authority"
+            if action == "stage-api-admission-owner-authority"
             else action
         )
         return (
@@ -1468,7 +2025,11 @@ class CapabilityCanaryTransport(IapStoppedReleaseTransport):
                 maximum_input_bytes=(
                     _MAX_PLAN_INPUT_BYTES
                     if action
-                    in {"publish-plan", "collect-plan-authoring-context"}
+                    in {
+                        "publish-plan",
+                        "collect-plan-authoring-context",
+                        "collect-foundation-authoring-context",
+                    }
                     else 2 * 1024 * 1024
                     if action
                     in {
@@ -1476,6 +2037,8 @@ class CapabilityCanaryTransport(IapStoppedReleaseTransport):
                         "install-producer-foundation",
                         "wait-production-observation-marker",
                         "stage-production-observation",
+                        "wait-api-admission-challenge",
+                        "stage-api-admission-owner-authority",
                     }
                     else _MAX_BITRIX_FOUNDATION_INPUT_BYTES
                     if action == "bootstrap-bitrix-foundation"
@@ -1516,15 +2079,11 @@ class CapabilityProducerFoundationOwnerSigner:
         command_runner: Any = subprocess.run,
         namespace: str = PRODUCER_FOUNDATION_SSHSIG_NAMESPACE,
     ) -> None:
-        if (
-            not callable(command_runner)
-            or namespace
-            not in {
-                PRODUCER_FOUNDATION_SSHSIG_NAMESPACE,
-                PRODUCTION_OBSERVATION_SSHSIG_NAMESPACE,
-                CAPABILITY_FIXTURE_SSHSIG_NAMESPACE,
-            }
-        ):
+        if not callable(command_runner) or namespace not in {
+            PRODUCER_FOUNDATION_SSHSIG_NAMESPACE,
+            PRODUCTION_OBSERVATION_SSHSIG_NAMESPACE,
+            CAPABILITY_FIXTURE_SSHSIG_NAMESPACE,
+        }:
             raise OwnerLauncherError("capability_producer_signer_invalid")
         self._inspector = inspector or _PhaseBOwnerExternalSigner(
             private_key_path=PHASE_B_OWNER_PRIVATE_KEY_PATH,
@@ -1553,9 +2112,7 @@ class CapabilityProducerFoundationOwnerSigner:
         try:
             executable = PHASE_B_SSH_KEYGEN.lstat()
         except OSError:
-            raise OwnerLauncherError(
-                "capability_producer_signer_unavailable"
-            ) from None
+            raise OwnerLauncherError("capability_producer_signer_unavailable") from None
         if (
             not stat.S_ISREG(executable.st_mode)
             or stat.S_ISLNK(executable.st_mode)
@@ -1590,9 +2147,7 @@ class CapabilityProducerFoundationOwnerSigner:
                 },
             )
         except (OSError, subprocess.SubprocessError, TypeError):
-            raise OwnerLauncherError(
-                "capability_producer_signer_failed"
-            ) from None
+            raise OwnerLauncherError("capability_producer_signer_failed") from None
         if (
             completed.returncode != 0
             or not isinstance(completed.stdout, bytes)
@@ -1606,27 +2161,28 @@ class CapabilityProducerFoundationOwnerSigner:
         try:
             return completed.stdout.decode("ascii", errors="strict")
         except UnicodeError:
-            raise OwnerLauncherError(
-                "capability_producer_signature_invalid"
-            ) from None
+            raise OwnerLauncherError("capability_producer_signature_invalid") from None
 
 
-_PRODUCER_BOOTSTRAP_RECEIPT_FIELDS = frozenset(
-    {
-        "schema",
-        "revision",
-        "capability_plan_sha256",
-        "full_canary_plan_sha256",
-        "preparation_sha256",
-        "foundation_sha256",
-        "install_receipt_sha256",
-        "unit_bundle_manifest_sha256",
-        "preflight_ready",
-        "private_key_loaded_by_launcher",
-        "secret_material_recorded",
-        "receipt_sha256",
-    }
-)
+_PRODUCER_BOOTSTRAP_RECEIPT_FIELDS = frozenset({
+    "schema",
+    "revision",
+    "capability_plan_sha256",
+    "full_canary_plan_sha256",
+    "full_canary_terminal_receipt",
+    "full_canary_terminal_receipt_sha256",
+    "original_full_canary_owner_approval_sha256",
+    "service_identity_foundation_receipt_sha256",
+    "producer_identity_foundation_receipt_sha256",
+    "preparation_sha256",
+    "foundation_sha256",
+    "install_receipt_sha256",
+    "unit_bundle_manifest_sha256",
+    "preflight_ready",
+    "private_key_loaded_by_launcher",
+    "secret_material_recorded",
+    "receipt_sha256",
+})
 
 
 def validate_producer_bootstrap_receipt(
@@ -1635,7 +2191,10 @@ def validate_producer_bootstrap_receipt(
     revision: str,
     terminal_receipt: Mapping[str, Any],
 ) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping) or set(value) != _PRODUCER_BOOTSTRAP_RECEIPT_FIELDS:
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != _PRODUCER_BOOTSTRAP_RECEIPT_FIELDS
+    ):
         raise OwnerLauncherError("capability_producer_bootstrap_receipt_invalid")
     raw = dict(value)
     unsigned = {key: item for key, item in raw.items() if key != "receipt_sha256"}
@@ -1644,6 +2203,11 @@ def validate_producer_bootstrap_receipt(
         or raw.get("revision") != revision
         or raw.get("full_canary_plan_sha256")
         != terminal_receipt.get("full_canary_plan_sha256")
+        or raw.get("full_canary_terminal_receipt") != terminal_receipt
+        or raw.get("full_canary_terminal_receipt_sha256")
+        != terminal_receipt.get("receipt_sha256")
+        or raw.get("original_full_canary_owner_approval_sha256")
+        != terminal_receipt.get("owner_approval_sha256")
         or raw.get("preflight_ready") is not True
         or raw.get("private_key_loaded_by_launcher") is not False
         or raw.get("secret_material_recorded") is not False
@@ -1654,6 +2218,7 @@ def validate_producer_bootstrap_receipt(
     for field in _PRODUCER_BOOTSTRAP_RECEIPT_FIELDS - {
         "schema",
         "revision",
+        "full_canary_terminal_receipt",
         "preflight_ready",
         "private_key_loaded_by_launcher",
         "secret_material_recorded",
@@ -1670,6 +2235,7 @@ def validate_producer_bootstrap_receipt(
 def build_live_fixture_authority(
     *,
     producer_receipt: Mapping[str, Any],
+    plan_publication_receipt: Mapping[str, Any],
     signer: Any,
     run_id: str,
     now_unix_ms: int | None = None,
@@ -1695,12 +2261,26 @@ def build_live_fixture_authority(
     try:
         _digest(owner_key_id, "fixture owner key")
         _digest(producer_receipt.get("foundation_sha256"), "producer foundation")
+        _digest(
+            plan_publication_receipt.get("receipt_sha256"),
+            "plan publication receipt",
+        )
     except ValueError:
         raise OwnerLauncherError("capability_fixture_owner_authority_invalid") from None
     unsigned = {
         "schema": CAPABILITY_FIXTURE_AUTHORITY_SCHEMA,
         "run_id": run_id,
         "owner_id": PRODUCTION_OWNER_USER_ID,
+        "full_canary_terminal_receipt": copy.deepcopy(
+            dict(producer_receipt["full_canary_terminal_receipt"])
+        ),
+        "full_canary_terminal_receipt_sha256": producer_receipt[
+            "full_canary_terminal_receipt_sha256"
+        ],
+        "original_full_canary_owner_approval_sha256": producer_receipt[
+            "original_full_canary_owner_approval_sha256"
+        ],
+        "plan_publication_receipt_sha256": plan_publication_receipt["receipt_sha256"],
         "valid_from_unix_ms": issued,
         "valid_until_unix_ms": issued + valid_for_seconds * 1000,
         "public_discord_target": {
@@ -1726,6 +2306,7 @@ def author_live_fixture_authority(
     revision: str,
     terminal_receipt_file: Path,
     producer_receipt_file: Path,
+    plan_publication_receipt_file: Path,
     output_file: Path,
     run_id: str,
     valid_for_seconds: int,
@@ -1749,11 +2330,23 @@ def author_live_fixture_authority(
         revision=revision,
         terminal_receipt=terminal,
     )
+    plan_publication = validate_plan_publication_receipt(
+        _read_owner_canonical_json(
+            plan_publication_receipt_file,
+            maximum=_MAX_FULL_CANARY_TERMINAL_RECEIPT_BYTES,
+            label="capability plan publication receipt",
+        ),
+        revision=revision,
+        terminal_receipt=terminal,
+    )
+    if plan_publication["plan_sha256"] != producer["capability_plan_sha256"]:
+        raise OwnerLauncherError("capability_fixture_authoring_binding_missing")
     owner_signer = signer or CapabilityProducerFoundationOwnerSigner(
         namespace=CAPABILITY_FIXTURE_SSHSIG_NAMESPACE
     )
     authority = build_live_fixture_authority(
         producer_receipt=producer,
+        plan_publication_receipt=plan_publication,
         signer=owner_signer,
         run_id=run_id,
         now_unix_ms=now_unix_ms,
@@ -1766,6 +2359,10 @@ def author_live_fixture_authority(
         "revision": revision,
         "capability_plan_sha256": producer["capability_plan_sha256"],
         "full_canary_plan_sha256": producer["full_canary_plan_sha256"],
+        "full_canary_terminal_receipt": copy.deepcopy(dict(terminal)),
+        "full_canary_terminal_receipt_sha256": terminal["receipt_sha256"],
+        "original_full_canary_owner_approval_sha256": terminal["owner_approval_sha256"],
+        "plan_publication_receipt_sha256": plan_publication["receipt_sha256"],
         "producer_foundation_sha256": producer["foundation_sha256"],
         "producer_bootstrap_receipt_sha256": producer["receipt_sha256"],
         "run_id": run_id,
@@ -1802,9 +2399,7 @@ class CapabilityProductionObservationTransport:
             )
 
             if _REVISION_RE.fullmatch(revision or "") is None:
-                raise OwnerLauncherError(
-                    "production_observation_binding_invalid"
-                )
+                raise OwnerLauncherError("production_observation_binding_invalid")
             trusted = require_trusted_owner_runtime(revision)
             configuration = PinnedGcloudConfiguration()
             identity = GcloudOwnerAccessToken(
@@ -1849,14 +2444,11 @@ class CapabilityProductionObservationTransport:
                     fixture_sha256,
                 )
             )
-            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", run_id or "")
-            is None
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", run_id or "") is None
         ):
             raise OwnerLauncherError("production_observation_binding_invalid")
         inner = self._transport
-        observer_source, observer_source_sha256 = _production_observer_source(
-            revision
-        )
+        observer_source, observer_source_sha256 = _production_observer_source(revision)
         observer_source_bytes = observer_source.encode("utf-8", errors="strict")
         account = inner._owner_identity.account_for_read_only_preflight()
         inner._owner_identity.require_stable()
@@ -1864,7 +2456,10 @@ class CapabilityProductionObservationTransport:
         if (
             not isinstance(authorization, tuple)
             or len(authorization) != 3
-            or any(re.fullmatch(r"[0-9a-f]{64}", item or "") is None for item in authorization)
+            or any(
+                re.fullmatch(r"[0-9a-f]{64}", item or "") is None
+                for item in authorization
+            )
         ):
             raise OwnerLauncherError("production_observation_authority_invalid")
         command = (
@@ -1895,28 +2490,18 @@ class CapabilityProductionObservationTransport:
         )
         inner._owner_identity.require_stable()
         raw = completed.stdout
-        if (
-            not isinstance(raw, bytes)
-            or not raw.endswith(b"\n")
-            or b"\n" in raw[:-1]
-        ):
+        if not isinstance(raw, bytes) or not raw.endswith(b"\n") or b"\n" in raw[:-1]:
             raise OwnerLauncherError("production_observation_output_invalid")
-        observation = _decode_json(
-            raw[:-1], label="production observation"
-        )
+        observation = _decode_json(raw[:-1], label="production observation")
         known_hosts_path = Path(inner._known_hosts.absolute_path())
-        known_hosts_raw = _stable_owner_file(
-            known_hosts_path, maximum=256 * 1024
-        )
+        known_hosts_raw = _stable_owner_file(known_hosts_path, maximum=256 * 1024)
         authority = {
             "kind": "pinned_owner_gcloud_iap_ssh_read_only",
             "project": "adventico-ai-platform",
             "zone": "europe-west3-a",
             "vm": "ai-platform-runtime-01",
             "instance_id": "1094477181810932795",
-            "known_hosts_file_sha256": hashlib.sha256(
-                known_hosts_raw
-            ).hexdigest(),
+            "known_hosts_file_sha256": hashlib.sha256(known_hosts_raw).hexdigest(),
             "observer_source_sha256": observer_source_sha256,
             "instance_authorization_sha256": authorization[0],
             "project_authorization_sha256": authorization[1],
@@ -2008,8 +2593,7 @@ def collect_owner_signed_production_observation(
     if (
         not isinstance(transport_authority, Mapping)
         or set(transport_authority) != transport_fields
-        or transport_authority.get("kind")
-        != "pinned_owner_gcloud_iap_ssh_read_only"
+        or transport_authority.get("kind") != "pinned_owner_gcloud_iap_ssh_read_only"
         or transport_authority.get("project") != "adventico-ai-platform"
         or transport_authority.get("zone") != "europe-west3-a"
         or transport_authority.get("vm") != "ai-platform-runtime-01"
@@ -2017,9 +2601,7 @@ def collect_owner_signed_production_observation(
         or transport_authority.get("observer_source_sha256")
         != _production_observer_source(revision)[1]
         or any(
-            re.fullmatch(
-                r"[0-9a-f]{64}", str(transport_authority.get(field) or "")
-            )
+            re.fullmatch(r"[0-9a-f]{64}", str(transport_authority.get(field) or ""))
             is None
             for field in (
                 "known_hosts_file_sha256",
@@ -2092,10 +2674,7 @@ def _production_observation_wait_request(
                 owner_subject_sha256,
             )
         )
-        or re.fullmatch(
-            r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", run_id or ""
-        )
-        is None
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", run_id or "") is None
         or type(timeout_seconds) is not int
         or not 1 <= timeout_seconds <= 300
     ):
@@ -2143,8 +2722,7 @@ def _validate_production_observation_marker_wait_receipt(
         or raw["phase"] != phase
         or raw["fixture_sha256"] != fixture_sha256
         or raw["run_id"] != run_id
-        or re.fullmatch(r"[0-9a-f]{64}", str(raw["marker_sha256"] or ""))
-        is None
+        or re.fullmatch(r"[0-9a-f]{64}", str(raw["marker_sha256"] or "")) is None
         or raw["observer_live_verified"] is not (phase == "after")
         or raw["secret_material_recorded"] is not False
         or raw["secret_digest_recorded"] is not False
@@ -2193,10 +2771,7 @@ def _validate_production_observation_stage_receipt(
             re.fullmatch(r"[0-9a-f]{64}", str(raw[field] or "")) is None
             for field in digests
         )
-        or (
-            phase == "before"
-            and raw["production_diff_sha256"] is not None
-        )
+        or (phase == "before" and raw["production_diff_sha256"] is not None)
         or (
             phase == "after"
             and re.fullmatch(
@@ -2214,6 +2789,241 @@ def _validate_production_observation_stage_receipt(
     return raw
 
 
+def _api_admission_owner_challenge_wait_request(
+    *,
+    revision: str,
+    plan_sha256: str,
+    full_canary_plan_sha256: str,
+    fixture_sha256: str,
+    run_id: str,
+    timeout_seconds: int,
+) -> Mapping[str, Any]:
+    if (
+        _REVISION_RE.fullmatch(revision or "") is None
+        or any(
+            re.fullmatch(r"[0-9a-f]{64}", value or "") is None
+            for value in (
+                plan_sha256,
+                full_canary_plan_sha256,
+                fixture_sha256,
+            )
+        )
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,239}", run_id or "")
+        is None
+        or type(timeout_seconds) is not int
+        or not 1 <= timeout_seconds <= 300
+    ):
+        raise OwnerLauncherError("api_admission_owner_challenge_binding_invalid")
+    return {
+        "schema": API_ADMISSION_OWNER_CHALLENGE_WAIT_SCHEMA,
+        "release_sha": revision,
+        "capability_plan_sha256": plan_sha256,
+        "full_canary_plan_sha256": full_canary_plan_sha256,
+        "fixture_sha256": fixture_sha256,
+        "run_id": run_id,
+        "timeout_seconds": timeout_seconds,
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+    }
+
+
+def build_api_admission_owner_authority(
+    challenge: Mapping[str, Any],
+    *,
+    expected_revision: str,
+    expected_plan_sha256: str,
+    expected_full_canary_plan_sha256: str,
+    expected_fixture_sha256: str,
+    expected_run_id: str,
+    owner_signer: Any | None = None,
+    now_unix_ms: int | None = None,
+) -> Mapping[str, Any]:
+    """Sign the nested command pregrant and outer epoch authority on the Mac."""
+
+    try:
+        from gateway import canonical_capability_canary_producers as producers
+
+        fixture_projection = challenge.get("fixture")
+        if not isinstance(fixture_projection, Mapping):
+            raise ValueError("fixture missing")
+        if (
+            challenge.get("release_sha") != expected_revision
+            or challenge.get("capability_plan_sha256")
+            != expected_plan_sha256
+            or challenge.get("full_canary_plan_sha256")
+            != expected_full_canary_plan_sha256
+            or challenge.get("fixture_sha256") != expected_fixture_sha256
+            or challenge.get("run_id") != expected_run_id
+            or fixture_projection.get("release_sha") != expected_revision
+            or fixture_projection.get("capability_plan_sha256")
+            != expected_plan_sha256
+            or fixture_projection.get("full_canary_plan_sha256")
+            != expected_full_canary_plan_sha256
+            or fixture_projection.get("run_id") != expected_run_id
+            or hashlib.sha256(_canonical_bytes(fixture_projection)).hexdigest()
+            != expected_fixture_sha256
+        ):
+            raise ValueError("trusted owner binding mismatch")
+        from gateway import canonical_capability_canary_e2e as e2e
+        from gateway import canonical_capability_canary_live_driver as live_driver
+
+        e2e._validate_fixture(fixture_projection, expected_fixture_sha256)
+        locally_recomputed_catalog = live_driver.build_live_probe_catalog(
+            fixture=live_driver.PublishedFixture(
+                value=copy.deepcopy(dict(fixture_projection)),
+                sha256=expected_fixture_sha256,
+                path=Path(REVIEWED_FIXTURE_PATH),
+                run_directory=Path(FIXTURE_PUBLICATION_ROOT) / expected_run_id,
+            ),
+            request=challenge.get("request"),
+        )
+        if challenge.get("catalog") != locally_recomputed_catalog:
+            raise ValueError("owner-local probe catalog mismatch")
+        validated = producers.validate_api_admission_owner_challenge(
+            challenge,
+            fixture=fixture_projection,
+            fixture_sha256=expected_fixture_sha256,
+        )
+    except Exception as exc:
+        raise OwnerLauncherError("api_admission_owner_challenge_invalid") from exc
+    signed_at = int(time.time() * 1000) if now_unix_ms is None else now_unix_ms
+    if (
+        type(signed_at) is not int
+        or signed_at < validated["fixture_valid_from_unix_ms"]
+        or signed_at > validated["owner_response_deadline_unix_ms"]
+    ):
+        raise OwnerLauncherError("api_admission_owner_signing_time_invalid")
+    remaining_seconds = (
+        validated["fixture_valid_until_unix_ms"] - signed_at
+    ) // 1000
+    ttl_seconds = min(8 * 60 * 60, remaining_seconds)
+    catalog = validated["catalog"]
+    commands = sorted(
+        item["command_sha256"] for item in catalog["commands"]["allowed"]
+    )
+    max_uses = sum(
+        item["max_uses"] for item in catalog["commands"]["allowed"]
+    )
+    if ttl_seconds < 1 or not commands or not len(commands) <= max_uses <= 64:
+        raise OwnerLauncherError("api_admission_owner_authority_invalid")
+    signer = owner_signer or CapabilityProducerFoundationOwnerSigner(
+        namespace=CAPABILITY_FIXTURE_SSHSIG_NAMESPACE
+    )
+    authority = signer.inspect()
+    if not callable(getattr(authority, "to_mapping", None)):
+        raise OwnerLauncherError("api_admission_owner_authority_invalid")
+    public = authority.to_mapping()
+    key_id = public.get("key_id") if isinstance(public, Mapping) else None
+    if re.fullmatch(r"[0-9a-f]{64}", str(key_id or "")) is None:
+        raise OwnerLauncherError("api_admission_owner_authority_invalid")
+    owner_payload = {
+        "schema": PLAN_APPROVAL_SCHEMA,
+        "run_id": validated["run_id"],
+        "release_sha": validated["release_sha"],
+        "fixture_sha256": validated["fixture_sha256"],
+        "observed_at_unix_ms": signed_at,
+        "approval_id": (
+            f"approval:{validated['run_id']}:"
+            f"{validated['challenge_bundle_sha256'][:16]}"
+        ),
+        "owner_id": PRODUCTION_OWNER_USER_ID,
+        "session_id": validated["session_id"],
+        "capability_epoch_sha256": validated["capability_epoch_sha256"],
+        "command_sha256s": commands,
+        "ttl_seconds": ttl_seconds,
+        "max_uses": max_uses,
+    }
+    owner_unsigned = {
+        "schema": SIGNED_RECEIPT_SCHEMA,
+        "authority_role": "owner",
+        "key_id": key_id,
+        "signature_algorithm": "sshsig-ed25519-sha512",
+        "payload": owner_payload,
+    }
+    owner_signature = signer.sign(
+        _canonical_bytes(owner_unsigned),
+        expected_authority=authority,
+    )
+    workspace_owner_receipt = {
+        **owner_unsigned,
+        "signature": owner_signature,
+    }
+    outer_unsigned = {
+        "schema": API_ADMISSION_OWNER_AUTHORITY_SCHEMA,
+        "challenge_sha256": validated["request"]["challenge_sha256"],
+        "release_sha": validated["release_sha"],
+        "capability_plan_sha256": validated["capability_plan_sha256"],
+        "full_canary_plan_sha256": validated["full_canary_plan_sha256"],
+        "fixture_sha256": validated["fixture_sha256"],
+        "run_id": validated["run_id"],
+        "session_id": validated["session_id"],
+        "capability_epoch_sha256": validated["capability_epoch_sha256"],
+        "issued_at_unix_ms": signed_at,
+        "valid_until_unix_ms": signed_at + ttl_seconds * 1000,
+        "catalog": copy.deepcopy(dict(catalog)),
+        "workspace_owner_receipt": workspace_owner_receipt,
+    }
+    return {
+        **outer_unsigned,
+        "owner_signature": signer.sign(
+            _canonical_bytes(outer_unsigned),
+            expected_authority=authority,
+        ),
+    }
+
+
+def _validate_api_admission_owner_authority_stage_receipt(
+    value: Any,
+    *,
+    challenge: Mapping[str, Any],
+    owner_authority: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    fields = {
+        "schema",
+        "run_id",
+        "fixture_sha256",
+        "session_id",
+        "capability_epoch_sha256",
+        "challenge_sha256",
+        "challenge_bundle_sha256",
+        "owner_authority_sha256",
+        "staged_path",
+        "staged_at_unix_ms",
+        "secret_material_recorded",
+        "secret_digest_recorded",
+        "receipt_sha256",
+    }
+    if not isinstance(value, Mapping) or set(value) != fields:
+        raise OwnerLauncherError("api_admission_owner_authority_stage_invalid")
+    raw = dict(value)
+    unsigned = {key: item for key, item in raw.items() if key != "receipt_sha256"}
+    if (
+        raw["schema"] != API_ADMISSION_OWNER_AUTHORITY_STAGE_SCHEMA
+        or raw["run_id"] != challenge.get("run_id")
+        or raw["fixture_sha256"] != challenge.get("fixture_sha256")
+        or raw["session_id"] != challenge.get("session_id")
+        or raw["capability_epoch_sha256"]
+        != challenge.get("capability_epoch_sha256")
+        or raw["challenge_sha256"]
+        != challenge.get("request", {}).get("challenge_sha256")
+        or raw["challenge_bundle_sha256"]
+        != challenge.get("challenge_bundle_sha256")
+        or raw["owner_authority_sha256"]
+        != hashlib.sha256(_canonical_bytes(owner_authority)).hexdigest()
+        or not isinstance(raw["staged_path"], str)
+        or not raw["staged_path"].endswith(
+            "/api-admission-owner-authority-staged.json"
+        )
+        or type(raw["staged_at_unix_ms"]) is not int
+        or raw["secret_material_recorded"] is not False
+        or raw["secret_digest_recorded"] is not False
+        or raw["receipt_sha256"]
+        != hashlib.sha256(_canonical_bytes(unsigned)).hexdigest()
+    ):
+        raise OwnerLauncherError("api_admission_owner_authority_stage_invalid")
+    return raw
+
+
 def run_live_with_owner_production_observations(
     transport: CapabilityCanaryTransport,
     observation_transport: Any,
@@ -2221,14 +3031,22 @@ def run_live_with_owner_production_observations(
     revision: str,
     plan_sha256: str,
     full_canary_plan_sha256: str,
+    terminal_receipt: Mapping[str, Any],
     fixture_sha256: str,
     run_id: str,
     owner_subject_sha256: str,
     owner_signer: Any | None = None,
+    api_admission_owner_signer: Any | None = None,
     timeout_seconds: int = 300,
 ) -> Mapping[str, Any]:
     """Run the live canary while the owner supplies both pinned observations."""
 
+    terminal = validate_full_canary_terminal_receipt(
+        terminal_receipt,
+        revision=revision,
+    )
+    if terminal["full_canary_plan_sha256"] != full_canary_plan_sha256:
+        raise OwnerLauncherError("production_observation_binding_invalid")
     # Build once up front so no remote mutation starts from a partial binding.
     requests = {
         phase: _production_observation_wait_request(
@@ -2243,6 +3061,14 @@ def run_live_with_owner_production_observations(
         )
         for phase in ("before", "after")
     }
+    api_admission_wait_request = _api_admission_owner_challenge_wait_request(
+        revision=revision,
+        plan_sha256=plan_sha256,
+        full_canary_plan_sha256=full_canary_plan_sha256,
+        fixture_sha256=fixture_sha256,
+        run_id=run_id,
+        timeout_seconds=timeout_seconds,
+    )
     live_results: list[Mapping[str, Any]] = []
     live_errors: list[BaseException] = []
 
@@ -2299,14 +3125,60 @@ def run_live_with_owner_production_observations(
                 )
             finally:
                 _wipe(stage_frame)
-            stage_receipts[phase] = (
-                _validate_production_observation_stage_receipt(
-                    staged,
-                    phase=phase,
-                    fixture_sha256=fixture_sha256,
-                    run_id=run_id,
-                )
+            stage_receipts[phase] = _validate_production_observation_stage_receipt(
+                staged,
+                phase=phase,
+                fixture_sha256=fixture_sha256,
+                run_id=run_id,
             )
+            if phase == "before":
+                challenge_frame = bytearray(
+                    _canonical_bytes(api_admission_wait_request)
+                )
+                try:
+                    challenge = transport.invoke(
+                        revision,
+                        "wait-api-admission-challenge",
+                        frame=challenge_frame,
+                    )
+                finally:
+                    _wipe(challenge_frame)
+                authority = build_api_admission_owner_authority(
+                    challenge,
+                    expected_revision=revision,
+                    expected_plan_sha256=plan_sha256,
+                    expected_full_canary_plan_sha256=(full_canary_plan_sha256),
+                    expected_fixture_sha256=fixture_sha256,
+                    expected_run_id=run_id,
+                    owner_signer=api_admission_owner_signer,
+                )
+                authority_stage_request = {
+                    "schema": (
+                        API_ADMISSION_OWNER_AUTHORITY_STAGE_REQUEST_SCHEMA
+                    ),
+                    "challenge_bundle_sha256": challenge[
+                        "challenge_bundle_sha256"
+                    ],
+                    "owner_authority": authority,
+                    "secret_material_recorded": False,
+                    "secret_digest_recorded": False,
+                }
+                authority_frame = bytearray(
+                    _canonical_bytes(authority_stage_request)
+                )
+                try:
+                    authority_stage = transport.invoke(
+                        revision,
+                        "stage-api-admission-owner-authority",
+                        frame=authority_frame,
+                    )
+                finally:
+                    _wipe(authority_frame)
+                _validate_api_admission_owner_authority_stage_receipt(
+                    authority_stage,
+                    challenge=challenge,
+                    owner_authority=authority,
+                )
     finally:
         # The remote live invocation has its own 900-second hard bound and
         # fail-closed cleanup.  Never abandon it while credentials/services
@@ -2320,12 +3192,15 @@ def run_live_with_owner_production_observations(
         raise OwnerLauncherError("capability_live_result_invalid")
     live = live_results[0]
     if (
-        live.get("schema")
-        != "muncho-production-capability-canary-live-driver.v1"
+        live.get("schema") != "muncho-production-capability-canary-live-driver.v2"
         or live.get("ok") is not True
         or live.get("release_sha") != revision
         or live.get("capability_plan_sha256") != plan_sha256
         or live.get("full_canary_plan_sha256") != full_canary_plan_sha256
+        or live.get("full_canary_terminal_receipt") != terminal
+        or live.get("full_canary_terminal_receipt_sha256") != terminal["receipt_sha256"]
+        or live.get("original_full_canary_owner_approval_sha256")
+        != terminal["owner_approval_sha256"]
         or live.get("fixture_sha256") != fixture_sha256
         or live.get("run_id") != run_id
         or live.get("production_before_observation_sha256")
@@ -2335,29 +3210,42 @@ def run_live_with_owner_production_observations(
     ):
         raise OwnerLauncherError("capability_live_result_invalid")
     unsigned = {
-        "schema": "muncho-production-capability-owner-observed-live-run.v1",
+        "schema": "muncho-production-capability-owner-observed-live-run.v2",
         "revision": revision,
         "capability_plan_sha256": plan_sha256,
         "full_canary_plan_sha256": full_canary_plan_sha256,
+        "full_canary_terminal_receipt": copy.deepcopy(dict(terminal)),
+        "full_canary_terminal_receipt_sha256": terminal["receipt_sha256"],
+        "original_full_canary_owner_approval_sha256": terminal["owner_approval_sha256"],
+        "plan_publication_receipt_sha256": live.get("plan_publication_receipt_sha256"),
+        "capability_owner_approval_sha256": live.get(
+            "capability_owner_approval_sha256"
+        ),
+        "lifecycle_start_receipt_sha256": live.get("lifecycle_start_receipt_sha256"),
+        "lifecycle_stop_receipt_sha256": live.get("lifecycle_stop_receipt_sha256"),
         "fixture_sha256": fixture_sha256,
         "run_id": run_id,
         "live_evidence_sha256": live.get("evidence_sha256"),
-        "before_stage_receipt_sha256": stage_receipts["before"][
-            "receipt_sha256"
-        ],
-        "after_stage_receipt_sha256": stage_receipts["after"][
-            "receipt_sha256"
-        ],
-        "production_diff_sha256": stage_receipts["after"][
-            "production_diff_sha256"
-        ],
+        "before_stage_receipt_sha256": stage_receipts["before"]["receipt_sha256"],
+        "after_stage_receipt_sha256": stage_receipts["after"]["receipt_sha256"],
+        "production_diff_sha256": stage_receipts["after"]["production_diff_sha256"],
         "secret_material_recorded": False,
         "secret_digest_recorded": False,
     }
-    for field in ("live_evidence_sha256", "production_diff_sha256"):
+    for field in (
+        "plan_publication_receipt_sha256",
+        "capability_owner_approval_sha256",
+        "lifecycle_start_receipt_sha256",
+        "lifecycle_stop_receipt_sha256",
+        "live_evidence_sha256",
+        "production_diff_sha256",
+    ):
         if re.fullmatch(r"[0-9a-f]{64}", str(unsigned[field] or "")) is None:
             raise OwnerLauncherError("capability_live_result_invalid")
-    return {**unsigned, "receipt_sha256": hashlib.sha256(_canonical_bytes(unsigned)).hexdigest()}
+    return {
+        **unsigned,
+        "receipt_sha256": hashlib.sha256(_canonical_bytes(unsigned)).hexdigest(),
+    }
 
 
 def _validate_producer_install_receipt(
@@ -2366,6 +3254,9 @@ def _validate_producer_install_receipt(
     revision: str,
     plan_sha256: str,
     full_canary_plan_sha256: str,
+    terminal_receipt: Mapping[str, Any],
+    service_identity_foundation_receipt_sha256: str,
+    producer_identity_foundation_receipt_sha256: str,
     preparation_sha256: str,
     foundation_sha256: str,
 ) -> Mapping[str, Any]:
@@ -2374,6 +3265,11 @@ def _validate_producer_install_receipt(
         "revision",
         "capability_plan_sha256",
         "full_canary_plan_sha256",
+        "full_canary_terminal_receipt",
+        "full_canary_terminal_receipt_sha256",
+        "original_full_canary_owner_approval_sha256",
+        "service_identity_foundation_receipt_sha256",
+        "producer_identity_foundation_receipt_sha256",
         "preparation_sha256",
         "foundation_sha256",
         "unit_bundle_manifest_sha256",
@@ -2399,6 +3295,15 @@ def _validate_producer_install_receipt(
         or raw["revision"] != revision
         or raw["capability_plan_sha256"] != plan_sha256
         or raw["full_canary_plan_sha256"] != full_canary_plan_sha256
+        or raw["full_canary_terminal_receipt"] != terminal_receipt
+        or raw["full_canary_terminal_receipt_sha256"]
+        != terminal_receipt["receipt_sha256"]
+        or raw["original_full_canary_owner_approval_sha256"]
+        != terminal_receipt["owner_approval_sha256"]
+        or raw["service_identity_foundation_receipt_sha256"]
+        != service_identity_foundation_receipt_sha256
+        or raw["producer_identity_foundation_receipt_sha256"]
+        != producer_identity_foundation_receipt_sha256
         or raw["preparation_sha256"] != preparation_sha256
         or raw["foundation_sha256"] != foundation_sha256
         or raw["daemon_reload_completed"] is not True
@@ -2410,6 +3315,14 @@ def _validate_producer_install_receipt(
     ):
         raise OwnerLauncherError("capability_producer_install_receipt_invalid")
     _digest(raw["unit_bundle_manifest_sha256"], "producer unit manifest")
+    _digest(
+        raw["service_identity_foundation_receipt_sha256"],
+        "producer service identity foundation",
+    )
+    _digest(
+        raw["producer_identity_foundation_receipt_sha256"],
+        "producer fixed identity foundation",
+    )
     return raw
 
 
@@ -2419,6 +3332,8 @@ def bootstrap_producer_foundation(
     revision: str,
     plan_sha256: str,
     full_canary_plan_sha256: str,
+    plan_publication_receipt_sha256: str,
+    terminal_receipt: Mapping[str, Any],
     owner_signer: Any | None = None,
 ) -> Mapping[str, Any]:
     """Prepare on Cloud, sign exact public bytes locally, install, preflight."""
@@ -2437,11 +3352,20 @@ def bootstrap_producer_foundation(
         raise OwnerLauncherError("capability_producer_binding_invalid")
     _digest(plan_sha256, "capability plan")
     _digest(full_canary_plan_sha256, "full-canary plan")
+    _digest(
+        plan_publication_receipt_sha256,
+        "capability plan publication receipt",
+    )
+    terminal = validate_full_canary_terminal_receipt(
+        terminal_receipt,
+        revision=revision,
+    )
+    if terminal["full_canary_plan_sha256"] != full_canary_plan_sha256:
+        raise OwnerLauncherError("capability_producer_binding_invalid")
     harden_owner_secret_process()
     signer = owner_signer or CapabilityProducerFoundationOwnerSigner()
-    if (
-        not callable(getattr(signer, "inspect", None))
-        or not callable(getattr(signer, "sign", None))
+    if not callable(getattr(signer, "inspect", None)) or not callable(
+        getattr(signer, "sign", None)
     ):
         raise OwnerLauncherError("capability_producer_signer_invalid")
     authority = signer.inspect()
@@ -2453,6 +3377,9 @@ def bootstrap_producer_foundation(
         "revision": revision,
         "capability_plan_sha256": plan_sha256,
         "full_canary_plan_sha256": full_canary_plan_sha256,
+        "full_canary_terminal_receipt": copy.deepcopy(dict(terminal)),
+        "full_canary_terminal_receipt_sha256": terminal["receipt_sha256"],
+        "original_full_canary_owner_approval_sha256": terminal["owner_approval_sha256"],
         "owner_public_authority": authority_mapping,
         "secret_material_recorded": False,
         "semantic_content_recorded": False,
@@ -2462,7 +3389,8 @@ def bootstrap_producer_foundation(
             revision,
             "prepare-producer-foundation",
             frame=_canonical_bytes(prepare_request),
-        )
+        ),
+        expected_plan_publication_receipt_sha256=(plan_publication_receipt_sha256),
     )
     projected_owner = project_pinned_owner_public_key_source(
         authority_mapping,
@@ -2472,17 +3400,39 @@ def bootstrap_producer_foundation(
         preparation["schema"] != FOUNDATION_PREPARATION_SCHEMA
         or preparation["revision"] != revision
         or preparation["capability_plan_sha256"] != plan_sha256
-        or preparation["full_canary_plan_sha256"]
-        != full_canary_plan_sha256
+        or preparation["full_canary_plan_sha256"] != full_canary_plan_sha256
+        or preparation["full_canary_terminal_receipt"] != terminal
+        or preparation["full_canary_terminal_receipt_sha256"]
+        != terminal["receipt_sha256"]
+        or preparation["original_full_canary_owner_approval_sha256"]
+        != terminal["owner_approval_sha256"]
+        or preparation["service_identity_foundation"].get(
+            "plan_publication_receipt_sha256"
+        )
+        != plan_publication_receipt_sha256
+        or preparation["producer_identity_foundation"].get(
+            "plan_publication_receipt_sha256"
+        )
+        != plan_publication_receipt_sha256
+        or preparation["service_identity_foundation_receipt_sha256"]
+        != preparation["service_identity_foundation"]["receipt_sha256"]
+        or preparation["unsigned_foundation"].get(
+            "service_identity_foundation_receipt_sha256"
+        )
+        != preparation["service_identity_foundation_receipt_sha256"]
+        or preparation["producer_identity_foundation_receipt_sha256"]
+        != preparation["producer_identity_foundation"]["receipt_sha256"]
+        or preparation["unsigned_foundation"].get(
+            "producer_identity_foundation_receipt_sha256"
+        )
+        != preparation["producer_identity_foundation_receipt_sha256"]
         or preparation["owner_public_key_ed25519_hex"]
         != authority_mapping.get("public_key_ed25519_hex")
         or preparation["owner_public_key_source_sha256"]
         != projected_owner["public_key_source_sha256"]
     ):
         raise OwnerLauncherError("capability_producer_preparation_invalid")
-    payload = producer_foundation_signature_payload(
-        preparation["unsigned_foundation"]
-    )
+    payload = producer_foundation_signature_payload(preparation["unsigned_foundation"])
     signature = signer.sign(payload, expected_authority=authority)
     sealed = seal_producer_foundation(
         preparation["unsigned_foundation"],
@@ -2509,6 +3459,13 @@ def bootstrap_producer_foundation(
         revision=revision,
         plan_sha256=plan_sha256,
         full_canary_plan_sha256=full_canary_plan_sha256,
+        terminal_receipt=terminal,
+        service_identity_foundation_receipt_sha256=preparation[
+            "service_identity_foundation_receipt_sha256"
+        ],
+        producer_identity_foundation_receipt_sha256=preparation[
+            "producer_identity_foundation_receipt_sha256"
+        ],
         preparation_sha256=preparation["preparation_sha256"],
         foundation_sha256=foundation_sha256,
     )
@@ -2521,16 +3478,33 @@ def bootstrap_producer_foundation(
             "revision",
             "foundation_sha256",
             "preparation_sha256",
+            "full_canary_terminal_receipt",
+            "full_canary_terminal_receipt_sha256",
+            "original_full_canary_owner_approval_sha256",
+            "service_identity_foundation_receipt_sha256",
+            "producer_identity_foundation_receipt_sha256",
             "unit_bundle_manifest_sha256",
             "ready",
             "mutation_performed",
         }
         or preflight.get("schema")
-        != "muncho-capability-producer-installation-preflight.v1"
+        != "muncho-capability-producer-installation-preflight.v2"
         or preflight.get("revision") != revision
         or preflight.get("foundation_sha256") != foundation_sha256
-        or preflight.get("preparation_sha256")
-        != preparation["preparation_sha256"]
+        or preflight.get("full_canary_terminal_receipt") != terminal
+        or preflight.get("full_canary_terminal_receipt_sha256")
+        != terminal["receipt_sha256"]
+        or preflight.get("original_full_canary_owner_approval_sha256")
+        != terminal["owner_approval_sha256"]
+        or preflight.get("service_identity_foundation_receipt_sha256")
+        != preparation["service_identity_foundation_receipt_sha256"]
+        or install.get("service_identity_foundation_receipt_sha256")
+        != preparation["service_identity_foundation_receipt_sha256"]
+        or preflight.get("producer_identity_foundation_receipt_sha256")
+        != preparation["producer_identity_foundation_receipt_sha256"]
+        or install.get("producer_identity_foundation_receipt_sha256")
+        != preparation["producer_identity_foundation_receipt_sha256"]
+        or preflight.get("preparation_sha256") != preparation["preparation_sha256"]
         or preflight.get("unit_bundle_manifest_sha256")
         != install["unit_bundle_manifest_sha256"]
         or preflight.get("ready") is not True
@@ -2542,12 +3516,19 @@ def bootstrap_producer_foundation(
         "revision": revision,
         "capability_plan_sha256": plan_sha256,
         "full_canary_plan_sha256": full_canary_plan_sha256,
+        "full_canary_terminal_receipt": copy.deepcopy(dict(terminal)),
+        "full_canary_terminal_receipt_sha256": terminal["receipt_sha256"],
+        "original_full_canary_owner_approval_sha256": terminal["owner_approval_sha256"],
+        "service_identity_foundation_receipt_sha256": preparation[
+            "service_identity_foundation_receipt_sha256"
+        ],
+        "producer_identity_foundation_receipt_sha256": preparation[
+            "producer_identity_foundation_receipt_sha256"
+        ],
         "preparation_sha256": preparation["preparation_sha256"],
         "foundation_sha256": foundation_sha256,
         "install_receipt_sha256": install["receipt_sha256"],
-        "unit_bundle_manifest_sha256": install[
-            "unit_bundle_manifest_sha256"
-        ],
+        "unit_bundle_manifest_sha256": install["unit_bundle_manifest_sha256"],
         "preflight_ready": True,
         "private_key_loaded_by_launcher": False,
         "secret_material_recorded": False,
@@ -2562,6 +3543,7 @@ def validate_fixture_publication_receipt(
     value: Any,
     *,
     revision: str,
+    authority: Mapping[str, Any],
 ) -> Mapping[str, Any]:
     fields = {
         "schema",
@@ -2569,6 +3551,10 @@ def validate_fixture_publication_receipt(
         "release_sha",
         "capability_plan_sha256",
         "full_canary_plan_sha256",
+        "full_canary_terminal_receipt",
+        "full_canary_terminal_receipt_sha256",
+        "original_full_canary_owner_approval_sha256",
+        "plan_publication_receipt_sha256",
         "producer_foundation_sha256",
         "authority_sha256",
         "fixture_path",
@@ -2583,10 +3569,17 @@ def validate_fixture_publication_receipt(
         or set(value) != fields
         or value.get("schema") != FIXTURE_PUBLICATION_RECEIPT_SCHEMA
         or value.get("release_sha") != revision
+        or value.get("full_canary_terminal_receipt")
+        != authority.get("full_canary_terminal_receipt")
+        or value.get("full_canary_terminal_receipt_sha256")
+        != authority.get("full_canary_terminal_receipt_sha256")
+        or value.get("original_full_canary_owner_approval_sha256")
+        != authority.get("original_full_canary_owner_approval_sha256")
+        or value.get("plan_publication_receipt_sha256")
+        != authority.get("plan_publication_receipt_sha256")
         or _REVISION_RE.fullmatch(revision or "") is None
         or not isinstance(value.get("run_id"), str)
-        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}", value["run_id"])
-        is None
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}", value["run_id"]) is None
         or value.get("fixture_path") != REVIEWED_FIXTURE_PATH
         or type(value.get("published_at_unix_ms")) is not int
         or value["published_at_unix_ms"] <= 0
@@ -2595,6 +3588,9 @@ def validate_fixture_publication_receipt(
     for field in (
         "capability_plan_sha256",
         "full_canary_plan_sha256",
+        "full_canary_terminal_receipt_sha256",
+        "original_full_canary_owner_approval_sha256",
+        "plan_publication_receipt_sha256",
         "producer_foundation_sha256",
         "authority_sha256",
         "fixture_sha256",
@@ -2625,12 +3621,11 @@ def validate_fixture_publication_receipt(
         or identity.get("size", 0) <= 1
     ):
         raise OwnerLauncherError("capability_fixture_publication_receipt_invalid")
-    unsigned = {
-        key: item for key, item in value.items() if key != "receipt_sha256"
-    }
-    if value.get("receipt_sha256") != hashlib.sha256(
-        _canonical_bytes(unsigned)
-    ).hexdigest():
+    unsigned = {key: item for key, item in value.items() if key != "receipt_sha256"}
+    if (
+        value.get("receipt_sha256")
+        != hashlib.sha256(_canonical_bytes(unsigned)).hexdigest()
+    ):
         raise OwnerLauncherError("capability_fixture_publication_receipt_invalid")
     return dict(value)
 
@@ -2649,6 +3644,34 @@ def publish_live_fixture(
         value = _decode_json(bytes(frame), label="capability fixture authority")
         if bytes(frame) != _canonical_bytes(value):
             raise OwnerLauncherError("capability_fixture_authority_input_invalid")
+        authority_fields = {
+            "schema",
+            "run_id",
+            "owner_id",
+            "full_canary_terminal_receipt",
+            "full_canary_terminal_receipt_sha256",
+            "original_full_canary_owner_approval_sha256",
+            "plan_publication_receipt_sha256",
+            "valid_from_unix_ms",
+            "valid_until_unix_ms",
+            "public_discord_target",
+            "producer_foundation_sha256",
+            "owner_key_id",
+            "signature_algorithm",
+            "owner_signature",
+        }
+        terminal = value.get("full_canary_terminal_receipt")
+        if (
+            set(value) != authority_fields
+            or value.get("schema") != CAPABILITY_FIXTURE_AUTHORITY_SCHEMA
+            or not isinstance(terminal, Mapping)
+            or value.get("full_canary_terminal_receipt_sha256")
+            != terminal.get("receipt_sha256")
+            or value.get("original_full_canary_owner_approval_sha256")
+            != terminal.get("owner_approval_sha256")
+        ):
+            raise OwnerLauncherError("capability_fixture_authority_input_invalid")
+        validate_full_canary_terminal_receipt(terminal, revision=revision)
         receipt = transport.invoke(
             revision,
             "publish-live-fixture",
@@ -2657,58 +3680,392 @@ def publish_live_fixture(
         return validate_fixture_publication_receipt(
             receipt,
             revision=revision,
+            authority=value,
         )
     finally:
         _wipe(frame)
+
+
+_PLAN_AUTHORING_RECEIPT_FIELDS = frozenset({
+    "schema",
+    "revision",
+    "full_canary_terminal_receipt",
+    "full_canary_terminal_receipt_sha256",
+    "original_full_canary_owner_approval_sha256",
+    "full_canary_plan_sha256",
+    "foundation_authoring_context_receipt_sha256",
+    "bitrix_foundation_receipt_sha256",
+    "plan_authoring_context",
+    "plan_authoring_context_receipt_sha256",
+    "staged_plan_file_sha256",
+    "capability_inputs_sha256",
+    "capability_plan_sha256",
+    "output_file",
+    "output_file_sha256",
+    "output_file_mode",
+    "mutation_scope",
+    "cloud_mutation_performed",
+    "secret_material_recorded",
+    "semantic_content_recorded",
+    "receipt_sha256",
+})
+
+
+def validate_plan_authoring_receipt(
+    value: Any,
+    *,
+    revision: str,
+    terminal_receipt: Mapping[str, Any],
+    plan_file: Path,
+) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != _PLAN_AUTHORING_RECEIPT_FIELDS:
+        raise OwnerLauncherError("capability_plan_authoring_receipt_invalid")
+    raw = dict(value)
+    unsigned = {key: item for key, item in raw.items() if key != "receipt_sha256"}
+    inputs = read_plan_publication_inputs(plan_file)
+    context = raw.get("plan_authoring_context")
+    if (
+        raw.get("schema") != CAPABILITY_PLAN_AUTHORING_RECEIPT_SCHEMA
+        or raw.get("revision") != revision
+        or raw.get("full_canary_terminal_receipt") != terminal_receipt
+        or raw.get("full_canary_terminal_receipt_sha256")
+        != terminal_receipt.get("receipt_sha256")
+        or raw.get("original_full_canary_owner_approval_sha256")
+        != terminal_receipt.get("owner_approval_sha256")
+        or raw.get("full_canary_plan_sha256")
+        != terminal_receipt.get("full_canary_plan_sha256")
+        or not isinstance(context, Mapping)
+        or raw.get("plan_authoring_context_receipt_sha256")
+        != context.get("receipt_sha256")
+        or context.get("plan_inputs") != inputs
+        or raw.get("capability_inputs_sha256") != inputs.get("inputs_sha256")
+        or raw.get("capability_plan_sha256") != context.get("capability_plan_sha256")
+        or raw.get("output_file") != str(plan_file)
+        or raw.get("output_file_sha256")
+        != hashlib.sha256(_canonical_bytes(inputs)).hexdigest()
+        or raw.get("output_file_mode") != "0600"
+        or raw.get("mutation_scope") != "local_owner_file_create_only"
+        or raw.get("cloud_mutation_performed") is not False
+        or raw.get("secret_material_recorded") is not False
+        or raw.get("semantic_content_recorded") is not False
+        or raw.get("receipt_sha256")
+        != hashlib.sha256(_canonical_bytes(unsigned)).hexdigest()
+    ):
+        raise OwnerLauncherError("capability_plan_authoring_receipt_invalid")
+    for field in _PLAN_AUTHORING_RECEIPT_FIELDS - {
+        "schema",
+        "revision",
+        "full_canary_terminal_receipt",
+        "plan_authoring_context",
+        "output_file",
+        "output_file_mode",
+        "mutation_scope",
+        "cloud_mutation_performed",
+        "secret_material_recorded",
+        "semantic_content_recorded",
+    }:
+        try:
+            _digest(raw.get(field), field)
+        except ValueError:
+            raise OwnerLauncherError(
+                "capability_plan_authoring_receipt_invalid"
+            ) from None
+    return raw
+
+
+_PLAN_PUBLICATION_RECEIPT_FIELDS = frozenset({
+    "schema",
+    "operation",
+    "revision",
+    "plan_sha256",
+    "full_canary_plan_sha256",
+    "full_canary_terminal_receipt",
+    "full_canary_terminal_receipt_sha256",
+    "original_full_canary_owner_approval_sha256",
+    "plan_authoring_context",
+    "plan_authoring_context_receipt_sha256",
+    "plan_path",
+    "plan_file_sha256",
+    "authority_sha256",
+    "owner_subject_sha256",
+    "connector_bot_user_id",
+    "routeback_bot_user_id",
+    "production_bot_user_id",
+    "stopped_service_state_sha256",
+    "prerequisite_evidence_sha256",
+    "receipt_path",
+    "published_at_unix",
+    "secret_material_recorded",
+    "secret_digest_recorded",
+    "semantic_content_recorded",
+    "receipt_sha256",
+})
+
+
+def validate_plan_publication_receipt(
+    value: Any,
+    *,
+    revision: str,
+    terminal_receipt: Mapping[str, Any],
+    authoring_receipt: Mapping[str, Any] | None = None,
+) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != _PLAN_PUBLICATION_RECEIPT_FIELDS:
+        raise OwnerLauncherError("capability_plan_publication_receipt_invalid")
+    raw = dict(value)
+    unsigned = {key: item for key, item in raw.items() if key != "receipt_sha256"}
+    if (
+        raw.get("schema") != CAPABILITY_PLAN_PUBLICATION_RECEIPT_SCHEMA
+        or raw.get("operation") != "publish_capability_plan"
+        or raw.get("revision") != revision
+        or raw.get("full_canary_plan_sha256")
+        != terminal_receipt.get("full_canary_plan_sha256")
+        or raw.get("full_canary_terminal_receipt") != terminal_receipt
+        or raw.get("full_canary_terminal_receipt_sha256")
+        != terminal_receipt.get("receipt_sha256")
+        or raw.get("original_full_canary_owner_approval_sha256")
+        != terminal_receipt.get("owner_approval_sha256")
+        or type(raw.get("published_at_unix")) is not int
+        or raw["published_at_unix"] < 0
+        or raw.get("secret_material_recorded") is not False
+        or raw.get("secret_digest_recorded") is not False
+        or raw.get("semantic_content_recorded") is not False
+        or raw.get("receipt_sha256")
+        != hashlib.sha256(_canonical_bytes(unsigned)).hexdigest()
+    ):
+        raise OwnerLauncherError("capability_plan_publication_receipt_invalid")
+    if authoring_receipt is not None and (
+        raw.get("plan_sha256") != authoring_receipt.get("capability_plan_sha256")
+        or raw.get("plan_authoring_context")
+        != authoring_receipt.get("plan_authoring_context")
+        or raw.get("plan_authoring_context_receipt_sha256")
+        != authoring_receipt.get("plan_authoring_context_receipt_sha256")
+    ):
+        raise OwnerLauncherError("capability_plan_publication_receipt_invalid")
+    for field in (
+        "plan_sha256",
+        "full_canary_plan_sha256",
+        "full_canary_terminal_receipt_sha256",
+        "original_full_canary_owner_approval_sha256",
+        "plan_authoring_context_receipt_sha256",
+        "plan_file_sha256",
+        "authority_sha256",
+        "owner_subject_sha256",
+        "stopped_service_state_sha256",
+        "prerequisite_evidence_sha256",
+        "receipt_sha256",
+    ):
+        try:
+            _digest(raw.get(field), field)
+        except ValueError:
+            raise OwnerLauncherError(
+                "capability_plan_publication_receipt_invalid"
+            ) from None
+    return raw
 
 
 def publish_capability_plan(
     transport: CapabilityCanaryTransport,
     *,
     revision: str,
-    full_canary_plan_sha256: str,
-    plan_sha256: str,
     owner_subject_sha256: str,
     plan_file: Path,
+    terminal_receipt_file: Path,
+    plan_authoring_receipt_file: Path,
 ) -> Mapping[str, Any]:
+    terminal = validate_full_canary_terminal_receipt(
+        _read_owner_canonical_json(
+            terminal_receipt_file,
+            maximum=_MAX_FULL_CANARY_TERMINAL_RECEIPT_BYTES,
+            label="full-canary terminal receipt",
+        ),
+        revision=revision,
+    )
     inputs = read_plan_publication_inputs(plan_file)
+    authoring = validate_plan_authoring_receipt(
+        _read_owner_canonical_json(
+            plan_authoring_receipt_file,
+            maximum=_MAX_FULL_CANARY_TERMINAL_RECEIPT_BYTES,
+            label="capability plan authoring receipt",
+        ),
+        revision=revision,
+        terminal_receipt=terminal,
+        plan_file=plan_file,
+    )
     authority = build_plan_publication_authority(
         revision=revision,
-        full_canary_plan_sha256=full_canary_plan_sha256,
-        plan_sha256=plan_sha256,
+        plan_sha256=authoring["capability_plan_sha256"],
         owner_subject_sha256=owner_subject_sha256,
         inputs=inputs,
+        plan_authoring_context=authoring["plan_authoring_context"],
     )
     frame = bytearray(_canonical_bytes(authority))
     try:
-        return transport.invoke(revision, "publish-plan", frame=frame)
+        return validate_plan_publication_receipt(
+            transport.invoke(revision, "publish-plan", frame=frame),
+            revision=revision,
+            terminal_receipt=terminal,
+            authoring_receipt=authoring,
+        )
     finally:
         _wipe(frame)
+
+
+_BITRIX_FOUNDATION_RECEIPT_FIELDS = frozenset({
+    "operation",
+    "revision",
+    "full_canary_plan_sha256",
+    "release_artifact_sha256",
+    "full_canary_terminal_receipt",
+    "full_canary_terminal_receipt_sha256",
+    "original_full_canary_owner_approval_sha256",
+    "foundation_authoring_context_receipt_sha256",
+    "authority_sha256",
+    "owner_subject_sha256",
+    "expires_at_unix",
+    "expiry_watchdog",
+    "identity_bootstrap_receipt_path",
+    "identity_bootstrap_receipt_sha256",
+    "key_bootstrap_receipt_path",
+    "key_bootstrap_receipt_sha256",
+    "receipt_public_key_id",
+    "asset_manifest_sha256",
+    "asset_verification_sha256",
+    "asset_name_to_id",
+    "rendered_unit_stage_path",
+    "rendered_unit_sha256",
+    "rendered_config_stage_path",
+    "rendered_config_sha256",
+    "rendered_trust_path",
+    "rendered_trust_sha256",
+    "read_peer_uids",
+    "mutation_peer_uid",
+    "private_content_or_digest_recorded",
+    "schema",
+    "receipt_path",
+    "secret_material_recorded",
+    "secret_digest_recorded",
+    "receipt_sha256",
+})
+
+
+def validate_bitrix_foundation_receipt(
+    value: Any,
+    *,
+    revision: str,
+    terminal_receipt: Mapping[str, Any],
+    authoring_receipt: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != _BITRIX_FOUNDATION_RECEIPT_FIELDS
+    ):
+        raise OwnerLauncherError("capability_bitrix_foundation_receipt_invalid")
+    raw = dict(value)
+    unsigned = {key: item for key, item in raw.items() if key != "receipt_sha256"}
+    watchdog = raw.get("expiry_watchdog")
+    if (
+        raw.get("schema") != CAPABILITY_BITRIX_FOUNDATION_RECEIPT_SCHEMA
+        or raw.get("operation") != "bootstrap_bitrix_foundation"
+        or raw.get("revision") != revision
+        or raw.get("full_canary_terminal_receipt") != terminal_receipt
+        or raw.get("full_canary_terminal_receipt_sha256")
+        != terminal_receipt.get("receipt_sha256")
+        or raw.get("original_full_canary_owner_approval_sha256")
+        != terminal_receipt.get("owner_approval_sha256")
+        or raw.get("full_canary_plan_sha256")
+        != terminal_receipt.get("full_canary_plan_sha256")
+        or raw.get("release_artifact_sha256")
+        != authoring_receipt.get("release_artifact_sha256")
+        or raw.get("foundation_authoring_context_receipt_sha256")
+        != authoring_receipt.get("foundation_authoring_context_receipt_sha256")
+        or type(raw.get("expires_at_unix")) is not int
+        or raw["expires_at_unix"] <= 0
+        or not isinstance(watchdog, Mapping)
+        or raw.get("private_content_or_digest_recorded") is not False
+        or raw.get("secret_material_recorded") is not False
+        or raw.get("secret_digest_recorded") is not False
+        or raw.get("receipt_sha256")
+        != hashlib.sha256(_canonical_bytes(unsigned)).hexdigest()
+    ):
+        raise OwnerLauncherError("capability_bitrix_foundation_receipt_invalid")
+    for field in (
+        "full_canary_plan_sha256",
+        "release_artifact_sha256",
+        "full_canary_terminal_receipt_sha256",
+        "original_full_canary_owner_approval_sha256",
+        "foundation_authoring_context_receipt_sha256",
+        "authority_sha256",
+        "owner_subject_sha256",
+        "identity_bootstrap_receipt_sha256",
+        "key_bootstrap_receipt_sha256",
+        "receipt_public_key_id",
+        "asset_manifest_sha256",
+        "asset_verification_sha256",
+        "rendered_unit_sha256",
+        "rendered_config_sha256",
+        "rendered_trust_sha256",
+        "receipt_sha256",
+    ):
+        try:
+            _digest(raw.get(field), field)
+        except ValueError:
+            raise OwnerLauncherError(
+                "capability_bitrix_foundation_receipt_invalid"
+            ) from None
+    return raw
 
 
 def bootstrap_bitrix_foundation(
     transport: CapabilityCanaryTransport,
     *,
     revision: str,
-    full_canary_plan_sha256: str,
-    release_artifact_sha256: str,
     owner_subject_sha256: str,
     foundation_file: Path,
+    terminal_receipt_file: Path,
+    foundation_authoring_receipt_file: Path,
 ) -> Mapping[str, Any]:
+    terminal = validate_full_canary_terminal_receipt(
+        _read_owner_canonical_json(
+            terminal_receipt_file,
+            maximum=_MAX_FULL_CANARY_TERMINAL_RECEIPT_BYTES,
+            label="full-canary terminal receipt",
+        ),
+        revision=revision,
+    )
+    authoring = validate_bitrix_foundation_authoring_receipt(
+        _read_owner_canonical_json(
+            foundation_authoring_receipt_file,
+            maximum=_MAX_FULL_CANARY_TERMINAL_RECEIPT_BYTES,
+            label="Bitrix foundation authoring receipt",
+        ),
+        revision=revision,
+        terminal_receipt=terminal,
+        foundation_file=foundation_file,
+    )
     inputs = read_bitrix_foundation_inputs(foundation_file)
     authority = build_bitrix_foundation_authority(
         revision=revision,
-        full_canary_plan_sha256=full_canary_plan_sha256,
-        release_artifact_sha256=release_artifact_sha256,
         owner_subject_sha256=owner_subject_sha256,
         inputs=inputs,
+        foundation_authoring_context_receipt_sha256=authoring[
+            "foundation_authoring_context_receipt_sha256"
+        ],
     )
     frame = bytearray(_canonical_bytes(authority))
     try:
-        return transport.invoke(
-            revision,
-            "bootstrap-bitrix-foundation",
-            frame=frame,
+        _require_expiry_reserve(
+            authority["expires_at_unix"],
+            label="capability_bitrix_foundation",
+        )
+        return validate_bitrix_foundation_receipt(
+            transport.invoke(
+                revision,
+                "bootstrap-bitrix-foundation",
+                frame=frame,
+            ),
+            revision=revision,
+            terminal_receipt=terminal,
+            authoring_receipt=authoring,
         )
     finally:
         _wipe(frame)
@@ -2733,7 +4090,7 @@ def provision_codex(
             plan_sha256=plan_sha256,
             owner_subject_sha256=owner_subject_sha256,
         )
-        return transport.invoke(revision, "provision-codex", frame=frame)
+        return _invoke_secret_lease(transport, revision, "provision-codex", frame)
     finally:
         _wipe(frame)
         _wipe(token)
@@ -2758,7 +4115,7 @@ def provision_mac_ops(
             plan_sha256=plan_sha256,
             owner_subject_sha256=owner_subject_sha256,
         )
-        return transport.invoke(revision, "provision-mac-ops", frame=frame)
+        return _invoke_secret_lease(transport, revision, "provision-mac-ops", frame)
     finally:
         _wipe(frame)
         _wipe(secret)
@@ -2777,9 +4134,7 @@ def read_discord_connector_token(stream: Any = None) -> bytearray:
         or any(value <= 0x20 or value == 0x7F for value in payload)
     ):
         _wipe(payload)
-        raise OwnerLauncherError(
-            "capability_discord_connector_secret_input_invalid"
-        )
+        raise OwnerLauncherError("capability_discord_connector_secret_input_invalid")
     try:
         payload.decode("ascii", errors="strict")
     except UnicodeError:
@@ -2809,10 +4164,11 @@ def provision_discord_connector(
             plan_sha256=plan_sha256,
             owner_subject_sha256=owner_subject_sha256,
         )
-        return transport.invoke(
+        return _invoke_secret_lease(
+            transport,
             revision,
             "provision-discord-connector",
-            frame=frame,
+            frame,
         )
     finally:
         _wipe(frame)
@@ -2847,10 +4203,11 @@ def provision_api_control(
             plan_sha256=plan_sha256,
             owner_subject_sha256=owner_subject_sha256,
         )
-        return transport.invoke(
+        return _invoke_secret_lease(
+            transport,
             revision,
             "provision-api-control",
-            frame=frame,
+            frame,
         )
     finally:
         _wipe(frame)
@@ -2870,9 +4227,7 @@ def read_discord_routeback_token(stream: Any = None) -> bytearray:
         or any(value <= 0x20 or value == 0x7F for value in payload)
     ):
         _wipe(payload)
-        raise OwnerLauncherError(
-            "capability_discord_routeback_secret_input_invalid"
-        )
+        raise OwnerLauncherError("capability_discord_routeback_secret_input_invalid")
     try:
         payload.decode("ascii", errors="strict")
     except UnicodeError:
@@ -2902,10 +4257,11 @@ def provision_discord_routeback(
             plan_sha256=plan_sha256,
             owner_subject_sha256=owner_subject_sha256,
         )
-        return transport.invoke(
+        return _invoke_secret_lease(
+            transport,
             revision,
             "provision-discord-routeback",
-            frame=frame,
+            frame,
         )
     finally:
         _wipe(frame)
@@ -2957,10 +4313,11 @@ def provision_bitrix_operational_edge(
             plan_sha256=plan_sha256,
             owner_subject_sha256=owner_subject_sha256,
         )
-        return transport.invoke(
+        return _invoke_secret_lease(
+            transport,
             revision,
             "provision-bitrix-operational-edge",
-            frame=frame,
+            frame,
         )
     finally:
         _wipe(frame)
@@ -2972,32 +4329,111 @@ def install_capability_approval(
     *,
     revision: str,
     owner_subject_sha256: str,
+    terminal_receipt_file: Path,
     now_unix: int | None = None,
 ) -> Mapping[str, Any]:
     """Build and install one fresh approval bound to live stopped preflight."""
 
+    terminal = validate_full_canary_terminal_receipt(
+        _read_owner_canonical_json(
+            terminal_receipt_file,
+            maximum=_MAX_FULL_CANARY_TERMINAL_RECEIPT_BYTES,
+            label="full-canary terminal receipt",
+        ),
+        revision=revision,
+    )
     preflight = transport.invoke(revision, "preflight-stopped")
     plan_sha256 = preflight.get("plan_sha256")
     full_plan_sha256 = preflight.get("full_canary_plan_sha256")
     report_sha256 = preflight.get("report_sha256")
     state_sha256 = preflight.get("state_sha256")
+    plan_publication_receipt_sha256 = preflight.get("plan_publication_receipt_sha256")
+    fixture_sha256 = preflight.get("fixture_sha256")
+    fixture_publication_receipt_sha256 = preflight.get(
+        "fixture_publication_receipt_sha256"
+    )
+    lease_expiries = preflight.get("lease_expires_at_unix_by_binding")
+    minimum_lease_expiry = preflight.get("minimum_lease_expires_at_unix")
+    approval_not_after = preflight.get("approval_not_after_unix")
     checks = preflight.get("checks")
     evidence = preflight.get("evidence")
     browser_identity = (
-        evidence.get("browser.host_identity")
-        if isinstance(evidence, Mapping)
-        else None
+        evidence.get("browser.host_identity") if isinstance(evidence, Mapping) else None
     )
     execution_identity = (
         evidence.get("execution.host_identity")
         if isinstance(evidence, Mapping)
         else None
     )
+    service_foundation = (
+        evidence.get("service_identities.foundation")
+        if isinstance(evidence, Mapping)
+        else None
+    )
+    mac_ops_identity = (
+        evidence.get("service_identity.mac_ops")
+        if isinstance(evidence, Mapping)
+        else None
+    )
+    connector_identity = (
+        evidence.get("service_identity.connector")
+        if isinstance(evidence, Mapping)
+        else None
+    )
+    producer_foundation = (
+        evidence.get("producer.foundation") if isinstance(evidence, Mapping) else None
+    )
+    producer_identity = (
+        evidence.get("producer.host_identity")
+        if isinstance(evidence, Mapping)
+        else None
+    )
+    lease_evidence_names = {
+        "api_control": "lease.api_control",
+        "bitrix_operational_edge_webhook": "lease.bitrix_operational_edge",
+        "discord_canonical_routeback_bot_token": "lease.discord_routeback",
+        "discord_public_session_bot_token": "lease.discord_connector",
+        "mac_ops_gitlab": "lease.mac_ops",
+        "openai_codex": "lease.codex",
+    }
+    lease_receipt_sha256_by_binding: dict[str, str] = {}
+    if isinstance(evidence, Mapping):
+        for binding, name in lease_evidence_names.items():
+            item = evidence.get(name)
+            if isinstance(item, Mapping):
+                lease_receipt_sha256_by_binding[binding] = str(
+                    item.get("install_receipt_sha256", "")
+                )
     if (
         preflight.get("schema") != CAPABILITY_PREFLIGHT_SCHEMA
         or preflight.get("ok") is not True
         or preflight.get("phase") != "stopped"
         or preflight.get("revision") != revision
+        or preflight.get("full_canary_terminal_receipt") != terminal
+        or preflight.get("full_canary_terminal_receipt_sha256")
+        != terminal["receipt_sha256"]
+        or preflight.get("original_full_canary_owner_approval_sha256")
+        != terminal["owner_approval_sha256"]
+        or full_plan_sha256 != terminal["full_canary_plan_sha256"]
+        or not isinstance(lease_expiries, Mapping)
+        or set(lease_expiries) != set(lease_evidence_names)
+        or set(lease_receipt_sha256_by_binding) != set(lease_evidence_names)
+        or any(
+            type(value) is not int or value <= 0 for value in lease_expiries.values()
+        )
+        or minimum_lease_expiry != min(lease_expiries.values())
+        or type(preflight.get("fixture_valid_until_unix")) is not int
+        or type(preflight.get("bitrix_foundation_expires_at_unix")) is not int
+        or type(preflight.get("observed_at_unix")) is not int
+        or approval_not_after
+        != min(
+            preflight["observed_at_unix"] + 900,
+            preflight["fixture_valid_until_unix"],
+            minimum_lease_expiry,
+            preflight["bitrix_foundation_expires_at_unix"],
+        )
+        - 5
+        or approval_not_after <= preflight["observed_at_unix"] + 30
         or not isinstance(checks, Mapping)
         or any(
             checks.get(name) is not True
@@ -3009,11 +4445,15 @@ def install_capability_approval(
                 "worker.executables",
                 "worker.systemd252_tmpfs_contract",
                 "execution.host_identity",
+                "service_identities.foundation",
+                "service_identity.mac_ops",
+                "service_identity.connector",
+                "producer.foundation",
+                "producer.host_identity",
             )
         )
         or not isinstance(browser_identity, Mapping)
-        or browser_identity.get("schema")
-        != CAPABILITY_BROWSER_HOST_IDENTITY_SCHEMA
+        or browser_identity.get("schema") != CAPABILITY_BROWSER_HOST_IDENTITY_SCHEMA
         or browser_identity.get("plan_sha256") != plan_sha256
         or browser_identity.get("create_only_eligible") is not True
         or not isinstance(browser_identity.get("receipt_sha256"), str)
@@ -3022,14 +4462,35 @@ def install_capability_approval(
         )
         is None
         or not isinstance(execution_identity, Mapping)
-        or execution_identity.get("schema")
-        != CAPABILITY_EXECUTION_HOST_IDENTITY_SCHEMA
+        or execution_identity.get("schema") != CAPABILITY_EXECUTION_HOST_IDENTITY_SCHEMA
         or execution_identity.get("plan_sha256") != plan_sha256
         or execution_identity.get("create_only_eligible") is not True
         or __import__("re").fullmatch(
             r"[0-9a-f]{64}", execution_identity.get("receipt_sha256", "")
         )
         is None
+        or not isinstance(service_foundation, Mapping)
+        or service_foundation.get("receipt_sha256")
+        != preflight.get("service_identity_foundation_receipt_sha256")
+        or not isinstance(mac_ops_identity, Mapping)
+        or mac_ops_identity.get("schema") != CAPABILITY_SERVICE_HOST_IDENTITY_SCHEMA
+        or mac_ops_identity.get("role") != "mac_ops"
+        or mac_ops_identity.get("state") != "present_exact"
+        or mac_ops_identity.get("plan_sha256") != plan_sha256
+        or not isinstance(connector_identity, Mapping)
+        or connector_identity.get("schema") != CAPABILITY_SERVICE_HOST_IDENTITY_SCHEMA
+        or connector_identity.get("role") != "connector"
+        or connector_identity.get("state") != "present_exact"
+        or connector_identity.get("plan_sha256") != plan_sha256
+        or not isinstance(producer_foundation, Mapping)
+        or producer_foundation.get("producer_identity_foundation_receipt_sha256")
+        != preflight.get("producer_identity_foundation_receipt_sha256")
+        or not isinstance(producer_identity, Mapping)
+        or producer_identity.get("schema")
+        != "muncho-production-capability-producer-host-identity.v2"
+        or producer_identity.get("plan_sha256") != plan_sha256
+        or producer_identity.get("create_only_eligible") is not True
+        or producer_identity.get("persistent_supplementary_memberships") is not False
         or any(
             not isinstance(value, str)
             or __import__("re").fullmatch(r"[0-9a-f]{64}", value) is None
@@ -3038,42 +4499,91 @@ def install_capability_approval(
                 full_plan_sha256,
                 report_sha256,
                 state_sha256,
+                plan_publication_receipt_sha256,
+                fixture_sha256,
+                fixture_publication_receipt_sha256,
+                preflight.get("service_identity_foundation_receipt_sha256"),
+                preflight.get("producer_identity_foundation_receipt_sha256"),
+                preflight.get("bitrix_expiry_watchdog_authority_sha256"),
+                *lease_receipt_sha256_by_binding.values(),
             )
         )
     ):
         raise OwnerLauncherError("capability_stopped_preflight_invalid")
     approved = int(time.time()) if now_unix is None else now_unix
-    if type(approved) is not int or approved < 0:
+    observed = preflight.get("observed_at_unix")
+    expires = approval_not_after
+    if (
+        type(approved) is not int
+        or approved < 0
+        or type(observed) is not int
+        or not observed <= approved <= observed + 30
+        or expires - approved < 30
+    ):
         raise OwnerLauncherError("capability_owner_approval_time_invalid")
     source = {
-        "schema": "muncho-production-capability-owner-approval-source.v1",
+        "schema": CAPABILITY_APPROVAL_SOURCE_SCHEMA,
         "scope": "production_capability_canary_runtime_start",
         "revision": revision,
         "plan_sha256": plan_sha256,
         "full_canary_plan_sha256": full_plan_sha256,
+        "full_canary_terminal_receipt": copy.deepcopy(dict(terminal)),
+        "full_canary_terminal_receipt_sha256": terminal["receipt_sha256"],
+        "original_full_canary_owner_approval_sha256": terminal["owner_approval_sha256"],
         "owner_subject_sha256": owner_subject_sha256,
-        "stopped_preflight_sha256": report_sha256,
+        "plan_publication_receipt_sha256": (plan_publication_receipt_sha256),
+        "stopped_preflight_report_sha256": report_sha256,
         "stopped_preflight_state_sha256": state_sha256,
+        "stopped_preflight_observed_at_unix": observed,
+        "fixture_sha256": fixture_sha256,
+        "fixture_publication_receipt_sha256": (fixture_publication_receipt_sha256),
+        "lease_install_receipt_sha256_by_binding": dict(
+            sorted(lease_receipt_sha256_by_binding.items())
+        ),
+        "bitrix_expiry_watchdog_authority_sha256": preflight[
+            "bitrix_expiry_watchdog_authority_sha256"
+        ],
+        "approval_not_after_unix": approval_not_after,
         "approved_at_unix": approved,
+        "expires_at_unix": expires,
     }
     approval = {
         "schema": CAPABILITY_APPROVAL_SCHEMA,
         "scope": "production_capability_canary_runtime_start",
         "plan_sha256": plan_sha256,
         "full_canary_plan_sha256": full_plan_sha256,
+        "full_canary_terminal_receipt": copy.deepcopy(dict(terminal)),
+        "full_canary_terminal_receipt_sha256": terminal["receipt_sha256"],
+        "original_full_canary_owner_approval_sha256": terminal["owner_approval_sha256"],
         "authority_kind": "trusted_root_bootstrap_out_of_band_owner",
         "cryptographic_owner_proof": False,
         "owner_subject_sha256": owner_subject_sha256,
-        "approval_source_sha256": hashlib.sha256(
-            _canonical_bytes(source)
-        ).hexdigest(),
+        "approval_source_sha256": hashlib.sha256(_canonical_bytes(source)).hexdigest(),
+        "plan_publication_receipt_sha256": (plan_publication_receipt_sha256),
+        "stopped_preflight_report_sha256": report_sha256,
         "stopped_preflight_state_sha256": state_sha256,
+        "stopped_preflight_observed_at_unix": observed,
+        "fixture_sha256": fixture_sha256,
+        "fixture_publication_receipt_sha256": (fixture_publication_receipt_sha256),
+        "lease_install_receipt_sha256_by_binding": dict(
+            sorted(lease_receipt_sha256_by_binding.items())
+        ),
+        "bitrix_expiry_watchdog_authority_sha256": preflight[
+            "bitrix_expiry_watchdog_authority_sha256"
+        ],
+        "approval_not_after_unix": approval_not_after,
         "nonce_sha256": hashlib.sha256(secrets.token_bytes(32)).hexdigest(),
         "approved_at_unix": approved,
-        "expires_at_unix": approved + 300,
+        "expires_at_unix": expires,
     }
     frame = bytearray(_canonical_bytes(approval))
     try:
+        _require_expiry_reserve(
+            expires,
+            label="capability_owner_approval",
+            now_unix=now_unix,
+            minimum_seconds=30,
+        )
         return transport.invoke(revision, "install-approval", frame=frame)
     finally:
         _wipe(frame)
@@ -3089,6 +4599,7 @@ def _parser() -> argparse.ArgumentParser:
         choices=(
             "contract",
             "storage-preflight",
+            "author-bitrix-foundation-inputs",
             "author-plan-inputs",
             "author-live-fixture",
             "bootstrap-bitrix-foundation",
@@ -3115,7 +4626,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--full-canary-plan-sha256")
     parser.add_argument("--plan-file", type=Path)
     parser.add_argument("--foundation-file", type=Path)
-    parser.add_argument("--release-artifact-sha256")
+    parser.add_argument("--foundation-authoring-receipt-file", type=Path)
+    parser.add_argument("--bitrix-foundation-receipt-file", type=Path)
+    parser.add_argument("--plan-authoring-receipt-file", type=Path)
+    parser.add_argument("--plan-publication-receipt-file", type=Path)
     parser.add_argument("--codex-auth-path", type=Path)
     parser.add_argument("--fixture-sha256")
     parser.add_argument("--run-id")
@@ -3126,10 +4640,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--valid-for-seconds", type=int)
     parser.add_argument("--connector-bot-user-id")
     parser.add_argument("--routeback-bot-user-id")
-    for field in sorted(_PLAN_INPUT_IDENTITY_FIELDS):
-        parser.add_argument(f"--{field.replace('_', '-')}", type=int)
-    for field in sorted(_PLAN_INPUT_ARTIFACT_FIELDS):
-        parser.add_argument(f"--{field.replace('_', '-')}")
     return parser
 
 
@@ -3167,28 +4677,37 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.run_id is not None
         ):
             raise OwnerLauncherError("capability_canary_command_invalid")
-        plan_identity_values = {
-            field: getattr(args, field) for field in _PLAN_INPUT_IDENTITY_FIELDS
-        }
-        plan_artifact_values = {
-            field: getattr(args, field) for field in _PLAN_INPUT_ARTIFACT_FIELDS
-        }
         if args.action != "author-plan-inputs" and any(
             value is not None
             for value in (
                 args.connector_bot_user_id,
                 args.routeback_bot_user_id,
-                *plan_identity_values.values(),
-                *plan_artifact_values.values(),
             )
         ):
             raise OwnerLauncherError("capability_canary_command_invalid")
-        if args.action not in {"author-plan-inputs", "author-live-fixture"} and any(
-            value is not None
-            for value in (
-                args.full_canary_receipt_file,
-                args.output_file,
-            )
+        if (
+            args.action
+            not in {
+                "author-bitrix-foundation-inputs",
+                "author-plan-inputs",
+                "author-live-fixture",
+                "bootstrap-bitrix-foundation",
+                "bootstrap-producer-foundation",
+                "publish-plan",
+                "install-approval",
+                "run-live-observed",
+            }
+            and args.full_canary_receipt_file is not None
+        ):
+            raise OwnerLauncherError("capability_canary_command_invalid")
+        if (
+            args.action
+            not in {
+                "author-bitrix-foundation-inputs",
+                "author-plan-inputs",
+                "author-live-fixture",
+            }
+            and args.output_file is not None
         ):
             raise OwnerLauncherError("capability_canary_command_invalid")
         if args.action != "author-live-fixture" and any(
@@ -3201,17 +4720,36 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise OwnerLauncherError("capability_canary_command_invalid")
         if args.action != "bootstrap-bitrix-foundation" and (
             args.foundation_file is not None
-            or args.release_artifact_sha256 is not None
         ):
             raise OwnerLauncherError("capability_canary_command_invalid")
-        if args.action == "author-plan-inputs":
+        if (
+            args.action
+            not in {
+                "bootstrap-bitrix-foundation",
+                "author-plan-inputs",
+            }
+            and args.foundation_authoring_receipt_file is not None
+        ):
+            raise OwnerLauncherError("capability_canary_command_invalid")
+        if (
+            args.action != "author-plan-inputs"
+            and args.bitrix_foundation_receipt_file is not None
+        ):
+            raise OwnerLauncherError("capability_canary_command_invalid")
+        if (
+            args.action != "publish-plan"
+            and args.plan_authoring_receipt_file is not None
+        ):
+            raise OwnerLauncherError("capability_canary_command_invalid")
+        if (
+            args.action != "author-live-fixture"
+            and args.plan_publication_receipt_file is not None
+        ):
+            raise OwnerLauncherError("capability_canary_command_invalid")
+        if args.action == "author-bitrix-foundation-inputs":
             if (
                 args.full_canary_receipt_file is None
                 or args.output_file is None
-                or not args.connector_bot_user_id
-                or not args.routeback_bot_user_id
-                or any(value is None for value in plan_identity_values.values())
-                or any(value is None for value in plan_artifact_values.values())
                 or any(
                     value is not None
                     for value in (
@@ -3219,7 +4757,36 @@ def main(argv: Sequence[str] | None = None) -> int:
                         args.full_canary_plan_sha256,
                         args.plan_file,
                         args.foundation_file,
-                        args.release_artifact_sha256,
+                        args.codex_auth_path,
+                    )
+                )
+            ):
+                raise OwnerLauncherError(
+                    "capability_bitrix_foundation_authoring_binding_missing"
+                )
+            if transport is None:
+                raise OwnerLauncherError("capability_canary_transport_invalid")
+            result = author_bitrix_foundation_inputs(
+                transport,
+                revision=args.revision,
+                terminal_receipt_file=args.full_canary_receipt_file,
+                output_file=args.output_file,
+            )
+        elif args.action == "author-plan-inputs":
+            if (
+                args.full_canary_receipt_file is None
+                or args.foundation_authoring_receipt_file is None
+                or args.bitrix_foundation_receipt_file is None
+                or args.output_file is None
+                or not args.connector_bot_user_id
+                or not args.routeback_bot_user_id
+                or any(
+                    value is not None
+                    for value in (
+                        args.plan_sha256,
+                        args.full_canary_plan_sha256,
+                        args.plan_file,
+                        args.foundation_file,
                         args.codex_auth_path,
                     )
                 )
@@ -3231,16 +4798,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 transport,
                 revision=args.revision,
                 terminal_receipt_file=args.full_canary_receipt_file,
+                foundation_authoring_receipt_file=(
+                    args.foundation_authoring_receipt_file
+                ),
+                bitrix_foundation_receipt_file=(args.bitrix_foundation_receipt_file),
                 output_file=args.output_file,
-                identities=plan_identity_values,
                 connector_bot_user_id=args.connector_bot_user_id,
                 routeback_bot_user_id=args.routeback_bot_user_id,
-                artifacts=plan_artifact_values,
             )
         elif args.action == "author-live-fixture":
             if (
                 args.full_canary_receipt_file is None
                 or args.producer_receipt_file is None
+                or args.plan_publication_receipt_file is None
                 or args.output_file is None
                 or not args.run_id
                 or args.valid_for_seconds is None
@@ -3251,7 +4821,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                         args.full_canary_plan_sha256,
                         args.plan_file,
                         args.foundation_file,
-                        args.release_artifact_sha256,
                         args.codex_auth_path,
                     )
                 )
@@ -3261,6 +4830,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 revision=args.revision,
                 terminal_receipt_file=args.full_canary_receipt_file,
                 producer_receipt_file=args.producer_receipt_file,
+                plan_publication_receipt_file=(args.plan_publication_receipt_file),
                 output_file=args.output_file,
                 run_id=args.run_id,
                 valid_for_seconds=args.valid_for_seconds,
@@ -3269,41 +4839,44 @@ def main(argv: Sequence[str] | None = None) -> int:
             if transport is None or owner_subject is None:
                 raise OwnerLauncherError("capability_canary_transport_invalid")
             if (
-                not args.full_canary_plan_sha256
-                or not args.release_artifact_sha256
+                args.full_canary_receipt_file is None
+                or args.foundation_authoring_receipt_file is None
                 or args.foundation_file is None
                 or args.plan_sha256 is not None
+                or args.full_canary_plan_sha256 is not None
                 or args.plan_file is not None
                 or args.codex_auth_path is not None
             ):
-                raise OwnerLauncherError(
-                    "capability_bitrix_foundation_binding_missing"
-                )
+                raise OwnerLauncherError("capability_bitrix_foundation_binding_missing")
             result = bootstrap_bitrix_foundation(
                 transport,
                 revision=args.revision,
-                full_canary_plan_sha256=args.full_canary_plan_sha256,
-                release_artifact_sha256=args.release_artifact_sha256,
                 owner_subject_sha256=owner_subject,
                 foundation_file=args.foundation_file,
+                terminal_receipt_file=args.full_canary_receipt_file,
+                foundation_authoring_receipt_file=(
+                    args.foundation_authoring_receipt_file
+                ),
             )
         elif args.action == "publish-plan":
             if transport is None or owner_subject is None:
                 raise OwnerLauncherError("capability_canary_transport_invalid")
             if (
-                not args.plan_sha256
-                or not args.full_canary_plan_sha256
+                args.full_canary_receipt_file is None
+                or args.plan_authoring_receipt_file is None
                 or args.plan_file is None
+                or args.plan_sha256 is not None
+                or args.full_canary_plan_sha256 is not None
                 or args.codex_auth_path is not None
             ):
                 raise OwnerLauncherError("capability_plan_binding_missing")
             result = publish_capability_plan(
                 transport,
                 revision=args.revision,
-                full_canary_plan_sha256=args.full_canary_plan_sha256,
-                plan_sha256=args.plan_sha256,
                 owner_subject_sha256=owner_subject,
                 plan_file=args.plan_file,
+                terminal_receipt_file=args.full_canary_receipt_file,
+                plan_authoring_receipt_file=args.plan_authoring_receipt_file,
             )
         elif args.action == "bootstrap-producer-foundation":
             if transport is None:
@@ -3311,23 +4884,45 @@ def main(argv: Sequence[str] | None = None) -> int:
             if (
                 not args.plan_sha256
                 or not args.full_canary_plan_sha256
+                or args.full_canary_receipt_file is None
+                or args.plan_publication_receipt_file is None
                 or args.plan_file is not None
                 or args.codex_auth_path is not None
             ):
+                raise OwnerLauncherError("capability_producer_binding_missing")
+            terminal_receipt = validate_full_canary_terminal_receipt(
+                _read_owner_canonical_json(
+                    args.full_canary_receipt_file,
+                    maximum=_MAX_FULL_CANARY_TERMINAL_RECEIPT_BYTES,
+                    label="full-canary terminal receipt",
+                ),
+                revision=args.revision,
+            )
+            plan_publication_receipt = validate_plan_publication_receipt(
+                _read_owner_canonical_json(
+                    args.plan_publication_receipt_file,
+                    maximum=_MAX_FULL_CANARY_TERMINAL_RECEIPT_BYTES,
+                    label="capability plan publication receipt",
+                ),
+                revision=args.revision,
+                terminal_receipt=terminal_receipt,
+            )
+            if plan_publication_receipt["plan_sha256"] != args.plan_sha256:
                 raise OwnerLauncherError("capability_producer_binding_missing")
             result = bootstrap_producer_foundation(
                 transport,
                 revision=args.revision,
                 plan_sha256=args.plan_sha256,
                 full_canary_plan_sha256=args.full_canary_plan_sha256,
+                plan_publication_receipt_sha256=(
+                    plan_publication_receipt["receipt_sha256"]
+                ),
+                terminal_receipt=terminal_receipt,
             )
         elif args.action == "provision-codex":
             if transport is None or owner_subject is None:
                 raise OwnerLauncherError("capability_canary_transport_invalid")
-            if (
-                args.full_canary_plan_sha256 is not None
-                or args.plan_file is not None
-            ):
+            if args.full_canary_plan_sha256 is not None or args.plan_file is not None:
                 raise OwnerLauncherError("capability_canary_command_invalid")
             if not args.plan_sha256:
                 raise OwnerLauncherError("capability_plan_binding_missing")
@@ -3409,7 +5004,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 owner_subject_sha256=owner_subject,
             )
         elif args.action == "install-approval":
-            if any(
+            if args.full_canary_receipt_file is None or any(
                 value is not None
                 for value in (
                     args.plan_sha256,
@@ -3423,6 +5018,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 transport,
                 revision=args.revision,
                 owner_subject_sha256=owner_subject,
+                terminal_receipt_file=args.full_canary_receipt_file,
             )
         elif args.action == "publish-live-fixture":
             if any(
@@ -3443,25 +5039,27 @@ def main(argv: Sequence[str] | None = None) -> int:
             if (
                 not args.plan_sha256
                 or not args.full_canary_plan_sha256
+                or args.full_canary_receipt_file is None
                 or not args.fixture_sha256
                 or not args.run_id
                 or args.plan_file is not None
                 or args.codex_auth_path is not None
                 or args.foundation_file is not None
-                or args.release_artifact_sha256 is not None
             ):
-                raise OwnerLauncherError(
-                    "production_observation_binding_invalid"
-                )
+                raise OwnerLauncherError("production_observation_binding_invalid")
             result = run_live_with_owner_production_observations(
                 transport,
-                CapabilityProductionObservationTransport(
-                    revision=args.revision
-                ),
+                CapabilityProductionObservationTransport(revision=args.revision),
                 revision=args.revision,
                 plan_sha256=args.plan_sha256,
-                full_canary_plan_sha256=(
-                    args.full_canary_plan_sha256
+                full_canary_plan_sha256=(args.full_canary_plan_sha256),
+                terminal_receipt=validate_full_canary_terminal_receipt(
+                    _read_owner_canonical_json(
+                        args.full_canary_receipt_file,
+                        maximum=_MAX_FULL_CANARY_TERMINAL_RECEIPT_BYTES,
+                        label="full-canary terminal receipt",
+                    ),
+                    revision=args.revision,
                 ),
                 fixture_sha256=args.fixture_sha256,
                 run_id=args.run_id,

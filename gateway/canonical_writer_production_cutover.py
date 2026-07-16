@@ -51,6 +51,7 @@ from gateway.production_capability_prerequisites import (
     MAC_OPS_UNIT,
     PHASE_B_RECEIPT_PATH,
     PHASE_B_UNIT,
+    FIRST_WAVE_TOOLSETS,
     PREREQUISITE_LIFECYCLE_STAGED,
     ROUTEBACK_EDGE_CONFIG_PATH,
     ROUTEBACK_EDGE_UNIT,
@@ -105,6 +106,15 @@ ROLLBACK_TERMINAL_SCHEMA = (
 LEGACY_TRUTH_DECISION_SCHEMA = "muncho-production-legacy-truth-decision.v1"
 LEGACY_RESEED_MANIFEST_SCHEMA = "muncho-production-legacy-reseed-manifest.v1"
 NEW_TRUTH_EPOCH_SCHEMA = "muncho-production-new-truth-epoch.v1"
+ISOLATED_CANARY_GOAL_PREREQUISITE_SCHEMA = (
+    "muncho-production-isolated-canary-goal-prerequisite.v2"
+)
+ISOLATION_EQUIVALENCE_SCHEMA = (
+    "muncho-production-isolation-equivalence-projection.v1"
+)
+CAPABILITY_PREREQUISITE_ACCEPTANCE_SCHEMA = (
+    "muncho-production-capability-prerequisite-acceptance.v3"
+)
 
 PROJECT = "adventico-ai-platform"
 ZONE = "europe-west3-a"
@@ -241,6 +251,208 @@ def _owner_runtime_attestation(value: Any, *, revision: str) -> dict[str, Any]:
     except production_owner_runtime.ProductionOwnerRuntimeError as exc:
         raise ValueError("owner runtime attestation is invalid") from exc
     return copy.deepcopy(dict(validated))
+
+
+_ISOLATED_CANARY_GOAL_PREREQUISITE_FIELDS = frozenset({
+    "schema",
+    "fixture",
+    "fixture_sha256",
+    "workspace_gateway",
+    "workspace_gateway_receipt_sha256",
+    "cleanup_receipt",
+    "cleanup_receipt_sha256",
+    "goal_continuation_terminal_schema",
+    "goal_continuation_terminal_sha256",
+    "isolation_equivalence_projection",
+    "isolation_equivalence_projection_sha256",
+    "production_diff_sha256",
+    "production_diff",
+    "production_diff_file_sha256",
+    "run_id",
+    "release_revision",
+    "capability_plan_sha256",
+    "full_canary_plan_sha256",
+    "canary_owner_approval_receipt_sha256",
+    "canary_production_mutation_observed",
+    "secret_material_recorded",
+    "secret_digest_recorded",
+    "evidence_sha256",
+})
+
+
+def _validate_isolated_canary_goal_prerequisite(
+    value: Any,
+    *,
+    revision: str,
+) -> dict[str, Any]:
+    """Validate the exact signed isolated-canary terminal selected by owner.
+
+    The Ed25519 trust path and terminal semantics live in the canary verifier;
+    this production edge adds only an exact owner-authority binding.  Keeping
+    the full fixture and signed envelope inside the signed FreezePlan prevents
+    substitution of a different run, release, fixture, or evidence envelope.
+    """
+
+    from gateway import canonical_capability_canary_e2e as canary_e2e
+    from gateway import canonical_capability_canary_runtime as canary_runtime
+
+    raw = _hashed(
+        value,
+        _ISOLATED_CANARY_GOAL_PREREQUISITE_FIELDS,
+        "evidence_sha256",
+        "isolated canary goal prerequisite",
+    )
+    fixture = raw["fixture"]
+    envelope = raw["workspace_gateway"]
+    cleanup_receipt = raw["cleanup_receipt"]
+    production_diff = raw["production_diff"]
+    if (
+        not isinstance(fixture, Mapping)
+        or not isinstance(envelope, Mapping)
+        or not isinstance(cleanup_receipt, Mapping)
+        or not isinstance(production_diff, Mapping)
+        or raw["fixture_sha256"] != _sha256_json(fixture)
+    ):
+        raise ValueError("isolated canary fixture binding is invalid")
+    try:
+        terminal = canary_e2e.validate_goal_continuation_terminal_receipt(
+            envelope,
+            fixture=fixture,
+            fixture_sha256=raw["fixture_sha256"],
+        )
+    except (KeyError, TypeError, ValueError, RuntimeError) as exc:
+        raise ValueError("isolated canary goal terminal is invalid") from exc
+    projection = terminal["isolation_equivalence_projection"]
+    try:
+        validated_diff = canary_runtime.validate_capability_production_diff(
+            production_diff,
+            run_id=terminal["run_id"],
+            revision=terminal["release_sha"],
+            capability_plan_sha256=terminal["capability_plan_sha256"],
+            full_canary_plan_sha256=terminal[
+                "full_canary_plan_sha256"
+            ],
+            fixture_sha256=terminal["fixture_sha256"],
+        )
+        validated_cleanup = (
+            canary_e2e.validate_cleanup_production_diff_receipt(
+                cleanup_receipt,
+                fixture=fixture,
+                fixture_sha256=raw["fixture_sha256"],
+                production_diff_sha256=validated_diff["diff_sha256"],
+            )
+        )
+    except (KeyError, TypeError, ValueError, RuntimeError) as exc:
+        raise ValueError(
+            "isolated canary native production diff is invalid"
+        ) from exc
+    if (
+        raw["schema"] != ISOLATED_CANARY_GOAL_PREREQUISITE_SCHEMA
+        or raw["release_revision"] != revision
+        or terminal["release_sha"] != revision
+        or raw["workspace_gateway_receipt_sha256"]
+        != _sha256_json(envelope)
+        or raw["cleanup_receipt_sha256"]
+        != _sha256_json(validated_cleanup)
+        or raw["goal_continuation_terminal_schema"]
+        != canary_e2e.GOAL_CONTINUATION_TERMINAL_SCHEMA
+        or raw["goal_continuation_terminal_schema"] != terminal["schema"]
+        or raw["goal_continuation_terminal_sha256"]
+        != terminal["terminal_sha256"]
+        or raw["isolation_equivalence_projection"] != projection
+        or raw["isolation_equivalence_projection_sha256"]
+        != terminal["isolation_equivalence_projection_sha256"]
+        or raw["isolation_equivalence_projection_sha256"]
+        != _sha256_json(projection)
+        or raw["production_diff_sha256"]
+        != terminal["production_diff_sha256"]
+        or raw["production_diff_sha256"] != validated_diff["diff_sha256"]
+        or raw["production_diff_file_sha256"]
+        != _sha256_json(validated_diff)
+        or raw["run_id"] != terminal["run_id"]
+        or raw["fixture_sha256"] != terminal["fixture_sha256"]
+        or raw["capability_plan_sha256"]
+        != terminal["capability_plan_sha256"]
+        or raw["full_canary_plan_sha256"]
+        != terminal["full_canary_plan_sha256"]
+        or raw["canary_owner_approval_receipt_sha256"]
+        != terminal["owner_approval_receipt_sha256"]
+        or raw["canary_production_mutation_observed"] is not False
+        or validated_diff["production_mutation_observed"] is not False
+        or projection["production_mutation_observed"] is not False
+        or raw["secret_material_recorded"] is not False
+        or raw["secret_digest_recorded"] is not False
+    ):
+        raise ValueError("isolated canary goal prerequisite binding is invalid")
+    return raw
+
+
+def build_isolated_canary_goal_prerequisite(
+    *,
+    fixture: Mapping[str, Any],
+    fixture_sha256: str,
+    workspace_gateway: Mapping[str, Any],
+    cleanup_receipt: Mapping[str, Any],
+    production_diff: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Build the public evidence object that an owner may bind into cutover."""
+
+    from gateway import canonical_capability_canary_e2e as canary_e2e
+
+    terminal = canary_e2e.validate_goal_continuation_terminal_receipt(
+        workspace_gateway,
+        fixture=fixture,
+        fixture_sha256=fixture_sha256,
+    )
+    projection = terminal["isolation_equivalence_projection"]
+    from gateway import canonical_capability_canary_runtime as canary_runtime
+
+    validated_diff = canary_runtime.validate_capability_production_diff(
+        production_diff,
+        run_id=terminal["run_id"],
+        revision=terminal["release_sha"],
+        capability_plan_sha256=terminal["capability_plan_sha256"],
+        full_canary_plan_sha256=terminal["full_canary_plan_sha256"],
+        fixture_sha256=terminal["fixture_sha256"],
+    )
+    validated_cleanup = canary_e2e.validate_cleanup_production_diff_receipt(
+        cleanup_receipt,
+        fixture=fixture,
+        fixture_sha256=fixture_sha256,
+        production_diff_sha256=validated_diff["diff_sha256"],
+    )
+    unsigned = {
+        "schema": ISOLATED_CANARY_GOAL_PREREQUISITE_SCHEMA,
+        "fixture": copy.deepcopy(dict(fixture)),
+        "fixture_sha256": fixture_sha256,
+        "workspace_gateway": copy.deepcopy(dict(workspace_gateway)),
+        "workspace_gateway_receipt_sha256": _sha256_json(workspace_gateway),
+        "cleanup_receipt": copy.deepcopy(dict(validated_cleanup)),
+        "cleanup_receipt_sha256": _sha256_json(validated_cleanup),
+        "goal_continuation_terminal_schema": terminal["schema"],
+        "goal_continuation_terminal_sha256": terminal["terminal_sha256"],
+        "isolation_equivalence_projection": copy.deepcopy(dict(projection)),
+        "isolation_equivalence_projection_sha256": terminal[
+            "isolation_equivalence_projection_sha256"
+        ],
+        "production_diff_sha256": validated_diff["diff_sha256"],
+        "production_diff": copy.deepcopy(dict(validated_diff)),
+        "production_diff_file_sha256": _sha256_json(validated_diff),
+        "run_id": terminal["run_id"],
+        "release_revision": terminal["release_sha"],
+        "capability_plan_sha256": terminal["capability_plan_sha256"],
+        "full_canary_plan_sha256": terminal["full_canary_plan_sha256"],
+        "canary_owner_approval_receipt_sha256": terminal[
+            "owner_approval_receipt_sha256"
+        ],
+        "canary_production_mutation_observed": False,
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+    }
+    return _validate_isolated_canary_goal_prerequisite(
+        {**unsigned, "evidence_sha256": _sha256_json(unsigned)},
+        revision=terminal["release_sha"],
+    )
 
 
 _SERVICE_FIELDS = frozenset({
@@ -779,13 +991,14 @@ _CUTOVER_AUTHORITY_FIELDS = frozenset({
     "cron_continuity_plan",
     "mechanical_job_host_facts",
     "mechanical_job_package",
+    "isolated_canary_goal_prerequisite",
     "legacy_truth_decision",
     "final_tail_bounds",
     "rollback_contract",
     "secret_material_recorded",
     "authority_sha256",
 })
-_CUTOVER_AUTHORITY_SCHEMA = "muncho-production-cutover-authority.v1"
+_CUTOVER_AUTHORITY_SCHEMA = "muncho-production-cutover-authority.v3"
 
 
 def _validate_cutover_authority(
@@ -849,6 +1062,10 @@ def _validate_cutover_authority(
         raise ValueError("cutover cron continuity authority is invalid") from exc
     if continuity_plan["cutover_executable"] is not True:
         raise ValueError("cutover cron continuity authority is not executable")
+    canary_goal = _validate_isolated_canary_goal_prerequisite(
+        raw["isolated_canary_goal_prerequisite"],
+        revision=revision,
+    )
     _validate_host_transition(
         raw["host_transition"],
         gateway_pre=gateway_pre,
@@ -904,6 +1121,7 @@ def _validate_cutover_authority(
         "cron_continuity_plan": copy.deepcopy(dict(continuity_plan)),
         "mechanical_job_host_facts": copy.deepcopy(dict(host_facts)),
         "mechanical_job_package": copy.deepcopy(dict(mechanical_package)),
+        "isolated_canary_goal_prerequisite": copy.deepcopy(dict(canary_goal)),
         "legacy_truth_decision": copy.deepcopy(dict(decision)),
     }
 
@@ -924,6 +1142,7 @@ def build_cutover_authority(
     cron_continuity_plan: Mapping[str, Any],
     mechanical_job_host_facts: Mapping[str, Any],
     mechanical_job_package: Mapping[str, Any],
+    isolated_canary_goal_prerequisite: Mapping[str, Any],
     legacy_truth_decision: Mapping[str, Any],
     max_appended_rows: int,
     max_capture_delay_seconds: int,
@@ -944,6 +1163,9 @@ def build_cutover_authority(
             dict(mechanical_job_host_facts)
         ),
         "mechanical_job_package": copy.deepcopy(dict(mechanical_job_package)),
+        "isolated_canary_goal_prerequisite": copy.deepcopy(
+            dict(isolated_canary_goal_prerequisite)
+        ),
         "legacy_truth_decision": copy.deepcopy(dict(legacy_truth_decision)),
         "final_tail_bounds": {
             "max_appended_rows": max_appended_rows,
@@ -3065,11 +3287,370 @@ class CapabilityPrerequisiteBoundary(Protocol):
     def collect_and_validate(self, plan: CutoverPlan) -> Mapping[str, Any]: ...
 
 
+_ISOLATION_EQUIVALENCE_FIELDS = frozenset({
+    "schema",
+    "plan_sha256",
+    "run_id",
+    "release_revision",
+    "fixture_sha256",
+    "workspace_gateway_receipt_sha256",
+    "goal_continuation_terminal_sha256",
+    "canary_projection_sha256",
+    "normalized_canary_projection_sha256",
+    "normalized_production_projection_sha256",
+    "environment_specific_fields_normalized",
+    "production_gateway_config_sha256",
+    "production_model_route",
+    "canary_semantic_config_contract_sha256",
+    "production_semantic_config_contract",
+    "production_semantic_config_contract_sha256",
+    "canary_ordered_toolsets_sha256",
+    "production_ordered_toolsets",
+    "production_ordered_toolsets_sha256",
+    "canary_capability_role_topology_contract_sha256",
+    "production_capability_role_topology_contract",
+    "production_capability_role_topology_contract_sha256",
+    "production_capability_topology_identity_sha256",
+    "production_mutation_observed",
+    "equivalent",
+    "projection_sha256",
+})
+
+_PRE_DB_ZERO_WRITE_OBSERVATION_FIELDS = frozenset({
+    "schema",
+    "plan_sha256",
+    "gateway_fenced",
+    "writer_stopped",
+    "connector_active",
+    "final_legacy_snapshot",
+    "frozen_truth_sha256",
+    "canonical_database_write_path_stopped",
+    "legacy_schema_not_applied",
+    "canonical_database_mutation_observed",
+    "staging_and_service_lifecycle_mutations_observed",
+    "observed_at_unix",
+    "observation_sha256",
+})
+
+
+def _build_pre_db_zero_write_observation(
+    *,
+    plan: CutoverPlan,
+    gateway: ServiceObservation,
+    writer: ServiceObservation,
+    connector: ServiceObservation,
+    snapshot: LegacySnapshot,
+) -> dict[str, Any]:
+    """Bind the exact fenced pre-DB state, not a self-asserted boolean."""
+
+    def _expected_staged_identity(
+        identity: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        # The owner-approved target identity describes the committed boot
+        # state.  Before the activation intent every newly installed unit is
+        # deliberately disabled, even when the connector is already running
+        # for readiness.  Normalize only that lifecycle field; every file,
+        # drop-in and executable identity remains byte-exact.
+        expected = copy.deepcopy(dict(identity))
+        expected["unit_file_state"] = "disabled"
+        return expected
+
+    if (
+        not gateway.stopped
+        or not writer.stopped
+        or connector.value["active_state"] != "active"
+        or gateway.stable_identity()
+        != _expected_staged_identity(plan.value["gateway_target_identity"])
+        or writer.stable_identity()
+        != _expected_staged_identity(plan.value["writer_target_identity"])
+        or connector.stable_identity()
+        != _expected_staged_identity(plan.value["connector_target_identity"])
+        or snapshot.frozen_truth() != plan.final_snapshot.frozen_truth()
+        or snapshot.value["shape"] != "legacy19"
+    ):
+        raise ProductionCutoverError(
+            "production_pre_db_zero_write_observation_invalid"
+        )
+    observed = max(
+        gateway.value["observed_at_unix"],
+        writer.value["observed_at_unix"],
+        connector.value["observed_at_unix"],
+        snapshot.value["observed_at_unix"],
+    )
+    unsigned = {
+        "schema": "muncho-production-pre-db-zero-write-observation.v2",
+        "plan_sha256": plan.sha256,
+        "gateway_fenced": gateway.to_mapping(),
+        "writer_stopped": writer.to_mapping(),
+        "connector_active": connector.to_mapping(),
+        "final_legacy_snapshot": snapshot.to_mapping(),
+        "frozen_truth_sha256": _sha256_json(snapshot.frozen_truth()),
+        "canonical_database_write_path_stopped": True,
+        "legacy_schema_not_applied": True,
+        "canonical_database_mutation_observed": False,
+        "staging_and_service_lifecycle_mutations_observed": True,
+        "observed_at_unix": observed,
+    }
+    return {**unsigned, "observation_sha256": _sha256_json(unsigned)}
+
+
+def _require_pre_db_zero_write_observation(
+    value: Any,
+    *,
+    plan: CutoverPlan,
+) -> dict[str, Any]:
+    raw = _hashed(
+        value,
+        _PRE_DB_ZERO_WRITE_OBSERVATION_FIELDS,
+        "observation_sha256",
+        "production pre-DB zero-write observation",
+    )
+    try:
+        expected = _build_pre_db_zero_write_observation(
+            plan=plan,
+            gateway=ServiceObservation.from_mapping(raw["gateway_fenced"]),
+            writer=ServiceObservation.from_mapping(raw["writer_stopped"]),
+            connector=ServiceObservation.from_mapping(raw["connector_active"]),
+            snapshot=LegacySnapshot.from_mapping(raw["final_legacy_snapshot"]),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ProductionCutoverError(
+            "production_pre_db_zero_write_observation_invalid"
+        ) from exc
+    if raw != expected:
+        raise ProductionCutoverError(
+            "production_pre_db_zero_write_observation_invalid"
+        )
+    return raw
+
+
+def _build_production_isolation_equivalence(
+    *,
+    plan: CutoverPlan,
+    evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project canary and production onto one environment-neutral contract.
+
+    Only the reviewed Discord channel is environment-specific.  Every model,
+    semantic-authority, task-workspace, transport, restart, prompt-cache, and
+    tool-schema field stays byte-exact.  The production release, config,
+    toolset and service-topology identities remain explicit in the receipt.
+    """
+
+    from gateway import canonical_capability_canary_e2e as canary_e2e
+
+    canary = copy.deepcopy(dict(evidence["isolation_equivalence_projection"]))
+    production_semantic = canary_e2e.build_semantic_config_contract()
+    production_toolsets = list(FIRST_WAVE_TOOLSETS)
+    production_topology = canary_e2e.build_capability_role_topology_contract(
+        public_discord_target={
+            "target_type": "public_channel",
+            "guild_id": SKYVISION_GUILD_ID,
+            "channel_id": SKYVISION_CONTROL_TOWER_CHANNEL_ID,
+        },
+        discord_bot_identities={
+            "production_bot_user_id": (
+                canary_e2e.PRODUCTION_DISCORD_BOT_USER_ID
+            ),
+            "connector_bot_user_id": (
+                canary_e2e.PRODUCTION_DISCORD_CONNECTOR_BOT_USER_ID
+            ),
+            "routeback_bot_user_id": (
+                canary_e2e.PRODUCTION_DISCORD_ROUTEBACK_BOT_USER_ID
+            ),
+        },
+    )
+    production_semantic_sha256 = _sha256_json(production_semantic)
+    production_toolsets_sha256 = _sha256_json(
+        {"toolsets": production_toolsets}
+    )
+    production_topology_sha256 = _sha256_json(production_topology)
+    production = {
+        "model": "gpt-5.6-sol",
+        "provider": "openai-codex",
+        "api_mode": "codex_responses",
+        "fallback_configured": False,
+        "fallback_used": False,
+        "goal_manager": production_semantic["goals"]["manager"],
+        "model_semantic_authority": True,
+        "auxiliary_semantic_authority": False,
+        "canonical_task_workspace": "durable_restart_recovery_v1",
+        "discord_transport": production_semantic["discord"][
+            "public_transport"
+        ],
+        "discord_guild_id": SKYVISION_GUILD_ID,
+        "discord_channel_id": SKYVISION_CONTROL_TOWER_CHANNEL_ID,
+        "direct_discord_in_gateway": production_semantic["discord"][
+            "direct_discord_in_gateway"
+        ],
+        "discord_dm_enabled": production_semantic["discord"]["dm_enabled"],
+        "full_gateway_restart": True,
+        "min_model_authored_continue_outcomes": 2,
+        "user_preemption_queue_preserved": True,
+        "production_mutation_observed": False,
+        "prompt_cache_stable": True,
+        "tool_schema_stable": True,
+        "semantic_config_contract": production_semantic,
+        "semantic_config_contract_sha256": production_semantic_sha256,
+        "ordered_toolsets": production_toolsets,
+        "ordered_toolsets_sha256": production_toolsets_sha256,
+        "capability_role_topology_contract": production_topology,
+        "capability_role_topology_contract_sha256": (
+            production_topology_sha256
+        ),
+    }
+    normalized_canary = copy.deepcopy(canary)
+    normalized_production = copy.deepcopy(production)
+    for projection in (normalized_canary, normalized_production):
+        projection["discord_channel_id"] = "<environment-specific-channel>"
+        projection["capability_role_topology_contract"][
+            "public_discord_target"
+        ]["channel_id"] = "<environment-specific-channel>"
+        projection["capability_role_topology_contract_sha256"] = _sha256_json(
+            projection["capability_role_topology_contract"]
+        )
+    normalized_canary_sha256 = _sha256_json(normalized_canary)
+    normalized_production_sha256 = _sha256_json(normalized_production)
+    capability_topology = plan.value["capability_topology"]
+    topology_sha256 = production_capability_topology_identity_sha256(
+        capability_topology
+    )
+    production_model_route = {
+        "model": "gpt-5.6-sol",
+        "provider": "openai-codex",
+        "api_mode": "codex_responses",
+        "fallback_configured": False,
+    }
+    host_transition = plan.value["host_transition"]
+    if (
+        evidence["release_revision"] != plan.value["release_revision"]
+        or canary["discord_guild_id"] != SKYVISION_GUILD_ID
+        or canary["model"] != production_model_route["model"]
+        or canary["provider"] != production_model_route["provider"]
+        or canary["api_mode"] != production_model_route["api_mode"]
+        or canary["fallback_configured"] is not False
+        or canary["fallback_used"] is not False
+        or canary["production_mutation_observed"] is not False
+        or canary["semantic_config_contract"] != production_semantic
+        or canary["semantic_config_contract_sha256"]
+        != production_semantic_sha256
+        or canary["ordered_toolsets"] != production_toolsets
+        or canary["ordered_toolsets_sha256"]
+        != production_toolsets_sha256
+        or plan.value["gateway_target_identity"]["name"]
+        != production_topology["gateway"]["service_unit"]
+        or plan.value["writer_target_identity"]["name"]
+        != production_topology["canonical_writer"]["service_unit"]
+        or capability_topology["public_connector"]["unit"]
+        != production_topology["discord_connector"]["service_unit"]
+        or capability_topology["routeback_edge"]["unit"]
+        != production_topology["discord_routeback"]["service_unit"]
+        or host_transition["gateway_direct_discord_enabled"] is not False
+        or host_transition["discord_dm_allowed"] is not False
+        or production_semantic["goals"]["max_turns"] != 0
+        or production_semantic["kanban"]
+        != {
+            "auxiliary_planning_enabled": False,
+            "auto_decompose": False,
+            "dispatch_in_gateway": False,
+        }
+        or production_semantic["canonical_writer"]
+        != {
+            "privileged_writer_boundary_enabled": True,
+            "gateway_direct_write_enabled": False,
+            "dangerous_mutation_requires_owner_approval": True,
+        }
+        or production_semantic["discord"]
+        != {
+            "public_transport": "credential_free_local_connector_relay",
+            "direct_discord_in_gateway": False,
+            "dm_enabled": False,
+        }
+        or normalized_canary_sha256 != normalized_production_sha256
+    ):
+        raise ProductionCutoverError(
+            "production_isolation_equivalence_projection_invalid"
+        )
+    unsigned = {
+        "schema": ISOLATION_EQUIVALENCE_SCHEMA,
+        "plan_sha256": plan.sha256,
+        "run_id": evidence["run_id"],
+        "release_revision": plan.value["release_revision"],
+        "fixture_sha256": evidence["fixture_sha256"],
+        "workspace_gateway_receipt_sha256": evidence[
+            "workspace_gateway_receipt_sha256"
+        ],
+        "goal_continuation_terminal_sha256": evidence[
+            "goal_continuation_terminal_sha256"
+        ],
+        "canary_projection_sha256": evidence[
+            "isolation_equivalence_projection_sha256"
+        ],
+        "normalized_canary_projection_sha256": normalized_canary_sha256,
+        "normalized_production_projection_sha256": (
+            normalized_production_sha256
+        ),
+        "environment_specific_fields_normalized": [
+            "discord_channel_id",
+            (
+                "capability_role_topology_contract."
+                "public_discord_target.channel_id"
+            ),
+        ],
+        "production_gateway_config_sha256": plan.value["host_transition"][
+            "files"
+        ]["gateway_config"]["sha256"],
+        "production_model_route": production_model_route,
+        "canary_semantic_config_contract_sha256": canary[
+            "semantic_config_contract_sha256"
+        ],
+        "production_semantic_config_contract": production_semantic,
+        "production_semantic_config_contract_sha256": (
+            production_semantic_sha256
+        ),
+        "canary_ordered_toolsets_sha256": canary[
+            "ordered_toolsets_sha256"
+        ],
+        "production_ordered_toolsets": production_toolsets,
+        "production_ordered_toolsets_sha256": production_toolsets_sha256,
+        "canary_capability_role_topology_contract_sha256": canary[
+            "capability_role_topology_contract_sha256"
+        ],
+        "production_capability_role_topology_contract": production_topology,
+        "production_capability_role_topology_contract_sha256": (
+            production_topology_sha256
+        ),
+        "production_capability_topology_identity_sha256": topology_sha256,
+        "production_mutation_observed": False,
+        "equivalent": True,
+    }
+    return {**unsigned, "projection_sha256": _sha256_json(unsigned)}
+
+
 class ProductionCapabilityPrerequisiteBoundary:
     """Re-attest the exact root-collected receipt before any forward edge."""
 
+    def __init__(
+        self,
+        *,
+        services: ServiceBoundary,
+        snapshots: SnapshotBoundary,
+    ) -> None:
+        self._services = services
+        self._snapshots = snapshots
+
     def collect_and_validate(self, plan: CutoverPlan) -> Mapping[str, Any]:
         topology = plan.value["capability_topology"]
+        canary_evidence = _validate_isolated_canary_goal_prerequisite(
+            plan.value["freeze_plan"]["cutover_authority"][
+                "isolated_canary_goal_prerequisite"
+            ],
+            revision=plan.value["release_revision"],
+        )
+        equivalence = _build_production_isolation_equivalence(
+            plan=plan,
+            evidence=canary_evidence,
+        )
         try:
             collect_and_install_from_production_config(
                 revision=plan.value["release_revision"],
@@ -3083,19 +3664,68 @@ class ProductionCapabilityPrerequisiteBoundary:
                 topology=topology,
                 lifecycle_phase=PREREQUISITE_LIFECYCLE_STAGED,
             )
+            pre_db_observation = _build_pre_db_zero_write_observation(
+                plan=plan,
+                gateway=self._services.observe_gateway(),
+                writer=self._services.observe_writer(),
+                connector=self._services.observe_connector(),
+                snapshot=self._snapshots.observe_before_apply(plan),
+            )
         except (TypeError, ValueError, RuntimeError) as exc:
             raise ProductionCutoverError(
                 "production_capability_prerequisite_invalid"
             ) from exc
         unsigned = {
-            "schema": "muncho-production-capability-prerequisite-acceptance.v1",
+            "schema": CAPABILITY_PREREQUISITE_ACCEPTANCE_SCHEMA,
             "plan_sha256": plan.sha256,
+            "production_owner_approval_sha256": plan.value[
+                "freeze_approval_sha256"
+            ],
             "prerequisite_receipt_sha256": current["receipt_sha256"],
             "prerequisite_file_sha256": _sha256_json(current),
             "topology_identity_sha256": (
                 production_capability_topology_identity_sha256(topology)
             ),
             "boot_id_sha256": current["boot_id_sha256"],
+            "pre_db_zero_write_observation": pre_db_observation,
+            "pre_db_zero_write_observation_sha256": pre_db_observation[
+                "observation_sha256"
+            ],
+            "isolated_canary_evidence_sha256": canary_evidence[
+                "evidence_sha256"
+            ],
+            "workspace_gateway_receipt_sha256": canary_evidence[
+                "workspace_gateway_receipt_sha256"
+            ],
+            "goal_continuation_terminal_schema": canary_evidence[
+                "goal_continuation_terminal_schema"
+            ],
+            "goal_continuation_terminal_sha256": canary_evidence[
+                "goal_continuation_terminal_sha256"
+            ],
+            "canary_run_id": canary_evidence["run_id"],
+            "canary_release_revision": canary_evidence["release_revision"],
+            "canary_fixture_sha256": canary_evidence["fixture_sha256"],
+            "canary_capability_plan_sha256": canary_evidence[
+                "capability_plan_sha256"
+            ],
+            "canary_full_canary_plan_sha256": canary_evidence[
+                "full_canary_plan_sha256"
+            ],
+            "canary_owner_approval_receipt_sha256": canary_evidence[
+                "canary_owner_approval_receipt_sha256"
+            ],
+            "production_diff_sha256": canary_evidence[
+                "production_diff_sha256"
+            ],
+            "isolation_equivalence_projection": equivalence,
+            "isolation_equivalence_projection_sha256": equivalence[
+                "projection_sha256"
+            ],
+            "zero_canonical_database_mutation_observed": (
+                pre_db_observation["canonical_database_mutation_observed"]
+                is False
+            ),
             "ok": True,
             "secret_material_recorded": False,
             "secret_digest_recorded": False,
@@ -3821,10 +4451,27 @@ _CAPABILITY_PREREQUISITE_ACCEPTANCE_FIELDS = frozenset(
     {
         "schema",
         "plan_sha256",
+        "production_owner_approval_sha256",
         "prerequisite_receipt_sha256",
         "prerequisite_file_sha256",
         "topology_identity_sha256",
         "boot_id_sha256",
+        "pre_db_zero_write_observation",
+        "pre_db_zero_write_observation_sha256",
+        "isolated_canary_evidence_sha256",
+        "workspace_gateway_receipt_sha256",
+        "goal_continuation_terminal_schema",
+        "goal_continuation_terminal_sha256",
+        "canary_run_id",
+        "canary_release_revision",
+        "canary_fixture_sha256",
+        "canary_capability_plan_sha256",
+        "canary_full_canary_plan_sha256",
+        "canary_owner_approval_receipt_sha256",
+        "production_diff_sha256",
+        "isolation_equivalence_projection",
+        "isolation_equivalence_projection_sha256",
+        "zero_canonical_database_mutation_observed",
         "ok",
         "secret_material_recorded",
         "secret_digest_recorded",
@@ -3844,10 +4491,25 @@ def _require_capability_prerequisite_acceptance(
         "receipt_sha256",
         "production capability prerequisite acceptance",
     )
+    canary_evidence = _validate_isolated_canary_goal_prerequisite(
+        plan.value["freeze_plan"]["cutover_authority"][
+            "isolated_canary_goal_prerequisite"
+        ],
+        revision=plan.value["release_revision"],
+    )
+    expected_equivalence = _build_production_isolation_equivalence(
+        plan=plan,
+        evidence=canary_evidence,
+    )
+    pre_db_observation = _require_pre_db_zero_write_observation(
+        raw["pre_db_zero_write_observation"],
+        plan=plan,
+    )
     if (
-        raw["schema"]
-        != "muncho-production-capability-prerequisite-acceptance.v1"
+        raw["schema"] != CAPABILITY_PREREQUISITE_ACCEPTANCE_SCHEMA
         or raw["plan_sha256"] != plan.sha256
+        or raw["production_owner_approval_sha256"]
+        != plan.value["freeze_approval_sha256"]
         or _SHA256.fullmatch(str(raw["prerequisite_receipt_sha256"])) is None
         or _SHA256.fullmatch(str(raw["prerequisite_file_sha256"])) is None
         or raw["topology_identity_sha256"]
@@ -3855,6 +4517,69 @@ def _require_capability_prerequisite_acceptance(
             plan.value["capability_topology"]
         )
         or _SHA256.fullmatch(str(raw["boot_id_sha256"])) is None
+        or raw["pre_db_zero_write_observation_sha256"]
+        != pre_db_observation["observation_sha256"]
+        or raw["goal_continuation_terminal_schema"]
+        != canary_evidence["goal_continuation_terminal_schema"]
+        or raw["canary_release_revision"] != plan.value["release_revision"]
+        or raw["isolated_canary_evidence_sha256"]
+        != canary_evidence["evidence_sha256"]
+        or raw["workspace_gateway_receipt_sha256"]
+        != canary_evidence["workspace_gateway_receipt_sha256"]
+        or raw["goal_continuation_terminal_sha256"]
+        != canary_evidence["goal_continuation_terminal_sha256"]
+        or raw["canary_run_id"] != canary_evidence["run_id"]
+        or raw["canary_fixture_sha256"] != canary_evidence["fixture_sha256"]
+        or raw["canary_capability_plan_sha256"]
+        != canary_evidence["capability_plan_sha256"]
+        or raw["canary_full_canary_plan_sha256"]
+        != canary_evidence["full_canary_plan_sha256"]
+        or raw["canary_owner_approval_receipt_sha256"]
+        != canary_evidence["canary_owner_approval_receipt_sha256"]
+        or raw["production_diff_sha256"]
+        != canary_evidence["production_diff_sha256"]
+        or any(
+            _SHA256.fullmatch(str(raw[field])) is None
+            for field in (
+                "isolated_canary_evidence_sha256",
+                "workspace_gateway_receipt_sha256",
+                "goal_continuation_terminal_sha256",
+                "canary_fixture_sha256",
+                "canary_capability_plan_sha256",
+                "canary_full_canary_plan_sha256",
+                "canary_owner_approval_receipt_sha256",
+                "production_diff_sha256",
+                "isolation_equivalence_projection_sha256",
+            )
+        )
+        or not isinstance(raw["canary_run_id"], str)
+        or not raw["canary_run_id"]
+        or not isinstance(raw["isolation_equivalence_projection"], Mapping)
+        or set(raw["isolation_equivalence_projection"])
+        != _ISOLATION_EQUIVALENCE_FIELDS
+        or raw["isolation_equivalence_projection_sha256"]
+        != raw["isolation_equivalence_projection"]["projection_sha256"]
+        or raw["isolation_equivalence_projection"] != expected_equivalence
+        or _sha256_json({
+            key: item
+            for key, item in raw["isolation_equivalence_projection"].items()
+            if key != "projection_sha256"
+        })
+        != raw["isolation_equivalence_projection_sha256"]
+        or raw["isolation_equivalence_projection"]["plan_sha256"]
+        != plan.sha256
+        or raw["isolation_equivalence_projection"]["equivalent"] is not True
+        or raw["isolation_equivalence_projection"][
+            "production_mutation_observed"
+        ] is not False
+        or raw["zero_canonical_database_mutation_observed"]
+        is not (
+            pre_db_observation["canonical_database_mutation_observed"]
+            is False
+        )
+        or pre_db_observation[
+            "staging_and_service_lifecycle_mutations_observed"
+        ] is not True
         or raw["ok"] is not True
         or raw["secret_material_recorded"] is not False
         or raw["secret_digest_recorded"] is not False
@@ -5994,6 +6719,31 @@ def execute_cutover(
                 "capability_prerequisite_file_sha256": (
                     prerequisite_acceptance["prerequisite_file_sha256"]
                 ),
+                "isolated_canary_goal_continuation_terminal_sha256": (
+                    prerequisite_acceptance[
+                        "goal_continuation_terminal_sha256"
+                    ]
+                ),
+                "isolated_canary_workspace_gateway_receipt_sha256": (
+                    prerequisite_acceptance[
+                        "workspace_gateway_receipt_sha256"
+                    ]
+                ),
+                "isolation_equivalence_projection_sha256": (
+                    prerequisite_acceptance[
+                        "isolation_equivalence_projection_sha256"
+                    ]
+                ),
+                "zero_canonical_database_mutation_observed": (
+                    prerequisite_acceptance[
+                        "zero_canonical_database_mutation_observed"
+                    ]
+                ),
+                "pre_db_zero_write_observation_sha256": (
+                    prerequisite_acceptance[
+                        "pre_db_zero_write_observation_sha256"
+                    ]
+                ),
                 "capability_topology_identity_sha256": (
                     production_capability_topology_identity_sha256(
                         plan.value["capability_topology"]
@@ -6189,7 +6939,10 @@ def execute_fixed_staged(command: str) -> Mapping[str, Any]:
                 snapshots=process,
                 database=ProductionDatabaseArtifactBoundary(process),
                 host=ProductionHostArtifactBoundary(process),
-                prerequisites=ProductionCapabilityPrerequisiteBoundary(),
+                prerequisites=ProductionCapabilityPrerequisiteBoundary(
+                    services=services,
+                    snapshots=process,
+                ),
                 journal=journal,
                 cron=ProductionCronCutoverBoundary(),
             ),
@@ -6252,7 +7005,8 @@ __all__ = [
     "ProductionDatabaseArtifactBoundary", "ProductionHostArtifactBoundary",
     "ProductionSystemdServiceBoundary",
     "RootCutoverJournal", "ServiceObservation",
-    "abort_freeze", "approval_signature_payload", "build_cutover_plan", "build_freeze_plan",
+    "abort_freeze", "approval_signature_payload", "build_cutover_plan",
+    "build_freeze_plan", "build_isolated_canary_goal_prerequisite",
     "execute_cutover", "execute_final_tail_capture", "execute_fixed_staged",
     "main",
 ]

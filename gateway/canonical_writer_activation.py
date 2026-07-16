@@ -57,6 +57,11 @@ from gateway.canonical_writer_host_authority import (
     owner_approval_receipt_path,
     write_native_observation_stage,
 )
+from gateway.canonical_projection_export import (
+    ProjectionExportError,
+    projection_provenance_sha256,
+    validate_projection_export,
+)
 
 
 ACTIVATION_PLAN_SCHEMA = "muncho-writer-only-activation-plan.v4"
@@ -3203,10 +3208,17 @@ def _validate_projection(
         trusted_parents=False,
     )
     value = _decode_strict_json(raw, label="projection export")
-    if set(value) != {"events"} or not isinstance(value["events"], list):
-        raise RuntimeError("projection export fields are not exact")
+    try:
+        events, provenance = validate_projection_export(
+            value,
+            maximum_events=1_000_000,
+        )
+    except ProjectionExportError as exc:
+        raise RuntimeError("projection export fields or provenance are invalid") from exc
     return {
-        "event_count": len(value["events"]),
+        "event_count": len(events),
+        "provenance_count": len(provenance),
+        "provenance_sha256": projection_provenance_sha256(provenance),
         "sha256": _sha256_bytes(raw),
         "size": len(raw),
         "owner_uid": identities.writer_uid,

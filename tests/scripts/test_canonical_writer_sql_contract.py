@@ -670,9 +670,25 @@ def test_event_retry_readback_uses_original_provenance_runtime():
     assert "'observed_session', provenance_runtime" in dedupe
 
 
+def test_event_append_receipt_exposes_only_database_verified_identity_fields():
+    append = _function_definition("_append_event")
+    dedupe = append.split("IF FOUND THEN", 1)[1].split(
+        "INSERT INTO public.canonical_event_log", 1
+    )[0]
+    inserted = append.split("INSERT INTO public.canonical_event_log", 1)[1]
+
+    for branch in (dedupe, inserted):
+        assert "'idempotency_key', identity_value" in branch
+        assert "'canonical_content_sha256', content_sha" in branch
+        assert "'readback_verified', true" in branch
+
+
 def test_case_scope_is_server_observed_and_rechecked_under_case_lock():
     scope = _function_definition("_case_scope_authorized")
-    assert "runtime_value->>'owner_authenticated' = 'true'" in scope
+    assert (
+        "runtime_value->>'owner_authenticated' IS NOT DISTINCT FROM 'true'"
+        in scope
+    )
     assert "provenance.trusted_runtime->>'session_key_sha256'" in scope
     assert "provenance.trusted_runtime->>'thread_id'" in scope
     assert "event.source->'source_refs'" not in scope
@@ -777,18 +793,55 @@ def test_routeback_claim_uses_exact_guild_shape_and_returns_claim_time():
     assert "WHEN 'guild_channel'" in target_helper
     assert "NOT (value ? 'parent_channel_id')" in target_helper
     assert "WHEN 'guild_thread'" in target_helper
-    assert "value->>'parent_channel_id' <> value->>'channel_id'" in target_helper
+    assert re.search(
+        r"value->>'parent_channel_id'\s+"
+        r"IS DISTINCT FROM value->>'channel_id'",
+        target_helper,
+    )
+    assert "LANGUAGE sql\nIMMUTABLE" in target_helper
+    assert "writer_event_provenance" not in target_helper
+    assert "channel.alias.learned" not in target_helper
+    for approved_channel_id in (
+        "1504852355588423801",
+        "1510888721614901358",
+        "1504852408227069993",
+        "1504852444407140402",
+        "1504852485083496561",
+        "1504852553031221391",
+        "1504852628373373028",
+        "1505499746939174993",
+        "1507239177350283274",
+        "1507239385010016308",
+    ):
+        assert approved_channel_id in target_helper
     assert "WHEN 'public_guild_channel'" in target_helper
     assert "value->>'channel_id' = '1526858760100909066'" in target_helper
     assert "WHEN 'public_guild_thread'" not in target_helper
     assert "ELSE false" in target_helper
     for field in ("platform", "adapter_receipt", "receipt_readback_verified"):
         assert f"receipt_value->'{field}'" in sent or f"receipt_value->>'{field}'" in sent
-    assert "receipt_value->>'platform' <> 'discord'" in sent
-    assert "receipt_value->'adapter_receipt' <> 'true'::jsonb" in sent
-    assert "receipt_value->'receipt_readback_verified' <> 'true'::jsonb" in sent
-    assert "receipt_value->>'content_sha256' <> authorization_record.content_sha256" in sent
-    assert "receipt_value->>'channel_id' <> target_id" in sent
+    assert "receipt_value->>'platform' IS DISTINCT FROM 'discord'" in sent
+    assert "receipt_value->'adapter_receipt' IS DISTINCT FROM 'true'::jsonb" in sent
+    assert re.search(
+        r"receipt_value->'receipt_readback_verified'\s+"
+        r"IS DISTINCT FROM 'true'::jsonb",
+        sent,
+    )
+    assert re.search(
+        r"receipt_value->>'content_sha256'\s+"
+        r"IS DISTINCT FROM authorization_record\.content_sha256",
+        sent,
+    )
+    assert "receipt_value->>'channel_id' IS DISTINCT FROM target_id" in sent
+    assert "receipt_value->>'public_receipt_sha256'" in sent
+    assert sent.count("'public_receipt_sha256'") >= 2
+    assert re.search(
+        r"terminal_record\.receipt\s*=\s*receipt_value\s*-\s*"
+        r"'public_receipt_sha256'",
+        sent,
+    )
+    assert "'receipt', terminal_record.receipt" in sent
+    assert "'legacy_receipt_read_only', legacy_receipt_read_only" in sent
     assert "route_back.sent" in sent
     assert "route_back.blocked" in blocked
     assert "'partial_receipt', receipt_value" in blocked
@@ -798,11 +851,12 @@ def test_routeback_claim_uses_exact_guild_shape_and_returns_claim_time():
         "                   IS DISTINCT FROM 'true'::jsonb"
     ) in blocked
     assert "'route_back_sent_receipt_persistence_failed'" in blocked
-    assert "receipt_value->>'channel_id' <> target_id" in blocked
-    assert (
-        "receipt_value->>'content_sha256'\n"
-        "               <> authorization_record.content_sha256"
-    ) in blocked
+    assert "receipt_value->>'channel_id' IS DISTINCT FROM target_id" in blocked
+    assert re.search(
+        r"receipt_value->>'content_sha256'\s+"
+        r"IS DISTINCT FROM authorization_record\.content_sha256",
+        blocked,
+    )
     assert "'outbound_delivery_uncertain'" in blocked
     assert "'accepted_unverified'" not in blocked
 
@@ -815,9 +869,24 @@ def test_routeback_blocked_routine_has_typed_preclaim_without_send_authorization
 
     assert "preclaim_value boolean := request->'preclaim' = 'true'::jsonb" in blocked
     assert "IF preclaim_value THEN" in blocked
-    assert "request->'preclaim' <> 'true'::jsonb" in blocked
-    assert "request->>'outcome' <> 'blocked'" in blocked
-    assert "request->'receipt' <> '{}'::jsonb" in blocked
+    assert "request->'preclaim' IS DISTINCT FROM 'true'::jsonb" in blocked
+    assert "request->>'outcome' IS DISTINCT FROM 'blocked'" in blocked
+    assert "blocker_value = 'discord_dm_target_forbidden'" in blocked
+    assert "'private_denial_receipt_sha256'" in blocked
+    assert "expected_private_denial_sha256" in blocked
+    assert "'{\"blocker_code\":\"forbidden_target\",'" in blocked
+    assert "'\"dispatch_attempted\":false,\"probe_id\":'" in blocked
+    assert "pg_catalog.to_json(request->>'idempotency_key')::text" in blocked
+    assert "',\"target_kind\":\"dm\"}'" in blocked
+    assert "IS DISTINCT FROM expected_private_denial_sha256" in blocked
+    assert re.search(
+        r"receipt_value->'dispatch_attempted'\s+"
+        r"IS DISTINCT FROM 'false'::jsonb",
+        blocked,
+    )
+    assert "'receipt', receipt_value" in preclaim
+    assert "'partial_receipt', receipt_value" in preclaim
+    assert "'dispatch_attempted', false" in preclaim
     assert "_case_scope_authorized(case_value, runtime, true)" in blocked
     assert "'route_back.blocked'" in blocked
     assert "'preclaim', true" in blocked
@@ -829,6 +898,38 @@ def test_routeback_blocked_routine_has_typed_preclaim_without_send_authorization
     assert "INSERT INTO canonical_brain.writer_routeback_lifecycle_terminals" in preclaim
     assert "'authorization_id'" not in preclaim
     assert "writer_routeback_finalize_preclaim" not in _writer_names()
+
+
+def test_legacy_routeback_receipts_are_strictly_read_only_dedupes():
+    sent = _function_definition("writer_routeback_finalize_sent")
+    blocked = _function_definition("writer_routeback_finalize_blocked")
+
+    assert sent.index("receipt_value->>'public_receipt_sha256'") < sent.index(
+        "SELECT * INTO terminal_record"
+    )
+    assert "NOT terminal_record.receipt ? 'public_receipt_sha256'" in sent
+    assert re.search(
+        r"terminal_record\.receipt\s*=\s*receipt_value\s*-\s*"
+        r"'public_receipt_sha256'",
+        sent,
+    )
+    assert "'receipt', terminal_record.receipt" in sent
+    assert "legacy_receipt_read_only := true" in sent
+
+    assert blocked.index("IS DISTINCT FROM expected_private_denial_sha256") < (
+        blocked.index("SELECT * INTO lifecycle_record")
+    )
+    for exact_legacy_binding in (
+        "lifecycle_record.receipt = '{}'::jsonb",
+        "lifecycle_record.case_id = case_value",
+        "lifecycle_record.idempotency_key",
+        "lifecycle_record.target_ref IS NOT DISTINCT FROM target_value",
+        "lifecycle_record.message_summary",
+        "lifecycle_record.source_refs",
+    ):
+        assert exact_legacy_binding in blocked
+    assert "'receipt', lifecycle_record.receipt" in blocked
+    assert "'legacy_receipt_read_only', legacy_receipt_read_only" in blocked
 
 
 def test_routeback_restart_recovery_is_exact_lane_and_append_only():
@@ -849,8 +950,16 @@ def test_routeback_restart_recovery_is_exact_lane_and_append_only():
     assert "UPDATE canonical_brain.writer_" not in recover
     assert "writer_capability_grants" not in recover
     for finalizer in (sent, blocked):
-        assert "authorization_record.runtime_platform <> runtime->>'platform'" in finalizer
-        assert "authorization_record.source_thread_id <> COALESCE(" in finalizer
+        assert re.search(
+            r"authorization_record\.runtime_platform\s+"
+            r"IS DISTINCT FROM runtime->>'platform'",
+            finalizer,
+        )
+        assert re.search(
+            r"authorization_record\.source_thread_id\s+"
+            r"IS DISTINCT FROM COALESCE\(",
+            finalizer,
+        )
         assert "_case_scope_authorized(" in finalizer
         assert "authorization_record.capability_epoch_sha256" not in finalizer
 
@@ -897,7 +1006,7 @@ def test_plan_and_capability_transactions_are_exact_and_non_replenishing():
             "approval_id,reason,revoked_by_session_sha256,revoked_at"
         )
 
-    assert "runtime->>'owner_authenticated' <> 'true'" in grant
+    assert "runtime->>'owner_authenticated' IS DISTINCT FROM 'true'" in grant
     assert "INTERVAL '8 hours'" in grant
     assert "(head_plan->>'revision')::integer < grant_record.plan_revision" in consume
     assert "'active_plan_revision', (head_plan->>'revision')::integer" in consume
@@ -968,6 +1077,16 @@ def test_capabilities_are_bound_to_exact_runtime_epoch_across_all_sql_paths():
     assert "'scope_revoked', true" in revoke_session
 
 
+def test_security_envelope_helpers_are_total_and_fail_closed_on_sql_null():
+    keys = _function_definition("_keys_valid")
+    runtime = _function_definition("_runtime_valid")
+
+    assert "SELECT COALESCE((" in keys
+    assert "SELECT COALESCE((" in runtime
+    assert keys.rstrip().endswith("), false)\n$function$;")
+    assert runtime.rstrip().endswith("), false)\n$function$;")
+
+
 def test_retired_session_epoch_fence_precedes_every_initiating_mutation_lock():
     initiating = {
         "writer_event_append_model": "canonical-case:",
@@ -1021,13 +1140,22 @@ def test_claimed_routeback_terminal_truth_is_not_blocked_by_epoch_retirement():
     assert "writer_capability_revocation_scopes" not in sent
     assert "'capability-scope:'" not in sent
     for definition in (sent, blocked):
-        assert (
-            "authorization_record.session_key_sha256 "
-            "<> runtime->>'session_key_sha256'"
-        ) in definition
+        assert re.search(
+            r"authorization_record\.session_key_sha256\s+"
+            r"IS DISTINCT FROM runtime->>'session_key_sha256'",
+            definition,
+        )
         assert "authorization_record.capability_epoch_sha256" not in definition
-        assert "authorization_record.runtime_platform <> runtime->>'platform'" in definition
-        assert "authorization_record.source_thread_id <> COALESCE(" in definition
+        assert re.search(
+            r"authorization_record\.runtime_platform\s+"
+            r"IS DISTINCT FROM runtime->>'platform'",
+            definition,
+        )
+        assert re.search(
+            r"authorization_record\.source_thread_id\s+"
+            r"IS DISTINCT FROM COALESCE\(",
+            definition,
+        )
         assert "_case_scope_authorized(" in definition
 
     # The blocked routine has one fence only, in its preclaim initiation branch;
@@ -1072,7 +1200,7 @@ def test_verification_and_completion_are_exact_plan_criterion_receipts():
     completion = _function_definition("writer_plan_transition")
 
     assert verification.index("canonical-plan:") < verification.index("_plan_head")
-    assert "head_plan->>'state' <> 'active'" in verification
+    assert "head_plan->>'state' IS DISTINCT FROM 'active'" in verification
     assert "verification_value->'criterion_ids'" in verification
     assert "head_plan->'success_criteria'" in verification
     assert "verification criterion_ids must be a unique subset" in verification
@@ -1083,7 +1211,7 @@ def test_verification_and_completion_are_exact_plan_criterion_receipts():
     )
     assert "previous_plan_id <> plan_id_value" in completion
     assert "previous_revision <> revision_value - 1" in completion
-    assert "previous_plan->>'state' <> 'active'" in completion
+    assert "previous_plan->>'state' IS DISTINCT FROM 'active'" in completion
     assert (
         "plan_value->'success_criteria'\n"
         "              IS DISTINCT FROM previous_plan->'success_criteria'"
@@ -1165,7 +1293,11 @@ def test_resume_bundle_support_is_bounded_explicit_and_no_unsafe_uuid_cast():
 
 def test_projection_read_is_case_scoped_or_internal_and_strictly_paginated():
     projection = _function_definition("writer_projection_read_events")
-    assert "case_value = '' AND runtime->>'service_internal' <> 'true'" in projection
+    assert re.search(
+        r"case_value = ''\s+AND runtime->>'service_internal'\s+"
+        r"IS DISTINCT FROM 'true'",
+        projection,
+    )
     assert "_case_scope_authorized(case_value, runtime, false)" in projection
     assert "limit_value > 500" in projection
     assert "(event.occurred_at, event.event_id) > (cursor_at, cursor_id)" in projection
@@ -1177,6 +1309,17 @@ def test_projection_read_is_case_scoped_or_internal_and_strictly_paginated():
     assert "'has_more'" in projection
     assert "'next_after_event_id'" in projection
     assert "writer_event_provenance" in projection
+    assert "provenance.trusted_runtime" in projection
+    assert "provenance.canonical_content_sha256" in projection
+    assert "provenance.appended_at" in projection
+    assert "'provenance', provenance_value" in projection
+    assert (
+        "WHEN runtime->>'service_internal' = 'true' THEN" in projection
+    )
+    assert "ELSE '{}'::jsonb" in projection
+    assert (
+        "JOIN canonical_brain.writer_event_provenance AS provenance" in projection
+    )
 
 
 def test_thread_only_reads_recheck_each_candidate_case_scope():

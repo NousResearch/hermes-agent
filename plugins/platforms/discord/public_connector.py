@@ -231,6 +231,7 @@ class DiscordPublicConnectorPolicy:
         channel: Any,
         *,
         bot_user: Any = None,
+        bot_member: Any = None,
         require_history: bool,
     ) -> DiscordConnectorTarget:
         guild = getattr(channel, "guild", None)
@@ -266,11 +267,21 @@ class DiscordPublicConnectorPolicy:
             # Includes DM/group-DM, forum/category/voice/stage, and unknown types.
             raise DiscordPublicConnectorError("target_type_forbidden")
 
-        allowed_ids = {channel_id}
-        if parent_id:
-            allowed_ids.add(parent_id)
-        if self.public_only and not (allowed_ids & self.allowed_channel_ids):
-            raise DiscordPublicConnectorError("target_not_allowed")
+        if self.public_only:
+            allowed_ids = {channel_id}
+            if parent_id:
+                allowed_ids.add(parent_id)
+            if not (allowed_ids & self.allowed_channel_ids):
+                raise DiscordPublicConnectorError("target_not_allowed")
+        else:
+            # Production guild-ACL lanes remain a closed capability set.  A
+            # root channel must itself be allowlisted; a public thread is
+            # authorized only through its exact allowlisted parent.  Discord
+            # ACLs prove who may use that lane, not which new lane Hermes may
+            # silently add to its scope.
+            allowlist_root_id = parent_id or channel_id
+            if allowlist_root_id not in self.allowed_channel_ids:
+                raise DiscordPublicConnectorError("target_not_allowed")
 
         if self.public_only:
             default_role = getattr(guild, "default_role", None)
@@ -287,8 +298,15 @@ class DiscordPublicConnectorPolicy:
             ):
                 raise DiscordPublicConnectorError("target_parent_history_not_public")
 
-        if bot_user is not None:
-            member = getattr(guild, "me", None) or bot_user
+        if bot_user is not None or bot_member is not None:
+            # A caller that supplies a freshly REST-fetched member is making
+            # an explicit live-role proof.  Never replace it with cached
+            # ``guild.me``.
+            member = (
+                bot_member
+                if bot_member is not None
+                else getattr(guild, "me", None) or bot_user
+            )
             permissions_for = getattr(channel, "permissions_for", None)
             if not callable(permissions_for):
                 raise DiscordPublicConnectorError("bot_permissions_unavailable")
@@ -316,20 +334,30 @@ class DiscordPublicConnectorPolicy:
         )
 
     def prove_target(
-        self, channel: Any, *, bot_user: Any = None
+        self,
+        channel: Any,
+        *,
+        bot_user: Any = None,
+        bot_member: Any = None,
     ) -> DiscordConnectorTarget:
         return self._prove_target(
             channel,
             bot_user=bot_user,
+            bot_member=bot_member,
             require_history=False,
         )
 
     def prove_history_target(
-        self, channel: Any, *, bot_user: Any = None
+        self,
+        channel: Any,
+        *,
+        bot_user: Any = None,
+        bot_member: Any = None,
     ) -> DiscordConnectorTarget:
         return self._prove_target(
             channel,
             bot_user=bot_user,
+            bot_member=bot_member,
             require_history=True,
         )
 
@@ -776,7 +804,7 @@ class DiscordPublicConnectorClient:
     async def _fetch_fresh_history_channel(
         self, channel_id: str
     ) -> _FreshHistoryChannelView:
-        """Fetch history ACL state from Discord REST without cache fallback."""
+        """Fetch channel and thread-parent ACL state from REST without cache."""
 
         fetch_channel = getattr(self._client, "fetch_channel", None)
         if not callable(fetch_channel):
@@ -818,10 +846,45 @@ class DiscordPublicConnectorClient:
                 )
         return _FreshHistoryChannelView(source=source, parent=parent)
 
+    async def _fetch_fresh_bot_member(self, channel: Any) -> Any:
+        """Fetch the current bot member/roles from the exact target guild."""
+
+        bot_user = getattr(self._client, "user", None)
+        bot_id = str(getattr(bot_user, "id", "") or "")
+        guild = getattr(channel, "guild", None)
+        guild_id = str(getattr(guild, "id", "") or "")
+        fetch_member = getattr(guild, "fetch_member", None)
+        if (
+            not bot_id.isdigit()
+            or bot_id.startswith("0")
+            or not guild_id
+            or not callable(fetch_member)
+        ):
+            raise DiscordPublicConnectorError("bot_live_member_unavailable")
+        try:
+            member = await fetch_member(int(bot_id))
+        except Exception as exc:
+            raise DiscordPublicConnectorError(
+                "bot_live_member_unavailable"
+            ) from exc
+        member_id = str(getattr(member, "id", "") or "")
+        member_guild = getattr(member, "guild", None)
+        member_guild_id = str(getattr(member_guild, "id", "") or "")
+        if member_id != bot_id or (
+            member_guild is not None and member_guild_id != guild_id
+        ):
+            raise DiscordPublicConnectorError("bot_identity_binding_changed")
+        return member
+
     def prove_public_target(self, channel_id: str) -> DiscordConnectorTarget:
         async def _prove() -> DiscordConnectorTarget:
-            channel = await self._resolve_channel(channel_id)
-            return self.policy.prove_target(channel, bot_user=self._client.user)
+            channel = await self._fetch_fresh_history_channel(channel_id)
+            bot_member = await self._fetch_fresh_bot_member(channel)
+            return self.policy.prove_target(
+                channel,
+                bot_user=self._client.user,
+                bot_member=bot_member,
+            )
 
         return self._submit(_prove())
 
@@ -1017,10 +1080,15 @@ class DiscordPublicConnectorClient:
         deadline_unix_ms: int,
     ) -> DiscordConnectorAcceptedMessage:
         async def _send() -> DiscordConnectorAcceptedMessage:
-            channel = await self._resolve_channel(target.channel_id)
+            # Target, parent and bot permissions are REST-refreshed at the
+            # last responsible moment.  Never authorize egress from the
+            # gateway cache.
+            channel = await self._fetch_fresh_history_channel(target.channel_id)
+            bot_member = await self._fetch_fresh_bot_member(channel)
             live_target = self.policy.prove_target(
                 channel,
                 bot_user=self._client.user,
+                bot_member=bot_member,
             )
             if live_target != target:
                 raise DiscordPublicConnectorError("public_target_binding_changed")
@@ -1030,11 +1098,30 @@ class DiscordPublicConnectorClient:
             if reply_to_message_id is not None:
                 kwargs["reference"] = discord.Object(id=int(reply_to_message_id))
                 kwargs["mention_author"] = False
-            sent = await channel.send(content, **kwargs)
-            # A fresh live proof and exact readback close the receipt boundary.
-            if self.policy.prove_target(channel, bot_user=self._client.user) != target:
+            sent = await channel.source.send(content, **kwargs)
+            # A second independent REST proof and exact readback close the
+            # receipt boundary even if permissions changed during dispatch.
+            refreshed_channel = await self._fetch_fresh_history_channel(
+                target.channel_id
+            )
+            refreshed_bot_member = await self._fetch_fresh_bot_member(
+                refreshed_channel
+            )
+            if (
+                self.policy.prove_target(
+                    refreshed_channel,
+                    bot_user=self._client.user,
+                    bot_member=refreshed_bot_member,
+                )
+                != target
+            ):
                 raise DiscordPublicConnectorError("public_target_binding_changed")
-            readback = await channel.fetch_message(int(sent.id))
+            readback = await refreshed_channel.source.fetch_message(int(sent.id))
+            reference = getattr(readback, "reference", None)
+            reply_raw = getattr(reference, "message_id", None) if reference else None
+            observed_reply_to_message_id = (
+                str(reply_raw) if reply_raw is not None else None
+            )
             verified = (
                 str(getattr(readback, "id", "")) == str(sent.id)
                 and str(getattr(getattr(readback, "channel", None), "id", ""))
@@ -1043,6 +1130,7 @@ class DiscordPublicConnectorClient:
                 and str(getattr(getattr(readback, "author", None), "id", ""))
                 == str(self._client.user.id)
                 and getattr(readback, "content", None) == content
+                and observed_reply_to_message_id == reply_to_message_id
             )
             return DiscordConnectorAcceptedMessage(
                 message_id=str(sent.id),

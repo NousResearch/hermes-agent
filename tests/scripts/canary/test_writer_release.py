@@ -1258,7 +1258,9 @@ def test_manifest_writer_counts_trailing_newline_before_creating_path(tmp_path):
     assert not os.path.lexists(root / writer_release.RELEASE_MANIFEST_NAME)
 
 
-def test_installed_runtime_requires_copied_venv_and_no_dynamic_site_path(tmp_path):
+def test_installed_runtime_requires_copied_venv_and_no_legacy_script_bootstraps(
+    tmp_path,
+):
     spec = _spec(tmp_path)
     managed = spec.managed_python_root / "cpython-3.11.15/bin/python3.11"
     managed.parent.mkdir(parents=True)
@@ -1288,6 +1290,19 @@ def test_installed_runtime_requires_copied_venv_and_no_dynamic_site_path(tmp_pat
     )
 
     writer_release._validate_installed_runtime(spec, managed)
+
+    for relative_path in (
+        "scripts/canonical_writer_bootstrap.py",
+        "scripts/canonical_writer_service.py",
+        "scripts/discord_edge_bootstrap.py",
+        "scripts/discord_edge_service.py",
+    ):
+        forbidden = spec.site_packages / relative_path
+        forbidden.parent.mkdir(parents=True, exist_ok=True)
+        forbidden.write_text("SOURCE_ONLY = True\n", encoding="utf-8")
+        with pytest.raises(RuntimeError, match="legacy scripts bootstrap"):
+            writer_release._validate_installed_runtime(spec, managed)
+        forbidden.unlink()
 
     (spec.site_packages / "injected.pth").write_text(
         str(spec.source_root) + "\n",

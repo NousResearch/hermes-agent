@@ -172,6 +172,7 @@ def validate_alias_projection_document(
     ):
         raise AliasProjectionError("alias_projection_channel_aliases_invalid")
     expected_guild_id = str(expected_channel_guild_id or "").strip()
+    approved_root_channel_ids = frozenset(static_channels.values())
     channel_aliases: dict[str, dict[str, str]] = {}
     for raw_alias, raw_target in channel_aliases_raw.items():
         if (
@@ -201,6 +202,15 @@ def validate_alias_projection_document(
             or _SNOWFLAKE_RE.fullmatch(guild_id) is None
             or _SNOWFLAKE_RE.fullmatch(channel_id) is None
             or (expected_guild_id and guild_id != expected_guild_id)
+            or (
+                approved_root_channel_ids
+                and (
+                    target_type == "guild_channel"
+                    and channel_id not in approved_root_channel_ids
+                    or target_type == "guild_thread"
+                    and parent_channel_id not in approved_root_channel_ids
+                )
+            )
             or (
                 target_type == "guild_thread"
                 and (

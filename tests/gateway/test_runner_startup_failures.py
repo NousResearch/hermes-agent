@@ -251,6 +251,100 @@ async def test_writer_readiness_failure_blocks_mcp_and_runner_start(
 
 
 @pytest.mark.asyncio
+async def test_capability_runner_start_failure_retires_partial_startup_state(
+    monkeypatch,
+    tmp_path,
+):
+    """A sealed canary must be retryable after a partial adapter startup."""
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    events = []
+
+    class _FailingCapabilityRunner:
+        def __init__(self, config, **kwargs):
+            assert kwargs["require_capability_canary"] is True
+            self.config = config
+            self._isolated_runtime = False
+            self.adapters = {"partially-created": object()}
+
+        async def start(self):
+            events.append("start")
+            return False
+
+        async def stop(self):
+            events.append("stop")
+            self.adapters.clear()
+
+    monkeypatch.setattr("gateway.code_skew.record_boot_fingerprint", lambda: None)
+    monkeypatch.setattr(
+        "gateway.canonical_writer_boundary."
+        "harden_gateway_process_for_writer_boundary",
+        lambda _policy=None: True,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.effective_config_projection_is_pinned",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.attest_pinned_effective_config_projection",
+        lambda: {"config_sha256": "a" * 64},
+    )
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+    monkeypatch.setattr(
+        "gateway.canonical_capability_canary_runtime."
+        "validate_capability_gateway_config",
+        lambda _config: None,
+    )
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+    monkeypatch.setattr(
+        "gateway.status.acquire_gateway_runtime_lock",
+        lambda: events.append("lock") or True,
+    )
+    monkeypatch.setattr(
+        "gateway.status.write_pid_file",
+        lambda: events.append("pid"),
+    )
+    monkeypatch.setattr(
+        "gateway.status.remove_pid_file",
+        lambda: events.append("remove_pid"),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_gateway_runtime_lock",
+        lambda: events.append("release_lock"),
+    )
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr(
+        "hermes_logging.setup_logging",
+        lambda hermes_home, mode: tmp_path,
+    )
+    monkeypatch.setattr(
+        "gateway.canonical_writer_readiness."
+        "attest_canonical_writer_startup_readiness",
+        lambda: None,
+    )
+    monkeypatch.setattr("gateway.run.GatewayRunner", _FailingCapabilityRunner)
+
+    from gateway.run import start_gateway
+
+    ok = await start_gateway(
+        config=GatewayConfig(),
+        replace=False,
+        verbosity=None,
+        require_capability_canary=True,
+    )
+
+    assert ok is False
+    assert events == [
+        "lock",
+        "pid",
+        "start",
+        "stop",
+        "remove_pid",
+        "release_lock",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_required_writer_cannot_fail_open_from_missing_managed_config(
     monkeypatch,
     tmp_path,

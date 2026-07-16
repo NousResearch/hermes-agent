@@ -26,10 +26,15 @@ from plugins.muncho_canary_evidence import (
     ACK_SCHEMA,
     CONFIG_SCHEMA,
     FRAME_SCHEMA,
+    GOAL_CONFIG_SCHEMA,
+    GOAL_FRAME_SCHEMA,
     CanaryEvidenceError,
     CanaryEvidencePlugin,
+    CanaryEvidenceHookMultiplexer,
     CollectorEndpoint,
     EdgeEndpoint,
+    GoalContinuationEvidencePlugin,
+    GoalObserverConfig,
     PeerIdentity,
     SocketIdentity,
     _collector_exchange,
@@ -37,6 +42,7 @@ from plugins.muncho_canary_evidence import (
     _sha256_bytes,
     _socket_identity,
     load_config,
+    load_goal_config,
 )
 
 
@@ -178,6 +184,49 @@ def _loaded_config(tmp_path: Path):
         config_path,
         expected_owner_uid=os.getuid(),
         expected_owner_gid=os.getgid(),
+    )
+
+
+def _goal_config() -> GoalObserverConfig:
+    return GoalObserverConfig(
+        config_sha256="3" * 64,
+        release_sha=RELEASE_SHA,
+        release_sha256=RELEASE_SHA256,
+        run_id=RUN_ID,
+        fixture_sha256="4" * 64,
+        valid_from_unix_ms=NOW_MS - 10_000,
+        valid_until_unix_ms=NOW_MS + 120_000,
+        public_target={
+            "target_type": "public_guild_channel",
+            "guild_id": "1282725267068157972",
+            "channel_id": "1526858760100909066",
+        },
+        owner_user_id="1279454038731264061",
+        model_route={
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "model": "gpt-5.6-sol",
+            "fallback_configured": False,
+        },
+        collector=CollectorEndpoint(
+            socket_path=canary_module.DEFAULT_GOAL_COLLECTOR_SOCKET_PATH,
+            expected_peer=PeerIdentity(41, 0, 0),
+            socket_identity=SocketIdentity(0, os.getgid(), 0o660),
+            service_identity_sha256=SERVICE_SHA256,
+            connect_timeout_ms=1_000,
+            ack_timeout_ms=3_000,
+        ),
+        api_observer_retirement={
+            "marker_path": str(
+                canary_module.DEFAULT_API_OBSERVER_RETIREMENT_PATH
+            ),
+            "marker_sha256": "5" * 64,
+            "marker_file_sha256": "9" * 64,
+            "api_observer_config_path": str(canary_module.DEFAULT_CONFIG_PATH),
+            "api_observer_config_sha256": "6" * 64,
+            "goal_config_authority_sha256": "7" * 64,
+        },
     )
 
 
@@ -656,6 +705,378 @@ def test_private_probe_reaches_protocol_forbidden_target_and_observes_no_receipt
     assert receipt["signed_receipt_observed"] is False
 
 
+def _goal_plugin() -> tuple[GoalContinuationEvidencePlugin, RecordingCollector]:
+    collector = RecordingCollector()
+    plugin = GoalContinuationEvidencePlugin(
+        _goal_config(),
+        collector_transport=collector,
+        socket_inspector=lambda _path, _identity: SOCKET_SHA256,
+        clock_ms=lambda: NOW_MS,
+    )
+    plugin.start(
+        module_origin="/sealed/release/plugin.py",
+        module_sha256=MODULE_SHA256,
+    )
+    plugin.on_session_start(
+        session_id="discord-session-1",
+        model="gpt-5.6-sol",
+        platform="discord",
+    )
+    return plugin, collector
+
+
+def _goal_pre_post(
+    plugin: GoalContinuationEvidencePlugin,
+    *,
+    api_id: str = "goal-api-1",
+    turn_id: str = "goal-turn-1",
+    tool_ids: tuple[str, ...] = ("goal-todo-1",),
+) -> None:
+    plugin.pre_api_request(
+        session_id="discord-session-1",
+        turn_id=turn_id,
+        task_id="goal-task-1",
+        api_request_id=api_id,
+        platform="discord",
+        model="gpt-5.6-sol",
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_mode="codex_responses",
+        api_call_count=0,
+        started_at=NOW.timestamp(),
+        request={
+            "body": {
+                "instructions": "private stable system prompt",
+                "tools": [{"type": "function", "name": "todo"}],
+                "reasoning": {"effort": "max"},
+            }
+        },
+    )
+    plugin.post_api_request(
+        session_id="discord-session-1",
+        turn_id=turn_id,
+        api_request_id=api_id,
+        platform="discord",
+        model="gpt-5.6-sol",
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_mode="codex_responses",
+        ended_at=NOW.timestamp(),
+        finish_reason="tool_calls",
+        response_model="gpt-5.6-sol",
+        response={
+            "assistant_message": {
+                "content": "private model prose",
+                "tool_calls": [{"id": item} for item in tool_ids],
+            }
+        },
+    )
+
+
+def test_goal_observer_projects_structured_outcome_without_prose() -> None:
+    plugin, collector = _goal_plugin()
+    _goal_pre_post(plugin)
+    plugin.post_tool_call(
+        session_id="discord-session-1",
+        turn_id="goal-turn-1",
+        api_request_id="goal-api-1",
+        tool_call_id="goal-todo-1",
+        tool_name="todo",
+        args={
+            "goal_outcome": {
+                "status": "continue",
+                "reason": "private model-authored reason",
+            },
+            "todos": [{"content": "private task step", "status": "pending"}],
+        },
+        result={"goal_outcome": {"recorded": True}},
+        status="ok",
+    )
+    plugin.on_session_end(
+        session_id="discord-session-1",
+        turn_id="goal-turn-1",
+        completed=True,
+        interrupted=False,
+        model="gpt-5.6-sol",
+        platform="discord",
+    )
+
+    assert [item["event"] for item in collector.frames] == [
+        "goal_plugin_ready",
+        "goal_pre_api_request",
+        "goal_post_api_request",
+        "goal_model_outcome",
+        "goal_turn_end",
+    ]
+    assert collector.frames[1]["payload"]["reasoning_effort"] == "max"
+    assert collector.frames[3]["payload"]["outcome"] == "continue"
+    joined = b"\n".join(collector.raw)
+    for prohibited in (
+        b"private stable system prompt",
+        b"private model prose",
+        b"private model-authored reason",
+        b"private task step",
+    ):
+        assert prohibited not in joined
+    assert all(item["schema"] == GOAL_FRAME_SCHEMA for item in collector.frames)
+
+
+def test_goal_observer_projects_verified_routeback_terminal_event() -> None:
+    plugin, collector = _goal_plugin()
+    _goal_pre_post(plugin, tool_ids=("route-tool-1",))
+    canonical_content_sha256 = hashlib.sha256(b"route-content").hexdigest()
+    plugin.post_tool_call(
+        session_id="discord-session-1",
+        turn_id="goal-turn-1",
+        api_request_id="goal-api-1",
+        tool_call_id="route-tool-1",
+        tool_name="route_back_execute",
+        args={
+            "case_id": "case:goal-routeback",
+            "message": "private delivered message",
+        },
+        result={
+            "success": True,
+            "status": "ROUTE_BACK_EXECUTE_SENT",
+            "route_back_record": {
+                "event_id": "61111111-1111-4111-8111-111111111111",
+                "case_id": "case:goal-routeback",
+                "event_type": "route_back.sent",
+                "canonical_content_sha256": canonical_content_sha256,
+                "idempotency_key": "goal-routeback-terminal",
+                "readback_verified": True,
+            },
+        },
+        status="ok",
+    )
+
+    frame = collector.frames[-1]
+    assert frame["event"] == "goal_canonical_event"
+    assert frame["payload"]["event_type"] == "route_back.sent"
+    assert frame["payload"]["canonical_content_sha256"] == (
+        canonical_content_sha256
+    )
+    assert b"private delivered message" not in collector.raw[-1]
+
+
+def test_goal_observer_rejects_unseen_duplicate_and_cross_turn_tool_ids() -> None:
+    plugin, _collector = _goal_plugin()
+    _goal_pre_post(plugin)
+    common = {
+        "session_id": "discord-session-1",
+        "api_request_id": "goal-api-1",
+        "tool_name": "todo",
+        "args": {"goal_outcome": {"status": "continue", "reason": "reason"}},
+        "result": {"goal_outcome": {"recorded": True}},
+        "status": "ok",
+    }
+    with pytest.raises(CanaryEvidenceError, match="goal_tool_observation_invalid"):
+        plugin.post_tool_call(
+            **common,
+            turn_id="goal-turn-1",
+            tool_call_id="unseen-tool-id",
+        )
+    with pytest.raises(CanaryEvidenceError, match="goal_tool_observation_invalid"):
+        plugin.post_tool_call(
+            **common,
+            turn_id="another-turn",
+            tool_call_id="goal-todo-1",
+        )
+    plugin.post_tool_call(
+        **common,
+        turn_id="goal-turn-1",
+        tool_call_id="goal-todo-1",
+    )
+    with pytest.raises(CanaryEvidenceError, match="goal_tool_observation_invalid"):
+        plugin.post_tool_call(
+            **common,
+            turn_id="goal-turn-1",
+            tool_call_id="goal-todo-1",
+        )
+
+
+def test_goal_config_rejects_non_uuid_run_and_route_substitution(tmp_path: Path) -> None:
+    config = _goal_config()
+    raw = {
+        "schema": GOAL_CONFIG_SCHEMA,
+        "release_sha": config.release_sha,
+        "release_sha256": config.release_sha256,
+        "run_id": config.run_id,
+        "fixture_sha256": config.fixture_sha256,
+        "valid_from_unix_ms": config.valid_from_unix_ms,
+        "valid_until_unix_ms": config.valid_until_unix_ms,
+        "public_target": dict(config.public_target),
+        "owner_user_id": config.owner_user_id,
+        "model_route": dict(config.model_route),
+        "collector": {
+            "socket_path": str(config.collector.socket_path),
+            "expected_pid": config.collector.expected_peer.pid,
+            "expected_uid": config.collector.expected_peer.uid,
+            "expected_gid": config.collector.expected_peer.gid,
+            "socket_owner_uid": config.collector.socket_identity.owner_uid,
+            "socket_owner_gid": config.collector.socket_identity.owner_gid,
+            "socket_mode": "0660",
+            "service_identity_sha256": config.collector.service_identity_sha256,
+            "connect_timeout_ms": config.collector.connect_timeout_ms,
+            "ack_timeout_ms": config.collector.ack_timeout_ms,
+        },
+    }
+    goal_authority_sha256 = hashlib.sha256(_canonical_bytes(raw)).hexdigest()
+    marker_unsigned = {
+        "schema": canary_module.API_OBSERVER_RETIREMENT_SCHEMA,
+        "release_sha": config.release_sha,
+        "release_sha256": config.release_sha256,
+        "run_id": config.run_id,
+        "fixture_sha256": config.fixture_sha256,
+        "api_observer_config_path": str(canary_module.DEFAULT_CONFIG_PATH),
+        "api_observer_config_sha256": "6" * 64,
+        "goal_config_authority_sha256": goal_authority_sha256,
+        "historical_api_observer_terminal": True,
+        "message_content_recorded": False,
+    }
+    marker_sha256 = hashlib.sha256(_canonical_bytes(marker_unsigned)).hexdigest()
+    marker_value = {**marker_unsigned, "marker_sha256": marker_sha256}
+    raw["api_observer_retirement"] = {
+        "marker_path": str(canary_module.DEFAULT_API_OBSERVER_RETIREMENT_PATH),
+        "marker_sha256": marker_sha256,
+        "marker_file_sha256": hashlib.sha256(
+            _canonical_bytes(marker_value)
+        ).hexdigest(),
+        "api_observer_config_path": str(canary_module.DEFAULT_CONFIG_PATH),
+        "api_observer_config_sha256": "6" * 64,
+        "goal_config_authority_sha256": goal_authority_sha256,
+    }
+    path = tmp_path / "goal-observer.json"
+    path.write_bytes(_canonical_bytes(raw))
+    os.chown(path, -1, os.getgid())
+    path.chmod(0o440)
+    loaded = load_goal_config(
+        path,
+        expected_owner_uid=os.getuid(),
+        expected_owner_gid=os.getgid(),
+    )
+    assert loaded.run_id == RUN_ID
+
+    for mutate in (
+        lambda value: value.__setitem__("run_id", "not-a-uuid"),
+        lambda value: value["model_route"].__setitem__(
+            "base_url", "https://example.invalid"
+        ),
+    ):
+        candidate = json.loads(json.dumps(raw))
+        mutate(candidate)
+        _rewrite_sealed(path, _canonical_bytes(candidate))
+        with pytest.raises(CanaryEvidenceError, match="goal_config_invalid"):
+            load_goal_config(
+                path,
+                expected_owner_uid=os.getuid(),
+                expected_owner_gid=os.getgid(),
+            )
+
+
+def test_api_observer_retirement_marker_is_exact_and_fail_closed(tmp_path: Path) -> None:
+    sealed = tmp_path / "sealed"
+    sealed.mkdir(mode=0o700)
+    api_path = sealed / "api-observer.json"
+    api_raw = _canonical_bytes({"schema": "historical-api-observer"})
+    api_path.write_bytes(api_raw)
+    api_path.chmod(0o440)
+    marker_path = sealed / "retired.json"
+    base = _goal_config()
+    api_sha256 = hashlib.sha256(api_raw).hexdigest()
+    goal_authority_sha256 = "8" * 64
+    marker_unsigned = {
+        "schema": canary_module.API_OBSERVER_RETIREMENT_SCHEMA,
+        "release_sha": base.release_sha,
+        "release_sha256": base.release_sha256,
+        "run_id": base.run_id,
+        "fixture_sha256": base.fixture_sha256,
+        "api_observer_config_path": str(api_path),
+        "api_observer_config_sha256": api_sha256,
+        "goal_config_authority_sha256": goal_authority_sha256,
+        "historical_api_observer_terminal": True,
+        "message_content_recorded": False,
+    }
+    marker = {
+        **marker_unsigned,
+        "marker_sha256": hashlib.sha256(
+            _canonical_bytes(marker_unsigned)
+        ).hexdigest(),
+    }
+    marker_path.write_bytes(_canonical_bytes(marker))
+    marker_path.chmod(0o440)
+    config = GoalObserverConfig(
+        **{
+            **base.__dict__,
+            "api_observer_retirement": {
+                "marker_path": str(marker_path),
+                "marker_sha256": marker["marker_sha256"],
+                "marker_file_sha256": hashlib.sha256(
+                    _canonical_bytes(marker)
+                ).hexdigest(),
+                "api_observer_config_path": str(api_path),
+                "api_observer_config_sha256": api_sha256,
+                "goal_config_authority_sha256": goal_authority_sha256,
+            },
+        }
+    )
+    owner_gid = marker_path.lstat().st_gid
+
+    observed = canary_module.validate_api_observer_retirement(
+        config,
+        expected_owner_uid=os.getuid(),
+        expected_owner_gid=owner_gid,
+    )
+    assert observed == marker
+
+    stale = GoalObserverConfig(
+        **{
+            **config.__dict__,
+            "run_id": "22222222-2222-4222-8222-222222222222",
+        }
+    )
+    with pytest.raises(CanaryEvidenceError, match="api_observer_retirement_invalid"):
+        canary_module.validate_api_observer_retirement(
+            stale,
+            expected_owner_uid=os.getuid(),
+            expected_owner_gid=owner_gid,
+        )
+
+    marker["message_content_recorded"] = True
+    _rewrite_sealed(marker_path, _canonical_bytes(marker))
+    with pytest.raises(CanaryEvidenceError, match="api_observer_retirement_invalid"):
+        canary_module.validate_api_observer_retirement(
+            config,
+            expected_owner_uid=os.getuid(),
+            expected_owner_gid=owner_gid,
+        )
+    marker_path.unlink()
+    with pytest.raises(CanaryEvidenceError, match="api_observer_retirement_invalid"):
+        canary_module.validate_api_observer_retirement(
+            config,
+            expected_owner_uid=os.getuid(),
+            expected_owner_gid=owner_gid,
+        )
+
+
+def test_hook_multiplexer_exposes_one_bound_exact_surface() -> None:
+    api = object.__new__(CanaryEvidencePlugin)
+    goal = object.__new__(GoalContinuationEvidencePlugin)
+    api._session_id = None
+    goal._session_id = None
+    multiplexer = CanaryEvidenceHookMultiplexer(api, goal)
+    for name in (
+        "pre_api_request",
+        "post_api_request",
+        "post_tool_call",
+        "on_session_start",
+        "on_session_end",
+    ):
+        callback = getattr(multiplexer, name)
+        assert callback.__self__ is multiplexer
+        assert callback.__name__ == name
+
+
 def test_manifest_has_only_observer_hooks_and_no_capability_surface():
     root = Path(__file__).parents[2]
     manifest = yaml.safe_load(
@@ -711,6 +1132,8 @@ def test_register_requires_ready_ack_before_hook_only_registration(monkeypatch):
 
     sentinel = object()
     monkeypatch.setattr(canary_module, "_PLUGIN", None)
+    monkeypatch.setattr(canary_module, "_API_PLUGIN", None)
+    monkeypatch.setattr(canary_module, "_GOAL_PLUGIN", None)
     monkeypatch.setattr(canary_module, "load_config", lambda: sentinel)
     monkeypatch.setattr(
         canary_module,
@@ -734,3 +1157,76 @@ def test_register_requires_ready_ack_before_hook_only_registration(monkeypatch):
         "module_origin": "/sealed/release/plugin.py",
         "module_sha256": MODULE_SHA256,
     }
+
+
+def test_register_skips_only_historical_api_after_exact_retirement(monkeypatch):
+    calls: list[str] = []
+
+    class GoalStub:
+        def __init__(self, _config):
+            calls.append("goal_construct")
+            self._session_id = None
+
+        def start(self, **_identity):
+            calls.append("goal_ready")
+
+        def pre_api_request(self, **_kwargs):
+            return None
+
+        def post_api_request(self, **_kwargs):
+            return None
+
+        def post_tool_call(self, **_kwargs):
+            return None
+
+        def on_session_start(self, **_kwargs):
+            return None
+
+        def on_session_end(self, **_kwargs):
+            return None
+
+    class ApiForbidden:
+        def __init__(self, _config):
+            raise AssertionError("retired API observer was reconstructed")
+
+    class Context:
+        def register_hook(self, _name, _callback):
+            calls.append("hook")
+
+    sentinel = _goal_config()
+    monkeypatch.setattr(canary_module, "_PLUGIN", None)
+    monkeypatch.setattr(canary_module, "_API_PLUGIN", None)
+    monkeypatch.setattr(canary_module, "_GOAL_PLUGIN", None)
+    monkeypatch.setattr(
+        canary_module.os.path,
+        "lexists",
+        lambda path: Path(path)
+        in {
+            canary_module.DEFAULT_GOAL_CONFIG_PATH,
+            canary_module.DEFAULT_CONFIG_PATH,
+            canary_module.DEFAULT_API_OBSERVER_RETIREMENT_PATH,
+        },
+    )
+    monkeypatch.setattr(canary_module, "load_goal_config", lambda: sentinel)
+    monkeypatch.setattr(
+        canary_module,
+        "validate_api_observer_retirement",
+        lambda config: calls.append("retirement_validated") or config,
+    )
+    monkeypatch.setattr(
+        canary_module,
+        "_module_identity",
+        lambda: ("/sealed/release/plugin.py", MODULE_SHA256),
+    )
+    monkeypatch.setattr(canary_module, "CanaryEvidencePlugin", ApiForbidden)
+    monkeypatch.setattr(canary_module, "GoalContinuationEvidencePlugin", GoalStub)
+
+    canary_module.register(Context())
+
+    assert calls[:3] == [
+        "retirement_validated",
+        "goal_construct",
+        "goal_ready",
+    ]
+    assert canary_module._API_PLUGIN is None
+    assert calls.count("hook") == 5

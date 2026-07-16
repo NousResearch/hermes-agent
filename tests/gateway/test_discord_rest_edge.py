@@ -7,23 +7,36 @@ import os
 import time
 import traceback
 import urllib.error
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 import gateway.discord_rest_edge as discord_rest_edge
 from gateway.discord_edge_protocol import (
+    DiscordEdgeAuthorityKind,
+    DiscordEdgeIntent,
     DiscordEdgeOperation,
     DiscordPublicTarget,
     DiscordPublicTargetType,
+    make_request,
+    sign_capability,
+)
+from gateway.discord_edge_runtime import (
+    DiscordEdgeBlockerCode,
+    DiscordEdgeJournalState,
+    DiscordEdgeRuntime,
+    DurableDiscordEdgeJournal,
 )
 from gateway.discord_rest_edge import (
     DiscordRestEdgeAdapter,
     DiscordRestEdgeError,
     DiscordRestEdgeErrorCode,
 )
+from gateway.support_ops_team_registry import SKYVISION_BOOKING_OPS_CHANNEL_ID
 
 GUILD_ID = "100000000000000001"
 CHANNEL_ID = "200000000000000002"
@@ -47,6 +60,7 @@ BOT_PERMISSIONS = (
     | SEND_MESSAGES_IN_THREADS
 )
 TOKEN = "test.token_value-with-safe-chars_123456789"
+INTEGRATED_NOW_MS = 1_000
 
 
 class FakeResponse:
@@ -280,6 +294,105 @@ def proof_handler(
     return handler
 
 
+def runtime_handler(
+    target_channel: dict[str, object],
+    *,
+    guild_value: dict[str, object],
+    parent_channel: dict[str, object] | None = None,
+    content: str = "Exact booking ops response",
+) -> tuple[
+    Callable[[str, str, dict[str, Any] | None], FakeResponse],
+    list[dict[str, Any]],
+]:
+    """Serve the complete proof -> mutation -> readback REST sequence."""
+
+    target_id = str(target_channel["id"])
+    parent_id = str(parent_channel["id"]) if parent_channel is not None else None
+    mutations: list[dict[str, Any]] = []
+
+    def handler(
+        method: str,
+        url: str,
+        body: dict[str, Any] | None,
+    ) -> FakeResponse:
+        if method == "GET" and url.endswith("/users/@me"):
+            return FakeResponse(current_user())
+        if method == "GET" and url.endswith(f"/guilds/{GUILD_ID}"):
+            return FakeResponse(guild_value)
+        if method == "GET" and url.endswith(
+            f"/guilds/{GUILD_ID}/members/{BOT_ID}"
+        ):
+            return FakeResponse(member())
+        if method == "GET" and url.endswith(f"/channels/{target_id}"):
+            return FakeResponse(target_channel)
+        if (
+            method == "GET"
+            and parent_channel is not None
+            and url.endswith(f"/channels/{parent_id}")
+        ):
+            return FakeResponse(parent_channel)
+        if method == "POST" and url.endswith(f"/channels/{target_id}/messages"):
+            assert isinstance(body, dict)
+            assert body["content"] == content
+            mutations.append(body)
+            return FakeResponse(
+                message(channel_id=target_id, content=content)
+            )
+        if method == "GET" and url.endswith(
+            f"/channels/{target_id}/messages/{MESSAGE_ID}"
+        ):
+            return FakeResponse(
+                message(channel_id=target_id, content=content)
+            )
+        raise AssertionError((method, url, body))
+
+    return handler, mutations
+
+
+def execute_with_rest_adapter(
+    tmp_path: Path,
+    *,
+    adapter: DiscordRestEdgeAdapter,
+    target_value: DiscordPublicTarget,
+    content: str = "Exact booking ops response",
+) -> Any:
+    writer_key = Ed25519PrivateKey.generate()
+    edge_key = Ed25519PrivateKey.generate()
+    intent = DiscordEdgeIntent(
+        operation=DiscordEdgeOperation.PUBLIC_MESSAGE_SEND,
+        target=target_value,
+        payload={"content": content},
+        idempotency_key=f"guild-acl:{uuid.uuid4()}",
+    )
+    capability = sign_capability(
+        writer_key,
+        intent,
+        authority_kind=DiscordEdgeAuthorityKind.CANONICAL_ROUTEBACK,
+        authority_ref="routeauth:guild-acl-integration",
+        issued_at_unix_ms=INTEGRATED_NOW_MS,
+        expires_at_unix_ms=INTEGRATED_NOW_MS + 60_000,
+    )
+    request = make_request(
+        intent,
+        capability,
+        now_unix_ms=INTEGRATED_NOW_MS,
+    )
+    journal_root = tmp_path / "journal"
+    journal_root.mkdir(mode=0o700)
+    journal_root.chmod(0o700)
+    runtime = DiscordEdgeRuntime(
+        writer_public_key=writer_key.public_key(),
+        edge_private_key=edge_key,
+        journal=DurableDiscordEdgeJournal.bootstrap(
+            journal_root / "discord-edge.sqlite3"
+        ),
+        target_prover=adapter,
+        transport=adapter,
+        clock_ms=lambda: INTEGRATED_NOW_MS,
+    )
+    return runtime.execute(request)
+
+
 def test_live_proof_rejects_dm_and_private_thread_types(tmp_path: Path) -> None:
     dm_adapter = make_adapter(
         tmp_path / "dm",
@@ -430,6 +543,96 @@ def test_guild_acl_public_thread_under_private_parent_is_accepted(
     assert proof.bot_has_required_permission is True
 
 
+def test_runtime_sends_to_booking_ops_style_acl_private_channel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import gateway.support_ops_team_registry as registry
+
+    monkeypatch.setattr(registry, "SKYVISION_GUILD_ID", GUILD_ID)
+    booking_channel = channel(channel_id=SKYVISION_BOOKING_OPS_CHANNEL_ID)
+    handler, mutations = runtime_handler(
+        booking_channel,
+        guild_value=guild(everyone_permissions=0),
+    )
+    adapter = make_adapter(
+        tmp_path,
+        FakeOpener(handler),
+        target_policy="guild_acl",
+    )
+    result = execute_with_rest_adapter(
+        tmp_path,
+        adapter=adapter,
+        target_value=DiscordPublicTarget(
+            DiscordPublicTargetType.GUILD_CHANNEL,
+            GUILD_ID,
+            SKYVISION_BOOKING_OPS_CHANNEL_ID,
+        ),
+    )
+
+    assert result.state is DiscordEdgeJournalState.VERIFIED
+    assert result.blocker_code is None
+    assert len(mutations) == 1
+
+
+def test_runtime_sends_to_public_thread_under_acl_private_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import gateway.support_ops_team_registry as registry
+
+    monkeypatch.setattr(registry, "SKYVISION_GUILD_ID", GUILD_ID)
+    thread = channel(
+        channel_id=THREAD_ID,
+        channel_type=11,
+        parent_id=SKYVISION_BOOKING_OPS_CHANNEL_ID,
+    )
+    private_parent = channel(channel_id=SKYVISION_BOOKING_OPS_CHANNEL_ID)
+    handler, mutations = runtime_handler(
+        thread,
+        guild_value=guild(everyone_permissions=0),
+        parent_channel=private_parent,
+    )
+    adapter = make_adapter(
+        tmp_path,
+        FakeOpener(handler),
+        target_policy="guild_acl",
+    )
+    result = execute_with_rest_adapter(
+        tmp_path,
+        adapter=adapter,
+        target_value=DiscordPublicTarget(
+            DiscordPublicTargetType.GUILD_THREAD,
+            GUILD_ID,
+            THREAD_ID,
+            SKYVISION_BOOKING_OPS_CHANNEL_ID,
+        ),
+    )
+
+    assert result.state is DiscordEdgeJournalState.VERIFIED
+    assert result.blocker_code is None
+    assert len(mutations) == 1
+
+
+def test_runtime_public_only_canary_still_requires_everyone_visibility(
+    tmp_path: Path,
+) -> None:
+    handler, mutations = runtime_handler(
+        channel(),
+        guild_value=guild(everyone_permissions=0),
+    )
+    adapter = make_adapter(tmp_path, FakeOpener(handler), target_policy="public_only")
+    result = execute_with_rest_adapter(
+        tmp_path,
+        adapter=adapter,
+        target_value=target(),
+    )
+
+    assert result.state is DiscordEdgeJournalState.BLOCKED
+    assert result.blocker_code is DiscordEdgeBlockerCode.TARGET_NOT_PUBLIC
+    assert mutations == []
+
+
 def test_guild_acl_wrong_guild_rejects_before_network(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -469,26 +672,34 @@ def test_public_only_canary_rejects_guild_acl_target_before_network(
     assert opener.requests == []
 
 
-def test_guild_acl_private_thread_remains_forbidden(
+@pytest.mark.parametrize("channel_type", [1, 3, 12])
+def test_guild_acl_dm_group_dm_and_private_thread_remain_forbidden(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    channel_type: int,
 ) -> None:
     import gateway.support_ops_team_registry as registry
 
     monkeypatch.setattr(registry, "SKYVISION_GUILD_ID", GUILD_ID)
+    is_thread = channel_type == 12
     adapter = make_adapter(
-        tmp_path,
+        tmp_path / str(channel_type),
         FakeOpener(
             proof_handler(
-                channel(channel_type=12, parent_id=PARENT_ID),
-                parent_channel=channel(channel_id=PARENT_ID),
+                channel(
+                    channel_type=channel_type,
+                    parent_id=PARENT_ID if is_thread else None,
+                ),
+                parent_channel=(
+                    channel(channel_id=PARENT_ID) if is_thread else None
+                ),
             )
         ),
         target_policy="guild_acl",
     )
     with pytest.raises(DiscordRestEdgeError) as caught:
         adapter.prove_public_message_send(
-            guild_acl_thread_target(),
+            guild_acl_thread_target() if is_thread else guild_acl_target(),
             deadline_unix_ms=30_000,
             now_unix_ms=1_000,
         )

@@ -25,6 +25,8 @@ from __future__ import annotations
 import argparse
 import base64
 import copy
+import ctypes
+import errno
 import fcntl
 import hashlib
 import json
@@ -4270,9 +4272,194 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def _write_exclusive_bytes(path: Path, payload: bytes, *, mode: int = 0o400) -> None:
-    path = _absolute_path(path, "full-canary evidence path")
-    parent_descriptor = _open_root_directory_chain(path.parent, create=True)
+def _exclusive_publication_temp_name(name: str) -> str:
+    """Return the bounded, deterministic sibling used for one final name."""
+
+    name = _entry_name(name)
+    digest = hashlib.sha256(name.encode("utf-8")).hexdigest()
+    return f".exclusive-{digest}.tmp"
+
+
+def _optional_stat_at(parent_descriptor: int, name: str) -> os.stat_result | None:
+    try:
+        return os.stat(
+            _entry_name(name),
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+    except FileNotFoundError:
+        return None
+
+
+def _publication_identity(item: os.stat_result) -> tuple[int, ...]:
+    return (
+        item.st_dev,
+        item.st_ino,
+        item.st_mode,
+        item.st_nlink,
+        item.st_uid,
+        item.st_gid,
+        item.st_size,
+        item.st_mtime_ns,
+        item.st_ctime_ns,
+    )
+
+
+def _unlink_stable_publication_entry_at(
+    parent_descriptor: int,
+    name: str,
+    expected: os.stat_result,
+) -> None:
+    """Unlink only the still-reachable entry observed by the caller."""
+
+    current = _optional_stat_at(parent_descriptor, name)
+    if current is None:
+        return
+    if _publication_identity(current) != _publication_identity(expected):
+        raise RuntimeError("full-canary evidence publication changed during cleanup")
+    try:
+        os.unlink(_entry_name(name), dir_fd=parent_descriptor)
+    except FileNotFoundError:
+        # A concurrent retry may already have completed the same bounded
+        # cleanup.  The caller always revalidates the resulting state.
+        return
+
+
+def _rename_noreplace_at(
+    parent_descriptor: int,
+    source_name: str,
+    destination_name: str,
+) -> None:
+    """Atomically publish a sibling without replacing an existing final."""
+
+    source_name = _entry_name(source_name)
+    destination_name = _entry_name(destination_name)
+    if sys.platform.startswith("linux"):
+        libc = ctypes.CDLL(None, use_errno=True)
+        try:
+            renameat2 = libc.renameat2
+        except AttributeError as exc:  # pragma: no cover - modern glibc exports it
+            raise RuntimeError("renameat2(RENAME_NOREPLACE) is unavailable") from exc
+        renameat2.argtypes = (
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        )
+        renameat2.restype = ctypes.c_int
+        ctypes.set_errno(0)
+        result = renameat2(
+            parent_descriptor,
+            os.fsencode(source_name),
+            parent_descriptor,
+            os.fsencode(destination_name),
+            1,  # RENAME_NOREPLACE
+        )
+        if result == 0:
+            return
+        error_number = ctypes.get_errno()
+        if error_number == errno.EEXIST:
+            raise FileExistsError(
+                error_number,
+                os.strerror(error_number),
+                destination_name,
+            )
+        raise OSError(error_number, os.strerror(error_number), destination_name)
+
+    # Test/development hosts may not expose Linux renameat2.  A hard link has
+    # the same create-only property.  The caller durably removes the temporary
+    # name; if the process dies between those operations, retry recognizes only
+    # the exact same inode with nlink == 2 and finishes that bounded cleanup.
+    os.link(
+        source_name,
+        destination_name,
+        src_dir_fd=parent_descriptor,
+        dst_dir_fd=parent_descriptor,
+        follow_symlinks=False,
+    )
+
+
+def _read_publication_entry_at(
+    parent_descriptor: int,
+    name: str,
+    *,
+    payload: bytes,
+    mode: int,
+    expected_uid: int,
+    expected_gid: int,
+    allowed_link_counts: frozenset[int] = frozenset({1}),
+) -> tuple[str, os.stat_result]:
+    raw, item = _read_stable_file_at(
+        parent_descriptor,
+        name,
+        maximum=len(payload),
+        expected_uid=expected_uid,
+        expected_gid=expected_gid,
+        allowed_modes=frozenset({mode}),
+        allowed_link_counts=allowed_link_counts,
+    )
+    if raw == payload:
+        return "exact", item
+    if len(raw) < len(payload) and payload.startswith(raw):
+        return "prefix", item
+    raise RuntimeError("full-canary evidence publication payload drifted")
+
+
+def _fsync_stable_publication_entry_at(
+    parent_descriptor: int,
+    name: str,
+    expected: os.stat_result,
+) -> os.stat_result:
+    """Durably flush one still-reachable, identity-stable publication inode."""
+
+    name = _entry_name(name)
+    descriptor = os.open(
+        name,
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+        dir_fd=parent_descriptor,
+    )
+    try:
+        opened = os.fstat(descriptor)
+        if _publication_identity(opened) != _publication_identity(expected):
+            raise RuntimeError(
+                "full-canary evidence publication changed before file fsync"
+            )
+        os.fsync(descriptor)
+        flushed = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    reachable = _optional_stat_at(parent_descriptor, name)
+    if (
+        reachable is None
+        or _publication_identity(flushed) != _publication_identity(opened)
+        or _publication_identity(reachable) != _publication_identity(flushed)
+    ):
+        raise RuntimeError(
+            "full-canary evidence publication changed during file fsync"
+        )
+    return flushed
+
+
+def _write_exclusive_bytes_at(
+    parent_descriptor: int,
+    name: str,
+    payload: bytes,
+    *,
+    mode: int,
+    expected_uid: int,
+    expected_gid: int,
+) -> None:
+    """Crash-atomically create one exact file below a validated parent fd."""
+
+    name = _entry_name(name)
+    if not isinstance(payload, bytes):
+        raise TypeError("full-canary evidence payload must be bytes")
+    if not isinstance(mode, int) or mode < 0 or mode > 0o7777:
+        raise ValueError("full-canary evidence mode is invalid")
+    temp_name = _exclusive_publication_temp_name(name)
     flags = (
         os.O_WRONLY
         | os.O_CREAT
@@ -4280,46 +4467,225 @@ def _write_exclusive_bytes(path: Path, payload: bytes, *, mode: int = 0o400) -> 
         | getattr(os, "O_CLOEXEC", 0)
         | getattr(os, "O_NOFOLLOW", 0)
     )
+
+    fcntl.flock(parent_descriptor, fcntl.LOCK_EX)
     try:
-        descriptor = os.open(
-            _entry_name(path.name),
-            flags,
-            mode,
-            dir_fd=parent_descriptor,
+        final_item = _optional_stat_at(parent_descriptor, name)
+        temp_item = _optional_stat_at(parent_descriptor, temp_name)
+
+        if (
+            final_item is not None
+            and temp_item is not None
+            and (final_item.st_dev, final_item.st_ino)
+            == (temp_item.st_dev, temp_item.st_ino)
+        ):
+            state, linked_item = _read_publication_entry_at(
+                parent_descriptor,
+                name,
+                payload=payload,
+                mode=mode,
+                expected_uid=expected_uid,
+                expected_gid=expected_gid,
+                allowed_link_counts=frozenset({2}),
+            )
+            if state != "exact" or temp_item.st_nlink != 2:
+                raise RuntimeError(
+                    "full-canary evidence linked publication is invalid"
+                )
+            linked_item = _fsync_stable_publication_entry_at(
+                parent_descriptor,
+                name,
+                linked_item,
+            )
+            _unlink_stable_publication_entry_at(
+                parent_descriptor,
+                temp_name,
+                linked_item,
+            )
+            os.fsync(parent_descriptor)
+            final_item = _optional_stat_at(parent_descriptor, name)
+            temp_item = _optional_stat_at(parent_descriptor, temp_name)
+
+        final_state: str | None = None
+        if final_item is not None:
+            final_state, final_item = _read_publication_entry_at(
+                parent_descriptor,
+                name,
+                payload=payload,
+                mode=mode,
+                expected_uid=expected_uid,
+                expected_gid=expected_gid,
+            )
+        temp_state: str | None = None
+        if temp_item is not None:
+            temp_state, temp_item = _read_publication_entry_at(
+                parent_descriptor,
+                temp_name,
+                payload=payload,
+                mode=mode,
+                expected_uid=expected_uid,
+                expected_gid=expected_gid,
+            )
+
+        if final_state == "exact":
+            if temp_item is not None:
+                _unlink_stable_publication_entry_at(
+                    parent_descriptor,
+                    temp_name,
+                    temp_item,
+                )
+            # This also commits a preceding retry whose rename reached the
+            # final name but whose directory fsync had not yet completed.
+            os.fsync(parent_descriptor)
+            final_state, _ = _read_publication_entry_at(
+                parent_descriptor,
+                name,
+                payload=payload,
+                mode=mode,
+                expected_uid=expected_uid,
+                expected_gid=expected_gid,
+            )
+            if final_state != "exact" or _optional_stat_at(parent_descriptor, temp_name):
+                raise RuntimeError("full-canary evidence publication did not converge")
+            final_item = _optional_stat_at(parent_descriptor, name)
+            if final_item is None:
+                raise RuntimeError("full-canary evidence publication disappeared")
+            _fsync_stable_publication_entry_at(
+                parent_descriptor,
+                name,
+                final_item,
+            )
+            return
+
+        if final_item is not None:
+            # Only a strict prefix with exact provenance can be a legacy crash
+            # from the former direct-to-final O_EXCL writer.
+            if final_state != "prefix":
+                raise RuntimeError("full-canary evidence publication is invalid")
+            _unlink_stable_publication_entry_at(parent_descriptor, name, final_item)
+            os.fsync(parent_descriptor)
+            if _optional_stat_at(parent_descriptor, name) is not None:
+                raise RuntimeError("full-canary evidence final cleanup did not converge")
+
+        if temp_item is not None and temp_state == "prefix":
+            _unlink_stable_publication_entry_at(
+                parent_descriptor,
+                temp_name,
+                temp_item,
+            )
+            os.fsync(parent_descriptor)
+            if _optional_stat_at(parent_descriptor, temp_name) is not None:
+                raise RuntimeError("full-canary evidence temp cleanup did not converge")
+            temp_item = None
+            temp_state = None
+
+        if temp_item is None:
+            descriptor = os.open(
+                temp_name,
+                flags,
+                mode,
+                dir_fd=parent_descriptor,
+            )
+            try:
+                offset = 0
+                while offset < len(payload):
+                    written = os.write(descriptor, payload[offset:])
+                    if written <= 0:
+                        raise RuntimeError(
+                            "full-canary evidence write made no progress"
+                        )
+                    offset += written
+                os.fchown(descriptor, expected_uid, expected_gid)
+                os.fchmod(descriptor, mode)
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            temp_state, temp_item = _read_publication_entry_at(
+                parent_descriptor,
+                temp_name,
+                payload=payload,
+                mode=mode,
+                expected_uid=expected_uid,
+                expected_gid=expected_gid,
+            )
+        if temp_state != "exact" or temp_item is None:
+            raise RuntimeError("full-canary evidence temp publication is incomplete")
+        temp_item = _fsync_stable_publication_entry_at(
+            parent_descriptor,
+            temp_name,
+            temp_item,
         )
+
+        published_item = temp_item
+        published_here = False
         try:
-            offset = 0
-            while offset < len(payload):
-                written = os.write(descriptor, payload[offset:])
-                if written <= 0:
-                    raise RuntimeError(
-                        "full-canary evidence write made no progress"
-                    )
-                offset += written
-            os.fchmod(descriptor, mode)
-            os.fchown(descriptor, 0, 0)
-            os.fsync(descriptor)
-            written_item = os.fstat(descriptor)
-        finally:
-            os.close(descriptor)
-        reachable = os.stat(
-            path.name,
-            dir_fd=parent_descriptor,
-            follow_symlinks=False,
+            _rename_noreplace_at(parent_descriptor, temp_name, name)
+            published_here = True
+        except FileExistsError:
+            # A cooperative retry is serialized by the directory lock.  Still
+            # handle an independently published exact final without replacing
+            # it; any other state remains a hard failure.
+            final_state, _ = _read_publication_entry_at(
+                parent_descriptor,
+                name,
+                payload=payload,
+                mode=mode,
+                expected_uid=expected_uid,
+                expected_gid=expected_gid,
+            )
+            if final_state != "exact":
+                raise RuntimeError("full-canary evidence final already exists")
+        os.fsync(parent_descriptor)
+
+        # Linux renameat2 consumes the temp name.  The non-Linux hard-link
+        # fallback leaves it reachable until this durable cleanup.
+        remaining_temp = _optional_stat_at(parent_descriptor, temp_name)
+        if remaining_temp is not None:
+            _unlink_stable_publication_entry_at(
+                parent_descriptor,
+                temp_name,
+                remaining_temp,
+            )
+            os.fsync(parent_descriptor)
+        final_state, final_item = _read_publication_entry_at(
+            parent_descriptor,
+            name,
+            payload=payload,
+            mode=mode,
+            expected_uid=expected_uid,
+            expected_gid=expected_gid,
         )
         if (
-            (reachable.st_dev, reachable.st_ino)
-            != (written_item.st_dev, written_item.st_ino)
-            or reachable.st_nlink != 1
-            or not stat.S_ISREG(reachable.st_mode)
-            or reachable.st_uid != 0
-            or reachable.st_gid != 0
-            or stat.S_IMODE(reachable.st_mode) != mode
-        ):
-            raise RuntimeError(
-                "full-canary evidence publication identity is invalid"
+            final_state != "exact"
+            or _optional_stat_at(parent_descriptor, temp_name)
+            or (
+                published_here
+                and (final_item.st_dev, final_item.st_ino)
+                != (published_item.st_dev, published_item.st_ino)
             )
-        os.fsync(parent_descriptor)
+        ):
+            raise RuntimeError("full-canary evidence publication did not converge")
+        _fsync_stable_publication_entry_at(
+            parent_descriptor,
+            name,
+            final_item,
+        )
+    finally:
+        fcntl.flock(parent_descriptor, fcntl.LOCK_UN)
+
+
+def _write_exclusive_bytes(path: Path, payload: bytes, *, mode: int = 0o400) -> None:
+    path = _absolute_path(path, "full-canary evidence path")
+    parent_descriptor = _open_root_directory_chain(path.parent, create=True)
+    try:
+        _write_exclusive_bytes_at(
+            parent_descriptor,
+            path.name,
+            payload,
+            mode=mode,
+            expected_uid=0,
+            expected_gid=0,
+        )
         _revalidate_root_directory_reachability(
             path.parent,
             parent_descriptor,

@@ -28,6 +28,7 @@ from tests.gateway.test_canonical_writer_production_cutover import (
     Snapshots,
     _db_receipt,
     _freeze,
+    _isolated_canary_goal_prerequisite,
     _runtime_attestation,
     _snapshot,
 )
@@ -474,6 +475,13 @@ def _stage_receipt(publication: dict) -> dict:
 
 
 def _terminal(plan: cutover.CutoverPlan, approval_sha256: str) -> dict:
+    canary_goal = plan.value["freeze_plan"]["cutover_authority"][
+        "isolated_canary_goal_prerequisite"
+    ]
+    equivalence = cutover._build_production_isolation_equivalence(
+        plan=plan,
+        evidence=canary_goal,
+    )
     unsigned = {
         "schema": cutover.TERMINAL_SCHEMA,
         "plan_sha256": plan.sha256,
@@ -483,6 +491,17 @@ def _terminal(plan: cutover.CutoverPlan, approval_sha256: str) -> dict:
         "final_tail_receipt_sha256": plan.value["final_tail_receipt_sha256"],
         "capability_prerequisite_receipt_sha256": "1" * 64,
         "capability_prerequisite_file_sha256": "2" * 64,
+        "isolated_canary_goal_continuation_terminal_sha256": canary_goal[
+            "goal_continuation_terminal_sha256"
+        ],
+        "isolated_canary_workspace_gateway_receipt_sha256": canary_goal[
+            "workspace_gateway_receipt_sha256"
+        ],
+        "isolation_equivalence_projection_sha256": equivalence[
+            "projection_sha256"
+        ],
+        "zero_canonical_database_mutation_observed": True,
+        "pre_db_zero_write_observation_sha256": "e" * 64,
         "capability_topology_identity_sha256": (
             production_capability_topology_identity_sha256(
                 plan.value["capability_topology"]
@@ -692,6 +711,9 @@ def test_workflow_order_is_fixed_and_first_mutation_has_signed_freeze(
         owner_subject_sha256="a" * 64,
         private_key=key,
         host_authority_plan=plan,
+        isolated_canary_goal_prerequisite=(
+            _isolated_canary_goal_prerequisite()
+        ),
         truth_mode="start_new_truth_epoch",
         transport_factory=lambda _identity: transport,
         now_unix=NOW,
@@ -755,6 +777,9 @@ def test_workflow_samples_fresh_time_at_each_long_running_gate(
         owner_subject_sha256="a" * 64,
         private_key=Ed25519PrivateKey.generate(),
         host_authority_plan=plan,
+        isolated_canary_goal_prerequisite=(
+            _isolated_canary_goal_prerequisite()
+        ),
         truth_mode="start_new_truth_epoch",
         transport_factory=lambda _identity: transport,
         clock=advancing_clock,
@@ -831,6 +856,9 @@ def test_workflow_stages_exact_packaged_cron_before_cutover_plan(
         owner_subject_sha256="a" * 64,
         private_key=Ed25519PrivateKey.generate(),
         host_authority_plan=plan,
+        isolated_canary_goal_prerequisite=(
+            _isolated_canary_goal_prerequisite()
+        ),
         truth_mode="start_new_truth_epoch",
         transport_factory=lambda _identity: transport,
         now_unix=NOW,
@@ -854,6 +882,9 @@ def test_publication_stage_receipt_rejects_swapped_path_or_digest() -> None:
         owner_subject_sha256="a" * 64,
         private_key=Ed25519PrivateKey.generate(),
         owner_runtime_attestation=_runtime_attestation(),
+        isolated_canary_goal_prerequisite=(
+            _isolated_canary_goal_prerequisite()
+        ),
         truth_mode="start_new_truth_epoch",
         now_unix=NOW,
     )
@@ -933,6 +964,9 @@ def test_packaged_cron_stage_receipt_binds_all_forty_five_files(
             "mechanical_job_host_facts"
         ],
         mechanical_job_package=old_authority["mechanical_job_package"],
+        isolated_canary_goal_prerequisite=old_authority[
+            "isolated_canary_goal_prerequisite"
+        ],
         legacy_truth_decision=old_authority["legacy_truth_decision"],
         max_appended_rows=old_authority["final_tail_bounds"][
             "max_appended_rows"
@@ -1017,6 +1051,9 @@ def test_failure_after_signed_freeze_invokes_abort_before_any_apply(
             owner_subject_sha256="a" * 64,
             private_key=Ed25519PrivateKey.generate(),
             host_authority_plan=plan,
+            isolated_canary_goal_prerequisite=(
+                _isolated_canary_goal_prerequisite()
+            ),
             truth_mode="start_new_truth_epoch",
             transport_factory=lambda _identity: transport,
             now_unix=NOW,
@@ -1062,6 +1099,9 @@ def test_cron_stage_mismatch_aborts_freeze_before_cutover_plan(
             owner_subject_sha256="a" * 64,
             private_key=Ed25519PrivateKey.generate(),
             host_authority_plan=plan,
+            isolated_canary_goal_prerequisite=(
+                _isolated_canary_goal_prerequisite()
+            ),
             truth_mode="start_new_truth_epoch",
             transport_factory=lambda _identity: transport,
             now_unix=NOW,

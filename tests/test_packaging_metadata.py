@@ -85,6 +85,8 @@ def test_privileged_discord_edge_entry_modules_ship_in_gateway_package():
     include = _packages_find_include()
     selected = set(find_packages(where=str(REPO_ROOT), include=include))
     assert "gateway" in selected
+    assert "scripts" in selected
+    assert "scripts.canary" in selected
     for name in ("discord_edge_bootstrap.py", "discord_edge_service.py"):
         module = REPO_ROOT / "gateway" / name
         assert module.is_file() and module.stat().st_size > 0

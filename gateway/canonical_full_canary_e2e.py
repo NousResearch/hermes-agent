@@ -44,7 +44,7 @@ from gateway.discord_edge_protocol import (
 
 
 FIXTURE_SCHEMA = "muncho-full-canary-e2e-fixture.v1"
-EVIDENCE_SCHEMA = "muncho-full-canary-e2e-evidence.v1"
+EVIDENCE_SCHEMA = "muncho-full-canary-e2e-evidence.v2"
 INVARIANT_RECEIPT_SCHEMA = "muncho-full-canary-e2e-verification.v1"
 MODEL_CALL_RECEIPT_SCHEMA = "muncho-live-model-call-receipt.v1"
 REASONING_RECEIPT_SCHEMA = "muncho-model-reasoning-directive-receipt.v1"
@@ -1356,6 +1356,7 @@ def _validate_public_routeback(
             "message_id",
             "channel_id",
             "content_sha256",
+            "public_receipt_sha256",
         ),
         code="canonical_routeback_truth_invalid",
     )
@@ -1375,6 +1376,7 @@ def _validate_public_routeback(
             "message_id": receipt.discord_object_id,
             "channel_id": target_channel,
             "content_sha256": receipt.content_sha256,
+            "public_receipt_sha256": _digest_mapping(envelope.to_message()),
         }
         or not isinstance(event["target_ref"], Mapping)
         or str(

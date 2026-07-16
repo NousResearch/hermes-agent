@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import base64
 import builtins
+import errno
 import hashlib
 import json
 import os
@@ -402,6 +403,257 @@ def test_sealed_host_receipt_rejects_path_replacement_during_read(
             expected_gid=expected_gid,
             allowed_modes=frozenset({0o400}),
         )
+
+
+def _publish_exclusive_for_test(
+    directory: Path,
+    name: str,
+    payload: bytes,
+    *,
+    mode: int = 0o400,
+    expected_uid: int | None = None,
+    expected_gid: int | None = None,
+) -> None:
+    descriptor = os.open(
+        directory,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0),
+    )
+    try:
+        runtime._write_exclusive_bytes_at(
+            descriptor,
+            name,
+            payload,
+            mode=mode,
+            expected_uid=os.getuid() if expected_uid is None else expected_uid,
+            expected_gid=(
+                directory.stat().st_gid if expected_gid is None else expected_gid
+            ),
+        )
+    finally:
+        os.close(descriptor)
+
+
+def test_exclusive_publisher_is_atomic_create_only_and_idempotent(
+    tmp_path: Path,
+) -> None:
+    payload = b'{"canonical":"exact"}\n'
+    path = tmp_path / "receipt.json"
+    temp = tmp_path / runtime._exclusive_publication_temp_name(path.name)
+
+    _publish_exclusive_for_test(tmp_path, path.name, payload)
+    original = path.stat()
+    _publish_exclusive_for_test(tmp_path, path.name, payload)
+
+    assert path.read_bytes() == payload
+    assert path.stat().st_ino == original.st_ino
+    assert path.stat().st_nlink == 1
+    assert stat.S_IMODE(path.stat().st_mode) == 0o400
+    assert not temp.exists()
+    with pytest.raises(RuntimeError, match="identity is invalid|payload drifted"):
+        _publish_exclusive_for_test(tmp_path, path.name, b'{"different":true}\n')
+    assert path.read_bytes() == payload
+    assert path.stat().st_ino == original.st_ino
+
+
+@pytest.mark.parametrize("interrupted_entry", ["temp", "final"])
+def test_exclusive_publisher_recovers_only_exact_truncated_prefix(
+    tmp_path: Path,
+    interrupted_entry: str,
+) -> None:
+    payload = b'{"canonical":"approval-or-receipt","value":123}\n'
+    final = tmp_path / "approval.json"
+    temp = tmp_path / runtime._exclusive_publication_temp_name(final.name)
+    interrupted = temp if interrupted_entry == "temp" else final
+    interrupted.write_bytes(payload[: len(payload) // 2])
+    interrupted.chmod(0o400)
+
+    _publish_exclusive_for_test(tmp_path, final.name, payload)
+
+    assert final.read_bytes() == payload
+    assert final.stat().st_nlink == 1
+    assert not temp.exists()
+
+
+def test_exclusive_publisher_fsyncs_complete_orphan_temp_before_rename(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b'{"canonical":"complete-before-fsync"}\n'
+    final = tmp_path / "receipt.json"
+    temp = tmp_path / runtime._exclusive_publication_temp_name(final.name)
+    temp.write_bytes(payload)
+    temp.chmod(0o400)
+    orphan_identity = (temp.stat().st_dev, temp.stat().st_ino)
+    flushed: set[tuple[int, int]] = set()
+    real_fsync = runtime.os.fsync
+    real_rename = runtime._rename_noreplace_at
+
+    def recording_fsync(descriptor: int) -> None:
+        item = os.fstat(descriptor)
+        flushed.add((item.st_dev, item.st_ino))
+        real_fsync(descriptor)
+
+    def rename_after_flush(*args, **kwargs) -> None:
+        assert orphan_identity in flushed
+        real_rename(*args, **kwargs)
+
+    monkeypatch.setattr(runtime.os, "fsync", recording_fsync)
+    monkeypatch.setattr(runtime, "_rename_noreplace_at", rename_after_flush)
+
+    _publish_exclusive_for_test(tmp_path, final.name, payload)
+
+    assert final.read_bytes() == payload
+    assert final.stat().st_nlink == 1
+    assert not temp.exists()
+
+
+def test_exclusive_publisher_fsyncs_exact_legacy_final_before_return(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b'{"canonical":"legacy-direct-final"}\n'
+    final = tmp_path / "receipt.json"
+    final.write_bytes(payload)
+    final.chmod(0o400)
+    legacy_identity = (final.stat().st_dev, final.stat().st_ino)
+    flushed: set[tuple[int, int]] = set()
+    real_fsync = runtime.os.fsync
+
+    def recording_fsync(descriptor: int) -> None:
+        item = os.fstat(descriptor)
+        flushed.add((item.st_dev, item.st_ino))
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(runtime.os, "fsync", recording_fsync)
+
+    _publish_exclusive_for_test(tmp_path, final.name, payload)
+
+    assert legacy_identity in flushed
+    assert final.read_bytes() == payload
+    assert final.stat().st_nlink == 1
+
+
+def test_exclusive_publisher_recovers_durable_hardlink_fallback(
+    tmp_path: Path,
+) -> None:
+    payload = b'{"canonical":"linked"}\n'
+    final = tmp_path / "receipt.json"
+    temp = tmp_path / runtime._exclusive_publication_temp_name(final.name)
+    temp.write_bytes(payload)
+    temp.chmod(0o400)
+    os.link(temp, final)
+    assert temp.stat().st_nlink == 2
+
+    _publish_exclusive_for_test(tmp_path, final.name, payload)
+
+    assert final.read_bytes() == payload
+    assert final.stat().st_nlink == 1
+    assert not temp.exists()
+
+
+def test_exclusive_publisher_tolerates_concurrent_temp_cleanup_enoent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = b'{"canonical":"cleanup"}\n'
+    final = tmp_path / "receipt.json"
+    temp = tmp_path / runtime._exclusive_publication_temp_name(final.name)
+    final.write_bytes(payload)
+    final.chmod(0o400)
+    temp.write_bytes(payload[: len(payload) // 2])
+    temp.chmod(0o400)
+    real_unlink = os.unlink
+    disappeared = False
+
+    def disappearing_unlink(name, *, dir_fd=None):
+        nonlocal disappeared
+        if name == temp.name and not disappeared:
+            disappeared = True
+            real_unlink(name, dir_fd=dir_fd)
+            raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), name)
+        return real_unlink(name, dir_fd=dir_fd)
+
+    monkeypatch.setattr(runtime.os, "unlink", disappearing_unlink)
+    _publish_exclusive_for_test(tmp_path, final.name, payload)
+
+    assert disappeared is True
+    assert final.read_bytes() == payload
+    assert final.stat().st_nlink == 1
+    assert not temp.exists()
+
+
+@pytest.mark.parametrize("entry_name", ["final", "temp"])
+@pytest.mark.parametrize(
+    "drift",
+    ["arbitrary-bytes", "symlink", "hardlink", "owner", "mode"],
+)
+def test_exclusive_publisher_rejects_untrusted_interrupted_state(
+    tmp_path: Path,
+    entry_name: str,
+    drift: str,
+) -> None:
+    payload = b'{"canonical":"expected"}\n'
+    final = tmp_path / "receipt.json"
+    temp = tmp_path / runtime._exclusive_publication_temp_name(final.name)
+    entry = final if entry_name == "final" else temp
+    backing = tmp_path / "backing"
+    expected_uid = os.getuid()
+
+    if drift == "symlink":
+        backing.write_bytes(payload)
+        backing.chmod(0o400)
+        entry.symlink_to(backing)
+    elif drift == "hardlink":
+        backing.write_bytes(payload)
+        backing.chmod(0o400)
+        os.link(backing, entry)
+    else:
+        entry.write_bytes(
+            b"not-an-expected-prefix" if drift == "arbitrary-bytes" else payload
+        )
+        entry.chmod(0o600 if drift == "mode" else 0o400)
+        if drift == "owner":
+            expected_uid += 1
+
+    with pytest.raises(RuntimeError, match="identity is invalid|payload drifted"):
+        _publish_exclusive_for_test(
+            tmp_path,
+            final.name,
+            payload,
+            expected_uid=expected_uid,
+        )
+    assert os.path.lexists(entry)
+    if entry_name == "temp":
+        assert not final.exists()
+
+
+def test_exclusive_publisher_serializes_concurrent_exact_retries(
+    tmp_path: Path,
+) -> None:
+    payload = b'{"canonical":"concurrent"}\n'
+    final = tmp_path / "receipt.json"
+    temp = tmp_path / runtime._exclusive_publication_temp_name(final.name)
+    barrier = threading.Barrier(4)
+    failures: list[BaseException] = []
+
+    def publish() -> None:
+        try:
+            barrier.wait()
+            _publish_exclusive_for_test(tmp_path, final.name, payload)
+        except BaseException as exc:  # pragma: no cover - asserted below
+            failures.append(exc)
+
+    workers = [threading.Thread(target=publish) for _ in range(4)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=5)
+
+    assert failures == []
+    assert all(not worker.is_alive() for worker in workers)
+    assert final.read_bytes() == payload
+    assert final.stat().st_nlink == 1
+    assert not temp.exists()
 
 
 def test_stopped_preflight_host_mismatch_never_reaches_runner_or_install(
@@ -935,6 +1187,15 @@ def test_isolated_gateway_pins_exact_provider_registry_before_runtime_resolution
     assert calls == []
     assert run._configure_gateway_provider_discovery(True) is True
     assert calls == [frozenset({"openai-codex"})]
+    assert run._configure_gateway_provider_discovery(
+        False,
+        False,
+        True,
+    ) is True
+    assert calls == [
+        frozenset({"openai-codex"}),
+        frozenset({"openai-codex"}),
+    ]
 
     monkeypatch.setattr(
         providers,

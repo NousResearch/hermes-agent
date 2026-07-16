@@ -1037,8 +1037,40 @@ def _cutover_plan(
         "decision_sha256": _sha_json(decision_unsigned),
     }
     cron_inventory, cron_plan, host_facts, mechanical_package = _cron_authority()
+    isolated_canary_unsigned = {
+        "schema": "muncho-production-isolated-canary-goal-prerequisite.v2",
+        "fixture": {},
+        "fixture_sha256": "1" * 64,
+        "workspace_gateway": {},
+        "workspace_gateway_receipt_sha256": "2" * 64,
+        "cleanup_receipt": {},
+        "cleanup_receipt_sha256": _sha_json({}),
+        "goal_continuation_terminal_schema": (
+            "muncho-production-capability-goal-continuation-terminal.v2"
+        ),
+        "goal_continuation_terminal_sha256": "3" * 64,
+        "isolation_equivalence_projection": {},
+        "isolation_equivalence_projection_sha256": "4" * 64,
+        "production_diff_sha256": "5" * 64,
+        "production_diff": {"diff_sha256": "5" * 64},
+        "production_diff_file_sha256": _sha_json(
+            {"diff_sha256": "5" * 64}
+        ),
+        "run_id": "capability-run-package-test",
+        "release_revision": REVISION,
+        "capability_plan_sha256": "6" * 64,
+        "full_canary_plan_sha256": "7" * 64,
+        "canary_owner_approval_receipt_sha256": "8" * 64,
+        "canary_production_mutation_observed": False,
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+    }
+    isolated_canary = {
+        **isolated_canary_unsigned,
+        "evidence_sha256": _sha_json(isolated_canary_unsigned),
+    }
     authority_unsigned = {
-        "schema": "muncho-production-cutover-authority.v1",
+        "schema": "muncho-production-cutover-authority.v3",
         "release_revision": REVISION,
         "artifacts": artifacts,
         "gateway_target_identity": stable(gateway_target_observation),
@@ -1050,6 +1082,7 @@ def _cutover_plan(
         "cron_continuity_plan": cron_plan,
         "mechanical_job_host_facts": host_facts,
         "mechanical_job_package": mechanical_package,
+        "isolated_canary_goal_prerequisite": isolated_canary,
         "legacy_truth_decision": legacy_truth_decision,
         "final_tail_bounds": {
             "max_appended_rows": 10_000,

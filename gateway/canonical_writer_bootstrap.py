@@ -61,6 +61,11 @@ from gateway.canonical_writer_postgres_backend import (
     PRODUCTION_STATEMENT_CATALOG,
     PostgresCanonicalWriterBackend,
 )
+from gateway.canonical_projection_export import (
+    PROJECTION_EXPORT_SCHEMA,
+    ProjectionExportError,
+    validate_projection_rows,
+)
 from gateway.discord_edge_protocol import ed25519_public_key_id
 from gateway.discord_edge_writer_authority import CanonicalWriterDiscordAuthority
 from gateway.canonical_writer_service import (
@@ -1020,22 +1025,39 @@ def export_projection_events(
         raise RuntimeError("writer backend cannot provide a projection snapshot")
 
     temporary = target.with_name(f".{target.name}.tmp.{os.getpid()}")
+    provenance_temporary = target.with_name(
+        f".{target.name}.provenance.tmp.{os.getpid()}"
+    )
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    provenance_flags = (
+        os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    )
     descriptor = -1
+    provenance_descriptor = -1
     count = 0
     seen_event_ids: set[str] = set()
     try:
         descriptor = os.open(temporary, flags, 0o640)
         os.fchown(descriptor, -1, bootstrap.config.projector_gid)
         os.fchmod(descriptor, 0o640)
+        provenance_descriptor = os.open(provenance_temporary, provenance_flags, 0o600)
+        os.fchmod(provenance_descriptor, 0o600)
         with (
             projection_scope() as projection,
             os.fdopen(descriptor, "w", encoding="utf-8", closefd=True) as handle,
+            os.fdopen(
+                provenance_descriptor,
+                "w+",
+                encoding="utf-8",
+                closefd=True,
+            ) as provenance_handle,
         ):
             descriptor = -1
+            provenance_descriptor = -1
             handle.write('{"events":[')
             cursor = ""
             first = True
+            first_provenance = True
             while count < int(limit):
                 page_limit = min(500, int(limit) - count)
                 response = projection.projector_read(
@@ -1050,26 +1072,49 @@ def export_projection_events(
                         service_internal=True,
                     ),
                 )
+                if (
+                    not isinstance(response, Mapping)
+                    or set(response)
+                    != {
+                        "events",
+                        "provenance",
+                        "has_more",
+                        "next_after_event_id",
+                        "case_id",
+                        "bounded",
+                    }
+                    or response.get("case_id") != ""
+                    or response.get("bounded") is not True
+                ):
+                    raise RuntimeError(
+                        "writer projection routine returned an invalid internal envelope"
+                    )
                 events = response.get("events")
-                if not isinstance(events, list):
-                    raise RuntimeError("writer projection routine returned no events array")
-                if len(events) > page_limit:
-                    raise RuntimeError("writer projection routine exceeded its page limit")
-                for event in events:
-                    if not isinstance(event, Mapping):
-                        raise RuntimeError("writer projection routine returned an invalid row")
-                    event_id = str(event.get("event_id") or "").strip()
-                    try:
-                        parsed_event_id = uuid.UUID(event_id)
-                    except (AttributeError, ValueError):
+                provenance = response.get("provenance")
+                if isinstance(events, list) and len(events) > page_limit:
+                    raise RuntimeError(
+                        "writer projection routine exceeded its page limit"
+                    )
+                try:
+                    events, provenance = validate_projection_rows(
+                        events,
+                        provenance,
+                        maximum_events=page_limit,
+                    )
+                except ProjectionExportError as exc:
+                    if exc.args and exc.args[0] in {
+                        "projection_export_event_id_invalid",
+                        "projection_export_event_duplicate",
+                    }:
                         raise RuntimeError(
-                            "writer projection row has an invalid event_id"
-                        ) from None
-                    if (
-                        parsed_event_id.int == 0
-                        or str(parsed_event_id) != event_id
-                        or event_id in seen_event_ids
-                    ):
+                            "writer projection row has a duplicate or noncanonical event_id"
+                        ) from exc
+                    raise RuntimeError(
+                        "writer projection routine returned an invalid row or provenance join"
+                    ) from exc
+                for event, proof in zip(events, provenance, strict=True):
+                    event_id = event["event_id"]
+                    if event_id in seen_event_ids:
                         raise RuntimeError(
                             "writer projection row has a duplicate or noncanonical event_id"
                         )
@@ -1085,6 +1130,18 @@ def export_projection_events(
                         )
                     )
                     first = False
+                    if not first_provenance:
+                        provenance_handle.write(",")
+                    provenance_handle.write(
+                        json.dumps(
+                            proof,
+                            ensure_ascii=False,
+                            allow_nan=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        )
+                    )
+                    first_provenance = False
                     count += 1
                 has_more = response.get("has_more")
                 if type(has_more) is not bool:
@@ -1113,10 +1170,27 @@ def export_projection_events(
                 ):
                     raise RuntimeError("writer projection cursor did not advance")
                 cursor = next_cursor
-            handle.write("]}\n")
+            provenance_handle.flush()
+            provenance_handle.seek(0)
+            handle.write('],"provenance":[')
+            while True:
+                chunk = provenance_handle.read(1024 * 1024)
+                if not chunk:
+                    break
+                handle.write(chunk)
+            handle.write(
+                '],"schema":'
+                + json.dumps(PROJECTION_EXPORT_SCHEMA, separators=(",", ":"))
+                + "}\n"
+            )
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, target)
+        # Retire the writer-only scratch inode before the publication's final
+        # directory fsync.  A successful return must make both the atomic
+        # target replacement and the scratch cleanup durable; otherwise a
+        # reboot followed by PID reuse could make O_EXCL reject the next run.
+        provenance_temporary.unlink()
         directory_fd = os.open(target.parent, os.O_RDONLY)
         try:
             os.fsync(directory_fd)
@@ -1125,8 +1199,14 @@ def export_projection_events(
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+        if provenance_descriptor >= 0:
+            os.close(provenance_descriptor)
         try:
             temporary.unlink()
+        except FileNotFoundError:
+            pass
+        try:
+            provenance_temporary.unlink()
         except FileNotFoundError:
             pass
     return count

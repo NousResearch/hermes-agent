@@ -13,6 +13,8 @@ from gateway.support_ops_alias_projection import (
     load_channel_alias_projection,
 )
 from gateway.support_ops_team_registry import (
+    SKYVISION_BACKEND_CHANNEL_ID,
+    SKYVISION_FRONTEND_CHANNEL_ID,
     SKYVISION_GUILD_ID,
     STATIC_ALIAS_CHANNEL_IDS,
     TEAM_MEMBERS_BY_KEY,
@@ -87,7 +89,7 @@ def _channel_alias_event(
     number: int,
     *,
     alias: str = "Incidents",
-    channel_id: str = "1527000000000000001",
+    channel_id: str = SKYVISION_BACKEND_CHANNEL_ID,
     target_type: str = "guild_channel",
     parent_channel_id: str | None = None,
     guild_id: str = SKYVISION_GUILD_ID,
@@ -110,8 +112,28 @@ def _channel_alias_event(
 
 
 def _write_export(path, rows) -> None:
+    provenance = [
+        {
+            "event_id": row["event_id"],
+            "canonical_content_sha256": row["payload"][
+                "canonical_content_sha256"
+            ],
+            "origin": row["decision"]["decided_by"],
+            "trusted_runtime": row["source"]["observed_session"],
+            "appended_at": row["occurred_at"],
+        }
+        for row in rows
+    ]
     path.write_text(
-        json.dumps({"events": rows}, ensure_ascii=False, separators=(",", ":")),
+        json.dumps(
+            {
+                "events": rows,
+                "provenance": provenance,
+                "schema": "canonical-writer-projection-export.v2",
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
         encoding="utf-8",
     )
     path.chmod(0o640)
@@ -123,8 +145,18 @@ def test_projector_emits_only_safe_aliases_and_integrity_receipt(tmp_path):
         "event_id": _event_id(1),
         "event_type": "case.note",
         "occurred_at": "2026-07-14T10:00:01+00:00",
-        "payload": {"private_business_text": "must-not-escape"},
-        "source": {"raw": "also-must-not-escape"},
+        "payload": {
+            "private_business_text": "must-not-escape",
+            "canonical_content_sha256": "f" * 64,
+        },
+        "source": {
+            "raw": "also-must-not-escape",
+            "observed_session": {
+                "request_id": "unrelated-writer-event",
+                "platform": "writer_service",
+            },
+        },
+        "decision": {"decided_by": "model_event_append"},
     }
     _write_export(export, [unrelated, _alias_event(2, alias="  Ники  ")])
 
@@ -139,6 +171,18 @@ def test_projector_emits_only_safe_aliases_and_integrity_receipt(tmp_path):
     assert "must-not-escape" not in rendered
     assert "Requester explicitly clarified" not in rendered
     assert "message_id" not in rendered
+
+
+def test_projector_rejects_writer_export_with_substituted_provenance(tmp_path):
+    export = tmp_path / "canonical-events.json"
+    event = _alias_event(1)
+    _write_export(export, [event])
+    value = json.loads(export.read_text(encoding="utf-8"))
+    value["provenance"][0]["canonical_content_sha256"] = "0" * 64
+    export.write_text(json.dumps(value), encoding="utf-8")
+
+    with pytest.raises(AliasProjectorError, match="writer_export_envelope_invalid"):
+        project_aliases_from_writer_export(export)
 
 
 def test_projector_rejects_extra_alias_fields_and_conflicting_mappings():
@@ -176,7 +220,7 @@ def test_channel_alias_root_and_thread_round_trip_and_replay():
         alias="July incidents",
         channel_id="1527000000000000002",
         target_type="guild_thread",
-        parent_channel_id="1527000000000000001",
+        parent_channel_id=SKYVISION_BACKEND_CHANNEL_ID,
     )
     replay = _channel_alias_event(
         3,
@@ -191,13 +235,13 @@ def test_channel_alias_root_and_thread_round_trip_and_replay():
         "incidents": {
             "guild_id": SKYVISION_GUILD_ID,
             "target_type": "guild_channel",
-            "channel_id": "1527000000000000001",
+            "channel_id": SKYVISION_BACKEND_CHANNEL_ID,
         },
         "july incidents": {
             "guild_id": SKYVISION_GUILD_ID,
             "target_type": "guild_thread",
             "channel_id": "1527000000000000002",
-            "parent_channel_id": "1527000000000000001",
+            "parent_channel_id": SKYVISION_BACKEND_CHANNEL_ID,
         },
     }
     assert document["receipt"]["alias_event_count"] == 3
@@ -227,6 +271,22 @@ def test_channel_alias_root_and_thread_round_trip_and_replay():
             ),
             "alias_event_payload_invalid",
         ),
+        (
+            _channel_alias_event(
+                1,
+                channel_id="1527000000000000001",
+            ),
+            "channel_alias_event_target_not_owner_approved",
+        ),
+        (
+            _channel_alias_event(
+                1,
+                target_type="guild_thread",
+                channel_id="1527000000000000002",
+                parent_channel_id="1527000000000000003",
+            ),
+            "channel_alias_event_target_not_owner_approved",
+        ),
     ],
 )
 def test_channel_alias_rejects_wrong_guild_and_invalid_parent_shape(event, error):
@@ -239,7 +299,10 @@ def test_channel_alias_rejects_conflict_rebinding_and_cross_kind_alias():
         build_alias_projection_document(
             [
                 _channel_alias_event(1),
-                _channel_alias_event(2, channel_id="1527000000000000009"),
+                _channel_alias_event(
+                    2,
+                    channel_id=SKYVISION_FRONTEND_CHANNEL_ID,
+                ),
             ],
             source_export_sha256="9" * 64,
         )

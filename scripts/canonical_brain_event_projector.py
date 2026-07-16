@@ -16,6 +16,10 @@ import pathlib
 from typing import Any, Mapping
 
 from gateway.canonical_brain_projection import fold_case_events
+from gateway.canonical_projection_export import (
+    ProjectionExportError,
+    validate_projection_export,
+)
 
 
 def read_events(events_path: pathlib.Path, *, limit: int) -> list[dict[str, Any]]:
@@ -29,20 +33,20 @@ def read_events(events_path: pathlib.Path, *, limit: int) -> list[dict[str, Any]
 
     with events_path.open(encoding="utf-8") as handle:
         value = json.load(handle)
-    if isinstance(value, Mapping):
-        rows = value.get("events")
-    else:
-        rows = value
-    if not isinstance(rows, list):
-        raise ValueError("writer event export must contain an events array")
-    if len(rows) > limit:
+    if (
+        isinstance(value, Mapping)
+        and isinstance(value.get("events"), list)
+        and len(value["events"]) > limit
+    ):
         raise ValueError("writer event export exceeds the projector limit")
-    normalized: list[dict[str, Any]] = []
-    for row in rows:
-        if not isinstance(row, Mapping):
-            raise ValueError("writer event export rows must be objects")
-        normalized.append(dict(row))
-    return normalized
+    try:
+        rows, _provenance = validate_projection_export(
+            value,
+            maximum_events=limit,
+        )
+    except ProjectionExportError as exc:
+        raise ValueError("writer event export failed its exact v2 contract") from exc
+    return rows
 
 
 def projection_documents(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:

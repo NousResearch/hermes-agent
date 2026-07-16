@@ -7,7 +7,7 @@ readback truth themselves.
 
 This layer is intentionally semantic-free.  It validates fixed protocol
 shapes and exact bindings, returns a fresh short-lived capability for an
-eligible nonterminal durable claim, and derives the legacy Canonical Writer
+eligible nonterminal durable claim, and derives the Canonical Writer
 receipt shape from verified edge evidence.  The edge journal, not capability
 freshness, is the one-mutation idempotency fence.
 """
@@ -79,6 +79,35 @@ def derive_routeback_edge_idempotency_key(
     return "canonical-routeback:" + digest
 
 
+def derive_private_denial_receipt_sha256(*, probe_id: str) -> str:
+    """Return the exact receipt digest for a private-target pre-dispatch denial.
+
+    The raw private target is deliberately absent.  ``probe_id`` is the stable
+    Canonical route-back idempotency key; the remaining fields are fixed
+    mechanical facts of the Discord DM safety boundary.  Keeping this formula
+    beside the edge canonical-JSON implementation gives the gateway, writer,
+    and tests one byte contract without creating semantic routing authority.
+    """
+
+    if (
+        not isinstance(probe_id, str)
+        or not probe_id
+        or len(probe_id.encode("utf-8")) > 256
+        or any(ord(char) < 32 for char in probe_id)
+    ):
+        raise ValueError("private denial probe_id is invalid")
+    return hashlib.sha256(
+        canonical_json_bytes(
+            {
+                "probe_id": probe_id,
+                "target_kind": "dm",
+                "blocker_code": DiscordEdgeErrorCode.FORBIDDEN_TARGET.value,
+                "dispatch_attempted": False,
+            }
+        )
+    ).hexdigest()
+
+
 class DiscordEdgeWriterAuthorityError(ValueError):
     """Secret-free, fixed-code writer authority failure."""
 
@@ -90,11 +119,12 @@ class DiscordEdgeWriterAuthorityError(ValueError):
 
 @dataclass(frozen=True)
 class VerifiedDiscordEdgeEvidence:
-    """Verified edge evidence and its derived legacy writer representation."""
+    """Verified edge evidence and its derived canonical writer representation."""
 
     request: DiscordEdgeRequest
     capability: DiscordEdgeCapability
     receipt: DiscordEdgeReceipt
+    public_receipt_sha256: str
     canonical_receipt: Mapping[str, Any]
     blocker_reason: str
 
@@ -349,6 +379,13 @@ class CanonicalWriterDiscordAuthority:
                 "Discord edge request or receipt evidence is invalid",
             ) from exc
 
+        # Bind Canonical truth to the exact normalized signed envelope, not to
+        # caller-authored receipt fields or transport JSON formatting.  The
+        # pinned edge signature is verified above; this digest is therefore a
+        # stable identifier for that cryptographic readback receipt.
+        public_receipt_sha256 = hashlib.sha256(
+            canonical_json_bytes(receipt_envelope.to_message())
+        ).hexdigest()
         canonical_receipt: dict[str, Any] = {}
         blocker_reason = ""
         if receipt.outcome is DiscordEdgeReceiptOutcome.VERIFIED:
@@ -359,6 +396,7 @@ class CanonicalWriterDiscordAuthority:
                 "message_id": receipt.discord_object_id,
                 "channel_id": receipt.target.channel_id,
                 "content_sha256": receipt.content_sha256,
+                "public_receipt_sha256": public_receipt_sha256,
             }
         else:
             if receipt.blocker_code is None:
@@ -383,11 +421,13 @@ class CanonicalWriterDiscordAuthority:
                     "message_id": receipt.discord_object_id,
                     "channel_id": receipt.target.channel_id,
                     "content_sha256": receipt.content_sha256,
+                    "public_receipt_sha256": public_receipt_sha256,
                 }
         return VerifiedDiscordEdgeEvidence(
             request=request,
             capability=capability,
             receipt=receipt,
+            public_receipt_sha256=public_receipt_sha256,
             canonical_receipt=canonical_receipt,
             blocker_reason=blocker_reason,
         )
@@ -397,5 +437,6 @@ __all__ = [
     "CanonicalWriterDiscordAuthority",
     "DiscordEdgeWriterAuthorityError",
     "VerifiedDiscordEdgeEvidence",
+    "derive_private_denial_receipt_sha256",
     "derive_routeback_edge_idempotency_key",
 ]

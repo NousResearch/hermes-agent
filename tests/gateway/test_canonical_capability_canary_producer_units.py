@@ -5,6 +5,8 @@ import json
 import os
 import stat
 import sys
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
@@ -14,6 +16,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from gateway import canonical_capability_canary_producer_units as units
 from gateway import canonical_capability_canary_producers as producers
+from gateway import canonical_capability_canary_e2e as canary
 from gateway.discord_history_authority import (
     CANARY_HISTORY_READER_SERVICE_UNIT,
     CANARY_HISTORY_READER_SERVICE_USER,
@@ -59,9 +62,7 @@ def _probe_catalog() -> dict[str, Any]:
             "denied": [
                 {
                     "kind": kind,
-                    "command": _command(
-                        f"denied:{index}", f"deny-{index}".encode()
-                    ),
+                    "command": _command(f"denied:{index}", f"deny-{index}".encode()),
                 }
                 for index, kind in enumerate(producers.DENIAL_KINDS)
             ],
@@ -82,9 +83,7 @@ def _probe_catalog() -> dict[str, Any]:
             "readback_probe_id": "bitrix:readback",
             "normalized_equality_excluded_fields": ["generated_at_utc"],
             "mutation_operation_id": "bitrix.crm.lead_add",
-            "mutation_arguments": dict(
-                producers.BITRIX_CANARY_MUTATION_ARGUMENTS
-            ),
+            "mutation_arguments": dict(producers.BITRIX_CANARY_MUTATION_ARGUMENTS),
             "mutation_probe_id": "bitrix:denial",
         },
         discord={
@@ -112,27 +111,7 @@ def _probe_catalog() -> dict[str, Any]:
 
 
 def _identities() -> dict[str, dict[str, Any]]:
-    values = {
-        "business_edge": ("muncho-cap-business", "muncho-cap-business", 2201, 2301),
-        "canonical_writer": ("muncho-cap-writer", "muncho-cap-writer", 2202, 2302),
-        "discord_edge": ("muncho-cap-discord", "muncho-cap-discord", 2203, 2303),
-        "gateway_observer": ("muncho-cap-observer", "muncho-cap-observer", 2204, 2304),
-    }
-    return {
-        role: {
-            "user": value[0],
-            "group": value[1],
-            "uid": value[2],
-            "gid": value[3],
-            "receipt_writer_gid": 2401,
-            "bitrix_socket_gid": (
-                2501
-                if role in {"business_edge", "canonical_writer"}
-                else None
-            ),
-        }
-        for role, value in values.items()
-    }
+    return copy.deepcopy(dict(units.planned_producer_role_identities()))
 
 
 def _key_bootstrap(tmp_path: Path) -> units.ProducerKeyBootstrap:
@@ -187,7 +166,7 @@ def _production_foundation(
         **copy.deepcopy(prior["receipt_contract"]),
         "base_root": str(producers.DEFAULT_RECEIPT_ROOT),
         "run_directory_uid": 0,
-        "run_directory_gid": 2401,
+        "run_directory_gid": units.PRODUCER_RECEIPT_WRITER_GID,
         "run_directory_mode": 0o3770,
     }
     signature = _sshsig(
@@ -204,6 +183,1021 @@ def _production_foundation(
         )
     )
     return foundation, context, keys
+
+
+def _service_identity_foundation(
+    *,
+    terminal: Mapping[str, Any],
+    capability_plan_sha256: str = "b" * 64,
+    full_canary_plan_sha256: str = "c" * 64,
+    plan_publication_receipt_sha256: str = "e" * 64,
+) -> dict[str, Any]:
+    def observation(
+        role: str,
+        user: str,
+        group: str,
+        uid: int,
+        gid: int,
+    ) -> dict[str, Any]:
+        unsigned = {
+            "schema": units.CAPABILITY_SERVICE_HOST_IDENTITY_SCHEMA,
+            "plan_sha256": capability_plan_sha256,
+            "role": role,
+            "state": "present_exact",
+            "user": user,
+            "group": group,
+            "uid": uid,
+            "gid": gid,
+            "home": "/nonexistent",
+            "shell": "/usr/sbin/nologin",
+            "group_members": [],
+            "supplementary_group_ids": [gid],
+            "create_only_eligible": True,
+            "secret_material_recorded": False,
+        }
+        return {**unsigned, "receipt_sha256": producers._sha256_json(unsigned)}
+
+    observations = {
+        "mac_ops": observation(
+            "mac_ops", "muncho-mac-ops", "muncho-mac-ops", 2104, 2205
+        ),
+        "connector": observation(
+            "connector", "muncho-connector", "muncho-connector", 2105, 2206
+        ),
+    }
+    unsigned = {
+        "schema": units.SERVICE_IDENTITY_FOUNDATION_SCHEMA,
+        "operation": "create_only_service_principals",
+        "revision": REVISION,
+        "capability_plan_sha256": capability_plan_sha256,
+        "full_canary_plan_sha256": full_canary_plan_sha256,
+        "full_canary_terminal_receipt_sha256": terminal["receipt_sha256"],
+        "original_full_canary_owner_approval_sha256": terminal["owner_approval_sha256"],
+        "plan_publication_receipt_sha256": plan_publication_receipt_sha256,
+        "receipt_path": "/var/lib/muncho-capability-canary/service-identities/foundation.json",
+        "before": observations,
+        "after": copy.deepcopy(observations),
+        "created": [],
+        "create_only": True,
+        "existing_identities_mutated": False,
+        "retained_dormant_on_rollback": True,
+        "mutation_performed": False,
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+    }
+    return {**unsigned, "receipt_sha256": producers._sha256_json(unsigned)}
+
+
+def _producer_identity_foundation(*, plan: Any, full_plan: Any) -> dict[str, Any]:
+    roles = {
+        role: {
+            "state": "present_exact",
+            "user": identity["user"],
+            "group": identity["group"],
+            "uid": identity["uid"],
+            "gid": identity["gid"],
+            "home": "/nonexistent",
+            "shell": "/usr/sbin/nologin",
+            "group_members": [],
+            "supplementary_group_ids": [identity["gid"]],
+            "create_only_eligible": True,
+        }
+        for role, identity in _identities().items()
+    }
+    host_unsigned = {
+        "schema": units.PRODUCER_HOST_IDENTITY_SCHEMA,
+        "plan_sha256": plan.sha256,
+        "roles": roles,
+        "receipt_writer_group": {
+            "state": "present_exact",
+            "group": units.PRODUCER_RECEIPT_WRITER_GROUP,
+            "gid": units.PRODUCER_RECEIPT_WRITER_GID,
+            "members": [],
+            "create_only_eligible": True,
+        },
+        "planned_identities": _identities(),
+        "persistent_supplementary_memberships": False,
+        "service_time_supplementary_groups_only": True,
+        "create_only_eligible": True,
+        "secret_material_recorded": False,
+    }
+    observation = {
+        **host_unsigned,
+        "receipt_sha256": producers._sha256_json(host_unsigned),
+    }
+    receipt_path = units._producer_identity_foundation_path(plan)
+    unsigned = {
+        "schema": units.PRODUCER_IDENTITY_FOUNDATION_SCHEMA,
+        "operation": "create_only_fixed_producer_principals",
+        "revision": plan.revision,
+        "capability_plan_sha256": plan.sha256,
+        "full_canary_plan_sha256": full_plan.sha256,
+        "full_canary_terminal_receipt_sha256": (
+            plan.full_canary_terminal_receipt_sha256
+        ),
+        "original_full_canary_owner_approval_sha256": (
+            plan.original_full_canary_owner_approval_sha256
+        ),
+        "plan_publication_receipt_sha256": "e" * 64,
+        "receipt_path": str(receipt_path),
+        "planned_identities": _identities(),
+        "before": observation,
+        "after": copy.deepcopy(observation),
+        "created": [],
+        "create_only": True,
+        "existing_identities_mutated": False,
+        "retained_dormant_on_rollback": True,
+        "mutation_performed": False,
+        "persistent_supplementary_memberships": False,
+        "service_time_supplementary_groups_only": True,
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+    }
+    return {**unsigned, "receipt_sha256": producers._sha256_json(unsigned)}
+
+
+def _producer_prepare_context(tmp_path: Path):
+    prior_root = tmp_path / "prior"
+    prior_root.mkdir()
+    prior, context, _keys = _production_foundation(prior_root)
+    terminal = copy.deepcopy(prior["full_canary_terminal_receipt"])
+    service_foundation = _service_identity_foundation(terminal=terminal)
+    discord_contract = copy.deepcopy(prior["discord_edge_evidence_contract"])
+    plan = SimpleNamespace(
+        revision=REVISION,
+        sha256="b" * 64,
+        full_canary_terminal_receipt=terminal,
+        full_canary_terminal_receipt_sha256=terminal["receipt_sha256"],
+        original_full_canary_owner_approval_sha256=terminal["owner_approval_sha256"],
+        identities=SimpleNamespace(
+            connector_uid=discord_contract["connector_service_uid"],
+            connector_gid=discord_contract["connector_service_gid"],
+        ),
+        to_mapping=lambda: {
+            "bitrix_operational_edge": copy.deepcopy(
+                prior["bitrix_operational_edge_contract"]
+            )
+        },
+    )
+    full_plan = SimpleNamespace(
+        revision=REVISION,
+        sha256="c" * 64,
+        identities=SimpleNamespace(
+            edge_uid=discord_contract["edge_service_uid"],
+            edge_gid=discord_contract["edge_service_gid"],
+            writer_gid=0,
+        ),
+    )
+    owner = prior["owner_authority"]
+    source = owner["public_key_source"]
+    owner_authority = {
+        "public_key_ed25519_hex": owner["public_key_ed25519_hex"],
+        "key_id": owner["key_id"],
+        "public_key_file_sha256": source["file_sha256"],
+        "public_fingerprint": source["fingerprint"],
+        "public_key_source": {
+            "path": source["path"],
+            "file_sha256": source["file_sha256"],
+            "device": 7,
+            "inode": 11,
+            "uid": source["uid"],
+            "gid": source["gid"],
+            "mode": f"{source['mode']:04o}",
+            "size": source["size"],
+        },
+    }
+    request = {
+        "schema": units.FOUNDATION_PREPARE_REQUEST_SCHEMA,
+        "revision": REVISION,
+        "capability_plan_sha256": plan.sha256,
+        "full_canary_plan_sha256": full_plan.sha256,
+        "full_canary_terminal_receipt": terminal,
+        "full_canary_terminal_receipt_sha256": terminal["receipt_sha256"],
+        "original_full_canary_owner_approval_sha256": terminal["owner_approval_sha256"],
+        "owner_public_authority": owner_authority,
+        "secret_material_recorded": False,
+        "semantic_content_recorded": False,
+    }
+    return (
+        prior,
+        context,
+        plan,
+        full_plan,
+        service_foundation,
+        discord_contract,
+        request,
+    )
+
+
+def test_fixed_producer_inventory_is_create_only_and_never_uses_usermod(
+    monkeypatch,
+) -> None:
+    plan = SimpleNamespace(
+        revision=REVISION,
+        sha256="b" * 64,
+        full_canary_terminal_receipt_sha256="c" * 64,
+        original_full_canary_owner_approval_sha256="d" * 64,
+    )
+    full_plan = SimpleNamespace(sha256="e" * 64)
+    present = _producer_identity_foundation(plan=plan, full_plan=full_plan)["after"]
+    absent = copy.deepcopy(present)
+    for item in absent["roles"].values():
+        item["state"] = "absent_create_only_slot"
+        item["group_members"] = None
+        item["supplementary_group_ids"] = None
+    absent["receipt_writer_group"]["state"] = "absent_create_only_slot"
+    absent["receipt_writer_group"]["members"] = None
+    absent_unsigned = {
+        key: value for key, value in absent.items() if key != "receipt_sha256"
+    }
+    absent["receipt_sha256"] = producers._sha256_json(absent_unsigned)
+    commands: list[tuple[str, ...]] = []
+    published: dict[Path, bytes] = {}
+    monkeypatch.setattr(units.sys, "platform", "linux")
+    monkeypatch.setattr(units.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(units.os.path, "lexists", lambda _path: False)
+
+    receipt = units.ensure_producer_role_identities(
+        plan=plan,
+        full_plan=full_plan,
+        account_runner=lambda argv: commands.append(tuple(argv)),
+        observer=lambda _sha, *, allow_create_only_absence: (
+            absent if allow_create_only_absence else present
+        ),
+        publisher=lambda path, payload: published.__setitem__(path, payload),
+        plan_publication_receipt={"receipt_sha256": "f" * 64},
+    )
+
+    assert receipt["planned_identities"] == _identities()
+    assert receipt["persistent_supplementary_memberships"] is False
+    assert receipt["created"] == [
+        *(
+            item
+            for role in producers.ENDPOINT_ROLES
+            for item in (f"{role}_group", f"{role}_user")
+        ),
+        "receipt_writer_group",
+    ]
+    assert all("usermod" not in command[0] for command in commands)
+    for role in producers.ENDPOINT_ROLES:
+        uid, gid = units.PRODUCER_ROLE_NUMERIC_IDENTITIES[role]
+        assert any("--gid" in command and str(gid) in command for command in commands)
+        assert any("--uid" in command and str(uid) in command for command in commands)
+    assert str(units.PRODUCER_RECEIPT_WRITER_GID) in {
+        value for command in commands for value in command
+    }
+    assert published[units._producer_identity_foundation_path(plan)] == (
+        producers._canonical_bytes(receipt)
+    )
+
+
+def test_producer_identity_observation_allows_only_exact_empty_group_partial(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(units, "_primary_group_user_names", lambda _gid: [])
+    monkeypatch.setattr(
+        units,
+        "_passwd_slot_inventory",
+        lambda _user, _uid, _gid: ([], []),
+    )
+    monkeypatch.setattr(
+        units,
+        "_group_slot_inventory",
+        lambda group, gid: [(group, gid, ())],
+    )
+    monkeypatch.setattr(units, "_optional_user_by_name", lambda _name: None)
+    monkeypatch.setattr(units, "_optional_user_by_uid", lambda _uid: None)
+    monkeypatch.setattr(
+        units,
+        "_optional_group_by_name",
+        lambda name: SimpleNamespace(
+            gr_name=name,
+            gr_gid=(
+                units.PRODUCER_RECEIPT_WRITER_GID
+                if name == units.PRODUCER_RECEIPT_WRITER_GROUP
+                else next(
+                    gid
+                    for role, (_uid, gid) in (
+                        units.PRODUCER_ROLE_NUMERIC_IDENTITIES.items()
+                    )
+                    if units.PRODUCER_ROLE_ACCOUNTS[role][1] == name
+                )
+            ),
+            gr_mem=[],
+        ),
+    )
+    monkeypatch.setattr(
+        units,
+        "_optional_group_by_gid",
+        lambda gid: SimpleNamespace(
+            gr_name=(
+                units.PRODUCER_RECEIPT_WRITER_GROUP
+                if gid == units.PRODUCER_RECEIPT_WRITER_GID
+                else next(
+                    units.PRODUCER_ROLE_ACCOUNTS[role][1]
+                    for role, (_uid, expected_gid) in (
+                        units.PRODUCER_ROLE_NUMERIC_IDENTITIES.items()
+                    )
+                    if expected_gid == gid
+                )
+            ),
+            gr_gid=gid,
+            gr_mem=[],
+        ),
+    )
+
+    observed = units.producer_host_identity_receipt(
+        "a" * 64,
+        allow_create_only_absence=True,
+    )
+    for item in observed["roles"].values():
+        assert item["state"] == ("group_present_user_absent_create_only_slot")
+        assert item["group_members"] == []
+        assert item["supplementary_group_ids"] is None
+
+    with pytest.raises(
+        producers.CapabilityProducerError,
+        match="producer_identity_unavailable",
+    ):
+        units.producer_host_identity_receipt(
+            "a" * 64,
+            allow_create_only_absence=False,
+        )
+
+    original = units._optional_group_by_name
+
+    def nonempty_group(name: str):
+        value = original(name)
+        if name == units.PRODUCER_ROLE_ACCOUNTS["business_edge"][1]:
+            return SimpleNamespace(
+                gr_name=value.gr_name,
+                gr_gid=value.gr_gid,
+                gr_mem=["unexpected"],
+            )
+        return value
+
+    monkeypatch.setattr(units, "_optional_group_by_name", nonempty_group)
+    with pytest.raises(
+        producers.CapabilityProducerError,
+        match="producer_identity_slot_collision_or_drift",
+    ):
+        units.producer_host_identity_receipt(
+            "a" * 64,
+            allow_create_only_absence=True,
+        )
+
+
+def test_producer_identity_rejects_hidden_primary_gid_authority(
+    monkeypatch,
+) -> None:
+    role = "business_edge"
+    user_name, group_name = units.PRODUCER_ROLE_ACCOUNTS[role]
+    uid, gid = units.PRODUCER_ROLE_NUMERIC_IDENTITIES[role]
+    group = SimpleNamespace(gr_name=group_name, gr_gid=gid, gr_mem=[])
+    monkeypatch.setattr(units, "_optional_user_by_name", lambda _name: None)
+    monkeypatch.setattr(units, "_optional_user_by_uid", lambda _uid: None)
+    monkeypatch.setattr(
+        units,
+        "_passwd_slot_inventory",
+        lambda _user, _uid, _gid: ([], ["unrelated-primary-user"]),
+    )
+    monkeypatch.setattr(units, "_group_slot_inventory", lambda *_args: [])
+    monkeypatch.setattr(units, "_optional_group_by_name", lambda _name: None)
+    monkeypatch.setattr(units, "_optional_group_by_gid", lambda _gid: None)
+    with pytest.raises(
+        producers.CapabilityProducerError,
+        match="producer_identity_slot_collision_or_drift",
+    ):
+        units._producer_role_host_observation(
+            role,
+            allow_create_only_absence=True,
+        )
+
+    monkeypatch.setattr(units, "_optional_group_by_name", lambda _name: group)
+    monkeypatch.setattr(units, "_optional_group_by_gid", lambda _gid: group)
+    monkeypatch.setattr(
+        units,
+        "_group_slot_inventory",
+        lambda _group, _gid: [(group_name, gid, ())],
+    )
+    with pytest.raises(
+        producers.CapabilityProducerError,
+        match="producer_identity_slot_collision_or_drift",
+    ):
+        units._producer_role_host_observation(
+            role,
+            allow_create_only_absence=True,
+        )
+
+    user = SimpleNamespace(
+        pw_name=user_name,
+        pw_uid=uid,
+        pw_gid=gid,
+        pw_dir="/nonexistent",
+        pw_shell="/usr/sbin/nologin",
+    )
+    monkeypatch.setattr(units, "_optional_user_by_name", lambda _name: user)
+    monkeypatch.setattr(units, "_optional_user_by_uid", lambda _uid: user)
+    monkeypatch.setattr(units.os, "getgrouplist", lambda _name, _gid: [gid])
+    monkeypatch.setattr(
+        units,
+        "_passwd_slot_inventory",
+        lambda _user, _uid, _gid: (
+            [(user_name, uid, gid, "/nonexistent", "/usr/sbin/nologin")],
+            [user_name, "unrelated-primary-user"],
+        ),
+    )
+    with pytest.raises(
+        producers.CapabilityProducerError,
+        match="producer_identity_slot_collision_or_drift",
+    ):
+        units._producer_role_host_observation(
+            role,
+            allow_create_only_absence=True,
+        )
+
+
+def test_receipt_writer_group_rejects_hidden_primary_gid_authority(
+    monkeypatch,
+) -> None:
+    group = SimpleNamespace(
+        gr_name=units.PRODUCER_RECEIPT_WRITER_GROUP,
+        gr_gid=units.PRODUCER_RECEIPT_WRITER_GID,
+        gr_mem=[],
+    )
+    monkeypatch.setattr(units, "_optional_group_by_name", lambda _name: group)
+    monkeypatch.setattr(units, "_optional_group_by_gid", lambda _gid: group)
+    monkeypatch.setattr(
+        units,
+        "_primary_group_user_names",
+        lambda _gid: ["unrelated-primary-user"],
+    )
+    monkeypatch.setattr(
+        units,
+        "_group_slot_inventory",
+        lambda _group, _gid: [
+            (
+                units.PRODUCER_RECEIPT_WRITER_GROUP,
+                units.PRODUCER_RECEIPT_WRITER_GID,
+                (),
+            )
+        ],
+    )
+    with pytest.raises(
+        producers.CapabilityProducerError,
+        match="producer_receipt_group_slot_collision_or_drift",
+    ):
+        units._producer_receipt_group_observation(
+            allow_create_only_absence=True,
+        )
+
+
+def test_producer_identity_rejects_duplicate_passwd_and_group_nss_rows(
+    monkeypatch,
+) -> None:
+    role = "business_edge"
+    user_name, group_name = units.PRODUCER_ROLE_ACCOUNTS[role]
+    uid, gid = units.PRODUCER_ROLE_NUMERIC_IDENTITIES[role]
+    user = SimpleNamespace(
+        pw_name=user_name,
+        pw_uid=uid,
+        pw_gid=gid,
+        pw_dir="/nonexistent",
+        pw_shell="/usr/sbin/nologin",
+    )
+    group = SimpleNamespace(gr_name=group_name, gr_gid=gid, gr_mem=[])
+    exact_passwd = (
+        user_name,
+        uid,
+        gid,
+        "/nonexistent",
+        "/usr/sbin/nologin",
+    )
+    monkeypatch.setattr(units, "_optional_user_by_name", lambda _name: user)
+    monkeypatch.setattr(units, "_optional_user_by_uid", lambda _uid: user)
+    monkeypatch.setattr(units, "_optional_group_by_name", lambda _name: group)
+    monkeypatch.setattr(units, "_optional_group_by_gid", lambda _gid: group)
+    monkeypatch.setattr(units.os, "getgrouplist", lambda _name, _gid: [gid])
+    monkeypatch.setattr(
+        units,
+        "_group_slot_inventory",
+        lambda _group, _gid: [(group_name, gid, ())],
+    )
+    monkeypatch.setattr(
+        units,
+        "_passwd_slot_inventory",
+        lambda _user, _uid, _gid: (
+            [
+                exact_passwd,
+                (
+                    user_name,
+                    uid + 10_000,
+                    gid,
+                    "/nonexistent",
+                    "/usr/sbin/nologin",
+                ),
+            ],
+            [user_name, user_name],
+        ),
+    )
+    with pytest.raises(
+        producers.CapabilityProducerError,
+        match="producer_identity_slot_collision_or_drift",
+    ):
+        units._producer_role_host_observation(
+            role,
+            allow_create_only_absence=True,
+        )
+
+    monkeypatch.setattr(
+        units,
+        "_passwd_slot_inventory",
+        lambda _user, _uid, _gid: ([exact_passwd], [user_name]),
+    )
+    monkeypatch.setattr(
+        units,
+        "_group_slot_inventory",
+        lambda _group, _gid: [
+            (group_name, gid, ()),
+            ("unrelated-gid-alias", gid, ("unrelated-member",)),
+        ],
+    )
+    with pytest.raises(
+        producers.CapabilityProducerError,
+        match="producer_identity_slot_collision_or_drift",
+    ):
+        units._producer_role_host_observation(
+            role,
+            allow_create_only_absence=True,
+        )
+
+
+def test_producer_identity_rejects_user_only_partial_state(monkeypatch) -> None:
+    role = "business_edge"
+    user_name, _group_name = units.PRODUCER_ROLE_ACCOUNTS[role]
+    uid, gid = units.PRODUCER_ROLE_NUMERIC_IDENTITIES[role]
+    user = SimpleNamespace(
+        pw_name=user_name,
+        pw_uid=uid,
+        pw_gid=gid,
+        pw_dir="/nonexistent",
+        pw_shell="/usr/sbin/nologin",
+    )
+    monkeypatch.setattr(units, "_optional_user_by_name", lambda _name: user)
+    monkeypatch.setattr(units, "_optional_user_by_uid", lambda _uid: user)
+    monkeypatch.setattr(units, "_optional_group_by_name", lambda _name: None)
+    monkeypatch.setattr(units, "_optional_group_by_gid", lambda _gid: None)
+    monkeypatch.setattr(
+        units,
+        "_passwd_slot_inventory",
+        lambda _user, _uid, _gid: (
+            [
+                (
+                    user_name,
+                    uid,
+                    gid,
+                    "/nonexistent",
+                    "/usr/sbin/nologin",
+                )
+            ],
+            [user_name],
+        ),
+    )
+    monkeypatch.setattr(units, "_group_slot_inventory", lambda *_args: [])
+    with pytest.raises(
+        producers.CapabilityProducerError,
+        match="producer_identity_slot_collision_or_drift",
+    ):
+        units._producer_role_host_observation(
+            role,
+            allow_create_only_absence=True,
+        )
+
+
+@pytest.mark.parametrize("crash_role", producers.ENDPOINT_ROLES)
+def test_producer_identity_bootstrap_resumes_exact_group_only_crash_window(
+    monkeypatch,
+    crash_role: str,
+) -> None:
+    plan = SimpleNamespace(
+        revision=REVISION,
+        sha256="b" * 64,
+        full_canary_terminal_receipt_sha256="c" * 64,
+        original_full_canary_owner_approval_sha256="d" * 64,
+    )
+    full_plan = SimpleNamespace(sha256="e" * 64)
+    present = _producer_identity_foundation(plan=plan, full_plan=full_plan)["after"]
+    role_states = {role: "absent" for role in producers.ENDPOINT_ROLES}
+    receipt_group_present = False
+
+    def observe(_sha: str, *, allow_create_only_absence: bool):
+        value = copy.deepcopy(present)
+        for role, state in role_states.items():
+            item = value["roles"][role]
+            if state == "absent":
+                item["state"] = "absent_create_only_slot"
+                item["group_members"] = None
+                item["supplementary_group_ids"] = None
+            elif state == "group_only":
+                item["state"] = "group_present_user_absent_create_only_slot"
+                item["group_members"] = []
+                item["supplementary_group_ids"] = None
+        if not receipt_group_present:
+            value["receipt_writer_group"]["state"] = "absent_create_only_slot"
+            value["receipt_writer_group"]["members"] = None
+        unsigned = {key: item for key, item in value.items() if key != "receipt_sha256"}
+        value["receipt_sha256"] = producers._sha256_json(unsigned)
+        return value
+
+    group_to_role = {
+        group: role for role, (_user, group) in units.PRODUCER_ROLE_ACCOUNTS.items()
+    }
+    user_to_role = {
+        user: role for role, (user, _group) in units.PRODUCER_ROLE_ACCOUNTS.items()
+    }
+    commands: list[tuple[str, ...]] = []
+    crash_before_first_user = True
+
+    def run_account(argv):
+        nonlocal receipt_group_present, crash_before_first_user
+        command = tuple(argv)
+        commands.append(command)
+        target = command[-1]
+        if command[0] == str(units.GROUPADD):
+            if target == units.PRODUCER_RECEIPT_WRITER_GROUP:
+                receipt_group_present = True
+            else:
+                role_states[group_to_role[target]] = "group_only"
+            return
+        role = user_to_role[target]
+        if crash_before_first_user and role == crash_role:
+            crash_before_first_user = False
+            raise RuntimeError("simulated kill window before useradd")
+        role_states[role] = "present"
+
+    monkeypatch.setattr(units.sys, "platform", "linux")
+    monkeypatch.setattr(units.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(units.os.path, "lexists", lambda _path: False)
+    kwargs = {
+        "plan": plan,
+        "full_plan": full_plan,
+        "account_runner": run_account,
+        "observer": observe,
+        "publisher": lambda _path, _payload: None,
+        "plan_publication_receipt": {"receipt_sha256": "f" * 64},
+    }
+
+    with pytest.raises(RuntimeError, match="simulated kill window"):
+        units.ensure_producer_role_identities(**kwargs)
+    assert role_states[crash_role] == "group_only"
+
+    retry_start = len(commands)
+    receipt = units.ensure_producer_role_identities(**kwargs)
+    retry_commands = commands[retry_start:]
+    crash_group = units.PRODUCER_ROLE_ACCOUNTS[crash_role][1]
+    crash_user = units.PRODUCER_ROLE_ACCOUNTS[crash_role][0]
+    assert not any(
+        command[0] == str(units.GROUPADD) and command[-1] == crash_group
+        for command in retry_commands
+    )
+    assert retry_commands[0][0] == str(units.USERADD)
+    assert retry_commands[0][-1] == crash_user
+    assert receipt["before"]["roles"][crash_role]["state"] == (
+        "group_present_user_absent_create_only_slot"
+    )
+    assert receipt["created"][0] == f"{crash_role}_user"
+    assert all(state == "present" for state in role_states.values())
+    assert receipt_group_present is True
+
+
+def test_producer_identity_observation_rejects_numeric_slot_collision(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(units, "_optional_user_by_name", lambda _name: None)
+    monkeypatch.setattr(
+        units,
+        "_optional_user_by_uid",
+        lambda _uid: SimpleNamespace(pw_name="unrelated-service"),
+    )
+    monkeypatch.setattr(units, "_optional_group_by_name", lambda _name: None)
+    monkeypatch.setattr(units, "_optional_group_by_gid", lambda _gid: None)
+    with pytest.raises(
+        producers.CapabilityProducerError,
+        match="producer_identity_slot_collision_or_drift",
+    ):
+        units.producer_host_identity_receipt(
+            "a" * 64,
+            allow_create_only_absence=True,
+        )
+
+
+def test_foundation_service_attestation_rejects_hidden_nss_authority(
+    monkeypatch,
+) -> None:
+    identities = SimpleNamespace(
+        mac_ops_user="muncho-mac-ops",
+        mac_ops_group="muncho-mac-ops",
+        mac_ops_uid=2104,
+        mac_ops_gid=2205,
+        connector_user="muncho-connector",
+        connector_group="muncho-connector",
+        connector_uid=2105,
+        connector_gid=2206,
+    )
+    plan = SimpleNamespace(identities=identities)
+    accounts = {
+        identities.mac_ops_user: (
+            identities.mac_ops_uid,
+            identities.mac_ops_gid,
+        ),
+        identities.connector_user: (
+            identities.connector_uid,
+            identities.connector_gid,
+        ),
+    }
+    users = {
+        name: SimpleNamespace(
+            pw_name=name,
+            pw_uid=uid,
+            pw_gid=gid,
+            pw_dir="/nonexistent",
+            pw_shell="/usr/sbin/nologin",
+        )
+        for name, (uid, gid) in accounts.items()
+    }
+    groups = {
+        name: SimpleNamespace(gr_name=name, gr_gid=gid, gr_mem=[])
+        for name, (_uid, gid) in accounts.items()
+    }
+    users_by_uid = {item.pw_uid: item for item in users.values()}
+    groups_by_gid = {item.gr_gid: item for item in groups.values()}
+    monkeypatch.setattr(units.pwd, "getpwnam", lambda name: users[name])
+    monkeypatch.setattr(units.pwd, "getpwuid", lambda uid: users_by_uid[uid])
+    monkeypatch.setattr(units.grp, "getgrnam", lambda name: groups[name])
+    monkeypatch.setattr(units.grp, "getgrgid", lambda gid: groups_by_gid[gid])
+    monkeypatch.setattr(
+        units,
+        "_passwd_slot_inventory",
+        lambda name, uid, gid: (
+            [(name, uid, gid, "/nonexistent", "/usr/sbin/nologin")],
+            [name],
+        ),
+    )
+    monkeypatch.setattr(
+        units,
+        "_group_slot_inventory",
+        lambda name, gid: [(name, gid, ())],
+    )
+    monkeypatch.setattr(units.os, "getgrouplist", lambda _name, gid: [gid])
+
+    exact = units.attest_foundation_service_identities(plan)
+    assert set(exact) == {"mac_ops", "connector"}
+
+    monkeypatch.setattr(
+        units,
+        "_passwd_slot_inventory",
+        lambda name, uid, gid: (
+            [(name, uid, gid, "/nonexistent", "/usr/sbin/nologin")],
+            [name, "unrelated-primary-user"],
+        ),
+    )
+    with pytest.raises(
+        producers.CapabilityProducerError,
+        match="producer_service_identity_drifted",
+    ):
+        units.attest_foundation_service_identities(plan)
+
+
+def test_service_identity_receipt_binds_direct_prepare_install_and_preflight(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    (
+        _prior,
+        context,
+        plan,
+        full_plan,
+        service_foundation,
+        discord_contract,
+        request,
+    ) = _producer_prepare_context(tmp_path)
+    key_root = tmp_path / "prepared-keys"
+    key_root.mkdir(mode=0o700)
+    key_receipt = key_root / "bootstrap.json"
+    monkeypatch.setattr(
+        units,
+        "_discord_edge_evidence_contract",
+        lambda _plan, _full: copy.deepcopy(discord_contract),
+    )
+
+    mismatched_service_foundation = copy.deepcopy(service_foundation)
+    mismatched_service_foundation["plan_publication_receipt_sha256"] = "f" * 64
+    mismatched_unsigned = {
+        key: value
+        for key, value in mismatched_service_foundation.items()
+        if key != "receipt_sha256"
+    }
+    mismatched_service_foundation["receipt_sha256"] = producers._sha256_json(
+        mismatched_unsigned
+    )
+    with pytest.raises(
+        producers.CapabilityProducerError,
+        match="producer_service_identity_foundation_invalid",
+    ):
+        units.prepare_producer_foundation(
+            request,
+            plan=plan,
+            full_plan=full_plan,
+            role_identities=_identities(),
+            key_root=key_root,
+            key_bootstrap_receipt=key_receipt,
+            preparation_path=tmp_path / "mismatched-preparation.json",
+            service_identity_foundation=mismatched_service_foundation,
+            producer_identity_foundation=_producer_identity_foundation(
+                plan=plan,
+                full_plan=full_plan,
+            ),
+            plan_publication_receipt={"receipt_sha256": "e" * 64},
+        )
+
+    preparation = units.prepare_producer_foundation(
+        request,
+        plan=plan,
+        full_plan=full_plan,
+        role_identities=_identities(),
+        key_root=key_root,
+        key_bootstrap_receipt=key_receipt,
+        preparation_path=tmp_path / "preparation.json",
+        service_identity_foundation=service_foundation,
+        producer_identity_foundation=_producer_identity_foundation(
+            plan=plan, full_plan=full_plan
+        ),
+        plan_publication_receipt={"receipt_sha256": "e" * 64},
+    )
+    validated = units.validate_foundation_preparation(preparation)
+    service_digest = service_foundation["receipt_sha256"]
+    assert validated["service_identity_foundation"] == service_foundation
+    assert validated["service_identity_foundation_receipt_sha256"] == service_digest
+    assert (
+        validated["unsigned_foundation"]["service_identity_foundation_receipt_sha256"]
+        == service_digest
+    )
+
+    tampered = copy.deepcopy(preparation)
+    tampered["service_identity_foundation"]["receipt_sha256"] = "0" * 64
+    tampered_unsigned = {
+        key: value for key, value in tampered.items() if key != "preparation_sha256"
+    }
+    tampered["preparation_sha256"] = producers._sha256_json(tampered_unsigned)
+    with pytest.raises(
+        producers.CapabilityProducerError,
+        match="producer_service_identity_foundation_invalid",
+    ):
+        units.validate_foundation_preparation(tampered)
+
+    signature = _sshsig(
+        context["owner_private"],
+        producers.producer_foundation_signature_payload(
+            preparation["unsigned_foundation"]
+        ),
+        namespace=producers.PRODUCER_FOUNDATION_SSHSIG_NAMESPACE,
+    )
+    published: dict[str, bytes] = {}
+    monkeypatch.setattr(units, "DEFAULT_KEY_BOOTSTRAP_RECEIPT", key_receipt)
+    monkeypatch.setattr(
+        units,
+        "DEFAULT_FOUNDATION_INSTALL_RECEIPT",
+        tmp_path / "install-receipt.json",
+    )
+    monkeypatch.setattr(units, "_ensure_exact_directory", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        units,
+        "_publish_root_file",
+        lambda path, payload, **_kwargs: published.__setitem__(str(path), payload),
+    )
+    monkeypatch.setattr(
+        units,
+        "_publish_no_replace",
+        lambda path, payload, **_kwargs: published.__setitem__(str(path), payload),
+    )
+    install = units.install_prepared_producer_foundation(
+        {
+            "schema": units.FOUNDATION_INSTALL_REQUEST_SCHEMA,
+            "preparation_sha256": preparation["preparation_sha256"],
+            "owner_signature": signature,
+        },
+        preparation=preparation,
+        daemon_reload=lambda: None,
+        materialize_runtime=lambda: None,
+    )
+    assert install["service_identity_foundation_receipt_sha256"] == service_digest
+    assert published[str(units.DEFAULT_FOUNDATION_INSTALL_RECEIPT)] == (
+        producers._canonical_bytes(install)
+    )
+
+    def stable_read(path: Path, **_kwargs):
+        path = Path(path)
+        raw = path.read_bytes() if path == key_receipt else published[str(path)]
+        return raw, SimpleNamespace()
+
+    monkeypatch.setattr(units, "_stable_read", stable_read)
+    assert units._load_install_receipt() == install
+    monkeypatch.setattr(
+        units,
+        "_validate_key_bootstrap_receipt",
+        lambda value: copy.deepcopy(value),
+    )
+
+    sealed = producers.seal_producer_foundation(
+        preparation["unsigned_foundation"],
+        owner_signature=signature,
+        pinned_owner_public_key_ed25519_hex=preparation["owner_public_key_ed25519_hex"],
+        pinned_owner_public_key_source_sha256=preparation[
+            "owner_public_key_source_sha256"
+        ],
+    )
+    monkeypatch.setattr(
+        units,
+        "load_installed_producer_foundation",
+        lambda: producers.InstalledProducerFoundation(
+            value=sealed,
+            pinned_owner_public_key_ed25519_hex=preparation[
+                "owner_public_key_ed25519_hex"
+            ],
+            pinned_owner_public_key_source_sha256=preparation[
+                "owner_public_key_source_sha256"
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        units, "load_foundation_preparation", lambda: copy.deepcopy(preparation)
+    )
+    monkeypatch.setattr(
+        units,
+        "load_producer_identity_foundation_receipt",
+        lambda **_kwargs: copy.deepcopy(preparation["producer_identity_foundation"]),
+    )
+    monkeypatch.setattr(
+        units, "attest_producer_role_identities", lambda _identities: None
+    )
+    service_attestations: list[Any] = []
+    monkeypatch.setattr(
+        units,
+        "attest_foundation_service_identities",
+        lambda current_plan: service_attestations.append(current_plan),
+    )
+    monkeypatch.setattr(units, "_require_exact_directory", lambda *_a, **_k: None)
+    load_private = units._load_private_key
+    load_public = units._load_public_key
+    key_root_identity = key_root.lstat()
+    monkeypatch.setattr(
+        units,
+        "_load_private_key",
+        lambda path, **_kwargs: load_private(
+            key_root / Path(path).name,
+            uid=key_root_identity.st_uid,
+            gid=key_root_identity.st_gid,
+        ),
+    )
+    monkeypatch.setattr(
+        units,
+        "_load_public_key",
+        lambda path, **_kwargs: load_public(
+            key_root / Path(path).name,
+            uid=key_root_identity.st_uid,
+            gid=key_root_identity.st_gid,
+            mode=0o400,
+        ),
+    )
+
+    preflight = units.validate_installed_producer_foundation(
+        plan=plan,
+        full_plan=full_plan,
+    )
+    assert preflight["ready"] is True
+    assert preflight["service_identity_foundation_receipt_sha256"] == service_digest
+    assert service_attestations == [plan]
+
+    tampered_install = copy.deepcopy(install)
+    tampered_install["service_identity_foundation_receipt_sha256"] = "1" * 64
+    tampered_install_unsigned = {
+        key: value for key, value in tampered_install.items() if key != "receipt_sha256"
+    }
+    tampered_install["receipt_sha256"] = producers._sha256_json(
+        tampered_install_unsigned
+    )
+    published[str(units.DEFAULT_FOUNDATION_INSTALL_RECEIPT)] = (
+        producers._canonical_bytes(tampered_install)
+    )
+    assert units._load_install_receipt() == tampered_install
+    with pytest.raises(
+        producers.CapabilityProducerError,
+        match="producer_install_receipt_mismatch",
+    ):
+        units.validate_installed_producer_foundation(
+            plan=plan,
+            full_plan=full_plan,
+        )
 
 
 def test_four_distinct_nonroot_units_bind_keys_groups_and_signed_inbox(
@@ -243,9 +1237,7 @@ def test_four_distinct_nonroot_units_bind_keys_groups_and_signed_inbox(
             bundle.auxiliary_files[str(units.DEFAULT_TMPFILES_PATH)]
         )
     }
-    tmpfiles = bundle.auxiliary_files[str(units.DEFAULT_TMPFILES_PATH)].decode(
-        "ascii"
-    )
+    tmpfiles = bundle.auxiliary_files[str(units.DEFAULT_TMPFILES_PATH)].decode("ascii")
     assert "d /run/muncho-capability-canary 0700 root root -\n" in tmpfiles
     for role, identity in _identities().items():
         assert (
@@ -254,10 +1246,12 @@ def test_four_distinct_nonroot_units_bind_keys_groups_and_signed_inbox(
         ) in tmpfiles
     assert bundle.manifest["receipt_writer_group"] == {
         "group": units.PRODUCER_RECEIPT_WRITER_GROUP,
-        "gid": 2401,
-        "members": list(producers.ENDPOINT_ROLES),
+        "gid": units.PRODUCER_RECEIPT_WRITER_GID,
+        "persistent_members": [],
+        "runtime_service_roles": list(producers.ENDPOINT_ROLES),
+        "authority_source": "systemd_supplementary_groups",
         "run_directory_uid": 0,
-        "run_directory_gid": 2401,
+        "run_directory_gid": units.PRODUCER_RECEIPT_WRITER_GID,
         "run_directory_mode": 0o3770,
         "cross_role_precreate_is_fail_closed_dos_only": True,
         "accepted_file_owner_must_match_role_uid_gid": True,
@@ -267,8 +1261,14 @@ def test_four_distinct_nonroot_units_bind_keys_groups_and_signed_inbox(
         text = bundle.units[path].decode("ascii")
         assert f"User={identity['user']}\n" in text
         assert f"Group={identity['group']}\n" in text
-        assert f"LoadCredential=producer-private-key:{producers.DEFAULT_KEY_ROOT}/{role}-private.pem\n" in text
-        assert f"LoadCredential=producer-public-key:{producers.DEFAULT_KEY_ROOT}/{role}-public.pem\n" in text
+        assert (
+            f"LoadCredential=producer-private-key:{producers.DEFAULT_KEY_ROOT}/{role}-private.pem\n"
+            in text
+        )
+        assert (
+            f"LoadCredential=producer-public-key:{producers.DEFAULT_KEY_ROOT}/{role}-public.pem\n"
+            in text
+        )
         assert f"InaccessiblePaths={producers.DEFAULT_KEY_ROOT}\n" in text
         for secret_path in units.PRODUCER_INACCESSIBLE_CREDENTIAL_PATHS:
             assert f"InaccessiblePaths=-{secret_path}\n" in text
@@ -278,27 +1278,25 @@ def test_four_distinct_nonroot_units_bind_keys_groups_and_signed_inbox(
             row for row in text.splitlines() if row.startswith("SupplementaryGroups=")
         )
         assert units.PRODUCER_RECEIPT_WRITER_GROUP in supplementary
-        assert (
-            producers.BITRIX_OPERATIONAL_EDGE_SOCKET_GROUP in supplementary
-        ) is (role in {"business_edge", "canonical_writer"})
-        config = json.loads(
-            bundle.configs[str(units.producer_config_path(role))]
+        assert (producers.BITRIX_OPERATIONAL_EDGE_SOCKET_GROUP in supplementary) is (
+            role in {"business_edge", "canonical_writer"}
         )
+        config = json.loads(bundle.configs[str(units.producer_config_path(role))])
         assert config["service_uid"] == identity["uid"]
         assert config["service_gid"] == identity["gid"]
-        assert config["receipt_directory_gid"] == 2401
+        assert config["receipt_directory_gid"] == units.PRODUCER_RECEIPT_WRITER_GID
         assert config["receipt_directory_mode"] == 0o3770
-        assert config["public_key_path"] == str(
-            units.producer_public_key_path(role)
-        )
+        assert config["public_key_path"] == str(units.producer_public_key_path(role))
         assert config["private_key_path"] == str(
             units.producer_private_key_projection_path(role)
         )
-    assert CANARY_HISTORY_READER_SERVICE_UNIT == (
-        producers.PRODUCER_SERVICE_UNITS["discord_edge"]
+    assert (
+        CANARY_HISTORY_READER_SERVICE_UNIT
+        == (producers.PRODUCER_SERVICE_UNITS["discord_edge"])
     )
-    assert CANARY_HISTORY_READER_SERVICE_USER == (
-        units.PRODUCER_ROLE_ACCOUNTS["discord_edge"][0]
+    assert (
+        CANARY_HISTORY_READER_SERVICE_USER
+        == (units.PRODUCER_ROLE_ACCOUNTS["discord_edge"][0])
     )
     assert bundle.manifest["private_key_content_or_digest_recorded"] is False
     assert bundle.manifest["authority_key_lifecycle"] == {
@@ -350,9 +1348,7 @@ def test_key_bootstrap_is_exactly_idempotent_and_public_source_is_root_only(
         "root_gid": key_root_identity.st_gid,
     }
     first = units.bootstrap_producer_keys(**kwargs)
-    first_bytes = {
-        path.name: path.read_bytes() for path in key_root.iterdir()
-    }
+    first_bytes = {path.name: path.read_bytes() for path in key_root.iterdir()}
     second = units.bootstrap_producer_keys(**kwargs)
     assert second.value == first.value
     assert {path.name: path.read_bytes() for path in key_root.iterdir()} == first_bytes
@@ -458,14 +1454,10 @@ def test_canonical_writer_collector_queries_peer_authorized_projection() -> None
                         {
                             "event_id": terminal["terminal_event_id"],
                             "case_id": terminal["case_id"],
-                            "content_sha256": terminal[
-                                "terminal_event_sha256"
-                            ],
+                            "content_sha256": terminal["terminal_event_sha256"],
                             "body": {
                                 "owner_grant_id": payload["owner_grant_id"],
-                                "owner_grant_sha256": payload[
-                                    "owner_grant_sha256"
-                                ],
+                                "owner_grant_sha256": payload["owner_grant_sha256"],
                             },
                         }
                     ],
@@ -512,8 +1504,323 @@ def test_canonical_writer_collector_queries_peer_authorized_projection() -> None
         )
 
 
-def test_discord_edge_collector_verifies_signed_journal_and_public_history(
-) -> None:
+def test_discord_writer_collector_binds_exact_canonical_routeback_events() -> None:
+    catalog = _probe_catalog()
+    case_id = catalog["case_ids"]["discord_routeback"]
+    source_refs = {"thread_id": "thread:discord-routeback-source"}
+    sent_receipt = {
+        "platform": "discord",
+        "adapter_receipt": True,
+        "receipt_readback_verified": True,
+        "message_id": "1504852355588423999",
+        "channel_id": catalog["discord"]["public_target"]["channel_id"],
+        "content_sha256": "3" * 64,
+        "public_receipt_sha256": "4" * 64,
+    }
+    private_receipt = {
+        "private_denial_receipt_sha256": "5" * 64,
+        "dispatch_attempted": False,
+    }
+
+    def routeback_event(
+        *,
+        event_id: str,
+        event_type: str,
+        receipt: Mapping[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        sent = event_type == "route_back.sent"
+        summary = "Exact public route-back" if sent else "Exact private denial"
+        canonical_content_sha256 = "6" * 64 if sent else "7" * 64
+        if sent:
+            payload = {
+                "authorization_id": "routeauth:discord-canary",
+                "receipt": copy.deepcopy(receipt),
+                "route_back": {
+                    "target_ref": {
+                        "target_type": "public_guild_channel",
+                        "channel_type": "public_guild_channel",
+                        "guild_id": catalog["discord"]["public_target"]["guild_id"],
+                        "channel_id": sent_receipt["channel_id"],
+                    },
+                    "receipt": copy.deepcopy(receipt),
+                    "execution_binding": {
+                        "target_channel_id": sent_receipt["channel_id"],
+                        "content_sha256": sent_receipt["content_sha256"],
+                    },
+                },
+                "idempotency_key": "routeauth:discord-canary",
+                "summary": summary,
+                "canonical_content_sha256": canonical_content_sha256,
+            }
+            subject = {"type": "route_back", "id": sent_receipt["channel_id"]}
+            safety = {
+                "secret_value_recorded": False,
+                "payment_credential_recorded": False,
+                "business_mutation": False,
+                "outbound": True,
+            }
+            origin = "routeback_finalize_sent"
+        else:
+            payload = {
+                "preclaim": True,
+                "preclaim_block_id": "routeblock:discord-private-canary",
+                "target_ref": {"id": "blocked-target:private"},
+                "blocker_reason": "discord_dm_target_forbidden",
+                "receipt": copy.deepcopy(receipt),
+                "partial_receipt": copy.deepcopy(receipt),
+                "dispatch_attempted": False,
+                "route_back": {
+                    "preclaim": True,
+                    "target_ref": {"id": "blocked-target:private"},
+                    "delivery_state": "not_attempted",
+                    "blocker_reason": "discord_dm_target_forbidden",
+                    "receipt": copy.deepcopy(receipt),
+                    "partial_receipt": copy.deepcopy(receipt),
+                    "dispatch_attempted": False,
+                },
+                "idempotency_key": "routeblock:discord-private-canary",
+                "summary": summary,
+                "canonical_content_sha256": canonical_content_sha256,
+            }
+            subject = {
+                "type": "route_back_preclaim",
+                "id": "routeblock:discord-private-canary",
+            }
+            safety = {
+                "secret_value_recorded": False,
+                "payment_credential_recorded": False,
+                "business_mutation": False,
+                "outbound": False,
+                "outbound_delivery_uncertain": False,
+                "adapter_acceptance_observed": False,
+            }
+            origin = "routeback_preclaim_blocked"
+        event = {
+            "event_id": event_id,
+            "schema_version": "canonical_event.v1",
+            "event_type": event_type,
+            "occurred_at": "2026-07-16T10:00:00+00:00",
+            "case_id": case_id,
+            "source": {
+                "system": "hermes_agent",
+                "component": "canonical_writer",
+                "source_refs": copy.deepcopy(source_refs),
+                "observed_session": {"platform": "discord"},
+            },
+            "actor": {"type": "service", "id": "canonical_writer"},
+            "subject": subject,
+            "evidence": [],
+            "decision": {
+                "kind": "typed_canonical_writer_operation",
+                "decided_by": origin,
+                "keyword_authority": False,
+                "attestation": "privileged_writer_receipt",
+            },
+            "status": {
+                "state": event_type,
+                "event_type": event_type,
+                "summary": summary,
+            },
+            "next_action": {},
+            "safety": safety,
+            "payload": payload,
+        }
+        binding = {
+            "schema": units.CANONICAL_ROUTEBACK_EVENT_BINDING_SCHEMA,
+            "event_id": event_id,
+            "event_type": event_type,
+            "case_id": case_id,
+            "event_sha256": producers._sha256_json(event),
+            "canonical_content_sha256": canonical_content_sha256,
+            "source_refs": copy.deepcopy(source_refs),
+            "returned_receipt": copy.deepcopy(receipt),
+            "payload_receipt": copy.deepcopy(receipt),
+            "route_back_receipt": copy.deepcopy(receipt),
+        }
+        if not sent:
+            binding.update({
+                "payload_dispatch_attempted": False,
+                "route_back_dispatch_attempted": False,
+            })
+        return event, binding
+
+    sent_event, sent_binding = routeback_event(
+        event_id="event:route-back-sent",
+        event_type="route_back.sent",
+        receipt=sent_receipt,
+    )
+    blocked_event, blocked_binding = routeback_event(
+        event_id="event:route-back-blocked",
+        event_type="route_back.blocked",
+        receipt=private_receipt,
+    )
+    terminal = {
+        "case_id": case_id,
+        "terminal_event_id": "event:terminal",
+        "terminal_event_sha256": "8" * 64,
+    }
+    terminal_event = {
+        "event_id": terminal["terminal_event_id"],
+        "case_id": case_id,
+        "payload": {
+            "canonical_content_sha256": terminal["terminal_event_sha256"],
+        },
+    }
+    payload = {
+        "run_id": catalog["run_id"],
+        "release_sha": catalog["release_sha"],
+        "fixture_sha256": catalog["fixture_sha256"],
+        "sent_event": sent_binding,
+        "sent_after_verified_readback": True,
+        "blocked_event": blocked_binding,
+        "blocked_before_dispatch": True,
+        "terminal_ctw": terminal,
+    }
+
+    class Client:
+        def __init__(self, events):
+            self.events = events
+
+        def call(self, operation, request, *, runtime):
+            assert operation == "projection.read_events"
+            assert request["case_id"] == case_id
+            assert runtime == {"platform": "capability-canary-producer"}
+            return SimpleNamespace(
+                request_id="request:discord-routeback",
+                result={"events": copy.deepcopy(self.events), "has_more": False},
+            )
+
+    client = Client([terminal_event, sent_event, blocked_event])
+    collector = units.CanonicalWriterProjectionNativeCollector(
+        client=client,
+        catalog=catalog,
+        release_sha=REVISION,
+        capability_plan_sha256="b" * 64,
+        full_canary_plan_sha256="c" * 64,
+        source_identity={
+            "service_unit": "muncho-canonical-writer.service",
+            "peer_authorization": "exact_current_systemd_main_pid_each_call",
+        },
+    )
+
+    bindings = collector.collect(slot="discord_writer", payload=payload)
+
+    assert tuple(item.kind for item in bindings) == (
+        "canonical_writer_routeback_events",
+    )
+    assert bindings[0].artifact_sha256 == producers._sha256_json({
+        "case_id": case_id,
+        "terminal_event": terminal_event,
+        "sent_event": sent_event,
+        "blocked_event": blocked_event,
+    })
+
+    def assert_mutated_event_rejected(
+        *,
+        event_name: str,
+        mutate,
+    ) -> None:
+        mutated_sent = copy.deepcopy(sent_event)
+        mutated_blocked = copy.deepcopy(blocked_event)
+        mutated = mutated_sent if event_name == "sent_event" else mutated_blocked
+        mutate(mutated)
+        mutated_payload = copy.deepcopy(payload)
+        mutated_payload[event_name]["event_sha256"] = producers._sha256_json(mutated)
+        client.events = [terminal_event, mutated_sent, mutated_blocked]
+        with pytest.raises(
+            producers.CapabilityProducerError,
+            match="canonical_writer_native_evidence_invalid",
+        ):
+            collector.collect(slot="discord_writer", payload=mutated_payload)
+
+    assert_mutated_event_rejected(
+        event_name="sent_event",
+        mutate=lambda event: event["payload"]["route_back"]["target_ref"].__setitem__(
+            "guild_id", "1282725267068157973"
+        ),
+    )
+    assert_mutated_event_rejected(
+        event_name="sent_event",
+        mutate=lambda event: event["payload"]["route_back"][
+            "execution_binding"
+        ].__setitem__("content_sha256", "9" * 64),
+    )
+    assert_mutated_event_rejected(
+        event_name="sent_event",
+        mutate=lambda event: event["subject"].__setitem__("id", "1504852355588423998"),
+    )
+    assert_mutated_event_rejected(
+        event_name="sent_event",
+        mutate=lambda event: event["payload"].__setitem__(
+            "authorization_id", "routeauth:substituted"
+        ),
+    )
+    assert_mutated_event_rejected(
+        event_name="blocked_event",
+        mutate=lambda event: event["payload"]["route_back"].__setitem__(
+            "target_ref", {"id": "blocked-target:substituted"}
+        ),
+    )
+    assert_mutated_event_rejected(
+        event_name="blocked_event",
+        mutate=lambda event: event["subject"].__setitem__(
+            "id", "routeblock:substituted"
+        ),
+    )
+    assert_mutated_event_rejected(
+        event_name="blocked_event",
+        mutate=lambda event: event["payload"].__setitem__(
+            "idempotency_key", "routeblock:substituted"
+        ),
+    )
+
+    client.events = [terminal_event, sent_event, blocked_event]
+
+    malicious = {
+        "event_id": "event:unrelated",
+        "case_id": case_id,
+        "same_strings": {
+            "sent": copy.deepcopy(sent_binding),
+            "blocked": copy.deepcopy(blocked_binding),
+        },
+    }
+    client.events = [terminal_event, malicious]
+    with pytest.raises(
+        producers.CapabilityProducerError,
+        match="canonical_writer_native_evidence_invalid",
+    ):
+        collector.collect(slot="discord_writer", payload=payload)
+
+    substituted = copy.deepcopy(payload)
+    substituted["sent_event"]["event_sha256"] = "e" * 64
+    client.events = [
+        terminal_event,
+        sent_event,
+        blocked_event,
+        {
+            "event_id": "event:same-string-decoy",
+            "case_id": case_id,
+            "same_string": "e" * 64,
+        },
+    ]
+    with pytest.raises(
+        producers.CapabilityProducerError,
+        match="canonical_writer_native_evidence_invalid",
+    ):
+        collector.collect(slot="discord_writer", payload=substituted)
+
+    substituted_receipt = copy.deepcopy(payload)
+    substituted_receipt["blocked_event"]["returned_receipt"][
+        "private_denial_receipt_sha256"
+    ] = "e" * 64
+    with pytest.raises(
+        producers.CapabilityProducerError,
+        match="canonical_writer_native_evidence_invalid",
+    ):
+        collector.collect(slot="discord_writer", payload=substituted_receipt)
+
+
+def test_discord_edge_collector_verifies_signed_journal_and_public_history() -> None:
     from gateway.discord_edge_protocol import (
         DiscordEdgeAuthorityKind,
         DiscordEdgeIntent,
@@ -534,13 +1841,11 @@ def test_discord_edge_collector_verifies_signed_journal_and_public_history(
     bot_user_id = "1504852355588423803"
     writer_key = Ed25519PrivateKey.generate()
     edge_key = Ed25519PrivateKey.generate()
-    target = DiscordPublicTarget.from_mapping(
-        {
-            "target_type": "public_guild_channel",
-            "guild_id": target_value["guild_id"],
-            "channel_id": target_value["channel_id"],
-        }
-    )
+    target = DiscordPublicTarget.from_mapping({
+        "target_type": "public_guild_channel",
+        "guild_id": target_value["guild_id"],
+        "channel_id": target_value["channel_id"],
+    })
     intent = DiscordEdgeIntent(
         operation=DiscordEdgeOperation.PUBLIC_MESSAGE_SEND,
         target=target,
@@ -621,15 +1926,11 @@ def test_discord_edge_collector_verifies_signed_journal_and_public_history(
         "edge_socket_path": "/run/muncho-discord-egress/edge.sock",
         "edge_service_uid": 2110,
         "edge_service_gid": 2210,
-        "receipt_public_key_path": (
-            "/etc/muncho/keys/discord-edge-receipt-public.pem"
-        ),
+        "receipt_public_key_path": ("/etc/muncho/keys/discord-edge-receipt-public.pem"),
         "receipt_public_key_id": "a" * 64,
         "receipt_public_key_file_sha256": "b" * 64,
         "connector_service_unit": "muncho-discord-connector.service",
-        "connector_socket_path": (
-            "/run/muncho-discord-connector/connector.sock"
-        ),
+        "connector_socket_path": ("/run/muncho-discord-connector/connector.sock"),
         "connector_service_uid": 2111,
         "connector_service_gid": 2211,
         "public_history_operation": "public.history.fetch",
@@ -661,15 +1962,11 @@ def test_discord_edge_collector_verifies_signed_journal_and_public_history(
         "content_sha256": intent.content_sha256,
         "platform_message_id": message_id,
         "routeback_bot_user_id": bot_user_id,
-        "public_receipt_sha256": producers._sha256_json(
-            receipt.to_message()
-        ),
+        "public_receipt_sha256": producers._sha256_json(receipt.to_message()),
         "private_target_kind": "dm",
         "private_dispatch_attempted": False,
         "journal_unchanged_after_private_probe": True,
-        "private_denial_receipt_sha256": producers._sha256_json(
-            private_denial
-        ),
+        "private_denial_receipt_sha256": producers._sha256_json(private_denial),
         "observed_at_unix_ms": observed_at_unix_ms,
     }
 
@@ -684,9 +1981,7 @@ def test_discord_edge_collector_verifies_signed_journal_and_public_history(
     )
     assert len(edge_client.queries) == 2
     assert edge_client.queries[0].to_message() == edge_client.queries[1].to_message()
-    assert history_client.calls == [
-        {"channel_id": target.channel_id, "limit": 25}
-    ]
+    assert history_client.calls == [{"channel_id": target.channel_id, "limit": 25}]
     with pytest.raises(
         producers.CapabilityProducerError,
         match="discord_native_evidence_invalid",
@@ -734,8 +2029,7 @@ def test_gateway_observer_cleanup_reloads_facts_and_rejects_root_outcomes(
         "StatusText": "",
     }
     states = {
-        unit: dict(stopped_state)
-        for unit in units._CLEANUP_NON_OBSERVER_SERVICE_UNITS
+        unit: dict(stopped_state) for unit in units._CLEANUP_NON_OBSERVER_SERVICE_UNITS
     }
     bundle = units.render_producer_units(
         foundation=foundation,
@@ -743,24 +2037,18 @@ def test_gateway_observer_cleanup_reloads_facts_and_rejects_root_outcomes(
         pinned_owner_public_key_source_sha256=context["source_sha256"],
         role_identities=_identities(),
     )
-    inaccessibility_sha256 = producers._sha256_json(
-        {
-            "paths": list(units.PRODUCER_INACCESSIBLE_CREDENTIAL_PATHS),
-            "applies_to_roles": list(producers.ENDPOINT_ROLES),
-            "unit_hash_bound": True,
-            "cleanup_observer_has_no_credential_read_access": True,
-        }
-    )
+    inaccessibility_sha256 = producers._sha256_json({
+        "paths": list(units.PRODUCER_INACCESSIBLE_CREDENTIAL_PATHS),
+        "applies_to_roles": list(producers.ENDPOINT_ROLES),
+        "unit_hash_bound": True,
+        "cleanup_observer_has_no_credential_read_access": True,
+    })
     foundation_sha256 = producers.producer_foundation_sha256(foundation)
     observed_at_unix_ms = 2_000_000_000_000
     proof_unsigned = {
-        "schema": (
-            "muncho-production-capability-credential-consumer-stop-proof.v1"
-        ),
+        "schema": ("muncho-production-capability-credential-consumer-stop-proof.v1"),
         "plan_sha256": foundation["capability_plan_sha256"],
-        "non_observer_stop_order": list(
-            units._CLEANUP_NON_OBSERVER_SERVICE_UNITS
-        ),
+        "non_observer_stop_order": list(units._CLEANUP_NON_OBSERVER_SERVICE_UNITS),
         "non_observer_services_state_sha256": producers._sha256_json(states),
         "all_credential_consumers_stopped": True,
         "observer_service_unit": units._CLEANUP_OBSERVER_UNIT,
@@ -769,9 +2057,7 @@ def test_gateway_observer_cleanup_reloads_facts_and_rejects_root_outcomes(
         "observer_credential_read_access": False,
         "producer_foundation_sha256": foundation_sha256,
         "unit_bundle_manifest_sha256": bundle.manifest["manifest_sha256"],
-        "credential_inaccessibility_contract_sha256": (
-            inaccessibility_sha256
-        ),
+        "credential_inaccessibility_contract_sha256": (inaccessibility_sha256),
         "observed_at_unix": observed_at_unix_ms // 1000,
         "secret_material_recorded": False,
         "secret_digest_recorded": False,
@@ -818,25 +2104,20 @@ def test_gateway_observer_cleanup_reloads_facts_and_rejects_root_outcomes(
         "service_state_sha256": producers._sha256_json(observer_state),
         "producer_foundation_sha256": foundation_sha256,
         "unit_bundle_manifest_sha256": bundle.manifest["manifest_sha256"],
-        "credential_inaccessibility_contract_sha256": (
-            inaccessibility_sha256
-        ),
+        "credential_inaccessibility_contract_sha256": (inaccessibility_sha256),
     }
     facts_unsigned = {
         "schema": "muncho-production-capability-cleanup-facts.v1",
         "revision": REVISION,
         "capability_plan_sha256": foundation["capability_plan_sha256"],
         "full_canary_plan_sha256": foundation["full_canary_plan_sha256"],
-        "non_observer_stop_order": list(
-            units._CLEANUP_NON_OBSERVER_SERVICE_UNITS
-        ),
+        "non_observer_stop_order": list(units._CLEANUP_NON_OBSERVER_SERVICE_UNITS),
         "non_observer_service_states": states,
         "credential_consumer_stop_proof": proof,
         "observer_signer_identity": observer_identity,
         "retirements": retirements,
         "retirement_receipt_sha256s": {
-            binding: value["receipt_sha256"]
-            for binding, value in retirements.items()
+            binding: value["receipt_sha256"] for binding, value in retirements.items()
         },
         "credential_absence": absence,
         "bitrix_receipt_key_retirement": key_retirement,
@@ -900,9 +2181,7 @@ def test_gateway_observer_cleanup_reloads_facts_and_rejects_root_outcomes(
         "diff_sha256": producers._sha256_json(diff_unsigned),
     }
     state_reader = lambda unit: (
-        observer_state
-        if unit == units._CLEANUP_OBSERVER_UNIT
-        else states[unit]
+        observer_state if unit == units._CLEANUP_OBSERVER_UNIT else states[unit]
     )
     collector = units.GatewayObserverCleanupNativeCollector(
         config=config,
@@ -920,9 +2199,7 @@ def test_gateway_observer_cleanup_reloads_facts_and_rejects_root_outcomes(
         "release_sha": REVISION,
         "fixture_sha256": "d" * 64,
         "observed_at_unix_ms": observed_at_unix_ms,
-        "non_observer_service_units": list(
-            units._CLEANUP_NON_OBSERVER_SERVICE_UNITS
-        ),
+        "non_observer_service_units": list(units._CLEANUP_NON_OBSERVER_SERVICE_UNITS),
         "non_observer_services_stopped": True,
         "non_observer_services_state_sha256": proof[
             "non_observer_services_state_sha256"
@@ -932,25 +2209,22 @@ def test_gateway_observer_cleanup_reloads_facts_and_rejects_root_outcomes(
         "credential_leases": list(units._CLEANUP_CREDENTIAL_BINDINGS),
         "credential_leases_retired": True,
         "retirements": retirements,
-        "retirement_receipt_sha256s": facts[
-            "retirement_receipt_sha256s"
-        ],
+        "retirement_receipt_sha256s": facts["retirement_receipt_sha256s"],
         "credential_absence": absence,
         "credentials_absent": True,
         "bitrix_receipt_key_retirement": key_retirement,
         "bitrix_receipt_key_absence": key_absence,
-        "discord_credential_topology": dict(
-            units._CLEANUP_DISCORD_CREDENTIAL_TOPOLOGY
-        ),
+        "discord_credential_topology": dict(units._CLEANUP_DISCORD_CREDENTIAL_TOPOLOGY),
         "browser_session_retired": True,
         "isolated_worker_lease_cleanup_verified": True,
         "production_diff_sha256": diff["diff_sha256"],
     }
 
     bindings = collector.collect(slot="cleanup", payload=payload)
-    assert tuple(item.kind for item in bindings) == producers.SLOT_NATIVE_BINDING_KINDS[
-        "cleanup"
-    ]
+    assert (
+        tuple(item.kind for item in bindings)
+        == producers.SLOT_NATIVE_BINDING_KINDS["cleanup"]
+    )
     with pytest.raises(
         producers.CapabilityProducerError,
         match="gateway_observer_cleanup_evidence_invalid",
@@ -988,6 +2262,7 @@ def test_gateway_observer_cleanup_reloads_facts_and_rejects_root_outcomes(
 
 def test_gateway_observer_source_projection_is_redacted_and_chain_bound(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     foundation, _context, _keys = _production_foundation(tmp_path)
     source_fixture_sha256 = "7" * 64
@@ -1171,16 +2446,14 @@ def test_gateway_observer_source_projection_is_redacted_and_chain_bound(
             "payload": payload,
         }
         frame_sha256 = producers._sha256_json(frame)
-        chain_head = producers._sha256_json(
-            {
-                "schema": units._OBSERVER_FRAME_CHAIN_SCHEMA,
-                "previous_sha256": previous,
-                "sequence": sequence,
-                "frame_sha256": frame_sha256,
-                "peer_pid": peer.pid,
-                "peer_start_time_ticks": peer.start_time_ticks,
-            }
-        )
+        chain_head = producers._sha256_json({
+            "schema": units._OBSERVER_FRAME_CHAIN_SCHEMA,
+            "previous_sha256": previous,
+            "sequence": sequence,
+            "frame_sha256": frame_sha256,
+            "peer_pid": peer.pid,
+            "peer_start_time_ticks": peer.start_time_ticks,
+        })
         frames.append(
             SimpleNamespace(
                 value=frame,
@@ -1215,18 +2488,14 @@ def test_gateway_observer_source_projection_is_redacted_and_chain_bound(
         "capability_plan_sha256": foundation["capability_plan_sha256"],
         "full_canary_plan_sha256": foundation["full_canary_plan_sha256"],
         "service_unit": observer_endpoint["service_unit"],
-        "service_identity_sha256": observer_endpoint[
-            "service_identity_sha256"
-        ],
+        "service_identity_sha256": observer_endpoint["service_identity_sha256"],
         "main_pid": os.getpid(),
         "uid": observer_endpoint["uid"],
         "gid": observer_endpoint["gid"],
     }
     observer_readiness = {
         **observer_readiness_unsigned,
-        "readiness_sha256": producers._sha256_json(
-            observer_readiness_unsigned
-        ),
+        "readiness_sha256": producers._sha256_json(observer_readiness_unsigned),
     }
     fleet_readiness_unsigned = {
         "schema": producers.PRODUCER_ACTIVATION_SCHEMA,
@@ -1265,8 +2534,45 @@ def test_gateway_observer_source_projection_is_redacted_and_chain_bound(
         completed_at_unix_ms=2_000_000_000_011,
     )
     terminal = units.build_api_terminal_event_identity(conversation)
+    goal_terminal_unsigned = {
+        "schema": "goal-terminal-test.v1",
+        "production_diff_sha256": "3" * 64,
+        "completed_at_unix_ms": 2_000_000_000_025,
+    }
+    goal_terminal = {
+        **goal_terminal_unsigned,
+        "terminal_sha256": producers._sha256_json(goal_terminal_unsigned),
+    }
+    goal_evidence_unsigned = {
+        "schema": "goal-evidence-test.v1",
+        "discord_owner_ingress": {
+            "receipt_sha256": "4" * 64,
+            "owner_approval_receipt_sha256": "d" * 64,
+        },
+        "model_outcomes": [
+            {"receipt_sha256": value * 64} for value in ("5", "6", "7")
+        ],
+        "gateway_restart": {"receipt_sha256": "8" * 64},
+        "ctw_recovery": {"receipt_sha256": "9" * 64},
+        "model_route": {"receipt_sha256": "a" * 64},
+        "prompt_tool_stability": {"receipt_sha256": "b" * 64},
+        "user_preemption_queue_e2e": {"receipt_sha256": "c" * 64},
+        "terminal": goal_terminal,
+    }
+    goal_evidence = {
+        **goal_evidence_unsigned,
+        "evidence_sha256": producers._sha256_json(goal_evidence_unsigned),
+    }
+    # This test exercises redaction and chain binding.  The complete goal
+    # contract is exercised independently below; keep the fixture compact here.
+    monkeypatch.setattr(
+        units.evidence_contract,
+        "_validate_goal_continuation_evidence",
+        lambda value, **_kwargs: value,
+    )
     projection = units.build_gateway_observer_source_projection(
         foundation=foundation,
+        fixture={"run_id": "run-one"},
         fixture_sha256=capability_fixture_sha256,
         run_id="run-one",
         producer_readiness=producer_readiness,
@@ -1275,6 +2581,7 @@ def test_gateway_observer_source_projection_is_redacted_and_chain_bound(
         frames=frames,
         worker_restart_receipt=restart,
         api_terminal_event_identity=terminal,
+        goal_continuation_evidence=goal_evidence,
         observed_at_unix_ms=2_000_000_000_030,
     )
 
@@ -1291,14 +2598,17 @@ def test_gateway_observer_source_projection_is_redacted_and_chain_bound(
     assert projection["secret_digest_recorded"] is False
     assert projection["frame_chain_head_sha256"] == previous
     assert projection["source_canary_run_id"] == "source-run-one"
-    assert units.validate_gateway_observer_source_projection(
-        projection,
-        release_sha=REVISION,
-        capability_plan_sha256=foundation["capability_plan_sha256"],
-        full_canary_plan_sha256=foundation["full_canary_plan_sha256"],
-        fixture_sha256=capability_fixture_sha256,
-        run_id="run-one",
-    ) == projection
+    assert (
+        units.validate_gateway_observer_source_projection(
+            projection,
+            release_sha=REVISION,
+            capability_plan_sha256=foundation["capability_plan_sha256"],
+            full_canary_plan_sha256=foundation["full_canary_plan_sha256"],
+            fixture_sha256=capability_fixture_sha256,
+            run_id="run-one",
+        )
+        == projection
+    )
 
     tampered = copy.deepcopy(projection)
     tampered["frame_records"][4]["chain_head_sha256"] = "0" * 64
@@ -1347,12 +2657,8 @@ def test_gateway_observer_source_projection_is_redacted_and_chain_bound(
             units.validate_gateway_observer_source_projection(
                 forbidden_projection,
                 release_sha=REVISION,
-                capability_plan_sha256=foundation[
-                    "capability_plan_sha256"
-                ],
-                full_canary_plan_sha256=foundation[
-                    "full_canary_plan_sha256"
-                ],
+                capability_plan_sha256=foundation["capability_plan_sha256"],
+                full_canary_plan_sha256=foundation["full_canary_plan_sha256"],
                 fixture_sha256=capability_fixture_sha256,
                 run_id="run-one",
             )
@@ -1365,9 +2671,7 @@ def test_gateway_observer_source_projection_is_redacted_and_chain_bound(
             )
         )
     )
-    source_file_sha256 = producers._sha256_bytes(
-        producers._canonical_bytes(projection)
-    )
+    source_file_sha256 = producers._sha256_bytes(producers._canonical_bytes(projection))
     collector = units.GatewayObserverSourceNativeCollector(
         config=config,
         foundation=foundation,
@@ -1393,7 +2697,32 @@ def test_gateway_observer_source_projection_is_redacted_and_chain_bound(
         "initial_effort": "high",
         "adaptive_max_effort": "max",
         "max_turns": 90,
+        "semantic_config_contract": canary.build_semantic_config_contract(),
+        "semantic_config_contract_sha256": canary._digest(
+            canary.build_semantic_config_contract()
+        ),
         "toolsets": list(units._GATEWAY_OBSERVER_REQUIRED_TOOLSETS),
+        "ordered_toolsets_sha256": producers._sha256_json(
+            {"toolsets": list(units._GATEWAY_OBSERVER_REQUIRED_TOOLSETS)}
+        ),
+        "capability_role_topology_contract": (
+            canary.build_capability_role_topology_contract(
+                public_discord_target={
+                    "target_type": "public_channel",
+                    "guild_id": canary.PRODUCTION_DISCORD_GUILD_ID,
+                    "channel_id": canary.PRODUCTION_DISCORD_CANARY_CHANNEL_ID,
+                },
+                discord_bot_identities={
+                    "production_bot_user_id": canary.PRODUCTION_DISCORD_BOT_USER_ID,
+                    "connector_bot_user_id": (
+                        canary.PRODUCTION_DISCORD_CONNECTOR_BOT_USER_ID
+                    ),
+                    "routeback_bot_user_id": (
+                        canary.PRODUCTION_DISCORD_ROUTEBACK_BOT_USER_ID
+                    ),
+                },
+            )
+        ),
         "kanban_auxiliary_planning_enabled": False,
         "kanban_auto_decompose": False,
         "kanban_dispatch_in_gateway": False,
@@ -1410,9 +2739,12 @@ def test_gateway_observer_source_projection_is_redacted_and_chain_bound(
             "discord_connector_readiness_sha256"
         ],
     }
-    runtime_bindings = collector.collect(
-        slot="runtime", payload=runtime_payload
+    runtime_payload["capability_role_topology_contract_sha256"] = (
+        producers._sha256_json(
+            runtime_payload["capability_role_topology_contract"]
+        )
     )
+    runtime_bindings = collector.collect(slot="runtime", payload=runtime_payload)
     assert tuple(item.kind for item in runtime_bindings) == (
         "gateway_runtime_readiness",
         "discord_connector_readiness",
@@ -1440,9 +2772,7 @@ def test_gateway_observer_source_projection_is_redacted_and_chain_bound(
         for key, value in replayed_projection.items()
         if key != "projection_sha256"
     }
-    replayed_projection["projection_sha256"] = producers._sha256_json(
-        replayed_unsigned
-    )
+    replayed_projection["projection_sha256"] = producers._sha256_json(replayed_unsigned)
     replayed_file_sha256 = producers._sha256_bytes(
         producers._canonical_bytes(replayed_projection)
     )
@@ -1461,12 +2791,11 @@ def test_gateway_observer_source_projection_is_redacted_and_chain_bound(
         replayed_collector.collect(slot="runtime", payload=runtime_payload)
 
     workspace_payload = {
-        "schema": (
-            "muncho-production-capability-canonical-task-workspace-gateway.v3"
-        ),
+        "schema": ("muncho-production-capability-canonical-task-workspace-gateway.v4"),
         **common,
         "transcript_sha256": terminal["transcript_sha256"],
         **workspace_core,
+        "goal_continuation_evidence": goal_evidence,
     }
     workspace_bindings = collector.collect(
         slot="workspace_gateway", payload=workspace_payload
@@ -1475,6 +2804,7 @@ def test_gateway_observer_source_projection_is_redacted_and_chain_bound(
         "gateway_observer_frame_chain",
         "authenticated_api_terminal_event",
         "isolated_worker_restart_receipt",
+        "goal_continuation_native_identity",
     )
 
     failure_payload = {
@@ -1501,12 +2831,12 @@ def test_gateway_observer_source_projection_is_redacted_and_chain_bound(
             payload={**workspace_payload, "owner_grant_id": "approval-two"},
         )
     swapped_failure_payload = copy.deepcopy(failure_payload)
-    swapped_failure_payload["failures"][0][
-        "alternative_receipt_sha256"
-    ] = failure_digests[3]
-    swapped_failure_payload["failures"][1][
-        "alternative_receipt_sha256"
-    ] = failure_digests[1]
+    swapped_failure_payload["failures"][0]["alternative_receipt_sha256"] = (
+        failure_digests[3]
+    )
+    swapped_failure_payload["failures"][1]["alternative_receipt_sha256"] = (
+        failure_digests[1]
+    )
     with pytest.raises(
         producers.CapabilityProducerError,
         match="gateway_observer_source_evidence_invalid",
@@ -1563,9 +2893,7 @@ def test_gateway_observer_source_projection_is_redacted_and_chain_bound(
         for key, value in outcome_projection.items()
         if key != "projection_sha256"
     }
-    outcome_projection["projection_sha256"] = producers._sha256_json(
-        outcome_unsigned
-    )
+    outcome_projection["projection_sha256"] = producers._sha256_json(outcome_unsigned)
     with pytest.raises(
         producers.CapabilityProducerError,
         match="gateway_observer_source_projection_invalid",
@@ -1604,17 +2932,18 @@ def test_fixed_native_publication_pump_accepts_only_canonical_slot_subsets(
     )
     monkeypatch.setattr(
         native,
-        "_wait_payload",
-        lambda slot, *, deadline, cancel: {"slot": slot},
+        "_load_payload_if_present",
+        lambda slot, *, cancel: {"slot": slot},
     )
     selected = tuple(
         slot
         for slot in producers.PRODUCTION_PRE_CLEANUP_PUMP_SLOTS
-        if producers.SLOT_ROLE[slot] != "gateway_observer"
+        if producers.SLOT_ROLE[slot] in producers.ENDPOINT_ROLES
+        and producers.SLOT_ROLE[slot] != "gateway_observer"
     )
     assert native.pump_slots(
         selected,
-        deadline=1.0,
+        deadline=time.monotonic() + 1.0,
     ) == {slot: {"slot": slot} for slot in selected}
     assert [slot for slot, _payload in receipt_pump.calls] == list(selected)
 
@@ -1630,7 +2959,157 @@ def test_fixed_native_publication_pump_accepts_only_canonical_slot_subsets(
             producers.CapabilityProducerError,
             match="native_publication_pump_slots_invalid",
         ):
-            native.pump_slots(invalid, deadline=1.0)
+            native.pump_slots(invalid, deadline=time.monotonic() + 1.0)
+
+
+def test_fixed_native_publication_pump_has_no_head_of_line_deadlock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeProductionReceiptPump(producers.ProductionReceiptPump):
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def produce(
+            self,
+            *,
+            slot: str,
+            payload: Mapping[str, Any],
+        ) -> Mapping[str, Any]:
+            self.calls.append(slot)
+            return {"slot": slot, "payload": dict(payload)}
+
+    receipt_pump = FakeProductionReceiptPump()
+    native = units.FixedNativePublicationPump(
+        pump=receipt_pump,
+        root=tmp_path,
+        poll_seconds=0.01,
+    )
+    selected = tuple(
+        slot
+        for slot in producers.PRODUCTION_PRE_CLEANUP_PUMP_SLOTS
+        if producers.SLOT_ROLE[slot] in producers.ENDPOINT_ROLES
+        and producers.SLOT_ROLE[slot] != "gateway_observer"
+    )[:2]
+    polls = 0
+
+    def load(slot: str, *, cancel: threading.Event | None):
+        nonlocal polls
+        polls += 1
+        # The canonical first peer withholds its publication until it sees the
+        # second peer's receipt.  A sequential waiter deadlocks here.
+        if slot == selected[0] and selected[1] not in receipt_pump.calls:
+            return None
+        return {"slot": slot}
+
+    monkeypatch.setattr(native, "_load_payload_if_present", load)
+    result = native.pump_slots(
+        selected,
+        deadline=time.monotonic() + 0.5,
+    )
+
+    assert tuple(result) == selected
+    assert receipt_pump.calls == [selected[1], selected[0]]
+    assert polls >= 3
+
+
+def test_fixed_native_publication_pump_partial_peer_times_out_without_worker_leak(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeProductionReceiptPump(producers.ProductionReceiptPump):
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def produce(
+            self,
+            *,
+            slot: str,
+            payload: Mapping[str, Any],
+        ) -> Mapping[str, Any]:
+            self.calls.append(slot)
+            return {"slot": slot}
+
+    receipt_pump = FakeProductionReceiptPump()
+    native = units.FixedNativePublicationPump(
+        pump=receipt_pump,
+        root=tmp_path,
+        poll_seconds=0.01,
+    )
+    selected = tuple(
+        slot
+        for slot in producers.PRODUCTION_PRE_CLEANUP_PUMP_SLOTS
+        if producers.SLOT_ROLE[slot] in producers.ENDPOINT_ROLES
+        and producers.SLOT_ROLE[slot] != "gateway_observer"
+    )[:2]
+    monkeypatch.setattr(
+        native,
+        "_load_payload_if_present",
+        lambda slot, *, cancel: (
+            {"slot": slot} if slot == selected[1] else None
+        ),
+    )
+    before = {thread.ident for thread in threading.enumerate()}
+
+    with pytest.raises(
+        producers.CapabilityProducerError,
+        match="native_publication_pump_timeout",
+    ):
+        native.pump_slots(
+            selected,
+            deadline=time.monotonic() + 0.05,
+        )
+
+    assert receipt_pump.calls == [selected[1]]
+    assert {thread.ident for thread in threading.enumerate()} == before
+
+
+def test_fixed_native_publication_pump_stalled_peer_cancels_boundedly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeProductionReceiptPump(producers.ProductionReceiptPump):
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def produce(self, *, slot: str, payload: Mapping[str, Any]):
+            self.calls.append(slot)
+            return {"slot": slot}
+
+    receipt_pump = FakeProductionReceiptPump()
+    native = units.FixedNativePublicationPump(
+        pump=receipt_pump,
+        root=tmp_path,
+        poll_seconds=0.01,
+    )
+    selected = tuple(
+        slot
+        for slot in producers.PRODUCTION_PRE_CLEANUP_PUMP_SLOTS
+        if producers.SLOT_ROLE[slot] in producers.ENDPOINT_ROLES
+        and producers.SLOT_ROLE[slot] != "gateway_observer"
+    )[:1]
+    cancel = threading.Event()
+    monkeypatch.setattr(
+        native,
+        "_load_payload_if_present",
+        lambda _slot, *, cancel: None,
+    )
+    timer = threading.Timer(0.03, cancel.set)
+    timer.start()
+    try:
+        with pytest.raises(
+            producers.CapabilityProducerError,
+            match="native_publication_pump_cancelled",
+        ):
+            native.pump_slots(
+                selected,
+                deadline=time.monotonic() + 1.0,
+                cancel=cancel,
+            )
+    finally:
+        timer.join()
+
+    assert receipt_pump.calls == []
 
 
 def test_root_orchestrator_cannot_publish_for_a_nonroot_role(
@@ -1665,13 +3144,11 @@ def test_cross_role_precreate_can_only_cause_fail_closed_collision(
     parent = tmp_path.lstat()
     parent_mode = stat.S_IMODE(parent.st_mode)
     path = tmp_path / producers.SLOT_FILENAME["bitrix_writer"]
-    malicious = _canonical(
-        {
-            "schema": producers.SIGNED_RECEIPT_SCHEMA,
-            "authority_role": "canonical_writer",
-            "payload": {"forged": True},
-        }
-    )
+    malicious = _canonical({
+        "schema": producers.SIGNED_RECEIPT_SCHEMA,
+        "authority_role": "canonical_writer",
+        "payload": {"forged": True},
+    })
     producers._publish_no_replace(
         path,
         malicious,

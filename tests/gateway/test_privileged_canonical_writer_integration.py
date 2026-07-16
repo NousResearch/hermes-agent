@@ -63,7 +63,7 @@ def _guild_target(_target_ref):
         "channel_type": "guild_channel",
         "target_type": "guild_channel",
         "guild_id": DISCORD_GUILD_ID,
-        "target_kind": "exact_guild_acl_channel",
+        "target_kind": "approved_guild_lane",
         "target_member_key": None,
         "target_member_id": None,
         "target_mention": None,
@@ -367,7 +367,7 @@ def test_verified_channel_alias_event_returns_structured_thread_retry_target(
         "guild_id": DISCORD_GUILD_ID,
         "target_type": "guild_thread",
         "channel_id": "1527000000000000002",
-        "parent_channel_id": "1527000000000000001",
+        "parent_channel_id": DISCORD_CHANNEL_ID,
     }
 
     result = json.loads(canonical_tool.canonical_event_append_tool(
@@ -426,9 +426,28 @@ def test_verified_channel_alias_event_returns_structured_thread_retry_target(
             },
             "target_type",
         ),
+        (
+            {
+                "alias": "new root without owner authority",
+                "guild_id": DISCORD_GUILD_ID,
+                "target_type": "guild_channel",
+                "channel_id": "1527000000000000001",
+            },
+            "separate owner capability",
+        ),
+        (
+            {
+                "alias": "thread below unknown parent",
+                "guild_id": DISCORD_GUILD_ID,
+                "target_type": "guild_thread",
+                "channel_id": "1527000000000000002",
+                "parent_channel_id": "1527000000000000003",
+            },
+            "owner-approved parent root",
+        ),
     ],
 )
-def test_channel_alias_event_rejects_wrong_guild_or_private_shape_before_writer(
+def test_channel_alias_event_rejects_wrong_scope_or_private_shape_before_writer(
     monkeypatch, payload, error
 ):
     calls = []

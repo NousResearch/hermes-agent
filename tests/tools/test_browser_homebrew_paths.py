@@ -202,6 +202,10 @@ class TestFindAgentBrowser:
              patch("os.path.isdir", return_value=False), \
              patch.object(Path, "exists", mock_path_exists), \
              patch(
+                 "hermes_cli.dep_ensure.ensure_dependency",
+                 return_value=False,
+             ), \
+             patch(
                  "tools.browser_tool._discover_homebrew_node_dirs",
                  return_value=[],
              ):

@@ -93,6 +93,27 @@ def test_receipt_is_digest_bound_to_exact_request() -> None:
         )
 
 
+def test_event_ack_readback_has_an_exact_content_free_shape() -> None:
+    value = request_message(
+        DiscordConnectorKind.EVENT_ACK_READBACK,
+        {
+            "delivery_id": "11111111-1111-4111-8111-111111111111",
+            "event_id": "300",
+            "event_sha256": "a" * 64,
+        },
+    )
+    parsed = parse_request(value)
+    assert parsed.kind is DiscordConnectorKind.EVENT_ACK_READBACK
+    assert parsed.payload == value["payload"]
+
+    value["payload"]["content"] = "must never cross the readback boundary"
+    with pytest.raises(
+        DiscordConnectorProtocolError,
+        match="invalid_event_ack_readback",
+    ):
+        parse_request(value)
+
+
 def test_history_query_is_bounded_and_cursors_are_mutually_exclusive() -> None:
     value = request_message(
         DiscordConnectorKind.HISTORY_FETCH,

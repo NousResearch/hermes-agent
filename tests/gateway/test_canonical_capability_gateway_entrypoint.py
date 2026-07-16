@@ -279,7 +279,9 @@ def test_capability_execution_probe_is_last_gate_before_ready_and_fails_closed(
     monkeypatch.setattr(
         runtime,
         "validate_capability_extension_surface",
-        lambda manager, hooks, *, plan: events.append("extensions.live"),
+        lambda manager, hooks, providers, *, plan: events.append(
+            "extensions.live"
+        ),
     )
     monkeypatch.setattr(plugins, "get_plugin_manager", lambda: object())
     monkeypatch.setattr(status, "get_running_pid", lambda: None)

@@ -286,6 +286,7 @@ def _bundle():
             "message_id": MESSAGE_ID,
             "channel_id": CHANNEL_ID,
             "content_sha256": content_sha256,
+            "public_receipt_sha256": _digest(edge_receipt.to_message()),
         },
     }
     evidence = {
@@ -524,6 +525,16 @@ def test_full_live_evidence_contract_passes_all_invariants():
     digest_payload = dict(receipt)
     digest = digest_payload.pop("invariant_receipt_sha256")
     assert digest == _digest(digest_payload)
+
+
+def test_legacy_v1_evidence_bundle_is_rejected_after_v2_cutover():
+    fixture, evidence = _bundle()
+    evidence["schema"] = "muncho-full-canary-e2e-evidence.v1"
+
+    with pytest.raises(CanaryEvidenceError) as exc:
+        _verify(fixture, evidence)
+
+    assert exc.value.code == "evidence_binding_invalid"
 
 
 @pytest.mark.parametrize(

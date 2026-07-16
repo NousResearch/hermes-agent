@@ -362,6 +362,39 @@ class DurableDiscordConnectorJournal:
             conn.commit()
             return False
 
+    def read_event_ack(
+        self,
+        *,
+        delivery_id: str,
+        event_id: str,
+        event_sha256: str,
+    ) -> dict[str, Any]:
+        """Read one exact inbound ACK binding without changing journal state."""
+
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT event_sha256,state,delivery_id
+                  FROM connector_events_v1 WHERE event_id=?
+                """,
+                (event_id,),
+            ).fetchone()
+        if (
+            row is None
+            or row[0] != event_sha256
+            or row[2] != delivery_id
+            or row[1] not in {"delivering", "acked"}
+        ):
+            raise DiscordConnectorServiceError("event_ack_readback_binding_invalid")
+        state = str(row[1])
+        return {
+            "delivery_id": delivery_id,
+            "event_id": event_id,
+            "event_sha256": event_sha256,
+            "state": state,
+            "acked": state == "acked",
+        }
+
     def prepare_send(
         self, *, idempotency_key: str, request_sha256: str, now_unix_ms: int
     ) -> dict[str, Any] | None:
@@ -541,6 +574,12 @@ class DiscordConnectorRuntime:
                     "acked": True,
                 },
                 replayed=replayed,
+            )
+        if request.kind is DiscordConnectorKind.EVENT_ACK_READBACK:
+            return receipt(
+                request=request,
+                status="ok",
+                result=self.journal.read_event_ack(**request.payload),
             )
         if request.kind is DiscordConnectorKind.TARGET_GET:
             try:

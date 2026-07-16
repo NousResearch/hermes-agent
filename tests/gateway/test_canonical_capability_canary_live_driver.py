@@ -28,6 +28,17 @@ from tests.gateway.test_canonical_capability_canary_e2e import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _exact_bound_plan_publication(monkeypatch):
+    monkeypatch.setattr(
+        live,
+        "load_bound_plan_publication_receipt",
+        lambda plan: {
+            "receipt_sha256": plan.plan_publication_receipt_sha256,
+        },
+    )
+
+
 def _chmod_directory(path: Path, mode: int) -> None:
     path.mkdir(parents=True, exist_ok=True)
     path.chmod(mode)
@@ -51,6 +62,92 @@ def _retire_activated_fleet(
     }
 
 
+def test_collector_bundle_normalizes_target_and_retires_api_only_after_terminal(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    captured = {}
+
+    class GoalCollector:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def publish_api_observer_retirement(self):
+            captured["retired"] = True
+            return {"marker_sha256": "9" * 64}
+
+        def controlled_gateway_restart(
+            self, *, deadline, pre_restart_validator, runner
+        ):
+            captured["restart_deadline"] = deadline
+            captured["restart_validator"] = pre_restart_validator
+            captured["restart_runner"] = runner
+            return {"restart": "observed"}
+
+    class Primary:
+        plan = SimpleNamespace(
+            artifacts={
+                "plugin_config": SimpleNamespace(sha256="8" * 64),
+            }
+        )
+        frames = (
+            SimpleNamespace(value={"event": "session_end"}),
+        )
+
+        def wait_session_end(self, *, timeout):
+            captured["wait_timeout"] = timeout
+
+    monkeypatch.setattr(live, "SegmentedGoalEvidenceCollector", GoalCollector)
+    plan = SimpleNamespace(
+        identities=SimpleNamespace(gateway_uid=2101, gateway_gid=2102)
+    )
+    bundle = live.CapabilityEvidenceCollectorBundle(Primary(), plan)
+    fixture = live.PublishedFixture(
+        value={
+            "release_sha": "a" * 40,
+            "release_artifact_sha256": "b" * 64,
+            "run_id": "11111111-1111-4111-8111-111111111111",
+            "valid_from_unix_ms": 1,
+            "valid_until_unix_ms": 2,
+            "public_discord_target": {
+                "target_type": "public_channel",
+                "guild_id": "123456789012345678",
+                "channel_id": "223456789012345678",
+            },
+            "owner_id": live.PRODUCTION_OWNER_DISCORD_USER_ID,
+        },
+        sha256="c" * 64,
+        path=tmp_path / "fixture.json",
+        run_directory=tmp_path,
+    )
+
+    bundle.configure_goal(SimpleNamespace(), fixture)
+    result = bundle.retire_historical_api_observer(
+        deadline=time.monotonic() + 10,
+    )
+
+    assert captured["public_target"] == {
+        "target_type": "public_guild_channel",
+        "guild_id": "123456789012345678",
+        "channel_id": "223456789012345678",
+    }
+    assert captured["api_observer_config_sha256"] == "8" * 64
+    assert captured["retired"] is True
+    assert result["marker_sha256"] == "9" * 64
+
+    validator = lambda _frames: True
+    runner = object()
+    marker, restart = bundle.controlled_gateway_restart(
+        deadline=time.monotonic() + 10,
+        pre_restart_validator=validator,
+        runner=runner,
+    )
+    assert marker == {"marker_sha256": "9" * 64}
+    assert restart == {"restart": "observed"}
+    assert captured["restart_validator"] is validator
+    assert captured["restart_runner"] is runner
+
+
 def _fixture_and_plans():
     keys = _private_keys()
     fixture = _fixture(keys)
@@ -63,8 +160,6 @@ def _fixture_and_plans():
             contract.PRODUCTION_DISCORD_ROUTEBACK_BOT_USER_ID
         ),
     }
-    fixture_sha256 = contract._digest(fixture)
-    evidence = _evidence(fixture, fixture_sha256, keys)
     uid = os.getuid()
     gid = os.getgid()
     plan = SimpleNamespace(
@@ -163,9 +258,35 @@ def _fixture_and_plans():
         bitrix_operational_edge_credential_binding=fixture[
             "bitrix_operational_edge_contract"
         ]["credential_binding"],
-        identities=SimpleNamespace(mac_ops_uid=uid, mac_ops_gid=gid),
+        full_canary_terminal_receipt=fixture[
+            "full_canary_terminal_receipt"
+        ],
+        full_canary_terminal_receipt_sha256=fixture[
+            "full_canary_terminal_receipt_sha256"
+        ],
+        original_full_canary_owner_approval_sha256=fixture[
+            "original_full_canary_owner_approval_sha256"
+        ],
+        plan_publication_receipt_sha256=fixture[
+            "plan_publication_receipt_sha256"
+        ],
+        identities=SimpleNamespace(
+            mac_ops_uid=uid,
+            mac_ops_gid=gid,
+            worker_uid=uid + 61_001,
+            worker_gid=gid + 61_002,
+            worker_client_gid=gid + 61_003,
+            socket_client_gid=gid + 61_004,
+            browser_uid=uid + 61_005,
+        ),
         sha256="a" * 64,
     )
+    plan.gateway_config_sha256 = hashlib.sha256(
+        live.render_gateway_config(plan)
+    ).hexdigest()
+    fixture["effective_config_sha256"] = plan.gateway_config_sha256
+    fixture_sha256 = contract._digest(fixture)
+    evidence = _evidence(fixture, fixture_sha256, keys)
     full_plan = SimpleNamespace(
         revision=fixture["release_sha"],
         release={
@@ -251,6 +372,17 @@ def _foundation_and_authority(
         "release_sha": fixture["release_sha"],
         "capability_plan_sha256": plan.sha256,
         "full_canary_plan_sha256": full_plan.sha256,
+        "full_canary_terminal_receipt": copy.deepcopy(
+            fixture["full_canary_terminal_receipt"]
+        ),
+        "full_canary_terminal_receipt_sha256": fixture[
+            "full_canary_terminal_receipt_sha256"
+        ],
+        "original_full_canary_owner_approval_sha256": fixture[
+            "original_full_canary_owner_approval_sha256"
+        ],
+        "service_identity_foundation_receipt_sha256": "8" * 64,
+        "producer_identity_foundation_receipt_sha256": "7" * 64,
         "owner_id": fixture["owner_id"],
         "bitrix_operational_edge_contract": copy.deepcopy(
             fixture["bitrix_operational_edge_contract"]
@@ -314,6 +446,18 @@ def _foundation_and_authority(
         "schema": live.FIXTURE_PUBLICATION_AUTHORITY_SCHEMA,
         "run_id": fixture["run_id"],
         "owner_id": fixture["owner_id"],
+        "full_canary_terminal_receipt": copy.deepcopy(
+            fixture["full_canary_terminal_receipt"]
+        ),
+        "full_canary_terminal_receipt_sha256": fixture[
+            "full_canary_terminal_receipt_sha256"
+        ],
+        "original_full_canary_owner_approval_sha256": fixture[
+            "original_full_canary_owner_approval_sha256"
+        ],
+        "plan_publication_receipt_sha256": fixture[
+            "plan_publication_receipt_sha256"
+        ],
         "valid_from_unix_ms": fixture["valid_from_unix_ms"],
         "valid_until_unix_ms": fixture["valid_until_unix_ms"],
         "public_discord_target": fixture["public_discord_target"],
@@ -557,6 +701,8 @@ def _activate_installed_fleet(
         pinned_owner_public_key_ed25519_hex=installed["owner_public"],
         pinned_owner_public_key_source_sha256=installed["source_sha"],
         owner_grant_sha256="e" * 64,
+        owner_catalog_sha256="f" * 64,
+        owner_authority_sha256="1" * 64,
         routeback_bot_identity=_routeback_identity(
             installed, observed_at_unix_ms=observed_at_unix_ms
         ),
@@ -651,6 +797,9 @@ def test_gateway_observer_payloads_join_model_core_to_signed_truth(tmp_path):
         for name in live._FAILURE_MODEL_PROPOSAL_CORE_FIELDS
     }
     runtime_payload = receipts["runtime"]["payload"]
+    goal_continuation_evidence = workspace_gateway[
+        "goal_continuation_evidence"
+    ]
     source = {
         "api_terminal_event_identity": {
             "transcript_sha256": workspace_gateway["transcript_sha256"]
@@ -688,6 +837,11 @@ def test_gateway_observer_payloads_join_model_core_to_signed_truth(tmp_path):
                 ]
             }
         ],
+        "goal_continuation_identity": (
+            live.build_goal_continuation_native_identity(
+                goal_continuation_evidence
+            )
+        ),
         "observed_at_unix_ms": receipts["failure_writer"]["payload"][
             "observed_at_unix_ms"
         ]
@@ -700,6 +854,7 @@ def test_gateway_observer_payloads_join_model_core_to_signed_truth(tmp_path):
             "workspace_gateway": workspace_core,
             "failure_gateway": failure_core,
         },
+        goal_continuation_evidence=goal_continuation_evidence,
         non_observer_receipts={
             name: receipts[name]
             for name in (
@@ -739,6 +894,7 @@ def test_gateway_observer_payloads_join_model_core_to_signed_truth(tmp_path):
                 "workspace_gateway": tampered,
                 "failure_gateway": failure_core,
             },
+            goal_continuation_evidence=goal_continuation_evidence,
             non_observer_receipts={
                 name: receipts[name]
                 for name in (
@@ -956,8 +1112,46 @@ def test_live_driver_routes_all_six_bundles_stops_and_runs_offline_verifier(
     class Lifecycle:
         stopped = False
 
-        def start(self, _capability, _full):
-            return {"ok": True}
+        def start(self, _capability, *, defer_producers_until_api_admission=False):
+            assert defer_producers_until_api_admission is True
+            return {
+                "ok": True,
+                "receipt_sha256": "1" * 64,
+                "gateway_runtime_readiness": {
+                    "gateway_pid": 991,
+                    "gateway_uid": 2103,
+                    "gateway_gid": 2204,
+                },
+            }
+
+        def prepare_api_admission_inputs(self, _approval, **kwargs):
+            publication = kwargs["admission_publisher"]()
+            return (
+                {"stage": "api-inputs-prepared", "receipt_sha256": "5" * 64},
+                publication,
+            )
+
+        def start_admitted_producers(self, _approval, **kwargs):
+            publication = kwargs["admission_publisher"]()
+            activated = kwargs["producer_fleet_activator"]()
+            return (
+                {
+                    "stage": "runtime-live-pending-gateway-commit-ack",
+                    "receipt_sha256": "6" * 64,
+                },
+                activated,
+                publication,
+            )
+
+        def finalize_api_admission_gateway_commit(self, _approval, **_kwargs):
+            model_release.set()
+            return {
+                "stage": "gateway-commit-acknowledged-pre-model",
+                "gateway_commit_acknowledged": True,
+                "model_release_allowed": True,
+                "model_callback_released": False,
+                "receipt_sha256": "7" * 64,
+            }
 
         def stop(self, **kwargs):
             self.stopped = True
@@ -965,6 +1159,7 @@ def test_live_driver_routes_all_six_bundles_stops_and_runs_offline_verifier(
             retirement = kwargs["producer_activation_retirer"]()
             return {
                 "ok": True,
+                "receipt_sha256": "2" * 64,
                 "cleanup_receipt": cleanup,
                 "producer_fleet_retirement": retirement,
                 "cleanup_finalization": evidence["cleanup_finalization"],
@@ -984,6 +1179,7 @@ def test_live_driver_routes_all_six_bundles_stops_and_runs_offline_verifier(
         cleared = False
 
         def run(self, *, fixture: dict, session_id: str):
+            assert model_release.wait(1), "model started before gateway commit ACK"
             assert fixture["task_policy"]["prompt"] == live.reviewed_objective_prompt()
             put(
                 "worker_restart_checkpoint",
@@ -1018,7 +1214,8 @@ def test_live_driver_routes_all_six_bundles_stops_and_runs_offline_verifier(
     collector = Collector()
     client = Client()
     restarts: list[str] = []
-    times = iter((NOW + 5, NOW + 15, NOW + 20, NOW + 100))
+    model_release = threading.Event()
+    times = iter((NOW + 5, NOW + 15, *(NOW + 20 + index for index in range(100))))
     uid = published.run_directory.lstat().st_uid
     gid = published.run_directory.lstat().st_gid
     monkeypatch.setattr(
@@ -1026,15 +1223,98 @@ def test_live_driver_routes_all_six_bundles_stops_and_runs_offline_verifier(
         "_observer_cleanup_payload",
         lambda _publication, **_kwargs: {"mechanical_cleanup": True},
     )
+    catalog = {"catalog_sha256": "a" * 64}
+    validated_authority = {
+        "authority": {"schema": live.API_ADMISSION_OWNER_AUTHORITY_SCHEMA},
+        "catalog": catalog,
+        "validated_pregrant": {"grant_sha256": "b" * 64},
+        "authority_sha256": "c" * 64,
+    }
+    publication = {
+        "run_id": fixture["run_id"],
+        "session_id": f"capability_{fixture['run_id']}",
+        "capability_epoch_sha256": "d" * 64,
+        "catalog_sha256": catalog["catalog_sha256"],
+        "authority_sha256": validated_authority["authority_sha256"],
+        "readback_verified": True,
+        "receipt_sha256": "e" * 64,
+    }
+    goal_continuation_evidence = copy.deepcopy(
+        slot_values["workspace_gateway"]["payload"][
+            "goal_continuation_evidence"
+        ]
+    )
+    goal_production_diff = {
+        "schema": "muncho-production-capability-production-diff.v1",
+        "run_id": published.value["run_id"],
+        "fixture_sha256": published.sha256,
+        "changed_surfaces": [],
+        "production_mutation_observed": False,
+        "diff_sha256": goal_continuation_evidence["terminal"][
+            "production_diff_sha256"
+        ],
+    }
+    monkeypatch.setattr(
+        live,
+        "build_live_probe_catalog",
+        lambda **_kwargs: catalog,
+    )
+    monkeypatch.setattr(
+        live,
+        "validate_api_admission_owner_authority",
+        lambda *_args, **_kwargs: validated_authority,
+    )
+    monkeypatch.setattr(
+        live,
+        "provision_api_admission_owner_authority",
+        lambda *_args, **_kwargs: publication,
+    )
+
+    def admission_server(**kwargs):
+        request = {
+            "session_id": f"capability_{fixture['run_id']}",
+            "capability_epoch_sha256": "d" * 64,
+            "challenge_sha256": "f" * 64,
+        }
+        authorization = kwargs["authorizer"](request)
+        ready_ack = {
+            "schema": "hermes.api.run-admission-ready-ack.v1",
+            "session_id": request["session_id"],
+            "capability_epoch_sha256": request["capability_epoch_sha256"],
+            "challenge_sha256": request["challenge_sha256"],
+            "ready_receipt_sha256": "1" * 64,
+            "acknowledged": True,
+            "receipt_sha256": "2" * 64,
+        }
+        commitment = kwargs["committer"](request, authorization, ready_ack)
+        commit_ack = {
+            "schema": "hermes.api.run-admission-commit-ack.v1",
+            "session_id": request["session_id"],
+            "capability_epoch_sha256": request["capability_epoch_sha256"],
+            "challenge_sha256": request["challenge_sha256"],
+            "commit_receipt_sha256": "3" * 64,
+            "acknowledged": True,
+            "receipt_sha256": "4" * 64,
+        }
+        finalization = kwargs["finalizer"](request, commitment, commit_ack)
+        return {"authorization": authorization, "finalization": finalization}
     driver = live.HonestCapabilityCanaryDriver(
         plan=plan,
         full_plan=full_plan,
         lifecycle=lifecycle,
-        capability_approval=object(),
-        full_approval=object(),
+        capability_approval=SimpleNamespace(sha256="3" * 64),
         producer_foundation_check=lambda: installed["trusted_foundation"],
         fixture_publisher=lambda _foundation: published,
         producer_fleet_activator=activate,
+        admitted_producer_fleet_activator=(
+            lambda foundation, fixed, _authority: activate(foundation, fixed)
+        ),
+        api_admission_authority_gate=(
+            lambda _request, _catalog, _foundation, _fixed, _deadline: {
+                "schema": live.API_ADMISSION_OWNER_AUTHORITY_SCHEMA
+            }
+        ),
+        api_admission_server=admission_server,
         producer_fleet_retirer=_retire_activated_fleet,
         production_observation_gate=lambda phase, fixed, _deadline: (
             {
@@ -1052,6 +1332,10 @@ def test_live_driver_routes_all_six_bundles_stops_and_runs_offline_verifier(
                 "production_mutation_observed": False,
                 "diff_sha256": "7" * 64,
             }
+        ),
+        goal_continuation_gate=lambda *_args: (
+            goal_continuation_evidence,
+            goal_production_diff,
         ),
         gateway_observer_source_publisher=lambda *_args: {
             "mode": "0440",
@@ -1163,14 +1447,15 @@ def test_api_failure_cancels_watcher_before_stop_and_late_checkpoint_cannot_rest
         )
 
     class Lifecycle:
-        def start(self, _capability, _full):
-            return {"ok": True}
+        def start(self, _capability):
+            return {"ok": True, "receipt_sha256": "1" * 64}
 
         def stop(self, **kwargs):
             events.append("stop")
             cleanup = kwargs["cleanup_producer"]({})
             return {
                 "ok": True,
+                "receipt_sha256": "2" * 64,
                 "cleanup_receipt": cleanup,
                 "producer_fleet_retirement": kwargs[
                     "producer_activation_retirer"
@@ -1217,8 +1502,7 @@ def test_api_failure_cancels_watcher_before_stop_and_late_checkpoint_cannot_rest
         plan=plan,
         full_plan=full_plan,
         lifecycle=Lifecycle(),
-        capability_approval=object(),
-        full_approval=object(),
+        capability_approval=SimpleNamespace(sha256="3" * 64),
         producer_foundation_check=lambda: installed["trusted_foundation"],
         fixture_publisher=lambda _foundation: published,
         producer_fleet_activator=activate,
@@ -1240,6 +1524,7 @@ def test_api_failure_cancels_watcher_before_stop_and_late_checkpoint_cannot_rest
                 "diff_sha256": "7" * 64,
             }
         ),
+        goal_continuation_gate=lambda *_args: ({}, {}),
         gateway_observer_source_publisher=lambda *_args: {
             "mode": "0440",
             "uid": 0,
@@ -1294,8 +1579,7 @@ def test_partial_collector_start_still_attempts_close_stop_and_aggregates(
         plan=plan,
         full_plan=full_plan,
         lifecycle=Lifecycle(),
-        capability_approval=object(),
-        full_approval=object(),
+        capability_approval=SimpleNamespace(sha256="3" * 64),
         producer_foundation_check=lambda: installed["trusted_foundation"],
         fixture_publisher=lambda _foundation: published,
         producer_fleet_activator=lambda _foundation, _fixture: (
@@ -1319,6 +1603,7 @@ def test_partial_collector_start_still_attempts_close_stop_and_aggregates(
                 "diff_sha256": "7" * 64,
             }
         ),
+        goal_continuation_gate=lambda *_args: ({}, {}),
         gateway_observer_source_publisher=lambda *_args: {
             "mode": "0440",
             "uid": 0,
@@ -1348,13 +1633,13 @@ def test_missing_producer_foundation_blocks_before_fixture_consumption():
             plan=SimpleNamespace(),
             full_plan=SimpleNamespace(),
             lifecycle=SimpleNamespace(),
-            capability_approval=object(),
-            full_approval=object(),
+            capability_approval=SimpleNamespace(sha256="3" * 64),
             producer_foundation_check=None,  # type: ignore[arg-type]
             fixture_publisher=fixture_publisher,
             producer_fleet_activator=lambda *_args: None,
             producer_fleet_retirer=lambda *_args: {},
             production_observation_gate=lambda *_args: {},
+            goal_continuation_gate=lambda *_args: ({}, {}),
             gateway_observer_source_publisher=lambda *_args: {},
             inbox_factory=lambda _value: None,
             collector=SimpleNamespace(),

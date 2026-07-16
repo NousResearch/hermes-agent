@@ -10,10 +10,12 @@ from gateway.canonical_writer_handlers import (
     MODEL_FORBIDDEN_EVENT_TYPES,
     REQUEST_SCHEMAS,
     SUPPORTED_OPERATIONS,
+    CanonicalWriterError,
     CanonicalWriterHandlers,
     CanonicalWriterTypedDispatcher,
     InMemoryCanonicalWriterBackend,
     InMemoryCanonicalWriterStore,
+    RouteBackTerminalRequest,
     RuntimeContext,
 )
 from gateway.canonical_writer_protocol import CanonicalWriterOperation, make_request
@@ -25,6 +27,7 @@ from gateway.discord_edge_protocol import (
 )
 from gateway.discord_edge_writer_authority import (
     CanonicalWriterDiscordAuthority,
+    derive_private_denial_receipt_sha256,
     derive_routeback_edge_idempotency_key,
 )
 from gateway.canonical_writer_service import DispatchContext, PeerCredentials
@@ -38,7 +41,8 @@ ROUTEBACK_CONTENT = "Exact handler route-back content"
 CONTENT_HASH = hashlib.sha256(ROUTEBACK_CONTENT.encode("utf-8")).hexdigest()
 CAPABILITY_EPOCH_HASH = "e" * 64
 DISCORD_GUILD_ID = "1282725267068157972"
-DISCORD_CHANNEL_ID = "100000000000000002"
+DISCORD_CHANNEL_ID = "1504852408227069993"
+UNKNOWN_DISCORD_CHANNEL_ID = "1599999999999999999"
 SYNTHETIC_CANARY_CHANNEL_ID = "1526858760100909066"
 DISCORD_MESSAGE_ID = "100000000000000003"
 DISCORD_BOT_ID = "100000000000000004"
@@ -196,6 +200,31 @@ def _append(handlers, runtime, *, event_type="case.note", case_id="case:1", body
         payload,
         runtime=runtime,
     )
+
+
+def test_event_append_receipt_binds_verified_canonical_identity():
+    handlers, _ = _handlers()
+    runtime = _runtime()
+
+    first = _append(handlers, runtime, key="receipt:identity:1")
+    retry = _append(handlers, runtime, key="receipt:identity:1")
+
+    assert first["ok"] is True
+    assert retry["ok"] is True
+    first_receipt = first["result"]
+    retry_receipt = retry["result"]
+    for receipt in (first_receipt, retry_receipt):
+        assert receipt["event_type"] == "case.note"
+        assert receipt["case_id"] == "case:1"
+        assert receipt["idempotency_key"] == "receipt:identity:1"
+        assert len(receipt["canonical_content_sha256"]) == 64
+        assert receipt["readback_verified"] is True
+    assert first_receipt["event_id"] == retry_receipt["event_id"]
+    assert first_receipt["canonical_content_sha256"] == retry_receipt[
+        "canonical_content_sha256"
+    ]
+    assert first_receipt["inserted"] is True
+    assert retry_receipt["deduped"] is True
 
 
 def _seed_active_plan(handlers, runtime, *, case_id="case:1", plan_id="plan:1", key="plan:1:r1"):
@@ -559,6 +588,168 @@ def test_typed_preclaim_routeback_blocked_path_never_forges_authorization():
     assert backend.store.events[-1]["event_type"] == "route_back.blocked"
 
 
+def test_private_dm_preclaim_receipt_is_preserved_by_projection():
+    handlers, backend = _handlers()
+    receipt_sha256 = derive_private_denial_receipt_sha256(
+        probe_id="discord:private",
+    )
+    payload = {
+        "preclaim": True,
+        "case_id": "case:private-denial",
+        "target_ref": {
+            "id": "blocked-target:private",
+            "target_kind": "forbidden_or_unresolved_target",
+        },
+        "message_summary": "private Discord route-back denied before dispatch",
+        "source_refs": {"thread_id": "requester-thread"},
+        "blocker_reason": "discord_dm_target_forbidden",
+        "idempotency_key": "discord:private",
+        "private_denial_receipt_sha256": receipt_sha256,
+        "dispatch_attempted": False,
+    }
+
+    response = handlers.dispatch(
+        CanonicalWriterOperation.ROUTEBACK_FINALIZE_BLOCKED.value,
+        payload,
+        runtime=_runtime(),
+    )
+    projected = handlers.dispatch(
+        CanonicalWriterOperation.PROJECTION_READ_EVENTS.value,
+        {"case_id": payload["case_id"]},
+        runtime=_runtime(),
+    )
+
+    expected_receipt = {
+        "private_denial_receipt_sha256": receipt_sha256,
+        "dispatch_attempted": False,
+    }
+    assert response["ok"] is True
+    assert response["result"]["receipt"] == expected_receipt
+    assert response["result"]["partial_receipt"] == expected_receipt
+    assert backend.store.events[-1]["body"]["receipt"] == expected_receipt
+    assert backend.store.events[-1]["body"]["dispatch_attempted"] is False
+    assert projected["result"]["events"][-1]["body"]["route_back"][
+        "receipt"
+    ] == expected_receipt
+    assert projected["result"]["events"][-1]["body"]["route_back"][
+        "dispatch_attempted"
+    ] is False
+
+
+@pytest.mark.parametrize(
+    "receipt_fields",
+    [
+        {"dispatch_attempted": False},
+        {
+            "private_denial_receipt_sha256": "D" * 64,
+            "dispatch_attempted": False,
+        },
+        {
+            "private_denial_receipt_sha256": "e" * 64,
+            "dispatch_attempted": False,
+        },
+        {
+            "private_denial_receipt_sha256": "d" * 64,
+            "dispatch_attempted": True,
+        },
+    ],
+)
+def test_private_dm_preclaim_receipt_tampering_fails_closed(receipt_fields):
+    handlers, backend = _handlers()
+    payload = {
+        "preclaim": True,
+        "case_id": "case:private-denial-tamper",
+        "target_ref": {
+            "id": "blocked-target:private",
+            "target_kind": "forbidden_or_unresolved_target",
+        },
+        "message_summary": "tampered private denial",
+        "source_refs": {"thread_id": "requester-thread"},
+        "blocker_reason": "discord_dm_target_forbidden",
+        "idempotency_key": "discord:private:tampered",
+        **receipt_fields,
+    }
+
+    response = handlers.dispatch(
+        CanonicalWriterOperation.ROUTEBACK_FINALIZE_BLOCKED.value,
+        payload,
+        runtime=_runtime(),
+    )
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "invalid_receipt"
+    assert backend.store.events == []
+
+
+def test_legacy_private_dm_empty_receipt_is_read_only_dedupe_only():
+    handlers, backend = _handlers()
+    idempotency_key = "discord:private:legacy"
+    payload = {
+        "preclaim": True,
+        "case_id": "case:private-denial-legacy",
+        "target_ref": {
+            "id": "blocked-target:private",
+            "target_kind": "forbidden_or_unresolved_target",
+        },
+        "message_summary": "legacy private denial",
+        "source_refs": {"thread_id": "requester-thread"},
+        "blocker_reason": "discord_dm_target_forbidden",
+        "idempotency_key": idempotency_key,
+        "private_denial_receipt_sha256": (
+            derive_private_denial_receipt_sha256(probe_id=idempotency_key)
+        ),
+        "dispatch_attempted": False,
+    }
+    first = handlers.dispatch(
+        CanonicalWriterOperation.ROUTEBACK_FINALIZE_BLOCKED.value,
+        payload,
+        runtime=_runtime(),
+    )
+    lifecycle = next(iter(backend.store.routeback_lifecycle_terminals.values()))
+    lifecycle["receipt"] = {}
+    event_count = len(backend.store.events)
+
+    replay = handlers.dispatch(
+        CanonicalWriterOperation.ROUTEBACK_FINALIZE_BLOCKED.value,
+        payload,
+        runtime=_runtime(),
+    )
+
+    assert first["ok"] is True
+    assert replay["ok"] is True
+    assert replay["result"]["legacy_receipt_read_only"] is True
+    assert replay["result"]["receipt"] == {}
+    assert lifecycle["receipt"] == {}
+    assert len(backend.store.events) == event_count
+
+
+def test_private_dm_new_write_never_accepts_legacy_empty_receipt():
+    _handlers_instance, backend = _handlers()
+
+    with pytest.raises(CanonicalWriterError) as exc_info:
+        backend.routeback_terminal(
+            RouteBackTerminalRequest(
+                authorization_id="",
+                outcome="blocked",
+                receipt={},
+                blocker_reason="discord_dm_target_forbidden",
+                preclaim=True,
+                case_id="case:private-denial-new-empty",
+                target_ref={
+                    "id": "blocked-target:private",
+                    "target_kind": "forbidden_or_unresolved_target",
+                },
+                message_summary="new private denial cannot be empty",
+                source_refs={"thread_id": "requester-thread"},
+                idempotency_key="discord:private:new-empty",
+            ),
+            _runtime(),
+        )
+
+    assert exc_info.value.code == "invalid_request"
+    assert backend.store.events == []
+
+
 def test_preclaim_terminal_blocks_later_claim_across_session_rotation():
     handlers, backend = _handlers()
     claim = _routeback_claim_payload(key="preclaim:global-lifecycle:1")
@@ -788,6 +979,65 @@ def test_routeback_claim_and_typed_finalize_are_atomic_and_replay_safe():
     }]
 
 
+def test_legacy_sent_receipt_is_read_only_and_requires_fresh_signed_evidence():
+    handlers, backend = _handlers()
+    runtime = _runtime()
+    claim = _routeback_claim_payload(key="routeback:legacy-sent")
+    claimed = handlers.dispatch(
+        CanonicalWriterOperation.ROUTEBACK_CLAIM.value,
+        claim,
+        runtime=runtime,
+    )["result"]
+    edge_request = claimed["discord_edge_request"]
+    edge_receipt = _signed_routeback_receipt(
+        edge_request,
+        DiscordEdgeReceiptOutcome.VERIFIED,
+    )
+    evidence = handlers.discord_edge_authority.verify_routeback_evidence(
+        request_value=edge_request,
+        receipt_value=edge_receipt,
+        authorization_id=claimed["authorization_id"],
+    )
+    legacy_receipt = dict(evidence.canonical_receipt)
+    legacy_receipt.pop("public_receipt_sha256")
+
+    with pytest.raises(CanonicalWriterError) as exc_info:
+        backend.routeback_terminal(
+            RouteBackTerminalRequest(
+                authorization_id=claimed["authorization_id"],
+                outcome="sent",
+                receipt=legacy_receipt,
+                blocker_reason="",
+            ),
+            runtime,
+        )
+    assert exc_info.value.code == "invalid_receipt"
+
+    authorization = backend.store.routeback_authorizations[
+        claimed["authorization_id"]
+    ]
+    authorization["terminal"] = {
+        "outcome": "sent",
+        "receipt": legacy_receipt,
+        "blocker_reason": "",
+    }
+    authorization["state"] = "sent"
+    event_count = len(backend.store.events)
+
+    replay = handlers.dispatch(
+        CanonicalWriterOperation.ROUTEBACK_FINALIZE_SENT.value,
+        _routeback_terminal_payload(claim, edge_request, edge_receipt),
+        runtime=runtime,
+    )
+
+    assert replay["ok"] is True
+    assert replay["result"]["legacy_receipt_read_only"] is True
+    assert replay["result"]["receipt"] == legacy_receipt
+    assert "public_receipt_sha256" not in replay["result"]["receipt"]
+    assert authorization["terminal"]["receipt"] == legacy_receipt
+    assert len(backend.store.events) == event_count
+
+
 def test_routeback_sent_rejects_unverified_process_receipt():
     handlers, _backend = _handlers()
     runtime = _runtime()
@@ -978,6 +1228,39 @@ def test_routeback_claim_accepts_only_the_exact_synthetic_public_exception():
     assert len(backend.store.routeback_authorizations) == 1
 
 
+def test_routeback_claim_accepts_thread_only_under_approved_root():
+    handlers, backend = _handlers()
+    target_ref = {
+        "target_type": "guild_thread",
+        "channel_type": "guild_thread",
+        "guild_id": DISCORD_GUILD_ID,
+        "channel_id": "1599999999999999998",
+        "parent_channel_id": DISCORD_CHANNEL_ID,
+    }
+    claim = _routeback_claim_payload(key="routeback:approved-parent-thread")
+    claim["target_ref"] = target_ref
+    claim["execution_binding"]["target_channel_id"] = target_ref["channel_id"]
+    claim["discord_edge_intent"]["target"] = {
+        key: target_ref[key]
+        for key in (
+            "target_type",
+            "guild_id",
+            "channel_id",
+            "parent_channel_id",
+        )
+        if key in target_ref
+    }
+
+    response = handlers.dispatch(
+        CanonicalWriterOperation.ROUTEBACK_CLAIM.value,
+        claim,
+        runtime=_runtime(),
+    )
+
+    assert response["ok"] is True
+    assert len(backend.store.routeback_authorizations) == 1
+
+
 @pytest.mark.parametrize(
     "target_ref",
     [
@@ -1025,6 +1308,19 @@ def test_routeback_claim_accepts_only_the_exact_synthetic_public_exception():
             "guild_id": DISCORD_GUILD_ID,
             "channel_id": DISCORD_CHANNEL_ID,
             "chat_id": "100000000000000099",
+        },
+        {
+            "target_type": "guild_channel",
+            "channel_type": "guild_channel",
+            "guild_id": DISCORD_GUILD_ID,
+            "channel_id": UNKNOWN_DISCORD_CHANNEL_ID,
+        },
+        {
+            "target_type": "guild_thread",
+            "channel_type": "guild_thread",
+            "guild_id": DISCORD_GUILD_ID,
+            "channel_id": "1599999999999999998",
+            "parent_channel_id": UNKNOWN_DISCORD_CHANNEL_ID,
         },
     ],
 )

@@ -15,6 +15,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from gateway import canonical_capability_canary_e2e as e2e
 from gateway import canonical_capability_canary_producers as producers
 from gateway.operational_edge_protocol import sign_envelope
 
@@ -34,6 +35,30 @@ def _canonical(value: Any) -> bytes:
 
 def _sha(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def _full_canary_terminal_receipt() -> dict[str, Any]:
+    unsigned = {
+        "schema": "muncho-full-canary-session-bound-owner-receipt.v1",
+        "ok": True,
+        "state": "verified_stopped_and_credentials_retired",
+        "release_sha": "a" * 40,
+        "coordinator_input_sha256": "1" * 64,
+        "full_canary_plan_sha256": "c" * 64,
+        "owner_approval_sha256": "3" * 64,
+        "phase_b_readiness_anchor_sha256": "4" * 64,
+        "api_session_key_sha256": "5" * 64,
+        "fixture_sha256": "6" * 64,
+        "discord_token_install_receipt_sha256": "7" * 64,
+        "coordinator_receipt_sha256": "8" * 64,
+        "live_driver_receipt_sha256": "9" * 64,
+        "services_stopped": True,
+        "discord_token_retired": True,
+        "temporary_admin_created": False,
+        "bootstrap_credential_created": False,
+        "completed_at_unix": 1_900_000_000,
+    }
+    return {**unsigned, "receipt_sha256": _sha(_canonical(unsigned))}
 
 
 def _ssh_string(value: bytes) -> bytes:
@@ -59,9 +84,7 @@ def _sshsig(
         + _ssh_string(b"sha512")
         + _ssh_string(hashlib.sha512(message).digest())
     )
-    signature_blob = _ssh_string(b"ssh-ed25519") + _ssh_string(
-        private_key.sign(signed)
-    )
+    signature_blob = _ssh_string(b"ssh-ed25519") + _ssh_string(private_key.sign(signed))
     envelope = (
         b"SSHSIG"
         + struct.pack(">I", 1)
@@ -86,16 +109,24 @@ def _foundation(tmp_path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
         role: Ed25519PrivateKey.generate() for role in producers.ENDPOINT_ROLES
     }
     public = {
-        role: role_private[role].public_key().public_bytes(
+        role: role_private[role]
+        .public_key()
+        .public_bytes(
             serialization.Encoding.Raw,
             serialization.PublicFormat.Raw,
-        ).hex()
+        )
+        .hex()
         for role in producers.ENDPOINT_ROLES
     }
-    owner_public = owner_private.public_key().public_bytes(
-        serialization.Encoding.Raw,
-        serialization.PublicFormat.Raw,
-    ).hex()
+    owner_public = (
+        owner_private
+        .public_key()
+        .public_bytes(
+            serialization.Encoding.Raw,
+            serialization.PublicFormat.Raw,
+        )
+        .hex()
+    )
     authorities = {
         role: {
             "key_id": _sha(bytes.fromhex(public[role])),
@@ -143,11 +174,17 @@ def _foundation(tmp_path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
             "algorithm": "ed25519",
             "public_key_ed25519_hex": public[role],
         }
+    terminal = _full_canary_terminal_receipt()
     unsigned = {
         "schema": producers.PRODUCER_FOUNDATION_SCHEMA,
         "release_sha": "a" * 40,
         "capability_plan_sha256": "b" * 64,
         "full_canary_plan_sha256": "c" * 64,
+        "full_canary_terminal_receipt": terminal,
+        "full_canary_terminal_receipt_sha256": terminal["receipt_sha256"],
+        "original_full_canary_owner_approval_sha256": terminal["owner_approval_sha256"],
+        "service_identity_foundation_receipt_sha256": "8" * 64,
+        "producer_identity_foundation_receipt_sha256": "7" * 64,
         "owner_id": producers.PRODUCTION_OWNER_ID,
         "owner_authority": {
             "owner_id": producers.PRODUCTION_OWNER_ID,
@@ -208,8 +245,7 @@ def _foundation(tmp_path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
             "receipt_key_contract": {
                 "private_credential_name": "receipt-private-key",
                 "private_source_path": (
-                    "/etc/muncho/keys/"
-                    "operational-edge-bitrix-receipt-private.pem"
+                    "/etc/muncho/keys/operational-edge-bitrix-receipt-private.pem"
                 ),
                 "private_projection_path": (
                     "/run/credentials/muncho-operational-edge-bitrix.service/"
@@ -262,9 +298,7 @@ def _foundation(tmp_path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
             "receipt_public_key_id": "a" * 64,
             "receipt_public_key_file_sha256": "b" * 64,
             "connector_service_unit": "muncho-discord-connector.service",
-            "connector_socket_path": (
-                "/run/muncho-discord-connector/connector.sock"
-            ),
+            "connector_socket_path": ("/run/muncho-discord-connector/connector.sock"),
             "connector_service_uid": 2111,
             "connector_service_gid": 2211,
             "public_history_operation": "public.history.fetch",
@@ -394,9 +428,7 @@ def _fixture(
         "owner_id": producers.PRODUCTION_OWNER_ID,
         "valid_from_unix_ms": start_ms,
         "valid_until_unix_ms": start_ms + 600_000,
-        "producer_foundation_sha256": producers.producer_foundation_sha256(
-            foundation
-        ),
+        "producer_foundation_sha256": producers.producer_foundation_sha256(foundation),
         "discord_bot_identities": {
             "production_bot_user_id": producers.PRODUCTION_BOT_USER_ID,
             "connector_bot_user_id": "1501976597455044803",
@@ -431,6 +463,8 @@ def _activation(
         pinned_owner_public_key_ed25519_hex=context["owner_public"],
         pinned_owner_public_key_source_sha256=context["source_sha256"],
         owner_grant_sha256="e" * 64,
+        owner_catalog_sha256="f" * 64,
+        owner_authority_sha256="1" * 64,
         routeback_bot_identity=_routeback_identity(),
         endpoint_clients=clients,
         now_ms=lambda: NOW_MS,
@@ -454,7 +488,8 @@ def test_foundation_is_externally_pinned_and_run_independent(tmp_path: Path) -> 
         producers.validate_producer_foundation(
             foundation,
             pinned_owner_public_key_ed25519_hex=(
-                Ed25519PrivateKey.generate()
+                Ed25519PrivateKey
+                .generate()
                 .public_key()
                 .public_bytes(
                     serialization.Encoding.Raw,
@@ -477,19 +512,20 @@ def test_activation_binds_fixture_exact_run_root_and_live_endpoints(
     assert activation["fixture_sha256"] == _sha(_canonical(fixture))
     assert activation["run_receipt_root"].endswith("/run-one")
     assert activation["slot_filenames"] == producers.SLOT_FILENAME
-    assert producers.validate_fleet_readiness(
-        activation,
-        now_ms=NOW_MS,
-        expected_foundation_sha256=activation["foundation_sha256"],
-    ) == activation
+    assert (
+        producers.validate_fleet_readiness(
+            activation,
+            now_ms=NOW_MS,
+            expected_foundation_sha256=activation["foundation_sha256"],
+        )
+        == activation
+    )
 
 
 def test_expired_activation_can_be_exactly_retired_after_service_stop(
     tmp_path: Path,
 ) -> None:
-    _foundation_value, _context, _fixture_value, activation = _activation(
-        tmp_path
-    )
+    _foundation_value, _context, _fixture_value, activation = _activation(tmp_path)
     path = tmp_path / "activation.json"
     parent = tmp_path.lstat()
     producers.publish_fleet_readiness(
@@ -499,22 +535,43 @@ def test_expired_activation_can_be_exactly_retired_after_service_stop(
         gid=parent.st_gid,
         now_ms=NOW_MS,
     )
+    retirement_directory = tmp_path / "activation-retirement"
+    retirement_directory.mkdir(mode=0o700)
     retirement = producers.retire_fleet_readiness(
         expected_readiness_sha256=activation["readiness_sha256"],
+        run_id=activation["run_id"],
+        retirement_directory=retirement_directory,
         path=path,
         uid=parent.st_uid,
         gid=parent.st_gid,
+        retirement_uid=parent.st_uid,
+        retirement_gid=parent.st_gid,
         expected_foundation_sha256=activation["foundation_sha256"],
-        expected_capability_plan_sha256=activation[
-            "capability_plan_sha256"
-        ],
-        expected_full_canary_plan_sha256=activation[
-            "full_canary_plan_sha256"
-        ],
+        expected_capability_plan_sha256=activation["capability_plan_sha256"],
+        expected_full_canary_plan_sha256=activation["full_canary_plan_sha256"],
         retired_at_unix_ms=activation["valid_until_unix_ms"] + 1,
     )
     assert retirement["absence_verified"] is True
     assert not os.path.lexists(path)
+    assert (
+        producers.retire_fleet_readiness(
+            expected_readiness_sha256=activation["readiness_sha256"],
+            run_id=activation["run_id"],
+            retirement_directory=retirement_directory,
+            path=path,
+            uid=parent.st_uid,
+            gid=parent.st_gid,
+            retirement_uid=parent.st_uid,
+            retirement_gid=parent.st_gid,
+            expected_foundation_sha256=activation["foundation_sha256"],
+            expected_capability_plan_sha256=activation["capability_plan_sha256"],
+            expected_full_canary_plan_sha256=(
+                activation["full_canary_plan_sha256"]
+            ),
+            retired_at_unix_ms=activation["valid_until_unix_ms"] + 2,
+        )
+        == retirement
+    )
 
 
 class _ExactCollector:
@@ -545,29 +602,27 @@ def test_role_producer_cannot_sign_before_activation_and_publishes_exact_path(
     role = "business_edge"
     endpoint = foundation["endpoints"][role]
     receipt = foundation["receipt_contract"]
-    config = producers.ProducerConfig.from_mapping(
-        {
-            "schema": producers.PRODUCER_CONFIG_SCHEMA,
-            "role": role,
-            "foundation_sha256": producers.producer_foundation_sha256(foundation),
-            "release_sha": foundation["release_sha"],
-            "capability_plan_sha256": foundation["capability_plan_sha256"],
-            "full_canary_plan_sha256": foundation["full_canary_plan_sha256"],
-            "service_unit": endpoint["service_unit"],
-            "service_identity_sha256": endpoint["service_identity_sha256"],
-            "service_uid": os.getuid(),
-            "service_gid": os.getgid(),
-            "root_client_uid": 0,
-            "socket_path": endpoint["socket_path"],
-            "receipt_base_root": receipt["base_root"],
-            "receipt_directory_uid": receipt["run_directory_uid"],
-            "receipt_directory_gid": receipt["run_directory_gid"],
-            "receipt_directory_mode": receipt["run_directory_mode"],
-            "private_key_path": endpoint["private_key_path"],
-            "public_key_path": endpoint["public_key_path"],
-            "allowed_slots": endpoint["allowed_slots"],
-        }
-    )
+    config = producers.ProducerConfig.from_mapping({
+        "schema": producers.PRODUCER_CONFIG_SCHEMA,
+        "role": role,
+        "foundation_sha256": producers.producer_foundation_sha256(foundation),
+        "release_sha": foundation["release_sha"],
+        "capability_plan_sha256": foundation["capability_plan_sha256"],
+        "full_canary_plan_sha256": foundation["full_canary_plan_sha256"],
+        "service_unit": endpoint["service_unit"],
+        "service_identity_sha256": endpoint["service_identity_sha256"],
+        "service_uid": os.getuid(),
+        "service_gid": os.getgid(),
+        "root_client_uid": 0,
+        "socket_path": endpoint["socket_path"],
+        "receipt_base_root": receipt["base_root"],
+        "receipt_directory_uid": receipt["run_directory_uid"],
+        "receipt_directory_gid": receipt["run_directory_gid"],
+        "receipt_directory_mode": receipt["run_directory_mode"],
+        "private_key_path": endpoint["private_key_path"],
+        "public_key_path": endpoint["public_key_path"],
+        "allowed_slots": endpoint["allowed_slots"],
+    })
     producers.validate_producer_config_binding(config, foundation)
     private_key = context["role_private"][role]
     producer = producers.RoleReceiptProducer(
@@ -602,13 +657,16 @@ def test_role_producer_cannot_sign_before_activation_and_publishes_exact_path(
     )
     assert path.is_file()
     assert stat.S_IMODE(path.stat().st_mode) == 0o400
-    assert producers.verify_role_receipt(
-        signed,
-        role=role,
-        slot="bitrix_edge",
-        public_key=private_key.public_key(),
-        producer_readiness_sha256=activation["readiness_sha256"],
-    ) == request["payload"]
+    assert (
+        producers.verify_role_receipt(
+            signed,
+            role=role,
+            slot="bitrix_edge",
+            public_key=private_key.public_key(),
+            producer_readiness_sha256=activation["readiness_sha256"],
+        )
+        == request["payload"]
+    )
 
 
 def test_production_pump_uses_action_produce_and_verifies_immutable_receipt(
@@ -618,43 +676,27 @@ def test_production_pump_uses_action_produce_and_verifies_immutable_receipt(
     role = "business_edge"
     endpoint = foundation["endpoints"][role]
     receipt_contract = foundation["receipt_contract"]
-    config = producers.ProducerConfig.from_mapping(
-        {
-            "schema": producers.PRODUCER_CONFIG_SCHEMA,
-            "role": role,
-            "foundation_sha256": producers.producer_foundation_sha256(
-                foundation
-            ),
-            "release_sha": foundation["release_sha"],
-            "capability_plan_sha256": foundation[
-                "capability_plan_sha256"
-            ],
-            "full_canary_plan_sha256": foundation[
-                "full_canary_plan_sha256"
-            ],
-            "service_unit": endpoint["service_unit"],
-            "service_identity_sha256": endpoint[
-                "service_identity_sha256"
-            ],
-            "service_uid": os.getuid(),
-            "service_gid": os.getgid(),
-            "root_client_uid": 0,
-            "socket_path": endpoint["socket_path"],
-            "receipt_base_root": receipt_contract["base_root"],
-            "receipt_directory_uid": receipt_contract[
-                "run_directory_uid"
-            ],
-            "receipt_directory_gid": receipt_contract[
-                "run_directory_gid"
-            ],
-            "receipt_directory_mode": receipt_contract[
-                "run_directory_mode"
-            ],
-            "private_key_path": endpoint["private_key_path"],
-            "public_key_path": endpoint["public_key_path"],
-            "allowed_slots": endpoint["allowed_slots"],
-        }
-    )
+    config = producers.ProducerConfig.from_mapping({
+        "schema": producers.PRODUCER_CONFIG_SCHEMA,
+        "role": role,
+        "foundation_sha256": producers.producer_foundation_sha256(foundation),
+        "release_sha": foundation["release_sha"],
+        "capability_plan_sha256": foundation["capability_plan_sha256"],
+        "full_canary_plan_sha256": foundation["full_canary_plan_sha256"],
+        "service_unit": endpoint["service_unit"],
+        "service_identity_sha256": endpoint["service_identity_sha256"],
+        "service_uid": os.getuid(),
+        "service_gid": os.getgid(),
+        "root_client_uid": 0,
+        "socket_path": endpoint["socket_path"],
+        "receipt_base_root": receipt_contract["base_root"],
+        "receipt_directory_uid": receipt_contract["run_directory_uid"],
+        "receipt_directory_gid": receipt_contract["run_directory_gid"],
+        "receipt_directory_mode": receipt_contract["run_directory_mode"],
+        "private_key_path": endpoint["private_key_path"],
+        "public_key_path": endpoint["public_key_path"],
+        "allowed_slots": endpoint["allowed_slots"],
+    })
     private_key = context["role_private"][role]
     producer = producers.RoleReceiptProducer(
         config,
@@ -705,12 +747,12 @@ def test_production_pump_uses_action_produce_and_verifies_immutable_receipt(
     signed = pump.produce(slot="bitrix_edge", payload=payload)
 
     assert len(calls) == 1
-    assert calls[0]["request"]["producer_readiness_sha256"] == activation[
-        "readiness_sha256"
-    ]
+    assert (
+        calls[0]["request"]["producer_readiness_sha256"]
+        == activation["readiness_sha256"]
+    )
     receipt_path = (
-        Path(activation["run_receipt_root"])
-        / producers.SLOT_FILENAME["bitrix_edge"]
+        Path(activation["run_receipt_root"]) / producers.SLOT_FILENAME["bitrix_edge"]
     )
     assert json.loads(receipt_path.read_text()) == signed
     assert stat.S_IMODE(receipt_path.stat().st_mode) == 0o400
@@ -739,6 +781,35 @@ def test_atomic_publication_is_idempotent_and_divergence_fails_closed(
     assert path.read_bytes() == b'{"ok":true}'
 
 
+def test_linux_atomic_publication_uses_noreplace_on_validated_directory_fd(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import ctypes
+
+    calls: list[tuple[Any, ...]] = []
+
+    class RenameAt2:
+        argtypes = None
+        restype = None
+
+        def __call__(self, *args):
+            calls.append(args)
+            return 0
+
+    renameat2 = RenameAt2()
+    library = type("Library", (), {"renameat2": renameat2})()
+    monkeypatch.setattr(producers.sys, "platform", "linux")
+    monkeypatch.setattr(ctypes, "CDLL", lambda *_args, **_kwargs: library)
+
+    producers._rename_no_replace_at(
+        ".receipt.tmp",
+        "receipt.json",
+        directory_fd=37,
+    )
+
+    assert calls == [(37, b".receipt.tmp", 37, b"receipt.json", 1)]
+
+
 def test_atomic_publication_concurrent_same_payload_has_one_immutable_result(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -749,24 +820,24 @@ def test_atomic_publication_concurrent_same_payload_has_one_immutable_result(
 
     publishers = 8
     barrier = threading.Barrier(publishers)
-    real_link = os.link
+    real_publish = producers._rename_no_replace_at
 
-    def synchronized_link(*args: Any, **kwargs: Any) -> None:
+    def synchronized_publish(*args: Any, **kwargs: Any) -> None:
         barrier.wait(timeout=5)
-        real_link(*args, **kwargs)
+        real_publish(*args, **kwargs)
 
-    monkeypatch.setattr(os, "link", synchronized_link)
+    monkeypatch.setattr(producers, "_rename_no_replace_at", synchronized_publish)
 
     def publish() -> None:
         producers._publish_no_replace(
             path,
             b'{"receipt":1}',
             uid=os.getuid(),
-                gid=os.getgid(),
-                mode=0o400,
-                parent_uid=parent.st_uid,
-                parent_gid=parent.st_gid,
-            )
+            gid=os.getgid(),
+            mode=0o400,
+            parent_uid=parent.st_uid,
+            parent_gid=parent.st_gid,
+        )
 
     with ThreadPoolExecutor(max_workers=publishers) as pool:
         list(pool.map(lambda _index: publish(), range(publishers)))
@@ -781,12 +852,12 @@ def test_atomic_publication_failure_before_link_leaves_no_final_and_retries(
     tmp_path.chmod(0o700)
     parent = tmp_path.stat()
     path = tmp_path / "receipt.json"
-    real_link = os.link
+    real_publish = producers._rename_no_replace_at
 
-    def fail_link(*_args: Any, **_kwargs: Any) -> None:
+    def fail_publish(*_args: Any, **_kwargs: Any) -> None:
         raise OSError("injected-before-publication")
 
-    monkeypatch.setattr(os, "link", fail_link)
+    monkeypatch.setattr(producers, "_rename_no_replace_at", fail_publish)
     with pytest.raises(OSError, match="injected-before-publication"):
         producers._publish_no_replace(
             path,
@@ -799,7 +870,7 @@ def test_atomic_publication_failure_before_link_leaves_no_final_and_retries(
     assert not path.exists()
     assert not list(tmp_path.glob(".receipt.json.tmp.*"))
 
-    monkeypatch.setattr(os, "link", real_link)
+    monkeypatch.setattr(producers, "_rename_no_replace_at", real_publish)
     producers._publish_no_replace(
         path,
         b'{"receipt":1}',
@@ -820,13 +891,13 @@ def test_atomic_publication_concurrent_divergence_never_replaces_winner(
     path = tmp_path / "receipt.json"
 
     barrier = threading.Barrier(2)
-    real_link = os.link
+    real_publish = producers._rename_no_replace_at
 
-    def synchronized_link(*args: Any, **kwargs: Any) -> None:
+    def synchronized_publish(*args: Any, **kwargs: Any) -> None:
         barrier.wait(timeout=5)
-        real_link(*args, **kwargs)
+        real_publish(*args, **kwargs)
 
-    monkeypatch.setattr(os, "link", synchronized_link)
+    monkeypatch.setattr(producers, "_rename_no_replace_at", synchronized_publish)
 
     def publish(payload: bytes) -> str:
         try:
@@ -847,6 +918,112 @@ def test_atomic_publication_concurrent_divergence_never_replaces_winner(
         results = list(pool.map(publish, payloads))
     assert sorted(results) == ["publication_collision_diverged", "published"]
     assert path.read_bytes() in payloads
+
+
+def test_atomic_publication_recovers_exact_legacy_two_link_final(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tmp_path.chmod(0o700)
+    parent = tmp_path.stat()
+    path = tmp_path / "receipt.json"
+    payload = b'{"receipt":"legacy-crash"}'
+    temporary = tmp_path / f".{path.name}.tmp.4242.{'a' * 32}"
+    temporary.write_bytes(payload)
+    temporary.chmod(0o400)
+    os.link(temporary, path)
+    assert path.stat().st_nlink == 2
+    monkeypatch.setattr(producers.time, "sleep", lambda _seconds: None)
+
+    producers._publish_no_replace(
+        path,
+        payload,
+        uid=os.getuid(),
+        gid=path.lstat().st_gid,
+        parent_uid=parent.st_uid,
+        parent_gid=parent.st_gid,
+    )
+
+    assert path.read_bytes() == payload
+    assert path.stat().st_nlink == 1
+    assert not temporary.exists()
+
+
+@pytest.mark.parametrize(
+    "hazard",
+    ("multiple_mismatched", "malformed_name", "link_count_above_two"),
+)
+def test_legacy_link_recovery_rejects_ambiguous_or_unbounded_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    hazard: str,
+) -> None:
+    tmp_path.chmod(0o700)
+    parent = tmp_path.stat()
+    path = tmp_path / "receipt.json"
+    payload = b'{"receipt":"legacy-crash"}'
+    temporary = tmp_path / f".{path.name}.tmp.4242.{'a' * 32}"
+    if hazard == "malformed_name":
+        temporary = tmp_path / f".{path.name}.tmp.malformed"
+    temporary.write_bytes(payload)
+    temporary.chmod(0o400)
+    os.link(temporary, path)
+    if hazard == "multiple_mismatched":
+        extra = tmp_path / f".{path.name}.tmp.4343.{'b' * 32}"
+        extra.write_bytes(b'{"receipt":"different"}')
+        extra.chmod(0o400)
+    elif hazard == "link_count_above_two":
+        extra = tmp_path / f".{path.name}.tmp.4343.{'b' * 32}"
+        os.link(path, extra)
+    monkeypatch.setattr(producers.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(
+        producers.CapabilityProducerError,
+        match="artifact_identity_invalid",
+    ):
+        producers._publish_no_replace(
+            path,
+            payload,
+            uid=os.getuid(),
+            gid=os.getgid(),
+            parent_uid=parent.st_uid,
+            parent_gid=parent.st_gid,
+        )
+
+    assert path.read_bytes() == payload
+    assert temporary.exists()
+
+
+def test_legacy_link_recovery_rejects_unsafe_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tmp_path.chmod(0o700)
+    parent = tmp_path.stat()
+    path = tmp_path / "receipt.json"
+    payload = b'{"receipt":"legacy-crash"}'
+    temporary = tmp_path / f".{path.name}.tmp.4242.{'a' * 32}"
+    temporary.write_bytes(payload)
+    temporary.chmod(0o400)
+    os.link(temporary, path)
+    tmp_path.chmod(0o755)
+    monkeypatch.setattr(producers.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(
+        producers.CapabilityProducerError,
+        match="directory_identity_invalid",
+    ):
+        producers._publish_no_replace(
+            path,
+            payload,
+            uid=os.getuid(),
+            gid=os.getgid(),
+            parent_uid=parent.st_uid,
+            parent_gid=parent.st_gid,
+        )
+
+    assert path.read_bytes() == payload
+    assert temporary.exists()
 
 
 def test_cleanup_requires_all_six_retirement_journals_and_absence() -> None:
@@ -902,16 +1079,16 @@ class _BitrixClient:
         expected_release_revision: str,
         capability: Mapping[str, Any] | None = None,
     ) -> Mapping[str, Any]:
-        self.calls.append(
-            (operation_id, dict(_arguments), idempotency_key, capability)
-        )
+        self.calls.append((operation_id, dict(_arguments), idempotency_key, capability))
         denial = operation_id == "bitrix.crm.lead_add"
         read_ordinal = sum(
             1
             for called_operation, _args, _key, _capability in self.calls
             if called_operation == "bitrix.crm.status_list"
         )
-        status_value = "CHANGED" if self.unstable_readback and read_ordinal == 2 else "NEW"
+        status_value = (
+            "CHANGED" if self.unstable_readback and read_ordinal == 2 else "NEW"
+        )
         payload = {
             "operation_id": operation_id,
             "domain": "bitrix",
@@ -927,13 +1104,11 @@ class _BitrixClient:
             "readback_verified": not denial,
             "secret_material_recorded": False,
             "stdout_b64": base64.b64encode(
-                _canonical(
-                    {
-                        "status": "OK",
-                        "generated_at_utc": f"2026-07-15T00:00:0{read_ordinal}Z",
-                        "items": [{"ENTITY_ID": "STATUS", "STATUS_ID": status_value}],
-                    }
-                )
+                _canonical({
+                    "status": "OK",
+                    "generated_at_utc": f"2026-07-15T00:00:0{read_ordinal}Z",
+                    "items": [{"ENTITY_ID": "STATUS", "STATUS_ID": status_value}],
+                })
             ).decode(),
         }
         envelope = sign_envelope(
@@ -987,9 +1162,10 @@ def test_bitrix_collector_uses_real_fixed_operations_and_signed_denial() -> None
         },
     )
 
-    assert tuple(item.kind for item in bindings) == producers.SLOT_NATIVE_BINDING_KINDS[
-        "bitrix_edge"
-    ]
+    assert (
+        tuple(item.kind for item in bindings)
+        == producers.SLOT_NATIVE_BINDING_KINDS["bitrix_edge"]
+    )
     assert client.calls == [
         (
             "bitrix.crm.status_list",
@@ -1032,9 +1208,7 @@ def test_bitrix_collector_rejects_tampered_verified_envelope(
                     "read_arguments": {"entity_id": "STATUS"},
                     "initial_read_probe_id": "canary:bitrix:initial",
                     "readback_probe_id": "canary:bitrix:readback",
-                    "normalized_equality_excluded_fields": [
-                        "generated_at_utc"
-                    ],
+                    "normalized_equality_excluded_fields": ["generated_at_utc"],
                     "stable_normalized_equality": True,
                 }
             },
@@ -1061,9 +1235,7 @@ def test_bitrix_collector_rejects_unstable_normalized_readback() -> None:
                     "read_arguments": {"entity_id": "STATUS"},
                     "initial_read_probe_id": "canary:bitrix:initial",
                     "readback_probe_id": "canary:bitrix:readback",
-                    "normalized_equality_excluded_fields": [
-                        "generated_at_utc"
-                    ],
+                    "normalized_equality_excluded_fields": ["generated_at_utc"],
                     "stable_normalized_equality": True,
                 }
             },
@@ -1112,9 +1284,7 @@ def test_bitrix_writer_alone_collects_signed_predispatch_denial() -> None:
             "mutation_probe": {
                 "selected_edge_id": "operational-edge:bitrix",
                 "mutation_operation_id": "bitrix.crm.lead_add",
-                "mutation_arguments": dict(
-                    producers.BITRIX_CANARY_MUTATION_ARGUMENTS
-                ),
+                "mutation_arguments": dict(producers.BITRIX_CANARY_MUTATION_ARGUMENTS),
                 "mutation_probe_id": "canary:bitrix:denial",
             },
         },
@@ -1141,6 +1311,277 @@ def _command(command_id: str, body: bytes) -> Mapping[str, Any]:
         "command_sha256": _sha(body),
         "max_uses": 1,
     }
+
+
+def _api_admission_bundle(tmp_path: Path) -> dict[str, Any]:
+    foundation, context = _foundation(tmp_path / "foundation")
+    fixture = {
+        **_fixture(foundation, run_id="run-one", start_ms=NOW_MS - 1_000),
+        "capability_plan_sha256": foundation["capability_plan_sha256"],
+        "full_canary_plan_sha256": foundation["full_canary_plan_sha256"],
+    }
+    fixture_sha256 = _sha(_canonical(fixture))
+    session_id = f"capability_{fixture['run_id']}"
+    capability_epoch_sha256 = "d" * 64
+    catalog = producers.build_probe_catalog(
+        release_sha=fixture["release_sha"],
+        capability_plan_sha256=fixture["capability_plan_sha256"],
+        full_canary_plan_sha256=fixture["full_canary_plan_sha256"],
+        fixture_sha256=fixture_sha256,
+        run_id=fixture["run_id"],
+        session_id=session_id,
+        capability_epoch_sha256=capability_epoch_sha256,
+        case_ids={
+            name: f"case:{name}"
+            for name in (
+                "workspace_continuation",
+                "capability_denials",
+                "database_reconciliation",
+                "bitrix_boundary",
+                "discord_routeback",
+                "failure_recovery",
+            )
+        },
+        workspace={
+            "first_path_probe_id": "probe:first",
+            "alternate_path_probe_id": "probe:alternate",
+            "worker_restart_checkpoint_step_id": "step:restart",
+        },
+        commands={
+            "allowed": [_command("allowed", b"printf allowed")],
+            "denied": [
+                {
+                    "kind": kind,
+                    "command": _command(
+                        f"denied:{index}", f"deny-{index}".encode()
+                    ),
+                }
+                for index, kind in enumerate(producers.DENIAL_KINDS)
+            ],
+        },
+        database={
+            "row_key": "row:one",
+            "idempotency_key": "database:one",
+            "read_probe_id": "database:read",
+            "write_probe_id": "database:write",
+            "lost_response_probe_id": "database:lost-response",
+        },
+        bitrix={
+            "handoff_id": "handoff:bitrix",
+            "selected_edge_id": "operational-edge:bitrix",
+            "read_operation_id": "bitrix.crm.status_list",
+            "read_arguments": {"entity_id": "STATUS"},
+            "initial_read_probe_id": "canary:bitrix:initial",
+            "readback_probe_id": "canary:bitrix:readback",
+            "normalized_equality_excluded_fields": ["generated_at_utc"],
+            "mutation_operation_id": "bitrix.crm.lead_add",
+            "mutation_arguments": dict(producers.BITRIX_CANARY_MUTATION_ARGUMENTS),
+            "mutation_probe_id": "canary:bitrix:denial",
+        },
+        discord={
+            "public_target": {
+                "target_type": "public_channel",
+                "guild_id": "1282725267068157972",
+                "channel_id": "1504852355588423801",
+            },
+            "public_idempotency_key": "discord:public",
+            "private_target_kind": "dm",
+            "private_probe_id": "discord:private",
+        },
+        failure={
+            "probes": [
+                {
+                    "component": component,
+                    "failure_id": f"failure:{component}",
+                    "alternative_available": True,
+                    "alternative_id": f"alternative:{component}",
+                }
+                for component in producers.FAILURE_COMPONENTS
+            ]
+        },
+    )
+    request = producers._api_admission_request(
+        session_id=session_id,
+        capability_epoch_sha256=capability_epoch_sha256,
+        nonce="e" * 32,
+    )
+    challenge = producers.build_api_admission_owner_challenge(
+        request=request,
+        catalog=catalog,
+        fixture=fixture,
+        fixture_sha256=fixture_sha256,
+        requested_at_unix_ms=NOW_MS,
+        owner_response_deadline_unix_ms=NOW_MS + 60_000,
+    )
+    command_sha256s = sorted(
+        item["command_sha256"] for item in catalog["commands"]["allowed"]
+    )
+    approval_payload = {
+        "schema": e2e.PLAN_APPROVAL_SCHEMA,
+        "run_id": fixture["run_id"],
+        "release_sha": fixture["release_sha"],
+        "fixture_sha256": fixture_sha256,
+        "observed_at_unix_ms": NOW_MS,
+        "approval_id": "approval-one",
+        "owner_id": producers.PRODUCTION_OWNER_ID,
+        "session_id": session_id,
+        "capability_epoch_sha256": capability_epoch_sha256,
+        "command_sha256s": command_sha256s,
+        "ttl_seconds": 300,
+        "max_uses": len(command_sha256s),
+    }
+    approval_unsigned = {
+        "schema": producers.SIGNED_RECEIPT_SCHEMA,
+        "authority_role": "owner",
+        "key_id": fixture["authority_keys"]["owner"]["key_id"],
+        "signature_algorithm": "sshsig-ed25519-sha512",
+        "payload": approval_payload,
+    }
+    pregrant = {
+        **approval_unsigned,
+        "signature": _sshsig(
+            context["owner_private"],
+            _canonical(approval_unsigned),
+            namespace=producers.OWNER_SSHSIG_NAMESPACE,
+        ),
+    }
+    authority_unsigned = {
+        "schema": producers.API_ADMISSION_OWNER_AUTHORITY_SCHEMA,
+        "challenge_sha256": request["challenge_sha256"],
+        "release_sha": fixture["release_sha"],
+        "capability_plan_sha256": fixture["capability_plan_sha256"],
+        "full_canary_plan_sha256": fixture["full_canary_plan_sha256"],
+        "fixture_sha256": fixture_sha256,
+        "run_id": fixture["run_id"],
+        "session_id": session_id,
+        "capability_epoch_sha256": capability_epoch_sha256,
+        "issued_at_unix_ms": NOW_MS,
+        "valid_until_unix_ms": NOW_MS + 300_000,
+        "catalog": catalog,
+        "workspace_owner_receipt": pregrant,
+    }
+    authority = {
+        **authority_unsigned,
+        "owner_signature": _sshsig(
+            context["owner_private"],
+            _canonical(authority_unsigned),
+            namespace=producers.API_ADMISSION_OWNER_SSHSIG_NAMESPACE,
+        ),
+    }
+    installed = producers.InstalledProducerFoundation(
+        value=foundation,
+        pinned_owner_public_key_ed25519_hex=context["owner_public"],
+        pinned_owner_public_key_source_sha256=context["source_sha256"],
+    )
+    return {
+        "foundation": foundation,
+        "fixture": fixture,
+        "fixture_sha256": fixture_sha256,
+        "challenge": challenge,
+        "authority": authority,
+        "catalog": catalog,
+        "pregrant": pregrant,
+        "installed": installed,
+    }
+
+
+def _install_rootless_recovery_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    installed: producers.InstalledProducerFoundation,
+) -> None:
+    uid = os.getuid()
+    gid = os.getgid()
+    real_require_directory = producers._require_directory
+    real_stable_read = producers._stable_read
+    real_read_expected = producers._read_expected_publication
+    real_publish = producers._publish_no_replace
+
+    def owner(value: int) -> int:
+        return uid if value == 0 else value
+
+    def group(value: int) -> int:
+        return gid if value == 0 else value
+
+    def require_directory(path, *, uid, gid, mode):
+        return real_require_directory(
+            path,
+            uid=owner(uid),
+            gid=group(gid),
+            mode=mode,
+        )
+
+    def stable_read(path, *, maximum, uid, gid, mode):
+        return real_stable_read(
+            path,
+            maximum=maximum,
+            uid=owner(uid),
+            gid=group(gid),
+            mode=mode,
+        )
+
+    def read_expected(
+        path,
+        payload,
+        *,
+        uid,
+        gid,
+        mode,
+        parent_uid,
+        parent_gid,
+        parent_mode,
+    ):
+        return real_read_expected(
+            path,
+            payload,
+            uid=owner(uid),
+            gid=group(gid),
+            mode=mode,
+            parent_uid=owner(parent_uid),
+            parent_gid=group(parent_gid),
+            parent_mode=parent_mode,
+        )
+
+    def publish(
+        path,
+        payload,
+        *,
+        uid,
+        gid,
+        mode=0o400,
+        parent_mode=0o700,
+        parent_uid=None,
+        parent_gid=None,
+    ):
+        return real_publish(
+            path,
+            payload,
+            uid=owner(uid),
+            gid=group(gid),
+            mode=mode,
+            parent_mode=parent_mode,
+            parent_uid=(None if parent_uid is None else owner(parent_uid)),
+            parent_gid=(None if parent_gid is None else group(parent_gid)),
+        )
+
+    monkeypatch.setattr(producers, "_require_directory", require_directory)
+    monkeypatch.setattr(producers, "_stable_read", stable_read)
+    monkeypatch.setattr(producers, "_read_expected_publication", read_expected)
+    monkeypatch.setattr(producers, "_publish_no_replace", publish)
+    monkeypatch.setattr(
+        producers,
+        "load_installed_producer_foundation",
+        lambda **_kwargs: installed,
+    )
+    monkeypatch.setattr(
+        e2e,
+        "_validate_fixture",
+        lambda value, fixture_sha256: (
+            dict(value)
+            if _sha(_canonical(value)) == fixture_sha256
+            else pytest.fail("fixture digest drifted")
+        ),
+    )
 
 
 def test_probe_catalog_contains_real_bitrix_operational_edge_facts() -> None:
@@ -1194,9 +1635,7 @@ def test_probe_catalog_contains_real_bitrix_operational_edge_facts() -> None:
             "readback_probe_id": "canary:bitrix:status-list:readback",
             "normalized_equality_excluded_fields": ["generated_at_utc"],
             "mutation_operation_id": "bitrix.crm.lead_add",
-            "mutation_arguments": dict(
-                producers.BITRIX_CANARY_MUTATION_ARGUMENTS
-            ),
+            "mutation_arguments": dict(producers.BITRIX_CANARY_MUTATION_ARGUMENTS),
             "mutation_probe_id": "canary:bitrix:denial",
         },
         discord={
@@ -1235,3 +1674,429 @@ def test_probe_catalog_contains_real_bitrix_operational_edge_facts() -> None:
     }
     assert "issue_iid" not in _canonical(catalog).decode()
     assert "task.read" not in _canonical(catalog).decode()
+
+    unsupported_thread = json.loads(json.dumps(catalog))
+    unsupported_thread["discord"]["public_target"]["target_type"] = "public_thread"
+    with pytest.raises(RuntimeError, match="probe_catalog_invalid"):
+        producers.validate_probe_catalog(unsupported_thread)
+
+
+def _stage_api_admission_for_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    fail_after: str | None,
+) -> dict[str, Any]:
+    bundle = _api_admission_bundle(tmp_path)
+    installed = bundle["installed"]
+    _install_rootless_recovery_boundaries(monkeypatch, installed=installed)
+    receipt_root = Path(bundle["foundation"]["receipt_contract"]["base_root"])
+    receipt_root.mkdir(parents=True, mode=0o700)
+    os.chown(receipt_root, os.getuid(), os.getgid())
+    receipt_root.chmod(0o700)
+    run_root = receipt_root / bundle["fixture"]["run_id"]
+    run_root.mkdir(mode=0o770)
+    os.chown(run_root, os.getuid(), os.getgid())
+    run_root.chmod(0o770)
+    inputs_root = tmp_path / "inputs"
+    inputs_root.mkdir(mode=0o700)
+    os.chown(inputs_root, os.getuid(), os.getgid())
+    inputs_root.chmod(0o700)
+    catalog_path = inputs_root / "probe-catalog.json"
+    owner_grant_path = inputs_root / "owner-grant.json"
+    readiness_path = tmp_path / "runtime/producer-activation.json"
+    reviewed_fixture_root = tmp_path / "reviewed"
+    reviewed_fixture_root.mkdir(mode=0o700)
+    os.chown(reviewed_fixture_root, os.getuid(), os.getgid())
+    reviewed_fixture_root.chmod(0o700)
+    reviewed_fixture_path = reviewed_fixture_root / "reviewed-live-fixture.json"
+    live_fixture_root = tmp_path / "live"
+    live_fixture_root.mkdir(mode=0o700)
+    os.chown(live_fixture_root, os.getuid(), os.getgid())
+    live_fixture_root.chmod(0o700)
+    live_run_directory = live_fixture_root / bundle["fixture"]["run_id"]
+    live_run_directory.mkdir(mode=0o700)
+    os.chown(live_run_directory, os.getuid(), os.getgid())
+    live_run_directory.chmod(0o700)
+    live_fixture_path = live_run_directory / "fixture.json"
+    live_fixture_path.write_bytes(_canonical(bundle["fixture"]))
+    os.chown(live_fixture_path, os.getuid(), os.getgid())
+    live_fixture_path.chmod(0o400)
+    producers.publish_api_admission_owner_challenge(
+        bundle["challenge"],
+        fixture=bundle["fixture"],
+        fixture_sha256=bundle["fixture_sha256"],
+        installed_foundation=installed,
+    )
+    selected = {
+        "authority": run_root / "api-admission-owner-authority.json",
+        "intent": run_root / "api-admission-install-intent.json",
+        "catalog": catalog_path,
+        "grant": owner_grant_path,
+        "owner_receipt": run_root / producers.SLOT_FILENAME["workspace_owner"],
+    }
+    real_publish = producers._publish_or_identical
+    if fail_after == "pre_authority":
+        pass
+    elif fail_after is not None:
+        target = selected[fail_after]
+
+        def publish_then_fail(path, *args, **kwargs):
+            result = real_publish(path, *args, **kwargs)
+            if path == target:
+                raise RuntimeError(f"injected-after-{fail_after}")
+            return result
+
+        monkeypatch.setattr(producers, "_publish_or_identical", publish_then_fail)
+        with pytest.raises(RuntimeError, match=f"injected-after-{fail_after}"):
+            producers.provision_api_admission_owner_authority(
+                bundle["authority"],
+                challenge=bundle["challenge"]["request"],
+                fixture=bundle["fixture"],
+                fixture_sha256=bundle["fixture_sha256"],
+                installed_foundation=installed,
+                writer_gid=os.getgid(),
+                now_ms=NOW_MS,
+                catalog_path=catalog_path,
+                owner_grant_path=owner_grant_path,
+            )
+        monkeypatch.setattr(producers, "_publish_or_identical", real_publish)
+    else:
+        bundle["publication"] = producers.provision_api_admission_owner_authority(
+            bundle["authority"],
+            challenge=bundle["challenge"]["request"],
+            fixture=bundle["fixture"],
+            fixture_sha256=bundle["fixture_sha256"],
+            installed_foundation=installed,
+            writer_gid=os.getgid(),
+            now_ms=NOW_MS,
+            catalog_path=catalog_path,
+            owner_grant_path=owner_grant_path,
+        )
+    return {
+        **bundle,
+        "receipt_root": receipt_root,
+        "run_root": run_root,
+        "catalog_path": catalog_path,
+        "owner_grant_path": owner_grant_path,
+        "readiness_path": readiness_path,
+        "reviewed_fixture_path": reviewed_fixture_path,
+        "live_fixture_root": live_fixture_root,
+        "live_fixture_path": live_fixture_path,
+        "selected": selected,
+    }
+
+
+def test_post_publication_pre_authority_recovery_uses_durable_live_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    staged = _stage_api_admission_for_recovery(
+        monkeypatch,
+        tmp_path,
+        fail_after="pre_authority",
+    )
+    source = staged["reviewed_fixture_path"]
+    source.write_bytes(_canonical(staged["fixture"]))
+    os.chown(source, os.getuid(), os.getgid())
+    source.chmod(0o400)
+
+    recovered = producers.recover_and_retire_active_api_admission(
+        retired_at_unix_ms=NOW_MS + 500_000,
+        foundation_path=tmp_path / "foundation.json",
+        reviewed_fixture_path=source,
+        live_fixture_root=staged["live_fixture_root"],
+        receipt_root=staged["receipt_root"],
+        readiness_path=staged["readiness_path"],
+        catalog_path=staged["catalog_path"],
+        owner_grant_path=staged["owner_grant_path"],
+        owner_public_key_hex_path=tmp_path / "owner.hex",
+        owner_public_key_source_sha256_path=tmp_path / "owner-source.sha256",
+    )
+
+    assert recovered["outcome"] == (
+        "reconciled_published_run_without_admission"
+    )
+    assert recovered["run_id"] == staged["fixture"]["run_id"]
+    assert recovered["fixture_sha256"] == staged["fixture_sha256"]
+    assert recovered["admission_retirement"] is None
+    assert recovered["fleet_retirement"] is None
+    assert not source.exists()
+    assert staged["live_fixture_path"].is_file()
+    assert not staged["selected"]["authority"].exists()
+    aggregate = staged["run_root"] / "active-api-admission-retirement.json"
+    assert aggregate.is_file()
+    repeated = producers.recover_and_retire_active_api_admission(
+        retired_at_unix_ms=NOW_MS + 500_001,
+        foundation_path=tmp_path / "foundation.json",
+        reviewed_fixture_path=source,
+        live_fixture_root=staged["live_fixture_root"],
+        receipt_root=staged["receipt_root"],
+        readiness_path=staged["readiness_path"],
+        catalog_path=staged["catalog_path"],
+        owner_grant_path=staged["owner_grant_path"],
+        owner_public_key_hex_path=tmp_path / "owner.hex",
+        owner_public_key_source_sha256_path=tmp_path / "owner-source.sha256",
+    )
+    assert repeated == recovered
+
+
+def test_recovery_and_live_driver_share_one_durable_fixture_root() -> None:
+    from gateway import canonical_capability_canary_live_driver as live_driver
+
+    assert producers.DEFAULT_LIVE_FIXTURE_ROOT == live_driver.DEFAULT_LIVE_ROOT
+
+
+def test_post_publication_before_inbox_prepare_is_bound_not_no_active(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    staged = _stage_api_admission_for_recovery(
+        monkeypatch,
+        tmp_path,
+        fail_after="pre_authority",
+    )
+    challenge = staged["run_root"] / "api-admission-owner-challenge.json"
+    challenge.unlink()
+    staged["run_root"].rmdir()
+
+    recovered = producers.recover_and_retire_active_api_admission(
+        retired_at_unix_ms=NOW_MS + 500_000,
+        foundation_path=tmp_path / "foundation.json",
+        reviewed_fixture_path=staged["reviewed_fixture_path"],
+        live_fixture_root=staged["live_fixture_root"],
+        receipt_root=staged["receipt_root"],
+        readiness_path=staged["readiness_path"],
+        catalog_path=staged["catalog_path"],
+        owner_grant_path=staged["owner_grant_path"],
+        owner_public_key_hex_path=tmp_path / "owner.hex",
+        owner_public_key_source_sha256_path=tmp_path / "owner-source.sha256",
+    )
+
+    assert recovered["outcome"] == (
+        "reconciled_published_run_without_admission"
+    )
+    assert recovered["run_id"] == staged["fixture"]["run_id"]
+    assert recovered["fixture_sha256"] == staged["fixture_sha256"]
+    assert staged["live_fixture_path"].is_file()
+    assert not staged["run_root"].exists()
+
+
+@pytest.mark.parametrize(
+    ("fail_after", "state", "presence"),
+    (
+        ("authority", "authority_only_aborted", (False, False, False)),
+        ("intent", "partial_install_retired", (False, False, False)),
+        ("catalog", "partial_install_retired", (True, False, False)),
+        ("grant", "partial_install_retired", (True, True, False)),
+        ("owner_receipt", "partial_install_retired", (True, True, True)),
+    ),
+)
+def test_api_admission_partial_publication_recovers_exactly_and_is_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    fail_after: str,
+    state: str,
+    presence: tuple[bool, bool, bool],
+) -> None:
+    staged = _stage_api_admission_for_recovery(
+        monkeypatch,
+        tmp_path,
+        fail_after=fail_after,
+    )
+    recovered = producers.recover_and_retire_active_api_admission(
+        retired_at_unix_ms=NOW_MS + 500_000,
+        foundation_path=tmp_path / "foundation.json",
+        reviewed_fixture_path=staged["reviewed_fixture_path"],
+        live_fixture_root=staged["live_fixture_root"],
+        receipt_root=staged["receipt_root"],
+        readiness_path=staged["readiness_path"],
+        catalog_path=staged["catalog_path"],
+        owner_grant_path=staged["owner_grant_path"],
+        owner_public_key_hex_path=tmp_path / "owner.hex",
+        owner_public_key_source_sha256_path=tmp_path / "owner-source.sha256",
+    )
+
+    assert not staged["reviewed_fixture_path"].exists()
+    assert staged["live_fixture_path"].is_file()
+    assert recovered["outcome"] == "retired_partial_install"
+    abort = recovered["admission_retirement"]
+    assert abort["schema"] == producers.API_ADMISSION_INSTALL_ABORT_SCHEMA
+    assert abort["state"] == state
+    assert (
+        abort["catalog_present_at_recovery"],
+        abort["owner_grant_present_at_recovery"],
+        abort["owner_receipt_present_at_recovery"],
+    ) == presence
+    assert not staged["catalog_path"].exists()
+    assert not staged["owner_grant_path"].exists()
+    assert not staged["selected"]["owner_receipt"].exists()
+    assert (staged["run_root"] / "api-admission-install-abort.json").is_file()
+    assert (
+        staged["run_root"] / "active-api-admission-retirement.json"
+    ).is_file()
+    repeated = producers.recover_and_retire_active_api_admission(
+        retired_at_unix_ms=NOW_MS + 500_001,
+        foundation_path=tmp_path / "foundation.json",
+        reviewed_fixture_path=staged["reviewed_fixture_path"],
+        live_fixture_root=staged["live_fixture_root"],
+        receipt_root=staged["receipt_root"],
+        readiness_path=staged["readiness_path"],
+        catalog_path=staged["catalog_path"],
+        owner_grant_path=staged["owner_grant_path"],
+        owner_public_key_hex_path=tmp_path / "owner.hex",
+        owner_public_key_source_sha256_path=tmp_path / "owner-source.sha256",
+    )
+    assert repeated == recovered
+    with pytest.raises(
+        producers.CapabilityProducerError,
+        match="api_admission_owner_publication_aborted",
+    ):
+        producers.provision_api_admission_owner_authority(
+            staged["authority"],
+            challenge=staged["challenge"]["request"],
+            fixture=staged["fixture"],
+            fixture_sha256=staged["fixture_sha256"],
+            installed_foundation=staged["installed"],
+            writer_gid=os.getgid(),
+            now_ms=NOW_MS + 1,
+            catalog_path=staged["catalog_path"],
+            owner_grant_path=staged["owner_grant_path"],
+        )
+
+
+def test_api_admission_completed_before_activation_retires_without_readiness(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    staged = _stage_api_admission_for_recovery(
+        monkeypatch,
+        tmp_path,
+        fail_after=None,
+    )
+    recovered = producers.recover_and_retire_active_api_admission(
+        retired_at_unix_ms=NOW_MS + 500_000,
+        foundation_path=tmp_path / "foundation.json",
+        reviewed_fixture_path=staged["reviewed_fixture_path"],
+        live_fixture_root=staged["live_fixture_root"],
+        receipt_root=staged["receipt_root"],
+        readiness_path=staged["readiness_path"],
+        catalog_path=staged["catalog_path"],
+        owner_grant_path=staged["owner_grant_path"],
+        owner_public_key_hex_path=tmp_path / "owner.hex",
+        owner_public_key_source_sha256_path=tmp_path / "owner-source.sha256",
+    )
+
+    assert recovered["outcome"] == "retired_partial_install"
+    abort = recovered["admission_retirement"]
+    assert abort["state"] == "completed_install_retired_before_activation"
+    assert abort["install_publication_sha256"] == staged["publication"][
+        "receipt_sha256"
+    ]
+    assert abort["producer_activation_absent"] is True
+
+
+@pytest.mark.parametrize(
+    "target_name",
+    ("catalog", "grant", "owner_receipt"),
+)
+@pytest.mark.parametrize("hazard", ("bytes", "symlink", "hardlink"))
+def test_api_admission_partial_recovery_rejects_fixed_input_drift(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    hazard: str,
+    target_name: str,
+) -> None:
+    staged = _stage_api_admission_for_recovery(
+        monkeypatch,
+        tmp_path,
+        fail_after="owner_receipt",
+    )
+    targets = {
+        "catalog": staged["catalog_path"],
+        "grant": staged["owner_grant_path"],
+        "owner_receipt": staged["selected"]["owner_receipt"],
+    }
+    modes = {"catalog": 0o440, "grant": 0o400, "owner_receipt": 0o400}
+    target = targets[target_name]
+    if hazard == "bytes":
+        target.unlink()
+        target.write_bytes(b'{"drifted":true}')
+        target.chmod(modes[target_name])
+    elif hazard == "symlink":
+        target.unlink()
+        decoy = tmp_path / f"{target_name}-decoy"
+        decoy.write_bytes(b'{"decoy":true}')
+        target.symlink_to(decoy)
+    else:
+        os.link(target, tmp_path / f"{target_name}-unexpected-hardlink")
+        monkeypatch.setattr(producers.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(
+        producers.CapabilityProducerError,
+        match=(
+            "publication_collision_diverged"
+            if hazard == "bytes"
+            else "artifact_identity_invalid"
+        ),
+    ):
+        producers.recover_and_retire_active_api_admission(
+            retired_at_unix_ms=NOW_MS + 500_000,
+            foundation_path=tmp_path / "foundation.json",
+            reviewed_fixture_path=staged["reviewed_fixture_path"],
+            live_fixture_root=staged["live_fixture_root"],
+            receipt_root=staged["receipt_root"],
+            readiness_path=staged["readiness_path"],
+            catalog_path=staged["catalog_path"],
+            owner_grant_path=staged["owner_grant_path"],
+            owner_public_key_hex_path=tmp_path / "owner.hex",
+            owner_public_key_source_sha256_path=tmp_path / "owner-source.sha256",
+        )
+    assert os.path.lexists(target)
+    assert all(os.path.lexists(path) for path in targets.values())
+    assert not (staged["run_root"] / "api-admission-install-abort.json").exists()
+
+
+def test_recover_active_api_admission_records_exact_no_active_observation(
+    tmp_path: Path,
+) -> None:
+    result = producers.recover_and_retire_active_api_admission(
+        retired_at_unix_ms=1_700_000_000_000,
+        foundation_path=tmp_path / "foundation.json",
+        reviewed_fixture_path=tmp_path / "reviewed-live-fixture.json",
+        live_fixture_root=tmp_path / "live",
+        receipt_root=tmp_path / "receipts",
+        readiness_path=tmp_path / "producer-activation.json",
+        catalog_path=tmp_path / "probe-catalog.json",
+        owner_grant_path=tmp_path / "owner-grant.json",
+        owner_public_key_hex_path=tmp_path / "owner.hex",
+        owner_public_key_source_sha256_path=tmp_path / "owner-source.sha256",
+    )
+
+    assert result["schema"] == producers.ACTIVE_API_ADMISSION_RETIREMENT_SCHEMA
+    assert result["outcome"] == "confirmed_no_active_run"
+    assert result["run_id"] is None
+    assert result["catalog_absent"] is True
+    assert result["owner_grant_absent"] is True
+    assert result["producer_activation_absent"] is True
+    assert producers.validate_active_api_admission_retirement(result) == result
+
+
+def test_active_api_admission_retirement_rejects_self_digest_drift(
+    tmp_path: Path,
+) -> None:
+    result = dict(producers.recover_and_retire_active_api_admission(
+        retired_at_unix_ms=1_700_000_000_000,
+        reviewed_fixture_path=tmp_path / "reviewed-live-fixture.json",
+        live_fixture_root=tmp_path / "live",
+        readiness_path=tmp_path / "producer-activation.json",
+        catalog_path=tmp_path / "probe-catalog.json",
+        owner_grant_path=tmp_path / "owner-grant.json",
+    ))
+    result["catalog_absent"] = False
+
+    with pytest.raises(
+        producers.CapabilityProducerError,
+        match="active_api_admission_retirement_invalid",
+    ):
+        producers.validate_active_api_admission_retirement(result)

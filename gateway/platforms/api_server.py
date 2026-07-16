@@ -49,7 +49,7 @@ import uuid
 from collections import OrderedDict
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 try:
     from aiohttp import web
@@ -128,6 +128,9 @@ API_AGENT_SESSION_LOCK_STRIPES = 64
 API_CLARIFY_RESPONSE_MAX_LENGTH = 65_536
 API_APPROVAL_CHOICES = ("once", "session", "always", "deny")
 API_APPROVAL_AUTHORITY_SCHEMA = "hermes.api.approval-owner-authority.v1"
+API_RUN_ADMISSION_SCHEMA = "hermes.api.run-admission.v1"
+API_MODEL_RELEASE_SCHEMA = "hermes.api.model-release.v1"
+RunAdmissionCallback = Callable[[str, str], Mapping[str, Any]]
 API_APPROVAL_PASSKEY_AUTHORITY_SCHEMA = (
     "hermes.api.approval-owner-passkey.v1"
 )
@@ -175,6 +178,7 @@ class _APIServerCleanupHandle:
         "durable_revoke_succeeded",
         "last_error",
         "local_clear_succeeded",
+        "model_release_receipt",
         "receipt",
         "session_key_sha256",
         "status",
@@ -202,6 +206,7 @@ class _APIServerCleanupHandle:
         self.durable_revoke_succeeded = False
         self.local_clear_succeeded = False
         self.last_error = ""
+        self.model_release_receipt: Dict[str, Any] = {}
         self.receipt: Dict[str, Any] = {}
         self.status = "pending"
 
@@ -227,6 +232,8 @@ class _APIServerCleanupHandle:
             "deduped": receipt.get("deduped"),
             "writer_required": receipt.get("writer_required"),
         }
+        if self.model_release_receipt:
+            state["model_release_receipt"] = dict(self.model_release_receipt)
         if self.last_error:
             state["error"] = self.last_error
         return state
@@ -1274,8 +1281,17 @@ class APIServerAdapter(BasePlatformAdapter):
     # ``async_delivery_supported()``.
     supports_async_delivery: bool = False
 
-    def __init__(self, config: PlatformConfig):
+    def __init__(
+        self,
+        config: PlatformConfig,
+        *,
+        run_admission_callback: RunAdmissionCallback | None = None,
+        require_capability_canary: bool = False,
+    ):
+        if type(require_capability_canary) is not bool:
+            raise TypeError("require_capability_canary must be boolean")
         super().__init__(config, Platform.API_SERVER)
+        self._require_capability_canary = require_capability_canary
         extra = config.extra or {}
         self._host: str = extra.get("host", os.getenv("API_SERVER_HOST", DEFAULT_HOST))
         raw_port = extra.get("port")
@@ -1320,6 +1336,21 @@ class APIServerAdapter(BasePlatformAdapter):
         self._model_routes: Dict[str, Dict[str, Any]] = self._parse_model_routes(
             extra.get("model_routes"),
         )
+        # The production capability canary installs one mechanical barrier
+        # after its gateway-owned epoch is bound and before the first model
+        # call. Public HTTP input can neither supply nor alter that epoch.
+        if run_admission_callback is not None:
+            if not callable(run_admission_callback):
+                raise TypeError("run admission callback must be callable")
+            self._run_admission_callback = run_admission_callback
+        elif self._require_capability_canary:
+            from gateway.canonical_capability_canary_producers import (
+                api_server_capability_admission,
+            )
+
+            self._run_admission_callback = api_server_capability_admission
+        else:
+            self._run_admission_callback = None
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -1796,6 +1827,17 @@ class APIServerAdapter(BasePlatformAdapter):
             # agent still receives the caller/DB history and the next successful
             # probe can re-establish a baseline.
             return None
+
+    def _attest_capability_agent_policy(self, agent: Any) -> None:
+        """Fail at the final API boundary if sealed model policy drifted."""
+
+        if not self._require_capability_canary:
+            return
+        from gateway.canonical_capability_canary_runtime import (
+            validate_capability_agent_policy,
+        )
+
+        validate_capability_agent_policy(agent)
 
     @staticmethod
     def _api_credential_pool_identity(pool: Any) -> str:
@@ -2509,9 +2551,9 @@ class APIServerAdapter(BasePlatformAdapter):
         — matching the semantics of the native gateway's ``session_key``.
 
         ``route`` is an optional ``model_routes`` entry (per-client model
-        routing).  When set — and no session ``/model`` override exists for
-        this session — its model/provider/api_key/base_url override the
-        global defaults for this agent instance only.
+        routing).  Ordinary API-server runtimes retain their documented route
+        precedence.  The sealed capability canary rejects this request-owned
+        route surface and never reads a persisted session model override.
         """
         from run_agent import AIAgent
         from gateway.run import (
@@ -2540,13 +2582,20 @@ class APIServerAdapter(BasePlatformAdapter):
         if runtime_model:
             model = runtime_model
 
+        if self._require_capability_canary and route is not None:
+            raise RuntimeError(
+                "capability canary request model routes are forbidden"
+            )
+
         # Per-client model routing (model_routes config).  The route was
         # resolved from the request's ``model`` field by the HTTP handler.
         # Precedence (highest first): session ``/model`` override → model_routes
         # route → global config — an explicit user-issued ``/model`` on the
         # session always beats static per-client route config.
-        session_override = self._session_model_override_for(
-            gateway_session_key or session_id
+        session_override = (
+            None
+            if self._require_capability_canary
+            else self._session_model_override_for(gateway_session_key or session_id)
         )
         if route and not session_override:
             if route.get("provider"):
@@ -2586,14 +2635,47 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         user_config = _load_gateway_config()
+        if self._require_capability_canary:
+            from gateway.canonical_capability_canary_runtime import (
+                validate_capability_gateway_config,
+            )
+
+            validate_capability_gateway_config(user_config)
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        if self._require_capability_canary:
+            from gateway.production_capability_prerequisites import (
+                FIRST_WAVE_TOOLSETS,
+            )
+
+            if enabled_toolsets != sorted(FIRST_WAVE_TOOLSETS):
+                raise RuntimeError(
+                    "capability canary API toolset projection is not exact"
+                )
 
         max_iterations = _current_max_iterations()
 
         # Load fallback provider chain so the API server platform has the
         # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).
-        fallback_model = GatewayRunner._load_fallback_model()
+        fallback_model = (
+            None
+            if self._require_capability_canary
+            else GatewayRunner._load_fallback_model()
+        )
         isolated_runtime = _isolated_gateway_runtime_active()
+        if self._require_capability_canary:
+            from gateway.canonical_capability_canary_runtime import (
+                validate_capability_model_runtime_route,
+            )
+
+            validate_capability_model_runtime_route(model, runtime_kwargs)
+            if reasoning_config != {"enabled": True, "effort": "high"}:
+                raise RuntimeError(
+                    "capability canary reasoning baseline is not exact"
+                )
+            if isolated_runtime is not False:
+                raise RuntimeError(
+                    "capability canary API loop isolation mode is not exact"
+                )
 
         cache_keys = GatewayRunner._extract_cache_busting_config(user_config)
         cache_keys["api.isolated_runtime"] = isolated_runtime
@@ -2681,6 +2763,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 cached_agent,
                 fallback_model,
             )
+            self._attest_capability_agent_policy(cached_agent)
             cached_agent._api_clarify_scope = self._api_clarify_scope(session_id)
             logger.debug(
                 "Reusing API agent for session %s (sig=%s)",
@@ -2714,6 +2797,7 @@ class APIServerAdapter(BasePlatformAdapter):
         agent._api_clarify_scope = self._api_clarify_scope(session_id)
         agent._api_cache_signature = cache_signature
         agent._api_cache_session_id = session_id
+        self._attest_capability_agent_policy(agent)
 
         evicted_agents: List[Any] = []
         if reuse_cached_agent and cache_key:
@@ -6519,6 +6603,106 @@ class APIServerAdapter(BasePlatformAdapter):
             capability_epoch_sha256,
         )
 
+    def _admit_bound_api_server_run(
+        self,
+        *,
+        session_id: str,
+        capability_epoch_sha256: str,
+    ) -> Mapping[str, Any] | None:
+        """Run the optional canary barrier after binding and before the model."""
+
+        callback = self._run_admission_callback
+        if callback is None:
+            return None
+        if (
+            not isinstance(session_id, str)
+            or not session_id
+            or len(session_id.encode("utf-8", errors="strict")) > 256
+            or re.fullmatch(r"[0-9a-f]{64}", capability_epoch_sha256 or "")
+            is None
+        ):
+            raise RuntimeError("api_server run admission binding is invalid")
+        receipt = callback(session_id, capability_epoch_sha256)
+        if not isinstance(receipt, Mapping):
+            raise RuntimeError("api_server run admission returned no receipt")
+        raw = dict(receipt)
+        unsigned = {
+            key: value for key, value in raw.items() if key != "receipt_sha256"
+        }
+        if (
+            set(raw)
+            != {
+                "schema",
+                "session_id",
+                "capability_epoch_sha256",
+                "challenge_sha256",
+                "ready_receipt_sha256",
+                "commit_receipt_sha256",
+                "commit_ack_sha256",
+                "finalization_sha256",
+                "stage",
+                "gateway_commit_acknowledged",
+                "model_release_allowed",
+                "model_callback_released",
+                "receipt_sha256",
+            }
+            or raw["schema"] != API_RUN_ADMISSION_SCHEMA
+            or raw["session_id"] != session_id
+            or raw["capability_epoch_sha256"] != capability_epoch_sha256
+            or re.fullmatch(r"[0-9a-f]{64}", raw["challenge_sha256"] or "")
+            is None
+            or any(
+                re.fullmatch(r"[0-9a-f]{64}", str(raw[field] or "")) is None
+                for field in (
+                    "ready_receipt_sha256",
+                    "commit_receipt_sha256",
+                    "commit_ack_sha256",
+                    "finalization_sha256",
+                )
+            )
+            or raw["stage"] != "gateway_commit_acknowledged_pre_model"
+            or raw["gateway_commit_acknowledged"] is not True
+            or raw["model_release_allowed"] is not True
+            or raw["model_callback_released"] is not False
+            or raw["receipt_sha256"]
+            != hashlib.sha256(
+                json.dumps(
+                    unsigned,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8", errors="strict")
+            ).hexdigest()
+        ):
+            raise RuntimeError("api_server run admission receipt is invalid")
+        released_at = int(time.time() * 1000)
+        release_unsigned = {
+            "schema": API_MODEL_RELEASE_SCHEMA,
+            "session_id": session_id,
+            "capability_epoch_sha256": capability_epoch_sha256,
+            "challenge_sha256": raw["challenge_sha256"],
+            "admission_receipt_sha256": raw["receipt_sha256"],
+            "finalization_sha256": raw["finalization_sha256"],
+            "stage": "api_model_callback_released",
+            "gateway_commit_acknowledged": True,
+            "model_release_allowed": True,
+            "model_callback_released": True,
+            "released_at_unix_ms": released_at,
+        }
+        return {
+            **release_unsigned,
+            "receipt_sha256": hashlib.sha256(
+                json.dumps(
+                    release_unsigned,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8", errors="strict")
+            ).hexdigest(),
+        }
+
     @staticmethod
     def _revoke_api_server_run_capabilities(
         session_key: str,
@@ -7019,6 +7203,21 @@ class APIServerAdapter(BasePlatformAdapter):
                             approval_token = set_current_session_key(
                                 bound_session_key
                             )
+                            model_release_receipt = self._admit_bound_api_server_run(
+                                session_id=str(session_id or ""),
+                                capability_epoch_sha256=(
+                                    bound_capability_epoch_sha256
+                                ),
+                            )
+                            if model_release_receipt is not None:
+                                cleanup_handle.model_release_receipt = dict(
+                                    model_release_receipt
+                                )
+                                self._publish_api_cleanup_state(
+                                    cleanup_handle,
+                                    cleanup_ref,
+                                    cleanup_state_callback,
+                                )
                             approval_notify = self._make_api_approval_notify(
                                 session_id=str(session_id or ""),
                                 approval_session_key=bound_session_key,
@@ -7047,6 +7246,7 @@ class APIServerAdapter(BasePlatformAdapter):
                             if agent_ref is not None:
                                 agent_ref[0] = agent
                             effective_task_id = session_id or str(uuid.uuid4())
+                            self._attest_capability_agent_policy(agent)
                             result = agent.run_conversation(
                                 user_message=user_message,
                                 conversation_history=conversation_history,
@@ -7408,17 +7608,6 @@ class APIServerAdapter(BasePlatformAdapter):
             agent = None
             try:
                 self._set_run_status(run_id, "running")
-                agent = self._create_agent(
-                    ephemeral_system_prompt=ephemeral_system_prompt,
-                    session_id=session_id,
-                    stream_delta_callback=_text_cb,
-                    tool_progress_callback=event_cb,
-                    gateway_session_key=gateway_session_key,
-                    route=route,
-                    clarify_notify_callback=_clarify_notify,
-                    reuse_cached_agent=False,
-                )
-                self._active_run_agents[run_id] = agent
 
                 def _approval_notify(approval_data: Dict[str, Any]) -> None:
                     approval_id = str(
@@ -7561,6 +7750,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         pass
 
                 def _run_sync():
+                    nonlocal agent
                     from gateway.session_context import clear_session_vars
                     from tools.approval import (
                         register_gateway_notify,
@@ -7593,9 +7783,43 @@ class APIServerAdapter(BasePlatformAdapter):
                                 session_tokens.capability_epoch_sha256,
                                 contextvars.copy_context(),
                             )
+                            model_release_receipt = self._admit_bound_api_server_run(
+                                session_id=str(session_id or ""),
+                                capability_epoch_sha256=(
+                                    session_tokens.capability_epoch_sha256
+                                ),
+                            )
+                            if model_release_receipt is not None:
+                                cleanup_handle.model_release_receipt = dict(
+                                    model_release_receipt
+                                )
+                                self._publish_api_cleanup_state(
+                                    cleanup_handle,
+                                    cleanup_ref,
+                                    _cleanup_state_callback,
+                                )
+                                self._set_run_status(
+                                    run_id,
+                                    "running",
+                                    model_release_receipt=dict(
+                                        model_release_receipt
+                                    ),
+                                )
+                            agent = self._create_agent(
+                                ephemeral_system_prompt=ephemeral_system_prompt,
+                                session_id=session_id,
+                                stream_delta_callback=_text_cb,
+                                tool_progress_callback=event_cb,
+                                gateway_session_key=gateway_session_key,
+                                route=route,
+                                clarify_notify_callback=_clarify_notify,
+                                reuse_cached_agent=False,
+                            )
+                            self._active_run_agents[run_id] = agent
                             register_gateway_notify(
                                 approval_session_key, _approval_notify
                             )
+                            self._attest_capability_agent_policy(agent)
                             result = agent.run_conversation(
                                 user_message=user_message,
                                 conversation_history=conversation_history,

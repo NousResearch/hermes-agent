@@ -66,9 +66,10 @@ Required first-wave capabilities:
    Mac files, CLI state, code, or an authenticated local browser. GPT authors
    the complete task contract; the edge validates and carries it without
    interpreting its meaning.
-9. Public Discord traffic through two separately sealed privileged leases with
-   disjoint mechanical operation classes. The connector owns ordinary public
-   ingress/session replies over the Discord Gateway websocket; the signed
+9. Discord guild traffic through two separately sealed privileged leases with
+   disjoint mechanical operation classes. The connector owns ordinary
+   owner-approved guild ingress/session replies over the Discord Gateway
+   websocket; the signed
    egress owns Canonical `route_back` over REST only. The Hermes gateway owns
    neither token, and both boundaries reject DM/private/unallowlisted targets
    before dispatch.
@@ -129,8 +130,8 @@ The release intentionally uses two separate, sealed Discord credential leases;
 it does not claim a single token holder:
 
 - `muncho-discord-connector.service` is the only Discord Gateway websocket
-  consumer. It handles ordinary allowlisted public ingress and session replies
-  through the credential-free local Relay socket.
+  consumer. It handles ordinary owner-approved guild ingress and session
+  replies through the credential-free local Relay socket.
 - `muncho-discord-egress.service` accepts no inbound gateway session and opens
   no Discord Gateway websocket. It performs only signed Canonical `route_back`
   sends through Discord REST and returns the receipt required before
@@ -144,25 +145,30 @@ canary fails if either privileged service crosses into the other's operation
 class, if both attempt to consume the Discord Gateway websocket, or if the
 Hermes gateway can read either credential.
 
-For this boundary, `public` means a guild channel or public thread whose live
-Discord permission calculation grants `VIEW_CHANNEL` to `@everyone`; merely
-being a non-DM guild channel is insufficient. Locked team channels therefore
-remain ineligible even when a canary bot role can see them. The canary uses a
-dedicated publicly visible channel containing synthetic, non-sensitive test
-content, re-proves both public visibility and the bot's operation-specific
-permissions immediately before send/readback, and keeps every other channel
-outside the exact allowlist.
+For the dedicated synthetic canary only, `public` means a guild channel whose
+live Discord permission calculation grants `VIEW_CHANNEL` to `@everyone`;
+merely being a non-DM guild channel is insufficient. Production is a separate
+`guild_acl` mode: an exact owner-approved root may be ACL-private, and a
+Discord type-10/11 public thread is eligible only below its exact approved
+parent, after live requester and bot permission proof. DMs, group DMs, type-12
+private threads, arbitrary numeric roots, and threads below unallowlisted
+parents remain forbidden in both modes. The canary uses one dedicated publicly
+visible channel containing synthetic, non-sensitive test content, re-proves
+both public visibility and the bot's operation-specific permissions
+immediately before and after send/readback, and keeps every production lane
+outside the canary allowlist.
 
 The reviewed staging binding is exact: guild `1282725267068157972`, public
 channel `1526858760100909066`, production bot `1501976597455044801`, connector
 bot `1526849374007853086`, and route-back bot `1526850127921283222`. The three
 bot identities must remain pairwise distinct and be re-attested from their live
-Discord transports. The known private lanes `1504852355588423801`
+Discord transports. The known ACL-private production lanes `1504852355588423801`
 (`control-tower`), `1504852408227069993` (`backend`),
 `1504852444407140402` (`frontend`), `1504852485083496561` (`devops`),
 `1504852553031221391` (`booking-ops`), and `1505499746939174993`
-(`nasi-ai-ops`) are explicitly ineligible even if a bot-specific role can view
-them.
+(`nasi-ai-ops`) are explicitly ineligible as substitutes for the isolated
+public canary target. They remain eligible production `guild_acl` roots when
+present in the exact owner-approved allowlist and live permissions pass.
 
 ## Database and business systems
 
@@ -260,6 +266,21 @@ Start order is exact and bounded to 900 seconds:
 14. Normal Hermes gateway with exactly API Server plus the credential-free
    public Discord Relay connected.
 
+The four producer principals are code-pinned before plan publication:
+`muncho-cap-business` is UID/GID `2109/2212`, `muncho-cap-writer` is
+`2110/2213`, `muncho-cap-discord` is `2111/2214`, and
+`muncho-cap-observer` is `2112/2215`. The receipt-writer group is fixed at GID
+`2216`. Plan authoring observes every name and numeric slot, including all NSS
+users whose primary GID points at a pinned group. It accepts only a completely
+absent slot, the exact existing principal, or the one crash-recoverable state
+where the exact empty group exists while both the pinned user name and UID are
+still absent. Any unrelated primary/supplementary member, other partial
+principal, name/numeric collision, or changed home/shell fails closed.
+Creation is explicit-ID and create-only, ordered as group then user per role,
+with an immutable before/after receipt. Bitrix, Writer, Discord, connector, and
+receipt access is granted only by each service unit's `SupplementaryGroups=`
+while it runs; no `usermod` membership is installed.
+
 Stop is deliberately phased, including after a partial start failure. The
 gateway and every non-observer service/producer stop first. The still-isolated
 gateway-observer producer can then sign only what it has actually observed:
@@ -274,11 +295,22 @@ already stopped. Cleanup is also scheduled independently against the earliest
 lease/bootstrap expiry so an owner disconnect or failed live driver cannot
 leave credentials behind.
 
+Crash recovery binds only the root-owned per-run live fixture under
+`/var/lib/muncho-capability-canary-control/live/<run-id>/fixture.json`. The
+reviewed `/etc` source is retired after publication and is never reused as
+runtime authority. A crash before API admission records the bound
+`reconciled_published_run_without_admission` outcome instead of falsely
+claiming that no run existed; later authority/install/activation half-states
+are reconciled only against that same durable fixture and owner trust root.
+
 The trusted owner launcher exposes only these fixed packaged actions:
 
 ```text
 contract
 storage-preflight
+author-bitrix-foundation-inputs
+author-plan-inputs
+author-live-fixture
 bootstrap-bitrix-foundation
 bootstrap-producer-foundation
 publish-plan
@@ -300,11 +332,20 @@ retire-secrets
 ```
 
 Opaque credentials enter through protected owner files or inherited stdin,
-never argv or environment variables. `install-approval` first binds a fresh
-five-minute owner approval to the stopped preflight's timestamp-independent
-state digest, records the exact observed report in the install receipt, and
-consumes its nonce once; the approval is never accepted from argv or
-environment.
+never argv or environment variables. The authoring actions use packaged
+read-only collectors and create canonical owner-only mode-`0600` files without
+replacement. No UID/GID or artifact digest is accepted from the caller for
+plan authoring. The fixed producer inventory and clean-host slot observations
+are included in the authoring context, re-observed at publication, and chained
+through the owner-signed producer foundation, installation receipt, and
+stopped/live preflight. `install-approval` runs only after fixture publication, all six
+credential leases, and the stopped preflight. It binds the capability plan,
+full plan, complete terminal full-canary receipt, original full-canary owner
+approval, fixture publication, six lease receipts, Bitrix watchdog, stopped
+preflight report/state, and a fresh nonce. Its expiry is the preflight's exact
+resource-bound ceiling (at most 900 seconds after observation, minus the
+five-second reserve), and it is rejected when fewer than 30 seconds remain.
+The approval is never accepted from argv or environment.
 `storage-preflight` runs before packaging with the host Python, performs no
 cleanup, and returns an identity-bound list of managed stale-release
 candidates. Packaging remains blocked below 8 GiB free. The target release and
@@ -328,9 +369,14 @@ but extension discovery is independently fail-closed. Only the sealed
 `muncho_canary_evidence` observer may load, with exactly five observer hooks.
 Plugin middleware, plugin-provided tools/commands/skills/platforms/auxiliary
 tasks/context engines, shell hooks, gateway event hooks, MCP auto-discovery,
-and the auxiliary goal judge/goal continuation loop are absent. This prevents
-an extension from rewriting or dropping inbound text, model messages, tool
-arguments, approval decisions, continuation prompts, or the final response.
+and the auxiliary semantic goal judge are absent. Native `GoalManager`
+continuation remains enabled with unlimited approved-plan turns
+(`max_turns: 0`): GPT authors each structured `todo.goal_outcome`, including
+`continue`, `complete`, or `blocked`, while deterministic code only persists
+and resumes that outcome. The observer records hashes and typed receipts; it
+does not decide whether the goal should continue. This prevents an extension
+from rewriting or dropping inbound text, model messages, tool arguments,
+approval decisions, continuation prompts, or the final response.
 
 ## Canary scenarios
 
@@ -357,13 +403,39 @@ gateway/model loop, not by calling the implementation functions directly:
    readback and idempotent lost-response reconciliation.
 8. Perform a Bitrix read through the explicitly selected authenticated edge;
    keep a mutation blocked until its separate approval is present.
-9. Send to an allowlisted public Discord thread, verify the platform receipt
-   and public readback, then append `route_back.sent`.
+9. Send to the exact allowlisted dedicated public Discord canary channel,
+   verify the platform receipt and public readback, then append
+   `route_back.sent`.
 10. Attempt a Discord DM and prove denial occurs before platform dispatch, with
     `route_back.blocked` recorded instead.
 11. Simulate tool, browser, DB, writer, and egress failures. GPT must retain
     semantic control, try other safe evidence paths where available, and leave
     the durable plan either completed or honestly blocked.
+
+The live goal lane is a separate, restart-segmented proof. The authenticated
+owner sends the exact published `/goal` challenge in the dedicated public
+canary channel and, while its first model turn is running, sends the exact
+published owner-direction message. The connector journal must show both
+events durably acknowledged. A full gateway restart is allowed only after two
+model-authored `continue` outcomes and both matching before/after native
+`GoalManager` finalization seals exist. After the rotated systemd PID and
+InvocationID, the gateway must recover the sealed connector lineage, the same
+goal generation, and the same active Canonical Task Workspace plan/cursor.
+
+An acknowledged connector event is never described as transport-redelivered.
+The proof is the exact durable ACK readback; a duplicate request with the same
+delivery ID may only replay that same ACK, while a changed delivery ID is
+rejected. The post-restart terminal proof additionally requires a new
+`route_back_execute` result in the same canary case. Its writer-owned
+`route_back.sent` projection must contain the real Discord message ID, content
+digest, signed public receipt digest, and verified readback. The goal is not
+complete merely because an older pre-restart route-back receipt exists.
+
+Canonical Task Workspace evidence is read through the privileged writer's
+one-shot versioned projection export. The root collector verifies the exact
+writer UID, projector GID, mode, file digest, ordered event/provenance rows,
+and the observer-frame join. It does not open another database role or infer a
+plan from prose.
 
 ## Offline evidence contract
 
@@ -385,6 +457,18 @@ weakening any scenario:
 6. `failure_recovery` contains the tool, browser, database, writer, and egress
    failures and the model's safe alternative attempts where an alternative was
    available.
+
+The Discord writer, goal-continuation, and goal-terminal evidence contracts
+are v2-only. The writer
+must name the exact `route_back.sent` and `route_back.blocked` Canonical events
+by event ID, type, and case. The trusted collector recomputes each full
+canonical event digest and binds its source references and returned receipt.
+Promotion then requires the public receipt digest, message ID, channel, and
+content digest to match the Discord edge readback at the returned, payload,
+and nested route-back receipt levels. The private denial digest must likewise
+match at all three levels, with `dispatch_attempted=false` in both the payload
+and nested route-back record. Legacy v1 evidence and recursive same-string
+containment are rejected.
 
 `gateway.canonical_capability_canary_e2e` is the packaged offline verifier for
 these bundles. It does not run GPT, open a browser, query PostgreSQL or Bitrix,

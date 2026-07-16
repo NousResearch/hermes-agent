@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from gateway import canonical_capability_canary_e2e as canary_e2e
 from gateway import production_capability_prerequisites as runtime
 
 
@@ -836,6 +837,9 @@ def test_exact_v3_topology_receipt_and_packaged_contract_are_accepted() -> None:
     )
     assert contract["browser_receipt_fields"] == sorted(runtime._BROWSER_RECEIPT_FIELDS)
     assert contract["lifecycle_phases"] == ["committed", "staged"]
+    assert contract["isolated_canary_goal_terminal_schema"] == (
+        canary_e2e.GOAL_CONTINUATION_TERMINAL_SCHEMA
+    )
     assert "workspaces" not in contract["topology_fields"]
     assert "workspaces" not in contract["fields"]
 

@@ -18,6 +18,7 @@ import socket
 import struct
 import time
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional
 
@@ -52,6 +53,104 @@ logger = logging.getLogger(__name__)
 
 MAX_RESPONSE_BYTES = 128 * 1024
 _FRAME_HEADER = struct.Struct("!I")
+_INGRESS_PROOF_ATTRIBUTE = "_hermes_discord_connector_ingress_proof"
+_INGRESS_PROOF_SEAL = object()
+
+
+@dataclass(frozen=True, slots=True)
+class _DiscordConnectorIngressProof:
+    """Opaque, process-local proof for one authenticated connector delivery.
+
+    The audit fields are also copied into ``MessageEvent.metadata`` for
+    receipts, but permission boundaries must validate this proof instead of
+    trusting a caller-shaped metadata mapping.  Object identities bind the
+    proof to the exact normalized event and source constructed below.
+    """
+
+    event_object_id: int
+    source_object_id: int
+    delivery_id: str
+    delivery_receipt_sha256: str
+    event_sha256: str
+    event_created_at_unix_ms: int
+    event_id: str
+    target_type: DiscordConnectorTargetType
+    guild_id: str
+    channel_id: str
+    parent_channel_id: str | None
+    author_id: str
+    author_is_bot: bool
+    content: str
+    seal: object = field(repr=False, compare=False)
+
+
+def _is_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(char in "0123456789abcdef" for char in value)
+    )
+
+
+def authenticated_discord_connector_ingress(
+    event: Any,
+) -> _DiscordConnectorIngressProof | None:
+    """Return exact connector provenance or ``None`` for caller-shaped input.
+
+    This is deliberately stronger than checking
+    ``delivered_via_upstream_relay`` or event metadata.  Only this transport
+    can attach the opaque seal after the Unix peer and signed receipt have
+    already passed their mechanical validation.
+    """
+
+    proof = getattr(event, _INGRESS_PROOF_ATTRIBUTE, None)
+    if (
+        type(proof) is not _DiscordConnectorIngressProof
+        or proof.seal is not _INGRESS_PROOF_SEAL
+        or proof.event_object_id != id(event)
+    ):
+        return None
+    source = getattr(event, "source", None)
+    if source is None or proof.source_object_id != id(source):
+        return None
+    metadata = getattr(event, "metadata", None)
+    expected_metadata = {
+        "discord_connector_delivery_id": proof.delivery_id,
+        "discord_connector_delivery_receipt_sha256": (
+            proof.delivery_receipt_sha256
+        ),
+        "discord_connector_event_sha256": proof.event_sha256,
+        "discord_connector_event_created_at_unix_ms": (
+            proof.event_created_at_unix_ms
+        ),
+        "discord_connector_target_type": proof.target_type.value,
+    }
+    if metadata != expected_metadata:
+        return None
+    is_thread = proof.target_type in DISCORD_CONNECTOR_THREAD_TARGET_TYPES
+    if (
+        not proof.delivery_id
+        or not _is_sha256(proof.delivery_receipt_sha256)
+        or not _is_sha256(proof.event_sha256)
+        or type(proof.event_created_at_unix_ms) is not int
+        or proof.event_created_at_unix_ms <= 0
+        or getattr(event, "message_id", None) != proof.event_id
+        or getattr(event, "text", None) != proof.content
+        or getattr(source, "platform", None) is not Platform.DISCORD
+        or getattr(source, "scope_id", None) != proof.guild_id
+        or getattr(source, "chat_id", None) != proof.channel_id
+        or getattr(source, "user_id", None) != proof.author_id
+        or getattr(source, "is_bot", None) is not proof.author_is_bot
+        or getattr(source, "message_id", None) != proof.event_id
+        or getattr(source, "parent_chat_id", None) != proof.parent_channel_id
+        or getattr(source, "delivered_via_upstream_relay", None) is not True
+        or getattr(source, "chat_type", None)
+        != ("thread" if is_thread else "channel")
+        or getattr(source, "thread_id", None)
+        != (proof.channel_id if is_thread else None)
+    ):
+        return None
+    return proof
 
 
 class DiscordConnectorTransportError(RuntimeError):
@@ -82,7 +181,24 @@ def _receive_response(sock: socket.socket) -> Mapping[str, Any]:
     return decode_frame(_receive_exact(sock, size))
 
 
-def _event_to_gateway(event: DiscordConnectorEvent) -> MessageEvent:
+def _event_to_gateway(
+    event: DiscordConnectorEvent,
+    *,
+    delivery_id: str,
+    delivery_receipt_sha256: str,
+) -> MessageEvent:
+    try:
+        canonical_delivery_id = str(uuid.UUID(delivery_id))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise DiscordConnectorProtocolError("invalid_event_delivery") from exc
+    if (
+        canonical_delivery_id != delivery_id
+        or not _is_sha256(delivery_receipt_sha256)
+        or not _is_sha256(event.sha256)
+        or type(event.created_at_unix_ms) is not int
+        or event.created_at_unix_ms <= 0
+    ):
+        raise DiscordConnectorProtocolError("invalid_event_delivery")
     target = event.target
     is_thread = target.target_type in DISCORD_CONNECTOR_THREAD_TARGET_TYPES
     source = SessionSource(
@@ -99,13 +215,50 @@ def _event_to_gateway(event: DiscordConnectorEvent) -> MessageEvent:
         message_id=event.event_id,
         delivered_via_upstream_relay=True,
     )
-    return MessageEvent(
+    gateway_event = MessageEvent(
         text=event.content,
         message_type=MessageType.TEXT,
         source=source,
         message_id=event.event_id,
         reply_to_message_id=event.reply_to_message_id,
+        metadata={
+            # Mechanical ingress provenance from the mutually authenticated
+            # connector EVENT_NEXT receipt.  Downstream permission/evidence
+            # boundaries may bind these digests without receiving a Discord
+            # credential or trusting caller-shaped wire metadata.
+            "discord_connector_delivery_id": delivery_id,
+            "discord_connector_delivery_receipt_sha256": delivery_receipt_sha256,
+            "discord_connector_event_sha256": event.sha256,
+            "discord_connector_event_created_at_unix_ms": (
+                event.created_at_unix_ms
+            ),
+            "discord_connector_target_type": event.target.target_type.value,
+        },
     )
+    setattr(
+        gateway_event,
+        _INGRESS_PROOF_ATTRIBUTE,
+        _DiscordConnectorIngressProof(
+            event_object_id=id(gateway_event),
+            source_object_id=id(source),
+            delivery_id=delivery_id,
+            delivery_receipt_sha256=delivery_receipt_sha256,
+            event_sha256=event.sha256,
+            event_created_at_unix_ms=event.created_at_unix_ms,
+            event_id=event.event_id,
+            target_type=target.target_type,
+            guild_id=target.guild_id,
+            channel_id=target.channel_id,
+            parent_channel_id=target.parent_channel_id,
+            author_id=event.author_id,
+            author_is_bot=event.author_is_bot,
+            content=event.content,
+            seal=_INGRESS_PROOF_SEAL,
+        ),
+    )
+    if authenticated_discord_connector_ingress(gateway_event) is None:
+        raise DiscordConnectorProtocolError("invalid_event_delivery")
+    return gateway_event
 
 
 class DiscordConnectorRelayTransport:
@@ -221,6 +374,82 @@ class DiscordConnectorRelayTransport:
     ) -> dict[str, Any]:
         return await asyncio.to_thread(self._request_sync, kind, payload)
 
+    async def prove_event_acknowledged(
+        self,
+        *,
+        delivery_id: str,
+        event_id: str,
+        event_sha256: str,
+    ) -> Mapping[str, Any]:
+        """Prove one exact connector-journal ACK without event content.
+
+        ``EVENT_ACK_READBACK`` performs only an exact SELECT in the privileged
+        connector journal.  It cannot turn a pending or delivering row into an
+        ACK while probing restart authority.  The normal request path also
+        re-authenticates the connector's Unix peer and exact systemd MainPID,
+        so caller-shaped gateway metadata cannot manufacture this proof after
+        a gateway process restart.
+        """
+
+        try:
+            canonical_delivery_id = str(uuid.UUID(str(delivery_id)))
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise DiscordConnectorTransportError(
+                "connector_event_ack_readback_invalid"
+            ) from exc
+        if (
+            canonical_delivery_id != delivery_id
+            or not isinstance(event_id, str)
+            or not event_id.isdigit()
+            or not event_id
+            or len(event_id) > 25
+            or not _is_sha256(event_sha256)
+        ):
+            raise DiscordConnectorTransportError(
+                "connector_event_ack_readback_invalid"
+            )
+
+        response = await self._request(
+            DiscordConnectorKind.EVENT_ACK_READBACK,
+            {
+                "delivery_id": canonical_delivery_id,
+                "event_id": event_id,
+                "event_sha256": event_sha256,
+            },
+        )
+        result = response.get("result")
+        if (
+            response.get("status") != "ok"
+            or response.get("replayed") is not False
+            or not isinstance(result, Mapping)
+            or set(result)
+            != {
+                "delivery_id",
+                "event_id",
+                "event_sha256",
+                "state",
+                "acked",
+            }
+            or result.get("delivery_id") != canonical_delivery_id
+            or result.get("event_id") != event_id
+            or result.get("event_sha256") != event_sha256
+            or result.get("state") != "acked"
+            or result.get("acked") is not True
+            or not _is_sha256(response.get("receipt_sha256"))
+        ):
+            raise DiscordConnectorTransportError(
+                "connector_event_ack_readback_invalid"
+            )
+        return {
+            "schema": "discord-connector-event-ack-readback.v1",
+            "delivery_id": canonical_delivery_id,
+            "event_id": event_id,
+            "event_sha256": event_sha256,
+            "journal_state": "acked",
+            "connector_receipt_sha256": response["receipt_sha256"],
+            "readback_verified": True,
+        }
+
     def set_inbound_handler(self, handler: InboundHandler) -> None:
         if not callable(handler):
             raise TypeError("Discord connector inbound handler is invalid")
@@ -329,7 +558,13 @@ class DiscordConnectorRelayTransport:
                     # No acceptance means no ACK; the lease makes it replayable.
                     await asyncio.sleep(0.25)
                     continue
-                await handler(_event_to_gateway(event))
+                await handler(
+                    _event_to_gateway(
+                        event,
+                        delivery_id=delivery_id,
+                        delivery_receipt_sha256=response["receipt_sha256"],
+                    )
+                )
                 ack = await self._request(
                     DiscordConnectorKind.EVENT_ACK,
                     {

@@ -1127,6 +1127,7 @@ def author_freeze(
     owner_subject_sha256: str,
     private_key: Ed25519PrivateKey,
     owner_runtime_attestation: Mapping[str, Any],
+    isolated_canary_goal_prerequisite: Mapping[str, Any],
     truth_mode: str,
     accepted_event_receipts: list[Mapping[str, Any]] | None = None,
     now_unix: int | None = None,
@@ -1176,6 +1177,9 @@ def author_freeze(
         cron_continuity_plan=receipt["cron_continuity_plan"],
         mechanical_job_host_facts=receipt["mechanical_job_host_facts"],
         mechanical_job_package=receipt["mechanical_job_package"],
+        isolated_canary_goal_prerequisite=(
+            isolated_canary_goal_prerequisite
+        ),
         legacy_truth_decision=decision,
         max_appended_rows=10_000,
         max_capture_delay_seconds=900,
@@ -1558,6 +1562,11 @@ def _validate_terminal_receipt(
         "final_tail_receipt_sha256",
         "capability_prerequisite_receipt_sha256",
         "capability_prerequisite_file_sha256",
+        "isolated_canary_goal_continuation_terminal_sha256",
+        "isolated_canary_workspace_gateway_receipt_sha256",
+        "isolation_equivalence_projection_sha256",
+        "zero_canonical_database_mutation_observed",
+        "pre_db_zero_write_observation_sha256",
         "capability_topology_identity_sha256",
         "database_apply_receipt_sha256",
         "host_apply_receipt_sha256",
@@ -1577,6 +1586,13 @@ def _validate_terminal_receipt(
     unsigned = {
         name: item for name, item in value.items() if name != "receipt_sha256"
     }
+    canary_goal = plan.value["freeze_plan"]["cutover_authority"][
+        "isolated_canary_goal_prerequisite"
+    ]
+    expected_equivalence = cutover._build_production_isolation_equivalence(
+        plan=plan,
+        evidence=canary_goal,
+    )
     if (
         set(value) != fields
         or value.get("schema") != cutover.TERMINAL_SCHEMA
@@ -1589,6 +1605,13 @@ def _validate_terminal_receipt(
         or value.get("direct_discord_disabled") is not True
         or value.get("discord_dm_allowed") is not False
         or value.get("rollback_used") is not False
+        or value.get("zero_canonical_database_mutation_observed") is not True
+        or value.get("isolated_canary_goal_continuation_terminal_sha256")
+        != canary_goal["goal_continuation_terminal_sha256"]
+        or value.get("isolated_canary_workspace_gateway_receipt_sha256")
+        != canary_goal["workspace_gateway_receipt_sha256"]
+        or value.get("isolation_equivalence_projection_sha256")
+        != expected_equivalence["projection_sha256"]
         or value.get("secret_material_recorded") is not False
         or any(
             _SHA256.fullmatch(str(value.get(field))) is None
@@ -1611,6 +1634,7 @@ def execute_production_cutover_workflow(
     owner_subject_sha256: str,
     private_key: Ed25519PrivateKey,
     host_authority_plan: Mapping[str, Any],
+    isolated_canary_goal_prerequisite: Mapping[str, Any],
     truth_mode: str,
     accepted_event_receipts: list[Mapping[str, Any]] | None = None,
     transport_factory: Any = ProductionCutoverTransport,
@@ -1710,6 +1734,9 @@ def execute_production_cutover_workflow(
         owner_subject_sha256=owner_subject_sha256,
         private_key=private_key,
         owner_runtime_attestation=runtime_attestation,
+        isolated_canary_goal_prerequisite=(
+            isolated_canary_goal_prerequisite
+        ),
         truth_mode=truth_mode,
         accepted_event_receipts=accepted_event_receipts,
         now_unix=gate_now(),
@@ -2009,6 +2036,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     freeze.add_argument("--owner-private-key", type=Path, required=True)
     freeze.add_argument("--owner-subject-sha256", required=True)
     freeze.add_argument(
+        "--isolated-canary-goal-prerequisite", type=Path, required=True
+    )
+    freeze.add_argument(
         "--truth-mode",
         choices=("start_new_truth_epoch", "reseed_accepted_events"),
         required=True,
@@ -2038,6 +2068,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--host-authority-plan", type=Path, required=True
     )
     workflow.add_argument(
+        "--isolated-canary-goal-prerequisite", type=Path, required=True
+    )
+    workflow.add_argument(
         "--owner-private-key", type=Path, required=True
     )
     workflow.add_argument(
@@ -2057,6 +2090,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments.command == "execute-cutover":
             if (
                 not arguments.host_authority_plan.is_absolute()
+                or not arguments.isolated_canary_goal_prerequisite.is_absolute()
                 or not arguments.owner_private_key.is_absolute()
             ):
                 raise OwnerCutoverError(
@@ -2111,6 +2145,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 private_key=key,
                 host_authority_plan=_read_public_json(
                     arguments.host_authority_plan
+                ),
+                isolated_canary_goal_prerequisite=_read_public_json(
+                    arguments.isolated_canary_goal_prerequisite
                 ),
                 truth_mode=arguments.truth_mode,
                 accepted_event_receipts=accepted,
@@ -2253,7 +2290,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     owner_runtime_attestation=runtime_attestation,
                 )
             else:
-                if not arguments.collector_receipt.is_absolute():
+                if (
+                    not arguments.collector_receipt.is_absolute()
+                    or not arguments.isolated_canary_goal_prerequisite.is_absolute()
+                ):
                     raise OwnerCutoverError("owner_cutover_public_input_invalid")
                 accepted = None
                 if arguments.accepted_event_receipts is not None:
@@ -2279,6 +2319,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     owner_subject_sha256=arguments.owner_subject_sha256,
                     private_key=key,
                     owner_runtime_attestation=runtime_attestation,
+                    isolated_canary_goal_prerequisite=_read_public_json(
+                        arguments.isolated_canary_goal_prerequisite
+                    ),
                     truth_mode=arguments.truth_mode,
                     accepted_event_receipts=accepted,
                 )

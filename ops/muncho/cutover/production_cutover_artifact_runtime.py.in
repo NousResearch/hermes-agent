@@ -1172,7 +1172,9 @@ def _plan_digest(raw: Mapping[str, Any]) -> str:
                 "connector_target_identity", "host_transition",
                 "capability_topology", "cron_inventory",
                 "cron_continuity_plan", "mechanical_job_host_facts",
-                "mechanical_job_package", "legacy_truth_decision",
+                "mechanical_job_package",
+                "isolated_canary_goal_prerequisite",
+                "legacy_truth_decision",
                 "final_tail_bounds",
                 "rollback_contract", "secret_material_recorded",
                 "authority_sha256",
@@ -1190,7 +1192,7 @@ def _plan_digest(raw: Mapping[str, Any]) -> str:
         )
         _validate_cron_continuity_authority(authority, revision=revision)
         if (
-            authority.get("schema") != "muncho-production-cutover-authority.v1"
+            authority.get("schema") != "muncho-production-cutover-authority.v3"
             or authority.get("release_revision") != revision
             or authority.get("secret_material_recorded") is not False
             or not isinstance(artifacts, Mapping)
@@ -1199,6 +1201,96 @@ def _plan_digest(raw: Mapping[str, Any]) -> str:
                 "database_postflight", "host_activation", "host_rollback",
             }
             or raw.get("observe_artifact") != artifacts.get("observe")
+            or not isinstance(
+                authority.get("isolated_canary_goal_prerequisite"), Mapping
+            )
+            or set(authority["isolated_canary_goal_prerequisite"]) != {
+                "schema", "fixture", "fixture_sha256", "workspace_gateway",
+                "workspace_gateway_receipt_sha256",
+                "cleanup_receipt", "cleanup_receipt_sha256",
+                "goal_continuation_terminal_schema",
+                "goal_continuation_terminal_sha256",
+                "isolation_equivalence_projection",
+                "isolation_equivalence_projection_sha256",
+                "production_diff_sha256", "production_diff",
+                "production_diff_file_sha256", "run_id", "release_revision",
+                "capability_plan_sha256", "full_canary_plan_sha256",
+                "canary_owner_approval_receipt_sha256",
+                "canary_production_mutation_observed",
+                "secret_material_recorded",
+                "secret_digest_recorded", "evidence_sha256",
+            }
+            or authority["isolated_canary_goal_prerequisite"].get("schema")
+            != "muncho-production-isolated-canary-goal-prerequisite.v2"
+            or authority["isolated_canary_goal_prerequisite"].get(
+                "release_revision"
+            ) != revision
+            or authority["isolated_canary_goal_prerequisite"].get(
+                "goal_continuation_terminal_schema"
+            ) != "muncho-production-capability-goal-continuation-terminal.v2"
+            or authority["isolated_canary_goal_prerequisite"].get(
+                "canary_production_mutation_observed"
+            ) is not False
+            or authority["isolated_canary_goal_prerequisite"].get(
+                "secret_material_recorded"
+            ) is not False
+            or authority["isolated_canary_goal_prerequisite"].get(
+                "secret_digest_recorded"
+            ) is not False
+            or any(
+                SHA256.fullmatch(str(
+                    authority["isolated_canary_goal_prerequisite"].get(name)
+                )) is None
+                for name in (
+                    "fixture_sha256", "workspace_gateway_receipt_sha256",
+                    "cleanup_receipt_sha256",
+                    "goal_continuation_terminal_sha256",
+                    "isolation_equivalence_projection_sha256",
+                    "production_diff_sha256", "production_diff_file_sha256",
+                    "capability_plan_sha256",
+                    "full_canary_plan_sha256",
+                    "canary_owner_approval_receipt_sha256", "evidence_sha256",
+                )
+            )
+            or not isinstance(
+                authority["isolated_canary_goal_prerequisite"].get(
+                    "cleanup_receipt"
+                ), Mapping
+            )
+            or not isinstance(
+                authority["isolated_canary_goal_prerequisite"].get(
+                    "production_diff"
+                ), Mapping
+            )
+            or authority["isolated_canary_goal_prerequisite"][
+                "cleanup_receipt_sha256"
+            ] != _sha_json(
+                authority["isolated_canary_goal_prerequisite"][
+                    "cleanup_receipt"
+                ]
+            )
+            or authority["isolated_canary_goal_prerequisite"][
+                "production_diff_file_sha256"
+            ] != _sha_json(
+                authority["isolated_canary_goal_prerequisite"][
+                    "production_diff"
+                ]
+            )
+            or authority["isolated_canary_goal_prerequisite"][
+                "production_diff"
+            ].get("diff_sha256")
+            != authority["isolated_canary_goal_prerequisite"][
+                "production_diff_sha256"
+            ]
+            or authority["isolated_canary_goal_prerequisite"][
+                "evidence_sha256"
+            ] != _sha_json({
+                key: item
+                for key, item in authority[
+                    "isolated_canary_goal_prerequisite"
+                ].items()
+                if key != "evidence_sha256"
+            })
             or not isinstance(bounds, Mapping)
             or set(bounds) != {
                 "max_appended_rows", "max_capture_delay_seconds"
@@ -1427,6 +1519,15 @@ def _validate_capability_prerequisite_plan(
             "topology_fields", "isolated_worker_topology_fields",
             "browser_topology_fields", "isolated_worker_receipt_fields",
             "browser_receipt_fields", "collector_entrypoint", "dynamic_receipt",
+            "cutover_acceptance_schema",
+            "isolated_canary_goal_terminal_schema",
+            "isolated_canary_signed_workspace_required",
+            "isolation_equivalence_projection_required",
+            "canary_zero_production_mutation_observation_required",
+            "pre_db_zero_canonical_database_mutation_observation_required",
+            "post_staging_service_mutation_observation_required",
+            "exact_run_release_fixture_evidence_binding_required",
+            "production_owner_approval_binding_required",
             "owner_approval_binds_collector_criteria",
             "live_reobservation_required", "atomic_root_install",
             "secret_material_recorded", "secret_digest_recorded",
@@ -1449,6 +1550,25 @@ def _validate_capability_prerequisite_plan(
         or contract["lifecycle_phases"] != ["committed", "staged"]
         or contract["collector_entrypoint"]
         != "gateway.production_capability_prerequisites:collect"
+        or contract["cutover_acceptance_schema"]
+        != "muncho-production-capability-prerequisite-acceptance.v3"
+        or contract["isolated_canary_goal_terminal_schema"]
+        != "muncho-production-capability-goal-continuation-terminal.v2"
+        or contract["isolated_canary_signed_workspace_required"] is not True
+        or contract["isolation_equivalence_projection_required"] is not True
+        or contract[
+            "canary_zero_production_mutation_observation_required"
+        ] is not True
+        or contract[
+            "pre_db_zero_canonical_database_mutation_observation_required"
+        ] is not True
+        or contract[
+            "post_staging_service_mutation_observation_required"
+        ] is not True
+        or contract[
+            "exact_run_release_fixture_evidence_binding_required"
+        ] is not True
+        or contract["production_owner_approval_binding_required"] is not True
         or contract["dynamic_receipt"] is not True
         or contract["owner_approval_binds_collector_criteria"] is not True
         or contract["live_reobservation_required"] is not True

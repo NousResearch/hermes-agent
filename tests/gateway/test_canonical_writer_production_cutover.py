@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import copy
 import json
+from functools import lru_cache
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, Mapping
 
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from gateway import canonical_writer_production_cutover as cutover
+from gateway import canonical_capability_canary_runtime as canary_runtime
 from gateway import production_cron_continuity_package
 from gateway import production_cron_cutover_runtime
 from gateway import production_cron_migration
@@ -26,10 +29,193 @@ from ops.muncho.runtime import mechanical_job_rail
 from tests.gateway.test_production_capability_prerequisites import (
     _receipt_pair as _capability_receipt_pair,
 )
+from tests.gateway.test_canonical_capability_canary_e2e import (
+    build_signed_production_prerequisite_evidence_for_test,
+)
 
 
 NOW = 1_800_000_000
 REVISION = "a" * 40
+
+
+@lru_cache(maxsize=4)
+def _cached_isolated_canary_goal_prerequisite(
+    revision: str = REVISION,
+) -> Mapping[str, Any]:
+    fixture, fixture_sha256, workspace_gateway, cleanup, production_diff = (
+        build_signed_production_prerequisite_evidence_for_test(
+            revision=revision
+        )
+    )
+    return cutover.build_isolated_canary_goal_prerequisite(
+        fixture=fixture,
+        fixture_sha256=fixture_sha256,
+        workspace_gateway=workspace_gateway,
+        cleanup_receipt=cleanup,
+        production_diff=production_diff,
+    )
+
+
+def _isolated_canary_goal_prerequisite(
+    revision: str = REVISION,
+) -> Mapping[str, Any]:
+    return copy.deepcopy(_cached_isolated_canary_goal_prerequisite(revision))
+
+
+def test_isolation_equivalence_normalizes_only_reviewed_channel_fields() -> None:
+    plan = _cutover_plan(Ed25519PrivateKey.generate(), Services())
+    evidence = plan.value["freeze_plan"]["cutover_authority"][
+        "isolated_canary_goal_prerequisite"
+    ]
+
+    receipt = cutover._build_production_isolation_equivalence(
+        plan=plan,
+        evidence=evidence,
+    )
+
+    assert receipt["normalized_canary_projection_sha256"] == receipt[
+        "normalized_production_projection_sha256"
+    ]
+    assert receipt["environment_specific_fields_normalized"] == [
+        "discord_channel_id",
+        (
+            "capability_role_topology_contract."
+            "public_discord_target.channel_id"
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("path", "replacement"),
+    [
+        (("discord_guild_id",), "999999999999999999"),
+        (
+            (
+                "capability_role_topology_contract",
+                "public_discord_target",
+                "guild_id",
+            ),
+            "999999999999999999",
+        ),
+        (
+            ("capability_role_topology_contract", "authority_roles"),
+            [
+                "business_edge",
+                "canonical_writer",
+                "discord_edge",
+                "owner",
+            ],
+        ),
+        (
+            (
+                "capability_role_topology_contract",
+                "producer_service_units",
+                "gateway_observer",
+            ),
+            "drifted-gateway-observer.service",
+        ),
+        (("semantic_config_contract", "goals", "max_turns"), 1),
+        (("ordered_toolsets",), ["terminal"]),
+    ],
+)
+def test_isolation_equivalence_rejects_non_channel_drift(
+    path: tuple[str, ...], replacement: object
+) -> None:
+    plan = _cutover_plan(Ed25519PrivateKey.generate(), Services())
+    evidence = copy.deepcopy(
+        plan.value["freeze_plan"]["cutover_authority"][
+            "isolated_canary_goal_prerequisite"
+        ]
+    )
+    target = evidence["isolation_equivalence_projection"]
+    for field in path[:-1]:
+        target = target[field]
+    target[path[-1]] = replacement
+
+    with pytest.raises(
+        cutover.ProductionCutoverError,
+        match="production_isolation_equivalence_projection_invalid",
+    ):
+        cutover._build_production_isolation_equivalence(
+            plan=plan,
+            evidence=evidence,
+        )
+
+
+def test_native_production_diff_is_exactly_replay_bound() -> None:
+    evidence = _isolated_canary_goal_prerequisite()
+    diff = evidence["production_diff"]
+
+    validated = canary_runtime.validate_capability_production_diff(
+        diff,
+        run_id=evidence["run_id"],
+        revision=evidence["release_revision"],
+        capability_plan_sha256=evidence["capability_plan_sha256"],
+        full_canary_plan_sha256=evidence["full_canary_plan_sha256"],
+        fixture_sha256=evidence["fixture_sha256"],
+    )
+    assert validated["diff_sha256"] == evidence["production_diff_sha256"]
+
+    with pytest.raises(ValueError, match="production no-change diff"):
+        canary_runtime.validate_capability_production_diff(
+            diff,
+            run_id="replayed-run",
+            revision=evidence["release_revision"],
+            capability_plan_sha256=evidence["capability_plan_sha256"],
+            full_canary_plan_sha256=evidence["full_canary_plan_sha256"],
+            fixture_sha256=evidence["fixture_sha256"],
+        )
+
+
+def test_signed_cleanup_native_diff_binding_rejects_tamper() -> None:
+    evidence = _isolated_canary_goal_prerequisite()
+    cleanup = evidence["cleanup_receipt"]
+    binding = next(
+        item
+        for item in cleanup["native_evidence"]["bindings"]
+        if item["kind"] == "production_diff_observation"
+    )
+    binding["artifact_sha256"] = "f" * 64
+    evidence["cleanup_receipt_sha256"] = cutover._sha256_json(cleanup)
+    evidence["evidence_sha256"] = cutover._sha256_json({
+        key: item
+        for key, item in evidence.items()
+        if key != "evidence_sha256"
+    })
+
+    with pytest.raises(ValueError, match="native production diff"):
+        cutover._validate_isolated_canary_goal_prerequisite(
+            evidence,
+            revision=REVISION,
+        )
+
+
+def test_legacy_isolated_canary_prerequisite_shape_is_rejected() -> None:
+    evidence = _isolated_canary_goal_prerequisite()
+    evidence["schema"] = (
+        "muncho-production-isolated-canary-goal-prerequisite.v1"
+    )
+    evidence["production_mutation_observed"] = evidence.pop(
+        "canary_production_mutation_observed"
+    )
+    for field in (
+        "cleanup_receipt",
+        "cleanup_receipt_sha256",
+        "production_diff",
+        "production_diff_file_sha256",
+    ):
+        evidence.pop(field)
+    evidence["evidence_sha256"] = cutover._sha256_json({
+        key: item
+        for key, item in evidence.items()
+        if key != "evidence_sha256"
+    })
+
+    with pytest.raises(ValueError, match="fields are not exact"):
+        cutover._validate_isolated_canary_goal_prerequisite(
+            evidence,
+            revision=REVISION,
+        )
 
 
 def _operational_receipt_key_ids() -> dict[str, str]:
@@ -613,6 +799,9 @@ def _freeze(private: Ed25519PrivateKey, services: Services, initial_rows: int = 
         cron_continuity_plan=cron_plan,
         mechanical_job_host_facts=host_facts,
         mechanical_job_package=mechanical_package,
+        isolated_canary_goal_prerequisite=(
+            _isolated_canary_goal_prerequisite()
+        ),
         legacy_truth_decision=legacy_truth_decision,
         max_appended_rows=10_000,
         max_capture_delay_seconds=900,
@@ -1621,9 +1810,47 @@ class Prerequisites:
             raise cutover.ProductionCutoverError(
                 "production_capability_prerequisite_drifted"
             )
+        canary = plan.value["freeze_plan"]["cutover_authority"][
+            "isolated_canary_goal_prerequisite"
+        ]
+        equivalence = cutover._build_production_isolation_equivalence(
+            plan=plan,
+            evidence=canary,
+        )
+        gateway_identity = plan.value["gateway_target_identity"]
+        writer_identity = plan.value["writer_target_identity"]
+        connector_identity = plan.value["connector_target_identity"]
+        pre_db_observation = cutover._build_pre_db_zero_write_observation(
+            plan=plan,
+            gateway=_service(
+                cutover.GATEWAY_UNIT,
+                active=False,
+                digest=gateway_identity["fragment_sha256"],
+                drop_in_digest=gateway_identity["drop_in_sha256"][
+                    cutover.GATEWAY_CONNECTOR_DROP_IN
+                ],
+                unit_file_state="disabled",
+            ),
+            writer=_service(
+                cutover.WRITER_UNIT,
+                active=False,
+                digest=writer_identity["fragment_sha256"],
+                unit_file_state="disabled",
+            ),
+            connector=_service(
+                cutover.CONNECTOR_UNIT,
+                active=True,
+                digest=connector_identity["fragment_sha256"],
+                unit_file_state="disabled",
+            ),
+            snapshot=plan.final_snapshot,
+        )
         unsigned = {
-            "schema": "muncho-production-capability-prerequisite-acceptance.v1",
+            "schema": cutover.CAPABILITY_PREREQUISITE_ACCEPTANCE_SCHEMA,
             "plan_sha256": plan.sha256,
+            "production_owner_approval_sha256": plan.value[
+                "freeze_approval_sha256"
+            ],
             "prerequisite_receipt_sha256": "8" * 64,
             "prerequisite_file_sha256": "9" * 64,
             "topology_identity_sha256": (
@@ -1632,6 +1859,38 @@ class Prerequisites:
                 )
             ),
             "boot_id_sha256": "a" * 64,
+            "pre_db_zero_write_observation": pre_db_observation,
+            "pre_db_zero_write_observation_sha256": pre_db_observation[
+                "observation_sha256"
+            ],
+            "isolated_canary_evidence_sha256": canary["evidence_sha256"],
+            "workspace_gateway_receipt_sha256": canary[
+                "workspace_gateway_receipt_sha256"
+            ],
+            "goal_continuation_terminal_schema": canary[
+                "goal_continuation_terminal_schema"
+            ],
+            "goal_continuation_terminal_sha256": canary[
+                "goal_continuation_terminal_sha256"
+            ],
+            "canary_run_id": canary["run_id"],
+            "canary_release_revision": canary["release_revision"],
+            "canary_fixture_sha256": canary["fixture_sha256"],
+            "canary_capability_plan_sha256": canary[
+                "capability_plan_sha256"
+            ],
+            "canary_full_canary_plan_sha256": canary[
+                "full_canary_plan_sha256"
+            ],
+            "canary_owner_approval_receipt_sha256": canary[
+                "canary_owner_approval_receipt_sha256"
+            ],
+            "production_diff_sha256": canary["production_diff_sha256"],
+            "isolation_equivalence_projection": equivalence,
+            "isolation_equivalence_projection_sha256": equivalence[
+                "projection_sha256"
+            ],
+            "zero_canonical_database_mutation_observed": True,
             "ok": True,
             "secret_material_recorded": False,
             "secret_digest_recorded": False,

@@ -90,7 +90,7 @@ are forbidden from it.
 
 ## Required evidence
 
-`muncho-full-canary-e2e-evidence.v1` is bound to the exact fixture file digest
+`muncho-full-canary-e2e-evidence.v2` is bound to the exact fixture file digest
 and must say `execution_mode=live_isolated_canary` and `synthetic=false`. It
 contains these externally produced receipts:
 

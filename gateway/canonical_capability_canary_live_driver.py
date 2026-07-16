@@ -16,6 +16,7 @@ requires independently role-signed receipts at every fixed slot.
 from __future__ import annotations
 
 import argparse
+import base64
 import copy
 import hashlib
 import json
@@ -31,6 +32,8 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
+
+import yaml
 
 from gateway import canonical_capability_canary_e2e as evidence_contract
 from gateway.canonical_capability_canary_e2e import (
@@ -49,11 +52,32 @@ from gateway.canonical_capability_canary_runtime import (
     load_staged_owner_signed_production_observation,
     load_capability_approval,
     load_capability_plan,
+    load_bound_plan_publication_receipt,
     publish_capability_production_observation_marker,
+    render_gateway_config,
+)
+from gateway.canonical_capability_goal_live import (
+    GoalLiveEvidenceError,
+    SegmentedGoalEvidenceCollector,
+    build_goal_continuation_evidence,
+    normalize_goal_observer_public_target,
+    read_connector_rows,
+    read_goal_native_finalizations,
+    read_goal_native_receipts,
+    read_writer_projection_export,
+    validate_goal_canonical_projection_binding,
 )
 from gateway.canonical_capability_canary_producers import (
+    API_ADMISSION_OWNER_AUTHORITY_SCHEMA,
+    BITRIX_CANARY_MUTATION_ARGUMENTS,
+    BITRIX_CANARY_READ_ARGUMENTS,
+    DEFAULT_API_ADMISSION_SOCKET,
+    DEFAULT_LIVE_FIXTURE_ROOT,
+    DENIAL_KINDS,
     ENDPOINT_ROLES,
+    FAILURE_COMPONENTS,
     InstalledProducerFoundation,
+    PeerIdentity,
     PRODUCER_ENDPOINT_ACTIVATION_SCHEMA,
     ProductionFleetActivation,
     ProductionReceiptPump,
@@ -63,16 +87,25 @@ from gateway.canonical_capability_canary_producers import (
     SLOT_FILENAME,
     SLOT_ROLE,
     activate_production_fleet,
+    build_api_admission_owner_challenge,
+    build_probe_catalog,
     load_installed_producer_foundation,
     producer_foundation_sha256,
     production_endpoint_clients,
+    provision_api_admission_owner_authority,
+    retire_api_admission_inputs,
     retire_fleet_readiness,
+    serve_api_server_capability_admission_once,
+    validate_api_admission_owner_authority,
     validate_fleet_readiness,
     validate_producer_foundation,
+    wait_for_staged_api_admission_owner_authority,
+    publish_api_admission_owner_challenge,
 )
 from gateway.canonical_capability_canary_producer_units import (
     FixedNativePublicationPump,
     build_api_terminal_event_identity,
+    build_goal_continuation_native_identity,
     build_gateway_observer_source_projection,
     extract_gateway_observer_model_proposal_cores,
     publish_gateway_observer_source_projection,
@@ -86,26 +119,28 @@ from gateway.canonical_full_canary_live_driver import (
 )
 from gateway.canonical_full_canary_runtime import (
     FullCanaryPlan,
-    load_full_canary_approval,
     load_full_canary_plan,
     validate_dedicated_canary_host,
 )
+from gateway.canonical_writer_activation import (
+    DEFAULT_PLAN_PATH as DEFAULT_WRITER_ACTIVATION_PLAN_PATH,
+    ActivationExecutor,
+    load_activation_plan,
+)
 
 
-LIVE_DRIVER_SCHEMA = "muncho-production-capability-canary-live-driver.v1"
+LIVE_DRIVER_SCHEMA = "muncho-production-capability-canary-live-driver.v2"
 FIXTURE_PUBLICATION_AUTHORITY_SCHEMA = (
-    "muncho-production-capability-canary-fixture-authority.v1"
+    "muncho-production-capability-canary-fixture-authority.v2"
 )
 FIXTURE_PUBLICATION_RECEIPT_SCHEMA = (
-    "muncho-production-capability-canary-fixture-publication.v1"
+    "muncho-production-capability-canary-fixture-publication.v2"
 )
-RESTART_CHECKPOINT_SCHEMA = (
-    "muncho-production-capability-worker-restart-checkpoint.v1"
-)
+RESTART_CHECKPOINT_SCHEMA = "muncho-production-capability-worker-restart-checkpoint.v1"
 DEFAULT_REVIEWED_FIXTURE = Path(
     "/etc/muncho/capability-canary/reviewed-live-fixture.json"
 )
-DEFAULT_LIVE_ROOT = Path("/var/lib/muncho-capability-canary-control/live")
+DEFAULT_LIVE_ROOT = DEFAULT_LIVE_FIXTURE_ROOT
 DEFAULT_FIXTURE_PUBLICATION_ROOT = Path(
     "/var/lib/muncho-capability-canary-control/fixture-publications"
 )
@@ -116,6 +151,10 @@ MAX_RECEIPT_BYTES = 2 * 1024 * 1024
 MAX_EVIDENCE_BYTES = 8 * 1024 * 1024
 DEFAULT_RECEIPT_TIMEOUT_SECONDS = 600.0
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$")
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-"
+    r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
 PRODUCTION_OWNER_DISCORD_USER_ID = "1279454038731264061"
 
 
@@ -161,9 +200,7 @@ def _strict_json(raw: bytes, code: str) -> dict[str, Any]:
         value = json.loads(
             raw.decode("utf-8", errors="strict"),
             object_pairs_hook=reject_duplicates,
-            parse_constant=lambda _token: (_ for _ in ()).throw(
-                ValueError("constant")
-            ),
+            parse_constant=lambda _token: (_ for _ in ()).throw(ValueError("constant")),
         )
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
         raise CapabilityLiveDriverError(code) from exc
@@ -212,9 +249,7 @@ def _stable_read(
         _fail("trusted_artifact_identity_invalid")
     descriptor = os.open(
         path,
-        os.O_RDONLY
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0),
+        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
     )
     try:
         opened = os.fstat(descriptor)
@@ -467,13 +502,9 @@ def _prepare_fixture_publication_directory(
 ) -> None:
     _secure_directory(root, uid=uid, gid=gid, mode=0o700, create=False)
     plan_directory = root / plan_sha256
-    _secure_directory(
-        plan_directory, uid=uid, gid=gid, mode=0o700, create=True
-    )
+    _secure_directory(plan_directory, uid=uid, gid=gid, mode=0o700, create=True)
     run_directory = plan_directory / run_id
-    _secure_directory(
-        run_directory, uid=uid, gid=gid, mode=0o700, create=True
-    )
+    _secure_directory(run_directory, uid=uid, gid=gid, mode=0o700, create=True)
     if path.parent != run_directory:
         _fail("fixture_publication_receipt_invalid")
 
@@ -498,6 +529,10 @@ def validate_fixture_publication_receipt(
         "release_sha",
         "capability_plan_sha256",
         "full_canary_plan_sha256",
+        "full_canary_terminal_receipt",
+        "full_canary_terminal_receipt_sha256",
+        "original_full_canary_owner_approval_sha256",
+        "plan_publication_receipt_sha256",
         "producer_foundation_sha256",
         "authority_sha256",
         "fixture_path",
@@ -524,6 +559,13 @@ def validate_fixture_publication_receipt(
         or raw["release_sha"] != full_plan.revision
         or raw["capability_plan_sha256"] != plan.sha256
         or raw["full_canary_plan_sha256"] != full_plan.sha256
+        or raw["full_canary_terminal_receipt"] != plan.full_canary_terminal_receipt
+        or raw["full_canary_terminal_receipt_sha256"]
+        != plan.full_canary_terminal_receipt_sha256
+        or raw["original_full_canary_owner_approval_sha256"]
+        != plan.original_full_canary_owner_approval_sha256
+        or raw["plan_publication_receipt_sha256"]
+        != fixture["plan_publication_receipt_sha256"]
         or raw["producer_foundation_sha256"] != producer_foundation_sha256
         or raw["authority_sha256"] != authority_sha256
         or raw["fixture_path"] != str(fixture_path)
@@ -603,30 +645,145 @@ def reviewed_objective_prompt() -> str:
         f"{index}. [{item.objective_id}] {item.text}"
         for index, item in enumerate(REVIEWED_OBJECTIVES, start=1)
     )
-    lines.extend(
-        (
-            "After the six outcomes and their authoritative receipts are "
-            "complete, use canonical_event_append exactly once to make the "
-            "final/latest case event capability.canary.gateway-evidence.proposed. "
-            "Its payload must contain exactly one field named evidence, whose "
-            "value is an ordered two-item array. Each item must contain exactly "
-            "schema, slot, and core; schema is "
-            "muncho-production-capability-gateway-observer-proposal-core.v1.",
-            "The first item slot is workspace_gateway. Its core must contain "
-            "exactly these fields, authored from the actual task state and "
-            "receipts: "
-            + ", ".join(_WORKSPACE_MODEL_PROPOSAL_CORE_FIELDS)
-            + ".",
-            "The second item slot is failure_gateway. Its core must contain "
-            "exactly these fields, authored from the actual failure work and "
-            "receipts: "
-            + ", ".join(_FAILURE_MODEL_PROPOSAL_CORE_FIELDS)
-            + ". Do not invent evidence; if an authoritative receipt is absent, "
-            "continue the approved work or record the exact blocker before "
-            "authoring this final proposal.",
-        )
-    )
+    lines.extend((
+        "After the six outcomes and their authoritative receipts are "
+        "complete, use canonical_event_append exactly once to make the "
+        "final/latest case event capability.canary.gateway-evidence.proposed. "
+        "Its payload must contain exactly one field named evidence, whose "
+        "value is an ordered two-item array. Each item must contain exactly "
+        "schema, slot, and core; schema is "
+        "muncho-production-capability-gateway-observer-proposal-core.v1.",
+        "The first item slot is workspace_gateway. Its core must contain "
+        "exactly these fields, authored from the actual task state and "
+        "receipts: " + ", ".join(_WORKSPACE_MODEL_PROPOSAL_CORE_FIELDS) + ".",
+        "The second item slot is failure_gateway. Its core must contain "
+        "exactly these fields, authored from the actual failure work and "
+        "receipts: "
+        + ", ".join(_FAILURE_MODEL_PROPOSAL_CORE_FIELDS)
+        + ". Do not invent evidence; if an authoritative receipt is absent, "
+        "continue the approved work or record the exact blocker before "
+        "authoring this final proposal.",
+    ))
     return "\n".join(lines)
+
+
+def _catalog_command(command_id: str, command: bytes) -> Mapping[str, Any]:
+    if not command or b"\x00" in command:
+        _fail("api_admission_probe_catalog_invalid")
+    return {
+        "command_id": command_id,
+        "command_b64": base64.b64encode(command).decode("ascii"),
+        "command_sha256": _sha256_bytes(command),
+        "max_uses": 1,
+    }
+
+
+def build_live_probe_catalog(
+    *,
+    fixture: PublishedFixture,
+    request: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Build fixed canary facts bound to the gateway-created API epoch.
+
+    This is deliberately mechanical data, not a semantic plan or router.  The
+    reviewed objective remains model-authored and GPT/Hermes chooses every
+    step and alternative through the normal agent loop.
+    """
+
+    try:
+        return build_probe_catalog(
+            release_sha=fixture.value["release_sha"],
+            capability_plan_sha256=fixture.value["capability_plan_sha256"],
+            full_canary_plan_sha256=fixture.value["full_canary_plan_sha256"],
+            fixture_sha256=fixture.sha256,
+            run_id=fixture.value["run_id"],
+            session_id=request["session_id"],
+            capability_epoch_sha256=request["capability_epoch_sha256"],
+            case_ids={
+                name: f"case:{name.replace('_', '-')}"
+                for name in (
+                    "workspace_continuation",
+                    "capability_denials",
+                    "database_reconciliation",
+                    "bitrix_boundary",
+                    "discord_routeback",
+                    "failure_recovery",
+                )
+            },
+            workspace={
+                "first_path_probe_id": "probe:workspace:first-unavailable",
+                "alternate_path_probe_id": "probe:workspace:safe-alternative",
+                "worker_restart_checkpoint_step_id": "step:workspace:restart",
+            },
+            commands={
+                "allowed": [
+                    _catalog_command(
+                        "command:workspace:primary",
+                        b"printf '%s\\n' muncho-capability-primary",
+                    ),
+                    _catalog_command(
+                        "command:workspace:alternative",
+                        b"printf '%s\\n' muncho-capability-alternative",
+                    ),
+                ],
+                "denied": [
+                    {
+                        "kind": kind,
+                        "command": _catalog_command(
+                            f"denied:{kind}",
+                            f"muncho-denied-capability:{kind}".encode("ascii"),
+                        ),
+                    }
+                    for kind in DENIAL_KINDS
+                ],
+            },
+            database={
+                "row_key": f"row:{fixture.value['run_id']}",
+                "idempotency_key": f"idempotency:database:{fixture.value['run_id']}",
+                "read_probe_id": "probe:database:read",
+                "write_probe_id": "probe:database:write",
+                "lost_response_probe_id": "probe:database:lost-response",
+            },
+            bitrix={
+                "handoff_id": f"handoff:bitrix:{fixture.value['run_id']}",
+                "selected_edge_id": "operational-edge:bitrix",
+                "read_operation_id": "bitrix.crm.status_list",
+                "read_arguments": copy.deepcopy(dict(BITRIX_CANARY_READ_ARGUMENTS)),
+                "initial_read_probe_id": "probe:bitrix:status-list:initial",
+                "readback_probe_id": "probe:bitrix:status-list:readback",
+                "normalized_equality_excluded_fields": ["generated_at_utc"],
+                "mutation_operation_id": "bitrix.crm.lead_add",
+                "mutation_arguments": copy.deepcopy(
+                    dict(BITRIX_CANARY_MUTATION_ARGUMENTS)
+                ),
+                "mutation_probe_id": "probe:bitrix:lead-add:denied",
+            },
+            discord={
+                "public_target": copy.deepcopy(
+                    dict(fixture.value["public_discord_target"])
+                ),
+                "public_idempotency_key": (
+                    f"discord:public:{fixture.value['run_id']}"
+                ),
+                "private_target_kind": "dm",
+                "private_probe_id": "discord:private:blocked",
+            },
+            failure={
+                "probes": [
+                    {
+                        "component": component,
+                        "failure_id": f"failure:{component}",
+                        "alternative_available": True,
+                        "alternative_id": f"alternative:{component}",
+                    }
+                    for component in FAILURE_COMPONENTS
+                ]
+            },
+        )
+    except Exception as exc:
+        raise CapabilityLiveDriverError(
+            "api_admission_probe_catalog_invalid"
+        ) from exc
 
 
 @dataclass(frozen=True)
@@ -655,15 +812,114 @@ class ActivatedProducerFleet:
 
     readiness: Mapping[str, Any]
     endpoint_activation_receipts: Mapping[str, Mapping[str, Any]]
-    pre_cleanup_pump: Callable[
-        [float, threading.Event], Mapping[str, Mapping[str, Any]]
-    ] | None = None
-    observer_pump: Callable[
-        [float, threading.Event], Mapping[str, Mapping[str, Any]]
-    ] | None = None
-    cleanup_producer: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = (
-        None
-    )
+    pre_cleanup_pump: (
+        Callable[[float, threading.Event], Mapping[str, Mapping[str, Any]]] | None
+    ) = None
+    observer_pump: (
+        Callable[[float, threading.Event], Mapping[str, Mapping[str, Any]]] | None
+    ) = None
+    cleanup_producer: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None
+
+
+class CapabilityEvidenceCollectorBundle:
+    """Keep the historical API chain and the restart-segmented goal chain separate."""
+
+    def __init__(self, primary: RootEvidenceCollector, plan: CapabilityCanaryPlan) -> None:
+        self.primary = primary
+        self.plan = plan
+        self.goal: SegmentedGoalEvidenceCollector | None = None
+
+    def configure_goal(
+        self,
+        _foundation: TrustedProducerFoundation,
+        fixture: PublishedFixture,
+    ) -> None:
+        if self.goal is not None:
+            _fail("goal_collector_configure_replayed")
+        fixture_target = fixture.value["public_discord_target"]
+        observer_target = normalize_goal_observer_public_target(fixture_target)
+        self.goal = SegmentedGoalEvidenceCollector(
+            revision=fixture.value["release_sha"],
+            release_sha256=fixture.value["release_artifact_sha256"],
+            run_id=fixture.value["run_id"],
+            fixture_sha256=fixture.sha256,
+            valid_from_unix_ms=fixture.value["valid_from_unix_ms"],
+            valid_until_unix_ms=fixture.value["valid_until_unix_ms"],
+            public_target=observer_target,
+            owner_user_id=fixture.value["owner_id"],
+            api_observer_config_sha256=(
+                self.primary.plan.artifacts["plugin_config"].sha256
+            ),
+            gateway_uid=self.plan.identities.gateway_uid,
+            gateway_gid=self.plan.identities.gateway_gid,
+        )
+
+    @property
+    def frames(self) -> Any:
+        return self.primary.frames
+
+    def start(self) -> None:
+        if self.goal is None:
+            _fail("goal_collector_not_configured")
+        self.primary.start()
+        try:
+            self.goal.start()
+        except BaseException:
+            self.primary.close()
+            raise
+
+    def wait_session_end(self, timeout: float = 600.0) -> None:
+        self.primary.wait_session_end(timeout=timeout)
+
+    def retire_historical_api_observer(
+        self,
+        *,
+        deadline: float,
+    ) -> Mapping[str, Any]:
+        if self.goal is None:
+            _fail("goal_collector_not_configured")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _fail("api_observer_retirement_timeout")
+        self.primary.wait_session_end(timeout=remaining)
+        frames = self.primary.frames
+        if not frames or frames[-1].value.get("event") != "session_end":
+            _fail("api_observer_retirement_without_terminal")
+        return self.goal.publish_api_observer_retirement()
+
+    def controlled_gateway_restart(
+        self,
+        *,
+        deadline: float,
+        pre_restart_validator: Callable[[Sequence[Any]], bool],
+        runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    ) -> tuple[Mapping[str, Any], Any]:
+        if self.goal is None:
+            _fail("goal_collector_not_configured")
+        retirement = self.retire_historical_api_observer(deadline=deadline)
+        observation = self.goal.controlled_gateway_restart(
+            deadline=deadline,
+            pre_restart_validator=pre_restart_validator,
+            runner=runner,
+        )
+        return retirement, observation
+
+    def close(self) -> None:
+        errors: list[BaseException] = []
+        try:
+            self.primary.close()
+        except BaseException as exc:
+            errors.append(exc)
+        if self.goal is not None:
+            try:
+                self.goal.close()
+            except BaseException as exc:
+                errors.append(exc)
+        if errors:
+            raise BaseExceptionGroup("capability collector cleanup failed", errors)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.primary, name)
 
 
 def trust_producer_foundation(
@@ -677,9 +933,7 @@ def trust_producer_foundation(
     try:
         validated = validate_producer_foundation(
             value,
-            pinned_owner_public_key_ed25519_hex=(
-                pinned_owner_public_key_ed25519_hex
-            ),
+            pinned_owner_public_key_ed25519_hex=(pinned_owner_public_key_ed25519_hex),
             pinned_owner_public_key_source_sha256=(
                 pinned_owner_public_key_source_sha256
             ),
@@ -688,12 +942,8 @@ def trust_producer_foundation(
         raise CapabilityLiveDriverError("producer_foundation_invalid") from exc
     return TrustedProducerFoundation(
         value=copy.deepcopy(validated),
-        pinned_owner_public_key_ed25519_hex=(
-            pinned_owner_public_key_ed25519_hex
-        ),
-        pinned_owner_public_key_source_sha256=(
-            pinned_owner_public_key_source_sha256
-        ),
+        pinned_owner_public_key_ed25519_hex=(pinned_owner_public_key_ed25519_hex),
+        pinned_owner_public_key_source_sha256=(pinned_owner_public_key_source_sha256),
         sha256=producer_foundation_sha256(validated),
     )
 
@@ -750,23 +1000,18 @@ def _validate_activated_fleet(
         }:
             _fail("producer_activation_invalid")
         unsigned = {
-            key: item
-            for key, item in receipt.items()
-            if key != "activation_sha256"
+            key: item for key, item in receipt.items() if key != "activation_sha256"
         }
         if (
-            receipt["schema"]
-            != PRODUCER_ENDPOINT_ACTIVATION_SCHEMA
+            receipt["schema"] != PRODUCER_ENDPOINT_ACTIVATION_SCHEMA
             or receipt["role"] != role
             or receipt["readiness_sha256"] != readiness["readiness_sha256"]
-            or receipt["main_pid"]
-            != readiness["endpoint_readiness"][role]["main_pid"]
+            or receipt["main_pid"] != readiness["endpoint_readiness"][role]["main_pid"]
             or type(receipt["activated_at_unix_ms"]) is not int
             or not readiness["observed_at_unix_ms"]
             <= receipt["activated_at_unix_ms"]
             <= now_ms
-            or receipt["activation_sha256"]
-            != _sha256_bytes(_canonical_bytes(unsigned))
+            or receipt["activation_sha256"] != _sha256_bytes(_canonical_bytes(unsigned))
         ):
             _fail("producer_activation_invalid")
     return copy.deepcopy(readiness)
@@ -792,6 +1037,10 @@ def build_reviewed_fixture(
         "schema",
         "run_id",
         "owner_id",
+        "full_canary_terminal_receipt",
+        "full_canary_terminal_receipt_sha256",
+        "original_full_canary_owner_approval_sha256",
+        "plan_publication_receipt_sha256",
         "valid_from_unix_ms",
         "valid_until_unix_ms",
         "public_discord_target",
@@ -810,9 +1059,7 @@ def build_reviewed_fixture(
     try:
         foundation = validate_producer_foundation(
             producer_foundation,
-            pinned_owner_public_key_ed25519_hex=(
-                pinned_owner_public_key_ed25519_hex
-            ),
+            pinned_owner_public_key_ed25519_hex=(pinned_owner_public_key_ed25519_hex),
             pinned_owner_public_key_source_sha256=(
                 pinned_owner_public_key_source_sha256
             ),
@@ -820,9 +1067,26 @@ def build_reviewed_fixture(
     except Exception as exc:
         raise CapabilityLiveDriverError("producer_foundation_invalid") from exc
     foundation_sha256 = producer_foundation_sha256(foundation)
+    try:
+        plan_publication = load_bound_plan_publication_receipt(plan)
+    except Exception as exc:
+        raise CapabilityLiveDriverError("plan_publication_receipt_invalid") from exc
     keys = foundation["authority_keys"]
     if (
         authority["schema"] != FIXTURE_PUBLICATION_AUTHORITY_SCHEMA
+        or not isinstance(authority["run_id"], str)
+        or _UUID_RE.fullmatch(authority["run_id"]) is None
+        or authority["full_canary_terminal_receipt"]
+        != plan.full_canary_terminal_receipt
+        or authority["full_canary_terminal_receipt_sha256"]
+        != plan.full_canary_terminal_receipt_sha256
+        or authority["original_full_canary_owner_approval_sha256"]
+        != plan.original_full_canary_owner_approval_sha256
+        or not isinstance(authority["plan_publication_receipt_sha256"], str)
+        or re.fullmatch(r"[0-9a-f]{64}", authority["plan_publication_receipt_sha256"])
+        is None
+        or authority["plan_publication_receipt_sha256"]
+        != plan_publication["receipt_sha256"]
         or authority["producer_foundation_sha256"] != foundation_sha256
         or authority["owner_key_id"] != keys.get("owner", {}).get("key_id")
         or authority["signature_algorithm"] != "sshsig-ed25519-sha512"
@@ -861,19 +1125,13 @@ def build_reviewed_fixture(
         plan, "bitrix_operational_edge_service_identity_sha256", None
     )
     bitrix_contract = {
-        "revision": getattr(
-            plan, "bitrix_operational_edge_revision", None
-        ),
-        "service_unit": getattr(
-            plan, "bitrix_operational_edge_service_unit", None
-        ),
+        "revision": getattr(plan, "bitrix_operational_edge_revision", None),
+        "service_unit": getattr(plan, "bitrix_operational_edge_service_unit", None),
         "service_identity_sha256": bitrix_edge_identity,
         "asset_manifest_sha256": getattr(
             plan, "bitrix_operational_edge_asset_manifest_sha256", None
         ),
-        "asset_names": list(
-            getattr(plan, "bitrix_operational_edge_asset_names", ())
-        ),
+        "asset_names": list(getattr(plan, "bitrix_operational_edge_asset_names", ())),
         "asset_manifest_path": str(
             getattr(
                 plan,
@@ -904,18 +1162,12 @@ def build_reviewed_fixture(
             getattr(plan, "bitrix_operational_edge_rendered_trust_path", "")
         ),
         "identity_bootstrap": {
-            "service_user": getattr(
-                plan, "bitrix_operational_edge_service_user", None
-            ),
+            "service_user": getattr(plan, "bitrix_operational_edge_service_user", None),
             "service_group": getattr(
                 plan, "bitrix_operational_edge_service_group", None
             ),
-            "service_uid": getattr(
-                plan, "bitrix_operational_edge_service_uid", None
-            ),
-            "service_gid": getattr(
-                plan, "bitrix_operational_edge_service_gid", None
-            ),
+            "service_uid": getattr(plan, "bitrix_operational_edge_service_uid", None),
+            "service_gid": getattr(plan, "bitrix_operational_edge_service_gid", None),
             "socket_client_group": getattr(
                 plan, "bitrix_operational_edge_socket_client_group", None
             ),
@@ -931,9 +1183,7 @@ def build_reviewed_fixture(
         "credential_projection": {
             "name": "bitrix-webhook-url",
             "source_path": evidence_contract.BITRIX_WEBHOOK_SOURCE_PATH,
-            "projected_path": (
-                evidence_contract.BITRIX_WEBHOOK_PROJECTION_PATH
-            ),
+            "projected_path": (evidence_contract.BITRIX_WEBHOOK_PROJECTION_PATH),
             "bind_target_path": evidence_contract.BITRIX_WEBHOOK_SOURCE_PATH,
             "source_owner_uid": 0,
             "source_owner_gid": 0,
@@ -944,9 +1194,7 @@ def build_reviewed_fixture(
         },
         "receipt_key_contract": {
             "private_credential_name": "receipt-private-key",
-            "private_source_path": (
-                evidence_contract.BITRIX_RECEIPT_PRIVATE_KEY_PATH
-            ),
+            "private_source_path": (evidence_contract.BITRIX_RECEIPT_PRIVATE_KEY_PATH),
             "private_projection_path": (
                 evidence_contract.BITRIX_RECEIPT_PRIVATE_KEY_PROJECTION_PATH
             ),
@@ -961,9 +1209,7 @@ def build_reviewed_fixture(
                 plan, "bitrix_operational_edge_rendered_trust_sha256", None
             ),
             "writer_public_key_credential_name": "writer-public-key",
-            "writer_public_key_source_path": (
-                evidence_contract.WRITER_PUBLIC_KEY_PATH
-            ),
+            "writer_public_key_source_path": (evidence_contract.WRITER_PUBLIC_KEY_PATH),
             "writer_public_key_projection_path": (
                 evidence_contract.WRITER_PUBLIC_KEY_PROJECTION_PATH
             ),
@@ -1004,24 +1250,18 @@ def build_reviewed_fixture(
         or bitrix_contract["asset_names"]
         != list(evidence_contract.BITRIX_OPERATIONAL_EDGE_ASSET_NAMES)
         or bitrix_contract["asset_manifest_path"]
-        != (
-            f"{plan.release_root}/ops/muncho/runtime/"
-            "operational-assets/manifest.json"
-        )
-        or plan.release_root
-        != Path("/opt/muncho-canary-releases") / plan.revision
+        != (f"{plan.release_root}/ops/muncho/runtime/operational-assets/manifest.json")
+        or plan.release_root != Path("/opt/muncho-canary-releases") / plan.revision
         or bitrix_contract["rendered_unit_path"]
         != evidence_contract.BITRIX_OPERATIONAL_EDGE_UNIT_PATH
         or bitrix_contract["rendered_config_path"]
         != evidence_contract.BITRIX_OPERATIONAL_EDGE_CONFIG_PATH
         or bitrix_contract["rendered_trust_path"]
         != evidence_contract.BITRIX_OPERATIONAL_EDGE_TRUST_PATH
-        or bitrix_contract["credential_binding"]
-        != "bitrix_operational_edge_webhook"
+        or bitrix_contract["credential_binding"] != "bitrix_operational_edge_webhook"
         or any(
             not isinstance(bitrix_contract[field], str)
-            or re.fullmatch(r"[0-9a-f]{64}", bitrix_contract[field])
-            is None
+            or re.fullmatch(r"[0-9a-f]{64}", bitrix_contract[field]) is None
             for field in (
                 "service_identity_sha256",
                 "asset_manifest_sha256",
@@ -1043,39 +1283,50 @@ def build_reviewed_fixture(
         )
         or bitrix_contract["identity_bootstrap"]["service_gid"]
         == bitrix_contract["identity_bootstrap"]["socket_client_gid"]
-        or not isinstance(
-            bitrix_contract["identity_bootstrap"]["receipt_sha256"], str
-        )
+        or not isinstance(bitrix_contract["identity_bootstrap"]["receipt_sha256"], str)
         or re.fullmatch(
             r"[0-9a-f]{64}",
             bitrix_contract["identity_bootstrap"]["receipt_sha256"],
         )
         is None
-        or not isinstance(
-            bitrix_contract["receipt_key_contract"]["public_key_id"], str
-        )
+        or not isinstance(bitrix_contract["receipt_key_contract"]["public_key_id"], str)
         or re.fullmatch(
             r"[0-9a-f]{64}",
             bitrix_contract["receipt_key_contract"]["public_key_id"],
         )
         is None
         or not isinstance(
-            bitrix_contract["receipt_key_contract"][
-                "key_bootstrap_receipt_sha256"
-            ],
+            bitrix_contract["receipt_key_contract"]["key_bootstrap_receipt_sha256"],
             str,
         )
         or re.fullmatch(
             r"[0-9a-f]{64}",
-            bitrix_contract["receipt_key_contract"][
-                "key_bootstrap_receipt_sha256"
-            ],
+            bitrix_contract["receipt_key_contract"]["key_bootstrap_receipt_sha256"],
         )
         is None
     ):
         _fail("bitrix_operational_edge_assets_not_packaged")
     if foundation.get("bitrix_operational_edge_contract") != bitrix_contract:
         _fail("bitrix_operational_edge_foundation_mismatch")
+    rendered_gateway_config = render_gateway_config(plan)
+    if _sha256_bytes(rendered_gateway_config) != plan.gateway_config_sha256:
+        _fail("fixture_gateway_config_projection_invalid")
+    loaded_gateway_config = yaml.safe_load(rendered_gateway_config)
+    if not isinstance(loaded_gateway_config, Mapping):
+        _fail("fixture_gateway_config_projection_invalid")
+    semantic_config_contract = evidence_contract.build_semantic_config_contract(
+        loaded_gateway_config
+    )
+    required_toolsets = list(evidence_contract.REQUIRED_TOOLSETS)
+    discord_bot_identities = {
+        "production_bot_user_id": PRODUCTION_DISCORD_BOT_USER_ID,
+        "connector_bot_user_id": plan.connector_bot_user_id,
+        "routeback_bot_user_id": plan.routeback_bot_user_id,
+    }
+    role_topology = evidence_contract.build_capability_role_topology_contract(
+        public_discord_target=target,
+        discord_bot_identities=discord_bot_identities,
+    )
     fixture = {
         "schema": FIXTURE_SCHEMA,
         "release_sha": plan.revision,
@@ -1083,9 +1334,17 @@ def build_reviewed_fixture(
         "release_artifact_sha256": plan.release_artifact_sha256,
         "capability_plan_sha256": plan.sha256,
         "full_canary_plan_sha256": full_plan.sha256,
-        "installed_wheel_manifest_sha256": (
-            plan.runtime_dependency_manifest_sha256
+        "full_canary_terminal_receipt": copy.deepcopy(
+            dict(plan.full_canary_terminal_receipt)
         ),
+        "full_canary_terminal_receipt_sha256": (
+            plan.full_canary_terminal_receipt_sha256
+        ),
+        "original_full_canary_owner_approval_sha256": (
+            plan.original_full_canary_owner_approval_sha256
+        ),
+        "plan_publication_receipt_sha256": authority["plan_publication_receipt_sha256"],
+        "installed_wheel_manifest_sha256": (plan.runtime_dependency_manifest_sha256),
         "effective_config_sha256": plan.gateway_config_sha256,
         "tool_inventory_sha256": _sha256_bytes(
             _canonical_bytes({"toolsets": list(evidence_contract.REQUIRED_TOOLSETS)})
@@ -1093,9 +1352,7 @@ def build_reviewed_fixture(
         "run_id": authority["run_id"],
         "owner_id": authority["owner_id"],
         "host_identity_sha256": host.get("host_identity_sha256"),
-        "business_edge_service_identity_sha256": (
-            bitrix_edge_identity
-        ),
+        "business_edge_service_identity_sha256": (bitrix_edge_identity),
         "bitrix_operational_edge_contract": bitrix_contract,
         "valid_from_unix_ms": valid_from,
         "valid_until_unix_ms": valid_until,
@@ -1108,13 +1365,20 @@ def build_reviewed_fixture(
             "adaptive_max_effort": "max",
             "max_turns": 90,
         },
-        "required_toolsets": list(evidence_contract.REQUIRED_TOOLSETS),
+        "semantic_config_contract": semantic_config_contract,
+        "semantic_config_contract_sha256": _sha256_bytes(
+            _canonical_bytes(semantic_config_contract)
+        ),
+        "required_toolsets": required_toolsets,
+        "required_toolsets_sha256": _sha256_bytes(
+            _canonical_bytes({"toolsets": required_toolsets})
+        ),
         "public_discord_target": copy.deepcopy(dict(target)),
-        "discord_bot_identities": {
-            "production_bot_user_id": PRODUCTION_DISCORD_BOT_USER_ID,
-            "connector_bot_user_id": plan.connector_bot_user_id,
-            "routeback_bot_user_id": plan.routeback_bot_user_id,
-        },
+        "discord_bot_identities": discord_bot_identities,
+        "capability_role_topology_contract": role_topology,
+        "capability_role_topology_contract_sha256": _sha256_bytes(
+            _canonical_bytes(role_topology)
+        ),
         "authority_keys": copy.deepcopy(dict(keys)),
     }
     digest = _sha256_bytes(_canonical_bytes(fixture))
@@ -1145,12 +1409,8 @@ def install_reviewed_fixture(
     fixture = build_reviewed_fixture(
         authority,
         producer_foundation=producer_foundation,
-        pinned_owner_public_key_ed25519_hex=(
-            pinned_owner_public_key_ed25519_hex
-        ),
-        pinned_owner_public_key_source_sha256=(
-            pinned_owner_public_key_source_sha256
-        ),
+        pinned_owner_public_key_ed25519_hex=(pinned_owner_public_key_ed25519_hex),
+        pinned_owner_public_key_source_sha256=(pinned_owner_public_key_source_sha256),
         plan=plan,
         full_plan=full_plan,
         receipt_root=receipt_root,
@@ -1195,9 +1455,17 @@ def install_reviewed_fixture(
         "release_sha": fixture["release_sha"],
         "capability_plan_sha256": plan.sha256,
         "full_canary_plan_sha256": full_plan.sha256,
-        "producer_foundation_sha256": fixture[
-            "producer_foundation_sha256"
-        ],
+        "full_canary_terminal_receipt": copy.deepcopy(
+            dict(plan.full_canary_terminal_receipt)
+        ),
+        "full_canary_terminal_receipt_sha256": (
+            plan.full_canary_terminal_receipt_sha256
+        ),
+        "original_full_canary_owner_approval_sha256": (
+            plan.original_full_canary_owner_approval_sha256
+        ),
+        "plan_publication_receipt_sha256": fixture["plan_publication_receipt_sha256"],
+        "producer_foundation_sha256": fixture["producer_foundation_sha256"],
         "authority_sha256": authority_sha256,
         "fixture_path": str(destination),
         "fixture_sha256": fixture_sha256,
@@ -1245,26 +1513,23 @@ def _validate_fixture_plan_binding(
         or fixture["release_sha"] != plan.revision
         or fixture["release_sha"] != full_plan.revision
         or fixture["release_root"] != str(plan.release_root)
-        or fixture["release_root"]
-        != str(full_plan.release["artifact_root"])
+        or fixture["release_root"] != str(full_plan.release["artifact_root"])
         or fixture["release_artifact_sha256"] != plan.release_artifact_sha256
-        or fixture["release_artifact_sha256"]
-        != full_plan.release["artifact_sha256"]
+        or fixture["release_artifact_sha256"] != full_plan.release["artifact_sha256"]
         or fixture["capability_plan_sha256"] != plan.sha256
         or fixture["full_canary_plan_sha256"] != full_plan.sha256
+        or fixture["full_canary_terminal_receipt"] != plan.full_canary_terminal_receipt
+        or fixture["full_canary_terminal_receipt_sha256"]
+        != plan.full_canary_terminal_receipt_sha256
+        or fixture["original_full_canary_owner_approval_sha256"]
+        != plan.original_full_canary_owner_approval_sha256
         or fixture["effective_config_sha256"] != plan.gateway_config_sha256
         or fixture["business_edge_service_identity_sha256"]
-        != getattr(
-            plan, "bitrix_operational_edge_service_identity_sha256", None
-        )
+        != getattr(plan, "bitrix_operational_edge_service_identity_sha256", None)
         or fixture["bitrix_operational_edge_contract"]
         != {
-            "revision": getattr(
-                plan, "bitrix_operational_edge_revision", None
-            ),
-            "service_unit": getattr(
-                plan, "bitrix_operational_edge_service_unit", None
-            ),
+            "revision": getattr(plan, "bitrix_operational_edge_revision", None),
+            "service_unit": getattr(plan, "bitrix_operational_edge_service_unit", None),
             "service_identity_sha256": getattr(
                 plan,
                 "bitrix_operational_edge_service_identity_sha256",
@@ -1353,12 +1618,8 @@ def _validate_fixture_plan_binding(
             "credential_projection": {
                 "name": "bitrix-webhook-url",
                 "source_path": evidence_contract.BITRIX_WEBHOOK_SOURCE_PATH,
-                "projected_path": (
-                    evidence_contract.BITRIX_WEBHOOK_PROJECTION_PATH
-                ),
-                "bind_target_path": (
-                    evidence_contract.BITRIX_WEBHOOK_SOURCE_PATH
-                ),
+                "projected_path": (evidence_contract.BITRIX_WEBHOOK_PROJECTION_PATH),
+                "bind_target_path": (evidence_contract.BITRIX_WEBHOOK_SOURCE_PATH),
                 "source_owner_uid": 0,
                 "source_owner_gid": 0,
                 "source_mode": "0400",
@@ -1377,9 +1638,7 @@ def _validate_fixture_plan_binding(
                 "private_owner_uid": 0,
                 "private_owner_gid": 0,
                 "private_mode": "0400",
-                "public_path": (
-                    evidence_contract.BITRIX_OPERATIONAL_EDGE_TRUST_PATH
-                ),
+                "public_path": (evidence_contract.BITRIX_OPERATIONAL_EDGE_TRUST_PATH),
                 "public_key_id": getattr(
                     plan,
                     "bitrix_operational_edge_receipt_public_key_id",
@@ -1460,12 +1719,8 @@ def publish_reviewed_fixture(
 
     foundation = trust_producer_foundation(
         producer_foundation,
-        pinned_owner_public_key_ed25519_hex=(
-            pinned_owner_public_key_ed25519_hex
-        ),
-        pinned_owner_public_key_source_sha256=(
-            pinned_owner_public_key_source_sha256
-        ),
+        pinned_owner_public_key_ed25519_hex=(pinned_owner_public_key_ed25519_hex),
+        pinned_owner_public_key_source_sha256=(pinned_owner_public_key_source_sha256),
     )
     if (
         foundation.value["release_sha"] != plan.revision
@@ -1488,7 +1743,7 @@ def publish_reviewed_fixture(
     if value.get("producer_foundation_sha256") != foundation.sha256:
         _fail("fixture_producer_foundation_mismatch")
     run_id = value["run_id"]
-    if _SAFE_ID_RE.fullmatch(run_id) is None:
+    if _UUID_RE.fullmatch(run_id) is None:
         _fail("reviewed_fixture_invalid")
     receipt_path = _fixture_publication_receipt_path(
         root=publication_root,
@@ -1517,9 +1772,7 @@ def publish_reviewed_fixture(
         uid=uid,
         gid=gid,
     )
-    receipt = _strict_json(
-        receipt_raw, "fixture_publication_receipt_invalid"
-    )
+    receipt = _strict_json(receipt_raw, "fixture_publication_receipt_invalid")
     authority_sha256 = receipt.get("authority_sha256")
     if (
         not isinstance(authority_sha256, str)
@@ -1631,6 +1884,30 @@ class FixedReceiptInbox:
     def assert_empty(self) -> None:
         if any(os.path.lexists(self.path(slot.name)) for slot in RECEIPT_SLOTS):
             _fail("receipt_inbox_not_fresh")
+
+    def load_if_present(self, name: str) -> dict[str, Any] | None:
+        """Stable-read one fixed slot without waiting or accepting discovery."""
+
+        slot = _SLOT_BY_NAME.get(name)
+        if slot is None:
+            _fail("receipt_slot_invalid")
+        path = self.path(name)
+        if not os.path.lexists(path):
+            return None
+        uid, gid = self.role_identities[slot.role]
+        raw = _stable_read(
+            path,
+            maximum=MAX_RECEIPT_BYTES,
+            uid=uid,
+            gid=gid,
+        )
+        value = _strict_json(raw, "signed_receipt_invalid")
+        if (
+            value.get("schema") != SIGNED_RECEIPT_SCHEMA
+            or value.get("authority_role") != slot.role
+        ):
+            _fail("signed_receipt_invalid")
+        return value
 
     def wait(
         self,
@@ -1811,7 +2088,9 @@ class RestartWatcher:
         if self.thread.is_alive():
             _fail("worker_restart_watcher_stuck")
         if self.error is not None:
-            raise CapabilityLiveDriverError("worker_restart_checkpoint_missing") from self.error
+            raise CapabilityLiveDriverError(
+                "worker_restart_checkpoint_missing"
+            ) from self.error
         if self.restart_receipt is None:
             _fail("worker_restart_checkpoint_missing")
         return self.restart_receipt
@@ -1944,8 +2223,7 @@ def _observer_cleanup_payload(
     facts = publication["facts"]
     if (
         not isinstance(facts, Mapping)
-        or facts.get("schema")
-        != "muncho-production-capability-cleanup-facts.v1"
+        or facts.get("schema") != "muncho-production-capability-cleanup-facts.v1"
         or publication.get("facts_mode") != "0440"
         or production_diff.get("run_id") != fixture.value["run_id"]
         or production_diff.get("fixture_sha256") != fixture.sha256
@@ -1967,9 +2245,7 @@ def _observer_cleanup_payload(
         "non_observer_services_state_sha256": proof[
             "non_observer_services_state_sha256"
         ],
-        "gateway_observer_signer_identity": facts[
-            "observer_signer_identity"
-        ],
+        "gateway_observer_signer_identity": facts["observer_signer_identity"],
         "credential_consumer_stop_proof": proof,
         "credential_leases": [
             "api_control",
@@ -1981,32 +2257,20 @@ def _observer_cleanup_payload(
         ],
         "credential_leases_retired": True,
         "retirements": facts["retirements"],
-        "retirement_receipt_sha256s": facts[
-            "retirement_receipt_sha256s"
-        ],
+        "retirement_receipt_sha256s": facts["retirement_receipt_sha256s"],
         "credential_absence": facts["credential_absence"],
         "credentials_absent": True,
-        "bitrix_receipt_key_retirement": facts[
-            "bitrix_receipt_key_retirement"
-        ],
-        "bitrix_receipt_key_absence": facts[
-            "bitrix_receipt_key_absence"
-        ],
+        "bitrix_receipt_key_retirement": facts["bitrix_receipt_key_retirement"],
+        "bitrix_receipt_key_absence": facts["bitrix_receipt_key_absence"],
         "discord_credential_topology": {
             "connector_service_unit": "muncho-discord-connector.service",
-            "connector_credential_lease": (
-                "discord_public_session_bot_token"
-            ),
+            "connector_credential_lease": ("discord_public_session_bot_token"),
             "connector_credential_scope": (
                 "ordinary_public_ingress_and_session_replies"
             ),
             "routeback_service_unit": "muncho-discord-egress.service",
-            "routeback_credential_lease": (
-                "discord_canonical_routeback_bot_token"
-            ),
-            "routeback_credential_scope": (
-                "canonical_public_routeback_only"
-            ),
+            "routeback_credential_lease": ("discord_canonical_routeback_bot_token"),
+            "routeback_credential_scope": ("canonical_public_routeback_only"),
         },
         "browser_session_retired": True,
         "isolated_worker_lease_cleanup_verified": True,
@@ -2046,6 +2310,7 @@ def _build_gateway_observer_payloads(
     fixture: PublishedFixture,
     source_projection: Mapping[str, Any],
     model_proposal_cores: Mapping[str, Mapping[str, Any]],
+    goal_continuation_evidence: Mapping[str, Any],
     non_observer_receipts: Mapping[str, Mapping[str, Any]],
 ) -> Mapping[str, Mapping[str, Any]]:
     """Join fixed signed facts to the model-authored proposal mechanically."""
@@ -2057,21 +2322,15 @@ def _build_gateway_observer_payloads(
     }
     if (
         not isinstance(source_projection, Mapping)
-        or set(model_proposal_cores)
-        != {"workspace_gateway", "failure_gateway"}
+        or set(model_proposal_cores) != {"workspace_gateway", "failure_gateway"}
         or not required_receipts.issubset(non_observer_receipts)
     ):
         _fail("gateway_observer_payload_sources_invalid")
-    workspace_core = copy.deepcopy(
-        dict(model_proposal_cores["workspace_gateway"])
-    )
-    failure_core = copy.deepcopy(
-        dict(model_proposal_cores["failure_gateway"])
-    )
-    if (
-        set(workspace_core) != set(_WORKSPACE_MODEL_PROPOSAL_CORE_FIELDS)
-        or set(failure_core) != set(_FAILURE_MODEL_PROPOSAL_CORE_FIELDS)
-    ):
+    workspace_core = copy.deepcopy(dict(model_proposal_cores["workspace_gateway"]))
+    failure_core = copy.deepcopy(dict(model_proposal_cores["failure_gateway"]))
+    if set(workspace_core) != set(_WORKSPACE_MODEL_PROPOSAL_CORE_FIELDS) or set(
+        failure_core
+    ) != set(_FAILURE_MODEL_PROPOSAL_CORE_FIELDS):
         _fail("gateway_observer_model_proposal_invalid")
     try:
         owner_receipt = non_observer_receipts["workspace_owner"]
@@ -2125,12 +2384,11 @@ def _build_gateway_observer_payloads(
         terminal = writer["terminal_ctw"]
         source_terminal = source_projection["api_terminal_event_identity"]
         runtime_source = source_projection["runtime_source_identity"]
-        proposal_identities = source_projection[
-            "model_proposal_core_identities"
-        ]
+        proposal_identities = source_projection["model_proposal_core_identities"]
         frame_records = source_projection["frame_records"]
-        owner_receipt_sha256 = _sha256_bytes(
-            _canonical_bytes(owner_receipt)
+        owner_receipt_sha256 = _sha256_bytes(_canonical_bytes(owner_receipt))
+        goal_identity = build_goal_continuation_native_identity(
+            goal_continuation_evidence
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise CapabilityLiveDriverError(
@@ -2143,32 +2401,26 @@ def _build_gateway_observer_payloads(
         or not isinstance(proposal_identities, Mapping)
         or not isinstance(frame_records, list)
         or not frame_records
+        or goal_identity != source_projection.get("goal_continuation_identity")
         or _sha256_bytes(_canonical_bytes(workspace_core))
-        != proposal_identities.get("workspace_gateway", {}).get(
-            "core_sha256"
-        )
+        != proposal_identities.get("workspace_gateway", {}).get("core_sha256")
         or _sha256_bytes(_canonical_bytes(failure_core))
         != proposal_identities.get("failure_gateway", {}).get("core_sha256")
         or workspace_core["session_id"] != owner["session_id"]
         or workspace_core["session_id"] != writer["session_id"]
-        or workspace_core["capability_epoch_sha256"]
-        != owner["capability_epoch_sha256"]
+        or workspace_core["capability_epoch_sha256"] != owner["capability_epoch_sha256"]
         or workspace_core["capability_epoch_sha256"]
         != writer["capability_epoch_sha256"]
         or workspace_core["owner_grant_id"] != owner["approval_id"]
         or workspace_core["owner_grant_id"] != writer["owner_grant_id"]
         or workspace_core["owner_grant_sha256"] != owner_receipt_sha256
-        or workspace_core["owner_grant_sha256"]
-        != writer["owner_grant_sha256"]
-        or workspace_core["used_command_sha256s"]
-        != owner["command_sha256s"]
-        or workspace_core["consumed_command_sha256s"]
-        != owner["command_sha256s"]
+        or workspace_core["owner_grant_sha256"] != writer["owner_grant_sha256"]
+        or workspace_core["used_command_sha256s"] != owner["command_sha256s"]
+        or workspace_core["consumed_command_sha256s"] != owner["command_sha256s"]
         or workspace_core["consumed_command_sha256s"]
         != writer["consumed_command_sha256s"]
         or workspace_core["terminal_plan_id"] != terminal.get("plan_id")
-        or workspace_core["terminal_plan_revision"]
-        != terminal.get("revision")
+        or workspace_core["terminal_plan_revision"] != terminal.get("revision")
         or workspace_core["replayed_mutation_count"]
         != terminal.get("replayed_mutation_count")
         or owner["observed_at_unix_ms"] > writer["observed_at_unix_ms"]
@@ -2183,24 +2435,33 @@ def _build_gateway_observer_payloads(
         "release_sha": fixture.value["release_sha"],
         "fixture_sha256": fixture.sha256,
     }
-    runtime_observed_at = min(
-        record["observed_at_unix_ms"] for record in frame_records
-    )
+    runtime_observed_at = min(record["observed_at_unix_ms"] for record in frame_records)
     runtime_payload = {
         "schema": evidence_contract.RUNTIME_RECEIPT_SCHEMA,
         **common,
         "observed_at_unix_ms": runtime_observed_at,
         "host_identity_sha256": fixture.value["host_identity_sha256"],
-        "release_artifact_sha256": fixture.value[
-            "release_artifact_sha256"
-        ],
+        "release_artifact_sha256": fixture.value["release_artifact_sha256"],
         "installed_wheel_manifest_sha256": fixture.value[
             "installed_wheel_manifest_sha256"
         ],
         "effective_config_sha256": fixture.value["effective_config_sha256"],
         "tool_inventory_sha256": fixture.value["tool_inventory_sha256"],
         **copy.deepcopy(dict(fixture.value["model_route"])),
+        "semantic_config_contract": copy.deepcopy(
+            dict(fixture.value["semantic_config_contract"])
+        ),
+        "semantic_config_contract_sha256": fixture.value[
+            "semantic_config_contract_sha256"
+        ],
         "toolsets": list(fixture.value["required_toolsets"]),
+        "ordered_toolsets_sha256": fixture.value["required_toolsets_sha256"],
+        "capability_role_topology_contract": copy.deepcopy(
+            dict(fixture.value["capability_role_topology_contract"])
+        ),
+        "capability_role_topology_contract_sha256": fixture.value[
+            "capability_role_topology_contract_sha256"
+        ],
         "kanban_auxiliary_planning_enabled": False,
         "kanban_auto_decompose": False,
         "kanban_dispatch_in_gateway": False,
@@ -2223,6 +2484,9 @@ def _build_gateway_observer_payloads(
         "observed_at_unix_ms": writer["observed_at_unix_ms"],
         "transcript_sha256": source_terminal["transcript_sha256"],
         **workspace_core,
+        "goal_continuation_evidence": copy.deepcopy(
+            dict(goal_continuation_evidence)
+        ),
     }
     failure_payload = {
         "schema": evidence_contract.FAILURE_GATEWAY_SCHEMA,
@@ -2232,7 +2496,8 @@ def _build_gateway_observer_payloads(
         **failure_core,
     }
     if not (
-        runtime_observed_at <= workspace_payload["observed_at_unix_ms"]
+        runtime_observed_at
+        <= workspace_payload["observed_at_unix_ms"]
         <= failure_payload["observed_at_unix_ms"]
     ):
         _fail("gateway_observer_payload_order_invalid")
@@ -2248,15 +2513,38 @@ FixturePublisher = Callable[[TrustedProducerFoundation], PublishedFixture]
 FleetActivator = Callable[
     [TrustedProducerFoundation, PublishedFixture], ActivatedProducerFleet
 ]
+AdmittedFleetActivator = Callable[
+    [TrustedProducerFoundation, PublishedFixture, Mapping[str, Any]],
+    ActivatedProducerFleet,
+]
 FleetRetirer = Callable[[ActivatedProducerFleet], Mapping[str, Any]]
-ProductionObservationGate = Callable[
-    [str, PublishedFixture, float], Mapping[str, Any]
+ApiAdmissionAuthorityGate = Callable[
+    [
+        Mapping[str, Any],
+        Mapping[str, Any],
+        TrustedProducerFoundation,
+        PublishedFixture,
+        float,
+    ],
+    Mapping[str, Any],
+]
+ProductionObservationGate = Callable[[str, PublishedFixture, float], Mapping[str, Any]]
+GoalContinuationGate = Callable[
+    [
+        TrustedProducerFoundation,
+        PublishedFixture,
+        Mapping[str, Any],
+        Mapping[str, Any],
+        float,
+    ],
+    tuple[Mapping[str, Any], Mapping[str, Any]],
 ]
 GatewayObserverSourcePublisher = Callable[
     [
         TrustedProducerFoundation,
         PublishedFixture,
         SSEConversation,
+        Mapping[str, Any],
         Mapping[str, Any],
         Mapping[str, Any],
         Mapping[str, Any],
@@ -2278,12 +2566,14 @@ class HonestCapabilityCanaryDriver:
         full_plan: FullCanaryPlan,
         lifecycle: CapabilityCanaryLifecycle,
         capability_approval: Any,
-        full_approval: Any,
         producer_foundation_check: FoundationChecker,
         fixture_publisher: FixturePublisher,
         producer_fleet_activator: FleetActivator,
+        admitted_producer_fleet_activator: AdmittedFleetActivator | None = None,
+        api_admission_authority_gate: ApiAdmissionAuthorityGate | None = None,
         producer_fleet_retirer: FleetRetirer,
         production_observation_gate: ProductionObservationGate,
+        goal_continuation_gate: GoalContinuationGate,
         gateway_observer_source_publisher: GatewayObserverSourcePublisher,
         inbox_factory: InboxFactory,
         collector: Any,
@@ -2298,6 +2588,9 @@ class HonestCapabilityCanaryDriver:
         receipt_timeout_seconds: float = DEFAULT_RECEIPT_TIMEOUT_SECONDS,
         now_ms: Callable[[], int] = lambda: int(time.time() * 1000),
         session_key_factory: Callable[[], str] = lambda: secrets.token_urlsafe(32),
+        api_admission_server: Callable[..., Mapping[str, Any]] = (
+            serve_api_server_capability_admission_once
+        ),
     ) -> None:
         if not callable(producer_foundation_check):
             _fail("producer_foundation_missing")
@@ -2307,21 +2600,30 @@ class HonestCapabilityCanaryDriver:
             _fail("producer_retirement_missing")
         if not callable(production_observation_gate):
             _fail("production_observation_gate_missing")
+        if not callable(goal_continuation_gate):
+            _fail("goal_continuation_gate_missing")
         if not callable(gateway_observer_source_publisher):
             _fail("gateway_observer_source_publisher_missing")
         self.plan = plan
         self.full_plan = full_plan
         self.lifecycle = lifecycle
         self.capability_approval = capability_approval
-        self.full_approval = full_approval
         self.producer_foundation_check = producer_foundation_check
         self.fixture_publisher = fixture_publisher
         self.producer_fleet_activator = producer_fleet_activator
+        if (admitted_producer_fleet_activator is None) != (
+            api_admission_authority_gate is None
+        ):
+            _fail("api_admission_coordinator_incomplete")
+        if not callable(api_admission_server):
+            _fail("api_admission_coordinator_invalid")
+        self.admitted_producer_fleet_activator = admitted_producer_fleet_activator
+        self.api_admission_authority_gate = api_admission_authority_gate
+        self.api_admission_server = api_admission_server
         self.producer_fleet_retirer = producer_fleet_retirer
         self.production_observation_gate = production_observation_gate
-        self.gateway_observer_source_publisher = (
-            gateway_observer_source_publisher
-        )
+        self.goal_continuation_gate = goal_continuation_gate
+        self.gateway_observer_source_publisher = gateway_observer_source_publisher
         self.inbox_factory = inbox_factory
         self.collector = collector
         self.client_factory = client_factory
@@ -2351,11 +2653,11 @@ class HonestCapabilityCanaryDriver:
             ),
         )
         fixture = self.fixture_publisher(foundation)
-        if (
-            fixture.value.get("producer_foundation_sha256")
-            != foundation.sha256
-        ):
+        if fixture.value.get("producer_foundation_sha256") != foundation.sha256:
             _fail("fixture_producer_foundation_mismatch")
+        configure_goal = getattr(self.collector, "configure_goal", None)
+        if callable(configure_goal):
+            configure_goal(foundation, fixture)
         inbox = self.inbox_factory(fixture)
         inbox.prepare()
         inbox.assert_empty()
@@ -2388,28 +2690,19 @@ class HonestCapabilityCanaryDriver:
         production_before: Mapping[str, Any] | None = None
         production_diff: Mapping[str, Any] | None = None
         lifecycle_start_attempted = False
-        try:
-            production_before = self.production_observation_gate(
-                "before", fixture, deadline
-            )
-            if (
-                not isinstance(production_before, Mapping)
-                or production_before.get("phase") != "before"
-                or production_before.get("run_id")
-                != fixture.value["run_id"]
-                or production_before.get("fixture_sha256") != fixture.sha256
-            ):
-                _fail("production_before_observation_invalid")
-            self.collector.start()
-            lifecycle_start_attempted = True
-            lifecycle_start_result = self.lifecycle.start(
-                self.capability_approval,
-                self.full_approval,
-            )
-            if not isinstance(lifecycle_start_result, Mapping):
-                _fail("capability_lifecycle_start_invalid")
-            services_started = True
-            activated = self.producer_fleet_activator(foundation, fixture)
+        admission_input_retirement: Mapping[str, Any] | None = None
+        admission_context: dict[str, Any] = {}
+        admission_errors: list[BaseException] = []
+        admission_results: list[Mapping[str, Any]] = []
+        admission_thread: threading.Thread | None = None
+        admission_input_retirer_callback: Callable[[], Mapping[str, Any]] | None = (
+            None
+        )
+
+        def begin_activated_fleet(activated: ActivatedProducerFleet) -> None:
+            nonlocal producer_fleet
+            nonlocal producer_readiness
+            nonlocal producer_pump_thread
             producer_fleet = activated
             producer_readiness = _validate_activated_fleet(
                 activated,
@@ -2421,6 +2714,7 @@ class HonestCapabilityCanaryDriver:
                 now_ms=self.now_ms(),
             )
             if callable(activated.pre_cleanup_pump):
+
                 def run_pre_cleanup_pump() -> None:
                     try:
                         producer_pump_receipts.update(
@@ -2438,6 +2732,35 @@ class HonestCapabilityCanaryDriver:
                     daemon=False,
                 )
                 producer_pump_thread.start()
+        try:
+            production_before = self.production_observation_gate(
+                "before", fixture, deadline
+            )
+            if (
+                not isinstance(production_before, Mapping)
+                or production_before.get("phase") != "before"
+                or production_before.get("run_id") != fixture.value["run_id"]
+                or production_before.get("fixture_sha256") != fixture.sha256
+            ):
+                _fail("production_before_observation_invalid")
+            self.collector.start()
+            lifecycle_start_attempted = True
+            deferred_admission = self.admitted_producer_fleet_activator is not None
+            lifecycle_start_result = self.lifecycle.start(
+                self.capability_approval,
+                **(
+                    {"defer_producers_until_api_admission": True}
+                    if deferred_admission
+                    else {}
+                ),
+            )
+            if not isinstance(lifecycle_start_result, Mapping):
+                _fail("capability_lifecycle_start_invalid")
+            services_started = True
+            if not deferred_admission:
+                begin_activated_fleet(
+                    self.producer_fleet_activator(foundation, fixture)
+                )
             control_key, _control_provenance_sha256 = self.control_key_reader()
             session_key = self.session_key_factory()
             client = self.client_factory(control_key, session_key)
@@ -2449,6 +2772,225 @@ class HonestCapabilityCanaryDriver:
                 restart=self.restart,
             )
             watcher.start()
+            if deferred_admission:
+                gateway = lifecycle_start_result.get("gateway_runtime_readiness")
+                if (
+                    not isinstance(gateway, Mapping)
+                    or type(gateway.get("gateway_pid")) is not int
+                    or type(gateway.get("gateway_uid")) is not int
+                    or type(gateway.get("gateway_gid")) is not int
+                ):
+                    _fail("api_admission_gateway_identity_invalid")
+                expected_session_id = f"capability_{fixture.value['run_id']}"
+                installed = InstalledProducerFoundation(
+                    value=foundation.value,
+                    pinned_owner_public_key_ed25519_hex=(
+                        foundation.pinned_owner_public_key_ed25519_hex
+                    ),
+                    pinned_owner_public_key_source_sha256=(
+                        foundation.pinned_owner_public_key_source_sha256
+                    ),
+                )
+                writer_gid = getattr(
+                    getattr(self.full_plan, "identities", None),
+                    "writer_gid",
+                    None,
+                )
+                if type(writer_gid) is not int or writer_gid <= 0:
+                    _fail("api_admission_writer_identity_invalid")
+
+                def admission_authorizer(
+                    request: Mapping[str, Any],
+                ) -> Mapping[str, Any]:
+                    catalog = build_live_probe_catalog(
+                        fixture=fixture,
+                        request=request,
+                    )
+                    assert self.api_admission_authority_gate is not None
+                    owner_authority = self.api_admission_authority_gate(
+                        request,
+                        catalog,
+                        foundation,
+                        fixture,
+                        deadline,
+                    )
+                    validated = validate_api_admission_owner_authority(
+                        owner_authority,
+                        challenge=request,
+                        fixture=fixture.value,
+                        fixture_sha256=fixture.sha256,
+                        installed_foundation=installed,
+                        now_ms=self.now_ms(),
+                    )
+                    if validated["catalog"] != catalog:
+                        _fail("api_admission_owner_catalog_mismatch")
+
+                    def publish() -> Mapping[str, Any]:
+                        return provision_api_admission_owner_authority(
+                            validated["authority"],
+                            challenge=request,
+                            fixture=fixture.value,
+                            fixture_sha256=fixture.sha256,
+                            installed_foundation=installed,
+                            writer_gid=writer_gid,
+                            now_ms=self.now_ms(),
+                        )
+
+                    publication = publish()
+                    prepared, replayed = self.lifecycle.prepare_api_admission_inputs(
+                        self.capability_approval,
+                        expected_gateway_pid=gateway["gateway_pid"],
+                        expected_run_id=fixture.value["run_id"],
+                        expected_session_id=expected_session_id,
+                        expected_capability_epoch_sha256=request[
+                            "capability_epoch_sha256"
+                        ],
+                        expected_catalog_sha256=catalog["catalog_sha256"],
+                        expected_owner_authority_sha256=validated[
+                            "authority_sha256"
+                        ],
+                        admission_publisher=publish,
+                    )
+                    if replayed != publication:
+                        _fail("api_admission_publication_replay_drifted")
+                    admission_context.update({
+                        "request": copy.deepcopy(dict(request)),
+                        "catalog": copy.deepcopy(dict(catalog)),
+                        "validated_owner_authority": copy.deepcopy(dict(validated)),
+                        "publication": copy.deepcopy(dict(publication)),
+                        "prepared": copy.deepcopy(dict(prepared)),
+                        "publish": publish,
+                    })
+                    return prepared
+
+                def retire_admission_inputs() -> Mapping[str, Any]:
+                    nonlocal admission_input_retirement
+                    validated = admission_context.get("validated_owner_authority")
+                    publication = admission_context.get("publication")
+                    if not isinstance(validated, Mapping) or not isinstance(
+                        publication, Mapping
+                    ):
+                        _fail("api_admission_retirement_context_missing")
+                    admission_input_retirement = retire_api_admission_inputs(
+                        catalog=validated["catalog"],
+                        validated_pregrant=validated["validated_pregrant"],
+                        owner_authority=validated["authority"],
+                        publication=publication,
+                        fixture=fixture.value,
+                        installed_foundation=installed,
+                        writer_gid=writer_gid,
+                        retired_at_unix_ms=self.now_ms(),
+                    )
+                    return admission_input_retirement
+
+                admission_input_retirer_callback = retire_admission_inputs
+
+                def admission_committer(
+                    request: Mapping[str, Any],
+                    _authorization: Mapping[str, Any],
+                    ready_ack: Mapping[str, Any],
+                ) -> Mapping[str, Any]:
+                    validated = admission_context.get("validated_owner_authority")
+                    publish = admission_context.get("publish")
+                    if not isinstance(validated, Mapping) or not callable(publish):
+                        _fail("api_admission_authorization_state_missing")
+                    assert self.admitted_producer_fleet_activator is not None
+
+                    def activate() -> ActivatedProducerFleet:
+                        return self.admitted_producer_fleet_activator(
+                            foundation,
+                            fixture,
+                            validated,
+                        )
+
+                    pending, activated, publication = (
+                        self.lifecycle.start_admitted_producers(
+                            self.capability_approval,
+                            expected_gateway_pid=gateway["gateway_pid"],
+                            expected_run_id=fixture.value["run_id"],
+                            expected_session_id=expected_session_id,
+                            expected_capability_epoch_sha256=request[
+                                "capability_epoch_sha256"
+                            ],
+                            expected_catalog_sha256=validated["catalog"][
+                                "catalog_sha256"
+                            ],
+                            expected_owner_authority_sha256=validated[
+                                "authority_sha256"
+                            ],
+                            api_admission_ready_ack=ready_ack,
+                            admission_publisher=publish,
+                            producer_fleet_activator=activate,
+                            producer_activation_retirer=(
+                                lambda value: self.producer_fleet_retirer(value)
+                            ),
+                            admission_input_retirer=retire_admission_inputs,
+                        )
+                    )
+                    if publication != admission_context.get("publication"):
+                        _fail("api_admission_publication_commit_drifted")
+                    begin_activated_fleet(activated)
+                    admission_context["runtime_pending"] = copy.deepcopy(
+                        dict(pending)
+                    )
+                    return pending
+
+                def admission_finalizer(
+                    _request: Mapping[str, Any],
+                    commitment: Mapping[str, Any],
+                    commit_ack: Mapping[str, Any],
+                ) -> Mapping[str, Any]:
+                    nonlocal lifecycle_start_result
+                    pending = admission_context.get("runtime_pending")
+                    if not isinstance(pending, Mapping) or pending != commitment:
+                        _fail("api_admission_runtime_commitment_drifted")
+                    lifecycle_start_result = (
+                        self.lifecycle.finalize_api_admission_gateway_commit(
+                            self.capability_approval,
+                            runtime_pending_receipt=pending,
+                            api_admission_commit_ack=commit_ack,
+                        )
+                    )
+                    admission_context["gateway_ack"] = copy.deepcopy(
+                        dict(lifecycle_start_result)
+                    )
+                    return lifecycle_start_result
+
+                def run_admission_server() -> None:
+                    try:
+                        admission_results.append(
+                            self.api_admission_server(
+                                expected_peer=PeerIdentity(
+                                    gateway["gateway_pid"],
+                                    gateway["gateway_uid"],
+                                    gateway["gateway_gid"],
+                                ),
+                                expected_session_id=expected_session_id,
+                                authorizer=admission_authorizer,
+                                committer=admission_committer,
+                                finalizer=admission_finalizer,
+                                timeout_seconds=min(
+                                    180.0,
+                                    max(1.0, deadline - time.monotonic()),
+                                ),
+                            )
+                        )
+                    except BaseException as exc:
+                        admission_errors.append(exc)
+
+                admission_thread = threading.Thread(
+                    target=run_admission_server,
+                    name="capability-api-admission-coordinator",
+                    daemon=False,
+                )
+                admission_thread.start()
+                if self.api_admission_server is serve_api_server_capability_admission_once:
+                    while not os.path.lexists(DEFAULT_API_ADMISSION_SOCKET):
+                        if admission_errors:
+                            raise admission_errors[0]
+                        if time.monotonic() >= deadline:
+                            _fail("api_admission_socket_timeout")
+                        time.sleep(0.01)
             try:
                 conversation = client.run(
                     fixture={"task_policy": {"prompt": reviewed_objective_prompt()}},
@@ -2460,18 +3002,57 @@ class HonestCapabilityCanaryDriver:
                     clear()
                 control_key = None
                 session_key = None
+            if admission_thread is not None:
+                admission_thread.join(max(0.0, deadline - time.monotonic()))
+                if admission_thread.is_alive():
+                    _fail("api_admission_coordinator_timeout")
+                if admission_errors:
+                    raise admission_errors[0]
+                if (
+                    len(admission_results) != 1
+                    or producer_fleet is None
+                    or producer_readiness is None
+                    or lifecycle_start_result.get("gateway_commit_acknowledged")
+                    is not True
+                    or lifecycle_start_result.get("model_release_allowed") is not True
+                    or lifecycle_start_result.get("model_callback_released") is not False
+                ):
+                    _fail("api_admission_coordinator_result_invalid")
             restart_receipt = watcher.finish()
             checkpoint_at = watcher.checkpoint_at_unix_ms
-            observer_source_publication = (
-                self.gateway_observer_source_publisher(
+            goal_continuation_evidence, production_diff = (
+                self.goal_continuation_gate(
                     foundation,
                     fixture,
-                    conversation,
-                    restart_receipt,
                     lifecycle_start_result,
                     producer_readiness,
                     deadline,
                 )
+            )
+            if (
+                not isinstance(goal_continuation_evidence, Mapping)
+                or not isinstance(production_diff, Mapping)
+                or production_diff.get("schema")
+                != "muncho-production-capability-production-diff.v1"
+                or production_diff.get("run_id") != fixture.value["run_id"]
+                or production_diff.get("fixture_sha256") != fixture.sha256
+                or production_diff.get("changed_surfaces") != []
+                or production_diff.get("production_mutation_observed") is not False
+                or goal_continuation_evidence.get("terminal", {}).get(
+                    "production_diff_sha256"
+                )
+                != production_diff.get("diff_sha256")
+            ):
+                _fail("goal_continuation_gate_invalid")
+            observer_source_publication = self.gateway_observer_source_publisher(
+                foundation,
+                fixture,
+                conversation,
+                restart_receipt,
+                lifecycle_start_result,
+                producer_readiness,
+                goal_continuation_evidence,
+                deadline,
             )
             if (
                 not isinstance(observer_source_publication, Mapping)
@@ -2484,9 +3065,7 @@ class HonestCapabilityCanaryDriver:
             ):
                 _fail("gateway_observer_source_publication_invalid")
             if producer_pump_thread is not None:
-                producer_pump_thread.join(
-                    max(0.0, deadline - time.monotonic())
-                )
+                producer_pump_thread.join(max(0.0, deadline - time.monotonic()))
                 producer_pump_joined = not producer_pump_thread.is_alive()
                 if not producer_pump_joined:
                     _fail("producer_pre_cleanup_pump_timeout")
@@ -2494,8 +3073,10 @@ class HonestCapabilityCanaryDriver:
                     raise CapabilityLiveDriverError(
                         "producer_pre_cleanup_pump_failed"
                     ) from producer_pump_errors[0]
-            if callable(activated.observer_pump):
-                activated.observer_pump(
+            if producer_fleet is None:
+                _fail("producer_activation_missing")
+            if callable(producer_fleet.observer_pump):
+                producer_fleet.observer_pump(
                     deadline,
                     producer_pump_cancel,
                 )
@@ -2532,32 +3113,28 @@ class HonestCapabilityCanaryDriver:
                 checkpoint_at_unix_ms=checkpoint_at,
             )
             if producer_pump_thread is not None:
-                producer_pump_thread.join(
-                    timeout=max(0.0, deadline - time.monotonic())
-                )
+                producer_pump_thread.join(timeout=max(0.0, deadline - time.monotonic()))
                 producer_pump_joined = True
                 if producer_pump_thread.is_alive():
                     _fail("producer_pre_cleanup_pump_timeout")
                 if producer_pump_errors:
                     raise producer_pump_errors[0]
-            production_diff = self.production_observation_gate(
-                "after", fixture, deadline
-            )
-            if (
-                not isinstance(production_diff, Mapping)
-                or production_diff.get("schema")
-                != "muncho-production-capability-production-diff.v1"
-                or production_diff.get("run_id")
-                != fixture.value["run_id"]
-                or production_diff.get("fixture_sha256") != fixture.sha256
-                or production_diff.get("changed_surfaces") != []
-                or production_diff.get("production_mutation_observed")
-                is not False
-            ):
-                _fail("production_after_observation_invalid")
         except BaseException as exc:
             primary = exc
         finally:
+            if admission_thread is not None:
+                if admission_thread.is_alive():
+                    admission_thread.join(
+                        max(0.0, min(185.0, deadline - time.monotonic()))
+                    )
+                if admission_thread.is_alive():
+                    cleanup_errors.append(
+                        RuntimeError("API admission coordinator did not stop")
+                    )
+                else:
+                    cleanup_errors.extend(
+                        error for error in admission_errors if error is not primary
+                    )
             if watcher is not None:
                 try:
                     watcher.shutdown_before_cleanup()
@@ -2565,7 +3142,11 @@ class HonestCapabilityCanaryDriver:
                     cleanup_errors.append(exc)
             if producer_pump_thread is not None and not producer_pump_joined:
                 producer_pump_cancel.set()
-                producer_pump_thread.join(timeout=5.0)
+                # The exact production endpoint client has a <=30s socket
+                # deadline.  Give that bounded call time to unwind after the
+                # cancel signal; cleanup must never race a still-running
+                # receipt publisher that can use the live producer services.
+                producer_pump_thread.join(timeout=31.0)
                 if producer_pump_thread.is_alive():
                     cleanup_errors.append(
                         RuntimeError("producer receipt pump did not stop")
@@ -2582,7 +3163,11 @@ class HonestCapabilityCanaryDriver:
             # Even a failed task run must obtain the immutable production
             # after/diff while the credential-blind observer is still live.
             # Cleanup consumes that diff and therefore cannot silently skip it.
-            if services_started and producer_fleet is not None and production_diff is None:
+            if (
+                services_started
+                and producer_fleet is not None
+                and production_diff is None
+            ):
                 try:
                     production_diff = self.production_observation_gate(
                         "after",
@@ -2593,10 +3178,8 @@ class HonestCapabilityCanaryDriver:
                         not isinstance(production_diff, Mapping)
                         or production_diff.get("schema")
                         != "muncho-production-capability-production-diff.v1"
-                        or production_diff.get("run_id")
-                        != fixture.value["run_id"]
-                        or production_diff.get("fixture_sha256")
-                        != fixture.sha256
+                        or production_diff.get("run_id") != fixture.value["run_id"]
+                        or production_diff.get("fixture_sha256") != fixture.sha256
                         or production_diff.get("changed_surfaces") != []
                         or production_diff.get("production_mutation_observed")
                         is not False
@@ -2608,8 +3191,23 @@ class HonestCapabilityCanaryDriver:
             # all nine reverse-order stops plus all three overlay retirements.
             # Invoke it even after a partial lifecycle start.
             try:
+                if (
+                    producer_pump_thread is not None
+                    and producer_pump_thread.is_alive()
+                ):
+                    raise RuntimeError(
+                        "capability cleanup withheld while receipt pump is live"
+                    )
                 if producer_fleet is None:
-                    lifecycle_stop_result = self.lifecycle.stop()
+                    lifecycle_stop_result = (
+                        self.lifecycle.stop()
+                        if admission_input_retirer_callback is None
+                        else self.lifecycle.stop(
+                            admission_input_retirer=(
+                                admission_input_retirer_callback
+                            )
+                        )
+                    )
                 else:
                     if not callable(producer_fleet.cleanup_producer):
                         _fail("cleanup_observer_producer_missing")
@@ -2625,9 +3223,23 @@ class HonestCapabilityCanaryDriver:
                                 )
                             )
                         ),
+                        cleanup_receipt_loader=lambda: inbox.load_if_present(
+                            "cleanup"
+                        ),
+                        cleanup_receipt_verifier=lambda value: (
+                            evidence_contract._validate_cleanup(
+                                value,
+                                fixture=fixture.value,
+                                fixture_sha256=fixture.sha256,
+                            )
+                        ),
                         cleanup_run_id=fixture.value["run_id"],
-                        producer_activation_retirer=lambda: (
-                            self.producer_fleet_retirer(producer_fleet)
+                        cleanup_fixture_sha256=fixture.sha256,
+                        producer_activation_retirer=lambda: self.producer_fleet_retirer(
+                            producer_fleet
+                        ),
+                        admission_input_retirer=(
+                            admission_input_retirer_callback
                         ),
                     )
                     if not isinstance(lifecycle_stop_result, Mapping):
@@ -2642,8 +3254,7 @@ class HonestCapabilityCanaryDriver:
                         not isinstance(producer_retirement, Mapping)
                         or producer_retirement.get("schema")
                         != "muncho-production-capability-fleet-retirement.v1"
-                        or producer_retirement.get("run_id")
-                        != fixture.value["run_id"]
+                        or producer_retirement.get("run_id") != fixture.value["run_id"]
                         or producer_retirement.get("readiness_sha256")
                         != producer_fleet.readiness.get("readiness_sha256")
                         or producer_retirement.get("retired") is not True
@@ -2654,13 +3265,9 @@ class HonestCapabilityCanaryDriver:
                         not isinstance(cleanup_finalization, Mapping)
                         or cleanup_finalization.get("schema")
                         != evidence_contract.CLEANUP_FINALIZATION_SCHEMA
-                        or cleanup_finalization.get("run_id")
-                        != fixture.value["run_id"]
-                        or cleanup_finalization.get("fixture_sha256")
-                        != fixture.sha256
-                        or type(
-                            cleanup_finalization.get("finalized_at_unix_ms")
-                        )
+                        or cleanup_finalization.get("run_id") != fixture.value["run_id"]
+                        or cleanup_finalization.get("fixture_sha256") != fixture.sha256
+                        or type(cleanup_finalization.get("finalized_at_unix_ms"))
                         is not int
                         or not isinstance(
                             cleanup_finalization.get("finalization_sha256"), str
@@ -2674,8 +3281,7 @@ class HonestCapabilityCanaryDriver:
                 try:
                     cleanup = inbox.wait(
                         "cleanup",
-                        deadline=time.monotonic()
-                        + self.receipt_timeout_seconds,
+                        deadline=time.monotonic() + self.receipt_timeout_seconds,
                     )
                     evidence_contract._validate_cleanup(
                         cleanup,
@@ -2716,6 +3322,8 @@ class HonestCapabilityCanaryDriver:
         assert producer_retirement is not None
         assert production_before is not None
         assert production_diff is not None
+        assert lifecycle_start_result is not None
+        assert lifecycle_stop_result is not None
         receipt_times = [
             _observed_at(value)
             for value in evidence_contract._all_evidence_receipts(
@@ -2739,9 +3347,13 @@ class HonestCapabilityCanaryDriver:
             "installed_wheel_manifest_sha256": fixture.value[
                 "installed_wheel_manifest_sha256"
             ],
-            "producer_readiness_sha256": producer_readiness[
-                "readiness_sha256"
-            ],
+            "producer_readiness_sha256": producer_readiness["readiness_sha256"],
+            "producer_activation": copy.deepcopy(dict(producer_readiness)),
+            "producer_owner_authority": copy.deepcopy(dict(
+                admission_context.get("validated_owner_authority", {}).get(
+                    "authority", {}
+                )
+            )),
             "run_id": fixture.value["run_id"],
             "started_at_unix_ms": started_at,
             "api_started_at_unix_ms": api_started_at,
@@ -2750,9 +3362,7 @@ class HonestCapabilityCanaryDriver:
             "runtime_receipt": runtime,
             "bundles": bundles,
             "cleanup_receipt": cleanup,
-            "cleanup_finalization": copy.deepcopy(
-                dict(cleanup_finalization)
-            ),
+            "cleanup_finalization": copy.deepcopy(dict(cleanup_finalization)),
         }
         evidence_path, evidence_sha256 = self.evidence_publisher(fixture, evidence)
         verification = self.verifier(
@@ -2767,6 +3377,21 @@ class HonestCapabilityCanaryDriver:
             "release_sha": self.plan.revision,
             "capability_plan_sha256": self.plan.sha256,
             "full_canary_plan_sha256": self.full_plan.sha256,
+            "full_canary_terminal_receipt": copy.deepcopy(
+                dict(self.plan.full_canary_terminal_receipt)
+            ),
+            "full_canary_terminal_receipt_sha256": (
+                self.plan.full_canary_terminal_receipt_sha256
+            ),
+            "original_full_canary_owner_approval_sha256": (
+                self.plan.original_full_canary_owner_approval_sha256
+            ),
+            "plan_publication_receipt_sha256": fixture.value[
+                "plan_publication_receipt_sha256"
+            ],
+            "capability_owner_approval_sha256": (self.capability_approval.sha256),
+            "lifecycle_start_receipt_sha256": lifecycle_start_result["receipt_sha256"],
+            "lifecycle_stop_receipt_sha256": lifecycle_stop_result["receipt_sha256"],
             "run_id": fixture.value["run_id"],
             "reviewed_objective_ids": [
                 item.objective_id for item in REVIEWED_OBJECTIVES
@@ -2776,9 +3401,7 @@ class HonestCapabilityCanaryDriver:
                 _canonical_bytes(conversation.assistant_completed)
             ),
             "worker_restart_receipt": copy.deepcopy(dict(restart_receipt)),
-            "producer_retirement_receipt": copy.deepcopy(
-                dict(producer_retirement)
-            ),
+            "producer_retirement_receipt": copy.deepcopy(dict(producer_retirement)),
             "production_before_observation_sha256": production_before[
                 "observation_sha256"
             ],
@@ -2796,10 +3419,11 @@ def _build_driver() -> HonestCapabilityCanaryDriver:
     full_plan = load_full_canary_plan()
     capability_approval = load_capability_approval()
     lifecycle = CapabilityCanaryLifecycle(plan, full_plan)
-    collector = RootEvidenceCollector(full_plan)
-    owner_subject_sha256 = capability_approval.value[
-        "owner_subject_sha256"
-    ]
+    collector = CapabilityEvidenceCollectorBundle(
+        RootEvidenceCollector(full_plan),
+        plan,
+    )
+    owner_subject_sha256 = capability_approval.value["owner_subject_sha256"]
     published_markers: dict[str, Mapping[str, Any]] = {}
     observer_source_state: dict[str, Mapping[str, Any]] = {}
 
@@ -2816,15 +3440,13 @@ def _build_driver() -> HonestCapabilityCanaryDriver:
         if type(observer_gid) is not int or observer_gid <= 0:
             _fail("production_observer_identity_invalid")
         if phase not in published_markers:
-            published_markers[phase] = (
-                publish_capability_production_observation_marker(
-                    plan,
-                    phase=phase,
-                    fixture_sha256=fixture.sha256,
-                    run_id=fixture.value["run_id"],
-                    owner_subject_sha256=owner_subject_sha256,
-                    observer_gid=observer_gid,
-                )
+            published_markers[phase] = publish_capability_production_observation_marker(
+                plan,
+                phase=phase,
+                fixture_sha256=fixture.sha256,
+                run_id=fixture.value["run_id"],
+                owner_subject_sha256=owner_subject_sha256,
+                observer_gid=observer_gid,
             )
         path = (
             DEFAULT_RECEIPT_ROOT
@@ -2856,6 +3478,328 @@ def _build_driver() -> HonestCapabilityCanaryDriver:
             observer_gid=observer_gid,
         )
 
+    def goal_continuation_gate(
+        _foundation: TrustedProducerFoundation,
+        fixture: PublishedFixture,
+        _lifecycle_start_result: Mapping[str, Any],
+        producer_readiness: Mapping[str, Any],
+        deadline: float,
+    ) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
+        goal_collector = collector.goal
+        if goal_collector is None:
+            _fail("goal_continuation_collector_unavailable")
+        receipt_root = Path(
+            str(producer_readiness.get("run_receipt_root") or "")
+        ).parent
+        owner_authority = producer_readiness.get("owner_authority")
+        owner_approval_sha256 = (
+            owner_authority.get("grant_sha256")
+            if isinstance(owner_authority, Mapping)
+            else None
+        )
+        if (
+            receipt_root != DEFAULT_RECEIPT_ROOT
+            or not isinstance(owner_approval_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", owner_approval_sha256) is None
+        ):
+            _fail("goal_continuation_authority_invalid")
+
+        kickoff = (
+            "Execute the approved live durability canary through one "
+            "model-authored Canonical Task Workspace plan. Create and verify "
+            "one active plan on the current canary case, preserve its exact "
+            "case, plan, generation, revision, and resume cursor, and use the "
+            "todo tool's structured goal_outcome to continue at least twice. "
+            "Incorporate the authenticated owner direction without replacing "
+            "the plan. Keep the plan active after the second continuation so "
+            "the gateway can be restarted. After restart, recover the same "
+            "durable lineage and cursor, finish every remaining step, execute "
+            "one idempotent route_back_execute to this allowlisted public "
+            "Discord channel, require its real message receipt and verified "
+            "readback-backed route_back.sent event, then persist the completed "
+            "plan and emit structured goal_outcome complete. Never use a DM, "
+            "never mutate production, never invent a receipt, and exhaust safe "
+            "approved alternatives before reporting an exact blocker."
+        )
+        preemption_message = (
+            "Authenticated owner direction for the active canary plan: keep "
+            "the same case, plan, and goal generation; verify the durable "
+            "cursor, advance the next safe step, seal a new active revision, "
+            "and emit structured goal_outcome continue so the controlled full "
+            "gateway restart can test exact recovery."
+        )
+        challenge = goal_collector.publish_challenge(
+            receipt_root=receipt_root,
+            goal_command=f"/goal {kickoff}",
+            kickoff_message=kickoff,
+            preemption_message=preemption_message,
+        )
+        print(
+            json.dumps(
+                {
+                    "schema": "muncho-capability-goal-owner-action.v1",
+                    "stage": "goal_command",
+                    "public_target": fixture.value["public_discord_target"],
+                    "exact_message": challenge.transient_input["goal_command"],
+                    "challenge_sha256": challenge.receipt["challenge_sha256"],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
+
+        def current_connector_rows() -> Any:
+            return read_connector_rows(
+                expected_uid=plan.identities.connector_uid,
+                expected_gid=plan.identities.connector_gid,
+                expected_parent_uid=plan.identities.connector_uid,
+                expected_parent_gid=plan.identities.connector_gid,
+            )
+
+        def exact_acked_row(rows: Sequence[Any], content: str) -> Any | None:
+            matches = [
+                row
+                for row in rows
+                if row.event.content == content
+                and row.event.author_id == fixture.value["owner_id"]
+                and row.event.author_is_bot is False
+                and row.event.created_at_unix_ms
+                >= challenge.receipt["published_at_unix_ms"]
+                and row.offered_at_unix_ms
+                >= challenge.receipt["published_at_unix_ms"]
+                and row.event.target.to_mapping()
+                == normalize_goal_observer_public_target(
+                    fixture.value["public_discord_target"]
+                )
+            ]
+            if len(matches) > 1:
+                _fail("goal_continuation_ingress_ambiguous")
+            if not matches:
+                return None
+            row = matches[0]
+            return row if row.state == "acked" and row.acked_at_unix_ms else None
+
+        goal_row = None
+        while goal_row is None:
+            if time.monotonic() >= deadline:
+                _fail("goal_continuation_owner_goal_timeout")
+            goal_row = exact_acked_row(
+                current_connector_rows(),
+                challenge.transient_input["goal_command"],
+            )
+            if goal_row is None:
+                time.sleep(0.05)
+        goal_collector.wait_for_frame(
+            lambda frames: any(
+                frame.value.get("event") == "goal_pre_api_request"
+                for frame in frames
+            ),
+            deadline=deadline,
+        )
+        print(
+            json.dumps(
+                {
+                    "schema": "muncho-capability-goal-owner-action.v1",
+                    "stage": "preemption_message",
+                    "public_target": fixture.value["public_discord_target"],
+                    "exact_message": challenge.transient_input[
+                        "preemption_message"
+                    ],
+                    "challenge_sha256": challenge.receipt["challenge_sha256"],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
+
+        preemption_row = None
+        while preemption_row is None:
+            if time.monotonic() >= deadline:
+                _fail("goal_continuation_owner_preemption_timeout")
+            preemption_row = exact_acked_row(
+                current_connector_rows(),
+                challenge.transient_input["preemption_message"],
+            )
+            if preemption_row is None:
+                time.sleep(0.05)
+
+        def pre_restart_validator(frames: Sequence[Any]) -> bool:
+            outcomes = [
+                frame
+                for frame in frames
+                if frame.value.get("event") == "goal_model_outcome"
+                and frame.value.get("payload", {}).get("outcome") == "continue"
+            ]
+            if len(outcomes) < 2:
+                return False
+            first = outcomes[:2]
+            sessions = {frame.value.get("session_id") for frame in first}
+            turns = [str(frame.value.get("turn_id") or "") for frame in first]
+            if (
+                len(sessions) != 1
+                or not isinstance(next(iter(sessions)), str)
+                or not all(turns)
+                or any(
+                    frame.service_identity != first[0].service_identity
+                    for frame in first[1:]
+                )
+            ):
+                _fail("goal_continuation_pre_restart_invalid")
+            session_id = str(next(iter(sessions)))
+            try:
+                finalizations = read_goal_native_finalizations(
+                    session_id,
+                    turns,
+                    expected_uid=plan.identities.gateway_uid,
+                    expected_gid=plan.identities.gateway_gid,
+                    expected_parent_uid=plan.identities.gateway_uid,
+                    expected_parent_gid=plan.identities.gateway_gid,
+                )
+            except GoalLiveEvidenceError as exc:
+                if exc.code == "goal_native_receipt_unavailable":
+                    return False
+                raise
+            prior_after = None
+            generation_id = None
+            for frame, turn_id in zip(first, turns, strict=True):
+                intent, finalization = finalizations[turn_id]
+                state_before = intent.get("state_before")
+                state_after = finalization.get("state_after")
+                observed_generation = intent.get("goal_generation_id")
+                if generation_id is None:
+                    generation_id = observed_generation
+                if (
+                    intent.get("session_id") != session_id
+                    or finalization.get("session_id") != session_id
+                    or observed_generation != generation_id
+                    or intent.get("originating_turn_id") != turn_id
+                    or finalization.get("originating_turn_id") != turn_id
+                    or intent.get("model_outcome") != "continue"
+                    or finalization.get("model_outcome") != "continue"
+                    or intent.get("pending_outcome_exact") is not True
+                    or finalization.get("decision_verdict") != "continue"
+                    or finalization.get("should_continue") is not True
+                    or not isinstance(state_before, Mapping)
+                    or not isinstance(state_after, Mapping)
+                    or state_before.get("status") != "active"
+                    or state_after.get("status") != "active"
+                    or state_before.get("max_turns") != 0
+                    or state_after.get("max_turns") != 0
+                    or finalization.get("gateway_invocation_id")
+                    != frame.service_identity.invocation_id
+                    or finalization.get("gateway_main_pid")
+                    != frame.service_identity.main_pid
+                    or (
+                        prior_after is not None
+                        and intent.get("state_before_sha256") != prior_after
+                    )
+                ):
+                    _fail("goal_continuation_pre_restart_invalid")
+                prior_after = finalization.get("state_after_sha256")
+            return True
+
+        _retirement, restart = collector.controlled_gateway_restart(
+            deadline=deadline,
+            pre_restart_validator=pre_restart_validator,
+        )
+        frames = goal_collector.wait_for_frame(
+            lambda values: (
+                sum(
+                    frame.value.get("event") == "goal_model_outcome"
+                    and frame.value.get("payload", {}).get("outcome")
+                    == "continue"
+                    for frame in values
+                )
+                >= 2
+                and any(
+                    frame.value.get("event") == "goal_model_outcome"
+                    and frame.value.get("payload", {}).get("outcome")
+                    == "complete"
+                    and frame.service_identity == restart.post_service_identity
+                    for frame in values
+                )
+                and any(
+                    frame.value.get("event") == "goal_canonical_event"
+                    and frame.value.get("payload", {}).get("event_type")
+                    == "route_back.sent"
+                    and frame.service_identity == restart.post_service_identity
+                    for frame in values
+                )
+            ),
+            deadline=deadline,
+        )
+        outcome_frames = [
+            frame
+            for frame in frames
+            if frame.value.get("event") == "goal_model_outcome"
+        ]
+        sessions = {frame.value.get("session_id") for frame in outcome_frames}
+        turn_ids = [str(frame.value.get("turn_id") or "") for frame in outcome_frames]
+        if len(sessions) != 1 or not all(turn_ids):
+            _fail("goal_continuation_terminal_invalid")
+        session_id = str(next(iter(sessions)))
+        while True:
+            try:
+                native_receipts = read_goal_native_receipts(
+                    session_id,
+                    turn_ids,
+                    expected_uid=plan.identities.gateway_uid,
+                    expected_gid=plan.identities.gateway_gid,
+                    expected_parent_uid=plan.identities.gateway_uid,
+                    expected_parent_gid=plan.identities.gateway_gid,
+                )
+                break
+            except GoalLiveEvidenceError as exc:
+                if exc.code != "goal_native_receipt_unavailable":
+                    raise
+                if time.monotonic() >= deadline:
+                    _fail("goal_continuation_native_receipt_timeout")
+                time.sleep(0.05)
+
+        frames = goal_collector.frames
+        ended_turn_ids = {
+            str(frame.value.get("turn_id") or "")
+            for frame in frames
+            if frame.value.get("event") == "goal_turn_end"
+            and frame.value.get("payload", {}).get("completed") is True
+            and frame.value.get("payload", {}).get("interrupted") is False
+        }
+        if set(turn_ids) != ended_turn_ids:
+            _fail("goal_continuation_terminal_invalid")
+        activation = load_activation_plan(DEFAULT_WRITER_ACTIVATION_PLAN_PATH)
+        export_receipt = ActivationExecutor(activation)._run_projection_export()
+        projection_export = read_writer_projection_export(
+            activation.paths.projection_export_path,
+            expected_writer_uid=activation.identities.writer_uid,
+            expected_projector_gid=activation.identities.projector_gid,
+            export_receipt=export_receipt,
+        )
+        projection_binding = validate_goal_canonical_projection_binding(
+            frames,
+            projection_export,
+        )
+        production_diff = production_observation_gate(
+            "after", fixture, deadline
+        )
+        connector_rows = current_connector_rows()
+        evidence = build_goal_continuation_evidence(
+            fixture=fixture.value,
+            fixture_sha256=fixture.sha256,
+            owner_approval_receipt_sha256=owner_approval_sha256,
+            challenge=challenge,
+            connector_rows=connector_rows,
+            frames=frames,
+            native_receipts=native_receipts,
+            restart=restart,
+            projection_binding=projection_binding,
+            production_diff=production_diff,
+        )
+        return evidence, production_diff
+
     def gateway_observer_source_publisher(
         foundation: TrustedProducerFoundation,
         fixture: PublishedFixture,
@@ -2863,6 +3807,7 @@ def _build_driver() -> HonestCapabilityCanaryDriver:
         restart_receipt: Mapping[str, Any],
         lifecycle_start_result: Mapping[str, Any],
         producer_readiness: Mapping[str, Any],
+        goal_continuation_evidence: Mapping[str, Any],
         deadline: float,
     ) -> Mapping[str, Any]:
         remaining = max(0.0, deadline - time.monotonic())
@@ -2881,9 +3826,7 @@ def _build_driver() -> HonestCapabilityCanaryDriver:
         )
         evidence = live_preflight.get("evidence")
         gateway = (
-            evidence.get("gateway.readiness")
-            if isinstance(evidence, Mapping)
-            else None
+            evidence.get("gateway.readiness") if isinstance(evidence, Mapping) else None
         )
         connector = (
             evidence.get("discord_connector.runtime")
@@ -2907,35 +3850,33 @@ def _build_driver() -> HonestCapabilityCanaryDriver:
             _fail("gateway_observer_runtime_source_invalid")
         runtime_source_identity = {
             "gateway_process_identity_sha256": _sha256_bytes(
-                _canonical_bytes(
-                    {
-                        "service_unit": "hermes-cloud-gateway.service",
-                        "main_pid": gateway.get("gateway_pid"),
-                        "gateway_readiness_receipt_sha256": gateway.get(
-                            "receipt_sha256"
-                        ),
-                        "lifecycle_start_receipt_sha256": (
-                            lifecycle_start_result["receipt_sha256"]
-                        ),
-                    }
-                )
+                _canonical_bytes({
+                    "service_unit": "hermes-cloud-gateway.service",
+                    "main_pid": gateway.get("gateway_pid"),
+                    "gateway_readiness_receipt_sha256": gateway.get("receipt_sha256"),
+                    "lifecycle_start_receipt_sha256": (
+                        lifecycle_start_result["receipt_sha256"]
+                    ),
+                })
             ),
-            "discord_connector_readiness_sha256": connector.get(
-                "receipt_sha256"
-            ),
+            "discord_connector_readiness_sha256": connector.get("receipt_sha256"),
             "connector_bot_user_id": discord_ready["bot_user_id"],
-            "connector_bot_user_id_provenance": (
-                "discord_gateway_ready_user_id"
-            ),
+            "connector_bot_user_id_provenance": ("discord_gateway_ready_user_id"),
         }
         observed_at = max(
             int(time.time() * 1000),
             conversation.completed_at_unix_ms,
             restart_receipt.get("completed_at_unix_ms", 0),
+            int(
+                goal_continuation_evidence.get("terminal", {}).get(
+                    "completed_at_unix_ms", 0
+                )
+            ),
             *(frame.value["observed_at_unix_ms"] for frame in frames),
         )
         projection = build_gateway_observer_source_projection(
             foundation=foundation.value,
+            fixture=fixture.value,
             fixture_sha256=fixture.sha256,
             run_id=fixture.value["run_id"],
             producer_readiness=producer_readiness,
@@ -2946,6 +3887,7 @@ def _build_driver() -> HonestCapabilityCanaryDriver:
             api_terminal_event_identity=(
                 build_api_terminal_event_identity(conversation)
             ),
+            goal_continuation_evidence=goal_continuation_evidence,
             observed_at_unix_ms=observed_at,
         )
         run_id = fixture.value["run_id"]
@@ -2955,6 +3897,9 @@ def _build_driver() -> HonestCapabilityCanaryDriver:
             "projection": copy.deepcopy(dict(projection)),
             "model_proposal_cores": (
                 extract_gateway_observer_model_proposal_cores(frames)
+            ),
+            "goal_continuation_evidence": copy.deepcopy(
+                dict(goal_continuation_evidence)
             ),
         }
         return publish_gateway_observer_source_projection(
@@ -2968,9 +3913,7 @@ def _build_driver() -> HonestCapabilityCanaryDriver:
         try:
             installed = load_installed_producer_foundation()
         except Exception as exc:
-            raise CapabilityLiveDriverError(
-                "producer_foundation_unavailable"
-            ) from exc
+            raise CapabilityLiveDriverError("producer_foundation_unavailable") from exc
         return trust_producer_foundation(
             installed.value,
             pinned_owner_public_key_ed25519_hex=(
@@ -3001,14 +3944,10 @@ def _build_driver() -> HonestCapabilityCanaryDriver:
             installed = load_installed_producer_foundation()
             receipt = installed.value["receipt_contract"]
         except Exception as exc:
-            raise CapabilityLiveDriverError(
-                "producer_foundation_unavailable"
-            ) from exc
-        if (
-            fixture.value.get("producer_foundation_sha256")
-            != installed.sha256
-            or receipt.get("base_root") != str(DEFAULT_RECEIPT_ROOT)
-        ):
+            raise CapabilityLiveDriverError("producer_foundation_unavailable") from exc
+        if fixture.value.get(
+            "producer_foundation_sha256"
+        ) != installed.sha256 or receipt.get("base_root") != str(DEFAULT_RECEIPT_ROOT):
             _fail("fixture_producer_foundation_mismatch")
         return FixedReceiptInbox(
             fixture=fixture,
@@ -3030,9 +3969,10 @@ def _build_driver() -> HonestCapabilityCanaryDriver:
             ),
         )
 
-    def fleet_activator(
+    def admitted_fleet_activator(
         foundation: TrustedProducerFoundation,
         fixture: PublishedFixture,
+        validated_owner_authority: Mapping[str, Any],
     ) -> ActivatedProducerFleet:
         installed = InstalledProducerFoundation(
             value=foundation.value,
@@ -3044,6 +3984,16 @@ def _build_driver() -> HonestCapabilityCanaryDriver:
             ),
         )
         try:
+            if (
+                not isinstance(validated_owner_authority, Mapping)
+                or validated_owner_authority.get("catalog", {}).get(
+                    "fixture_sha256"
+                )
+                != fixture.sha256
+                or validated_owner_authority.get("authority", {}).get("schema")
+                != API_ADMISSION_OWNER_AUTHORITY_SCHEMA
+            ):
+                _fail("api_admission_owner_authority_invalid")
             endpoint_clients = production_endpoint_clients(installed.value)
             activated: ProductionFleetActivation = activate_production_fleet(
                 plan=plan,
@@ -3051,12 +4001,16 @@ def _build_driver() -> HonestCapabilityCanaryDriver:
                 installed_foundation=installed,
                 fixture=fixture.value,
                 fixture_sha256=fixture.sha256,
+                owner_catalog_sha256=validated_owner_authority["catalog"][
+                    "catalog_sha256"
+                ],
+                owner_authority_sha256=validated_owner_authority[
+                    "authority_sha256"
+                ],
                 endpoint_clients=endpoint_clients,
             )
         except Exception as exc:
-            raise CapabilityLiveDriverError(
-                "producer_activation_unavailable"
-            ) from exc
+            raise CapabilityLiveDriverError("producer_activation_unavailable") from exc
         receipt_pump = ProductionReceiptPump(
             installed_foundation=installed,
             readiness=activated.readiness,
@@ -3067,6 +4021,9 @@ def _build_driver() -> HonestCapabilityCanaryDriver:
             slot
             for slot in PRODUCTION_PRE_CLEANUP_PUMP_SLOTS
             if SLOT_ROLE[slot] != "gateway_observer"
+        )
+        endpoint_non_observer_slots = tuple(
+            slot for slot in non_observer_slots if SLOT_ROLE[slot] in ENDPOINT_ROLES
         )
         observer_slots = tuple(
             slot
@@ -3080,10 +4037,14 @@ def _build_driver() -> HonestCapabilityCanaryDriver:
             cancel: threading.Event,
         ) -> Mapping[str, Mapping[str, Any]]:
             produced = native_pump.pump_slots(
-                non_observer_slots,
+                endpoint_non_observer_slots,
                 deadline=deadline,
                 cancel=cancel,
             )
+            produced = {
+                **produced,
+                "workspace_owner": receipt_pump.read_staged_owner_receipt(),
+            }
             if set(produced) != set(non_observer_slots):
                 _fail("producer_pre_cleanup_receipts_incomplete")
             non_observer_receipts.update(produced)
@@ -3099,15 +4060,17 @@ def _build_driver() -> HonestCapabilityCanaryDriver:
                 _fail("gateway_observer_pump_timeout")
             run_id = fixture.value["run_id"]
             state = observer_source_state.get(run_id)
-            if (
-                not isinstance(state, Mapping)
-                or set(non_observer_receipts) != set(non_observer_slots)
+            if not isinstance(state, Mapping) or set(non_observer_receipts) != set(
+                non_observer_slots
             ):
                 _fail("gateway_observer_payload_sources_unavailable")
             payloads = _build_gateway_observer_payloads(
                 fixture=fixture,
                 source_projection=state["projection"],
                 model_proposal_cores=state["model_proposal_cores"],
+                goal_continuation_evidence=state[
+                    "goal_continuation_evidence"
+                ],
                 non_observer_receipts=non_observer_receipts,
             )
             if tuple(payloads) != observer_slots:
@@ -3122,13 +4085,11 @@ def _build_driver() -> HonestCapabilityCanaryDriver:
 
         return ActivatedProducerFleet(
             readiness=activated.readiness,
-            endpoint_activation_receipts=(
-                activated.endpoint_activation_receipts
-            ),
+            endpoint_activation_receipts=(activated.endpoint_activation_receipts),
             pre_cleanup_pump=pump_non_observer,
             observer_pump=pump_observer,
-            cleanup_producer=lambda payload: (
-                native_pump.pump_cleanup_payload(payload=payload)
+            cleanup_producer=lambda payload: native_pump.pump_cleanup_payload(
+                payload=payload
             ),
         )
 
@@ -3136,30 +4097,92 @@ def _build_driver() -> HonestCapabilityCanaryDriver:
         activated: ActivatedProducerFleet,
     ) -> Mapping[str, Any]:
         try:
+            receipt = load_installed_producer_foundation().value[
+                "receipt_contract"
+            ]
+            readiness = activated.readiness
             return retire_fleet_readiness(
-                expected_readiness_sha256=activated.readiness[
-                    "readiness_sha256"
-                ]
+                expected_readiness_sha256=readiness["readiness_sha256"],
+                run_id=readiness["run_id"],
+                retirement_directory=Path(readiness["run_receipt_root"]),
+                retirement_uid=receipt["run_directory_uid"],
+                retirement_gid=receipt["run_directory_gid"],
+                retirement_mode=receipt["run_directory_mode"],
+                expected_foundation_sha256=readiness["foundation_sha256"],
+                expected_capability_plan_sha256=readiness[
+                    "capability_plan_sha256"
+                ],
+                expected_full_canary_plan_sha256=readiness[
+                    "full_canary_plan_sha256"
+                ],
+                retired_at_unix_ms=int(time.time() * 1000),
             )
         except Exception as exc:
-            raise CapabilityLiveDriverError(
-                "producer_retirement_unavailable"
-            ) from exc
+            raise CapabilityLiveDriverError("producer_retirement_unavailable") from exc
+
+    def api_admission_authority_gate(
+        request: Mapping[str, Any],
+        catalog: Mapping[str, Any],
+        foundation: TrustedProducerFoundation,
+        fixture: PublishedFixture,
+        deadline: float,
+    ) -> Mapping[str, Any]:
+        installed = InstalledProducerFoundation(
+            value=foundation.value,
+            pinned_owner_public_key_ed25519_hex=(
+                foundation.pinned_owner_public_key_ed25519_hex
+            ),
+            pinned_owner_public_key_source_sha256=(
+                foundation.pinned_owner_public_key_source_sha256
+            ),
+        )
+        requested_at = int(time.time() * 1000)
+        owner_wait_seconds = min(170.0, max(0.0, deadline - time.monotonic()))
+        response_deadline = min(
+            fixture.value["valid_until_unix_ms"],
+            requested_at + int(owner_wait_seconds * 1000),
+        )
+        if response_deadline <= requested_at:
+            _fail("api_admission_owner_authority_timeout")
+        challenge = build_api_admission_owner_challenge(
+            request=request,
+            catalog=catalog,
+            fixture=fixture.value,
+            fixture_sha256=fixture.sha256,
+            requested_at_unix_ms=requested_at,
+            owner_response_deadline_unix_ms=response_deadline,
+        )
+        publish_api_admission_owner_challenge(
+            challenge,
+            fixture=fixture.value,
+            fixture_sha256=fixture.sha256,
+            installed_foundation=installed,
+        )
+        validated = wait_for_staged_api_admission_owner_authority(
+            challenge=challenge,
+            fixture=fixture.value,
+            fixture_sha256=fixture.sha256,
+            installed_foundation=installed,
+            deadline=min(deadline, time.monotonic() + owner_wait_seconds),
+        )
+        return copy.deepcopy(dict(validated["authority"]))
 
     return HonestCapabilityCanaryDriver(
         plan=plan,
         full_plan=full_plan,
         lifecycle=lifecycle,
         capability_approval=capability_approval,
-        full_approval=load_full_canary_approval(),
         producer_foundation_check=foundation_check,
         fixture_publisher=fixture_publisher,
-        producer_fleet_activator=fleet_activator,
+        producer_fleet_activator=lambda _foundation, _fixture: _fail(
+            "api_admission_required"
+        ),
+        admitted_producer_fleet_activator=admitted_fleet_activator,
+        api_admission_authority_gate=api_admission_authority_gate,
         producer_fleet_retirer=fleet_retirer,
         production_observation_gate=production_observation_gate,
-        gateway_observer_source_publisher=(
-            gateway_observer_source_publisher
-        ),
+        goal_continuation_gate=goal_continuation_gate,
+        gateway_observer_source_publisher=(gateway_observer_source_publisher),
         inbox_factory=inbox_factory,
         collector=collector,
         client_factory=lambda control, session: LoopbackCanaryClient(
@@ -3188,9 +4211,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raw = sys.stdin.buffer.read(MAX_FIXTURE_BYTES + 1)
             if not raw or len(raw) > MAX_FIXTURE_BYTES or sys.stdin.buffer.read(1):
                 _fail("fixture_publication_authority_invalid")
-            authority = _strict_json(
-                raw, "fixture_publication_authority_invalid"
-            )
+            authority = _strict_json(raw, "fixture_publication_authority_invalid")
             plan = load_capability_plan()
             full_plan = load_full_canary_plan()
             installed = load_installed_producer_foundation()

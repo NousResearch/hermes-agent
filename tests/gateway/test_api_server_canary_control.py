@@ -1265,7 +1265,43 @@ async def test_http_client_cannot_supply_epoch_and_revoke_precedes_clear(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+    admission_order: list[str] = []
+    admitted: dict[str, str] = {}
+
+    def admit(session_id: str, epoch_sha256: str) -> dict:
+        admission_order.append("admit")
+        admitted.update({"session_id": session_id, "epoch": epoch_sha256})
+        unsigned = {
+            "schema": "hermes.api.run-admission.v1",
+            "session_id": session_id,
+            "capability_epoch_sha256": epoch_sha256,
+            "challenge_sha256": "c" * 64,
+            "ready_receipt_sha256": "d" * 64,
+            "commit_receipt_sha256": "e" * 64,
+            "commit_ack_sha256": "f" * 64,
+            "finalization_sha256": "1" * 64,
+            "stage": "gateway_commit_acknowledged_pre_model",
+            "gateway_commit_acknowledged": True,
+            "model_release_allowed": True,
+            "model_callback_released": False,
+        }
+        return {
+            **unsigned,
+            "receipt_sha256": hashlib.sha256(
+                json.dumps(
+                    unsigned,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest(),
+        }
+
+    adapter = APIServerAdapter(
+        PlatformConfig(enabled=True),
+        run_admission_callback=admit,
+    )
     adapter._session_db = SessionDB(tmp_path / "state.db")
     session_id = adapter._session_db.create_session("epoch-stream", "api_server")
     during_agent = {}
@@ -1282,6 +1318,7 @@ async def test_http_client_cannot_supply_epoch_and_revoke_precedes_clear(
             self.session_id = session_id
 
         def run_conversation(self, **_kwargs):
+            admission_order.append("model")
             during_agent.update(trusted_runtime_envelope())
             return {
                 "final_response": "done",
@@ -1338,12 +1375,98 @@ async def test_http_client_cannot_supply_epoch_and_revoke_precedes_clear(
 
     assert "event: run.completed" in body
     assert cleanup_order == ["durable_revoke", "local_clear"]
+    assert admission_order == ["admit", "model"]
+    assert admitted == {
+        "session_id": session_id,
+        "epoch": during_agent["capability_epoch_sha256"],
+    }
     assert during_agent == during_revoke == during_local_clear
     assert during_agent["session_id"] == session_id
     assert during_agent["session_key_sha256"]
     assert during_agent["capability_epoch_sha256"] != client_epoch
     assert trusted_runtime_envelope() == {}
     adapter._session_db.close()
+
+
+@pytest.mark.asyncio
+async def test_session_entry_creates_no_agent_when_model_release_is_unproven(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def malformed_admission(session_id: str, epoch_sha256: str) -> dict:
+        return {
+            "schema": "hermes.api.run-admission.v1",
+            "session_id": session_id,
+            "capability_epoch_sha256": epoch_sha256,
+            "model_release_allowed": False,
+        }
+
+    adapter = APIServerAdapter(
+        PlatformConfig(enabled=True),
+        run_admission_callback=malformed_admission,
+    )
+    adapter._session_db = SessionDB(tmp_path / "state.db")
+    session_id = adapter._session_db.create_session("blocked", "api_server")
+    created: list[bool] = []
+    monkeypatch.setattr(
+        adapter,
+        "_create_agent",
+        lambda **_kwargs: created.append(True),
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_revoke_api_server_run_capabilities",
+        _local_revoke_receipt,
+    )
+
+    app = _session_app(adapter)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post(
+            f"/api/sessions/{session_id}/chat/stream",
+            json={"message": "must stay blocked"},
+        )
+        await response.text()
+
+    assert created == []
+    adapter._session_db.close()
+
+
+@pytest.mark.asyncio
+async def test_runs_entry_creates_no_agent_when_model_release_is_unproven(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unavailable_admission(_session_id: str, _epoch_sha256: str) -> dict:
+        raise RuntimeError("gateway finalization unavailable")
+
+    adapter = APIServerAdapter(
+        PlatformConfig(enabled=True),
+        run_admission_callback=unavailable_admission,
+    )
+    created: list[bool] = []
+    monkeypatch.setattr(
+        adapter,
+        "_create_agent",
+        lambda **_kwargs: created.append(True),
+    )
+    monkeypatch.setattr(
+        adapter,
+        "_revoke_api_server_run_capabilities",
+        _local_revoke_receipt,
+    )
+
+    app = _session_app(adapter)
+    async with TestClient(TestServer(app)) as client:
+        started = await client.post(
+            "/v1/runs", json={"input": "must stay blocked"}
+        )
+        run_id = (await started.json())["run_id"]
+        events_response = await client.get(f"/v1/runs/{run_id}/events")
+        events = _run_event_payloads(await events_response.text())
+        status = await (await client.get(f"/v1/runs/{run_id}")).json()
+
+    assert created == []
+    assert any(event["event"] == "run.failed" for event in events)
+    assert status["status"] == "failed"
 
 
 @pytest.mark.asyncio

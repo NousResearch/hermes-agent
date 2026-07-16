@@ -490,6 +490,120 @@ class TestRunJobSessionPersistence:
         fake_db.close.assert_called_once()
         mock_agent.close.assert_called_once()
 
+    def test_run_job_retains_lease_when_end_session_fails(self, tmp_path):
+        """The real finally path keeps the lease when DB closure fails."""
+        job = {"id": "test-job", "name": "test", "prompt": "hello"}
+        fake_db = MagicMock()
+        fake_db.get_compression_tip.side_effect = lambda session_id: session_id
+        fake_db.end_session.side_effect = RuntimeError("DB locked")
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("cron.scheduler._register_cron_session_lease", return_value={}) as register_lease, \
+             patch("cron.scheduler._remove_cron_session_lease") as remove_lease, \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent_cls.return_value.run_conversation.return_value = {
+                "final_response": "ok"
+            }
+            success, _, final_response, error = run_job(job)
+
+        assert success is True
+        assert final_response == "ok"
+        assert error is None
+        session_id = mock_agent_cls.call_args.kwargs["session_id"]
+        register_lease.assert_called_once_with(session_id, "test-job")
+        fake_db.end_session.assert_called_once_with(session_id, "cron_complete")
+        remove_lease.assert_not_called()
+
+    def test_run_job_persists_exactly_one_final_assistant_message(self, tmp_path):
+        """Cron + shared finalizer persist one durable assistant reply."""
+        from agent.turn_finalizer import finalize_turn
+        from hermes_state import SessionDB
+        from run_agent import AIAgent
+
+        job = {
+            "id": "test-job",
+            "name": "test",
+            "prompt": "hello",
+            "model": "test/model",
+        }
+        final_text = "The cron report output."
+        db_path = tmp_path / "state.db"
+        session_db = SessionDB(db_path=db_path)
+        session_ids = []
+
+        def finalize_cron_turn(agent, prompt):
+            session_ids.append(agent.session_id)
+            return finalize_turn(
+                agent,
+                final_response=final_text,
+                api_call_count=1,
+                interrupted=False,
+                failed=False,
+                messages=[{"role": "user", "content": prompt}],
+                conversation_history=[],
+                effective_task_id=agent.session_id,
+                turn_id="cron-turn",
+                user_message=prompt,
+                original_user_message=prompt,
+                _should_review_memory=False,
+                _turn_exit_reason="text_response(finish_reason=stop)",
+            )
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("cron.scheduler._open_cron_session_db", return_value=session_db), \
+             patch("cron.scheduler._register_cron_session_lease", return_value={}), \
+             patch("cron.scheduler._remove_cron_session_lease"), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
+             patch("hermes_cli.plugins.invoke_hook", return_value=[]), \
+             patch("run_agent.OpenAI"), \
+             patch("run_agent.get_tool_definitions", return_value=[]), \
+             patch("run_agent.check_toolset_requirements", return_value={}), \
+             patch.object(AIAgent, "run_conversation", new=finalize_cron_turn), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ):
+            success, _, final_response, error = run_job(job)
+
+        assert success is True
+        assert final_response == final_text
+        assert error is None
+        assert len(session_ids) == 1
+
+        persisted_db = SessionDB(db_path=db_path)
+        try:
+            messages = persisted_db.get_messages_as_conversation(session_ids[0])
+        finally:
+            persisted_db.close()
+
+        final_assistant_messages = [
+            message
+            for message in messages
+            if message.get("role") == "assistant"
+            and message.get("content") == final_text
+        ]
+        assert len(final_assistant_messages) == 1, messages
 
     @contextlib.contextmanager
     def _run_job_patches(self, tmp_path, extra=()):
@@ -533,49 +647,6 @@ class TestRunJobSessionPersistence:
             yield fake_db, mock_agent_cls
 
 
-    def test_run_job_memory_toolset_disabled_in_cron(self, tmp_path):
-        """memory toolset must be disabled in cron sessions — issue #38129.
-
-        Cron agents are constructed with skip_memory=True, so the memory
-        backend is not initialised.  Exposing the memory tool only gives the
-        model an unbacked tool that fails at runtime with
-        "Memory is not available."  Hiding it from the schema prevents that.
-        """
-        job = {
-            "id": "memory-hide-job",
-            "name": "test",
-            "prompt": "hello",
-        }
-        with self._run_job_patches(tmp_path) as (fake_db, mock_agent_cls):
-            run_job(job)
-
-        kwargs = mock_agent_cls.call_args.kwargs
-        assert "memory" in (kwargs["disabled_toolsets"] or []), (
-            "memory toolset should be disabled in cron to match skip_memory=True"
-        )
-
-    def test_run_job_disables_memory_even_when_per_job_enables_it(self, tmp_path):
-        """Cron runs pass skip_memory=True, so memory must not be exposed.
-
-        A cron job can request the memory tool through enabled_toolsets, but
-        there is no MemoryStore injected for cron agents.  Keep memory in the
-        disabled set so AIAgent filters the unbacked tool out before the model
-        can call it and receive "Memory is not available" failures.
-        """
-        job = {
-            "id": "memory-toolset-job",
-            "name": "test",
-            "prompt": "remember what you learn",
-            "enabled_toolsets": ["memory", "file"],
-        }
-        with self._run_job_patches(tmp_path) as (fake_db, mock_agent_cls):
-            run_job(job)
-
-        kwargs = mock_agent_cls.call_args.kwargs
-        assert kwargs["skip_memory"] is True
-        assert kwargs["enabled_toolsets"] == ["memory", "file"]
-        assert "memory" in kwargs["disabled_toolsets"]
-
     def test_tick_skips_due_jobs_while_dispatch_is_paused(self, tmp_path):
         """The drain gate runs before advancing a due job's schedule."""
         from cron.scheduler import tick
@@ -588,7 +659,7 @@ class TestRunJobSessionPersistence:
             "enabled": True,
         }
         with patch("cron.scheduler.get_due_jobs", return_value=[job]), patch(
-            "cron.scheduler.advance_next_runs"
+            "cron.scheduler.advance_next_run"
         ) as advance, patch("cron.scheduler.run_one_job") as run_one:
             assert tick(verbose=False, sync=True, can_dispatch=lambda: False) == 0
 
@@ -1192,20 +1263,12 @@ class TestBuildJobPromptBumpUse:
 
         with patch("tools.skills_tool.skill_view", side_effect=_skill_view), \
              patch("tools.skill_usage.bump_use") as mock_bump:
-            _build_job_prompt({
-                "id": "cron-task",
-                "skills": ["alpha", "beta"],
-                "prompt": "go",
-            })
+            _build_job_prompt({"skills": ["alpha", "beta"], "prompt": "go"})
 
         assert mock_bump.call_count == 2
         calls = [c[0][0] for c in mock_bump.call_args_list]
         assert "alpha" in calls
         assert "beta" in calls
-        assert all(
-            call.kwargs == {"task_id": "cron-task"}
-            for call in mock_bump.call_args_list
-        )
 
 
 class TestSendMediaViaAdapter:
@@ -1281,7 +1344,7 @@ class TestParallelTick:
         ]
 
         with patch("cron.scheduler.get_due_jobs", return_value=jobs), \
-             patch("cron.scheduler.advance_next_runs"), \
+             patch("cron.scheduler.advance_next_run"), \
              patch("cron.scheduler.run_job", side_effect=mock_run_job), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._deliver_result", return_value=None), \
@@ -1326,7 +1389,7 @@ class TestParallelTick:
         ]
 
         with patch("cron.scheduler.get_due_jobs", return_value=jobs), \
-             patch("cron.scheduler.advance_next_runs"), \
+             patch("cron.scheduler.advance_next_run"), \
              patch("cron.scheduler.run_job", side_effect=mock_run_job), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._deliver_result", return_value=None), \

@@ -90,6 +90,7 @@ Thread safety:
 """
 
 import asyncio
+import contextlib
 import contextvars
 import concurrent.futures
 import inspect
@@ -2296,83 +2297,84 @@ class MCPServerTask:
         # exist, which would otherwise stall the shared MCP event loop.
         await asyncio.to_thread(_kill_orphaned_mcp_children)
 
-        # Snapshot child PIDs before spawning so we can track the new one.
-        pids_before = _snapshot_child_pids()
         new_pids: set = set()
-        # Redirect subprocess stderr into a shared log file so MCP servers
-        # (FastMCP banners, slack-mcp startup JSON, etc.) don't dump onto
-        # the user's TTY and corrupt the TUI.  Preserves debuggability via
-        # ~/.hermes/logs/mcp-stderr.log.
-        _write_stderr_log_header(self.name)
-        _errlog = _get_mcp_stderr_log()
         try:
-            async with stdio_client(server_params, errlog=_errlog) as (
-                read_stream,
-                write_stream,
-            ):
-                # Capture the newly spawned subprocess PID for force-kill cleanup.
-                # Filter out non-MCP children that race into the snapshot window:
-                # slash_worker and LSP servers (jdtls/pyright/yaml-ls) are spawned
-                # directly by the gateway without start_new_session, so their pgid
-                # equals the TUI parent PID. If they leak into _stdio_pgids, the
-                # shutdown sweep's killpg() kills the TUI parent itself.
-                # See agent/lsp/client.py for the complementary start_new_session fix.
-                new_pids = _filter_mcp_children(
-                    _snapshot_child_pids() - pids_before
-                )
-                if new_pids:
-                    # Capture pgid while the child is alive — once it exits we
-                    # can no longer call ``os.getpgid`` on it, and the cleanup
-                    # sweep needs the pgid to reach any reparented descendants
-                    # (e.g. ``claude mcp serve`` spawned by a stdio wrapper).
-                    new_pgids: Dict[int, int] = {}
-                    for _pid in new_pids:
-                        try:
-                            new_pgids[_pid] = os.getpgid(_pid)
-                        except (AttributeError, ProcessLookupError, OSError):
-                            # AttributeError: Windows (os.getpgid is POSIX-only)
-                            # ProcessLookupError: child raced and already exited
-                            pass
-                    with _lock:
+            async with contextlib.AsyncExitStack() as stack:
+                async with _stdio_spawn_lock:
+                    # Snapshot child PIDs before spawning so we can track the new one.
+                    pids_before = _snapshot_child_pids()
+                    # Redirect subprocess stderr into a shared log file so MCP servers
+                    # (FastMCP banners, slack-mcp startup JSON, etc.) don't dump onto
+                    # the user's TTY and corrupt the TUI. Preserves debuggability via
+                    # ~/.hermes/logs/mcp-stderr.log.
+                    _write_stderr_log_header(self.name)
+                    _errlog = _get_mcp_stderr_log()
+                    read_stream, write_stream = await stack.enter_async_context(
+                        stdio_client(server_params, errlog=_errlog)
+                    )
+                    # Capture the newly spawned subprocess PID for force-kill cleanup.
+                    # Filter out non-MCP children that race into the snapshot window:
+                    # slash_worker and LSP servers (jdtls/pyright/yaml-ls) are spawned
+                    # directly by the gateway without start_new_session, so their pgid
+                    # equals the TUI parent PID. If they leak into _stdio_pgids, the
+                    # shutdown sweep's killpg() kills the TUI parent itself.
+                    # See agent/lsp/client.py for the complementary start_new_session fix.
+                    new_pids = _filter_mcp_children(
+                        _snapshot_child_pids() - pids_before
+                    )
+                    if new_pids:
+                        # Capture pgid while the child is alive — once it exits we
+                        # can no longer call ``os.getpgid`` on it, and the cleanup
+                        # sweep needs the pgid to reach any reparented descendants
+                        # (e.g. ``claude mcp serve`` spawned by a stdio wrapper).
+                        new_pgids: Dict[int, int] = {}
                         for _pid in new_pids:
-                            _stdio_pids[_pid] = self.name
-                        _stdio_pgids.update(new_pgids)
-                async with ClientSession(
-                    read_stream, write_stream, **sampling_kwargs
-                ) as session:
-                    # Bound the MCP handshake. A stdio server that never
-                    # completes ``initialize`` (e.g. emits a non-JSON-RPC frame
-                    # and then blocks on stdin) otherwise hangs this coroutine
-                    # forever on the background loop: ``connect_timeout`` only
-                    # bounds the caller's ``.result()`` wait, not the coroutine
-                    # itself. Because the connect never unwinds, the cleanup
-                    # ``finally`` below never runs, so the spawned child and its
-                    # stdio pipes/pidfd leak on every discovery retry — unbounded
-                    # until the gateway hits EMFILE. Timing out here converts the
-                    # hang into a normal failure, letting the ``finally`` reap the
-                    # child. See #59349.
-                    connect_timeout = float(
-                        config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
-                    )
-                    self.initialize_result = await asyncio.wait_for(
-                        session.initialize(), timeout=connect_timeout
-                    )
-                    self.session = session
-                    self._mark_lifecycle_started()
-                    await self._discover_tools()
-                    self._ready.set()
-                    # Session is live again: clear any breaker state from a
-                    # prior outage so the first call after recovery isn't
-                    # gated on a stale consecutive-failure count (#16788).
-                    _reset_server_error(self.name)
-                    # This session is live: reset the reconnect retry counter
-                    # so transient prior failures do not accumulate toward
-                    # permanent parking (#57604).
-                    self._reconnect_retries = 0
-                    # stdio transport does not use OAuth, but we still honor
-                    # _reconnect_event (e.g. future manual /mcp refresh) for
-                    # consistency with _run_http.
-                    return await self._wait_for_lifecycle_event()
+                            try:
+                                new_pgids[_pid] = os.getpgid(_pid)
+                            except (AttributeError, ProcessLookupError, OSError):
+                                # AttributeError: Windows (os.getpgid is POSIX-only)
+                                # ProcessLookupError: child raced and already exited
+                                pass
+                        with _lock:
+                            for _pid in new_pids:
+                                _stdio_pids[_pid] = self.name
+                            _stdio_pgids.update(new_pgids)
+                session = await stack.enter_async_context(
+                    ClientSession(read_stream, write_stream, **sampling_kwargs)
+                )
+                # Bound the MCP handshake. A stdio server that never
+                # completes ``initialize`` (e.g. emits a non-JSON-RPC frame
+                # and then blocks on stdin) otherwise hangs this coroutine
+                # forever on the background loop: ``connect_timeout`` only
+                # bounds the caller's ``.result()`` wait, not the coroutine
+                # itself. Because the connect never unwinds, the cleanup
+                # ``finally`` below never runs, so the spawned child and its
+                # stdio pipes/pidfd leak on every discovery retry — unbounded
+                # until the gateway hits EMFILE. Timing out here converts the
+                # hang into a normal failure, letting the ``finally`` reap the
+                # child. See #59349.
+                connect_timeout = float(
+                    config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+                )
+                self.initialize_result = await asyncio.wait_for(
+                    session.initialize(), timeout=connect_timeout
+                )
+                self.session = session
+                self._mark_lifecycle_started()
+                await self._discover_tools()
+                self._ready.set()
+                # Session is live again: clear any breaker state from a
+                # prior outage so the first call after recovery isn't
+                # gated on a stale consecutive-failure count (#16788).
+                _reset_server_error(self.name)
+                # This session is live: reset the reconnect retry counter
+                # so transient prior failures do not accumulate toward
+                # permanent parking (#57604).
+                self._reconnect_retries = 0
+                # stdio transport does not use OAuth, but we still honor
+                # _reconnect_event (e.g. future manual /mcp refresh) for
+                # consistency with _run_http.
+                return await self._wait_for_lifecycle_event()
         finally:
             # Runs on clean exit, exceptions, AND asyncio cancellation.
             # If any of the spawned PIDs are still alive, the SDK's
@@ -3655,6 +3657,14 @@ _mcp_thread: Optional[threading.Thread] = None
 # Protects _mcp_loop, _mcp_thread, _servers, MCP connection status maps,
 # _parallel_safe_servers, _mcp_tool_server_names, and _stdio_pids.
 _lock = threading.Lock()
+
+# Serialize only the stdio spawn-attribution window (snapshot → spawn → delta
+# → registration) so concurrent _run_stdio() coroutines on the shared MCP loop
+# cannot claim each other's child PIDs. Spawns are rare, so the serialization
+# cost is negligible; _filter_mcp_children remains defense-in-depth for
+# unrelated children. On Python 3.10+ asyncio.Lock() is loop-agnostic at
+# construction and this lock is only awaited on the MCP loop.
+_stdio_spawn_lock = asyncio.Lock()
 
 # PIDs of stdio MCP server subprocesses.  Tracked so we can force-kill
 # them on shutdown if the graceful cleanup (SDK context-manager teardown)

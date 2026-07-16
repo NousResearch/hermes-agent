@@ -3,6 +3,7 @@ import { type FC, useCallback, useEffect, useMemo, useRef, useState } from 'reac
 
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
+import { requestExpandRenderBudget } from '@/store/thread-scroll'
 
 import {
   activeTimelineIndex,
@@ -101,10 +102,11 @@ function jumpScroll(viewport: HTMLElement, top: number, duration = 170): void {
   jumpRaf = requestAnimationFrame(step)
 }
 
-function scrollToPrompt(id: string) {
-  const viewport = document.querySelector<HTMLElement>(VIEWPORT)
-  const node = viewport?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)
-
+// Imperative scroll-and-haptic once both the viewport and target node exist.
+// Pulled out so the click handler can defer it to after the render-budget
+// bridge has mounted older turns (issue #52816). On missing inputs the helper
+// stays silent — the caller decides whether to console.warn in dev.
+function scrollViewportToNode(viewport: HTMLElement | null, node: HTMLElement | null) {
   if (!viewport || !node) {
     return
   }
@@ -134,6 +136,50 @@ export const ThreadTimeline: FC = () => {
   const entries = useMemo(
     () => deriveTimelineEntries(JSON.parse(sourceSignature) as TimelineSourceMessage[]),
     [sourceSignature]
+  )
+
+  // Click handler for each dash / popover row. Uses `entries.findIndex` only
+  // as the bail-out gate (id present in the filtered rail? — if not, the dash
+  // was hidden and there's nothing to scroll to). The actual budget request
+  // carries the message id, not an index, because ThreadMessageList resolves
+  // the id against its full `groups` array (which includes every user
+  // message — blanks and process notifications included). An index in the
+  // filtered `entries` array would mis-aim whenever a filtered user message
+  // precedes the target (teknium1 review, 2026-07-15). Two rAFs because the
+  // heaviest sessions (RENDER_BUDGET=300 → ~1000+ parts) can take more than
+  // one frame to commit + lay out; one rAF would re-miss the target on those
+  // sessions and silently no-op (issue #52816).
+  const jumpToPrompt = useCallback(
+    (id: string) => {
+      if (entries.findIndex(entry => entry.id === id) < 0) {
+        // No rendered dash for this id (filtered out by deriveTimelineEntries
+        // as blank or a process notification). Bail — nothing to scroll to.
+        return
+      }
+
+      requestExpandRenderBudget(id)
+
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const viewport = document.querySelector<HTMLElement>(VIEWPORT)
+          const node = viewport?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)
+
+          if (!node) {
+            // Dev-only affordance: when the target is still unmounted after
+            // the budget raise, surface it so future regressions don't repeat
+            // the silent-failure mode of the original handler.
+            if (import.meta.env.DEV) {
+              console.warn('[thread-timeline] scrollToPrompt target not mounted after render-budget expansion:', id)
+            }
+
+            return
+          }
+
+          scrollViewportToNode(viewport, node)
+        })
+      })
+    },
+    [entries]
   )
 
   const [activeIndex, setActiveIndex] = useState(0)
@@ -236,14 +282,14 @@ export const ThreadTimeline: FC = () => {
         activeIndex={activeIndex}
         entries={entries}
         onHover={paint}
-        onJump={scrollToPrompt}
+        onJump={jumpToPrompt}
         tickRefs={tickRefs}
       />
       <TimelinePopover
         activeIndex={activeIndex}
         entries={entries}
         onHover={paint}
-        onJump={scrollToPrompt}
+        onJump={jumpToPrompt}
         open={open}
         rowRefs={rowRefs}
       />

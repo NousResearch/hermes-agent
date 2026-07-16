@@ -73,3 +73,37 @@ export function activeTimelineIndex(offsets: readonly (number | null)[], slack: 
 
   return firstRendered === -1 ? 0 : firstRendered
 }
+
+/**
+ * Map a user-message id to its i-th user position in a raw message stream.
+ * Returns -1 when the id isn't a user message.
+ *
+ * NOT used by the render-budget bridge anymore (that path resolves ids
+ * directly against `groups` via `groups.findIndex` to handle standalone
+ * non-user groups correctly — see `groups.findIndex` in thread-list.tsx
+ * and the Gemini 3.5 Flash + GPT-OSS code-review consensus on 2026-07-16).
+ *
+ * Retained as a defensive export because the timeline rail's filtered
+ * `entries` array and ThreadMessageList's `groups` array are indexed by
+ * DIFFERENT orders (one skips blanks and process notifications, the other
+ * includes them as standalone groups too). Future timeline controls that
+ * operate on the raw stream can hit that asymmetry — the tests below pin
+ * the user-ordinal contract so a future caller that reintroduces the
+ * joined-serialization round-trip the timeline used to do (issue #52816)
+ * gets caught here, not in production.
+ */
+export function userMessageIndex(messages: readonly { id: string; role: string }[], targetId: string): number {
+  let userIndex = 0
+
+  for (const message of messages) {
+    if (message.role === 'user') {
+      if (message.id === targetId) {
+        return userIndex
+      }
+
+      userIndex += 1
+    }
+  }
+
+  return -1
+}

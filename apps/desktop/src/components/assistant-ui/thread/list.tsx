@@ -8,6 +8,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState
 } from 'react'
@@ -16,6 +17,7 @@ import { useStickToBottom } from 'use-stick-to-bottom'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import {
+  onExpandRenderBudgetRequest,
   onScrollToBottomRequest,
   onThreadEditClose,
   onThreadEditOpen,
@@ -96,14 +98,27 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   loadingIndicator,
   sessionKey
 }) => {
-  const messageSignature = useAuiState(s =>
-    s.thread.messages
-      .map((message, index) => `${index}:${message.id}:${message.role}:${message.content?.length ?? 1}`)
-      .join('\n')
+  const messages = useAuiState(s => s.thread.messages)
+
+  // String signature drives `buildGroups` (pure string-in / groups-out).
+  // Memoized so the bridge handler and the budget-walk memo can rely on a
+  // stable reference across re-renders that don't change content.
+  const messageSignature = useMemo(
+    () =>
+      messages
+        .map((message, index) => `${index}:${message.id}:${message.role}:${message.content?.length ?? 1}`)
+        .join('\n'),
+    [messages]
   )
 
   const { t } = useI18n()
-  const groups = buildGroups(messageSignature)
+  // Memoize so the bridge handler and the budget-walk memo can rely on a
+  // stable groups reference across re-renders that don't change content.
+  // buildGroups is pure O(n) but it does a string split per row, and the
+  // bridge reads `groups.length` / per-group weights on every click — without
+  // this, those reads cross an unmemoized boundary that can drift under
+  // concurrent rendering.
+  const groups = useMemo(() => buildGroups(messageSignature), [messageSignature])
   const renderEmpty = groups.length === 0 && Boolean(emptyPlaceholder)
 
   // use-stick-to-bottom owns scrollTop (single writer): follow while locked,
@@ -118,18 +133,26 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
   const [renderBudget, setRenderBudget] = useState(RENDER_BUDGET)
 
-  // Walk turns newest-first, summing their part weights until the budget is met;
-  // everything before that first kept turn is hidden.
-  let firstVisible = groups.length
+  // Walk turns newest-first, summing their part weights until the budget is
+  // met; everything before that first kept turn is hidden. Memoized so the
+  // bridge handler can compare against the live cutoff without re-walking
+  // every render — and so its decision is correct under content-edit shrinking,
+  // where requiredWeight may be lower than the current renderBudget but the
+  // target's firstVisible index is still past the live cutoff.
+  const firstVisible = useMemo(() => {
+    let first = groups.length
 
-  for (let i = groups.length - 1, weight = 0; i >= 0; i--) {
-    weight += groups[i].weight
-    firstVisible = i
+    for (let i = groups.length - 1, weight = 0; i >= 0; i--) {
+      weight += groups[i].weight
+      first = i
 
-    if (weight >= renderBudget) {
-      break
+      if (weight >= renderBudget) {
+        break
+      }
     }
-  }
+
+    return first
+  }, [groups, renderBudget])
 
   const hiddenCount = firstVisible
   const visibleGroups = hiddenCount > 0 ? groups.slice(hiddenCount) : groups
@@ -155,6 +178,75 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
   // Floating jump button (outside this subtree) → return to the bottom.
   useEffect(() => onScrollToBottomRequest(() => void scrollToBottom()), [scrollToBottom])
+
+  // Long-session budget bridge: the right-edge prompt rail (thread-timeline.tsx)
+  // lists every user prompt but only the bottom RENDER_BUDGET-worth of groups
+  // is actually mounted. When the user clicks a dash whose target group was
+  // sliced off, the rail hands us the target message id; we resolve it
+  // against the unfiltered `groups` array (so blank/process notifications
+  // interleaved before the target don't mis-aim the slice — teknium1 review,
+  // 2026-07-15), then lower firstVisible to cover that group and raise
+  // renderBudget to match, and escape stick-to-bottom so the rail's manual
+  // scrollTop write sticks. Without this, scrollToPrompt silently no-ops on
+  // long sessions (issue #52816).
+  //
+  // stopScroll() always fires — even when the target is already visible (no
+  // budget raise needed), because the rail is about to write scrollTop itself
+  // and stick-to-bottom would fight that write. Same pattern as beginEditHold
+  // above (lines 164-174). `stopScroll` on use-stick-to-bottom is a no-op
+  // when the lock isn't held, so unconditional is safe and avoids a second
+  // branch that would otherwise need to mirror the bail-out condition.
+  const expandBudgetHandlerRef = useRef<(targetMessageId: string) => void>(() => {})
+
+  expandBudgetHandlerRef.current = (targetMessageId: string) => {
+    // Resolve the groups index directly. `groups` (built by `buildGroups`,
+    // lines 58-92 above) is the actual array that `firstVisible` slices, so
+    // matching the id here lines up exactly with what gets rendered. Using
+    // a user-ordinal helper would mis-aim whenever a standalone non-user
+    // group precedes the target — e.g. a system message at session start
+    // shifts all subsequent user indices by one (Gemini 3.5 Flash + GPT-OSS
+    // code review, 2026-07-16). Each group carries a unique id (the user
+    // message id for turn groups, the message id for standalone groups),
+    // so findIndex is exact.
+    const targetGroupIndex = groups.findIndex(g => g.id === targetMessageId)
+
+    if (targetGroupIndex < 0) {
+      // Id not found in the current groups array — bail defensively. The
+      // rail already gated on `entries.findIndex >= 0` so this should be
+      // unreachable in practice; the guard exists for races between the
+      // rail's sourceSignature and our messageSignature during a session
+      // swap (cross-vendor review consensus: release the scroll lock even
+      // on bail so a session-swap race doesn't leave the new session
+      // permanently stuck at the bottom).
+      stopScroll()
+
+      return
+    }
+
+    const clamped = Math.max(0, Math.min(targetGroupIndex, Math.max(0, groups.length - 1)))
+
+    // Compare against the live cutoff (memoized above), not against the
+    // requiredWeight-vs-renderBudget test the previous version did. Under
+    // content shrinking (tool results pruned mid-session reduce old groups'
+    // weights), requiredWeight can be lower than renderBudget while the
+    // target's firstVisible is still past the cutoff — the older test would
+    // skip the setRenderBudget and leave the slice in place.
+    if (clamped < firstVisible) {
+      let requiredWeight = 0
+
+      for (let i = groups.length - 1; i >= clamped; i--) {
+        requiredWeight += groups[i].weight
+      }
+
+      setRenderBudget(requiredWeight)
+    }
+
+    stopScroll()
+  }
+
+  useEffect(() => {
+    return onExpandRenderBudgetRequest(target => expandBudgetHandlerRef.current(target))
+  }, [])
 
   const endEditHold = useCallback(() => {
     scrollRef.current?.removeAttribute('data-editing')

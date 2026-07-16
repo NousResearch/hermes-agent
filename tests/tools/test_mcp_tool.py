@@ -4760,8 +4760,8 @@ class TestRegisterMcpServers:
 
         assert "conflicts with existing server(s) 'crm-api'" in caplog.text
 
-    def test_disabled_collision_does_not_enable_capabilities(self, caplog):
-        """Disabled entries neither collide nor mutate capability opt-ins."""
+    def test_disabled_collider_does_not_trigger_collision_warning(self, caplog):
+        """Disabled entries do not participate in sanitized-name collision checks."""
         import tools.mcp_tool as mcp
 
         live_server = _make_mock_server("crm-api", session=MagicMock())
@@ -4772,6 +4772,7 @@ class TestRegisterMcpServers:
              patch.object(mcp, "_session_context_forwarding_servers", set()), \
              patch.object(mcp, "_MCP_AVAILABLE", True), \
              patch.object(mcp, "_filter_suspicious_mcp_servers", side_effect=lambda value: value), \
+             patch.object(mcp, "_ensure_mcp_loop") as ensure_loop, \
              patch.object(mcp, "_existing_tool_names", return_value=[]), \
              patch.object(mcp, "_signal_reconnect") as signal_reconnect:
             caplog.set_level("WARNING", logger="tools.mcp_tool")
@@ -4794,11 +4795,20 @@ class TestRegisterMcpServers:
             assert mcp._parallel_safe_servers == set()
             assert mcp._session_context_forwarding_servers == set()
             signal_reconnect.assert_not_called()
+            ensure_loop.assert_not_called()
 
-        assert "names sanitize to the same component" not in caplog.text
+        collision_warnings = [
+            record.getMessage()
+            for record in caplog.records
+            if (
+                "names sanitize to the same component" in record.getMessage()
+                or "sanitized component" in record.getMessage()
+            )
+        ]
+        assert collision_warnings == []
 
-    def test_incremental_collision_preserves_existing_capability_update(self, caplog):
-        """A live raw entry remains accepted when the same call adds a collider."""
+    def test_disabled_existing_server_does_not_enable_capabilities(self):
+        """A disabled update cannot mutate a live server's capability opt-ins."""
         import tools.mcp_tool as mcp
 
         live_server = _make_mock_server("crm-api", session=MagicMock())
@@ -4810,6 +4820,54 @@ class TestRegisterMcpServers:
              patch.object(mcp, "_MCP_AVAILABLE", True), \
              patch.object(mcp, "_filter_suspicious_mcp_servers", side_effect=lambda value: value), \
              patch.object(mcp, "_ensure_mcp_loop") as ensure_loop, \
+             patch.object(mcp, "_run_on_mcp_loop") as run_on_loop, \
+             patch.object(mcp, "_existing_tool_names", return_value=[]), \
+             patch.object(mcp, "_signal_reconnect") as signal_reconnect:
+            result = mcp.register_mcp_servers({
+                "crm-api": {
+                    "command": "echo",
+                    "enabled": False,
+                    "supports_parallel_tool_calls": True,
+                    "forward_session_context": True,
+                },
+            })
+
+            assert result == []
+            assert mcp._server_connecting == set()
+            assert mcp._parallel_safe_servers == set()
+            assert mcp._session_context_forwarding_servers == set()
+            signal_reconnect.assert_not_called()
+            ensure_loop.assert_not_called()
+            run_on_loop.assert_not_called()
+
+    @pytest.mark.parametrize("existing_location", ["servers", "connecting"])
+    def test_incremental_collision_preserves_existing_capability_update(
+        self,
+        existing_location,
+        caplog,
+    ):
+        """An exact active or connecting entry remains accepted beside a collider."""
+        import tools.mcp_tool as mcp
+
+        existing_servers = {}
+        connecting_servers = set()
+        if existing_location == "servers":
+            existing_servers["crm-api"] = _make_mock_server(
+                "crm-api",
+                session=MagicMock(),
+            )
+        else:
+            connecting_servers.add("crm-api")
+
+        with patch.object(mcp, "_servers", existing_servers), \
+             patch.object(mcp, "_server_connecting", connecting_servers), \
+             patch.object(mcp, "_server_connect_errors", {}), \
+             patch.object(mcp, "_parallel_safe_servers", set()), \
+             patch.object(mcp, "_session_context_forwarding_servers", set()), \
+             patch.object(mcp, "_MCP_AVAILABLE", True), \
+             patch.object(mcp, "_filter_suspicious_mcp_servers", side_effect=lambda value: value), \
+             patch.object(mcp, "_ensure_mcp_loop") as ensure_loop, \
+             patch.object(mcp, "_run_on_mcp_loop") as run_on_loop, \
              patch.object(mcp, "_existing_tool_names", return_value=[]):
             caplog.set_level("WARNING", logger="tools.mcp_tool")
             result = mcp.register_mcp_servers({
@@ -4826,10 +4884,12 @@ class TestRegisterMcpServers:
             })
 
             assert result == []
-            assert mcp._server_connecting == set()
+            expected_connecting = {"crm-api"} if existing_location == "connecting" else set()
+            assert mcp._server_connecting == expected_connecting
             assert mcp._parallel_safe_servers == {"crm_api"}
             assert mcp._session_context_forwarding_servers == {"crm_api"}
             ensure_loop.assert_not_called()
+            run_on_loop.assert_not_called()
 
         collision_warnings = [
             record.getMessage()

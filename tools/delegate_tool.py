@@ -2876,9 +2876,9 @@ DELEGATE_TASK_SCHEMA = {
                         "acp_command": {
                             "type": "string",
                             "description": (
-                                "Per-task ACP command override (e.g. 'copilot'). "
+                                "Per-task external agent CLI override (e.g. 'copilot' or 'agy'). "
                                 "Overrides the top-level acp_command for this task only. "
-                                "Do NOT set unless the user explicitly told you an ACP CLI is installed."
+                                "Do NOT set unless the user explicitly told you a compatible CLI is installed."
                             ),
                         },
                         "acp_args": {
@@ -2907,13 +2907,13 @@ DELEGATE_TASK_SCHEMA = {
             "acp_command": {
                 "type": "string",
                 "description": (
-                    "Override ACP command for child agents (e.g. 'copilot'). "
-                    "When set, children use ACP subprocess transport instead of inheriting "
-                    "the parent's transport. Requires an ACP-compatible CLI "
-                    "(currently GitHub Copilot CLI via 'copilot --acp --stdio'). "
+                    "Override external agent command for child agents (e.g. 'copilot' or 'agy'). "
+                    "When set, children use an external CLI transport instead of inheriting "
+                    "the parent's transport. Requires a compatible CLI "
+                    "(currently GitHub Copilot CLI via 'copilot --acp --stdio', and Antigravity CLI via 'agy -p'). "
                     "See agent/copilot_acp_client.py for the implementation. "
                     "IMPORTANT: Do NOT set this unless the user has explicitly told you "
-                    "a specific ACP-compatible CLI is installed and configured. "
+                    "a specific compatible CLI is installed and configured. "
                     "Leave empty to use the parent's default transport (Hermes subagents)."
                 ),
             },

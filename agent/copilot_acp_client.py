@@ -1,8 +1,8 @@
-"""OpenAI-compatible shim that forwards Hermes requests to `copilot --acp`.
+"""OpenAI-compatible shim for external autonomous CLI workers.
 
-This adapter lets Hermes treat the GitHub Copilot ACP server as a chat-style
-backend. Each request starts a short-lived ACP session, sends the formatted
-conversation as a single prompt, collects text chunks, and converts the result
+Primarily this forwards Hermes requests to `copilot --acp --stdio`, but it also
+supports Google Antigravity CLI (`agy`) in one-shot print mode. Each request is
+converted into a single prompt and the external CLI's final text reply is mapped
 back into the minimal shape Hermes expects from an OpenAI client.
 """
 
@@ -66,6 +66,38 @@ def _resolve_args() -> list[str]:
     if not raw:
         return ["--acp", "--stdio"]
     return shlex.split(raw)
+
+
+def _command_basename(command: str | None) -> str:
+    if not command:
+        return ""
+    candidate = command.strip().strip('"')
+    try:
+        return Path(candidate).name.lower()
+    except Exception:
+        return candidate.lower()
+
+
+def _is_antigravity_command(command: str | None) -> bool:
+    name = _command_basename(command)
+    return name in {"agy", "agy.exe", "antigravity", "antigravity.exe"}
+
+
+def _sanitize_antigravity_args(args: list[str]) -> list[str]:
+    cleaned: list[str] = []
+    skip_exact = {"--acp", "--stdio", "-p", "--print"}
+    for arg in args:
+        token = str(arg).strip()
+        lower = token.lower()
+        if lower in skip_exact:
+            continue
+        if lower == "agentapi":
+            raise RuntimeError(
+                "Hermes Antigravity subagent transport currently supports agy print mode, "
+                "not `agy agentapi`. Omit ACP default args and let Hermes call `agy -p` for you."
+            )
+        cleaned.append(token)
+    return cleaned
 
 
 def _resolve_home_dir() -> str:
@@ -332,7 +364,7 @@ class _ACPChatNamespace:
 
 
 class CopilotACPClient:
-    """Minimal OpenAI-client-compatible facade for Copilot ACP."""
+    """Minimal OpenAI-client-compatible facade for external CLI workers."""
 
     def __init__(
         self,
@@ -352,6 +384,11 @@ class CopilotACPClient:
         self._default_headers = dict(default_headers or {})
         self._acp_command = acp_command or command or _resolve_command()
         self._acp_args = list(acp_args or args or _resolve_args())
+        self._transport_mode = (
+            "antigravity-print"
+            if _is_antigravity_command(self._acp_command)
+            else "copilot-acp"
+        )
         self._acp_cwd = str(Path(acp_cwd or os.getcwd()).resolve())
         self.chat = _ACPChatNamespace(self)
         self.is_closed = False
@@ -436,6 +473,12 @@ class CopilotACPClient:
         )
 
     def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+        if self._transport_mode == "antigravity-print":
+            return self._run_antigravity_print_prompt(
+                prompt_text,
+                timeout_seconds=timeout_seconds,
+            )
+
         try:
             proc = subprocess.Popen(
                 [self._acp_command] + self._acp_args,
@@ -594,6 +637,46 @@ class CopilotACPClient:
             return "".join(text_parts), "".join(reasoning_parts)
         finally:
             self.close()
+
+    def _run_antigravity_print_prompt(
+        self,
+        prompt_text: str,
+        *,
+        timeout_seconds: float,
+    ) -> tuple[str, str]:
+        args = _sanitize_antigravity_args(self._acp_args)
+        command = [self._acp_command, *args, "-p", prompt_text]
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=self._acp_cwd,
+                env=_build_subprocess_env(),
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                f"Could not start Antigravity CLI command '{self._acp_command}'. "
+                "Install `agy` or point Hermes at it explicitly via acp_command."
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise TimeoutError(
+                f"Timed out waiting for Antigravity CLI response after {timeout_seconds:.0f}s."
+            ) from exc
+
+        stdout_text = (completed.stdout or "").strip()
+        stderr_text = (completed.stderr or "").strip()
+        if completed.returncode != 0:
+            detail = stderr_text or stdout_text or f"exit code {completed.returncode}"
+            raise RuntimeError(
+                f"Antigravity CLI subprocess failed ({completed.returncode}): {detail}"
+            )
+        if not stdout_text:
+            detail = stderr_text or "CLI returned empty stdout"
+            raise RuntimeError(f"Antigravity CLI did not return a response: {detail}")
+        return stdout_text, ""
 
     def _handle_server_message(
         self,

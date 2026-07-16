@@ -153,6 +153,7 @@ if __name__ == "__main__":
 # ── HOME env propagation tests (from PR #11285) ─────────────────────
 
 from unittest.mock import patch as _patch
+from types import SimpleNamespace
 import pytest
 
 
@@ -205,3 +206,48 @@ def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):
 
     assert "env" in captured["kwargs"]
     assert captured["kwargs"]["env"]["HOME"]
+
+
+def test_agy_transport_uses_print_mode_and_strips_default_acp_args(monkeypatch, tmp_path):
+    captured = {}
+
+    def _fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(returncode=0, stdout="AGY_OK\n", stderr="")
+
+    client = CopilotACPClient(
+        api_key="copilot-acp",
+        base_url="acp://copilot",
+        acp_command="agy",
+        acp_args=["--acp", "--stdio"],
+        acp_cwd=str(tmp_path),
+    )
+
+    monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    monkeypatch.setattr("agent.copilot_acp_client.subprocess.run", _fake_run)
+
+    text, reasoning = client._run_prompt("reply exactly once", timeout_seconds=12)
+
+    assert text == "AGY_OK"
+    assert reasoning == ""
+    assert captured["cmd"] == ["agy", "-p", "reply exactly once"]
+    assert captured["kwargs"]["cwd"] == str(tmp_path)
+    assert captured["kwargs"]["text"] is True
+    assert captured["kwargs"]["capture_output"] is True
+    assert captured["kwargs"]["timeout"] == 12
+    assert captured["kwargs"]["env"]["HOME"]
+
+
+def test_agy_transport_rejects_agentapi_args(tmp_path):
+    client = CopilotACPClient(
+        api_key="copilot-acp",
+        base_url="acp://copilot",
+        acp_command="agy",
+        acp_args=["agentapi"],
+        acp_cwd=str(tmp_path),
+    )
+
+    with pytest.raises(RuntimeError, match="print mode"):
+        client._run_prompt("hello", timeout_seconds=5)

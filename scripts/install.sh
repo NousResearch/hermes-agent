@@ -82,7 +82,6 @@ NON_INTERACTIVE=false
 INCLUDE_DESKTOP=false
 BUNDLE_MODE=true
 BUNDLE_SOURCE=""
-SOURCE_MODE=false
 
 # Detect non-interactive mode (e.g. curl | bash)
 # When stdin is not a terminal, read -p will fail with EOF,
@@ -142,12 +141,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --bundle)
             BUNDLE_MODE=true
-            SOURCE_MODE=false
             shift
             ;;
         --source)
             BUNDLE_MODE=false
-            SOURCE_MODE=true
             shift
             ;;
         --bundle-source)

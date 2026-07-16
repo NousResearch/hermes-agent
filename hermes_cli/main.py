@@ -7785,8 +7785,7 @@ def _refresh_active_lazy_features() -> None:
 
     # Phase 5 task 5.2: the ledger REPLACES the probe-based refresh.
     # apply_ledger reads features.json (seeded from the venv probe on first
-    # call) and reinstalls each feature under the current pins. The symbol
-    # + signature are frozen in updater_compat.py — only internals change.
+    # call) and reinstalls each feature under the current pins.
     try:
         results = lazy_deps.apply_ledger(sys.executable)
     except Exception as exc:
@@ -9742,43 +9741,37 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # Worktree-based update for ejected/dev checkouts with dirty trees.
     # When the tree is a checkout (not a slot) and git worktree is viable,
     # route to the worktree-based flow instead of the legacy autostash dance.
-    # --in-place forces the legacy flow.
-    _in_place = bool(getattr(args, "in_place", False))
-    if not _in_place and git_dir.exists():
+    if git_dir.exists():
         # ── Auto-adopt: pristine clean-main checkouts → bundled slots ──
         # If the checkout is pristine (clean tree, official origin, on main,
         # no local commits ahead), auto-adopt to managed slots instead of
         # git-pulling. This is the "usurp the old update mechanism" path:
         # running `hermes update` on a clean checkout flips you to bundled.
-        # --in-place or --no-adopt forces the legacy git flow.
-        _no_adopt = bool(getattr(args, "no_adopt", False))
-        if not _no_adopt:
-            try:
-                from hermes_cli.adoption import detect_legacy_install
-                from hermes_constants import get_hermes_home
+        try:
+            from hermes_cli.adoption import detect_legacy_install
+            from hermes_constants import get_hermes_home
 
-                _legacy = detect_legacy_install(PROJECT_ROOT, get_hermes_home())
-                if _legacy is not None and _legacy.pristine:
-                    print("→ This is a pristine checkout on main.")
-                    print("  Switching to managed release bundles (hermes adopt).")
-                    print("  The old git-checkout flow is available via --in-place.")
-                    print()
+            _legacy = detect_legacy_install(PROJECT_ROOT, get_hermes_home())
+            if _legacy is not None and _legacy.pristine:
+                print("→ This is a pristine checkout on main.")
+                print("  Switching to managed release bundles (hermes adopt).")
+                print()
 
-                    # Route to adopt: fetch updater, exec it, never return.
-                    from hermes_cli.subcommands.adopt import cmd_adopt
+                # Route to adopt: fetch updater, exec it, never return.
+                from hermes_cli.subcommands.adopt import cmd_adopt
 
-                    class _AdoptArgs:
-                        yes = True
-                        yes_dirty = False
-                        source = None
-                        dir = None
+                class _AdoptArgs:
+                    yes = True
+                    yes_dirty = False
+                    source = None
+                    dir = None
 
-                    cmd_adopt(_AdoptArgs())
-                    return  # never reached — cmd_adopt execs the updater
-            except SystemExit:
-                raise
-            except Exception as exc:
-                logger.debug("Auto-adopt check failed (non-fatal): %s", exc)
+                cmd_adopt(_AdoptArgs())
+                return  # never reached — cmd_adopt execs the updater
+        except SystemExit:
+            raise
+        except Exception as exc:
+            logger.debug("Auto-adopt check failed (non-fatal): %s", exc)
 
         from hermes_cli.dev_update import should_use_worktree_update, run_dev_update
 

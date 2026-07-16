@@ -25,8 +25,8 @@ Each item is its own PR. Verify E2E gates green after each.
 
 ### Frozen contract
 
-- [ ] Delete `hermes_cli/updater_compat.py`
-- [ ] Delete `tests/test_updater_compat_fence.py`
+- [x] Delete `hermes_cli/updater_compat.py`
+- [x] Delete `tests/test_updater_compat_fence.py`
   - **Precondition:** no supported legacy updater still in the wild.
   - **Verification:** `scripts/run_tests.sh` still green (no dangling imports).
 

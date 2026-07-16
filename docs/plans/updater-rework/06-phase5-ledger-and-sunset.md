@@ -115,7 +115,7 @@ PRECONDITION for all: adoption prompts shipping ≥ 12 months; maintainer
 declares legacy population negligible (support-channel signal / opt-in
 diagnostics).
 
-[ ] Delete hermes_cli/updater_compat.py + tests/test_updater_compat_fence.py
+[x] Delete hermes_cli/updater_compat.py + tests/test_updater_compat_fence.py
 [ ] Delete _cmd_update_impl git flow (keep the thin dispatcher:
     slot→updater, checkout→dev_update, docker/nix/brew→messages)
 [ ] Delete: _UvResult (managed_uv.py), rebuild_venv tombstone,

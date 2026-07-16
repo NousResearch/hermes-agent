@@ -113,8 +113,7 @@ EXIT_CODE=$?
 if [ $EXIT_CODE -ne 0 ]; then
     echo ""
     echo "  FAIL: hop 1 failed — old updater could not update to current main"
-    echo "  The compat fence has a hole. Identify the symbol from the traceback,"
-    echo "  add it to updater_compat.py, and fix."
+    echo "  Identify the symbol from the traceback and fix."
     exit 1
 fi
 echo "  PASS: hop 1 — old code updated to current main (exit 0)"

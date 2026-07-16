@@ -7221,7 +7221,7 @@ def _dispatch_once_locked(
                 )
                 continue
         task_for_skills = get_task(conn, row["id"])
-        if task_for_skills and task_for_skills.skills and not dry_run:
+        if task_for_skills and task_for_skills.skills:
             missing_skills = _worker_missing_card_skills(
                 row_assignee, task_for_skills.skills
             )
@@ -7232,7 +7232,11 @@ def _dispatch_once_locked(
                     "Install the missing skill(s) for that profile or edit the "
                     "card skills before dispatching."
                 )
-                block_task(conn, row["id"], reason=reason, kind="capability")
+                # Dry-run still resolves skills and reports a proposed block
+                # so operators see the same outcome as a real dispatch, but
+                # must not mutate the card (dispatch dry-run contract).
+                if not dry_run:
+                    block_task(conn, row["id"], reason=reason, kind="capability")
                 result.auto_blocked.append(row["id"])
                 continue
         # Respawn guard: refuse to re-spawn when useful work is already

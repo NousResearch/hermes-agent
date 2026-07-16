@@ -198,3 +198,46 @@ def test_dispatch_allows_card_skill_present_in_worker_profile(
     assert spawned == [(tid, ["card-skill"])]
     assert result.spawned and result.spawned[0][0] == tid
     assert task.status == "running"
+
+
+def test_dispatch_dry_run_missing_card_skill_reports_block_without_mutating(
+    monkeypatch, tmp_path
+):
+    """Dry-run must surface the capability block, not a false spawn.
+
+    Real dispatch blocks cards whose requested skills are unavailable on the
+    assignee profile. Dry-run is documented to show that outcome without
+    mutating the DB — so missing skills belong in ``auto_blocked``, not
+    ``spawned``, and the card stays ``ready``.
+    """
+    root = tmp_path / ".hermes"
+    profile = root / "profiles" / "elias"
+    profile.mkdir(parents=True)
+    root.joinpath("config.yaml").write_text("", encoding="utf-8")
+    profile.joinpath("config.yaml").write_text("", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    from hermes_cli import kanban_db as kb
+
+    kb.init_db()
+    spawned = []
+
+    def fake_spawn(task, workspace):
+        spawned.append(task.id)
+        return 789
+
+    with kb.connect_closing() as conn:
+        tid = kb.create_task(
+            conn,
+            title="dry-run missing skill",
+            assignee="elias",
+            skills=["missing-card-skill"],
+        )
+        result = kb.dispatch_once(conn, spawn_fn=fake_spawn, dry_run=True)
+        task = kb.get_task(conn, tid)
+
+    assert spawned == []
+    assert tid in result.auto_blocked
+    assert result.spawned == []
+    assert task.status == "ready"
+    assert task.block_kind is None

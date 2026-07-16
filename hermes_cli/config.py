@@ -29,7 +29,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple, Set
+from typing import Dict, Any, Mapping, Optional, List, Tuple, Set
 
 from hermes_cli.secret_prompt import masked_secret_prompt
 
@@ -3105,6 +3105,20 @@ DEFAULT_CONFIG = {
     # reports 384MB+ databases with 68K+ messages, which slows down FTS5
     # inserts, /resume listing, and insights queries.
     "sessions": {
+        # State backend selection is profile-local because each profile has its
+        # own config.yaml and Hermes home. PostgreSQL remains declarative until
+        # the production backend is implemented; keep credentials in .env.
+        "state": {
+            "backend": "sqlite",
+            "sqlite_path": "state.db",
+            "postgres": {
+                "dsn_env": "HERMES_STATE_POSTGRES_DSN",
+                # Null derives a deterministic profile/home-specific schema.
+                # Set a lowercase PostgreSQL identifier to opt into an
+                # explicitly shared or externally managed schema.
+                "schema": None,
+            },
+        },
         # When true, prune ended sessions older than retention_days once
         # per (roughly) min_interval_hours at CLI/gateway/cron startup.
         # Only touches ended sessions — active sessions are always preserved.
@@ -6557,23 +6571,28 @@ def _strip_dotted_keys(cfg: dict, dotted_keys: set) -> Tuple[dict, set]:
     return cfg, stripped
 
 
-def _expand_env_vars(obj):
+def _expand_env_vars(
+    obj: Any,
+    environ: Optional[Mapping[str, str]] = None,
+):
     """Recursively expand ``${VAR}`` references in config values.
 
     Only string values are processed; dict keys, numbers, booleans, and
     None are left untouched.  Unresolved references (variable not in
-    ``os.environ``) are kept verbatim so callers can detect them.
+    the supplied environment (or ``os.environ`` by default) are kept verbatim
+    so callers can detect them.
     """
+    env = os.environ if environ is None else environ
     if isinstance(obj, str):
         return re.sub(
             r"\${([^}]+)}",
-            lambda m: os.environ.get(m.group(1), m.group(0)),
+            lambda m: env.get(m.group(1), m.group(0)),
             obj,
         )
     if isinstance(obj, dict):
-        return {k: _expand_env_vars(v) for k, v in obj.items()}
+        return {k: _expand_env_vars(v, environ=env) for k, v in obj.items()}
     if isinstance(obj, list):
-        return [_expand_env_vars(item) for item in obj]
+        return [_expand_env_vars(item, environ=env) for item in obj]
     return obj
 
 
@@ -6952,6 +6971,69 @@ def read_raw_config() -> Dict[str, Any]:
             data = {}
         _RAW_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], copy.deepcopy(data))
         return data
+
+
+class ExplicitHomeConfigError(RuntimeError):
+    """Raised when an explicitly selected home's config cannot be loaded."""
+
+
+def load_config_for_home(home: Path) -> Dict[str, Any]:
+    """Load one explicit home's config without ambient profile resolution.
+
+    This narrow loader intentionally bypasses ``get_config_path()``,
+    ``ensure_hermes_home()``, and caches. It still applies the normal config
+    pipeline: defaults, user merge, root-key normalization, environment
+    expansion, and the managed-scope overlay. It is for callers that already
+    own a concrete Hermes home and must not silently select another profile's
+    state store.
+    """
+    config_path = Path(home) / "config.yaml"
+    config = copy.deepcopy(DEFAULT_CONFIG)
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            user_config = fast_safe_load(f) or {}
+    except FileNotFoundError:
+        user_config = {}
+    except Exception:
+        raise ExplicitHomeConfigError(
+            "Unable to load the explicit home config.yaml"
+        ) from None
+
+    if not isinstance(user_config, dict):
+        raise ExplicitHomeConfigError(
+            "The explicit home config.yaml must contain a mapping"
+        )
+
+    if "max_turns" in user_config:
+        agent_user_config = dict(user_config.get("agent") or {})
+        if agent_user_config.get("max_turns") is None:
+            agent_user_config["max_turns"] = user_config["max_turns"]
+        user_config["agent"] = agent_user_config
+        user_config.pop("max_turns", None)
+
+    config = _deep_merge(config, user_config)
+    normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
+    explicit_home_env = dict(os.environ)
+    explicit_home_env["HERMES_HOME"] = str(Path(home))
+    expanded = _expand_env_vars(normalized, environ=explicit_home_env)
+    from hermes_cli import managed_scope
+
+    try:
+        managed_config = managed_scope.load_managed_config()
+        if not managed_config:
+            return expanded
+        managed_expanded = _normalize_root_model_keys(
+            _expand_env_vars(managed_config, environ=explicit_home_env)
+        )
+        if isinstance(managed_expanded.get("model"), str):
+            managed_expanded = dict(managed_expanded)
+            managed_expanded["model"] = {
+                "default": managed_expanded["model"],
+            }
+        return _deep_merge(expanded, managed_expanded)
+    except Exception:
+        logger.warning("managed scope: failed to apply config overlay", exc_info=True)
+        return expanded
 
 
 def require_readable_config_before_write(config_path: Optional[Path] = None) -> None:

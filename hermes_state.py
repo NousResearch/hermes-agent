@@ -27,7 +27,7 @@ from pathlib import Path
 
 from agent.memory_manager import sanitize_context
 from hermes_constants import get_hermes_home
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -1009,6 +1009,42 @@ class SessionDB:
     _IMPORT_MAX_TOTAL_MESSAGES = 50_000
     _IMPORT_MAX_SESSION_BYTES = 5 * 1024 * 1024
     _IMPORT_MAX_TOTAL_BYTES = 25 * 1024 * 1024
+
+    @classmethod
+    def for_home(
+        cls,
+        home: Path,
+        read_only: bool = False,
+        config: Optional[Mapping[str, Any]] = None,
+        environ: Optional[Mapping[str, str]] = None,
+    ) -> "SessionDB":
+        """Open the explicitly resolved SQLite state store for ``home``.
+
+        This establishes the production factory boundary without changing
+        existing SQLite callers. PostgreSQL settings resolve into a safe spec
+        but deliberately do not fall back to SQLite before that backend exists.
+        """
+        if config is None:
+            from hermes_cli.config import load_config_for_home
+
+            config = load_config_for_home(home)
+
+        from state_store import (
+            StateStoreBackendNotActivatedError,
+            resolve_state_store,
+        )
+
+        spec = resolve_state_store(
+            home,
+            config,
+            read_only=read_only,
+            environ=environ,
+        )
+        if spec.backend != "sqlite":
+            raise StateStoreBackendNotActivatedError(
+                "The configured PostgreSQL state store is not activated in this build."
+            )
+        return cls(db_path=spec.sqlite_path, read_only=spec.read_only)
 
     def __init__(self, db_path: Path = None, read_only: bool = False):
         self.db_path = db_path or DEFAULT_DB_PATH

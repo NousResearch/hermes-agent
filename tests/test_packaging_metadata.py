@@ -79,6 +79,15 @@ def test_every_on_disk_subpackage_is_covered_by_packages_find():
     )
 
 
+def test_state_store_package_is_shipped():
+    """The state-store resolver is imported by SessionDB in installed wheels."""
+    include = _packages_find_include()
+    selected = set(find_packages(where=str(REPO_ROOT), include=include))
+
+    assert {"state_store", "state_store.*"} <= set(include)
+    assert "state_store" in selected
+
+
 def test_packaging_declared_as_core_dependency():
     """Regression for #40503.
 

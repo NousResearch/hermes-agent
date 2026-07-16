@@ -172,9 +172,16 @@ def _enforce_worker_process_ownership(conn, tid: str) -> Optional[str]:
     that the caller is the worker the dispatcher spawned.  The task row's
     ``worker_pid`` is the authoritative direct-worker identity.
 
+    Bypass the check when ``HERMES_KANBAN_MCP_PROXY`` is set: the
+    ``hermes_tools_mcp_server`` subprocess is a legitimate proxy that
+    dispatches kanban lifecycle calls on behalf of the owning Codex
+    worker (see ``agent/transports/hermes_tools_mcp_server.py``).
+
     Legacy/manual claims may not have a worker PID; retain their existing
     behavior rather than making those task rows impossible to terminate.
     """
+    if os.environ.get("HERMES_KANBAN_MCP_PROXY") == "1":
+        return None
     row = conn.execute(
         "SELECT worker_pid FROM tasks WHERE id = ?", (tid,)
     ).fetchone()

@@ -408,6 +408,45 @@ def test_invalid_worker_pid_rejected(worker_env):
     assert "invalid worker_pid" in out["error"]
 
 
+@pytest.mark.parametrize(
+    ("handler_name", "args"),
+    [
+        ("_handle_complete", {"summary": "MCP proxy finished"}),
+        ("_handle_block", {"reason": "MCP proxy blocked"}),
+        ("_handle_heartbeat", {"note": "MCP proxy alive"}),
+    ],
+)
+def test_mcp_proxy_bypasses_process_guard(
+    monkeypatch, worker_env, handler_name, args
+):
+    """HERMES_KANBAN_MCP_PROXY=1 must bypass the PID check.
+
+    The hermes_tools_mcp_server subprocess is a legitimate proxy that
+    dispatches kanban lifecycle calls on behalf of the owning Codex
+    worker.  It has a different PID but must not be rejected.
+    """
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    # Set worker_pid to a PID that is NOT our current process
+    parent_pid = os.getpid() + 9999
+    conn = kb.connect()
+    try:
+        kb._set_worker_pid(conn, worker_env, parent_pid)
+    finally:
+        conn.close()
+
+    # Without the proxy env var, this would be rejected
+    monkeypatch.setenv("HERMES_KANBAN_MCP_PROXY", "1")
+
+    out = getattr(kt, handler_name)(args)
+    result = json.loads(out)
+    assert result.get("ok") is True, f"{handler_name} should succeed for MCP proxy: {result}"
+
+    # Clean up
+    monkeypatch.delenv("HERMES_KANBAN_MCP_PROXY", raising=False)
+
+
 def test_complete_metadata_round_trips_through_show(worker_env):
     """Structured completion metadata should be visible to downstream agents."""
     from tools import kanban_tools as kt

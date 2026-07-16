@@ -209,6 +209,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     # Quiet mode: keep Hermes' own banners off stdout (which is the MCP wire).
     os.environ.setdefault("HERMES_QUIET", "1")
     os.environ.setdefault("HERMES_REDACT_SECRETS", "true")
+    # Mark this process as a kanban MCP proxy subprocess. The kanban_tools
+    # PID guard (added in #64547) checks worker_pid == os.getpid() to reject
+    # calls from child processes that inherit HERMES_KANBAN_* env vars. This
+    # MCP server is a legitimate proxy: it dispatches kanban lifecycle calls
+    # on behalf of the owning Codex worker. The PID guard bypasses the check
+    # when this env var is set.
+    os.environ["HERMES_KANBAN_MCP_PROXY"] = "1"
 
     try:
         server = _build_server()

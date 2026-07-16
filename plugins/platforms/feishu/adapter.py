@@ -2920,12 +2920,32 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.debug("[Feishu] Clarify %s already resolved or unknown", clarify_id)
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
+        # --- Authorization check: validate operator and chat binding ---
+        operator = getattr(event, "operator", None)
+        open_id = str(getattr(operator, "open_id", "") or "")
+        sender_id = SimpleNamespace(
+            open_id=open_id,
+            user_id=str(getattr(operator, "user_id", "") or ""),
+        )
+        if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
+            logger.warning("[Feishu] Unauthorized clarify click by %s", open_id or "")
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        callback_chat_id = str(getattr(getattr(event, "context", None), "open_chat_id", "") or "")
+        expected_chat_id = str(state.get("chat_id", "") or "")
+        if callback_chat_id and expected_chat_id and callback_chat_id != expected_chat_id:
+            logger.warning(
+                "[Feishu] Clarify callback chat mismatch for %s (expected=%s, got=%s)",
+                clarify_id, expected_chat_id, callback_chat_id,
+            )
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        # --- End authorization check ---
+
         choice_idx = action_value.get("choice_idx", "other")
         choices = state.get("choices") or []
-        operator = getattr(event, "operator", None)
         user_name = (
             getattr(operator, "name", None)
-            or getattr(operator, "open_id", None)
+            or open_id
             or "operator"
         )
 
@@ -2936,12 +2956,33 @@ class FeishuAdapter(BasePlatformAdapter):
             body_md = f"✅ **{label}** selected by **{user_name}**"
 
             try:
-                _clarify_mod.resolve_gateway_clarify(str(clarify_id), response_text)
+                resolved = _clarify_mod.resolve_gateway_clarify(str(clarify_id), response_text)
             except Exception as exc:
                 logger.warning("[Feishu] resolve_gateway_clarify failed: %s", exc)
+                resolved = False
 
             # Pop state immediately so a re-tap (network race) becomes a no-op.
             self._clarify_state.pop(str(clarify_id), None)
+
+            if not resolved:
+                # Waiter expired or session was reset — show an expired card
+                # so the user knows the choice was not received.
+                logger.debug("[Feishu] Clarify %s already expired or session reset", clarify_id)
+                if P2CardActionTriggerResponse is not None:
+                    response = P2CardActionTriggerResponse()
+                    if CallBackCard is not None:
+                        card = CallBackCard()
+                        card.type = "raw"
+                        card.data = {
+                            "config": {"wide_screen_mode": True},
+                            "header": {
+                                "title": {"content": "⏰ Expired", "tag": "plain_text"},
+                                "template": "red",
+                            },
+                            "elements": [{"tag": "markdown", "content": "This question has expired. Please start a new conversation."}],
+                        }
+                        response.card = card
+                    return response
         else:
             # "other" — flip entry into text-capture mode ONLY.  Do NOT
             # resolve_gateway_clarify here: the agent stays blocked, the

@@ -4900,6 +4900,78 @@ class TestCronContinuableSurfaceInChannel:
         mirror_mock.assert_called_once()
         assert mirror_mock.call_args.kwargs.get("thread_id") is None
 
+    def test_in_channel_from_origin_thread_delivers_flat_not_to_thread(self):
+        """Regression: a job scheduled from INSIDE a Slack thread (origin carries
+        a thread_id) must still deliver FLAT when cron_continuable_surface is
+        in_channel — not into the origin thread. Without clearing the inherited
+        thread_id, the live-adapter route (DeliveryRouter._deliver_to_platform)
+        folds target.thread_id into send_metadata['thread_id'], so the brief
+        would land in the origin thread while the seeded continuable session
+        (thread_id=None, asserted above) never matches where it actually went."""
+        adapter = self._slack_adapter(supports_inchannel=True)
+        _, mirror_mock = self._run_inchannel_delivery(
+            {"cron_continuable_surface": "in_channel"}, adapter,
+            origin={
+                "platform": "slack", "chat_id": "C123", "user_id": "U_HUMAN",
+                "thread_id": "999.888",
+            },
+        )
+        # The thread-open branch must still be skipped (in_channel behavior).
+        adapter.send.assert_awaited_once()
+        _, send_kwargs = adapter.send.await_args
+        send_metadata = send_kwargs.get("metadata") or {}
+        assert "thread_id" not in send_metadata, (
+            "in_channel delivery must be flat — the origin's thread_id must "
+            "not be forwarded to the adapter, even though the job was "
+            "scheduled from inside that thread"
+        )
+        # The seeded continuable session must match where the brief actually
+        # landed: flat (thread_id=None), not the origin thread.
+        adapter._session_store.get_or_create_session.assert_called_once()
+        seeded = adapter._session_store.get_or_create_session.call_args[0][0]
+        assert seeded.thread_id is None
+        mirror_mock.assert_called_once()
+        assert mirror_mock.call_args.kwargs.get("thread_id") is None
+
+    def test_in_channel_standalone_no_adapter_preserves_origin_thread(self):
+        """Fail-safe (D6 bypass guard): with NO live adapter, an
+        in_channel-configured job must NOT be flattened. The flat continuable
+        session can only be seeded on the live-adapter path, and the D6
+        capability check can't run without an adapter — so the standalone send
+        must fall back to the origin thread rather than silently flattening
+        (which would bypass D6 and drop the brief out of any continuable lane).
+        Scoping the thread_id clear to `runtime_adapter is not None` keeps the
+        clear in lockstep with the seed and the D6 fail-safe."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        pconfig.extra = {"cron_continuable_surface": "in_channel"}
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.SLACK: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("tools.send_message_tool._send_to_platform",
+                   new=AsyncMock(return_value={"success": True})) as send_mock:
+            job = {
+                "id": "brief-job",
+                "name": "Daily Brief",
+                "deliver": "origin",
+                "origin": {
+                    "platform": "slack", "chat_id": "C123",
+                    "user_id": "U_HUMAN", "thread_id": "999.888",
+                },
+            }
+            # No adapters/loop → standalone (no-live-adapter) delivery path.
+            _deliver_result(job, "Here is today's brief.")
+
+        send_mock.assert_called_once()
+        assert send_mock.call_args.kwargs.get("thread_id") == "999.888", (
+            "standalone in_channel delivery must fall back to the origin thread "
+            "(no live adapter can seed a flat continuable session), not flatten"
+        )
+
     def test_thread_mode_default_still_opens_thread(self):
         """G1 regression: the default (thread) mode is byte-identical — the
         thread-open branch still fires when no surface key is set."""

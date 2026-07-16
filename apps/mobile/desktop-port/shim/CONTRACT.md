@@ -145,9 +145,13 @@ it and is applied on **save/apply/test/probe** so the stored URL is always clean
 `const pref = await desktop.profile?.get?.(); const profileKey = (pref?.profile ?? '').trim() || 'default'`.
 `null` preference ⇒ `profileKey = 'default'`.
 
-**Shim**: `profile.get → { profile: null }`; `profile.set(name) → { profile: name ?? null }`
-as a no-op (`store/profile.ts:140` calls `set` **unguarded**; no profile switching
-against a single remote backend).
+**Shim**: `profile.get → { profile: null }` (the primary profile). `profile.set`
+accepts only the primary profile (`''` / `null` / `'default'`) and **throws** for
+any named profile, so `switchProfile()` (`store/profile.ts:140`, called unguarded)
+fails loudly rather than leaving the UI believing it switched while requests still
+hit the one unscoped backend. `api`, `getConnection`, `getGatewayWsUrl` and
+`touchBackend` apply the same `assertPrimaryProfile` guard: this client binds to a
+single remote gateway, so profile switching is disabled by design.
 
 ---
 

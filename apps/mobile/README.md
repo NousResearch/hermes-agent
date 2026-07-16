@@ -11,7 +11,7 @@ and the app never modifies the server.
 ```
 desktop-port/build.sh
   ├─ checks out the hermes-agent renderer at a pinned tag (or a local source),
-  │  resets it pristine, applies patches
+  │  resets it pristine (+ applies any patches/*.patch, none by default)
   ├─ builds the renderer with vite            → desktop-port/vendor/apps/desktop/dist
   ├─ copies the result to                     → desktop-port/dist/
   ├─ injects the browser shim                 → desktop-port/dist/index.html
@@ -126,9 +126,10 @@ re-entered.
 ## 7. Known refinements
 
 - **Title-bar toggle hit targets** (~20×22 CSS px) are smaller than Apple's 44pt
-  guidance. Their function was originally broken at narrow width (dead taps) and
-  is fixed via `desktop-port/patches/0001-touch-toggle-sidebar-filebrowser-narrow-viewport.patch`;
-  enlarging only the tap area (an invisible `::after`) is a possible follow-up.
+  guidance. Their narrow-width behavior is handled by the renderer itself
+  (`apps/desktop/src/store/layout.ts` routes the sidebar / file-browser toggles
+  through `revealNarrowPane()`), so the taps work on touch. Enlarging only the
+  tap area (an invisible `::after`) is a possible follow-up.
 - **Connect screen, empty token field:** if only the URL is changed and the
   token field is left blank, the shim reuses the previously stored token
   (mirrors the desktop app's token inheritance in `coerceRemote()`).

@@ -17,7 +17,7 @@ apps/mobile/
   shim/CONTRACT.md
   scripts/inject-shim.mjs
   scripts/fix-assets.mjs
-  patches/                     # only patches NOT yet merged upstream (see below)
+  test/                        # node --test suites (bridge behavior + build-path)
   build.sh
   package.json
 ```
@@ -35,24 +35,22 @@ and skips the git clone + pristine-reset of the pinned vendor tag. In-tree,
 drop the vendoring path entirely and depend on `apps/desktop` + `apps/shared`
 directly.
 
-## Renderer-side fixes worth contributing directly (not as carried patches)
+## Renderer-side fixes
 
-These live in `patches/` today only because this wrapper builds an unmodified
-tag. In-tree they should be proper changes to `apps/desktop` and can drop from
-`patches/`:
-
-1. **UIScene lifecycle** — the renderer runs fine, but any WKWebView host on
-   iOS 26/27 needs `UIApplicationSceneManifest` + a `SceneDelegate`. Belongs in
-   the mobile host, documented for other embedders.
-2. **Font path** — the renderer references `@nous-research/ui` fonts via an
+1. **Touch toggle** — **already handled upstream; no change needed.** Current
+   `main` routes `toggleSidebarOpen` / `toggleFileBrowserOpen`
+   (`apps/desktop/src/store/layout.ts`) through `revealNarrowPane()`, which
+   dispatches the pane-reveal event at narrow width — so the title-bar toggles
+   work on touch out of the box. (An earlier iteration of this port carried a
+   vendor patch for this against an older tag; it has been dropped.)
+2. **UIScene lifecycle** — the renderer runs fine, but any WKWebView host on
+   iOS 26/27 needs `UIApplicationSceneManifest` + a `SceneDelegate`. Lives in
+   the mobile host (`ios/`), documented for other embedders.
+3. **Font path** — the renderer references `@nous-research/ui` fonts via an
    absolute `/node_modules/...` URL that 404s when served from a non-root/static
-   host. A relative or configurable font base in `apps/desktop`'s build would
-   remove the need for `fix-assets.mjs`.
-3. **Touch toggle** (`patches/0001-*`) — `toggleSidebarOpen` /
-   `toggleFileBrowserOpen` don't dispatch the pane-reveal event at narrow width
-   (unlike `toggleReview`), so title-bar taps are dead on touch. A one-line fix
-   in `apps/desktop/src/store/layout.ts` mirroring `toggleReview` fixes it for
-   all narrow/touch consumers.
+   host; `scripts/fix-assets.mjs` rebases them post-build (for both the
+   standalone and in-tree builds). A relative or configurable font base in
+   `apps/desktop`'s Vite build would remove the need for that script entirely.
 
 ## Signing / identifiers
 

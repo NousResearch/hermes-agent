@@ -26,16 +26,20 @@ else
     fi
   fi
   # Reset vendor to the pristine tag state before every build (discard manual
-  # edits; documented patches are applied afterwards)
+  # edits; any documented patches are applied afterwards)
   git -C "$VENDOR" checkout -- .
   git -C "$VENDOR" clean -fd
 
-  echo "== Applying vendor patches =="
-  for patch in patches/*.patch; do
-    [ -e "$patch" ] || continue
-    echo "  -> $patch"
-    git -C "$VENDOR" apply "../$patch"
-  done
+  # Optional extension point: renderer fixes needed against the pinned tag but
+  # not yet released. Empty by default — the fixes this port needs now live in
+  # apps/desktop upstream, and the in-tree build (above) uses them directly.
+  if compgen -G "patches/*.patch" > /dev/null; then
+    echo "== Applying vendor patches =="
+    for patch in patches/*.patch; do
+      echo "  -> $patch"
+      git -C "$VENDOR" apply "../$patch"
+    done
+  fi
   DESKTOP_DIR="$VENDOR/apps/desktop"
 fi
 
@@ -49,6 +53,6 @@ echo "== Injecting browser shim (window.hermesDesktop) =="
 node scripts/inject-shim.mjs
 
 echo "== Fixing assets (rebasing hero font paths) =="
-node scripts/fix-assets.mjs
+node scripts/fix-assets.mjs "$DESKTOP_DIR"
 
 echo "== Build ok: desktop-port/dist =="

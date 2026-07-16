@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "description": "Native iOS client that bundles the Hermes desktop renderer and connects to a self-hosted Hermes gateway (remote-only).",
   "scripts": {
-    "build": "./desktop-port/build.sh"
+    "build": "./desktop-port/build.sh",
+    "test": "node --test desktop-port/test/fix-assets.test.mjs desktop-port/test/bridge.test.mjs",
+    "check": "node --test desktop-port/test/fix-assets.test.mjs desktop-port/test/bridge.test.mjs"
   },
   "keywords": [
     "hermes",

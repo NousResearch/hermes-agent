@@ -223,7 +223,8 @@ def test_deepseek_v4_pro_pricing_entry_exists():
 
     Before this fix, deepseek-v4-pro sessions showed as unknown cost
     in hermes insights because the _OFFICIAL_DOCS_PRICING table had no
-    entry for that model.  See #24218.
+    entry for that model.  See #24218.  Rates track the 2026-07 price cut
+    ($1.74/$3.48 → $0.435/$0.87).
     """
     entry = get_pricing_entry(
         "deepseek-v4-pro",
@@ -233,9 +234,9 @@ def test_deepseek_v4_pro_pricing_entry_exists():
     assert entry is not None
     assert entry.input_cost_per_million is not None
     assert entry.output_cost_per_million is not None
-    assert float(entry.input_cost_per_million) == 1.74
-    assert float(entry.output_cost_per_million) == 3.48
-    assert float(entry.cache_read_cost_per_million) == 0.0145
+    assert float(entry.input_cost_per_million) == 0.435
+    assert float(entry.output_cost_per_million) == 0.87
+    assert float(entry.cache_read_cost_per_million) == 0.003625
 
 
 def test_deepseek_v4_pro_estimate_usage_cost():
@@ -248,8 +249,39 @@ def test_deepseek_v4_pro_estimate_usage_cost():
 
     assert result.status == "estimated"
     assert result.amount_usd is not None
-    # 1M input × $1.74/M + 500K output × $3.48/M = $1.74 + $1.74 = $3.48
-    assert float(result.amount_usd) == 3.48
+    # 1M input × $0.435/M + 500K output × $0.87/M = $0.435 + $0.435 = $0.87
+    assert float(result.amount_usd) == 0.87
+
+
+def test_deepseek_deprecated_aliases_price_as_v4_flash():
+    """Invariant: deepseek-chat / deepseek-reasoner are deprecated aliases for
+    deepseek-v4-flash's non-thinking / thinking modes (deprecation 2026-07-24)
+    — they must bill at identical rates to the flash entry, or sessions on the
+    legacy names over/under-report cost."""
+    flash = get_pricing_entry("deepseek-v4-flash", provider="deepseek")
+    assert flash is not None
+    for alias in ("deepseek-chat", "deepseek-reasoner"):
+        entry = get_pricing_entry(alias, provider="deepseek")
+        assert entry is not None, alias
+        assert entry.input_cost_per_million == flash.input_cost_per_million, alias
+        assert entry.output_cost_per_million == flash.output_cost_per_million, alias
+        assert (
+            entry.cache_read_cost_per_million == flash.cache_read_cost_per_million
+        ), alias
+
+
+def test_deepseek_rows_all_carry_cache_read_pricing():
+    """Invariant: DeepSeek publishes a cache-hit rate for every current model;
+    every deepseek snapshot row must carry cache_read < input so cached
+    sessions estimate correctly instead of billing reads at full price."""
+    from agent.usage_pricing import _OFFICIAL_DOCS_PRICING
+
+    ds_rows = [k for k in _OFFICIAL_DOCS_PRICING if k[0] == "deepseek"]
+    assert ds_rows, "expected at least one deepseek pricing row"
+    for key in ds_rows:
+        entry = _OFFICIAL_DOCS_PRICING[key]
+        assert entry.cache_read_cost_per_million is not None, key
+        assert entry.cache_read_cost_per_million < entry.input_cost_per_million, key
 
 
 def test_bedrock_claude_rows_all_carry_cache_pricing():

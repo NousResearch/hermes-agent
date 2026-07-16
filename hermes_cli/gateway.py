@@ -8,6 +8,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -142,33 +143,27 @@ def _get_service_pids() -> set:
 
     # --- launchd (macOS) ---
     if is_macos():
-        try:
-            label = get_launchd_label()
-            result = subprocess.run(
-                ["launchctl", "list", label],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode == 0:
-                # Try plist format first (macOS 26+): "PID" = <N>;
-                pid = _parse_launchd_pid_from_list_output(result.stdout)
-                if pid is not None and pid > 0:
-                    pids.add(pid)
-                else:
-                    # Fall back to legacy tab-separated format:
-                    # "PID\tStatus\tLabel"
-                    for line in result.stdout.strip().splitlines():
-                        parts = line.split()
-                        if len(parts) >= 3 and parts[2] == label:
-                            try:
-                                pid = int(parts[0])
-                                if pid > 0:
-                                    pids.add(pid)
-                            except ValueError:
-                                pass
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
+        loaded = _launchd_print_loaded_service()
+        if loaded:
+            _domain, output = loaded
+            pid = _parse_launchd_pid_from_list_output(output)
+            if pid is not None and pid > 0:
+                pids.add(pid)
+        else:
+            try:
+                label = get_launchd_label()
+                result = subprocess.run(
+                    ["launchctl", "list", label],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+                if result.returncode == 0:
+                    pid = _parse_launchd_pid_from_list_output(result.stdout)
+                    if pid is not None and pid > 0:
+                        pids.add(pid)
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                pass
 
     return pids
 
@@ -1261,12 +1256,23 @@ def _parse_launchd_pid_from_list_output(output: str) -> int | None:
     """
     for line in output.splitlines():
         stripped = line.strip()
-        if stripped.startswith('"PID"') or stripped.startswith("PID"):
+        if (
+            stripped.startswith('"PID"')
+            or stripped.startswith("PID")
+            or stripped.startswith("pid")
+        ):
             parts = stripped.split("=", 1)
             if len(parts) == 2:
                 val = parts[1].strip().rstrip(";").strip('"')
                 try:
                     pid = int(val)
+                    return pid if pid > 0 else None
+                except ValueError:
+                    return None
+            parts = stripped.split()
+            if len(parts) >= 3:
+                try:
+                    pid = int(parts[0])
                     return pid if pid > 0 else None
                 except ValueError:
                     return None
@@ -1283,6 +1289,10 @@ def _probe_launchd_service_running() -> bool:
     """
     if not get_launchd_plist_path().exists():
         return False
+    loaded = _launchd_print_loaded_service()
+    if loaded is not None:
+        _domain, output = loaded
+        return _parse_launchd_pid_from_list_output(output) is not None
     try:
         result = subprocess.run(
             ["launchctl", "list", get_launchd_label()],
@@ -3610,6 +3620,33 @@ def _launchd_domain() -> str:
     return user_domain
 
 
+def _launchd_domain_candidates() -> list[str]:
+    """Return launchd domains worth probing for an already-loaded job."""
+    domains = [_launchd_domain(), f"gui/{os.getuid()}"]
+    return list(dict.fromkeys(domains))
+
+
+def _launchd_print_loaded_service(label: str | None = None) -> tuple[str, str] | None:
+    """Return (domain, output) for a loaded launchd service, if discoverable."""
+    label = label or get_launchd_label()
+    for domain in _launchd_domain_candidates():
+        target = f"{domain}/{label}"
+        try:
+            result = subprocess.run(
+                ["launchctl", "print", target],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode == 0:
+            if not result.stdout.strip():
+                continue
+            return domain, result.stdout
+    return None
+
+
 # On macOS, exit code 125 ("Domain does not support specified action") and
 # 3/113 ("Could not find service") all mean the job isn't currently loaded in
 # the target domain, so start/restart should re-bootstrap the plist and retry.
@@ -4199,6 +4236,7 @@ def launchd_uninstall():
 def launchd_start():
     plist_path = get_launchd_plist_path()
     label = get_launchd_label()
+    target = f"{_launchd_domain()}/{label}"
 
     # Self-heal if the plist is missing entirely (e.g., manual cleanup, failed upgrade)
     if not plist_path.exists():
@@ -4227,11 +4265,21 @@ def launchd_start():
     refresh_launchd_plist_if_needed()
     try:
         subprocess.run(
-            ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
+            ["launchctl", "kickstart", target],
             check=True,
             timeout=30,
         )
     except subprocess.CalledProcessError as e:
+        loaded = _launchd_print_loaded_service(label)
+        if loaded:
+            loaded_target = f"{loaded[0]}/{label}"
+            subprocess.run(
+                ["launchctl", "kickstart", loaded_target],
+                check=True,
+                timeout=30,
+            )
+            print("✓ Service started")
+            return
         if not _launchd_error_indicates_unloaded(e):
             raise
         # Job not loaded in this domain — re-bootstrap the plist and retry.
@@ -4239,7 +4287,7 @@ def launchd_start():
         try:
             _launchctl_bootstrap(_launchd_domain(), plist_path, label, timeout=30)
             subprocess.run(
-                ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
+                ["launchctl", "kickstart", target],
                 check=True,
                 timeout=30,
             )
@@ -4343,6 +4391,13 @@ def launchd_restart():
     drain_timeout = _get_restart_drain_timeout()
     from gateway.status import get_running_pid
 
+    def _ensure_detached_restart_can_take_over() -> None:
+        # When launchd cannot manage this host and we fall back to a detached
+        # process, there is no supervisor to serialize the replacement. Make
+        # one final PID-file-based pass so the new gateway does not overlap the
+        # old websocket clients and lose the Feishu app locks.
+        _wait_for_gateway_exit(timeout=5.0, force_after=0.0)
+
     try:
         pid = get_running_pid()
         if pid is not None and _request_gateway_self_restart(pid):
@@ -4374,11 +4429,18 @@ def launchd_restart():
         print("✓ Service restarted")
         _clear_launchd_unsupported_marker()
     except subprocess.CalledProcessError as e:
+        loaded = _launchd_print_loaded_service(label)
+        if loaded:
+            loaded_target = f"{loaded[0]}/{label}"
+            subprocess.run(["launchctl", "kickstart", "-k", loaded_target], check=True, timeout=90)
+            print("✓ Service restarted")
+            return
         if not _launchd_error_indicates_unloaded(e):
             # Not a "job unloaded" code. If the domain is fundamentally
             # unmanageable (error 5), degrade to detached; the old process was
             # already drained/terminated above. Otherwise re-raise.
             if _launchctl_domain_unsupported(e.returncode):
+                _ensure_detached_restart_can_take_over()
                 _launchd_fallback_to_detached(f"launchctl kickstart exit {e.returncode}")
                 return
             raise
@@ -4403,8 +4465,15 @@ def launchd_restart():
             )
             subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
         except subprocess.CalledProcessError as e2:
+            loaded = _launchd_print_loaded_service(label)
+            if loaded:
+                loaded_target = f"{loaded[0]}/{label}"
+                subprocess.run(["launchctl", "kickstart", "-k", loaded_target], check=True, timeout=90)
+                print("✓ Service restarted")
+                return
             if not _launchctl_domain_unsupported(e2.returncode):
                 raise
+            _ensure_detached_restart_can_take_over()
             _launchd_fallback_to_detached(f"launchctl exit {e2.returncode}")
             return
         print("✓ Service restarted")
@@ -4414,18 +4483,24 @@ def launchd_restart():
 def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()
     label = get_launchd_label()
-    try:
-        result = subprocess.run(
-            ["launchctl", "list", label],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        service_listed = result.returncode == 0
-        list_output = result.stdout
-    except subprocess.TimeoutExpired:
-        service_listed = False
-        list_output = ""
+    loaded_service = _launchd_print_loaded_service(label)
+    loaded_domain = loaded_service[0] if loaded_service else None
+    if loaded_service is not None:
+        service_listed = True
+        list_output = loaded_service[1]
+    else:
+        try:
+            result = subprocess.run(
+                ["launchctl", "list", label],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            service_listed = result.returncode == 0
+            list_output = result.stdout
+        except subprocess.TimeoutExpired:
+            service_listed = False
+            list_output = ""
 
     # Determine whether launchd is actively supervising a process.
     # ``launchctl list`` returns exit 0 whenever the service definition is
@@ -4459,7 +4534,8 @@ def launchd_status(deep: bool = False):
 
     if service_listed:
         if launchd_pid is not None:
-            print(f"✓ Gateway is supervised by launchd (PID {launchd_pid})")
+            suffix = f" ({loaded_domain})" if loaded_domain else ""
+            print(f"✓ Gateway is supervised by launchd{suffix} (PID {launchd_pid})")
             print("  Auto-start at login and auto-restart on crash are available.")
             if launchd_unsupported:
                 print("  (launchd domain was previously unavailable but is now working)")

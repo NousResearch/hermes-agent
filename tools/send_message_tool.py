@@ -260,6 +260,27 @@ def _handle_list():
         return json.dumps(_error(f"Failed to load channel directory: {e}"))
 
 
+def _enabled_platform_configs(pconfig):
+    """Return enabled configs from a single- or multi-app platform config."""
+    configs = pconfig if isinstance(pconfig, list) else [pconfig]
+    return [cfg for cfg in configs if cfg is not None and getattr(cfg, "enabled", False)]
+
+
+def _select_platform_config(platform, configs, chat_id):
+    """Pick the best config for a target, preserving Feishu multi-app fallback."""
+    if not configs:
+        return None
+    if platform.value == "feishu":
+        for cfg in configs:
+            home = getattr(cfg, "home_channel", None)
+            if home and chat_id and str(home.chat_id) == str(chat_id):
+                return cfg
+        # Unknown Feishu chats may belong to any configured app. Let _send_feishu
+        # try each enabled app instead of failing before it reaches the adapter.
+        return configs if len(configs) > 1 else configs[0]
+    return configs[0]
+
+
 def _handle_react(args, remove=False):
     """Attach (or with ``remove=True`` retract) an emoji reaction on a message
     via a live gateway adapter.
@@ -406,7 +427,8 @@ def _handle_send(args):
         return tool_error(f"Unknown platform: {platform_name}")
 
     pconfig = config.platforms.get(platform)
-    if not pconfig or not pconfig.enabled:
+    enabled_configs = _enabled_platform_configs(pconfig)
+    if not enabled_configs:
         # Weixin can be configured purely via .env; synthesize a pconfig so
         # send_message and cron delivery work without a gateway.yaml entry.
         if platform_name == "weixin":
@@ -423,6 +445,7 @@ def _handle_send(args):
                         "cdn_base_url": get_secret("WEIXIN_CDN_BASE_URL", "").strip(),
                     },
                 )
+                enabled_configs = [pconfig]
             else:
                 return tool_error(f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables.")
         else:
@@ -442,16 +465,29 @@ def _handle_send(args):
 
     used_home_channel = False
     if not chat_id:
-        home = config.get_home_channel(platform)
-        if not home and platform_name == "weixin":
-            wx_home = os.getenv("WEIXIN_HOME_CHANNEL", "").strip()
-            if wx_home:
-                from gateway.config import HomeChannel
-                home = HomeChannel(platform=platform, chat_id=wx_home, name="Weixin Home")
-        if home:
-            chat_id = home.chat_id
-            used_home_channel = True
-        else:
+        enabled_configs = _enabled_platform_configs(pconfig)
+        if enabled_configs:
+            for cfg in enabled_configs:
+                home = getattr(cfg, "home_channel", None)
+                if home:
+                    chat_id = home.chat_id
+                    used_home_channel = True
+                    break
+        if not chat_id and hasattr(config, "get_home_channel"):
+            home = config.get_home_channel(platform)
+            if home:
+                chat_id = home.chat_id
+                used_home_channel = True
+        if not chat_id:
+            if platform_name == "weixin":
+                wx_home = os.getenv("WEIXIN_HOME_CHANNEL", "").strip()
+                if wx_home:
+                    from gateway.config import HomeChannel
+                    home = HomeChannel(platform=platform, chat_id=wx_home, name="Weixin Home")
+                    if home:
+                        chat_id = home.chat_id
+                        used_home_channel = True
+        if not chat_id:
             home_env = _HOME_CHANNEL_ENV_OVERRIDES.get(
                 platform_name, f"{platform_name.upper()}_HOME_CHANNEL"
             )
@@ -464,6 +500,10 @@ def _handle_send(args):
     duplicate_skip = _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id)
     if duplicate_skip:
         return json.dumps(duplicate_skip)
+
+    pconfig = _select_platform_config(platform, enabled_configs, chat_id)
+    if not pconfig:
+        return tool_error(f"Platform '{platform_name}' is not configured. Set up credentials in ~/.hermes/config.yaml or environment variables.")
 
     # Slack: resolve user IDs (U...) to DM channel IDs via conversations.open
     if platform_name == "slack" and chat_id and chat_id.startswith("U"):

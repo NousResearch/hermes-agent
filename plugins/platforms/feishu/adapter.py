@@ -1299,6 +1299,31 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     """Run the official Lark WS client in its own thread-local event loop."""
     import lark_oapi.ws.client as ws_client_module
 
+    async def _run_manual_ws_client() -> None:
+        disconnected_since: Optional[float] = None
+        stale_after = max(
+            30.0,
+            float(getattr(adapter, "_ws_reconnect_nonce", 30) or 0)
+            + float(getattr(adapter, "_ws_reconnect_interval", 120) or 120)
+            + 15.0,
+        )
+        await ws_client._connect()
+        ping_loop = getattr(ws_client, "_ping_loop", None)
+        if callable(ping_loop):
+            loop.create_task(ping_loop())
+        while getattr(adapter, "_running", False):
+            if getattr(ws_client, "_conn", None) is None:
+                now = time.monotonic()
+                disconnected_since = disconnected_since or now
+                if now - disconnected_since >= stale_after:
+                    raise RuntimeError(
+                        "Feishu websocket receive loop exited and did not reconnect "
+                        f"within {stale_after:.0f}s"
+                    )
+            else:
+                disconnected_since = None
+            await asyncio.sleep(5)
+
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     ws_client_module.loop = loop
@@ -1336,8 +1361,20 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     _apply_runtime_ws_overrides()
     try:
         ws_client.start()
-    except Exception:
-        pass
+    except RuntimeError as e:
+        if "no running event loop" in str(e).lower():
+            logger.warning("[Feishu] lark_oapi.start() requires running loop — retrying with loop.run_until_complete")
+            try:
+                loop.run_until_complete(_run_manual_ws_client())
+            except Exception as exc:
+                logger.error("[Feishu] websocket client exited: %s", exc, exc_info=True)
+                raise
+        else:
+            logger.error("[Feishu] websocket client exited: %s", e, exc_info=True)
+            raise
+    except Exception as exc:
+        logger.error("[Feishu] websocket client exited: %s", exc, exc_info=True)
+        raise
     finally:
         ws_client_module.websockets.connect = original_connect
         if original_configure is not None:
@@ -1502,6 +1539,15 @@ class FeishuAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _load_settings(extra: Dict[str, Any]) -> FeishuAdapterSettings:
+        def _iter_allowed_users(raw: Any):
+            if isinstance(raw, str):
+                yield from (item.strip() for item in raw.split(",") if item.strip())
+            elif isinstance(raw, (list, tuple, set)):
+                for item in raw:
+                    text = str(item).strip()
+                    if text:
+                        yield text
+
         # Parse per-group rules from config
         raw_group_rules = extra.get("group_rules", {})
         group_rules: Dict[str, FeishuGroupRule] = {}
@@ -1551,9 +1597,8 @@ class FeishuAdapter(BasePlatformAdapter):
             ).strip(),
             group_policy=os.getenv("FEISHU_GROUP_POLICY", "allowlist").strip().lower(),
             allowed_group_users=frozenset(
-                item.strip()
-                for item in os.getenv("FEISHU_ALLOWED_USERS", "").split(",")
-                if item.strip()
+                set(_iter_allowed_users(os.getenv("FEISHU_ALLOWED_USERS", "")))
+                | set(_iter_allowed_users(extra.get("allowed_users")))
             ),
             bot_open_id=os.getenv("FEISHU_BOT_OPEN_ID", "").strip(),
             bot_user_id=os.getenv("FEISHU_BOT_USER_ID", "").strip(),
@@ -1754,7 +1799,12 @@ class FeishuAdapter(BasePlatformAdapter):
             self._loop = asyncio.get_running_loop()
             await self._connect_with_retry()
             self._mark_connected()
-            logger.info("[Feishu] Connected in %s mode (%s)", self._connection_mode, self._domain_name)
+            logger.info(
+                "[Feishu] Connected in %s mode (%s, adapter_id=%s)",
+                self._connection_mode,
+                self._domain_name,
+                getattr(self, "adapter_id", None) or "pending",
+            )
             return True
         except Exception as exc:
             await self._release_app_lock()
@@ -3269,8 +3319,9 @@ class FeishuAdapter(BasePlatformAdapter):
             or "<unknown>"
         )
         logger.info(
-            "[Feishu] Inbound %s message received: id=%s type=%s chat_id=%s sender=%s:%s text=%r media=%d",
+            "[Feishu] Inbound %s message received: adapter_id=%s id=%s type=%s chat_id=%s sender=%s:%s text=%r media=%d",
             "dm" if chat_type == "p2p" else "group",
+            getattr(self, "adapter_id", None) or "unknown",
             message_id,
             inbound_type.value,
             getattr(message, "chat_id", "") or "",
@@ -4748,6 +4799,7 @@ class FeishuAdapter(BasePlatformAdapter):
             self._ws_client,
             self,
         )
+        self._ws_future.add_done_callback(self._on_websocket_thread_done)
 
     async def _connect_webhook(self) -> None:
         if not FEISHU_WEBHOOK_AVAILABLE:
@@ -4777,6 +4829,36 @@ class FeishuAdapter(BasePlatformAdapter):
             .log_level(lark.LogLevel.WARNING)
             .build()
         )
+
+    def _on_websocket_thread_done(self, future: asyncio.Future) -> None:
+        """Escalate an unexpected Feishu websocket thread exit to the runner."""
+        if not getattr(self, "_running", False):
+            return
+        try:
+            exc = future.exception()
+        except asyncio.CancelledError:
+            return
+        except Exception as callback_exc:
+            exc = callback_exc
+
+        if exc is None:
+            message = "Feishu websocket thread exited while adapter was still running"
+        else:
+            message = f"Feishu websocket thread exited: {exc}"
+        logger.error(
+            "[Feishu] %s",
+            message,
+            exc_info=(type(exc), exc, exc.__traceback__) if exc else None,
+        )
+        self._set_fatal_error("feishu_ws_disconnected", message, retryable=True)
+
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(self._notify_fatal_error(), loop)
+        except RuntimeError:
+            logger.debug("[Feishu] Could not schedule websocket fatal-error handler", exc_info=True)
 
     async def _feishu_send_with_retry(
         self,
@@ -5395,6 +5477,26 @@ _MIGRATION_AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
 _MIGRATION_VOICE_EXTS = {".ogg", ".opus"}
 
 
+def _standalone_config_enabled(config) -> bool:
+    if isinstance(config, dict):
+        return bool(config.get("enabled", True))
+    return bool(getattr(config, "enabled", True))
+
+
+def _normalize_standalone_configs(pconfig) -> list:
+    """Normalize single- and multi-app Feishu configs for standalone sends."""
+    if pconfig is None:
+        return []
+    if isinstance(pconfig, list):
+        return [item for item in pconfig if item and _standalone_config_enabled(item)]
+    if isinstance(pconfig, dict):
+        apps = pconfig.get("apps")
+        if isinstance(apps, list):
+            return [item for item in apps if item and _standalone_config_enabled(item)]
+        return [pconfig] if pconfig.get("enabled", True) else []
+    return [pconfig] if _standalone_config_enabled(pconfig) else []
+
+
 async def _standalone_send(
     pconfig,
     chat_id,
@@ -5415,46 +5517,71 @@ async def _standalone_send(
         return {"error": "Feishu dependencies not installed. Run: pip install 'hermes-agent[feishu]'"}
 
     media_files = media_files or []
-    try:
-        adapter = FeishuAdapter(pconfig)
-        domain_name = getattr(adapter, "_domain_name", "feishu")
-        domain = FEISHU_DOMAIN if domain_name != "lark" else LARK_DOMAIN
-        adapter._client = adapter._build_lark_client(domain)
-        metadata = {"thread_id": thread_id} if thread_id else None
+    configs = _normalize_standalone_configs(pconfig)
+    if not configs:
+        return {"error": "No enabled Feishu config found"}
 
-        last_result = None
-        if message.strip():
-            last_result = await adapter.send(chat_id, message, metadata=metadata)
-            if not last_result.success:
-                return {"error": f"Feishu send failed: {last_result.error}"}
+    errors: list[str] = []
+    for candidate in configs:
+        try:
+            feishu_config = (
+                PlatformConfig.from_dict(candidate)
+                if isinstance(candidate, dict)
+                else candidate
+            )
+            adapter = FeishuAdapter(feishu_config)
+            domain_name = getattr(adapter, "_domain_name", "feishu")
+            domain = FEISHU_DOMAIN if domain_name != "lark" else LARK_DOMAIN
+            adapter._client = adapter._build_lark_client(domain)
+            metadata = {"thread_id": thread_id} if thread_id else None
 
-        for media_path, is_voice in media_files:
-            if not os.path.exists(media_path):
-                return {"error": f"Media file not found: {media_path}"}
-            ext = os.path.splitext(media_path)[1].lower()
-            if ext in _MIGRATION_IMAGE_EXTS:
-                last_result = await adapter.send_image_file(chat_id, media_path, metadata=metadata)
-            elif ext in _MIGRATION_VIDEO_EXTS:
-                last_result = await adapter.send_video(chat_id, media_path, metadata=metadata)
-            elif ext in _MIGRATION_VOICE_EXTS and is_voice:
-                last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
-            elif ext in _MIGRATION_AUDIO_EXTS:
-                last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
-            else:
-                last_result = await adapter.send_document(chat_id, media_path, metadata=metadata)
-            if not last_result.success:
-                return {"error": f"Feishu media send failed: {last_result.error}"}
+            last_result = None
+            delivered_any = False
+            if message.strip():
+                last_result = await adapter.send(chat_id, message, metadata=metadata)
+                if not last_result.success:
+                    errors.append(str(last_result.error))
+                    continue
+                delivered_any = True
 
-        if last_result is None:
-            return {"error": "No deliverable text or media remained after processing MEDIA tags"}
-        return {
-            "success": True,
-            "platform": "feishu",
-            "chat_id": chat_id,
-            "message_id": last_result.message_id,
-        }
-    except Exception as e:
-        return {"error": f"Feishu send failed: {e}"}
+            media_failed = False
+            for media_path, is_voice in media_files:
+                if not os.path.exists(media_path):
+                    return {"error": f"Media file not found: {media_path}"}
+                ext = os.path.splitext(media_path)[1].lower()
+                if ext in _MIGRATION_IMAGE_EXTS:
+                    last_result = await adapter.send_image_file(chat_id, media_path, metadata=metadata)
+                elif ext in _MIGRATION_VIDEO_EXTS:
+                    last_result = await adapter.send_video(chat_id, media_path, metadata=metadata)
+                elif ext in _MIGRATION_VOICE_EXTS and is_voice:
+                    last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
+                elif ext in _MIGRATION_AUDIO_EXTS:
+                    last_result = await adapter.send_voice(chat_id, media_path, metadata=metadata)
+                else:
+                    last_result = await adapter.send_document(chat_id, media_path, metadata=metadata)
+                if not last_result.success:
+                    if delivered_any:
+                        return {"error": f"Feishu media send failed: {last_result.error}"}
+                    errors.append(str(last_result.error))
+                    media_failed = True
+                    break
+                delivered_any = True
+            if media_failed:
+                continue
+
+            if last_result is None:
+                return {"error": "No deliverable text or media remained after processing MEDIA tags"}
+            return {
+                "success": True,
+                "platform": "feishu",
+                "chat_id": chat_id,
+                "message_id": last_result.message_id,
+            }
+        except Exception as e:
+            errors.append(str(e))
+
+    detail = "; ".join(error for error in errors if error) or "all configured Feishu apps failed"
+    return {"error": f"Feishu send failed: {detail}"}
 
 
 def interactive_setup() -> None:

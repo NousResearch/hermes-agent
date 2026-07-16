@@ -3170,6 +3170,38 @@ class TestSubagentApprovalCallback(unittest.TestCase):
         self.assertTrue(result["approved"])
         self.assertNotIn(session_key, approval._pending)
 
+    def test_request_tool_approval_gateway_honors_worker_callback(self):
+        """request_tool_approval must use the worker callback, not the parent gateway queue."""
+        from tools import approval
+        from tools.delegate_tool import _subagent_auto_deny
+
+        session_key = "test-tool-approval-gateway-callback"
+        approval._pending.clear()
+        approval._session_approved.clear()
+        approval._permanent_approved.clear()
+        callback = MagicMock(wraps=_subagent_auto_deny)
+
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_GATEWAY_SESSION": "1",
+                "HERMES_SESSION_KEY": session_key,
+                "HERMES_EXEC_ASK": "1",
+            },
+            clear=False,
+        ):
+            os.environ.pop("HERMES_CRON_SESSION", None)
+            result = approval.request_tool_approval(
+                "write_file",
+                "Plugin requires approval for write_file",
+                approval_callback=callback,
+            )
+
+        callback.assert_called_once()
+        self.assertFalse(result["approved"])
+        self.assertNotEqual(result.get("status"), "approval_required")
+        self.assertNotIn(session_key, approval._pending)
+
 
 class TestFallbackModelInheritance(unittest.TestCase):
     """Subagents must inherit the parent's fallback provider chain."""

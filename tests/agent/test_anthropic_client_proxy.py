@@ -17,9 +17,17 @@ it injects an ``httpx.Client(trust_env=False, proxy=_get_proxy_for_base_url(...)
 so the system proxy is never silently applied, while explicit HTTP(S)_PROXY env
 still works and NO_PROXY is honored.
 
+``trust_env=False`` also stops httpx from loading ``SSL_CERT_FILE`` /
+``SSL_CERT_DIR`` into its default SSL context, so ``build_anthropic_client``
+forwards an explicit ``verify`` resolved via ``agent.ssl_verify`` (honoring
+``HERMES_CA_BUNDLE`` / ``SSL_CERT_FILE`` / ``REQUESTS_CA_BUNDLE`` /
+``CURL_CA_BUNDLE``) to preserve custom-root-CA behavior for corporate-MITM
+users — the last test below pins that contract.
+
 Tracked in NousResearch/hermes-agent#25319 (the httpx-path sibling of the
 already-fixed OpenAI/auxiliary cases #14451 / #25319 loopback fixes).
 """
+import ssl
 import types
 
 import httpx
@@ -117,5 +125,41 @@ def test_anthropic_client_honors_no_proxy(monkeypatch):
     http_client = captured["kwargs"]["http_client"]
     assert "HTTPProxy" not in _proxy_pool_names(http_client), (
         "NO_PROXY host must not route through HTTPProxy"
+    )
+    http_client.close()
+
+
+def test_anthropic_client_forwards_resolved_ca_verify(monkeypatch):
+    """trust_env=False stops httpx from reading SSL_CERT_FILE/SSL_CERT_DIR into
+    its SSL context, so build_anthropic_client must forward an explicit verify
+    context from hermes's shared CA resolver. This pins the wiring: the injected
+    client's SSL context is exactly what resolve_httpx_verify(base_url=...)
+    returned. Without it, users behind a corporate MITM proxy with a custom root
+    CA would hit TLS verification failures on the Anthropic path."""
+    _clear_proxy_env(monkeypatch)
+    captured = _capture_anthropic_kwargs(monkeypatch)
+
+    sentinel_ctx = ssl.create_default_context()
+    seen = {}
+
+    import agent.ssl_verify as ssl_verify_mod
+
+    def _fake_resolve(**kwargs):
+        seen.update(kwargs)
+        return sentinel_ctx
+
+    monkeypatch.setattr(ssl_verify_mod, "resolve_httpx_verify", _fake_resolve)
+
+    aa.build_anthropic_client(
+        "sk-test", base_url="https://gateway.internal.example.com/anthropic"
+    )
+
+    http_client = captured["kwargs"]["http_client"]
+    assert http_client._transport._pool._ssl_context is sentinel_ctx, (
+        "build_anthropic_client must forward resolve_httpx_verify() output as the "
+        "httpx client's verify context so custom-CA env vars survive trust_env=False"
+    )
+    assert seen.get("base_url") == "https://gateway.internal.example.com/anthropic", (
+        "the provider base_url must be threaded into resolve_httpx_verify"
     )
     http_client.close()

@@ -778,12 +778,24 @@ def build_anthropic_client(
     # trust_env and route only through hermes's own env-/NO_PROXY-aware
     # resolver. Explicit HTTP(S)_PROXY env still applies for users who need
     # egress, and NO_PROXY is honored for hosts that must bypass it.
+    #
+    # trust_env=False also stops httpx from reading SSL_CERT_FILE/SSL_CERT_DIR
+    # into its default SSL context, so resolve the verify context explicitly to
+    # preserve custom-CA behavior. This routes through hermes's shared resolver
+    # (agent/ssl_verify.py), which honors HERMES_CA_BUNDLE, SSL_CERT_FILE,
+    # REQUESTS_CA_BUNDLE, and CURL_CA_BUNDLE — the same env conventions the
+    # OpenAI-wire and auxiliary clients use — falling back to the certifi
+    # default. Without this, users behind a corporate MITM proxy with a custom
+    # root CA (a population that overlaps heavily with proxy users) would hit
+    # TLS verification failures on the Anthropic path.
     import httpx as _httpx
     from agent.process_bootstrap import _get_proxy_for_base_url
+    from agent.ssl_verify import resolve_httpx_verify
     kwargs["http_client"] = _httpx.Client(
         timeout=kwargs["timeout"],
         trust_env=False,
         proxy=_get_proxy_for_base_url(base_url),
+        verify=resolve_httpx_verify(base_url=base_url),
     )
 
     if normalized_base_url:

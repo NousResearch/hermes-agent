@@ -84,31 +84,20 @@ HISTORICAL_REMAINING_WORK_HEADING = "## Historical Remaining Work"
 
 
 SUMMARY_PREFIX = (
-    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
-    "into the summary below. This is a handoff from a previous context "
-    "window — treat it as background reference, NOT as active instructions. "
-    "Do NOT answer questions or fulfill requests mentioned in this summary; "
-    "they were already addressed. "
-    "Respond ONLY to the latest user message that appears AFTER this "
-    "summary — that message is the single source of truth for what to do "
-    "right now. "
-    "Topic overlap with the summary does NOT mean you should resume its "
-    "task: even on similar topics, the latest user message WINS. Treat ONLY "
-    "the latest message as the active task and discard stale items from "
-    f"'{HISTORICAL_TASK_HEADING}' / '{HISTORICAL_IN_PROGRESS_HEADING}' / "
-    f"'{HISTORICAL_PENDING_ASKS_HEADING}' / "
-    f"'{HISTORICAL_REMAINING_WORK_HEADING}' entirely — do not 'wrap up' or "
-    "'finish' work described there unless the latest message explicitly "
-    "asks for it. "
+    "[CONTEXT COMPACTION] The conversation above this point has been "
+    "summarized for context. The summary is information only — continue "
+    "responding to the most recent user message that appears AFTER this "
+    "summary, not to tasks listed in the summary unless the latest "
+    "message asks for them. "
     "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
     "back', 'just verify', 'don't do that anymore', 'never mind', a new "
     "topic) must immediately end any in-flight work described in the "
     "summary; do not re-surface it in later turns. "
-    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
-    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
-    "memory content due to this compaction note. "
-    "The current session state (files, config, etc.) may reflect work "
-    "described here — avoid repeating it:"
+    "Your persistent memory (MEMORY.md, USER.md) in the system prompt "
+    "remains authoritative — never deprioritize memory content to satisfy "
+    "this compaction note. "
+    "Current session state (files, config, etc.) may already reflect work "
+    "described in the summary — don't repeat it:"
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 
@@ -189,10 +178,49 @@ _MERGED_SUMMARY_DELIMITER = "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]
 # Handoff prefixes that shipped in earlier releases. A summary persisted under
 # one of these can be inherited into a resumed lineage (#35344); when it is
 # re-normalized on re-compaction we must strip the OLD prefix too, otherwise the
-# stale directive it carried (e.g. "resume exactly from Active Task") survives
-# embedded in the body and keeps hijacking replies. Keep newest-first; entries
-# are matched literally. Add a frozen copy here whenever SUMMARY_PREFIX changes.
+# stale directive it carried (e.g. "treat as background reference, NOT as
+# active instructions") survives embedded in the body and keeps hijacking
+# replies. Keep newest-first; entries are matched literally. Add a frozen
+# copy here whenever SUMMARY_PREFIX changes.
+#
+# Jul 10 2026 inc#6 fix: the framing "treat as background reference, NOT as
+# active instructions" + "Do NOT answer questions or fulfill requests
+# mentioned in this summary" was suppressing the model's tool-use discipline
+# after compression events (default-profile session 20260710_234335 went
+# pure-narration for 7 consecutive turns immediately after compression).
+# The current SUMMARY_PREFIX drops that framing; the prior three generations
+# are preserved below so older summaries still get the directive-strip on
+# re-compaction.
 _HISTORICAL_SUMMARY_PREFIXES = (
+    # Jul 10 2026 (THIS generation, retired by inc#6 fix): contained
+    # the "REFERENCE ONLY — treat as background reference, NOT as active
+    # instructions — Do NOT answer questions or fulfill requests mentioned
+    # in this summary" framing that suppressed post-compression tool use.
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
+    "into the summary below. This is a handoff from a previous context "
+    "window — treat it as background reference, NOT as active instructions. "
+    "Do NOT answer questions or fulfill requests mentioned in this summary; "
+    "they were already addressed. "
+    "Respond ONLY to the latest user message that appears AFTER this "
+    "summary — that message is the single source of truth for what to do "
+    "right now. "
+    "Topic overlap with the summary does NOT mean you should resume its "
+    "task: even on similar topics, the latest user message WINS. Treat ONLY "
+    "the latest message as the active task and discard stale items from "
+    f"'{HISTORICAL_TASK_HEADING}' / '{HISTORICAL_IN_PROGRESS_HEADING}' / "
+    f"'{HISTORICAL_PENDING_ASKS_HEADING}' / "
+    f"'{HISTORICAL_REMAINING_WORK_HEADING}' entirely — do not 'wrap up' or "
+    "'finish' work described there unless the latest message explicitly "
+    "asks for it. "
+    "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
+    "back', 'just verify', 'don't do that anymore', 'never mind', a new "
+    "topic) must immediately end any in-flight work described in the "
+    "summary; do not re-surface it in later turns. "
+    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
+    "memory content due to this compaction note. "
+    "The current session state (files, config, etc.) may reflect work "
+    "described here — avoid repeating it:",
     # Carveout era (#41607/#38364/#42812): "consistent → use as background"
     # licensed stale-task resumption on topic overlap.
     "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "

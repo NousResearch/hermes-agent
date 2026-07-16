@@ -14,13 +14,24 @@ def test_main_enables_unstable_protocol(monkeypatch):
     async def fake_run_agent(agent, **kwargs):
         calls["kwargs"] = kwargs
 
+    async def fake_open_streams(limit=None):
+        # Stand-ins only — run_agent is mocked so StreamReader/Writer types
+        # are not validated.
+        return object(), object()
+
     monkeypatch.setattr(entry, "_setup_logging", lambda: None)
     monkeypatch.setattr(entry, "_load_env", lambda: None)
+    monkeypatch.setattr(
+        "acp_adapter.stdio_transport.open_acp_stdio_streams",
+        fake_open_streams,
+    )
     monkeypatch.setattr(acp, "run_agent", fake_run_agent)
 
     entry.main([])
 
     assert calls["kwargs"]["use_unstable_protocol"] is True
+    assert "input_stream" in calls["kwargs"]
+    assert "output_stream" in calls["kwargs"]
 
 
 def test_main_version_prints_without_starting_server(monkeypatch, capsys):

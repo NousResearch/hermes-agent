@@ -214,6 +214,34 @@ def _run_setup_browser(assume_yes: bool = False) -> int:
         return 1
 
 
+
+async def _run_acp_agent(agent) -> None:
+    """Start the ACP agent with stdio that tolerates non-pipe fds.
+
+    ``acp.run_agent`` defaults to ``acp.stdio.stdio_streams``, which uses
+    ``connect_{read,write}_pipe`` on POSIX and crashes when stdin/stdout are
+    not pipe-compatible. We open streams ourselves (pipe first, thread/buffer
+    fallback) and pass them in.
+
+    AgentSideConnection expects:
+      input_stream  = StreamWriter  (agent → client, i.e. stdout)
+      output_stream = StreamReader  (client → agent, i.e. stdin)
+    while ``open_acp_stdio_streams`` returns ``(reader, writer)``.
+    """
+    import acp
+    from acp.core import DEFAULT_STDIO_BUFFER_LIMIT_BYTES
+
+    from .stdio_transport import open_acp_stdio_streams
+
+    reader, writer = await open_acp_stdio_streams(limit=DEFAULT_STDIO_BUFFER_LIMIT_BYTES)
+    await acp.run_agent(
+        agent,
+        input_stream=writer,
+        output_stream=reader,
+        use_unstable_protocol=True,
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     """Entry point: load env, configure logging, run the ACP agent."""
     args = _parse_args(argv)
@@ -243,7 +271,6 @@ def main(argv: list[str] | None = None) -> None:
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
 
-    import acp
     from .server import HermesACPAgent
 
     # MCP tool discovery from config.yaml — run before asyncio.run() so
@@ -259,7 +286,7 @@ def main(argv: list[str] | None = None) -> None:
 
     agent = HermesACPAgent()
     try:
-        asyncio.run(acp.run_agent(agent, use_unstable_protocol=True))
+        asyncio.run(_run_acp_agent(agent))
     except KeyboardInterrupt:
         logger.info("Shutting down (KeyboardInterrupt)")
     except Exception:

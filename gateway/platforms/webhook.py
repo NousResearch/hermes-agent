@@ -33,6 +33,7 @@ Security:
 import asyncio
 import base64
 import binascii
+import errno
 import hashlib
 import hmac
 import json
@@ -287,6 +288,24 @@ class WebhookAdapter(BasePlatformAdapter):
         except OSError as exc:
             await self._runner.cleanup()
             self._runner = None
+            if getattr(exc, "errno", None) == errno.EADDRINUSE:
+                # A port conflict is a configuration error, not a transient
+                # blip — another process holds the port for its lifetime. A
+                # bare ``return False`` makes the reconnect watcher in
+                # gateway.run treat it as retryable ("No fatal error info
+                # means likely a transient issue — queue for retry") and loop
+                # forever at the backoff cap, filling errors.log and leaking
+                # the adapter's resources each retry (the same failure the
+                # api_server direct-bind path hit). Mark it non-retryable so
+                # the platform drops from the reconnect queue; recover with
+                # ``/platform resume webhook`` after changing the port.
+                self._set_fatal_error(
+                    "webhook_port_in_use",
+                    f"Port {self._port} already in use. Set a different "
+                    f"host/port under platforms.webhook.extra in config.yaml, "
+                    f"then `/platform resume webhook`.",
+                    retryable=False,
+                )
             logger.error(
                 "[webhook] Could not bind %s:%d: %s. "
                 "Set a different host or port in config.yaml under "

@@ -16,6 +16,7 @@ Covers:
 
 import asyncio
 import base64
+import errno
 import hashlib
 import hmac
 import json
@@ -1687,3 +1688,67 @@ class TestDualStackBind:
             await adapter.disconnect()
             blocker.close()
             await blocker.wait_closed()
+
+    @pytest.mark.asyncio
+    async def test_port_conflict_sets_non_retryable_fatal_error(self):
+        """A port conflict (EADDRINUSE) must set a non-retryable fatal error so
+        the reconnect watcher drops the platform from the retry queue instead
+        of looping indefinitely.
+
+        Previously connect() returned bare ``False`` with no fatal-error info,
+        which gateway.run treats as a transient failure ("No fatal error info
+        means likely a transient issue — queue for retry") and retries forever
+        at the backoff cap — the same infinite-reconnect symptom the api_server
+        direct-bind path was hardened against. The bind failure is injected so
+        the branch is exercised deterministically regardless of the OS's
+        dual-stack rebinding semantics.
+        """
+        port = 8099
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "port": port,
+                "routes": {"r1": {"secret": "real-secret-abc123", "prompt": "x"}},
+            },
+        )
+        adapter = WebhookAdapter(cfg)
+        eaddrinuse = OSError(errno.EADDRINUSE, "address already in use")
+        try:
+            with patch.object(adapter, "_reload_dynamic_routes"), patch(
+                "gateway.platforms.webhook.web.TCPSite"
+            ) as mock_site_cls:
+                mock_site_cls.return_value.start = AsyncMock(side_effect=eaddrinuse)
+                result = await adapter.connect()
+            assert result is False
+            assert adapter.has_fatal_error is True
+            assert adapter.fatal_error_retryable is False
+            assert adapter.fatal_error_code == "webhook_port_in_use"
+            assert str(port) in (adapter.fatal_error_message or "")
+        finally:
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_transient_bind_error_stays_retryable(self):
+        """A non-EADDRINUSE bind failure (e.g. a transient OSError) must NOT be
+        marked fatal — it stays a bare ``False`` so the watcher keeps retrying.
+        Only a genuine port conflict is treated as a configuration error.
+        """
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "port": 8099,
+                "routes": {"r1": {"secret": "real-secret-abc123", "prompt": "x"}},
+            },
+        )
+        adapter = WebhookAdapter(cfg)
+        transient = OSError(errno.EADDRNOTAVAIL, "cannot assign requested address")
+        try:
+            with patch.object(adapter, "_reload_dynamic_routes"), patch(
+                "gateway.platforms.webhook.web.TCPSite"
+            ) as mock_site_cls:
+                mock_site_cls.return_value.start = AsyncMock(side_effect=transient)
+                result = await adapter.connect()
+            assert result is False
+            assert adapter.has_fatal_error is False
+        finally:
+            await adapter.disconnect()

@@ -9,7 +9,7 @@ import pytest
 from gateway.session import SessionSource, build_session_key
 from gateway.run import GatewayRunner
 from gateway.profile_routing import ProfileRoute
-from gateway.config import Platform
+from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import BasePlatformAdapter
 
 
@@ -400,10 +400,28 @@ class TestAdapterToSessionKeyIntegration:
             chat_id="-1001234567890", chat_type="group", user_id="u1",
         )
         assert source.profile == "ops"
+        assert source._transport_adapter_ref() is adapter
 
         key = build_session_key(source, profile=source.profile)
         assert key.startswith("agent:ops:"), key
         assert key != build_session_key(source, profile=None)
+
+    def test_chat_route_keeps_shared_adapter_for_delivery(self):
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            multiplex_profiles=True,
+            profile_routes=self._routes(),
+        )
+        runner._profile_adapters = {"ops": {}}
+        adapter = _stub_adapter(Platform.TELEGRAM, runner)
+        runner.adapters = {Platform.TELEGRAM: adapter}
+
+        source = adapter.build_source(
+            chat_id="-1001234567890", chat_type="group", user_id="u1",
+        )
+
+        assert source.profile == "ops"
+        assert runner._adapter_for_source(source) is adapter
 
     def test_adapter_without_runner_falls_back_to_default_namespace(self, mock_runner):
         """Regression anchor: with no ``gateway_runner`` injected (the pre-fix

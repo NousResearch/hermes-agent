@@ -393,6 +393,15 @@ DANGEROUS_PATTERNS = [
     (r'\bsudo\b[^;|&\n]*?\s+(?:-s\b|--st[a-z]*\b|-a\b|--a[a-z]*\b)', "sudo with privilege flag (stdin/askpass/shell/list)"),
     # Combined short-flag form (-nS, -sa, -las).
     (r'\bsudo\b[^;|&\n]*?\s+-[a-z]*[sa][a-z]*\b', "sudo with combined-flag privilege escalation"),
+    # Package-manager uninstall commands can remove installed software outside
+    # the current project (notably `npm uninstall -g`). Treat their destructive
+    # subcommands like other state-removing operations while leaving installs
+    # and updates alone.
+    (r'\bnpm\s+(?:-[^\s]+\s+)*(?:uninstall|unlink|remove|rm|r|un)\b', "package manager uninstall"),
+    (r'\bpnpm\s+(?:-[^\s]+\s+)*(?:uninstall|remove|rm|un)\b', "package manager uninstall"),
+    (r'\byarn\s+(?:global\s+)?(?:uninstall|remove)\b', "package manager uninstall"),
+    (r'\bpip(?:3)?\s+(?:-[^\s]+\s+)*uninstall\b', "package manager uninstall"),
+    (r'\bbrew\s+(?:uninstall|remove|rm)\b', "package manager uninstall"),
 ]
 
 

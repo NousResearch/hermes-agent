@@ -54,6 +54,7 @@ AUTHOR_MAP = {
     "christianpersico98@gmail.com": "chrispersico",  # upstream docs fix (correct web search instructions) — mapped during 2026-06-29 upstream parity sync
     "daniel.laforce@argobox.com": "KeyArgo",  # PR #45638 (clean up stale #32848 audit comments) — mapped during 2026-06-29 upstream parity sync
     "poli.koltsova@gmail.com": "wnuuee1",  # upstream desktop fix (styled Tip component for title tooltips) — mapped during 2026-06-29 upstream parity sync
+    "41409874+2751738943@users.noreply.github.com": "2751738943",  # PR #54785 salvage (tui: post-turn completion ownership routing)
     "Burgunthy@users.noreply.github.com": "Burgunthy",  # PR #20096 salvage (gateway: profile-based routing for inbound messages)
     "75556242+webtecnica@users.noreply.github.com": "webtecnica",  # PR #63360 salvage (nous: restore inference-api base_url)
     "skosarevivan@yandex.ru": "Epoxidex",  # PR #29820 salvage (ollama: top-level reasoning_effort=none; #25758)
@@ -61,6 +62,7 @@ AUTHOR_MAP = {
     "changhyun.min@gmail.com": "minchang",  # PR #42231 salvage (providers: add Upstage Solar)
     "neo@neodeMac-mini.local": "neo-claw-bot",  # PR #58465 salvage (moa: drop empty user turns from advisory view)
     "2024104039@mails.szu.edu.cn": "pixel4039",  # PR #64420 salvage (streaming: retry zero-chunk streams)
+    "marceloparra.hm@gmail.com": "marcelohildebrand",  # PR #42346 salvage (lmstudio: JIT load mode)
     "m.guttmann@journaway.com": "mguttmann",  # PR #63738 salvage (Anthropic setup-token pool auth normalization)
     "VrtxOmega@pm.me": "VrtxOmega",  # PR #43809 salvage (desktop: WSL folder-picker path bridge)
     "gn00742754@gmail.com": "SemonCat",  # PR #56786 salvage (Slack Agent View manifests and Assistant APIs)
@@ -2011,6 +2013,7 @@ AUTHOR_MAP = {
     "git@hode.co.uk": "okisdev",  # upstream contributor (Harry Yep); parity sync 2026-07-15
     "jakub.wolniewicz@gmail.com": "frizikk",  # upstream contributor; parity sync 2026-07-15
     "markvlcek@gmail.com": "MarkVLK",  # upstream contributor; parity sync 2026-07-15
+    "yansh2017@gmail.com": "ya-nsh",  # PR #26790 salvage (normalize local terminal relative cwd; #26783)
 }
 
 

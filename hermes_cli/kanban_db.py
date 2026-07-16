@@ -94,7 +94,6 @@ from hermes_cli.kanban_status_timing import (
     status_surface_refresh_period,
 )
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
-from hermes_cli.kanban_status_timing import status_surface_refresh_period
 from toolsets import get_toolset_names
 
 _log = logging.getLogger(__name__)
@@ -8160,7 +8159,10 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     return False
 
 
-DEFAULT_REVIEW_PROFILE = "reviewer"
+# ``default`` is the only profile guaranteed by a stock Hermes installation.
+# Deployments that require a separate review role can opt into it with
+# ``kanban.review_profile``.
+DEFAULT_REVIEW_PROFILE = "default"
 _REVIEWER_REVIEW_TTL_SECONDS = 15 * 60
 _REVIEWER_REVIEW_MAX_ATTEMPTS = 2
 

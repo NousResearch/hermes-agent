@@ -4713,14 +4713,14 @@ def test_review_requested_spawns_one_reviewer_receipt_without_reclaiming_heavy(
     spawned = []
     monkeypatch.setattr(kb, "_pid_alive", lambda _pid: True)
 
-    def audit_spawn(task, workspace, board=None):
+    def reviewer_spawn(task, workspace, board=None):
         spawned.append((task.id, workspace))
         return 4321
 
     with kb.connect() as conn:
         tid, workspace = _request_review_with_workspace(conn, tmp_path)
-        first = kb.dispatch_once(conn, reviewer_spawn_fn=audit_spawn)
-        second = kb.dispatch_once(conn, reviewer_spawn_fn=audit_spawn)
+        first = kb.dispatch_once(conn, reviewer_spawn_fn=reviewer_spawn)
+        second = kb.dispatch_once(conn, reviewer_spawn_fn=reviewer_spawn)
         task = kb.get_task(conn, tid)
         job = conn.execute("SELECT profile, status, attempts FROM kanban_review_jobs WHERE task_id=?", (tid,)).fetchone()
 
@@ -4730,7 +4730,7 @@ def test_review_requested_spawns_one_reviewer_receipt_without_reclaiming_heavy(
     assert task is not None
     assert task.status == "review"
     assert task.assignee == "heavy"
-    assert dict(job) == {"profile": "reviewer", "status": "running", "attempts": 1}
+    assert dict(job) == {"profile": "default", "status": "running", "attempts": 1}
     with kb.connect() as conn:
         assert kb.accept_review(conn, tid, summary="reviewer accepted")
         accepted_task = kb.get_task(conn, tid)
@@ -4744,18 +4744,18 @@ def test_reviewer_reject_and_bounded_crash_retry_keep_review_separate(
 ):
     spawned = []
 
-    def audit_spawn(task, workspace, board=None):
+    def reviewer_spawn(task, workspace, board=None):
         spawned.append(task.id)
         return 9876
 
     monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
     with kb.connect() as conn:
         tid, _ = _request_review_with_workspace(conn, tmp_path)
-        kb.dispatch_once(conn, reviewer_spawn_fn=audit_spawn)
-        retry = kb.dispatch_once(conn, reviewer_spawn_fn=audit_spawn)
+        kb.dispatch_once(conn, reviewer_spawn_fn=reviewer_spawn)
+        retry = kb.dispatch_once(conn, reviewer_spawn_fn=reviewer_spawn)
         conn.execute("UPDATE kanban_review_jobs SET next_retry_at=0 WHERE task_id=?", (tid,))
-        kb.dispatch_once(conn, reviewer_spawn_fn=audit_spawn)
-        exhausted = kb.dispatch_once(conn, reviewer_spawn_fn=audit_spawn)
+        kb.dispatch_once(conn, reviewer_spawn_fn=reviewer_spawn)
+        exhausted = kb.dispatch_once(conn, reviewer_spawn_fn=reviewer_spawn)
         job = conn.execute("SELECT status, attempts FROM kanban_review_jobs WHERE task_id=?", (tid,)).fetchone()
         assert kb.reject_review(conn, tid, reason="missing contract proof")
         assert kb.get_task(conn, tid) is not None
@@ -4779,7 +4779,7 @@ def test_dispatch_reconciles_legacy_review_handoffs_once_per_board(
     monkeypatch.setattr(kb, "_pid_alive", lambda _pid: True)
     spawned = []
 
-    def audit_spawn(task, workspace, board=None):
+    def reviewer_spawn(task, workspace, board=None):
         spawned.append((task.id, board))
         return 2468
 
@@ -4795,8 +4795,8 @@ def test_dispatch_reconciles_legacy_review_handoffs_once_per_board(
             task_ids[board] = tid
 
     with kb.connect(board="alpha") as conn:
-        first = kb.dispatch_once(conn, reviewer_spawn_fn=audit_spawn, board="alpha")
-        second = kb.dispatch_once(conn, reviewer_spawn_fn=audit_spawn, board="alpha")
+        first = kb.dispatch_once(conn, reviewer_spawn_fn=reviewer_spawn, board="alpha")
+        second = kb.dispatch_once(conn, reviewer_spawn_fn=reviewer_spawn, board="alpha")
         alpha_job = conn.execute(
             "SELECT handoff_event_id, status, attempts FROM kanban_review_jobs WHERE task_id=?",
             (task_ids["alpha"],),
@@ -4806,7 +4806,7 @@ def test_dispatch_reconciles_legacy_review_handoffs_once_per_board(
         beta_before = conn.execute(
             "SELECT COUNT(*) FROM kanban_review_jobs WHERE task_id=?", (task_ids["beta"],)
         ).fetchone()[0]
-        beta = kb.dispatch_once(conn, reviewer_spawn_fn=audit_spawn, board="beta")
+        beta = kb.dispatch_once(conn, reviewer_spawn_fn=reviewer_spawn, board="beta")
         beta_job = conn.execute(
             "SELECT handoff_event_id, status, attempts FROM kanban_review_jobs WHERE task_id=?",
             (task_ids["beta"],),
@@ -4831,13 +4831,13 @@ def test_review_request_after_reject_resets_review_receipt_for_retry(
     monkeypatch.setattr(kb, "_pid_alive", lambda _pid: True)
     spawned = []
 
-    def audit_spawn(task, workspace, board=None):
+    def reviewer_spawn(task, workspace, board=None):
         spawned.append(task.id)
         return 7654
 
     with kb.connect() as conn:
         tid, _ = _request_review_with_workspace(conn, tmp_path)
-        assert kb.dispatch_once(conn, reviewer_spawn_fn=audit_spawn).reviewer_spawned == [tid]
+        assert kb.dispatch_once(conn, reviewer_spawn_fn=reviewer_spawn).reviewer_spawned == [tid]
 
         assert kb.reject_review(conn, tid, reason="failing edge-case")
         first_reject_handoff = conn.execute(
@@ -4849,7 +4849,7 @@ def test_review_request_after_reject_resets_review_receipt_for_retry(
         assert kb.request_review(
             conn, tid, summary="ready for second review", metadata={"tests_run": 2}
         )
-        assert kb.dispatch_once(conn, reviewer_spawn_fn=audit_spawn).reviewer_spawned == [tid]
+        assert kb.dispatch_once(conn, reviewer_spawn_fn=reviewer_spawn).reviewer_spawned == [tid]
 
         assert kb.accept_review(
             conn, tid, summary="reviewer found no blockers on second pass"
@@ -4901,7 +4901,7 @@ def test_reconcile_replaces_stale_terminal_review_receipt(
     monkeypatch.setattr(kb, "_pid_alive", lambda _pid: True)
     spawned = []
 
-    def audit_spawn(task, workspace, board=None):
+    def reviewer_spawn(task, workspace, board=None):
         spawned.append(task.id)
         return 5555
 
@@ -4917,7 +4917,7 @@ def test_reconcile_replaces_stale_terminal_review_receipt(
             (handoff, tid),
         )
 
-        kb.dispatch_once(conn, reviewer_spawn_fn=audit_spawn)
+        kb.dispatch_once(conn, reviewer_spawn_fn=reviewer_spawn)
 
         repaired = conn.execute(
             "SELECT handoff_event_id, status FROM kanban_review_jobs WHERE task_id=?",

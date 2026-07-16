@@ -505,6 +505,7 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
         # reason aborts the install (fail-closed), same contract as
         # validate_mcp_server_entry for MCP servers.
         gate_reasons: list[str] = []
+        # invoke_hook drops a callback that raises (fail-open), so gates must RETURN a block reason, not raise.
         for ret in invoke_hook(
             "pre_plugin_install",
             name=plugin_name,

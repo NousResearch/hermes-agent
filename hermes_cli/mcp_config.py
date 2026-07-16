@@ -90,10 +90,12 @@ def _save_mcp_server(name: str, server_config: dict) -> bool:
     """Add or update a server entry in config.yaml.
 
     Returns False when a high-signal exfiltration-shaped stdio command is
-    rejected. MCP stdio servers are user-chosen local commands, so this blocks
-    shell+egress payloads rather than whitelisting command families.
+    rejected, or when a ``pre_mcp_add`` hook returns a block reason (e.g. a
+    security-scan verdict). MCP stdio servers are user-chosen local commands,
+    so this blocks shell+egress payloads rather than whitelisting command families.
     """
     issues = validate_mcp_server_entry(name, server_config)
+    # invoke_hook drops a callback that raises (fail-open), so gates must RETURN a block reason, not raise.
     for ret in invoke_hook("pre_mcp_add", name=name, server_config=server_config):
         if isinstance(ret, str):
             issues.append(ret)

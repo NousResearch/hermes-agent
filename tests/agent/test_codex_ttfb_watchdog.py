@@ -353,8 +353,8 @@ def test_ttfb_disabled_via_env_zero(tmp_path, monkeypatch):
 
 def test_large_codex_request_waits_instead_of_ttfb_reconnect(tmp_path, monkeypatch):
     """Large Codex inputs can legitimately take longer than the small-request
-    first-byte cutoff before the first SSE frame. Preserve the full input and
-    wait instead of killing/retrying at TTFB."""
+    first-byte cutoff before the first SSE frame. Scale the TTFB timeout up
+    for those requests instead of killing/retrying at the small-request cutoff."""
     from agent import chat_completion_helpers as h
 
     agent = _make_codex_agent(tmp_path, monkeypatch)
@@ -384,6 +384,45 @@ def test_large_codex_request_waits_instead_of_ttfb_reconnect(tmp_path, monkeypat
     resp = h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": large_input})
     assert resp is sentinel
     assert "codex_ttfb_kill" not in closes
+
+
+def test_large_codex_request_can_still_ttfb_reconnect_when_capped(tmp_path, monkeypatch):
+    """Large Codex requests should keep a finite TTFB watchdog instead of
+    disabling it entirely. A low max cap should still force an early reconnect."""
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", "1")
+    monkeypatch.setenv("HERMES_CODEX_TTFB_MAX_SECONDS", "1")
+
+    closes: list = []
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(
+        agent, "_abort_request_openai_client", lambda c, reason=None: closes.append(reason)
+    )
+    monkeypatch.setattr(
+        agent, "_close_request_openai_client", lambda c, reason=None: closes.append(reason)
+    )
+
+    stop = {"flag": False}
+
+    def fake_hang(api_kwargs, client=None, on_first_delta=None):
+        deadline = time.time() + 30
+        while time.time() < deadline and not stop["flag"] and not agent._interrupt_requested:
+            time.sleep(0.02)
+        raise RuntimeError("connection closed")
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_hang)
+
+    large_input = "x" * 44_000  # ~11k estimated tokens, above the large-request gate.
+    try:
+        with pytest.raises(TimeoutError) as excinfo:
+            h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": large_input})
+        assert "TTFB threshold: 1s" in str(excinfo.value)
+        assert "codex_ttfb_kill" in closes
+    finally:
+        stop["flag"] = True
 
 
 def test_large_codex_request_strict_ttfb_env_still_reconnects(tmp_path, monkeypatch):
@@ -421,5 +460,145 @@ def test_large_codex_request_strict_ttfb_env_still_reconnects(tmp_path, monkeypa
             h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": large_input})
         assert "TTFB threshold: 1s" in str(excinfo.value)
         assert "codex_ttfb_kill" in closes
+    finally:
+        stop["flag"] = True
+
+
+def test_large_codex_request_hard_ceiling_reclaims_silent_stall(tmp_path, monkeypatch):
+    """#64507 regression: a large Codex request (TTFB watchdog disabled by the
+    size gate, stale floor *raised*) that never emits a single byte must still
+    be reclaimed at a finite hard ceiling — not hang for 13+ minutes while the
+    worker stays idle and the session shows as active.
+
+    Uses the real default TTFB threshold (120s) and asserts the request dies at
+    the hard ceiling regardless of the size-based TTFB disable.
+    """
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    # Real default TTFB threshold (no HERMES_CODEX_TTFB_* override) → for a
+    # >10k-token request the no-byte TTFB watchdog is auto-disabled.
+    monkeypatch.setenv("HERMES_CODEX_HARD_TIMEOUT_SECONDS", "3")
+
+    closes: list = []
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(
+        agent, "_abort_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+    monkeypatch.setattr(
+        agent, "_close_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+
+    stop = {"flag": False}
+
+    def fake_hang(api_kwargs, client=None, on_first_delta=None):
+        # No event marker AND no event ever: the exact issue-64507 stall.
+        deadline = time.time() + 120
+        while time.time() < deadline and not stop["flag"] and not agent._interrupt_requested:
+            time.sleep(0.02)
+        raise RuntimeError("connection closed")
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_hang)
+
+    large_input = "x" * 44_000  # ~11k estimated tokens → TTFB disabled, stale raised
+    t0 = time.time()
+    try:
+        with pytest.raises(TimeoutError) as excinfo:
+            h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": large_input})
+        elapsed = time.time() - t0
+        # Must die at the hard ceiling (3s), nowhere near the raised stale floor.
+        assert elapsed < 30, f"hard ceiling took {elapsed:.1f}s — stall not reclaimed"
+        assert "stale_call_kill" in closes, f"stale kill expected, got {closes}"
+        assert "timed out after" in str(excinfo.value)
+        assert "with no response" in str(excinfo.value)
+    finally:
+        stop["flag"] = True
+
+
+def test_large_codex_request_hard_ceiling_disabled_restores_legacy(tmp_path, monkeypatch):
+    """Setting HERMES_CODEX_HARD_TIMEOUT_SECONDS=0 disables the ceiling entirely,
+    restoring the pre-#64507 behavior (request waits out the raised stale floor
+    instead of being capped). Keeps the knob for operators who must.
+    """
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_CODEX_HARD_TIMEOUT_SECONDS", "0")
+
+    closes: list = []
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(
+        agent, "_abort_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+    monkeypatch.setattr(
+        agent, "_close_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+
+    sentinel = SimpleNamespace(ok=True)
+
+    def fake_stream(api_kwargs, client=None, on_first_delta=None):
+        # No event, but only briefly — well under the (here 60s) stale timeout.
+        time.sleep(2.0)
+        return sentinel
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_stream)
+
+    large_input = "x" * 44_000
+    resp = h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": large_input})
+    assert resp is sentinel
+    assert "codex_ttfb_kill" not in closes
+    assert "stale_call_kill" not in closes
+
+
+def test_large_codex_request_hard_ceiling_caps_raised_stale_floor(tmp_path, monkeypatch):
+    """The hard ceiling must cap the raised stale floor (openai-codex can push
+    the stale timeout to 1200s at >100k tokens). A large silent stall must die
+    at the ceiling, proving the min() wins over the floor.
+    """
+    from agent import chat_completion_helpers as h
+
+    agent = _make_codex_agent(tmp_path, monkeypatch)
+    monkeypatch.setenv("HERMES_CODEX_HARD_TIMEOUT_SECONDS", "4")
+    # Force the >100k-token tier so openai_codex_stale_timeout_floor returns 1200s.
+    monkeypatch.setattr(
+        agent, "_compute_non_stream_stale_timeout", lambda *a, **k: 1200.0
+    )
+
+    closes: list = []
+    dummy_client = SimpleNamespace()
+    monkeypatch.setattr(agent, "_create_request_openai_client", lambda **k: dummy_client)
+    monkeypatch.setattr(
+        agent, "_abort_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+    monkeypatch.setattr(
+        agent, "_close_request_openai_client",
+        lambda c, reason=None: closes.append(reason),
+    )
+
+    stop = {"flag": False}
+
+    def fake_hang(api_kwargs, client=None, on_first_delta=None):
+        deadline = time.time() + 200
+        while time.time() < deadline and not stop["flag"] and not agent._interrupt_requested:
+            time.sleep(0.02)
+        raise RuntimeError("connection closed")
+
+    monkeypatch.setattr(agent, "_run_codex_stream", fake_hang)
+
+    huge_input = "x" * 500_000  # ~125k tokens → stale floor 1200s
+    t0 = time.time()
+    try:
+        with pytest.raises(TimeoutError):
+            h.interruptible_api_call(agent, {"model": "gpt-5.5", "input": huge_input})
+        elapsed = time.time() - t0
+        assert elapsed < 40, f"hard ceiling lost to stale floor: {elapsed:.1f}s"
+        assert "stale_call_kill" in closes, f"stale kill expected, got {closes}"
     finally:
         stop["flag"] = True

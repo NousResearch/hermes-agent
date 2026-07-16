@@ -601,6 +601,13 @@ class AIAgent:
             return
         source = _session_source_for_agent(self.platform)
         try:
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+                _profile_for_session = get_active_profile_name()
+                if _profile_for_session == "default":
+                    _profile_for_session = None
+            except Exception:
+                _profile_for_session = None
             self._session_db.create_session(
                 session_id=self.session_id,
                 source=source,
@@ -610,6 +617,7 @@ class AIAgent:
                 user_id=None,
                 parent_session_id=self._parent_session_id,
                 cwd=_launch_cwd_for_session(source),
+                profile_name=_profile_for_session,
             )
             self._session_db_created = True
         except Exception as e:
@@ -764,9 +772,12 @@ class AIAgent:
 
     def _ensure_lmstudio_runtime_loaded(self, config_context_length: Optional[int] = None) -> None:
         """
-        Preload the LM Studio model with at least Hermes' minimum context.
+        Preload the LM Studio model unless configured to rely on LM Studio JIT loading.
         """
         if (self.provider or "").strip().lower() != "lmstudio":
+            return
+        if (getattr(self, "lmstudio_load_mode", "explicit") or "explicit").strip().lower() == "jit":
+            logger.debug("LM Studio explicit preload skipped: lmstudio_load_mode=jit")
             return
         try:
             from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
@@ -935,6 +946,30 @@ class AIAgent:
                 self.notice_clear_callback(key)
             except Exception:
                 logger.debug("notice_clear_callback error in _emit_notice_clear", exc_info=True)
+
+    def _emit_wait_notice(self, text: str) -> None:
+        """Surface a live wait-state explanation on every driver.
+
+        Long provider waits (slow/overloaded backend, no first byte, reasoning
+        model thinking for minutes) used to leave the user staring at a generic
+        "cogitating..." spinner with no hint of what the agent was waiting on.
+        This helper rewrites the live status line with an explanation:
+
+        - CLI: ``thinking_callback`` updates the prompt_toolkit spinner text.
+        - TUI / Desktop: the same callback is bridged to the ``thinking.delta``
+          event, which both render as the live spinner/status line.
+        - Gateway: ``_touch_activity`` stores the text as the activity
+          description, which the "⏳ Working — N min" heartbeat includes.
+
+        Never raises — a wait notice must not break the API-call wait loop.
+        """
+        self._touch_activity(text)
+        _thinking_cb = getattr(self, "thinking_callback", None)
+        if _thinking_cb:
+            try:
+                _thinking_cb(text)
+            except Exception:
+                logger.debug("thinking_callback error in _emit_wait_notice", exc_info=True)
 
     # ── Buffered retry/fallback status ────────────────────────────────────
     # Retry and fallback chains were flooding the CLI/gateway with status
@@ -5846,6 +5881,35 @@ class AIAgent:
         from agent.chat_completion_helpers import handle_max_iterations
         return handle_max_iterations(self, messages, api_call_count)
 
+    def _conversation_root_id(self) -> Optional[str]:
+        """Resolve the stable conversation id for Portal usage attribution.
+
+        Returns the session-lineage ROOT id rather than the current segment
+        id, so one user-facing conversation keeps a single ``conversation=``
+        tag across context-compression rotation (`/new` starts a genuinely
+        new lineage). Delegate subagents resolve through their
+        ``_parent_session_id`` so an entire delegation tree tags as the
+        parent conversation.
+
+        Best-effort: falls back to the raw session id when the session DB
+        is unavailable or the lineage walk fails.
+        """
+        sid = getattr(self, "session_id", None)
+        if not sid:
+            return None
+        # Subagents may not have a DB row yet on their first turn; walking
+        # from the parent id still lands on the right root.
+        start = getattr(self, "_parent_session_id", None) or sid
+        db = getattr(self, "_session_db", None)
+        if db is not None:
+            try:
+                root = db.get_conversation_root(start)
+                if root:
+                    return root
+            except Exception:
+                logger.debug("Conversation root lineage walk failed", exc_info=True)
+        return start
+
     def run_conversation(
         self,
         user_message: Any,
@@ -5859,17 +5923,30 @@ class AIAgent:
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.conversation_loop import run_conversation
-        return run_conversation(
-            self,
-            user_message,
-            system_message,
-            conversation_history,
-            task_id,
-            stream_callback,
-            persist_user_message,
-            persist_user_timestamp=persist_user_timestamp,
-            moa_config=moa_config,
+        from agent.portal_tags import (
+            reset_conversation_context,
+            set_conversation_context,
         )
+        # Publish the conversation id for ambient Nous Portal tagging. Every
+        # LLM call made inside this turn — main loop, compression, vision,
+        # web_extract, session_search, MoA slots, background-review forks
+        # (which copy this Context into their thread) — inherits the
+        # ``conversation=<root>`` tag with zero per-call-site plumbing.
+        token = set_conversation_context(self._conversation_root_id())
+        try:
+            return run_conversation(
+                self,
+                user_message,
+                system_message,
+                conversation_history,
+                task_id,
+                stream_callback,
+                persist_user_message,
+                persist_user_timestamp=persist_user_timestamp,
+                moa_config=moa_config,
+            )
+        finally:
+            reset_conversation_context(token)
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """

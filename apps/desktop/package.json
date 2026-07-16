@@ -50,8 +50,8 @@
     "check": "npm run typecheck && npm run test && npm run test:desktop:all && npm run build"
   },
   "dependencies": {
-    "@assistant-ui/react": "^0.12.28",
-    "@assistant-ui/react-streamdown": "^0.1.11",
+    "@assistant-ui/react": "^0.14.23",
+    "@assistant-ui/react-streamdown": "^0.3.4",
     "@audiowave/react": "^0.6.2",
     "@chenglou/pretext": "^0.0.6",
     "@codemirror/commands": "^6.10.4",

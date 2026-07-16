@@ -107,6 +107,19 @@ def _gateway_surface_passes_raw_text(platform: Any) -> bool:
     return _gateway_platform_value(platform) in _GATEWAY_RAW_TEXT_PLATFORMS
 
 
+# Platforms whose gateway-driven session has no live human responder and
+# therefore cannot satisfy the interactive "ask the user what they'd like
+# to do next" resume prompt. For these we steer the model's behaviour to
+# FINISH the interrupted turn rather than emit a useless "session restored"
+# acknowledgement (issue #57056). The set intentionally overlaps with
+# ``_GATEWAY_RAW_TEXT_PLATFORMS`` — both encode "no human at the other
+# end" — but we keep it as a separate constant so a future platform can
+# be added to one without coupling the two flags.
+_GATEWAY_NON_INTERACTIVE_RESUME_PLATFORMS = frozenset(
+    {"webhook", "api_server", "msgraph_webhook"}
+)
+
+
 _GATEWAY_PROVIDER_ERROR_RE = re.compile(
     r"("  # infrastructure/provider error preambles, not ordinary assistant prose
     r"api\s+(?:call\s+)?failed"
@@ -19522,14 +19535,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     else "a gateway interruption"
                 )
                 _persist_user_message_override = message
-                # The empty-message case is the auto-resume startup turn
-                # synthesized by _schedule_resume_pending_sessions — there is
-                # no NEW user message to address, so tell the model to report
-                # recovery instead of the (nonexistent) "new message".
+
+                # Adaptive resume guidance — bug #57056.
+                #
+                # The empty-message branch below used to instruct the model to
+                # "report restored and ask the user what they'd like to do
+                # next" and to "skip any unfinished work". That is correct
+                # for an interactive platform (CLI/Telegram/Slack DM where a
+                # human can answer), but wrong for a non-interactive platform
+                # (webhook / api_server / msgraph_webhook) where there is no
+                # responder: the resumed turn emits a short "session restored"
+                # acknowledgement and *abandons* the interrupted task instead
+                # of completing it. For non-interactive platforms we want the
+                # resumed turn to *finish* the interrupted task.
+                #
+                # Idempotency of the completed work is the downstream's
+                # responsibility (dedup on the downstream write) — we only
+                # steer the model's behaviour here. The "restart/shutdown
+                # command already ran" caveat is preserved verbatim: even on a
+                # non-interactive platform we must not re-execute any
+                # restart/shutdown command the operator has just triggered.
                 if message:
                     _resume_guidance = (
                         "Address the user's NEW message below FIRST and focus "
                         "on what the user is asking now."
+                    )
+                elif _platform_name in _GATEWAY_NON_INTERACTIVE_RESUME_PLATFORMS:
+                    _resume_guidance = (
+                        "Continue and complete the interrupted turn. The prior "
+                        "in-flight work is still in the conversation history and "
+                        "should be finished, not abandoned.\n                       "
+                        "Tool calls or commands already issued may have produced "
+                        "results that are still valid — re-using them when they "
+                        "answer your next step is fine, but do NOT re-execute any "
+                        "destructive action that already completed."
                     )
                 else:
                     _resume_guidance = (
@@ -19537,12 +19576,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "successfully and ask what they would like to do next."
                     )
                 message = (
-                    f"[System note: The previous turn was interrupted by "
-                    f"{_reason_phrase}; the gateway is now back online. "
-                    f"Any restart/shutdown command in the history has already "
-                    f"run — do NOT re-execute or verify it. {_resume_guidance} "
-                    f"Do NOT re-execute old tool calls — skip any unfinished "
-                    f"work from the conversation history.]"
+                    f"[System note: The previous turn was interrupted by {_reason_phrase}; "
+                    f"the gateway is now back online. Any restart/shutdown command in the "
+                    f"history has already run — do NOT re-execute or verify it. {_resume_guidance} "
+                    + (
+                        # Non-interactive case: do NOT carry the
+                        # interactive "skip unfinished work" clause —
+                        # that drops the in-flight task on the floor.
+                        # Re-execution warnings for completed / permanent
+                        # actions remain (restart/shutdown command, anything
+                        # whose effect is observable enough that the
+                        # integration can dedup).
+                        "Do NOT re-execute destructive actions or restart/shutdown "
+                        "commands whose effect may have already landed.]"
+                        if _platform_name in _GATEWAY_NON_INTERACTIVE_RESUME_PLATFORMS
+                        else
+                        "Do NOT re-execute old tool calls — skip any unfinished "
+                        "work from the conversation history.]"
+                    )
                     + (f"\n\n{message}" if message else "")
                 )
             elif _has_fresh_tool_tail:

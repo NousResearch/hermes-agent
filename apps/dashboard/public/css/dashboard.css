@@ -303,6 +303,30 @@ a { color: inherit; }
   box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px currentColor;
 }
 
+/* ---------- page tabs ---------- */
+.pagetabs {
+  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+  padding: 8px 20px 0; max-width: 1680px; width: 100%; margin: 0 auto;
+}
+.pagetab {
+  font: inherit; font-size: 12px; letter-spacing: 0.04em;
+  display: inline-flex; align-items: center; gap: 6px;
+  background: none; border: 1px solid transparent; border-radius: 4px 4px 0 0;
+  color: var(--muted); padding: 6px 12px; cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+.pagetab:hover { color: var(--ink); }
+.pagetab-on {
+  color: var(--accent); border-bottom-color: var(--accent);
+  background: var(--accent-dim);
+}
+.pagetab-x { color: var(--muted); font-size: 10px; }
+.pagetab-x:hover { color: var(--danger); }
+.pagetab-add { color: var(--ink-2); border: 1px dashed var(--hairline-2); }
+.pagetab-add:hover { color: var(--accent); border-color: var(--accent); }
+.pagetab-hint { margin-left: 8px; }
+@media (max-width: 760px) { .pagetabs { padding: 8px 12px 0; } }
+
 /* ---------- grid & widget cards ---------- */
 
 .grid {

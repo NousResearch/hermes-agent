@@ -115,19 +115,42 @@ check("title", (await page.title()) === "Hermes Hub");
 check("topbar brand", await page.locator(".brand-name").innerText() === "HERMES//HUB");
 check("dark theme default", await page.evaluate(() => document.documentElement.dataset.theme) === "dark");
 
-// ---- widgets render --------------------------------------------------------
-for (const type of ["clock", "worldstate", "agent", "weather", "launcher", "news", "reading", "tasks", "markets", "stocks", "scores", "socials", "gaming", "calendar", "notes", "focus", "system"]) {
-  await page.waitForSelector(`.widget-${type}`, { timeout: 10000 });
-  check(`widget ${type} present`, true);
+// Dashboard is split into pages; switch to the page holding a widget before
+// interacting with it. gotoPage clicks the page tab and settles.
+const WIDGET_PAGES = {
+  Main: ["clock", "worldstate", "agent", "weather", "launcher", "tasks", "calendar", "notes", "focus", "system"],
+  Markets: ["markets", "stocks"],
+  Feeds: ["news", "reading", "socials", "gaming"],
+  Sports: ["scores"],
+};
+const pageOf = (type) => Object.keys(WIDGET_PAGES).find((p) => WIDGET_PAGES[p].includes(type)) || "Main";
+const gotoPage = async (name) => {
+  await page.locator(".pagetab", { hasText: new RegExp(`^${name}$`) }).click();
+  await page.waitForTimeout(60);
+};
+const gotoWidget = async (type) => { await gotoPage(pageOf(type)); await page.waitForSelector(`.widget-${type}`, { timeout: 10000 }); };
+
+// ---- widgets render (per page) ---------------------------------------------
+check("page tabs render", (await page.locator(".pagetab").count()) >= 3);
+for (const [pageName, types] of Object.entries(WIDGET_PAGES)) {
+  await gotoPage(pageName);
+  for (const type of types) {
+    await page.waitForSelector(`.widget-${type}`, { timeout: 10000 });
+    check(`widget ${type} present`, true);
+  }
 }
-await page.waitForSelector(".news-item", { timeout: 10000 });
-check("news items rendered", (await page.locator(".news-item").count()) > 3);
+await gotoPage("Main");
 check("clock shows time", /\d{1,2}:\d{2}/.test(await page.locator(".clock-time").innerText()));
 check("weather temp shown", /-?\d+°/.test(await page.locator(".weather-temp").innerText()));
-check("market rows", (await page.locator(".market-row").count()) >= 3);
 check("worldstate domains", (await page.locator(".ws-row").count()) >= 5);
 check("worldstate levels are labeled", (await page.locator(".ws-row .level-chip").first().innerText()).length > 2);
 check("sample badges when offline", (await page.locator(".widget-badge:not([hidden])").count()) >= 2);
+await gotoWidget("news");
+await page.waitForSelector(".news-item", { timeout: 10000 });
+check("news items rendered", (await page.locator(".news-item").count()) > 3);
+await gotoWidget("markets");
+check("market rows", (await page.locator(".market-row").count()) >= 3);
+await gotoPage("Main");
 await shot(page, "01-dashboard-dark-full");
 await syncProbe("P1-after-boot");
 
@@ -145,6 +168,7 @@ await page.keyboard.press("Escape");
 await page.waitForSelector(".viewer", { state: "detached" });
 
 // ---- news opens in-app ------------------------------------------------------
+await gotoWidget("news");
 await page.locator(".news-item").first().click();
 await page.waitForSelector(".viewer", { timeout: 5000 });
 check("news opens in-app viewer", true);
@@ -155,6 +179,7 @@ await page.keyboard.press("Escape");
 await page.waitForSelector(".viewer", { state: "detached" });
 
 // ---- launcher opens in-app --------------------------------------------------
+await gotoWidget("launcher");
 await page.locator(".app-tile").first().click();
 await page.waitForSelector(".viewer", { timeout: 5000 });
 check("app tile opens in-app viewer (embed)", (await page.locator(".viewer-frame").count()) === 1);
@@ -162,9 +187,10 @@ await page.keyboard.press("Escape");
 await page.waitForSelector(".viewer", { state: "detached" });
 
 // ---- news topic tabs ---------------------------------------------------------
-await page.locator(".tab", { hasText: "Science" }).click();
+await gotoWidget("news");
+await page.locator(".widget-news .tab", { hasText: "Science" }).click();
 await page.waitForFunction(() =>
-  document.querySelector('.tab[aria-selected="true"]')?.textContent === "Science");
+  document.querySelector('.widget-news .tab[aria-selected="true"]')?.textContent === "Science");
 await page.waitForSelector(".news-item");
 check("topic switch renders items", (await page.locator(".news-item").count()) > 2);
 
@@ -177,6 +203,7 @@ await page.waitForSelector(".news-item");
 check("gaming news topic renders", (await page.locator(".news-item").count()) >= 2);
 
 // ---- tasks -------------------------------------------------------------------
+await gotoWidget("tasks");
 const taskInput = page.locator(".task-form .input");
 await taskInput.fill("E2E: buy coffee beans");
 await taskInput.press("Enter");
@@ -389,6 +416,7 @@ check("chat-stream serves SSE with delta+done",
   streamShape.contentType.includes("text/event-stream") && streamShape.hasDelta && streamShape.hasDone);
 
 // ---- reading list ---------------------------------------------------------------
+await gotoWidget("news");
 await page.locator(".news-item .bookmark-btn").first().click();
 await page.waitForSelector(".reading-row", { timeout: 10000 });
 check("bookmark saves story to reading list", true);
@@ -410,7 +438,8 @@ await page.waitForFunction((t) =>
 check("clear read empties the list", true);
 
 // ---- summarize buttons -------------------------------------------------------
-check("widget summarize buttons present", (await page.locator(".widget-controls .sum-btn").count()) >= 6);
+await gotoWidget("news");
+check("widget summarize buttons present", (await page.locator(".widget-controls .sum-btn").count()) >= 3);
 await page.locator(".news-item .sum-btn.sum-inline").first().click();
 await page.waitForSelector(".sum-pop", { timeout: 10000 });
 await page.waitForFunction(() => document.querySelector(".sum-body p"));
@@ -421,6 +450,7 @@ await page.keyboard.press("Escape");
 await page.waitForSelector(".sum-pop", { state: "detached" });
 
 // widget-level summarize (worldstate)
+await gotoWidget("worldstate");
 await page.locator(".widget-worldstate .widget-controls .sum-btn").click();
 await page.waitForSelector(".sum-pop", { timeout: 10000 });
 check("worldstate widget summary opens", true);
@@ -447,8 +477,9 @@ check("feed added to custom topic", true);
 await page.keyboard.press("Escape");
 await page.waitForSelector(".sources-pop", { state: "detached" });
 // the news widget should now show the new tab; clicking it renders (sample fallback offline)
-await page.waitForSelector(".tab:has-text('E2e Custom')", { timeout: 10000 });
-await page.locator(".tab", { hasText: "E2e Custom" }).click();
+await gotoWidget("news");
+await page.waitForSelector(".widget-news .tab:has-text('E2e Custom')", { timeout: 10000 });
+await page.locator(".widget-news .tab", { hasText: "E2e Custom" }).click();
 await page.waitForSelector(".news-item", { timeout: 10000 });
 check("custom topic tab renders stories", true);
 // clean up so reruns stay deterministic
@@ -456,14 +487,16 @@ await page.evaluate(async () => {
   await fetch("/api/feeds", { method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ op: "remove_topic", name: "e2e-custom" }) });
 });
-await page.locator(".tab", { hasText: "Top" }).click();
+await page.locator(".widget-news .tab", { hasText: "Top" }).click();
 
 // ---- weather extras (AQI + sun, from sample data offline) -----------------------
+await gotoWidget("weather");
 check("weather sun line shown", /☀ \d\d:\d\d · ☾ \d\d:\d\d/.test(
   await page.locator(".weather-extras").innerText()));
 check("weather AQI chip shown", /AQI \d+/.test(await page.locator(".aqi-chip").innerText()));
 
 // ---- calendar feeds (ICS subscriptions) ------------------------------------------
+await gotoWidget("calendar");
 await page.locator(".topbar-actions .menu-wrap .btn").click();
 await page.locator(".menu-item", { hasText: "Calendar feeds" }).click();
 await page.waitForSelector(".sources-pop", { timeout: 10000 });
@@ -492,6 +525,7 @@ await page.waitForSelector(".cal-event-ext", { state: "detached", timeout: 10000
 check("unsubscribe clears external events", true);
 
 // ---- stocks / indices / FX -------------------------------------------------------
+await gotoWidget("stocks");
 await page.waitForSelector(".widget-stocks .market-row");
 check("stocks rows render", (await page.locator(".widget-stocks .market-row").count()) >= 3);
 await page.locator(".widget-stocks .market-row").first().click();
@@ -502,11 +536,13 @@ await page.keyboard.press("Escape");
 await page.waitForSelector(".detail-pop", { state: "detached" });
 
 // ---- gaming (free games + deals) -------------------------------------------------
+await gotoWidget("gaming");
 await page.waitForSelector(".widget-gaming .game-free, .widget-gaming .game-deal");
 check("gaming free games render", (await page.locator(".widget-gaming .game-free").count()) >= 1);
 check("gaming steam deals render", (await page.locator(".widget-gaming .game-deal").count()) >= 1);
 
 // ---- socials hub -----------------------------------------------------------------
+await gotoWidget("socials");
 await page.waitForSelector(".widget-socials .social-item");
 check("socials feed renders items", (await page.locator(".widget-socials .social-item").count()) >= 1);
 await page.locator(".widget-socials .tab", { hasText: "Reddit" }).click();
@@ -517,6 +553,7 @@ await page.waitForSelector(".widget-socials .social-item");
 check("socials network switch works", (await page.locator(".widget-socials .social-badge").first().innerText()) === "RE");
 
 // ---- sports scores ---------------------------------------------------------------
+await gotoWidget("scores");
 await page.waitForSelector(".widget-scores .score-game");
 check("scores board renders games", (await page.locator(".widget-scores .score-game").count()) >= 1);
 check("scores show a status chip", (await page.locator(".widget-scores .score-chip").count()) >= 1);
@@ -528,12 +565,15 @@ await page.waitForSelector(".widget-scores .score-game");
 check("scores league switch works", (await page.locator(".widget-scores .score-game").count()) >= 1);
 
 // ---- crypto global bar + trending -----------------------------------------------
+await gotoWidget("markets");
 await page.waitForSelector(".global-bar");
 check("markets global bar renders", (await page.locator(".global-bar .gm-stat").count()) >= 3);
+check("markets widget has no stray null text", !(await page.locator(".widget-markets").innerText()).split("\n").includes("null"));
 check("fear & greed gauge shows", /\d/.test(await page.locator(".gm-fg-v").innerText()));
 check("trending strip renders chips", (await page.locator(".trend-chip").count()) >= 3);
 
 // ---- crypto detail drawer (chart + indicators) ----------------------------------
+await gotoWidget("markets");
 await page.waitForSelector(".market-row");
 await page.locator(".market-row").first().click();
 await page.waitForSelector(".detail-pop .coin-price", { timeout: 8000 });
@@ -560,6 +600,7 @@ await page.waitForSelector(".detail-pop", { state: "detached" });
 check("coin detail closes", true);
 
 // ---- markets watchlist editor ---------------------------------------------------
+await gotoWidget("markets");
 await page.waitForSelector(".widget-markets .market-row");
 const marketCountBefore = await page.locator(".widget-markets .market-row").count();
 page.once("dialog", (dialog) => dialog.accept("solana"));
@@ -577,6 +618,7 @@ check("watchlist add works", true);
 await page.locator("#edit-toggle").click();
 
 // ---- voice controls (presence + graceful degradation) ----------------------------
+await gotoWidget("agent");
 check("voice replies toggle present when supported", await page.evaluate(() =>
   !("speechSynthesis" in window)
   || [...document.querySelectorAll(".agent-quick .link-btn")].some((el) => el.textContent.includes("Voice"))));
@@ -628,6 +670,7 @@ await page.waitForFunction(() =>
 check("palette runs command through the agent", true);
 
 // ---- focus timer ----------------------------------------------------------------
+await gotoWidget("focus");
 await page.waitForSelector(".widget-focus .focus-clock", { timeout: 10000 });
 check("focus timer shows 25:00 idle",
   (await page.locator(".widget-focus .focus-clock").innerText()).trim() === "25:00");
@@ -754,7 +797,7 @@ if (process.env.AUTH_URL && process.env.AUTH_TOKEN) {
   await authPage.locator(".lock-input").fill(process.env.AUTH_TOKEN);
   await authPage.locator(".lock-form .btn-primary").click();
   await authPage.waitForSelector(".lock-backdrop", { state: "detached", timeout: 10000 });
-  await authPage.waitForSelector(".news-item", { timeout: 15000 });
+  await authPage.waitForSelector(".ws-row", { timeout: 15000 }); // Main page loads worldstate
   check("correct code unlocks and data loads", true);
   await shot(authPage, "08-lockscreen-unlocked");
   await authCtx.close();
@@ -763,6 +806,7 @@ if (process.env.AUTH_URL && process.env.AUTH_TOKEN) {
 }
 
 // ---- news search (client-side filter, no refetch) ---------------------------
+await gotoWidget("news");
 // Run late so the transient toasts these steps raise can't race earlier checks.
 await page.locator(".tab", { hasText: "Top" }).click();
 await page.waitForSelector(".news-item");

@@ -37,6 +37,9 @@ const WIDGETS = Object.fromEntries(
 
 const SIZES = ["s", "m", "l", "xl"];
 
+// The active page object within a state snapshot (mutations target its layout).
+const activePage = (state) => state.pages.find((p) => p.id === state.activePage) || state.pages[0];
+
 const SEARCH_ENGINES = {
   google: { name: "Google", url: "https://www.google.com/search?q=" },
   ddg: { name: "DuckDuckGo", url: "https://duckduckgo.com/?q=" },
@@ -166,7 +169,7 @@ function renderCard(item) {
         type: "button", title: "Cycle size", "aria-label": `Resize ${spec.title}`,
         onclick: () => {
           store.update((state) => {
-            const target = state.layout.find((l) => l.id === item.id);
+            const target = activePage(state).layout.find((l) => l.id === item.id);
             target.size = SIZES[(SIZES.indexOf(target.size) + 1) % SIZES.length];
           }, "layout");
           renderGrid();
@@ -176,7 +179,8 @@ function renderCard(item) {
         type: "button", title: "Remove widget", "aria-label": `Remove ${spec.title}`,
         onclick: () => {
           store.update((state) => {
-            state.layout = state.layout.filter((l) => l.id !== item.id);
+            const page = activePage(state);
+            page.layout = page.layout.filter((l) => l.id !== item.id);
           }, "layout");
           renderGrid();
         },
@@ -222,10 +226,11 @@ function renderCard(item) {
       const draggedId = ev.dataTransfer.getData("text/widget-id");
       if (!draggedId || draggedId === item.id) return;
       store.update((state) => {
-        const from = state.layout.findIndex((l) => l.id === draggedId);
-        const to = state.layout.findIndex((l) => l.id === item.id);
-        const [moved] = state.layout.splice(from, 1);
-        state.layout.splice(to, 0, moved);
+        const layout = activePage(state).layout;
+        const from = layout.findIndex((l) => l.id === draggedId);
+        const to = layout.findIndex((l) => l.id === item.id);
+        const [moved] = layout.splice(from, 1);
+        layout.splice(to, 0, moved);
       }, "layout");
       renderGrid();
     });
@@ -252,7 +257,7 @@ function renderGrid() {
   masonryObserver?.disconnect();
   clear(grid);
   const cards = [];
-  for (const item of store.state.layout) {
+  for (const item of store.activeLayout()) {
     const card = renderCard(item);
     if (card) { grid.append(card); cards.push(card); }
   }
@@ -275,6 +280,73 @@ window.addEventListener("resize", () => {
   document.querySelectorAll(".widget").forEach(fitCard);
 });
 
+function switchPage(id) {
+  if (store.state.activePage === id) return;
+  store.update((s) => { s.activePage = id; }, "activePage");
+  renderPageTabs();
+  renderGrid();
+}
+
+function renderPageTabs() {
+  const nav = document.getElementById("pagetabs");
+  if (!nav) return;
+  const editing = store.state.editMode;
+  clear(nav);
+  for (const page of store.state.pages) {
+    const activeTab = page.id === store.state.activePage;
+    nav.append(h("button.pagetab", {
+      type: "button",
+      "aria-current": activeTab ? "page" : null,
+      class: activeTab ? "pagetab pagetab-on" : "pagetab",
+      ondblclick: editing ? () => renamePage(page) : null,
+      onclick: () => switchPage(page.id),
+    },
+      h("span", {}, page.name),
+      editing && store.state.pages.length > 1
+        ? h("span.pagetab-x", {
+            title: "Delete page", "aria-label": `Delete page ${page.name}`,
+            onclick: (ev) => { ev.stopPropagation(); deletePage(page); },
+          }, "✕")
+        : null,
+    ));
+  }
+  if (editing) {
+    nav.append(h("button.pagetab.pagetab-add", {
+      type: "button", title: "Add a page",
+      onclick: () => {
+        const name = prompt("Name for the new page:");
+        if (!name?.trim()) return;
+        const id = uid();
+        store.update((s) => { s.pages.push({ id, name: name.trim(), layout: [] }); s.activePage = id; }, "pages");
+        renderPageTabs();
+        renderGrid();
+      },
+    }, "＋ Page"));
+    nav.append(h("span.pagetab-hint.muted.small", {}, "double-click a tab to rename"));
+  }
+}
+
+function renamePage(page) {
+  const name = prompt("Rename page:", page.name);
+  if (!name?.trim()) return;
+  store.update((s) => {
+    const p = s.pages.find((x) => x.id === page.id);
+    if (p) p.name = name.trim();
+  }, "pages");
+  renderPageTabs();
+}
+
+function deletePage(page) {
+  if (store.state.pages.length <= 1) return;
+  if (page.layout.length && !confirm(`Delete “${page.name}” and its ${page.layout.length} widget(s)?`)) return;
+  store.update((s) => {
+    s.pages = s.pages.filter((p) => p.id !== page.id);
+    if (s.activePage === page.id) s.activePage = s.pages[0].id;
+  }, "pages");
+  renderPageTabs();
+  renderGrid();
+}
+
 function renderAddGallery() {
   const missing = Object.values(WIDGETS);
   return h("section.widget.add-gallery.size-m", { "aria-label": "Add widgets" },
@@ -286,10 +358,10 @@ function renderAddGallery() {
             type: "button",
             onclick: () => {
               store.update((state) => {
-                state.layout.push({ id: uid(), type: spec.type, size: spec.defaultSize });
+                activePage(state).layout.push({ id: uid(), type: spec.type, size: spec.defaultSize });
               }, "layout");
               renderGrid();
-              toast(`Added ${spec.title}`);
+              toast(`Added ${spec.title} to ${activePage(store.state).name}`);
             },
           }, h("span", { "aria-hidden": "true" }, spec.icon), ` ${spec.title}`),
         ),
@@ -370,6 +442,7 @@ function renderTopbar() {
         onclick: () => {
           store.update((state) => { state.editMode = !state.editMode; }, "editMode");
           renderTopbar();
+          renderPageTabs();
           renderGrid();
         },
       }, store.state.editMode ? "Done" : "Edit layout"),
@@ -499,6 +572,9 @@ let paletteEl = null;
 
 /** Scroll a widget into view and pulse it — used when jumping to a search hit. */
 function flashWidget(type) {
+  // jump to the page holding this widget first, so cross-page search lands
+  const page = store.state.pages.find((p) => p.layout.some((wgt) => wgt.type === type));
+  if (page && page.id !== store.state.activePage) switchPage(page.id);
   const el = document.querySelector(`.widget-${type}`);
   if (!el) return;
   el.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -557,6 +633,9 @@ function paletteDataMatches(q) {
 // so it reuses the entire agent loop (local parser or Claude) and its
 // permission gate — the palette just hands off the text.
 function runAgentCommand(text) {
+  // make sure the Agent widget is on-screen (it may live on another page)
+  const page = store.state.pages.find((p) => p.layout.some((wgt) => wgt.type === "agent"));
+  if (page && page.id !== store.state.activePage) switchPage(page.id);
   const input = document.querySelector(".agent-input");
   const submit = document.querySelector(".agent-form .btn-primary");
   if (!input || !submit) {
@@ -581,6 +660,11 @@ function paletteCommands(query = "") {
     },
     { label: "Manage news sources", hint: "feeds", run: () => openSources() },
   ];
+  for (const page of store.state.pages) {
+    if (page.id !== store.state.activePage) {
+      commands.push({ label: `Go to ${page.name}`, hint: "page", run: () => switchPage(page.id) });
+    }
+  }
   for (const link of store.state.launcher.links) {
     commands.push({
       label: `Open ${link.name}`,
@@ -703,6 +787,7 @@ function boot() {
   applyTheme();
   applyAccent();
   renderTopbar();
+  renderPageTabs();
   renderGrid();
   renderFooter();
 }

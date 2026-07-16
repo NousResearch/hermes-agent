@@ -158,7 +158,7 @@ async function renderCoinDetail(body, ctx) {
       ),
     ) : null;
 
-    clear(body).append(
+    clear(body).append(...[
       h("div.coin-head", {},
         picker,
         h("div.coin-price", {}, `$${fmtPrice(detail.price ?? 0)}`),
@@ -183,7 +183,7 @@ async function renderCoinDetail(body, ctx) {
         stat("30d", pct(detail.changes?.["30d"])),
         stat("1y", pct(detail.changes?.["1y"])),
       ),
-    );
+    ].filter(Boolean));
   };
   await draw();
 }
@@ -303,7 +303,8 @@ const exportRef = {
         pfCost > 0 ? pct(((pfTotal - pfCost) / pfCost) * 100) : null,
       ) : null;
 
-      clear(body).append(
+      // Native .append() stringifies null → filter falsy children out.
+      clear(body).append(...[
         glob ? globalBar(glob) : null,
         rows,
         pfLine,
@@ -311,7 +312,8 @@ const exportRef = {
         h("div.market-note-row", {},
           h("span.muted.small", {}, "24h change · 7-day trend · tap a coin for detail"),
           h("button.link-btn", { type: "button", onclick: addAsset }, "+ watch asset"),
-        ));
+        ),
+      ].filter(Boolean));
     };
 
     let lastAssets = [];

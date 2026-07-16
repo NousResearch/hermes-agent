@@ -4,31 +4,32 @@ import { uid } from "./utils.js";
 
 const KEY = "hermesHub.v1";
 
+const w = (type, size) => ({ id: uid(), type, size });
+
+function defaultPages() {
+  return [
+    { id: uid(), name: "Main", layout: [
+      w("clock", "m"), w("worldstate", "xl"), w("agent", "m"), w("weather", "m"),
+      w("launcher", "m"), w("tasks", "m"), w("calendar", "m"), w("notes", "m"),
+      w("focus", "s"), w("system", "m"),
+    ] },
+    { id: uid(), name: "Markets", layout: [w("markets", "l"), w("stocks", "l")] },
+    { id: uid(), name: "Feeds", layout: [
+      w("news", "l"), w("reading", "m"), w("socials", "m"), w("gaming", "m"),
+    ] },
+    { id: uid(), name: "Sports", layout: [w("scores", "l")] },
+  ];
+}
+
 function defaultState() {
+  const pages = defaultPages();
   return {
     version: 1,
     theme: "dark", // auto | light | dark — dark is the house style
     accent: "cyan", // cyan (default) | amber | green | magenta
     editMode: false,
-    layout: [
-      { id: uid(), type: "clock", size: "m" },
-      { id: uid(), type: "worldstate", size: "xl" },
-      { id: uid(), type: "agent", size: "m" },
-      { id: uid(), type: "weather", size: "m" },
-      { id: uid(), type: "launcher", size: "m" },
-      { id: uid(), type: "news", size: "l" },
-      { id: uid(), type: "reading", size: "m" },
-      { id: uid(), type: "tasks", size: "m" },
-      { id: uid(), type: "markets", size: "m" },
-      { id: uid(), type: "stocks", size: "m" },
-      { id: uid(), type: "scores", size: "m" },
-      { id: uid(), type: "socials", size: "m" },
-      { id: uid(), type: "gaming", size: "m" },
-      { id: uid(), type: "calendar", size: "m" },
-      { id: uid(), type: "notes", size: "m" },
-      { id: uid(), type: "focus", size: "s" },
-      { id: uid(), type: "system", size: "m" },
-    ],
+    pages,
+    activePage: pages[0].id,
     launcher: {
       links: [
         { id: uid(), name: "Gmail", url: "https://mail.google.com" },
@@ -85,17 +86,21 @@ function defaultState() {
   };
 }
 
+const hasBoard = (s) => s && (Array.isArray(s.pages) || Array.isArray(s.layout));
+
 function load() {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return defaultState();
     const parsed = JSON.parse(raw);
-    if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.layout)) {
+    if (!parsed || parsed.version !== 1 || !hasBoard(parsed)) {
       return defaultState();
     }
     migrate(parsed);
     // Merge unknown/missing top-level sections from defaults (forward compat).
-    return { ...defaultState(), ...parsed, editMode: false };
+    const merged = { ...defaultState(), ...parsed, editMode: false };
+    normalizePages(merged);
+    return merged;
   } catch {
     return defaultState();
   }
@@ -108,6 +113,27 @@ function migrate(parsed) {
       locations: parsed.weather.location ? [parsed.weather.location] : [],
       active: 0,
     };
+  }
+  // Legacy single-board state → one "Main" page holding it, intact.
+  if (Array.isArray(parsed.layout) && !Array.isArray(parsed.pages)) {
+    parsed.pages = [{ id: uid(), name: "Main", layout: parsed.layout }];
+    parsed.activePage = parsed.pages[0].id;
+    delete parsed.layout;
+  }
+}
+
+/** Ensure pages is a non-empty array and activePage points at a real page. */
+function normalizePages(state) {
+  if (!Array.isArray(state.pages) || !state.pages.length) {
+    state.pages = defaultPages();
+  }
+  for (const p of state.pages) {
+    if (!p.id) p.id = uid();
+    if (!Array.isArray(p.layout)) p.layout = [];
+    if (!p.name) p.name = "Page";
+  }
+  if (!state.pages.some((p) => p.id === state.activePage)) {
+    state.activePage = state.pages[0].id;
   }
 }
 
@@ -136,21 +162,35 @@ export const store = {
     return JSON.stringify(this.state, null, 2);
   },
 
+  /** The active page object (never null — falls back to the first page). */
+  activePageObj() {
+    const pages = this.state.pages || [];
+    return pages.find((p) => p.id === this.state.activePage) || pages[0];
+  },
+
+  /** The active page's widget layout array. */
+  activeLayout() {
+    return this.activePageObj()?.layout || [];
+  },
+
   /** Replace the whole state (sync adopting another device's copy). */
   replace(incoming) {
-    if (!incoming || !Array.isArray(incoming.layout)) return;
+    if (!hasBoard(incoming)) return;
     migrate(incoming);
     this.state = { ...defaultState(), ...incoming, editMode: false };
+    normalizePages(this.state);
     this.save();
     for (const listener of listeners) listener("replace", this.state);
   },
 
   importJSON(text) {
     const incoming = JSON.parse(text); // throws on invalid JSON
-    if (!incoming || incoming.version !== 1 || !Array.isArray(incoming.layout)) {
+    if (!incoming || incoming.version !== 1 || !hasBoard(incoming)) {
       throw new Error("not a Hermes Hub backup file");
     }
+    migrate(incoming);
     this.state = { ...defaultState(), ...incoming, editMode: false };
+    normalizePages(this.state);
     this.save();
     for (const listener of listeners) listener("import", this.state);
   },

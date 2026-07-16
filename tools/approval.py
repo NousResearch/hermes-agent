@@ -2452,7 +2452,7 @@ def request_tool_approval(
     if rule_key:
         key_suffix = rule_key
     else:
-        _reason_hash = hashlib.sha256(description.encode("utf-8")).hexdigest()[:12]
+        _reason_hash = hashlib.sha256(description.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
         key_suffix = f"{tool_name}:{_reason_hash}"
     # Synthetic pattern key so plugin-rule approvals live in the same
     # session/permanent allowlist machinery as command patterns, namespaced

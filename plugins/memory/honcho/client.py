@@ -661,7 +661,7 @@ class HonchoClientConfig:
             return sanitized
 
         hash_len = cls._HONCHO_SESSION_ID_HASH_LEN
-        digest = hashlib.sha256(original.encode("utf-8")).hexdigest()[:hash_len]
+        digest = hashlib.sha256(original.encode("utf-8"), usedforsecurity=False).hexdigest()[:hash_len]
         # max_len - hash_len - 1 (for the '-' separator) chars of the sanitized
         # prefix, then '-<hash>'. Strip any trailing hyphen from the prefix so
         # the result doesn't double up on separators.

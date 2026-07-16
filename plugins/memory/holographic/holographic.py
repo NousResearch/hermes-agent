@@ -60,7 +60,7 @@ def encode_atom(word: str, dim: int = 1024) -> "np.ndarray":
 
     uint16_values: list[int] = []
     for i in range(blocks_needed):
-        digest = hashlib.sha256(f"{word}:{i}".encode()).digest()
+        digest = hashlib.sha256(f"{word}:{i}".encode(), usedforsecurity=False).digest()
         uint16_values.extend(struct.unpack("<16H", digest))
 
     phases = np.array(uint16_values[:dim], dtype=np.float64) * (_TWO_PI / 65536.0)

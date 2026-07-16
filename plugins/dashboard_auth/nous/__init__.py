@@ -181,7 +181,7 @@ class NousDashboardAuthProvider(DashboardAuthProvider):
 
         code_verifier = _b64url_no_pad(secrets.token_bytes(64))  # ~86 chars
         code_challenge = _b64url_no_pad(
-            hashlib.sha256(code_verifier.encode("ascii")).digest()
+            hashlib.sha256(code_verifier.encode("ascii"), usedforsecurity=False).digest()
         )
         state = _b64url_no_pad(secrets.token_bytes(32))
 

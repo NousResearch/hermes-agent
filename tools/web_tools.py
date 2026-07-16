@@ -495,7 +495,7 @@ def _store_full_text(url: str, content: str) -> Optional[str]:
 
         host = (urlparse(url).hostname or "page").replace(":", "_")
         slug = re.sub(r"[^A-Za-z0-9._-]", "-", host)[:60].strip("-") or "page"
-        digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:10]
+        digest = hashlib.sha256(url.encode("utf-8"), usedforsecurity=False).hexdigest()[:10]
         path = cache_dir / f"{slug}-{digest}.md"
         # Bound the stored copy so a pathologically large page can't write
         # unbounded bytes to disk. If capped, append a marker so a reader of

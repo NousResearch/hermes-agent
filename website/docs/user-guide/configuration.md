@@ -823,6 +823,22 @@ Plugin engines are **never auto-activated** — you must explicitly set `context
 
 See [Memory Providers](/user-guide/features/memory-providers) for the analogous single-select system for memory plugins.
 
+### Time Awareness
+
+When enabled, Hermes injects a brief temporal annotation into the user message when a significant gap has elapsed since the last conversation turn. This helps the model reason correctly across time gaps — understanding that "yesterday" or "a few hours ago" refers to real elapsed time.
+
+```yaml
+context:
+  engine: "compressor"
+  time_awareness:
+    enabled: false           # opt-in (default off)
+    threshold_minutes: 120   # gap in minutes before annotation fires
+```
+
+The annotation is injected into the **user message content** (not the system prompt), preserving byte-stable prompt caching. It is stripped from persisted session transcripts so it does not leak into stored history. Skipped on the first turn of a session (no prior turn to compare against).
+
+**Note:** When a session is resumed from stored history, the gap is measured from the persisted user-turn timestamp if available, not from agent reconstruction time.
+
 ## Iteration Budget
 
 When the agent is working on a complex task with many tool calls, it can burn through its iteration budget (default: 90 turns). Hermes does **not** inject mid-task pressure warnings — earlier builds warned the model at 70%/90% budget, which caused models to abandon complex tasks prematurely and was removed in April 2026.

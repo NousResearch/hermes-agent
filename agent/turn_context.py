@@ -43,8 +43,11 @@ def _format_elapsed(seconds: float) -> str:
     """Format a time duration (in seconds) into a concise human-readable string.
 
     Granularity decreases with duration: reports the largest whole unit
-    (days, hours, or minutes).  "A few seconds" for gaps under a minute.
+    (days, hours, or minutes).  "A few seconds" for gaps under a minute
+    or any negative value.
     """
+    if seconds < 0:
+        return "a few seconds"
     minutes = int(seconds // 60)
     if minutes < 1:
         return "a few seconds"
@@ -327,6 +330,21 @@ def build_turn_context(
             if agent._memory_nudge_interval > 0 and agent._turns_since_memory == 0:
                 agent._turns_since_memory = prior_user_turns % agent._memory_nudge_interval
 
+    # Rehydrate the time-awareness baseline from persisted timestamps so a
+    # session restored with nonempty history measures the actual conversation
+    # gap rather than time since agent reconstruction (teknium1, PR #64696).
+    # Compute user-turn count independently so this block doesn't silently
+    # break if the nudge-counter hydration above is refactored.
+    if conversation_history and getattr(agent, "_time_awareness_enabled", False):
+        _rehydrate_turn_count = agent._user_turn_count or sum(
+            1 for m in conversation_history if m.get("role") == "user"
+        )
+        if _rehydrate_turn_count > 0:
+            for _msg in reversed(conversation_history):
+                if _msg.get("role") == "user" and "timestamp" in _msg:
+                    agent._last_user_turn_ts = float(_msg["timestamp"])
+                    break
+
     # ── Time-awareness injection ──
     # When enabled and a significant gap has passed since the last user
     # turn, prepend a brief annotation to the user message so the agent
@@ -345,14 +363,30 @@ def build_turn_context(
                     f"[It is now {_now.strftime('%A, %B %d, %I:%M %p %Z')}. "
                     f"Your last message was about {_elapsed_str} ago.]"
                 )
-                user_msg["content"] = f"{_annotation}\n\n{user_msg['content']}"
+                # Preserve native multimodal content lists (gateway image/audio
+                # blocks) by prepending a text part rather than coercing the
+                # list to a string via format.  See teknium1 review on PR #64696.
+                if isinstance(user_msg["content"], list):
+                    user_msg["content"] = [
+                        {"type": "text", "text": f"{_annotation}\n\n"},
+                        *user_msg["content"],
+                    ]
+                else:
+                    user_msg["content"] = f"{_annotation}\n\n{user_msg['content']}"
 
                 # Ensure the annotation does not leak into the persisted
-                # transcript.  The gateway already provides a clean
-                # persist_user_message; for CLI/TUI we set the override
-                # to the original unmodified content.
-                if persist_user_message is None and getattr(agent, "_persist_user_message_override", None) is None:
+                # transcript.  For text content, prefer the gateway-provided
+                # persist_user_message (which excludes system notes); for
+                # multimodal content, the original user_message IS the clean
+                # content list — using it as a list override is required
+                # because _apply_persist_user_message_override refuses to
+                # replace list content with a plain string (PR #64696).
+                if isinstance(user_msg["content"], list):
                     agent._persist_user_message_override = user_message
+                else:
+                    agent._persist_user_message_override = (
+                        persist_user_message if persist_user_message is not None else user_message
+                    )
             except Exception:
                 logger.debug("Time-awareness injection failed (non-fatal)", exc_info=True)
 

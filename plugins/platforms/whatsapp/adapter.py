@@ -388,6 +388,22 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     _DEFAULT_BRIDGE_DIR = None  # resolved in __init__
     splits_long_messages = True  # send() chunks via truncate_message()
 
+    def _bundled_bridge_dir(self) -> Path:
+        """Directory of the bundled bridge.js, independent of the launched entrypoint.
+
+        When ``bridge_script`` points at an out-of-tree wrapper, deps and the
+        bundled-source hash still belong to the in-tree bridge.js, not the
+        wrapper's parent.  Reads an instance override first (set in tests /
+        via ``__init__``) before falling back to the lazily-resolved shared
+        default, so it works even when the adapter was built via ``__new__``.
+        """
+        d = getattr(self, "_default_bridge_dir", None) or WhatsAppAdapter._DEFAULT_BRIDGE_DIR
+        if d is None:
+            from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
+            WhatsAppAdapter._DEFAULT_BRIDGE_DIR = resolve_whatsapp_bridge_dir()
+            d = WhatsAppAdapter._DEFAULT_BRIDGE_DIR
+        return Path(d)
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WHATSAPP)
         # Use shared helper for bridge directory resolution (handles read-only install tree)
@@ -396,6 +412,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             WhatsAppAdapter._DEFAULT_BRIDGE_DIR = resolve_whatsapp_bridge_dir()
         self._bridge_process: Optional[subprocess.Popen] = None
         self._bridge_port: int = config.extra.get("bridge_port", 3000)
+        # Bundled bridge.js dir — used for dep install and the bundled-source
+        # half of the two-hash staleness contract, independent of any
+        # out-of-tree wrapper the entrypoint (`bridge_script`) may point at.
+        self._default_bridge_dir: Path = Path(self._DEFAULT_BRIDGE_DIR)
         self._bridge_script: Optional[str] = config.extra.get(
             "bridge_script",
             str(self._DEFAULT_BRIDGE_DIR / "bridge.js"),
@@ -523,7 +543,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # package.json changed since the last install (e.g. after
             # `hermes update` bumps the Baileys pin).  The stamp file records
             # the package.json hash of the last successful install.
-            bridge_dir = bridge_path.parent
+            #
+            # Resolve the *bundled* bridge dir independently of the launched
+            # entrypoint.  When `bridge_script` points at an out-of-tree
+            # wrapper, the wrapper's parent has no package.json/node_modules;
+            # the deps belong next to the bundled bridge.js, which Node's
+            # module resolution walks up to find from an in-process import.
+            # For a direct launch bundled_bridge_dir == bridge_path.parent, so
+            # this is byte-identical to the previous behavior.
+            bundled_bridge_dir = self._bundled_bridge_dir()
+            bridge_dir = bundled_bridge_dir
             _pkg_json = bridge_dir / "package.json"
             _dep_stamp = bridge_dir / "node_modules" / ".hermes-pkg-hash"
             _pkg_hash = _file_content_hash(_pkg_json)
@@ -585,11 +614,30 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                 # `hermes update`, so without this check it
                                 # keeps serving pre-update code forever
                                 # (e.g. no inbound media download).  Old
-                                # bridges that don't report scriptHash are
+                                # bridges that don't report a hash are
                                 # treated as stale by definition.
-                                running_hash = data.get("scriptHash", "")
-                                disk_hash = _file_content_hash(bridge_path)
-                                if running_hash and disk_hash and running_hash == disk_hash:
+                                #
+                                # Two-hash contract: verify BOTH the launched
+                                # entrypoint (entryHash vs the configured
+                                # bridge_script) AND the bundled bridge.js
+                                # (bundledHash vs the on-disk bundled file).
+                                # A wrapper launch reports entryHash=wrapper,
+                                # bundledHash=bridge.js; a direct launch reports
+                                # all three equal.  Older bridges report only
+                                # scriptHash — fall back to it for both so a
+                                # direct-launch upgrade path stays intact.
+                                running_entry = data.get("entryHash") or data.get("scriptHash", "")
+                                running_bundled = data.get("bundledHash") or data.get("scriptHash", "")
+                                entry_disk = _file_content_hash(bridge_path)
+                                bundled_disk = _file_content_hash(
+                                    self._bundled_bridge_dir() / "bridge.js"
+                                )
+                                if (
+                                    running_entry and running_bundled
+                                    and entry_disk and bundled_disk
+                                    and running_entry == entry_disk
+                                    and running_bundled == bundled_disk
+                                ):
                                     print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
                                     self._mark_connected()
                                     self._bridge_process = None  # Not managed by us
@@ -598,7 +646,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                     return True
                                 print(
                                     f"[{self.name}] Running bridge is stale "
-                                    f"(running={running_hash or 'unversioned'}, disk={disk_hash}), restarting"
+                                    f"(entry running={running_entry or 'unversioned'}/disk={entry_disk}, "
+                                    f"bundled running={running_bundled or 'unversioned'}/disk={bundled_disk}), restarting"
                                 )
                             else:
                                 print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")

@@ -39,8 +39,14 @@ class _AsyncCM:
 
 
 def _make_adapter(bridge_script: str = "/tmp/test-bridge.js",
-                  session_path: Path = Path("/tmp/test-wa-session")):
-    """Create a WhatsAppAdapter with test attributes (bypass __init__)."""
+                  session_path: Path = Path("/tmp/test-wa-session"),
+                  default_bridge_dir=None):
+    """Create a WhatsAppAdapter with test attributes (bypass __init__).
+
+    ``default_bridge_dir`` sets the bundled-bridge dir used by the two-hash
+    contract and dep install.  Defaults to the bridge_script's parent so a
+    direct-launch test (entrypoint == bundled bridge.js) behaves as before.
+    """
     from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     adapter = WhatsAppAdapter.__new__(WhatsAppAdapter)
@@ -48,6 +54,10 @@ def _make_adapter(bridge_script: str = "/tmp/test-bridge.js",
     adapter.config = MagicMock()
     adapter._bridge_port = 19876
     adapter._bridge_script = bridge_script
+    adapter._default_bridge_dir = (
+        default_bridge_dir if default_bridge_dir is not None
+        else Path(bridge_script).parent
+    )
     adapter._session_path = session_path
     adapter._bridge_log_fh = None
     adapter._bridge_log = None
@@ -223,6 +233,143 @@ class TestStaleBridgeHandshake:
         mock_popen.assert_called_once()
 
 
+class TestTwoHashContract:
+    """Wrapper-aware staleness contract: verify BOTH the launched entrypoint
+    (entryHash vs configured bridge_script) AND the bundled bridge.js
+    (bundledHash vs the on-disk bundled file).  Regression cover for the
+    wrapper-launch flow, where entrypoint != bundled bridge.js.
+    """
+
+    def _setup_wrapper(self, tmp_path: Path):
+        """Bundled bridge dir + a separate wrapper dir. Returns (bundled_dir, wrapper_path)."""
+        bundled_dir = _setup_bridge_dir(tmp_path)  # .../whatsapp-bridge/bridge.js
+        _fresh_node_modules(bundled_dir)
+        wrapper_dir = tmp_path / "custom"
+        wrapper_dir.mkdir()
+        wrapper = wrapper_dir / "wrapper.mjs"
+        wrapper.write_text("// out-of-tree wrapper importing bridge.js\n")
+        return bundled_dir, wrapper
+
+    @pytest.mark.asyncio
+    async def test_reuses_when_wrapper_and_bundled_match(self, tmp_path):
+        from plugins.platforms.whatsapp.adapter import _file_content_hash
+
+        bundled_dir, wrapper = self._setup_wrapper(tmp_path)
+        adapter = _make_adapter(
+            bridge_script=str(wrapper),
+            session_path=tmp_path / "session",
+            default_bridge_dir=bundled_dir,
+        )
+        mock_client = _mock_health({
+            "status": "connected",
+            "entryHash": _file_content_hash(wrapper),
+            "bundledHash": _file_content_hash(bundled_dir / "bridge.js"),
+        })
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch("aiohttp.ClientSession", mock_client), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.create_task") as mock_task, \
+             patch("subprocess.Popen") as mock_popen, \
+             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True), \
+             patch.object(adapter, "_mark_connected", create=True):
+            result = await adapter.connect()
+
+        assert result is True
+        mock_popen.assert_not_called()  # both hashes matched → reused
+        mock_task.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_restarts_when_bundled_stale(self, tmp_path):
+        """`hermes update` bumps bridge.js; wrapper unchanged → bundledHash mismatch.
+
+        This is the exact trap an entrypoint-only hash would miss: the wrapper
+        looks fresh, but it imports a stale bundled bridge.js.
+        """
+        from plugins.platforms.whatsapp.adapter import _file_content_hash
+
+        bundled_dir, wrapper = self._setup_wrapper(tmp_path)
+        adapter = _make_adapter(
+            bridge_script=str(wrapper),
+            session_path=tmp_path / "session",
+            default_bridge_dir=bundled_dir,
+        )
+        mock_client = _mock_health({
+            "status": "connected",
+            "entryHash": _file_content_hash(wrapper),          # wrapper matches
+            "bundledHash": "staleaaaaaaaaaa0",                  # bridge.js does NOT
+        })
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1
+        mock_proc.returncode = 1
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch("aiohttp.ClientSession", mock_client), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
+             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
+             patch("plugins.platforms.whatsapp.adapter._kill_port_process"), \
+             patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
+             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
+            await adapter.connect()
+
+        mock_popen.assert_called_once()  # stale bundled bridge → restart
+
+    @pytest.mark.asyncio
+    async def test_restarts_when_wrapper_stale(self, tmp_path):
+        """Wrapper edited, bundled bridge.js unchanged → entryHash mismatch."""
+        from plugins.platforms.whatsapp.adapter import _file_content_hash
+
+        bundled_dir, wrapper = self._setup_wrapper(tmp_path)
+        adapter = _make_adapter(
+            bridge_script=str(wrapper),
+            session_path=tmp_path / "session",
+            default_bridge_dir=bundled_dir,
+        )
+        mock_client = _mock_health({
+            "status": "connected",
+            "entryHash": "staleaaaaaaaaaa0",                    # wrapper does NOT match
+            "bundledHash": _file_content_hash(bundled_dir / "bridge.js"),  # bridge.js matches
+        })
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1
+        mock_proc.returncode = 1
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch("aiohttp.ClientSession", mock_client), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
+             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
+             patch("plugins.platforms.whatsapp.adapter._kill_port_process"), \
+             patch("subprocess.Popen", return_value=mock_proc) as mock_popen, \
+             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
+            await adapter.connect()
+
+        mock_popen.assert_called_once()  # stale wrapper → restart
+
+    @pytest.mark.asyncio
+    async def test_direct_launch_scripthash_fallback_reuses(self, tmp_path):
+        """Old bridge reports only `scriptHash` (pre-contract), direct launch,
+        unchanged → both entry/bundled fall back to scriptHash and match → reuse.
+        """
+        from plugins.platforms.whatsapp.adapter import _file_content_hash
+
+        bridge_dir = _setup_bridge_dir(tmp_path)
+        _fresh_node_modules(bridge_dir)
+        adapter = _make_adapter(
+            bridge_script=str(bridge_dir / "bridge.js"),
+            session_path=tmp_path / "session",
+            default_bridge_dir=bridge_dir,
+        )
+        disk = _file_content_hash(bridge_dir / "bridge.js")
+        mock_client = _mock_health({"status": "connected", "scriptHash": disk})
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch("aiohttp.ClientSession", mock_client), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.create_task") as mock_task, \
+             patch("subprocess.Popen") as mock_popen, \
+             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True), \
+             patch.object(adapter, "_mark_connected", create=True):
+            result = await adapter.connect()
+
+        assert result is True
+        mock_popen.assert_not_called()  # scriptHash fallback → reused
+        mock_task.assert_called_once()
+
+
 class TestDepRefreshStamp:
     @pytest.mark.asyncio
     async def test_skips_install_when_stamp_fresh(self, tmp_path):
@@ -339,3 +486,102 @@ class TestCacheDirEnvPassthrough:
         assert env["HERMES_IMAGE_CACHE_DIR"] == str(get_image_cache_dir())
         assert env["HERMES_AUDIO_CACHE_DIR"] == str(get_audio_cache_dir())
         assert env["HERMES_DOCUMENT_CACHE_DIR"] == str(get_document_cache_dir())
+
+
+class TestBundledDepInstallDir:
+    """When bridge_script points at an out-of-tree wrapper, npm install must
+    run in the bundled bridge.js dir (where package.json lives), not the
+    wrapper's parent.
+    """
+
+    @pytest.mark.asyncio
+    async def test_deps_install_in_bundled_dir(self, tmp_path):
+        bundled_dir = _setup_bridge_dir(tmp_path)  # has package.json, no node_modules
+        wrapper_dir = tmp_path / "custom"
+        wrapper_dir.mkdir()
+        wrapper = wrapper_dir / "wrapper.mjs"
+        wrapper.write_text("// wrapper\n")
+        adapter = _make_adapter(
+            bridge_script=str(wrapper),
+            session_path=tmp_path / "session",
+            default_bridge_dir=bundled_dir,
+        )
+        mock_proc = MagicMock()
+        mock_proc.poll.return_value = 1
+        mock_proc.returncode = 1
+
+        def _npm_install(*args, **kwargs):
+            (bundled_dir / "node_modules").mkdir(exist_ok=True)
+            return MagicMock(returncode=0)
+
+        with patch("plugins.platforms.whatsapp.adapter.check_whatsapp_requirements", return_value=True), \
+             patch("aiohttp.ClientSession", _mock_health({"status": "disconnected"})), \
+             patch("plugins.platforms.whatsapp.adapter.asyncio.sleep", new_callable=AsyncMock), \
+             patch("plugins.platforms.whatsapp.adapter._kill_stale_bridge_by_pidfile"), \
+             patch("plugins.platforms.whatsapp.adapter._kill_port_process"), \
+             patch("subprocess.run", side_effect=_npm_install) as mock_run, \
+             patch("subprocess.Popen", return_value=mock_proc), \
+             patch.object(adapter, "_acquire_platform_lock", return_value=True, create=True):
+            await adapter.connect()
+
+        mock_run.assert_called_once()
+        # cwd must be the bundled bridge dir, NOT the wrapper's parent
+        assert mock_run.call_args.kwargs["cwd"] == str(bundled_dir)
+
+
+class TestBridgePrintHashes:
+    """Node-level integration test for the two-hash contract via --print-hashes.
+
+    Spawns the real bridge.js and a wrapper .mjs, no WhatsApp connection.
+    Skips cleanly when node isn't available.
+    """
+
+    @pytest.mark.asyncio
+    async def test_print_hashes_direct_vs_wrapper(self, tmp_path):
+        import hashlib
+        import json
+        import shutil
+        import subprocess as _sp
+
+        node = shutil.which("node")
+        if not node:
+            pytest.skip("node not available")
+
+        repo_root = Path(__file__).resolve().parents[2]
+        bridge_js = repo_root / "scripts" / "whatsapp-bridge" / "bridge.js"
+        if not bridge_js.exists():
+            pytest.skip("bridge.js not found")
+        # bridge.js imports Baileys at module load; skip when deps aren't installed
+        if not (bridge_js.parent / "node_modules" / "@whiskeysockets").exists():
+            pytest.skip("whatsapp bridge node_modules not installed")
+
+        def _hash16(p: Path) -> str:
+            return hashlib.sha256(p.read_bytes()).hexdigest()[:16]
+
+        # Direct launch: entryHash == bundledHash == hash(bridge.js)
+        out = _sp.run(
+            [node, str(bridge_js), "--print-hashes"],
+            capture_output=True, text=True, timeout=30,
+        )
+        assert out.returncode == 0, out.stderr
+        direct = json.loads(out.stdout.strip())
+        bridge_hash = _hash16(bridge_js)
+        assert direct["entryHash"] == bridge_hash
+        assert direct["bundledHash"] == bridge_hash
+        assert direct["entryHash"] == direct["bundledHash"]
+
+        # Wrapper launch: wrapper imports bridge.js; entryHash == hash(wrapper),
+        # bundledHash == hash(bridge.js).
+        wrapper = tmp_path / "wrapper.mjs"
+        wrapper.write_text(
+            f"import {json.dumps(bridge_js.as_posix())};\n"
+        )
+        out2 = _sp.run(
+            [node, str(wrapper), "--print-hashes"],
+            capture_output=True, text=True, timeout=30,
+        )
+        assert out2.returncode == 0, out2.stderr
+        wrapped = json.loads(out2.stdout.strip())
+        assert wrapped["entryHash"] == _hash16(wrapper)
+        assert wrapped["bundledHash"] == bridge_hash
+        assert wrapped["entryHash"] != wrapped["bundledHash"]

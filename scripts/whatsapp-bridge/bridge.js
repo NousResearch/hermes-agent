@@ -80,14 +80,40 @@ const AUDIO_CACHE_DIR = process.env.HERMES_AUDIO_CACHE_DIR
 // restart it instead of silently reusing stale code (stale-bridge trap:
 // `hermes update` updates bridge.js on disk but a long-lived bridge process
 // keeps serving the old behavior forever).
-let SCRIPT_HASH = '';
+// Two-hash staleness contract.  BUNDLED_HASH is this bridge.js file's own
+// source, computed from import.meta.url — it catches a stale bridge.js after
+// `hermes update` even when a launching wrapper is unchanged.  ENTRY_HASH is
+// the actually-launched script (process.argv[1]): for a direct launch it is
+// bridge.js (so ENTRY_HASH === BUNDLED_HASH), for an out-of-tree wrapper
+// launch it is the wrapper.  The adapter verifies BOTH against disk so neither
+// a stale wrapper nor a stale bundled bridge can be silently reused.
+// SCRIPT_HASH is kept as an alias of BUNDLED_HASH for back-compat with older
+// adapters that only read `scriptHash`.
+function _hashFile(p) {
+  try {
+    return createHash('sha256').update(readFileSync(p)).digest('hex').slice(0, 16);
+  } catch {
+    return '';
+  }
+}
+const BUNDLED_HASH = _hashFile(fileURLToPath(import.meta.url));
+// process.argv[1] is the launched entrypoint; fall back to the bundled file
+// when it is missing/unreadable so a direct launch keeps identical semantics.
+let ENTRY_HASH = '';
 try {
-  SCRIPT_HASH = createHash('sha256')
-    .update(readFileSync(fileURLToPath(import.meta.url)))
-    .digest('hex')
-    .slice(0, 16);
+  ENTRY_HASH = process.argv[1] ? _hashFile(process.argv[1]) : '';
 } catch {}
+if (!ENTRY_HASH) ENTRY_HASH = BUNDLED_HASH;
+const SCRIPT_HASH = BUNDLED_HASH; // back-compat alias
 const PAIR_ONLY = args.includes('--pair-only');
+// Diagnostic: print the staleness-contract hashes as JSON and exit before any
+// WhatsApp connection.  Lets the wrapper integration test verify entry vs
+// bundled hashing without a live socket.  Exits non-zero if either is empty.
+if (args.includes('--print-hashes')) {
+  const ok = Boolean(ENTRY_HASH && BUNDLED_HASH);
+  process.stdout.write(JSON.stringify({ entryHash: ENTRY_HASH, bundledHash: BUNDLED_HASH }) + '\n');
+  process.exit(ok ? 0 : 1);
+}
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
 const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n────────────\n';
@@ -806,7 +832,9 @@ app.get('/health', (req, res) => {
     status: connectionState,
     queueLength: messageQueue.length,
     uptime: process.uptime(),
-    scriptHash: SCRIPT_HASH,
+    scriptHash: SCRIPT_HASH,   // back-compat alias of bundledHash
+    entryHash: ENTRY_HASH,     // hash of the launched script (wrapper or bridge.js)
+    bundledHash: BUNDLED_HASH, // hash of this bridge.js source
   });
 });
 

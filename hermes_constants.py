@@ -968,11 +968,15 @@ def is_container() -> bool:
                 if len(fields) < 5 or fields[4] not in _IDENTITY_MOUNTS:
                     continue
                 # fields[3] is the mount's root within its filesystem; after
-                # the "-" separator come fstype, source, and super options
-                # (e.g. overlay upperdir=/var/lib/docker/overlay2/...).
+                # the "-" separator come fstype, source, and super options.
+                # Probe ONLY the fs-root path and the super options (e.g.
+                # overlay upperdir=/var/lib/docker/overlay2/...): the fstype
+                # and SOURCE fields prove device provenance, not containment —
+                # a host root on an LVM volume group named "docker"
+                # (/dev/mapper/docker--vg-root) must not match.
                 try:
                     sep = fields.index("-")
-                    probe_fields = [fields[3]] + fields[sep + 1:]
+                    probe_fields = [fields[3]] + fields[sep + 3:]
                 except ValueError:
                     probe_fields = [fields[3]]
                 probe = " ".join(probe_fields)

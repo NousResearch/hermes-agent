@@ -499,6 +499,32 @@ class TestIsContainer:
         monkeypatch.setattr("builtins.open", _fake_open)
         assert is_container() is True
 
+    def test_lvm_docker_volume_group_root_is_not_container(self, monkeypatch, tmp_path):
+        """Review catch on #65060: the mount SOURCE proves device provenance,
+        not containment — a host whose root lives on an LVM volume group named
+        'docker' (/dev/mapper/docker--vg-root) must not be flagged."""
+        import builtins
+        self._reset_cache(monkeypatch)
+        monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        cgroup_file = tmp_path / "cgroup"
+        cgroup_file.write_text("0::/init.scope\n")
+        mountinfo_file = tmp_path / "mountinfo"
+        mountinfo_file.write_text(
+            "35 1 253:0 / / rw,relatime shared:1 - ext4 /dev/mapper/docker--vg-root rw\n"
+        )
+        _real_open = builtins.open
+
+        def _fake_open(p, *a, **kw):
+            if p == "/proc/1/cgroup":
+                return _real_open(str(cgroup_file), *a, **kw)
+            if p == "/proc/self/mountinfo":
+                return _real_open(str(mountinfo_file), *a, **kw)
+            return _real_open(p, *a, **kw)
+
+        monkeypatch.setattr("builtins.open", _fake_open)
+        assert is_container() is False
+
     def test_detects_rootless_podman_via_storage_root(self, monkeypatch, tmp_path):
         """Podman/CRI-O roots live under containers/storage (no 'podman'/'crio'
         in the path) — the root-mount check must still detect them even when

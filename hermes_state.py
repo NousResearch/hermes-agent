@@ -1783,6 +1783,18 @@ class SessionDB:
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique "
                 "ON sessions(title) WHERE title IS NOT NULL"
             )
+        except sqlite3.IntegrityError:
+            # Duplicate titles exist — deduplicate by keeping the newest row
+            cursor.execute(
+                "DELETE FROM sessions WHERE rowid NOT IN ("
+                "  SELECT MAX(rowid) FROM sessions"
+                "  WHERE title IS NOT NULL GROUP BY title"
+                ")"
+            )
+            cursor.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique "
+                "ON sessions(title) WHERE title IS NOT NULL"
+            )
         except sqlite3.OperationalError:
             pass  # Index already exists
 

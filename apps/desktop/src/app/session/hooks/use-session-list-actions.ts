@@ -74,6 +74,7 @@ interface UseSessionListActionsArgs {
  *  and the per-platform messaging slices. Returns the callbacks the controller
  *  wires into the sidebar and refresh effects. */
 export function useSessionListActions({ profileScope }: UseSessionListActionsArgs) {
+  const refreshMessagingSessionsRequestRef = useRef(0)
   const refreshSessionsRequestRef = useRef(0)
   const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
 
@@ -98,6 +99,9 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   // competes with local chats for the recents page budget. One combined fetch
   // seeds every platform; the sidebar splits the rows per source.
   const refreshMessagingSessions = useCallback(async () => {
+    const requestId = refreshMessagingSessionsRequestRef.current + 1
+    refreshMessagingSessionsRequestRef.current = requestId
+
     try {
       const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', sessionProfile, {
         excludeSources: MESSAGING_EXCLUDED_SOURCES
@@ -107,10 +111,12 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       // sources) — those stay in local recents, not a platform section.
       const rows = result.sessions.filter(s => isMessagingSource(s.source))
 
-      setMessagingSessions(prev => (sameCronSignature(prev, rows) ? prev : rows))
-      // Hit the cap → at least one platform may have more on disk than loaded,
-      // so platform sections offer their own per-platform "load more".
-      setMessagingTruncated(result.sessions.length >= MESSAGING_SECTION_LIMIT)
+      if (refreshMessagingSessionsRequestRef.current === requestId) {
+        setMessagingSessions(prev => (sameCronSignature(prev, rows) ? prev : rows))
+        // Hit the cap → at least one platform may have more on disk than loaded,
+        // so platform sections offer their own per-platform "load more".
+        setMessagingTruncated(result.sessions.length >= MESSAGING_SECTION_LIMIT)
+      }
     } catch {
       // Non-fatal: the messaging sections just stay empty/stale.
     }

@@ -129,6 +129,7 @@ import {
   useRepoWorktreeMap
 } from './projects'
 import {
+  shouldIncludeMessagingSession,
   shouldShowSessionSections,
   SidebarBlankState,
   SidebarPinnedEmptyState,
@@ -860,7 +861,7 @@ export function ChatSidebar({
     const bySource = new Map<string, SessionInfo[]>()
 
     for (const session of messagingSessions) {
-      if (!showAllProfiles && normalizeProfileKey(session.profile) !== profileScope) {
+      if (!shouldIncludeMessagingSession(profileScope, session.profile)) {
         continue
       }
 
@@ -893,7 +894,7 @@ export function ChatSidebar({
         }
       })
       .sort((a, b) => sessionTime(b.sessions[0]) - sessionTime(a.sessions[0]))
-  }, [messagingSessions, messagingPlatformTotals, messagingTruncated, profileScope, showAllProfiles])
+  }, [messagingSessions, messagingPlatformTotals, messagingTruncated, profileScope])
 
   // ALL-profiles view: one collapsible group per profile, color on the header
   // (not on every row). Default profile floats to the top, the rest alpha.

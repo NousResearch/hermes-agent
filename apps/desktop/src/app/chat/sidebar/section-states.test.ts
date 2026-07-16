@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
-import { shouldShowSessionSections } from './section-states'
+import { ALL_PROFILES } from '@/store/profile'
+
+import { shouldIncludeMessagingSession, shouldShowSessionSections } from './section-states'
 
 const emptySidebar = {
   hasCronJobs: false,
@@ -21,5 +23,16 @@ describe('shouldShowSessionSections', () => {
 
   it('uses the blank state only when every section is empty', () => {
     expect(shouldShowSessionSections(emptySidebar)).toBe(false)
+  })
+})
+
+describe('shouldIncludeMessagingSession', () => {
+  it('keeps rows when a persisted All Profiles scope falls back to one profile', () => {
+    expect(shouldIncludeMessagingSession(ALL_PROFILES, 'default')).toBe(true)
+  })
+
+  it('filters rows outside a concrete profile scope', () => {
+    expect(shouldIncludeMessagingSession('work', 'default')).toBe(false)
+    expect(shouldIncludeMessagingSession('work', 'work')).toBe(true)
   })
 })

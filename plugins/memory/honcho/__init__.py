@@ -256,6 +256,7 @@ class HonchoMemoryProvider(MemoryProvider):
 
         # B5: Cost-awareness turn counting and cadence
         self._turn_count = 0
+        self._query_rewrite_enabled = False
         self._injection_frequency = "every-turn"  # or "first-turn"
         self._context_cadence = 1   # minimum turns between context API calls
         self._dialectic_cadence = 1  # backwards-compat fallback; wizard writes 2 on new configs
@@ -361,6 +362,9 @@ class HonchoMemoryProvider(MemoryProvider):
             self._injection_frequency = cfg.injection_frequency
             self._context_cadence = cfg.context_cadence
             self._dialectic_cadence = cfg.dialectic_cadence
+            self._query_rewrite_enabled = cfg.query_rewrite
+            self._FIRST_TURN_BASE_TIMEOUT = cfg.first_turn_base_wait
+            self._FIRST_TURN_DIALECTIC_CAP = cfg.first_turn_dialectic_wait
             self._dialectic_depth = max(1, min(cfg.dialectic_depth, 3))
             self._dialectic_depth_levels = cfg.dialectic_depth_levels
             self._reasoning_heuristic = cfg.reasoning_heuristic
@@ -510,7 +514,7 @@ class HonchoMemoryProvider(MemoryProvider):
             except Exception as e:
                 logger.debug("Honcho context prewarm failed: %s", e)
 
-            if self._query_rewriter is None:
+            if self._query_rewriter is None or not self._query_rewrite_enabled:
                 _prewarm_query = (
                     "Summarize what you know about this user. "
                     "Focus on preferences, current projects, and working style."
@@ -1225,7 +1229,7 @@ class HonchoMemoryProvider(MemoryProvider):
         is_cold = not self._base_context_cache
         results: list[str] = []
         rewritten_query = ""
-        if use_query_rewrite and self._query_rewriter:
+        if use_query_rewrite and self._query_rewrite_enabled and self._query_rewriter:
             try:
                 rewritten_query = self._query_rewriter(query).strip()
             except Exception as exc:

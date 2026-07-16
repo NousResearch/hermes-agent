@@ -145,6 +145,17 @@ def _parse_int_config(host_val, root_val, default: int) -> int:
     return default
 
 
+def _parse_float_config(host_val, root_val, default: float) -> float:
+    """Parse a float config: host wins, then root, then default. Clamped ≥ 0."""
+    for val in (host_val, root_val):
+        if val is not None:
+            try:
+                return max(0.0, float(val))
+            except (ValueError, TypeError):
+                pass
+    return default
+
+
 def _parse_string_map(host_obj: dict, root_obj: dict, key: str) -> dict[str, str]:
     """Parse a string-to-string map with host-level whole-map override."""
     source = host_obj[key] if key in host_obj else root_obj.get(key)
@@ -368,6 +379,14 @@ class HonchoClientConfig:
     context_cadence: int = 1
     # Minimum turns between dialectic prefetch fires (supplement layer cadence)
     dialectic_cadence: int = 1
+    # Rewrite the latest user message into a retrieval query before dialectic.
+    # Off by default: adds one auxiliary LLM call per dialectic fire
+    # (model/timeout under auxiliary.memory_query_rewrite in config.yaml).
+    query_rewrite: bool = False
+    # Bounded synchronous waits on turn 1, in seconds. 0 disables the wait
+    # entirely (fully async first turn; context surfaces on later turns).
+    first_turn_base_wait: float = 3.0
+    first_turn_dialectic_wait: float = 2.0
     # Observation mode: legacy string shorthand ("directional" or "unified").
     # Kept for backward compat; granular per-peer booleans below are preferred.
     observation_mode: str = "directional"
@@ -626,6 +645,21 @@ class HonchoClientConfig:
                 host_block.get("dialecticCadence"),
                 raw.get("dialecticCadence"),
                 default=1,
+            ),
+            query_rewrite=_resolve_bool(
+                host_block.get("queryRewrite"),
+                raw.get("queryRewrite"),
+                default=False,
+            ),
+            first_turn_base_wait=_parse_float_config(
+                host_block.get("firstTurnBaseWait"),
+                raw.get("firstTurnBaseWait"),
+                default=3.0,
+            ),
+            first_turn_dialectic_wait=_parse_float_config(
+                host_block.get("firstTurnDialecticWait"),
+                raw.get("firstTurnDialecticWait"),
+                default=2.0,
             ),
             # Migration guard: existing configs without an explicit
             # observationMode keep the old "unified" default so users

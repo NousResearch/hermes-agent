@@ -2787,6 +2787,9 @@ class GatewaySlashCommandsMixin:
         # Apply approved writes against a fresh on-disk store (the gateway has
         # no long-lived agent; the store persists to the same MEMORY/USER.md).
         # load_on_disk_store() honors the user's configured char limits.
+        # Per-user profile scopes are recovered per record inside
+        # apply_memory_pending() from the staged payload, so one unscoped
+        # store here stays correct with memory.per_user_profiles on.
         store = load_on_disk_store()
 
         out = handle_pending_subcommand(

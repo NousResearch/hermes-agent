@@ -2191,6 +2191,22 @@ DEFAULT_CONFIG = {
         "write_approval": False,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
+        # Per-user USER.md profiles for multi-user gateway setups.
+        #   false (default) — one shared USER.md (legacy behaviour)
+        #   true            — the memory tool's "user" target maps to
+        #                     memories/users/<key>/USER.md per speaker;
+        #                     MEMORY.md stays shared by design.
+        "per_user_profiles": False,
+        # Optional registry mapping platform user ids to profile keys.
+        # Empty = <hermes_home>/data/users.json. Schema:
+        #   {"users": {"telegram:12345": {"key": "alice"},
+        #              "12345":          {"key": "alice"}}}
+        # A platform-qualified "<platform>:<id>" entry wins over a bare
+        # "<id>" one; unregistered ids get their own isolated scope.
+        "users_registry": "",
+        # Profile scope for sessions without a platform user_id (CLI,
+        # cron). Empty = those sessions keep the legacy shared USER.md.
+        "default_user_key": "",
         # External memory provider plugin (empty = built-in only).
         # Set to a provider name to activate: "openviking", "mem0",
         # "hindsight", "holographic", "retaindb", "byterover".

@@ -512,6 +512,10 @@ AUTHOR_MAP = {
     # teknium (multiple emails)
     "teknium1@gmail.com": "teknium1",
     "1920071390@campus.ouj.ac.jp": "zapabob",
+    "agent@agents-Mac-mini.local": "teknium1",
+    "git@hode.co.uk": "okisdev",
+    "jakub.wolniewicz@gmail.com": "frizikk",
+    "markvlcek@gmail.com": "MarkVLK",
     "ethie@nous": "ethernet8023",
     "justinccdev@gmail.com": "justinccdev",
     "pepelax@users.noreply.github.com": "pepelax",

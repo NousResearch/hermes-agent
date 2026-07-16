@@ -47,6 +47,11 @@ def _make_event(
     user_id: str = "u1",
     user_name: str | None = None,
     thread_id: str | None = None,
+    reply_to_message_id: str | None = None,
+    reply_to_text: str | None = None,
+    reply_to_author_id: str | None = None,
+    reply_to_author_name: str | None = None,
+    reply_to_is_own_message: bool = False,
 ) -> MessageEvent:
     source = SessionSource(
         platform=Platform.TELEGRAM,
@@ -61,6 +66,11 @@ def _make_event(
         message_type=MessageType.TEXT,
         source=source,
         message_id=f"msg-{text[:8]}",
+        reply_to_message_id=reply_to_message_id,
+        reply_to_text=reply_to_text,
+        reply_to_author_id=reply_to_author_id,
+        reply_to_author_name=reply_to_author_name,
+        reply_to_is_own_message=reply_to_is_own_message,
     )
 
 
@@ -260,5 +270,87 @@ def test_command_messages_bypass_debounce_even_in_queue_mode():
     adapter = _make_adapter()
     assert not adapter._is_queue_text_debounce_candidate(_make_event(""))
     assert not adapter._is_queue_text_debounce_candidate(_make_event("/stop"))
+
+
+@pytest.mark.asyncio
+async def test_queue_debounce_preserves_same_reply_context():
+    adapter = _make_adapter()
+    first = _make_event(
+        "one",
+        reply_to_message_id="reply-1",
+        reply_to_text="quoted",
+        reply_to_author_id="author-1",
+        reply_to_author_name="Author One",
+        reply_to_is_own_message=True,
+    )
+    session_key = build_session_key(first.source)
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    await adapter.handle_message(first)
+    await adapter.handle_message(
+        _make_event(
+            "two",
+            reply_to_message_id="reply-1",
+            reply_to_text="quoted",
+            reply_to_author_id="author-1",
+            reply_to_author_name="Author One",
+            reply_to_is_own_message=True,
+        )
+    )
+
+    merged = _debounced_event(adapter, session_key)
+    assert merged.text == "one\ntwo"
+    assert merged.message_id == "msg-two"
+    assert (
+        merged.reply_to_message_id,
+        merged.reply_to_text,
+        merged.reply_to_author_id,
+        merged.reply_to_author_name,
+        merged.reply_to_is_own_message,
+    ) == ("reply-1", "quoted", "author-1", "Author One", True)
+    adapter._discard_text_debounce(session_key)
+
+
+@pytest.mark.asyncio
+async def test_queue_debounce_splits_incompatible_reply_contexts():
+    adapter = _make_adapter()
+    first = _make_event(
+        "one",
+        reply_to_message_id="reply-1",
+        reply_to_text="first quote",
+        reply_to_author_id="author-1",
+        reply_to_author_name="Author One",
+    )
+    session_key = build_session_key(first.source)
+    adapter._active_sessions[session_key] = asyncio.Event()
+
+    await adapter.handle_message(first)
+    await adapter.handle_message(
+        _make_event(
+            "two",
+            reply_to_message_id="reply-2",
+            reply_to_text="second quote",
+            reply_to_author_id="author-2",
+            reply_to_author_name="Author Two",
+        )
+    )
+
+    pending = adapter._pending_messages[session_key]
+    queued = _debounced_event(adapter, session_key)
+    assert pending.text == "one"
+    assert (
+        pending.reply_to_message_id,
+        pending.reply_to_text,
+        pending.reply_to_author_id,
+        pending.reply_to_author_name,
+    ) == ("reply-1", "first quote", "author-1", "Author One")
+    assert queued.text == "two"
+    assert (
+        queued.reply_to_message_id,
+        queued.reply_to_text,
+        queued.reply_to_author_id,
+        queued.reply_to_author_name,
+    ) == ("reply-2", "second quote", "author-2", "Author Two")
+    adapter._discard_text_debounce(session_key)
 
 

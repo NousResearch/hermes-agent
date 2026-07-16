@@ -50,6 +50,7 @@ test.describe('mock backend gets past setup screen', () => {
 
         return !text.includes("Let's get you setup")
       },
+      undefined,
       { timeout: 30_000 },
     )
   })
@@ -75,6 +76,7 @@ test.describe('mock backend gets past setup screen', () => {
     // Verify the typed text appears in the DOM.
     await page.waitForFunction(
       () => (document.body.textContent ?? '').includes('hello mock backend'),
+      undefined,
       { timeout: 10_000 },
     )
   })

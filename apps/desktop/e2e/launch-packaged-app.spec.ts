@@ -71,6 +71,7 @@ test('boot progress overlay fades out or shows error state', async () => {
 
       return !bootIndicators.some((word) => lower.includes(word))
     },
+    undefined,
     { timeout: 60_000 },
   )
 })

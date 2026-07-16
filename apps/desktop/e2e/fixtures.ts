@@ -579,6 +579,7 @@ export async function waitForOnboarding(page: Page, timeoutMs = 60_000): Promise
         text.includes('Sign in')
       )
     },
+    undefined,
     { timeout: timeoutMs },
   )
 }
@@ -608,6 +609,7 @@ export async function waitForBootFailure(page: Page, timeoutMs = 60_000): Promis
         text.includes('Repair')
       )
     },
+    undefined,
     { timeout: timeoutMs },
   )
 }

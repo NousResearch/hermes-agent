@@ -8,11 +8,14 @@
  * on pixel-perfect matches.
  *
  * When a screenshot matches the baseline, nothing happens.  When it
- * differs, Playwright writes three images to the test's output dir:
+ * differs, this helper writes three images to the test's output dir:
  *   <name>-actual.png, <name>-expected.png, <name>-diff.png
  * These are picked up by the "Upload test results" artifact step.
  */
-import { type ElectronApplication, expect, type Page } from '@playwright/test'
+import fs from 'node:fs'
+import path from 'node:path'
+
+import { type ElectronApplication, type Page, test } from '@playwright/test'
 
 /** Fixed window dimensions for visual regression screenshots. */
 export const VISUAL_WINDOW_WIDTH = 1220
@@ -21,12 +24,12 @@ export const VISUAL_WINDOW_HEIGHT = 800
 export interface VisualSnapshotOptions {
   /** Snapshot name — defaults to the test title. */
   name?: string
-  /** Full page screenshot (default) vs. viewport-only. */
+  /** Full page screenshot vs. viewport-only (default). */
   fullPage?: boolean
   /** Timeout in ms. */
   timeout?: number
-  /** The Electron app handle — needed to force a fixed window size. */
-  app?: ElectronApplication
+  /** The Electron app handle — used to size and decode screenshots. */
+  app: ElectronApplication
 }
 
 /**
@@ -58,33 +61,85 @@ async function forceFixedSize(app: ElectronApplication): Promise<void> {
  */
 export async function expectVisualSnapshot(
   page: Page,
-  options: VisualSnapshotOptions = {},
+  options: VisualSnapshotOptions,
 ): Promise<void> {
   const { name, fullPage = false, timeout = 30_000, app } = options
 
   // Force the window to a fixed size right before the screenshot so it's
   // always comparable, regardless of WM resizing during the test.
-  if (app) {
-    await forceFixedSize(app)
-    // Give the renderer a moment to relayout after the resize.
-    await page.waitForTimeout(500)
-  }
+  await forceFixedSize(app)
+  // Give the renderer a moment to relayout after the resize.
+  await page.waitForTimeout(500)
 
   // Playwright appends a platform suffix (e.g. "-linux") and requires
   // a .png extension on the name argument.  Auto-append it if missing.
   const snapshotName = name ? (name.endsWith('.png') ? name : `${name}.png`) : undefined
 
-  try {
-    if (snapshotName) {
-      await expect(page).toHaveScreenshot(snapshotName, { fullPage, timeout })
-    } else {
-      await expect(page).toHaveScreenshot({ fullPage, timeout })
-    }
-  } catch (err) {
-    // Don't fail the test — just log that a diff was detected.
-    // The diff/actual/expected images are already written to the test
-    // output directory by Playwright for the CI workflow to pick up.
-    console.log(`[visual-diff] ${name ?? '(unnamed)'} — screenshot differs from baseline`)
-    console.log(`  ${err instanceof Error ? err.message.split('\n')[0] : String(err)}`)
+  const info = test.info()
+  const actual = await page.screenshot({ animations: 'disabled', caret: 'hide', fullPage, timeout })
+  const baselinePath = info.snapshotPath(snapshotName ?? `${info.title}.png`)
+  const outputName = (snapshotName ?? 'snapshot.png').replace(/\.png$/, '')
+
+  if (info.config.updateSnapshots === 'all' || info.config.updateSnapshots === 'changed') {
+    fs.mkdirSync(path.dirname(baselinePath), { recursive: true })
+    fs.writeFileSync(baselinePath, actual)
+    console.log(`[visual-baseline] updated ${baselinePath}`)
+    return
   }
+
+  if (!fs.existsSync(baselinePath)) {
+    fs.writeFileSync(info.outputPath(`${outputName}-actual.png`), actual)
+    console.log(`[visual-diff] ${name ?? '(unnamed)'} — no baseline available`)
+    return
+  }
+
+  const expected = fs.readFileSync(baselinePath)
+  const comparison = await app.evaluate(
+    ({ nativeImage }, images) => {
+      const actualImage = nativeImage.createFromBuffer(Buffer.from(images.actual, 'base64'))
+      const expectedImage = nativeImage.createFromBuffer(Buffer.from(images.expected, 'base64'))
+      const actualSize = actualImage.getSize()
+      const expectedSize = expectedImage.getSize()
+
+      if (actualSize.width !== expectedSize.width || actualSize.height !== expectedSize.height) {
+        return { mismatchRatio: 1, diff: images.actual }
+      }
+
+      const actualPixels = actualImage.toBitmap()
+      const expectedPixels = expectedImage.toBitmap()
+      const diffPixels = Buffer.alloc(actualPixels.length)
+      let mismatched = 0
+
+      for (let i = 0; i < actualPixels.length; i += 4) {
+        const different =
+          Math.abs(actualPixels[i] - expectedPixels[i]) > 51 ||
+          Math.abs(actualPixels[i + 1] - expectedPixels[i + 1]) > 51 ||
+          Math.abs(actualPixels[i + 2] - expectedPixels[i + 2]) > 51 ||
+          Math.abs(actualPixels[i + 3] - expectedPixels[i + 3]) > 51
+
+        if (different) {
+          mismatched++
+          diffPixels[i + 2] = 255
+        }
+        diffPixels[i + 3] = 255
+      }
+
+      return {
+        mismatchRatio: mismatched / (actualPixels.length / 4),
+        diff: nativeImage.createFromBitmap(diffPixels, actualSize).toPNG().toString('base64'),
+      }
+    },
+    { actual: actual.toString('base64'), expected: expected.toString('base64') },
+  )
+
+  if (comparison.mismatchRatio <= 0.01) {
+    return
+  }
+
+  fs.writeFileSync(info.outputPath(`${outputName}-actual.png`), actual)
+  fs.writeFileSync(info.outputPath(`${outputName}-expected.png`), expected)
+  fs.writeFileSync(info.outputPath(`${outputName}-diff.png`), Buffer.from(comparison.diff, 'base64'))
+  console.log(
+    `[visual-diff] ${name ?? '(unnamed)'} — ${(comparison.mismatchRatio * 100).toFixed(2)}% of pixels differ`,
+  )
 }

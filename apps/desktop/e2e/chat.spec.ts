@@ -60,6 +60,7 @@ test.describe('chat interaction with mock backend', () => {
 
         return (body.textContent ?? '').includes('Hello, can you hear me?')
       },
+      undefined,
       { timeout: 15_000 },
     )
 
@@ -79,6 +80,7 @@ test.describe('chat interaction with mock backend', () => {
 
         return text.includes('mock inference server') || text.includes('boot chain is working')
       },
+      undefined,
       { timeout: 60_000 },
     )
   })

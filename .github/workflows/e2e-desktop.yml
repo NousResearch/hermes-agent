@@ -70,7 +70,7 @@ jobs:
         id: restore-baselines
         uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
-          path: apps/desktop/e2e/__screenshots__
+          path: apps/desktop/e2e/*-snapshots
           key: visual-baselines-${{ github.ref_name }}
           restore-keys: |
             visual-baselines-main
@@ -155,7 +155,7 @@ jobs:
         if: github.ref_name == 'main' && always()
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
-          path: apps/desktop/e2e/__screenshots__
+          path: apps/desktop/e2e/*-snapshots
           key: visual-baselines-main
 
       # ── Upload Playwright report (HTML + traces) ──────────────────────

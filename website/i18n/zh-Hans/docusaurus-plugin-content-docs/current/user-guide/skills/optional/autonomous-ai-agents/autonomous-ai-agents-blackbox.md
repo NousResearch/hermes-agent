@@ -33,17 +33,12 @@ description: "将编码任务委托给 Blackbox AI CLI 代理"
 
 通过 Hermes 终端将编码任务委托给 [Blackbox AI](https://www.blackbox.ai/)。Blackbox 是一个多模型编码代理 CLI，可将任务分发给多个 LLM（Claude、Codex、Gemini、Blackbox Pro），并使用评判机制选出最佳实现。
 
-该 CLI 为[开源项目](https://github.com/blackboxaicode/cli)（GPL-3.0，TypeScript，fork 自 Gemini CLI），支持交互式会话、非交互式单次执行、检查点（checkpointing）、MCP 以及视觉模型切换。
+该 CLI 基于 GPL-3.0 许可证发布，支持交互式会话、非交互式单次执行、检查点（checkpointing）、MCP 以及视觉模型切换。
 
 ## 前置条件
 
 - 已安装 Node.js 20+
 - 已安装 Blackbox CLI：`npm install -g @blackboxai/cli`
-- 或从源码安装：
-  ```
-  git clone https://github.com/blackboxaicode/cli.git
-  cd cli && npm install && npm install -g .
-  ```
 - 从 [app.blackbox.ai/dashboard](https://app.blackbox.ai/dashboard) 获取 API 密钥
 - 配置：运行 `blackbox configure` 并输入 API 密钥
 - 在终端调用中使用 `pty=true` — Blackbox CLI 是交互式终端应用

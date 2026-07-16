@@ -1442,6 +1442,15 @@ class GatewaySlashCommandsMixin:
 
         raw_args = event.get_command_args().strip()
 
+        # Strip Markdown link formatting injected by platforms (e.g. Feishu
+        # auto-links URLs in "post" messages): [label](url) → label
+        # Also unescape backslash-escaped chars from _escape_markdown_text().
+        raw_args = re.sub(
+            r"\[([^\]]+)\]\([^)]+\)",
+            lambda m: m.group(1).replace("\\", ""),
+            raw_args,
+        )
+
         # Parse --provider, --global, --session, and --refresh flags
         (
             model_input,

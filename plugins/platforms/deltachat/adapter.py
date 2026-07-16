@@ -768,9 +768,12 @@ class DeltaChatAdapter(BasePlatformAdapter):
         if message.get("isInfo") or (not text and not file_path):
             return
 
-        sender = (
-            message.get("sender") if isinstance(message.get("sender"), dict) else {}
-        )
+        sender_id = int(message.get("fromId") or 0)
+        if sender_id <= 0:
+            return
+        sender = await rpc.call("get_contact", self._account_id, sender_id)
+        if not isinstance(sender, dict):
+            return
         sender_address = str(sender.get("address") or "").strip().lower()
         if not sender_address or sender_address.casefold() == self.email.casefold():
             return

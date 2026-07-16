@@ -157,12 +157,14 @@ def test_inbound_dm_builds_event_then_marks_message_seen():
         "get_message": {
             "id": 91,
             "chatId": 42,
+            "fromId": 33,
             "text": "hello",
             "timestamp": 1_700_000_000,
-            "sender": {
-                "address": "alice@example.org",
-                "displayName": "Alice",
-            },
+        },
+        "get_contact": {
+            "id": 33,
+            "address": "alice@example.org",
+            "displayName": "Alice",
         },
         "get_full_chat_by_id": {
             "id": 42,
@@ -184,6 +186,8 @@ def test_inbound_dm_builds_event_then_marks_message_seen():
     assert event.source.platform.value == "deltachat"
     assert event.source.chat_id == "42"
     assert event.source.user_id == "alice@example.org"
+    assert event.source.user_name == "Alice"
+    assert ("get_contact", (7, 33), 30.0) in adapter._rpc.calls
     methods = [call[0] for call in adapter._rpc.calls]
     assert methods[-2:] == ["accept_chat", "markseen_msgs"]
 
@@ -203,18 +207,23 @@ def test_group_requires_mention_and_strips_it_before_dispatch():
         1: {
             "id": 1,
             "chatId": 55,
+            "fromId": 33,
             "text": "general chatter",
-            "sender": {"address": "alice@example.org"},
         },
         2: {
             "id": 2,
             "chatId": 55,
+            "fromId": 33,
             "text": "@hermes, summarize this",
-            "sender": {"address": "alice@example.org"},
         },
     }
     adapter._rpc = FakeRPC({
         "get_message": lambda _account_id, message_id: messages[message_id],
+        "get_contact": {
+            "id": 33,
+            "address": "alice@example.org",
+            "displayName": "Alice",
+        },
         "get_full_chat_by_id": {
             "id": 55,
             "name": "Project",
@@ -395,12 +404,13 @@ def test_inbound_attachment_is_copied_to_hermes_media_cache(tmp_path, monkeypatc
         "get_message": {
             "id": 92,
             "chatId": 42,
+            "fromId": 33,
             "text": "",
             "file": str(attachment),
             "fileName": "report.txt",
             "fileMime": "text/plain",
-            "sender": {"address": "alice@example.org"},
         },
+        "get_contact": {"id": 33, "address": "alice@example.org"},
         "get_full_chat_by_id": {
             "id": 42,
             "name": "Alice",

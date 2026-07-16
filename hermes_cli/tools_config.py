@@ -116,7 +116,12 @@ def gui_toolset_label(label: str) -> str:
 # `hermes tools` → X (Twitter) Search setup walks users through credential
 # setup. The tool's check_fn means the schema still won't appear to the
 # model if the credential later goes missing or expires.
-_DEFAULT_OFF_TOOLSETS = {"homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search"}
+#
+# Reasoning effort is opt-in: it is deliberately NOT in _HERMES_CORE_TOOLS
+# (a new default core schema entry is permanent footprint on every request —
+# see AGENTS.md footprint ladder), so users enable it per platform via
+# `hermes tools` → Reasoning Effort.
+_DEFAULT_OFF_TOOLSETS = {"homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search", "reasoning"}
 
 
 def _xai_credentials_present() -> bool:

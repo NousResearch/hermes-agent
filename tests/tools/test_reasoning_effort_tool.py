@@ -100,3 +100,50 @@ class TestReasoningEffortTool:
         entry = registry.get_entry("reasoning_effort")
         assert entry is not None
         assert entry.toolset == "reasoning"
+
+
+class TestOptInFootprint:
+    """reasoning_effort is opt-in — zero default core-schema footprint.
+
+    Review #63316 (toolsets.py thread): core tools are never deferred by
+    tool_search, so membership in _HERMES_CORE_TOOLS is a permanent schema
+    cost on every default platform request. The tool must stay out of the
+    core bundle and off by default; users enable it via `hermes tools` →
+    Reasoning Effort.
+    """
+
+    def test_not_in_core_tools(self):
+        from toolsets import _HERMES_CORE_TOOLS
+
+        assert "reasoning_effort" not in _HERMES_CORE_TOOLS
+
+    def test_reasoning_toolset_off_by_default(self):
+        from hermes_cli.tools_config import _DEFAULT_OFF_TOOLSETS
+
+        assert "reasoning" in _DEFAULT_OFF_TOOLSETS
+
+    def test_reasoning_toolset_configurable(self):
+        from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS
+
+        assert any(key == "reasoning" for key, _, _ in CONFIGURABLE_TOOLSETS)
+
+    def test_unconfigured_platform_resolution_excludes_reasoning(self):
+        """Default (no saved toolset list) platform resolution must not
+        enable the reasoning toolset."""
+        from hermes_cli.tools_config import _get_platform_tools
+
+        enabled = _get_platform_tools(
+            {}, "cli", include_default_mcp_servers=False
+        )
+        assert "reasoning" not in enabled
+
+    def test_explicit_opt_in_enables_reasoning(self):
+        """A user-saved toolset list naming `reasoning` must survive
+        resolution (explicit opt-ins are never stripped by default-off)."""
+        from hermes_cli.tools_config import _get_platform_tools
+
+        config = {"platform_toolsets": {"cli": ["hermes-cli", "reasoning"]}}
+        enabled = _get_platform_tools(
+            config, "cli", include_default_mcp_servers=False
+        )
+        assert "reasoning" in enabled

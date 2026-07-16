@@ -1118,9 +1118,15 @@ class PluginContext:
                 f"Pick a plugin-namespaced key (e.g. '{self.manifest.name}_{key}')."
             )
 
+        # Owner is the plugin's canonical id (``key or name``) — the same id
+        # ``ctx.llm`` is bound to (PluginLlm._plugin_id) — so the task trust
+        # gate in agent/plugin_llm.py can match ownership. For the common
+        # case where a manifest sets no explicit ``key`` this equals the name.
+        owner_id = self.manifest.key or self.manifest.name
+
         # Reject duplicate registrations across plugins
         existing = self._manager._aux_tasks.get(key)
-        if existing is not None and existing.get("plugin") != self.manifest.name:
+        if existing is not None and existing.get("plugin") != owner_id:
             raise ValueError(
                 f"Plugin '{self.manifest.name}' cannot register auxiliary task "
                 f"{key!r} — already registered by plugin "
@@ -1146,7 +1152,7 @@ class PluginContext:
             "display_name": display_name,
             "description": description,
             "defaults": merged_defaults,
-            "plugin": self.manifest.name,
+            "plugin": owner_id,
         }
         logger.debug(
             "Plugin %s registered auxiliary task: %s (%s)",

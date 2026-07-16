@@ -46,11 +46,20 @@ override knobs (``provider=``, ``model=``, ``agent_id=``,
             allowed_models:    [openai/gpt-4o-mini]       # optional
             allow_agent_id_override: false
             allow_profile_override: false
+            allow_task_override: false   # borrow the host's built-in aux tasks
 
 Untrusted plugins still get the default surface — they just can't
 steer provider, model, agent, or auth-profile selection. The trust
 gate is fail-closed: a missing config block means "no overrides,"
 not "anything goes."
+
+The ``task=`` kwarg on the ``complete``/``acomplete`` family routes a
+call through a plugin-registered auxiliary model slot
+(``ctx.register_auxiliary_task``). A plugin may always name a slot it
+registered itself; ``allow_task_override`` additionally lets it route
+through the host's *built-in* auxiliary tasks. A foreign or unknown key
+is rejected loudly (error + logged warning), never silently downgraded
+to the main model.
 
 Backed by :func:`agent.auxiliary_client.call_llm`, which already
 handles every provider, fallback chain, and per-task override Hermes
@@ -173,6 +182,11 @@ class _TrustPolicy:
     allow_any_model: bool = False  # True when allowed_models == ["*"]
     allow_agent_id_override: bool = False
     allow_profile_override: bool = False
+    # Gates routing a call through a *built-in* auxiliary task slot via
+    # ``ctx.llm.complete(task=...)``. A plugin may always route through a
+    # slot it registered itself; this flag additionally lets it borrow the
+    # host's built-in aux tasks. Off by default (fail-closed).
+    allow_task_override: bool = False
 
 
 def _normalize_ref(raw: str) -> str:
@@ -243,6 +257,7 @@ def _resolve_trust_policy(plugin_id: str) -> _TrustPolicy:
         allow_any_model=allow_any_model,
         allow_agent_id_override=bool(llm_cfg.get("allow_agent_id_override", False)),
         allow_profile_override=bool(llm_cfg.get("allow_profile_override", False)),
+        allow_task_override=bool(llm_cfg.get("allow_task_override", False)),
     )
 
 
@@ -327,6 +342,102 @@ def _check_overrides(
         final_profile = requested_profile.strip()
 
     return final_provider, final_model, requested_agent_id, final_profile
+
+
+def _resolve_task_ownership(plugin_id: str) -> tuple[frozenset, frozenset]:
+    """Return ``(owned_keys, builtin_keys)`` for the task trust gate.
+
+    ``owned_keys`` are auxiliary-task keys ``plugin_id`` registered itself
+    via ``ctx.register_auxiliary_task``; ``builtin_keys`` are the host's
+    reserved auxiliary tasks. Both imports are lazy so plugin discovery
+    doesn't hit a circular import at module load. A registry that can't be
+    read yields empty sets, which fails the gate closed (unknown → rejected).
+
+    Ownership matches on the same canonical id ``ctx.llm`` is bound to
+    (``manifest.key or manifest.name``); ``register_auxiliary_task`` stores
+    that same id as the entry's ``plugin`` owner.
+    """
+    owned: set = set()
+    builtin: set = set()
+    try:
+        from hermes_cli.plugins import get_plugin_auxiliary_tasks
+
+        for entry in get_plugin_auxiliary_tasks():
+            if entry.get("plugin") == plugin_id:
+                key = entry.get("key")
+                if isinstance(key, str) and key:
+                    owned.add(key)
+    except Exception:  # pragma: no cover — registry unavailable
+        pass
+    try:
+        from hermes_cli.main import _AUX_TASKS
+
+        builtin = {k for k, _name, _desc in _AUX_TASKS}
+    except Exception:  # pragma: no cover — main import failure
+        pass
+    return frozenset(owned), frozenset(builtin)
+
+
+def _check_task(
+    policy: _TrustPolicy,
+    *,
+    plugin_id: str,
+    requested_task: Optional[str],
+) -> Optional[str]:
+    """Validate a plugin's requested auxiliary ``task`` routing key.
+
+    Returns the normalized key to route through, or ``None`` for the
+    default main-model path. Resolution:
+
+    * unset / ``""`` / ``"auto"`` → ``None`` (today's behavior, byte-for-byte).
+    * a key the plugin registered itself → allowed.
+    * a built-in auxiliary key → allowed only when
+      ``plugins.entries.<id>.llm.allow_task_override`` is true.
+    * anything else (foreign or unknown) → **rejected loudly**.
+
+    A foreign/unknown key raises :class:`PluginLlmTrustError` and logs a
+    warning naming the offending plugin and key. It is deliberately *not*
+    silently downgraded to ``auto``: silent fallback masks the
+    misconfiguration and could route the call to the main model the user
+    may have steered elsewhere on purpose (round-2 design correction,
+    tracked in #64182 / #64174).
+    """
+    if not requested_task:
+        return None
+    task = requested_task.strip()
+    if not task or task.lower() == "auto":
+        return None
+
+    owned, builtin = _resolve_task_ownership(plugin_id)
+    if task in owned:
+        return task
+    if task in builtin:
+        if policy.allow_task_override:
+            return task
+        logger.warning(
+            "plugin_llm task routing denied: plugin %r requested built-in "
+            "auxiliary task %r without plugins.entries.%s.llm.allow_task_override",
+            plugin_id,
+            task,
+            plugin_id,
+        )
+        raise PluginLlmTrustError(
+            f"Plugin {plugin_id!r} cannot route through the built-in auxiliary "
+            f"task {task!r} (set plugins.entries.{plugin_id}.llm."
+            f"allow_task_override to true to allow)."
+        )
+    logger.warning(
+        "plugin_llm task routing denied: plugin %r requested auxiliary task %r "
+        "it did not register",
+        plugin_id,
+        task,
+    )
+    raise PluginLlmTrustError(
+        f"Plugin {plugin_id!r} cannot route through auxiliary task {task!r} — a "
+        f"plugin may only pass a task key it registered itself via "
+        f"ctx.register_auxiliary_task() (or a built-in key when plugins.entries."
+        f"{plugin_id}.llm.allow_task_override is true)."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -631,6 +742,7 @@ class PluginLlm:
         agent_id: Optional[str] = None,
         profile: Optional[str] = None,
         purpose: Optional[str] = None,
+        task: Optional[str] = None,
     ) -> PluginLlmCompleteResult:
         """Run a host-owned chat completion against the user's active model.
 
@@ -640,8 +752,15 @@ class PluginLlm:
         + ``model.model``). Each is independently gated by
         ``plugins.entries.<id>.llm.allow_*_override`` (see module
         docstring).
+
+        ``task`` optionally routes the call through a plugin-registered
+        auxiliary model slot (``ctx.register_auxiliary_task``): unset or
+        ``"auto"`` keeps today's main-model behavior, a slot the plugin
+        registered itself resolves through ``auxiliary.<task>`` config,
+        and a foreign/unknown key is rejected (see :func:`_check_task`).
         """
         policy = self._policy_loader(self._plugin_id)
+        eff_task = _check_task(policy, plugin_id=self._plugin_id, requested_task=task)
         eff_provider, eff_model, eff_agent, eff_profile = _check_overrides(
             policy,
             requested_provider=provider,
@@ -657,6 +776,7 @@ class PluginLlm:
             temperature=temperature,
             max_tokens=max_tokens,
             timeout=timeout,
+            task=eff_task,
         )
         text = _extract_text(response)
         usage = _extract_usage(response)
@@ -670,13 +790,14 @@ class PluginLlm:
                 "plugin_id": self._plugin_id,
                 "purpose": purpose or "",
                 "profile": eff_profile or "",
+                "task": eff_task or "",
             },
         )
         logger.info(
-            "plugin_llm.complete plugin=%s provider=%s model=%s purpose=%s "
-            "tokens=%d",
-            self._plugin_id, real_provider, real_model, purpose or "",
-            usage.total_tokens,
+            "plugin_llm.complete plugin=%s provider=%s model=%s task=%s "
+            "purpose=%s tokens=%d",
+            self._plugin_id, real_provider, real_model, eff_task or "",
+            purpose or "", usage.total_tokens,
         )
         return result
 
@@ -697,6 +818,7 @@ class PluginLlm:
         agent_id: Optional[str] = None,
         profile: Optional[str] = None,
         purpose: Optional[str] = None,
+        task: Optional[str] = None,
     ) -> PluginLlmStructuredResult:
         """Run a bounded host-owned structured completion.
 
@@ -709,6 +831,9 @@ class PluginLlm:
         Validation requires the optional ``jsonschema`` package. When it
         isn't installed, JSON mode still works but schema enforcement is
         skipped with a debug log.
+
+        ``task`` routes through a plugin-registered auxiliary slot (see
+        :meth:`complete`).
         """
         if not instructions or not instructions.strip():
             raise ValueError("complete_structured requires non-empty instructions")
@@ -716,6 +841,7 @@ class PluginLlm:
             raise ValueError("complete_structured requires at least one input block")
 
         policy = self._policy_loader(self._plugin_id)
+        eff_task = _check_task(policy, plugin_id=self._plugin_id, requested_task=task)
         eff_provider, eff_model, eff_agent, eff_profile = _check_overrides(
             policy,
             requested_provider=provider,
@@ -743,6 +869,7 @@ class PluginLlm:
             max_tokens=max_tokens,
             timeout=timeout,
             extra_body=extra_body,
+            task=eff_task,
         )
         text = _extract_text(response)
         usage = _extract_usage(response)
@@ -762,13 +889,14 @@ class PluginLlm:
                 "purpose": purpose or "",
                 "profile": eff_profile or "",
                 "schema_name": schema_name or "",
+                "task": eff_task or "",
             },
         )
         logger.info(
             "plugin_llm.complete_structured plugin=%s provider=%s model=%s "
-            "purpose=%s content_type=%s tokens=%d",
-            self._plugin_id, real_provider, real_model, purpose or "",
-            content_type, usage.total_tokens,
+            "task=%s purpose=%s content_type=%s tokens=%d",
+            self._plugin_id, real_provider, real_model, eff_task or "",
+            purpose or "", content_type, usage.total_tokens,
         )
         return result
 
@@ -786,9 +914,11 @@ class PluginLlm:
         agent_id: Optional[str] = None,
         profile: Optional[str] = None,
         purpose: Optional[str] = None,
+        task: Optional[str] = None,
     ) -> PluginLlmCompleteResult:
         """Async sibling of :meth:`complete`."""
         policy = self._policy_loader(self._plugin_id)
+        eff_task = _check_task(policy, plugin_id=self._plugin_id, requested_task=task)
         eff_provider, eff_model, eff_agent, eff_profile = _check_overrides(
             policy,
             requested_provider=provider,
@@ -804,6 +934,7 @@ class PluginLlm:
             temperature=temperature,
             max_tokens=max_tokens,
             timeout=timeout,
+            task=eff_task,
         )
         text = _extract_text(response)
         usage = _extract_usage(response)
@@ -817,6 +948,7 @@ class PluginLlm:
                 "plugin_id": self._plugin_id,
                 "purpose": purpose or "",
                 "profile": eff_profile or "",
+                "task": eff_task or "",
             },
         )
 
@@ -837,6 +969,7 @@ class PluginLlm:
         agent_id: Optional[str] = None,
         profile: Optional[str] = None,
         purpose: Optional[str] = None,
+        task: Optional[str] = None,
     ) -> PluginLlmStructuredResult:
         """Async sibling of :meth:`complete_structured`."""
         if not instructions or not instructions.strip():
@@ -845,6 +978,7 @@ class PluginLlm:
             raise ValueError("acomplete_structured requires at least one input block")
 
         policy = self._policy_loader(self._plugin_id)
+        eff_task = _check_task(policy, plugin_id=self._plugin_id, requested_task=task)
         eff_provider, eff_model, eff_agent, eff_profile = _check_overrides(
             policy,
             requested_provider=provider,
@@ -870,6 +1004,7 @@ class PluginLlm:
             max_tokens=max_tokens,
             timeout=timeout,
             extra_body=extra_body,
+            task=eff_task,
         )
         text = _extract_text(response)
         usage = _extract_usage(response)
@@ -889,6 +1024,7 @@ class PluginLlm:
                 "purpose": purpose or "",
                 "profile": eff_profile or "",
                 "schema_name": schema_name or "",
+                "task": eff_task or "",
             },
         )
 
@@ -927,10 +1063,15 @@ class PluginLlm:
         max_tokens: Optional[int],
         timeout: Optional[float],
         extra_body: Optional[Dict[str, Any]] = None,
+        task: Optional[str] = None,
     ) -> tuple[str, str, Any]:
         """Invoke the host's ``call_llm``. Lazy-imports
         ``agent.auxiliary_client`` to avoid circular deps at plugin
-        discovery time."""
+        discovery time.
+
+        ``task`` (already trust-checked by the caller) routes through the
+        matching ``auxiliary.<task>`` slot; ``None`` keeps the main model.
+        """
         if self._sync_caller is not None:
             return self._sync_caller(
                 messages=messages,
@@ -941,13 +1082,14 @@ class PluginLlm:
                 max_tokens=max_tokens,
                 timeout=timeout,
                 extra_body=extra_body,
+                task=task,
             )
         from agent.auxiliary_client import call_llm
         merged_extra = dict(extra_body or {})
         if profile_override:
             merged_extra.setdefault("metadata", {})["auth_profile"] = profile_override
         response = call_llm(
-            task=None,
+            task=task,
             provider=provider_override,
             model=model_override,
             messages=messages,
@@ -974,6 +1116,7 @@ class PluginLlm:
         max_tokens: Optional[int],
         timeout: Optional[float],
         extra_body: Optional[Dict[str, Any]] = None,
+        task: Optional[str] = None,
     ) -> tuple[str, str, Any]:
         if self._async_caller is not None:
             return await self._async_caller(
@@ -985,13 +1128,14 @@ class PluginLlm:
                 max_tokens=max_tokens,
                 timeout=timeout,
                 extra_body=extra_body,
+                task=task,
             )
         from agent.auxiliary_client import async_call_llm
         merged_extra = dict(extra_body or {})
         if profile_override:
             merged_extra.setdefault("metadata", {})["auth_profile"] = profile_override
         response = await async_call_llm(
-            task=None,
+            task=task,
             provider=provider_override,
             model=model_override,
             messages=messages,

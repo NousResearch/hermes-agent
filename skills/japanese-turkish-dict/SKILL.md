@@ -21,7 +21,7 @@ Arama URL kalıbı: `https://japoncaturkcesozluk.vaneralper.com/?q=<sözcük>`
 
 Kullanıcı bir kelime veya ifade sormak istediğinde:
 
-1. `WebFetch` aracıyla `https://japoncaturkcesozluk.vaneralper.com/?q=<kelime>` adresini çek
+1. `web_extract` aracıyla `https://japoncaturkcesozluk.vaneralper.com/?q=<kelime>` adresini çek
 2. Sonuçları kullanıcıya düzenli biçimde sun
 
 Kullanıcı daha fazla sonuç isterse sayfalama parametresiyle tekrar çek:  

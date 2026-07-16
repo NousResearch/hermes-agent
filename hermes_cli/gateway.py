@@ -2745,6 +2745,27 @@ def _runtime_code_root_status() -> dict[str, Path | bool | None]:
     }
 
 
+def _service_definition_runtime_status(currentness_check):
+    """Evaluate runtime provenance before generating a service definition.
+
+    A configured/imported mismatch is a distinct deployment state, not an
+    invalid declaration. Skip currentness generation in that state because the
+    generator deliberately fails closed on the same mismatch.
+    """
+    try:
+        runtime_info = _runtime_code_root_status()
+    except (ValueError, RuntimeError) as exc:
+        return None, False, str(exc)
+
+    if runtime_info["configured"] is not None and not runtime_info["matches"]:
+        return runtime_info, False, None
+
+    try:
+        return runtime_info, currentness_check(), None
+    except (ValueError, RuntimeError) as exc:
+        return runtime_info, False, str(exc)
+
+
 def _require_runtime_code_root_match() -> Path | None:
     """Fail closed when service generation runs from an unapproved code tree."""
     info = _runtime_code_root_status()
@@ -2869,7 +2890,9 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         # the long-standing system-service behavior of anchoring cwd at the
         # target user's stable HERMES_HOME rather than a caller checkout.
         if configured_runtime_root is not None:
-            working_dir = _remap_path_for_user(working_dir, home_dir)
+            # runtime.code_root is an exact deployment contract. Do not silently
+            # reinterpret a home-relative source tree for another service user.
+            working_dir = str(configured_runtime_root)
         else:
             working_dir = (
                 str(hermes_home)
@@ -3551,14 +3574,11 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
         print_legacy_unit_warning()
         print()
 
-    runtime_config_error = None
-    try:
-        runtime_info = _runtime_code_root_status()
-        definition_current = systemd_unit_is_current(system=system)
-    except (ValueError, RuntimeError) as exc:
-        runtime_info = None
-        definition_current = False
-        runtime_config_error = str(exc)
+    runtime_info, definition_current, runtime_config_error = (
+        _service_definition_runtime_status(
+            lambda: systemd_unit_is_current(system=system)
+        )
+    )
 
     if not definition_current:
         print("⚠ Installed gateway service definition is outdated")
@@ -4611,14 +4631,9 @@ def launchd_status(deep: bool = False):
 
     # ── Report ──
     print(f"Launchd plist: {plist_path}")
-    runtime_config_error = None
-    try:
-        runtime_info = _runtime_code_root_status()
-        definition_current = launchd_plist_is_current()
-    except (ValueError, RuntimeError) as exc:
-        runtime_info = None
-        definition_current = False
-        runtime_config_error = str(exc)
+    runtime_info, definition_current, runtime_config_error = (
+        _service_definition_runtime_status(launchd_plist_is_current)
+    )
 
     if definition_current:
         print("✓ Service definition matches the current Hermes install")

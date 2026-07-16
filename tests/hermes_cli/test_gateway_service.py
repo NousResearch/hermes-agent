@@ -563,6 +563,14 @@ class TestGeneratedSystemdUnits:
             "_hermes_home_for_target_user",
             lambda home: "/home/alice/.hermes",
         )
+        original_remap = gateway_cli._remap_path_for_user
+
+        def guarded_remap(path, home_dir):
+            if Path(path).resolve() == runtime_root.resolve():
+                raise AssertionError("configured runtime root must not be remapped")
+            return original_remap(path, home_dir)
+
+        monkeypatch.setattr(gateway_cli, "_remap_path_for_user", guarded_remap)
 
         unit = gateway_cli.generate_systemd_unit(system=True, run_as_user="alice")
 
@@ -1823,7 +1831,13 @@ class TestGatewaySystemServiceRouting:
             return runtime_status
 
         monkeypatch.setattr(gateway_cli, "_runtime_code_root_status", runtime_info)
-        monkeypatch.setattr(gateway_cli, "systemd_unit_is_current", lambda system=False: True)
+
+        def should_not_generate_definition(system=False):
+            raise AssertionError("mismatch/invalid config must skip service generation")
+
+        monkeypatch.setattr(
+            gateway_cli, "systemd_unit_is_current", should_not_generate_definition
+        )
         monkeypatch.setattr(gateway_cli, "_runtime_health_lines", lambda: [])
         monkeypatch.setattr(gateway_cli, "_read_systemd_unit_properties", lambda system=False: {})
         monkeypatch.setattr(gateway_cli, "get_systemd_linger_status", lambda: (True, ""))
@@ -3699,6 +3713,27 @@ class TestServiceWorkingDirIsStable:
         assert info["configured"] == runtime_root.resolve()
         assert info["imported"] == runtime_root.resolve()
         assert info["matches"] is True
+
+    def test_service_definition_status_preserves_mismatch_without_generation(self, monkeypatch):
+        runtime_info = {
+            "configured": Path("/opt/hermes-runtime"),
+            "imported": Path("/srv/hermes"),
+            "matches": False,
+        }
+        monkeypatch.setattr(
+            gateway_cli, "_runtime_code_root_status", lambda: runtime_info
+        )
+
+        def should_not_generate():
+            raise AssertionError("mismatch must skip service definition generation")
+
+        info, current, error = gateway_cli._service_definition_runtime_status(
+            should_not_generate
+        )
+
+        assert info == runtime_info
+        assert current is False
+        assert error is None
 
     def test_service_generation_refuses_wrong_imported_code_root(self, tmp_path, monkeypatch):
         runtime_root = tmp_path / "runtime" / "mission-ctrl"

@@ -17,6 +17,7 @@ Key design decisions:
 import asyncio
 import json
 import logging
+import os
 import random
 import re
 import sqlite3
@@ -1061,6 +1062,78 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update AFTER UPDATE ON message
 END;
 """
 
+# ── FTS v2: unified CJK-bigram index ──
+# One FTS5 table using the custom "cjk_unicode61" tokenizer (source in
+# native/fts5_cjk/, built to ~/.hermes/lib/libfts5_cjk.so) replaces the
+# unicode61 + trigram + LIKE three-way routing. unicode61 indexes a CJK run
+# as ONE token, so 2-char Korean queries (일본, 구글, 우리 ...) could never
+# match and fell through to a LIKE full-table scan measured at 3-6s per
+# query. The wrapper re-emits CJK runs as overlapping character bigrams,
+# giving exact substring semantics down to 2 chars at index speed.
+#
+# The table is created by scripts/fts_v2_migrate.py (online backfill), NOT
+# by _init_schema — a DB only carries v2 triggers after an operator ran the
+# migration on a host whose SessionDB can load the tokenizer. Columns stay
+# separate (vs the v1 concatenation) so snippets and future per-column
+# queries work; triggers are scoped to content-bearing columns so flag-only
+# UPDATEs (active/compacted flips) no longer re-tokenize whole messages.
+FTS_V2_SQL = """
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_v2 USING fts5(
+    content,
+    tool_name,
+    tool_calls,
+    tokenize='cjk_unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS messages_fts_v2_insert AFTER INSERT ON messages BEGIN
+    INSERT INTO messages_fts_v2(rowid, content, tool_name, tool_calls) VALUES (
+        new.id, COALESCE(new.content, ''), COALESCE(new.tool_name, ''), COALESCE(new.tool_calls, '')
+    );
+END;
+
+CREATE TRIGGER IF NOT EXISTS messages_fts_v2_delete AFTER DELETE ON messages BEGIN
+    DELETE FROM messages_fts_v2 WHERE rowid = old.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS messages_fts_v2_update AFTER UPDATE OF content, tool_name, tool_calls ON messages BEGIN
+    DELETE FROM messages_fts_v2 WHERE rowid = old.id;
+    INSERT INTO messages_fts_v2(rowid, content, tool_name, tool_calls) VALUES (
+        new.id, COALESCE(new.content, ''), COALESCE(new.tool_name, ''), COALESCE(new.tool_calls, '')
+    );
+END;
+"""
+
+_FTS_V2_TRIGGERS = (
+    "messages_fts_v2_insert",
+    "messages_fts_v2_delete",
+    "messages_fts_v2_update",
+)
+
+
+def fts5_cjk_so_path() -> Path:
+    """Location of the cjk_unicode61 loadable extension."""
+    env = os.getenv("HERMES_FTS5_CJK_SO")
+    if env:
+        return Path(env).expanduser()
+    return get_hermes_home() / "lib" / "libfts5_cjk.so"
+
+
+def load_fts5_cjk_extension(conn: sqlite3.Connection) -> bool:
+    """Best-effort load of the cjk_unicode61 tokenizer into ``conn``."""
+    path = fts5_cjk_so_path()
+    if not path.exists():
+        return False
+    try:
+        conn.enable_load_extension(True)
+        try:
+            conn.load_extension(str(path))
+        finally:
+            conn.enable_load_extension(False)
+        return True
+    except Exception:
+        logger.warning("fts5_cjk extension load failed (%s)", path, exc_info=True)
+        return False
+
 
 class SessionDB:
     """
@@ -1114,6 +1187,11 @@ class SessionDB:
         # self._lock. See _read_ctx().
         self._read_local = threading.local()
         self._wal_active = False
+        # FTS v2 (cjk_unicode61 bigram index). _fts_cjk_loaded: tokenizer
+        # extension present on the writer connection; _fts_v2_ready: the v2
+        # table + triggers exist and are queryable. See _probe_fts_v2().
+        self._fts_cjk_loaded = False
+        self._fts_v2_ready = False
         self._write_count = 0
         # One-shot guard for the runtime FTS rebuild recovery on the write
         # path. A corrupt FTS shadow table makes EVERY message write raise
@@ -1165,7 +1243,9 @@ class SessionDB:
                     apply_wal_with_fallback(self._conn, db_label="state.db") == "wal"
                 )
                 self._conn.execute("PRAGMA foreign_keys=ON")
+                self._fts_cjk_loaded = load_fts5_cjk_extension(self._conn)
                 self._init_schema()
+                self._fts_v2_ready = self._probe_fts_v2()
 
             try:
                 _connect_and_init()
@@ -1244,6 +1324,11 @@ class SessionDB:
             self._read_local.failed = True
             logger.debug("read-only connection open failed for %s", self.db_path, exc_info=True)
             return None
+        if self._fts_cjk_loaded:
+            # v2 MATCH queries run on this connection; a load failure here
+            # surfaces as OperationalError in the v2 path, which falls back
+            # to the legacy tables.
+            load_fts5_cjk_extension(conn)
         self._read_local.conn = conn
         return conn
 
@@ -1263,6 +1348,47 @@ class SessionDB:
             return
         with self._lock:
             yield self._conn
+
+    def _probe_fts_v2(self) -> bool:
+        """True when the v2 index exists and this process can serve it.
+
+        Self-heal guard: if the DB carries v2 triggers but THIS process
+        could not load the tokenizer, every message INSERT would fail at
+        trigger time. Dropping the triggers keeps writes working; the index
+        goes stale and the read path stays legacy until fts_v2_migrate.py
+        is re-run on a host with the extension available.
+        """
+        try:
+            with self._lock:
+                rows = self._conn.execute(
+                    "SELECT name FROM sqlite_master WHERE name LIKE 'messages_fts_v2%'"
+                ).fetchall()
+            names = {r["name"] for r in rows}
+            if "messages_fts_v2" not in names:
+                return False
+            present_triggers = set(_FTS_V2_TRIGGERS) & names
+            if not self._fts_cjk_loaded:
+                if present_triggers:
+                    logger.critical(
+                        "messages_fts_v2 triggers exist but the cjk_unicode61 "
+                        "tokenizer failed to load (%s) — dropping the triggers "
+                        "so message writes keep working. The v2 index is now "
+                        "STALE; re-run scripts/fts_v2_migrate.py after fixing "
+                        "the extension.",
+                        fts5_cjk_so_path(),
+                    )
+                    with self._lock:
+                        for trig in present_triggers:
+                            self._conn.execute(f"DROP TRIGGER IF EXISTS {trig}")
+                return False
+            if present_triggers != set(_FTS_V2_TRIGGERS):
+                return False
+            with self._lock:
+                self._conn.execute("SELECT rowid FROM messages_fts_v2 LIMIT 1").fetchone()
+            return True
+        except sqlite3.Error:
+            logger.debug("fts_v2 probe failed", exc_info=True)
+            return False
 
     # ── Core write helper ──
 
@@ -5611,6 +5737,96 @@ class SessionDB:
         """Count CJK characters in text."""
         return sum(1 for ch in text if cls._is_cjk_codepoint(ord(ch)))
 
+    @staticmethod
+    def _has_lone_cjk_run(query: str) -> bool:
+        """True when any maximal CJK run in the query is a single char."""
+        run = 0
+        for ch in query:
+            cp = ord(ch)
+            is_cjk = (
+                0xAC00 <= cp <= 0xD7A3 or 0x1100 <= cp <= 0x11FF
+                or 0x3130 <= cp <= 0x318F or 0x4E00 <= cp <= 0x9FFF
+                or 0x3400 <= cp <= 0x4DBF or 0xF900 <= cp <= 0xFAFF
+                or 0x3040 <= cp <= 0x309F or 0x30A0 <= cp <= 0x30FF
+                or 0x20000 <= cp <= 0x2FA1F
+            )
+            if is_cjk:
+                run += 1
+            else:
+                if run == 1:
+                    return True
+                run = 0
+        return run == 1
+
+    def _fts_v2_query_allowed(self, query: str) -> bool:
+        if not self._fts_v2_ready:
+            return False
+        if os.getenv("HERMES_FTS_V2_READ", "0").strip().lower() in ("0", "false", "off", ""):
+            return False
+        return not self._has_lone_cjk_run(query)
+
+    def _query_fts_v2(
+        self,
+        query: str,
+        *,
+        source_filter: Optional[List[str]],
+        exclude_sources: Optional[List[str]],
+        role_filter: Optional[List[str]],
+        include_inactive: bool,
+        order_by_sql: str,
+        limit: int,
+        offset: int,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Run the query against messages_fts_v2; None → fall back to legacy."""
+        where_clauses = ["messages_fts_v2 MATCH ?"]
+        params: list = [query]
+        if not include_inactive:
+            where_clauses.append("(m.active = 1 OR m.compacted = 1)")
+        if source_filter is not None:
+            where_clauses.append(
+                f"s.source IN ({','.join('?' for _ in source_filter)})"
+            )
+            params.extend(source_filter)
+        if exclude_sources is not None:
+            where_clauses.append(
+                f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})"
+            )
+            params.extend(exclude_sources)
+        if role_filter:
+            where_clauses.append(
+                f"m.role IN ({','.join('?' for _ in role_filter)})"
+            )
+            params.extend(role_filter)
+        params.extend([limit, offset])
+        sql = f"""
+            SELECT
+                m.id,
+                m.session_id,
+                m.role,
+                snippet(messages_fts_v2, -1, '>>>', '<<<', '...', 40) AS snippet,
+                m.content,
+                m.timestamp,
+                m.tool_name,
+                s.source,
+                s.model,
+                s.started_at AS session_started
+            FROM messages_fts_v2
+            JOIN messages m ON m.id = messages_fts_v2.rowid
+            JOIN sessions s ON s.id = m.session_id
+            WHERE {' AND '.join(where_clauses)}
+            {order_by_sql}
+            LIMIT ? OFFSET ?
+        """
+        try:
+            with self._read_ctx() as conn:
+                cursor = conn.execute(sql, params)
+                return [dict(row) for row in cursor.fetchall()]
+        except sqlite3.OperationalError:
+            # Syntax error, missing tokenizer on this connection, or a
+            # mid-migration race — the legacy tables still answer.
+            logger.debug("fts_v2 query failed; falling back to legacy", exc_info=True)
+            return None
+
     def search_messages(
         self,
         query: str,
@@ -5678,6 +5894,26 @@ class SessionDB:
             order_by_sql = "ORDER BY m.timestamp ASC, rank"
         else:
             order_by_sql = "ORDER BY rank"
+
+        # ── v2 unified path (cjk_unicode61 bigram index) ────────────────
+        # One indexed MATCH serves every query shape the legacy code split
+        # across unicode61 / trigram / LIKE — including 2-char Korean terms
+        # that used to full-scan the table. Lone 1-char CJK terms stay on
+        # the legacy path: the bigram index only holds unigrams for isolated
+        # chars, so a 1-char term inside longer runs needs LIKE semantics.
+        if self._fts_v2_query_allowed(query):
+            v2_matches = self._query_fts_v2(
+                query,
+                source_filter=source_filter,
+                exclude_sources=exclude_sources,
+                role_filter=role_filter,
+                include_inactive=include_inactive,
+                order_by_sql=order_by_sql,
+                limit=limit,
+                offset=offset,
+            )
+            if v2_matches is not None:
+                return self._finalize_search_matches(v2_matches)
 
         # Build WHERE clauses dynamically
         where_clauses = ["messages_fts MATCH ?"]
@@ -5909,6 +6145,10 @@ class SessionDB:
                     cursor = conn.execute(sql, params)
                     matches = [dict(row) for row in cursor.fetchall()]
 
+        return self._finalize_search_matches(matches)
+
+    def _finalize_search_matches(self, matches: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Attach ±1-message context to each match and strip full content."""
         # Add surrounding context (1 message before + after each match).
         # Done outside the lock so we don't hold it across N sequential queries.
         for match in matches:

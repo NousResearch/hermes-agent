@@ -3118,8 +3118,6 @@ class DiscordAdapter(DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThread
         return {
             "name": canonical["name"], "description": canonical["description"],
             "options": canonical["options"],
-            "contexts": canonical["contexts"],
-            "integration_types": canonical["integration_types"],
         }
 
     async def _safe_sync_slash_commands(self) -> dict[str, int]:

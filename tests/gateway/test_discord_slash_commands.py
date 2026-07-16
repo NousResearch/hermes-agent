@@ -157,7 +157,7 @@ def test_discord_bot_scope_kwargs_enable_guild_and_user_installs(monkeypatch):
     }
 
 
-def test_patchable_payload_includes_install_and_context_metadata(adapter):
+def test_patchable_payload_excludes_install_and_context_metadata(adapter):
     payload = {
         "type": 1,
         "name": "status",
@@ -171,8 +171,6 @@ def test_patchable_payload_includes_install_and_context_metadata(adapter):
         "name": "status",
         "description": "Show Hermes session status",
         "options": [],
-        "contexts": [0, 1, 2],
-        "integration_types": [0, 1],
     }
 
 

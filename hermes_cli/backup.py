@@ -1234,6 +1234,8 @@ def _prune_quick_snapshots(root: Path, keep: int = _QUICK_DEFAULT_KEEP) -> int:
         key=lambda d: d.name,
         reverse=True,
     )
+    if len(dirs) <= keep:
+        return 0
 
     deleted = 0
     verified_kept = 0

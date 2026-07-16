@@ -17,11 +17,15 @@ from hermes_cli import kanban_db as kb
 
 logger = logging.getLogger(__name__)
 
-_SYSTEM_PROMPT = """You plan a selected batch of Kanban tasks. Find only pairs
-that are likely to edit the same code, configuration, or versioned knowledge
-base. For each conflict, order the work so the first task finishes before the
-second begins. Do not invent dependencies for merely related tasks; preserve
-parallelism whenever possible.
+_SYSTEM_PROMPT = """You plan a selected batch of Kanban tasks. Serialize only
+CLEAR problems, not every touch. Add an ordering edge when two tasks would
+heavily rewrite the same code, configuration, or versioned knowledge base in
+different directions — that is the expensive merge-conflict case to prevent.
+Light overlap (each task adds a little in different places of the same file)
+merges trivially: keep those parallel. Judge by the volume and nature of the
+edits in the shared area: additive changes are peaceful, rewrites conflict.
+Do not invent dependencies for merely related tasks; preserve parallelism
+whenever possible.
 
 Return JSON only:
 {"edges":[{"before":"task-id","after":"task-id","reason":"short reason"}]}

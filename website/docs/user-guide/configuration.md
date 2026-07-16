@@ -862,6 +862,21 @@ When the iteration budget is fully exhausted, the CLI shows a notification to th
 
 `agent.api_max_retries` controls how many times Hermes retries a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `3` — four attempts total. If you have [fallback providers](/user-guide/features/fallback-providers) configured and want to fail over faster, drop this to `0` so the first transient error on your primary immediately hands off to the fallback instead of churning retries against the flaky endpoint.
 
+### Turn tracing (`agent.turn_trace`)
+
+Opt-in per-turn waterfall tracing for latency diagnosis. When enabled, every turn appends one JSON line of timing spans (gateway ingress, prologue, per-iteration model calls, tool batches, finalize, delivery) to `logs/turn_traces.jsonl` under the active Hermes home (default `~/.hermes`, per-profile under `HERMES_HOME`), 64 MB single rotation, rendered with `python -m agent.turn_trace_render`.
+
+```yaml
+agent:
+  turn_trace: true              # shorthand — enable with the default sink
+  # or the full form:
+  turn_trace:
+    enabled: true
+    file: /var/log/hermes/turn_traces.jsonl   # optional sink override
+```
+
+Disabled by default; when off, every instrumentation site is a no-op and tracing can never raise into a turn. The `HERMES_TURN_TRACE` / `HERMES_TURN_TRACE_FILE` environment variables act as process-level overrides for service managers, mirroring the other config bridges.
+
 ## Standing Goals (`/goal`)
 
 When a standing goal is active, Hermes judges whether each assistant response satisfies it. If not, it feeds a continuation prompt back into the same session and keeps working until the goal is done, the turn budget is exhausted, or the user pauses/clears it. The turn budget is the real backstop — judge failures fail **open** (continue) so a flaky judge never wedges progress.

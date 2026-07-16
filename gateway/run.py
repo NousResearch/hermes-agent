@@ -1855,6 +1855,14 @@ if _config_path.exists():
                 os.environ["HERMES_AUTO_CONTINUE_FRESHNESS"] = str(
                     _agent_cfg["gateway_auto_continue_freshness"]
                 )
+            if "turn_trace" in _agent_cfg:
+                _tt_cfg = _agent_cfg["turn_trace"]
+                if isinstance(_tt_cfg, dict):
+                    os.environ["HERMES_TURN_TRACE"] = str(_tt_cfg.get("enabled", False))
+                    if _tt_cfg.get("file"):
+                        os.environ["HERMES_TURN_TRACE_FILE"] = str(_tt_cfg["file"])
+                else:
+                    os.environ["HERMES_TURN_TRACE"] = str(_tt_cfg)
         # config-authoritative knobs for the session-search index; same
         # bridge semantics as the agent settings above.
         _sessions_cfg = _cfg.get("sessions", {})

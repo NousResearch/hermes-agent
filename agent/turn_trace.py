@@ -6,8 +6,11 @@ finalize, delivery) and emits ONE JSON line per turn to a rotating
 ``<hermes_home>/logs/turn_traces.jsonl`` sink, so turns can be rendered as a
 waterfall and hermes-added overhead separated from model inference time.
 
-Activation: ``HERMES_TURN_TRACE=1`` (also ``true``/``on``). When disabled every
-entry point is a cheap no-op. Sink override: ``HERMES_TURN_TRACE_FILE``.
+Activation: config.yaml ``agent.turn_trace: {enabled: true, file: ...}``
+(or shorthand ``agent.turn_trace: true``); the ``HERMES_TURN_TRACE`` /
+``HERMES_TURN_TRACE_FILE`` environment variables act as process-level
+overrides for service managers. When disabled every entry point is a cheap
+no-op.
 
 Threading model: a turn crosses threads (gateway asyncio loop -> run_sync
 worker -> per-LLM-call worker -> concurrent tool executors), so the trace is
@@ -37,12 +40,59 @@ _write_lock = threading.Lock()
 _tls = threading.local()
 
 
+_config_cache: Dict[str, dict] = {}
+
+
+def _config() -> dict:
+    """Read the ``agent.turn_trace`` config block for the active Hermes home.
+
+    config.yaml is the user-facing surface for this feature; the
+    ``HERMES_TURN_TRACE`` / ``HERMES_TURN_TRACE_FILE`` environment variables
+    are process-level overrides for service managers (same contract as the
+    other config bridges). The read is cached: tracing is a
+    restart-scoped diagnostic, and per-call config loads would put file IO
+    on every instrumentation site. The cache is keyed by the active
+    ``get_hermes_home()`` — a multiplexed gateway scopes each routed profile
+    to its own home (``_profile_runtime_scope``), and tracing can begin
+    before that scope is entered, so a single process-wide entry would let
+    one profile's gate/sink leak into another's turns.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+
+        home = str(get_hermes_home())
+    except Exception:
+        home = ""
+    cached = _config_cache.get(home)
+    if cached is None:
+        resolved: dict = {}
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = load_config() or {}
+            agent_cfg = cfg.get("agent") or {}
+            raw = agent_cfg.get("turn_trace")
+            if isinstance(raw, dict):
+                resolved = dict(raw)
+            elif raw is not None:
+                resolved = {"enabled": raw}
+        except Exception:
+            resolved = {}
+        _config_cache[home] = cached = resolved
+    return cached
+
+
 def enabled() -> bool:
-    return os.environ.get("HERMES_TURN_TRACE", "").strip().lower() in _TRUTHY
+    env = os.environ.get("HERMES_TURN_TRACE", "").strip().lower()
+    if env:
+        return env in _TRUTHY
+    return str(_config().get("enabled", "")).strip().lower() in _TRUTHY
 
 
 def sink_path() -> str:
     override = os.environ.get("HERMES_TURN_TRACE_FILE", "").strip()
+    if not override:
+        override = str(_config().get("file", "") or "").strip()
     if override:
         return os.path.expanduser(override)
     from hermes_constants import get_hermes_home

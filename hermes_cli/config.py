@@ -1129,6 +1129,19 @@ DEFAULT_CONFIG = {
         # matches a key in this dict.
         # Edit directly in config.yaml (no CLI support due to dots in keys).
         "reasoning_overrides": {},
+
+        # Per-turn waterfall tracing — when enabled, every turn appends one
+        # JSON line of timing spans (gateway ingress, context assembly, LLM
+        # calls, tool dispatch, delivery) to
+        # <hermes_home>/logs/turn_traces.jsonl; render with
+        # `python -m agent.turn_trace_render`.  `file` overrides the sink
+        # path (empty = the default above).  Off by default — when disabled
+        # every instrumentation site is a cheap no-op.  Shorthand
+        # `turn_trace: true` is also accepted in config.yaml.
+        "turn_trace": {
+            "enabled": False,
+            "file": "",
+        },
     },
 
     "terminal": {

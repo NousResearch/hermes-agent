@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 import pytest
+from unittest.mock import patch
 
 from agent import turn_trace
 from agent.turn_trace import _NULL_SPAN, TurnTrace
@@ -341,3 +342,88 @@ class TestRenderer:
         assert proc.returncode == 0, proc.stderr
         # The demo traces carry the contract's root span name.
         assert "turn" in proc.stdout
+
+
+class TestConfigSurface:
+    def test_config_enables_tracing(self, monkeypatch):
+        monkeypatch.delenv("HERMES_TURN_TRACE", raising=False)
+        monkeypatch.setattr(turn_trace, "_config_cache", {})
+        with patch("hermes_cli.config.load_config", return_value={"agent": {"turn_trace": {"enabled": True}}}):
+            assert turn_trace.enabled() is True
+
+    def test_config_shorthand_bool(self, monkeypatch):
+        monkeypatch.delenv("HERMES_TURN_TRACE", raising=False)
+        monkeypatch.setattr(turn_trace, "_config_cache", {})
+        with patch("hermes_cli.config.load_config", return_value={"agent": {"turn_trace": True}}):
+            assert turn_trace.enabled() is True
+
+    def test_env_overrides_config_off(self, monkeypatch):
+        monkeypatch.setenv("HERMES_TURN_TRACE", "0")
+        monkeypatch.setattr(turn_trace, "_config_cache", {})
+        with patch("hermes_cli.config.load_config", return_value={"agent": {"turn_trace": True}}):
+            assert turn_trace.enabled() is False
+
+    def test_config_file_key_sets_sink(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("HERMES_TURN_TRACE_FILE", raising=False)
+        monkeypatch.setattr(turn_trace, "_config_cache", {})
+        with patch("hermes_cli.config.load_config", return_value={"agent": {"turn_trace": {"enabled": True, "file": str(tmp_path / "t.jsonl")}}}):
+            assert turn_trace.sink_path() == str(tmp_path / "t.jsonl")
+
+    def test_config_failure_defaults_off(self, monkeypatch):
+        monkeypatch.delenv("HERMES_TURN_TRACE", raising=False)
+        monkeypatch.setattr(turn_trace, "_config_cache", {})
+        with patch("hermes_cli.config.load_config", side_effect=RuntimeError):
+            assert turn_trace.enabled() is False
+
+    def test_multiplexed_profiles_resolve_their_own_config(self, tmp_path, monkeypatch):
+        # A multiplexed gateway routes turns across profiles with independent
+        # HERMES_HOME directories (installed via the profile runtime scope's
+        # home override). The config cache is keyed by the active home, so
+        # one profile's gate/sink must never leak into another's turns.
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        monkeypatch.setattr(turn_trace, "_config_cache", {})
+
+        home_a = tmp_path / "profile-a"
+        home_b = tmp_path / "profile-b"
+        home_a.mkdir()
+        home_b.mkdir()
+        (home_a / "config.yaml").write_text(
+            f"agent:\n  turn_trace:\n    enabled: true\n    file: {home_a / 'a.jsonl'}\n",
+            encoding="utf-8",
+        )
+        (home_b / "config.yaml").write_text(
+            "agent:\n  turn_trace:\n    enabled: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(home_a))
+        assert turn_trace.enabled() is True
+        assert turn_trace.sink_path() == str(home_a / "a.jsonl")
+
+        # Routed profile: same process, home B scoped via the contextvar
+        # override — must resolve B's config, not A's cached entry.
+        token = set_hermes_home_override(str(home_b))
+        try:
+            assert turn_trace.enabled() is False
+            assert turn_trace.sink_path() == str(home_b / "logs" / "turn_traces.jsonl")
+        finally:
+            reset_hermes_home_override(token)
+
+        # Back on A: its cached entry still resolves A's gate and sink.
+        assert turn_trace.enabled() is True
+        assert turn_trace.sink_path() == str(home_a / "a.jsonl")
+
+    def test_default_config_declares_disabled_default(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["agent"]["turn_trace"] == {"enabled": False, "file": ""}
+
+    def test_dashboard_schema_exposes_turn_trace(self):
+        # The dashboard schema is generated from DEFAULT_CONFIG
+        # (hermes_cli.web_server._build_schema_from_config), so the feature
+        # only appears in the settings UI if the default tree declares it.
+        from hermes_cli.web_server import CONFIG_SCHEMA
+
+        assert CONFIG_SCHEMA["agent.turn_trace.enabled"]["type"] == "boolean"
+        assert CONFIG_SCHEMA["agent.turn_trace.file"]["type"] == "string"

@@ -64,8 +64,9 @@ import json
 import logging
 import os
 import secrets
+import threading
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from hermes_cli.dashboard_auth import (
     DashboardAuthProvider,
@@ -212,6 +213,7 @@ class BasicAuthProvider(DashboardAuthProvider):
         password_hash: str,
         secret: bytes,
         ttl_seconds: int = _DEFAULT_TTL_SECONDS,
+        credentials_loader: Optional[Callable[[], Optional[tuple[str, str, bytes, int]]]] = None,
     ) -> None:
         if not username:
             raise ValueError("username must be non-empty")
@@ -223,6 +225,22 @@ class BasicAuthProvider(DashboardAuthProvider):
         self._password_hash = password_hash
         self._secret = secret
         self._ttl = max(60, int(ttl_seconds))
+        self._credentials_loader = credentials_loader
+        self._credentials_lock = threading.RLock()
+
+    def _reload_credentials(self) -> None:
+        """Refresh configured credentials before a password-login attempt."""
+        if self._credentials_loader is None:
+            return
+        credentials = self._credentials_loader()
+        if credentials is None:
+            return
+        username, password_hash, secret, ttl = credentials
+        with self._credentials_lock:
+            self._username = username
+            self._password_hash = password_hash
+            self._secret = secret
+            self._ttl = max(60, int(ttl))
 
     # ---- OAuth methods: not used (pure-password provider) ------------------
 
@@ -244,19 +262,23 @@ class BasicAuthProvider(DashboardAuthProvider):
     def complete_password_login(
         self, *, username: str, password: str
     ) -> Session:
+        self._reload_credentials()
+        with self._credentials_lock:
+            configured_username = self._username
+            configured_password_hash = self._password_hash
         # Constant-time-ish: always run a scrypt verify (against the real
         # hash if the username matches, else a dummy hash) so an unknown
         # username and a wrong password take comparable time. Compare the
         # username with compare_digest too, to avoid a length/byte timing
         # leak on the username itself.
         username_ok = hmac.compare_digest(
-            username.encode("utf-8"), self._username.encode("utf-8")
+            username.encode("utf-8"), configured_username.encode("utf-8")
         )
-        target_hash = self._password_hash if username_ok else _DUMMY_HASH
+        target_hash = configured_password_hash if username_ok else _DUMMY_HASH
         password_ok = _verify_password(password, target_hash)
         if not (username_ok and password_ok):
             raise InvalidCredentialsError("invalid username or password")
-        return self._mint_session(self._username)
+        return self._mint_session(configured_username)
 
     # ---- session lifecycle -------------------------------------------------
 
@@ -391,15 +413,8 @@ def _resolve_secret(cfg_section: dict) -> bytes:
     return raw.encode("utf-8")
 
 
-def register(ctx) -> None:
-    """Plugin entry — registers BasicAuthProvider when credentials exist.
-
-    Loopback / ``--insecure`` operators and anyone using the OAuth
-    provider leave ``dashboard.basic_auth`` unset, so this plugin is a
-    no-op for them. When username + (password or password_hash) are
-    configured, it registers a password provider that the login page
-    renders as a credential form.
-    """
+def _load_basic_auth_credentials() -> Optional[tuple[str, str, bytes, int]]:
+    """Resolve the effective Basic Auth credentials from env and config."""
     global LAST_SKIP_REASON
     LAST_SKIP_REASON = ""
 
@@ -472,14 +487,26 @@ def register(ctx) -> None:
     except ValueError:
         ttl = _DEFAULT_TTL_SECONDS
 
+    return username, password_hash, secret, ttl
+
+
+def register(ctx) -> None:
+    """Register Basic Auth when valid credentials are configured."""
+    credentials = _load_basic_auth_credentials()
+    if credentials is None:
+        return
+
+    username, password_hash, secret, ttl = credentials
     try:
         provider = BasicAuthProvider(
             username=username,
             password_hash=password_hash,
             secret=secret,
             ttl_seconds=ttl,
+            credentials_loader=_load_basic_auth_credentials,
         )
     except ValueError as exc:
+        global LAST_SKIP_REASON
         LAST_SKIP_REASON = f"BasicAuthProvider construction failed: {exc}"
         logger.warning("dashboard-auth-basic: %s", LAST_SKIP_REASON)
         return

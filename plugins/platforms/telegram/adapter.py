@@ -677,13 +677,25 @@ class TelegramAdapter(BasePlatformAdapter):
         context-aware decision the runner would make. Unknown DMs with no
         allowlist still pass through so the normal pairing flow can run.
         """
-        source = self._source_from_message_for_auth(message)
+        return self._is_source_user_authorized(
+            self._source_from_message_for_auth(message)
+        )
+
+    def _is_source_user_authorized(self, source) -> bool:
+        """Shared authorization core for Telegram intake prefilters.
+
+        Extracted from :meth:`_is_user_authorized_from_message` (behavior
+        unchanged) so every inbound interaction that resolves to a gateway
+        source — regular messages and inbound reactions — runs the exact same
+        decision sequence rather than a parallel copy that could drift:
+        adapter ``allow_from`` when set is the sole authority, else the
+        runner's context-aware check, else the env allowlist.
+        """
         user_id = source.user_id
         # No identity at all → genuine group service message (pin, delete,
-        # new_chat_members, etc.). Defer to the cold path. Channel posts
-        # without sender_chat already resolved to None above and fall here;
-        # they carry no authorizable identity, so let the normal
-        # _should_process_message gating handle them.
+        # new_chat_members, etc.) or an anonymous reaction with no resolvable
+        # actor. Defer to the cold path / chat-level gating; there is no
+        # authorizable identity to reject here.
         if not user_id:
             return True
 
@@ -735,47 +747,51 @@ class TelegramAdapter(BasePlatformAdapter):
         allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
         return "*" in allowed_ids or user_id in allowed_ids
 
-    def _is_reaction_user_authorized(self, user, chat) -> bool:
-        """Authorize the reactor before dispatching a reaction-driven agent event.
+    def _source_from_reaction_for_auth(self, mr):
+        """Build the auth source for a ``MessageReactionUpdated`` update.
 
-        Mirrors the prefilter logic of :meth:`_is_user_authorized_from_message`
-        for the case where no full ``Message`` object is available (reaction
-        updates carry a ``user`` directly instead). Anonymous reactions (no
-        ``user``) are allowed through; the chat-level ``_should_process_reaction``
-        gate still applies.
+        Reaction updates carry no ``Message`` object, so this mirrors
+        :meth:`_source_from_message_for_auth` field-for-field from the fields
+        a reaction update does have: the reactor comes from ``user``, falling
+        back to ``actor_chat`` for anonymous reactions (the analog of
+        ``sender_chat`` on channel posts). Reactions carry no topic/thread
+        information, so supergroups resolve to ``group``.
         """
-        user_id = str(user.id) if user else None
+        from gateway.session import SessionSource
+
+        user = getattr(mr, "user", None)
+        chat = getattr(mr, "chat", None)
+        user_id = str(getattr(user, "id", "")).strip() or None
+        user_name = (
+            str(getattr(user, "username", "") or getattr(user, "full_name", "") or "").strip()
+            or None
+        )
+        # Anonymous reactions (chat admins reacting anonymously, channel
+        # reactions) surface actor_chat instead of user.
         if not user_id:
-            return True  # anonymous reaction — no user-level auth possible
+            actor_chat = getattr(mr, "actor_chat", None)
+            if actor_chat is not None:
+                user_id = str(getattr(actor_chat, "id", "")).strip() or None
+                if not user_name:
+                    user_name = (
+                        str(getattr(actor_chat, "title", "") or "").strip() or None
+                    )
 
-        adapter_allow_from = self.config.extra.get("allow_from") if self.config and self.config.extra else None
-        if adapter_allow_from is not None:
-            allowed = {str(u).strip() for u in adapter_allow_from if str(u).strip()}
-            return user_id in allowed or "*" in allowed
+        chat_id = str(getattr(chat, "id", "")).strip() or user_id
+        chat_type = str(getattr(chat, "type", "dm")).strip().lower() or "dm"
+        if chat_type == "private":
+            chat_type = "dm"
+        elif chat_type == "supergroup":
+            chat_type = "group"
 
-        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
-        auth_fn = getattr(runner, "_is_user_authorized", None)
-        if callable(auth_fn) and self._telegram_auth_env_configured():
-            try:
-                # Build a minimal source compatible with the runner's auth signature.
-                from gateway import MessageSource as _MS  # type: ignore[import]
-                chat_type_raw = str(getattr(chat, "type", "")).split(".")[-1].lower()
-                chat_type = "private" if chat_type_raw == "private" else chat_type_raw
-                source = _MS(
-                    chat_id=str(chat.id) if chat else user_id,
-                    user_id=user_id,
-                    chat_type=chat_type,
-                    user_name=None,
-                )
-                return bool(auth_fn(source))
-            except Exception:
-                logger.debug("[Telegram] reaction auth fell back to env for user %s", user_id, exc_info=True)
-
-        allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
-        if not allowed_csv:
-            return True
-        allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
-        return "*" in allowed_ids or user_id in allowed_ids
+        return SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=chat_id or "",
+            chat_type=chat_type,
+            user_id=user_id,
+            user_name=user_name,
+            thread_id=None,
+        )
 
     @classmethod
     def _metadata_thread_id(cls, metadata: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -2954,9 +2970,9 @@ class TelegramAdapter(BasePlatformAdapter):
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
             # Handle inbound message reactions (user long-press → emoji → action).
-            # Inert unless telegram.extra.reaction_actions (or a plugin-registered
-            # reaction) maps the emoji. message_reaction is already in
-            # allowed_updates=ALL_TYPES below, so no polling change is needed.
+            # Inert unless platforms.telegram.extra.reaction_actions maps the
+            # emoji. message_reaction is already in allowed_updates=ALL_TYPES
+            # below, so no polling change is needed.
             self._app.add_handler(TelegramMessageReactionHandler(self._handle_message_reaction))
 
             # Start polling — retry initialize() for transient TLS resets
@@ -7210,9 +7226,9 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _handle_message_reaction(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Turn a recognized inbound reaction into a synthetic agent turn.
 
-        Only newly-*added* emoji (diff of new vs old reaction) are considered.
-        An emoji counts as recognized if it is in ``reaction_actions`` config or
-        a plugin registered it via ``ctx.register_reaction``. Removed reactions
+        Only newly-*added* emoji (diff of new vs old reaction) are considered;
+        an emoji is recognized when it appears in the
+        ``platforms.telegram.extra.reaction_actions`` map. Removed reactions
         and unmapped emoji are ignored. Inert when nothing is configured.
         """
         mr = getattr(update, "message_reaction", None)
@@ -7242,7 +7258,11 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         user = getattr(mr, "user", None)
 
-        if not self._is_reaction_user_authorized(user, chat):
+        # Same intake authorization invariant as every other inbound handler:
+        # reject the reactor BEFORE event construction so an unauthorized user
+        # cannot inject prompt content via reactions (see
+        # _is_user_authorized_from_message / #40863).
+        if not self._is_source_user_authorized(self._source_from_reaction_for_auth(mr)):
             logger.debug(
                 "[%s] reaction from unauthorized user %s ignored",
                 self.name,

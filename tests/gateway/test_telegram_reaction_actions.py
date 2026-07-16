@@ -4,6 +4,12 @@ When a user reacts to one of the bot's messages with an emoji mapped in
 ``platforms.telegram.extra.reaction_actions``, the adapter synthesizes an agent
 turn. Unconfigured reactions, removed reactions, unmapped emoji, and unauthorized
 reactors are ignored, so the feature is backward-compatible by default.
+
+Authorization runs through ``_is_source_user_authorized`` — the same decision
+core every other Telegram inbound handler uses (extracted from
+``_is_user_authorized_from_message``) — so the reaction path cannot drift from
+the message-intake invariant. Tests cover both the adapter ``allow_from``
+branch and the runner-auth-fn branch of that shared core.
 """
 
 import importlib
@@ -224,3 +230,60 @@ async def test_authorized_reactor_dispatches(telegram_adapter_cls):
     )
 
     adapter.handle_message.assert_awaited_once()
+
+
+class _FakeRunner:
+    """Stands in for the gateway runner behind ``_message_handler``."""
+
+    def __init__(self, allow: bool):
+        self.allow = allow
+        self.auth_calls = []
+
+    async def _handle(self, event):  # bound-method target for _message_handler
+        pass
+
+    def _is_user_authorized(self, source):
+        self.auth_calls.append(source)
+        return self.allow
+
+
+@pytest.mark.asyncio
+async def test_reaction_auth_delegates_to_runner(telegram_adapter_cls, monkeypatch):
+    """Without allow_from, the runner's context-aware auth decides — and a
+    denial must block dispatch (regression guard for the shared-core wiring)."""
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "someone-else")
+    adapter = _make_adapter(
+        telegram_adapter_cls, extra={"reaction_actions": {"👍": "mark done"}}
+    )
+    runner = _FakeRunner(allow=False)
+    adapter._message_handler = runner._handle
+    adapter.handle_message = AsyncMock()
+
+    await adapter._handle_message_reaction(
+        _make_reaction_update("👍", user_id=7409767798), MagicMock()
+    )
+
+    adapter.handle_message.assert_not_awaited()
+    assert len(runner.auth_calls) == 1
+    source = runner.auth_calls[0]
+    assert source.user_id == "7409767798"
+    assert source.chat_type == "dm"
+
+
+@pytest.mark.asyncio
+async def test_reaction_auth_runner_allows(telegram_adapter_cls, monkeypatch):
+    """Runner approval lets the reaction dispatch normally."""
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "someone-else")
+    adapter = _make_adapter(
+        telegram_adapter_cls, extra={"reaction_actions": {"👍": "mark done"}}
+    )
+    runner = _FakeRunner(allow=True)
+    adapter._message_handler = runner._handle
+    adapter.handle_message = AsyncMock()
+
+    await adapter._handle_message_reaction(
+        _make_reaction_update("👍", user_id=7409767798), MagicMock()
+    )
+
+    adapter.handle_message.assert_awaited_once()
+    assert len(runner.auth_calls) == 1

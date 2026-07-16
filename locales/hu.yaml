@@ -171,10 +171,12 @@ gateway:
     header:                "🎭 **Elérhető személyiségek**\n"
     none_option:           "• `none` — (nincs személyiségréteg)"
     item:                  "• `{name}` — {preview}"
+    item_named:            "• `{name}` {display} — {preview}"
     usage:                 "\nHasználat: `/personality <name>`"
     save_failed:           "⚠️ Nem sikerült menteni a személyiség módosítását: {error}"
     cleared:               "🎭 Személyiség törölve — alap ügynöki viselkedés használatban.\n_(a következő üzenettől lép életbe)_"
     set_to:                "🎭 Személyiség beállítva: **{name}**\n_(a következő üzenettől lép életbe)_"
+    set_to_named:          "🎭 Személyiség beállítva: **{name}** ({display})\n_(a következő üzenettől lép életbe)_"
     unknown:               "Ismeretlen személyiség: `{name}`\n\nElérhetők: {available}"
 
   profile:

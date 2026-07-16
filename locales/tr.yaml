@@ -171,10 +171,12 @@ gateway:
     header:                "🎭 **Mevcut Kişilikler**\n"
     none_option:           "• `none` — (kişilik kaplaması yok)"
     item:                  "• `{name}` — {preview}"
+    item_named:            "• `{name}` {display} — {preview}"
     usage:                 "\nKullanım: `/personality <name>`"
     save_failed:           "⚠️ Kişilik değişikliği kaydedilemedi: {error}"
     cleared:               "🎭 Kişilik temizlendi — temel ajan davranışı kullanılıyor.\n_(bir sonraki mesajda etkili olur)_"
     set_to:                "🎭 Kişilik **{name}** olarak ayarlandı\n_(bir sonraki mesajda etkili olur)_"
+    set_to_named:          "🎭 Kişilik **{name}** ({display}) olarak ayarlandı\n_(bir sonraki mesajda etkili olur)_"
     unknown:               "Bilinmeyen kişilik: `{name}`\n\nMevcut: {available}"
 
   profile:

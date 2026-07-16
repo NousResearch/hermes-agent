@@ -171,10 +171,12 @@ gateway:
     header:                "🎭 **사용 가능한 성격**\n"
     none_option:           "• `none` — (성격 오버레이 없음)"
     item:                  "• `{name}` — {preview}"
+    item_named:            "• `{name}` {display} — {preview}"
     usage:                 "\n사용법: `/personality <name>`"
     save_failed:           "⚠️ 성격 변경 저장에 실패했습니다: {error}"
     cleared:               "🎭 성격이 해제되었습니다 — 기본 에이전트 동작을 사용합니다.\n_(다음 메시지부터 적용됩니다)_"
     set_to:                "🎭 성격이 **{name}**(으)로 설정되었습니다\n_(다음 메시지부터 적용됩니다)_"
+    set_to_named:          "🎭 성격이 **{name}** ({display})(으)로 설정되었습니다\n_(다음 메시지부터 적용됩니다)_"
     unknown:               "알 수 없는 성격: `{name}`\n\n사용 가능: {available}"
 
   profile:

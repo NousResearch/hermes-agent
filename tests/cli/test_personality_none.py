@@ -157,6 +157,92 @@ class TestGatewayPersonalityNone:
         assert result == "No personalities configured in `~/.hermes/profiles/coder/config.yaml`"
 
 
+class TestGatewayPersonalityLocalizedNames:
+    """Localized display names next to raw ids in gateway /personality."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_i18n(self):
+        from agent.i18n import reset_language_cache
+        reset_language_cache()
+        yield
+        reset_language_cache()
+
+    def _make_event(self, args=""):
+        event = MagicMock()
+        event.get_command.return_value = "personality"
+        event.get_command_args.return_value = args
+        return event
+
+    def _make_runner(self, personalities):
+        from gateway.run import GatewayRunner
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner._ephemeral_system_prompt = ""
+        runner.config = {"agent": {"personalities": personalities}}
+        return runner
+
+    def _write_config(self, tmp_path, personalities):
+        (tmp_path / "config.yaml").write_text(
+            yaml.dump({"agent": {"personalities": personalities}}),
+            encoding="utf-8",
+        )
+
+    async def _run(self, tmp_path, personalities, args=""):
+        runner = self._make_runner(personalities)
+        self._write_config(tmp_path, personalities)
+        with patch("gateway.run._hermes_home", tmp_path):
+            return await runner._handle_personality_command(self._make_event(args))
+
+    @pytest.mark.asyncio
+    async def test_builtin_shows_localized_name_zh_hant(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_LANGUAGE", "zh-hant")
+        result = await self._run(tmp_path, {"pirate": "Ye be a pirate."})
+        assert "• `pirate` 海盜船長 — Ye be a pirate." in result
+
+    @pytest.mark.asyncio
+    async def test_builtin_falls_back_to_english_name(self, tmp_path, monkeypatch):
+        # fr has no names map; the display name falls back to en.yaml.
+        monkeypatch.setenv("HERMES_LANGUAGE", "fr")
+        result = await self._run(tmp_path, {"pirate": "Ye be a pirate."})
+        assert "• `pirate` Pirate — Ye be a pirate." in result
+
+    @pytest.mark.asyncio
+    async def test_custom_personality_renders_raw_id(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_LANGUAGE", "zh-hant")
+        result = await self._run(tmp_path, {"mycustom": "You are custom."})
+        assert "• `mycustom` — You are custom." in result
+
+    @pytest.mark.asyncio
+    async def test_en_builtin_shows_english_name(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_LANGUAGE", "en")
+        result = await self._run(tmp_path, {"pirate": "Ye be a pirate."})
+        assert "• `pirate` Pirate — Ye be a pirate." in result
+
+    @pytest.mark.asyncio
+    async def test_en_custom_item_unchanged(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_LANGUAGE", "en")
+        result = await self._run(tmp_path, {"mycustom": "You are custom."})
+        assert "• `mycustom` — You are custom." in result
+
+    @pytest.mark.asyncio
+    async def test_name_identical_to_id_renders_plain(self, tmp_path, monkeypatch):
+        # "uwu" has a names entry equal to its id — no redundant repetition.
+        monkeypatch.setenv("HERMES_LANGUAGE", "en")
+        result = await self._run(tmp_path, {"uwu": "uwu~ nya"})
+        assert "• `uwu` — uwu~ nya" in result
+
+    @pytest.mark.asyncio
+    async def test_set_confirmation_includes_display_name(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_LANGUAGE", "zh-hant")
+        result = await self._run(tmp_path, {"pirate": "Ye be a pirate."}, args="pirate")
+        assert "**pirate**（海盜船長）" in result
+
+    @pytest.mark.asyncio
+    async def test_en_set_confirmation_custom_unchanged(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_LANGUAGE", "en")
+        result = await self._run(tmp_path, {"mycustom": "You are custom."}, args="mycustom")
+        assert "Personality set to **mycustom**\n" in result
+
+
 class TestPersonalityDictFormat:
     """Test dict-format custom personalities with description, tone, style."""
 

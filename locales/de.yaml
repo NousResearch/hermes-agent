@@ -171,10 +171,12 @@ gateway:
     header:                "🎭 **Verfügbare Persönlichkeiten**\n"
     none_option:           "• `none` — (kein Persönlichkeits-Overlay)"
     item:                  "• `{name}` — {preview}"
+    item_named:            "• `{name}` {display} — {preview}"
     usage:                 "\nVerwendung: `/personality <name>`"
     save_failed:           "⚠️ Speichern der Persönlichkeitsänderung fehlgeschlagen: {error}"
     cleared:               "🎭 Persönlichkeit gelöscht — Basisverhalten des Agenten wird verwendet.\n_(wird mit der nächsten Nachricht wirksam)_"
     set_to:                "🎭 Persönlichkeit auf **{name}** gesetzt\n_(wird mit der nächsten Nachricht wirksam)_"
+    set_to_named:          "🎭 Persönlichkeit auf **{name}** ({display}) gesetzt\n_(wird mit der nächsten Nachricht wirksam)_"
     unknown:               "Unbekannte Persönlichkeit: `{name}`\n\nVerfügbar: {available}"
 
   profile:

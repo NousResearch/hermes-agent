@@ -171,10 +171,12 @@ gateway:
     header:                "🎭 **利用可能な人格**\n"
     none_option:           "• `none` — (人格オーバーレイなし)"
     item:                  "• `{name}` — {preview}"
+    item_named:            "• `{name}` {display} — {preview}"
     usage:                 "\n使い方: `/personality <name>`"
     save_failed:           "⚠️ 人格変更の保存に失敗しました: {error}"
     cleared:               "🎭 人格をクリアしました — 基本のエージェント動作を使用します。\n_(次のメッセージから有効)_"
     set_to:                "🎭 人格を **{name}** に設定しました\n_(次のメッセージから有効)_"
+    set_to_named:          "🎭 人格を **{name}** ({display}) に設定しました\n_(次のメッセージから有効)_"
     unknown:               "不明な人格: `{name}`\n\n利用可能: {available}"
 
   profile:

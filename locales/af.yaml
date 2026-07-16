@@ -171,10 +171,12 @@ gateway:
     header:                "🎭 **Beskikbare Persoonlikhede**\n"
     none_option:           "• `none` — (geen persoonlikheidslaag)"
     item:                  "• `{name}` — {preview}"
+    item_named:            "• `{name}` {display} — {preview}"
     usage:                 "\nGebruik: `/personality <name>`"
     save_failed:           "⚠️ Kon nie persoonlikheidsverandering stoor nie: {error}"
     cleared:               "🎭 Persoonlikheid verwyder — basis-agentgedrag word gebruik.\n_(neem effek by die volgende boodskap)_"
     set_to:                "🎭 Persoonlikheid gestel op **{name}**\n_(neem effek by die volgende boodskap)_"
+    set_to_named:          "🎭 Persoonlikheid gestel op **{name}** ({display})\n_(neem effek by die volgende boodskap)_"
     unknown:               "Onbekende persoonlikheid: `{name}`\n\nBeskikbaar: {available}"
 
   profile:

@@ -186,11 +186,31 @@ gateway:
     header:                "🎭 **Available Personalities**\n"
     none_option:           "• `none` — (no personality overlay)"
     item:                  "• `{name}` — {preview}"
+    item_named:            "• `{name}` {display} — {preview}"
     usage:                 "\nUsage: `/personality <name>`"
     save_failed:           "⚠️ Failed to save personality change: {error}"
     cleared:               "🎭 Personality cleared — using base agent behavior.\n_(takes effect on next message)_"
     set_to:                "🎭 Personality set to **{name}**\n_(takes effect on next message)_"
+    set_to_named:          "🎭 Personality set to **{name}** ({display})\n_(takes effect on next message)_"
     unknown:               "Unknown personality: `{name}`\n\nAvailable: {available}"
+    # Display names for the built-in personality ids. Ids (and the
+    # /personality arguments) stay English; locales without a translated
+    # map fall back to these names via t().
+    names:
+      helpful:             "Helpful"
+      concise:             "Concise"
+      technical:           "Technical"
+      creative:            "Creative"
+      teacher:             "Teacher"
+      kawaii:              "Kawaii"
+      catgirl:             "Catgirl"
+      pirate:              "Pirate"
+      shakespeare:         "Shakespeare"
+      surfer:              "Surfer"
+      noir:                "Noir"
+      uwu:                 "uwu"
+      philosopher:         "Philosopher"
+      hype:                "Hype"
 
   profile:
     header:                "👤 **Profile:** `{profile}`"

@@ -171,10 +171,12 @@ gateway:
     header:                "🎭 **Personalidades disponibles**\n"
     none_option:           "• `none` — (sin superposición de personalidad)"
     item:                  "• `{name}` — {preview}"
+    item_named:            "• `{name}` {display} — {preview}"
     usage:                 "\nUso: `/personality <name>`"
     save_failed:           "⚠️ No se pudo guardar el cambio de personalidad: {error}"
     cleared:               "🎭 Personalidad eliminada — usando el comportamiento base del agente.\n_(surte efecto en el siguiente mensaje)_"
     set_to:                "🎭 Personalidad establecida en **{name}**\n_(surte efecto en el siguiente mensaje)_"
+    set_to_named:          "🎭 Personalidad establecida en **{name}** ({display})\n_(surte efecto en el siguiente mensaje)_"
     unknown:               "Personalidad desconocida: `{name}`\n\nDisponibles: {available}"
 
   profile:

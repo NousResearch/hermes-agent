@@ -2093,6 +2093,22 @@ class GatewaySlashCommandsMixin:
         prefix = "✓" if result.success else "✗"
         return f"{prefix} {result.message}"
 
+    @staticmethod
+    def _personality_display_name(personality_id: str) -> Optional[str]:
+        """Localized display name for a built-in personality id, else None.
+
+        Names live under ``gateway.personality.names.*`` (en/zh/zh-hant;
+        other locales fall back to English via ``t``). Custom user-defined
+        ids have no entry in any catalog, so ``t`` echoes the key path back
+        — treat that, and a name identical to the id (e.g. ``uwu``), as
+        "nothing extra to show" so those render exactly as before.
+        """
+        key = f"gateway.personality.names.{personality_id}"
+        display = t(key)
+        if display == key or display == personality_id:
+            return None
+        return display
+
     async def _handle_personality_command(self, event: MessageEvent) -> str:
         """Handle /personality command - list or set a personality."""
         from gateway.run import _hermes_home, _load_gateway_config
@@ -2119,7 +2135,12 @@ class GatewaySlashCommandsMixin:
                     preview = prompt.get("description") or prompt.get("system_prompt", "")[:50]
                 else:
                     preview = prompt[:50] + "..." if len(prompt) > 50 else prompt
-                lines.append(t("gateway.personality.item", name=name, preview=preview))
+                display = self._personality_display_name(name)
+                if display:
+                    lines.append(t("gateway.personality.item_named",
+                                   name=name, display=display, preview=preview))
+                else:
+                    lines.append(t("gateway.personality.item", name=name, preview=preview))
             lines.append(t("gateway.personality.usage"))
             return "\n".join(lines)
 
@@ -2158,6 +2179,9 @@ class GatewaySlashCommandsMixin:
             # Update in-memory so it takes effect on the very next message.
             self._ephemeral_system_prompt = new_prompt
 
+            display = self._personality_display_name(args)
+            if display:
+                return t("gateway.personality.set_to_named", name=args, display=display)
             return t("gateway.personality.set_to", name=args)
 
         available = "`none`, " + ", ".join(f"`{n}`" for n in personalities)

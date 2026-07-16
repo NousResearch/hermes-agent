@@ -175,10 +175,12 @@ gateway:
     header:                "🎭 **Pearsantachtaí ar fáil**\n"
     none_option:           "• `none` — (gan forleagan pearsantachta)"
     item:                  "• `{name}` — {preview}"
+    item_named:            "• `{name}` {display} — {preview}"
     usage:                 "\nÚsáid: `/personality <name>`"
     save_failed:           "⚠️ Theip ar shábháil athraithe pearsantachta: {error}"
     cleared:               "🎭 Pearsantacht glanta — ag úsáid iompair bunúsaigh an ghníomhaire.\n_(éifeachtach ón gcéad teachtaireacht eile)_"
     set_to:                "🎭 Pearsantacht socraithe go **{name}**\n_(éifeachtach ón gcéad teachtaireacht eile)_"
+    set_to_named:          "🎭 Pearsantacht socraithe go **{name}** ({display})\n_(éifeachtach ón gcéad teachtaireacht eile)_"
     unknown:               "Pearsantacht anaithnid: `{name}`\n\nAr fáil: {available}"
 
   profile:

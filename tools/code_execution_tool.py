@@ -596,7 +596,10 @@ def _rpc_server_loop(
                     continue
 
                 if not rpc_token or not secrets.compare_digest(
-                    str(request.get("token") or ""), rpc_token
+                    # Compare as bytes: compare_digest raises TypeError on a
+                    # str with non-ASCII characters, and the token comes from
+                    # sandbox-script-supplied JSON.
+                    str(request.get("token") or "").encode(), rpc_token.encode()
                 ):
                     resp = json.dumps({"error": "Unauthorized RPC request"})
                     conn.sendall((resp + "\n").encode())
@@ -881,7 +884,10 @@ def _rpc_poll_loop(
                     continue
 
                 if not rpc_token or not secrets.compare_digest(
-                    str(request.get("token") or ""), rpc_token
+                    # Compare as bytes: compare_digest raises TypeError on a
+                    # str with non-ASCII characters, and the token comes from
+                    # sandbox-script-supplied JSON.
+                    str(request.get("token") or "").encode(), rpc_token.encode()
                 ):
                     logger.debug("Unauthorized RPC request in %s", req_file)
                     env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)

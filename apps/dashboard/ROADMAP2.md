@@ -357,6 +357,108 @@ from ≥2 topics.
 **Tests.** Unit: enclosure parsed from a sample podcast feed. e2e: podcast widget
 lists episodes; mute hides a source.
 
+### 3.5 Gaming news + game data — **S (news) / M (data)** 
+**Problem.** No gaming coverage today; you want it first-class.
+
+**Design (news).** Add **gaming** as a default news topic — it's just a curated
+RSS list in `NEWS_SOURCES`, so it inherits the whole news pipeline (tabs, search,
+reader, summarize, save-for-later) for free. Proposed default feeds (all RSS):
+IGN (`feeds.ign.com/ign/games-all`), Polygon (`polygon.com/rss/index.xml`),
+Eurogamer (`eurogamer.net/feed`), PC Gamer (`pcgamer.com/rss/`), Kotaku
+(`kotaku.com/rss`), Rock Paper Shotgun (`rockpapershotgun.com/feed`), GameSpot
+(`gamespot.com/feeds/news/`).
+
+**Design (game data — optional widget `widgets/gaming.js`).** A gaming panel with
+free, no-key sources:
+- **Free games this week** — Epic Games Store promotions
+  (`store-site-backend-static.ak.epicgames.com/freeGamesPromotions?locale=en-US`),
+  no key; shows current + upcoming free titles with end dates.
+- **Deals / specials + new releases** — Steam store API (no key):
+  `store.steampowered.com/api/featuredcategories/` (specials, new/top sellers)
+  and `…/api/appdetails?appids={id}` for cover art, price, discount.
+- Optional "release calendar": upcoming releases → add to the calendar (reuses
+  the calendar/event store, like sports fixtures in §2.3).
+
+**Files.** `server.py` (`NEWS_SOURCES["gaming"]`; `live_free_games`,
+`live_steam_specials` + samples; routes `/api/gaming/free`, `/api/gaming/deals`);
+optional new `widgets/gaming.js`; `sample_data.json` fixtures; register widget.
+
+**Build steps.** (1) add the gaming topic (news-only ship, tiny); (2) Epic +
+Steam normalizers with samples; (3) gaming widget (free-games strip + deals
+grid); (4) optional release→calendar hand-off.
+
+**Tests.** Unit: Epic/Steam JSON → normalized shape from saved fixtures;
+gaming topic resolves feeds. e2e: gaming news tab renders; gaming widget shows
+free-games + deals from sample data.
+
+**Risks.** Steam/Epic payloads are large and occasionally reshape → defensive
+parsing, cache 10–30 min, sample fallback. Steam `appdetails` is per-app and
+rate-limited → batch/cache and only fetch on demand (detail window).
+
+### 3.6 Tech news, deepened — **S** 
+**Problem.** Tech exists as an RSS topic; power users want the ranked, discussion-
+aware view.
+
+**Design.** A tech panel (or an enrichment of the tech topic) using free no-key
+developer sources:
+- **Hacker News** official Firebase API (no key):
+  `hacker-news.firebaseio.com/v0/topstories.json` + `…/item/{id}.json` → title,
+  points, comment count, URL; rank by points, link to the discussion.
+- **Lobsters** (`lobste.rs/hottest.json`, no key) as a second ranked feed.
+- Optional **GitHub trending** (RSS mirror or the search API's public results) for
+  "what repos are hot today."
+
+**Files.** `server.py` (`live_hackernews`, `live_lobsters` + samples, routes
+`/api/tech/hn`, `/api/tech/lobsters`); either fold into `widgets/news.js` as a
+"ranked" view or a small `widgets/tech.js`.
+
+**Tests.** Unit: HN/Lobsters normalizers from fixtures. e2e: ranked tech list
+renders with points + comment counts.
+
+**Risks.** HN API needs N item fetches for the top list → fetch top ~30 ids then
+batch item calls with the existing thread pool + cache (mirrors `live_news`).
+
+### 3.7 Socials hub (`widgets/socials.js`) — **M** 
+**Problem.** You want socials in one place, no accounts/keys required.
+
+**Design.** A unified **read-only** social feed with per-network tabs, each on a
+free unauthenticated endpoint. The user configures which sources/handles to
+follow (stored in synced state):
+- **Reddit** — `reddit.com/r/{sub}/hot.json?limit=25` (send a User-Agent);
+  multiple subreddits, merged + sorted.
+- **Hacker News** — reuses §3.6 (`topstories` + `item`).
+- **Lobsters** — `lobste.rs/hottest.json`.
+- **Mastodon** — any instance's public timeline,
+  `https://{instance}/api/v1/timelines/public?limit=20` (no auth for public);
+  user adds instances they like.
+- **Bluesky** — public unauthenticated reads via
+  `public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed?actor={handle}` (public
+  posts, no login) for followed handles.
+
+Each item normalizes to `{network, author, text, url, score?, comments?, time}`
+and renders uniformly (network badge, author, snippet, engagement, "open"). Items
+open in the in-app viewer. All fetches go through the SSRF-safe proxy pattern;
+Mastodon/Bluesky handles/instances are validated (http(s), host allowlist-ish
+sanity) before fetch.
+
+**Files.** `server.py` (`live_reddit`, `live_mastodon`, `live_bluesky` + samples,
+routes under `/api/social/*`); new `widgets/socials.js`; `store.js`
+(`socials.sources`); `sources.js`-style config panel; `sample_data.json`;
+register widget.
+
+**Build steps.** (1) per-network normalizers + samples; (2) config (add subreddit
+/ Mastodon instance / Bluesky handle); (3) merged, tabbed widget; (4) detail
+window (§0.2) for a larger multi-column feed.
+
+**Tests.** Unit: each network's JSON → normalized item (from fixtures); handle/
+instance validation rejects junk. e2e: socials widget renders sample items across
+≥2 networks; add-source flow works.
+
+**Risks.** Reddit rate-limits anonymous JSON and requires a descriptive
+User-Agent (we already set one) → cache 5–10 min, degrade to sample on 429.
+Mastodon/Bluesky endpoints vary by instance → per-source try/except so one bad
+instance never sinks the widget. Read-only only — no posting, no auth, no keys.
+
 ---
 
 ## 4. Markets beyond crypto — stocks / indices / forex
@@ -416,7 +518,8 @@ the intelligence-agency aesthetic and round out "access to everything."
 | **Earthquakes** | USGS `…summary/2.5_day.geojson` | GeoJSON list + map dots | S |
 | **Space weather** | NOAA SWPC `services.swpc.noaa.gov/products/…` | Kp index, aurora | S |
 | **Flights overhead** | OpenSky `/api/states/all?bbox` | anonymous, rate-limited | M |
-| **Reddit / social** | `reddit.com/r/{sub}/.json` | needs UA; read-only | S |
+| **Socials hub** | Reddit/HN/Lobsters/Mastodon/Bluesky | see §3.7 — read-only, no keys | M |
+| **Gaming** | Epic + Steam store APIs | see §3.5 — free games, deals, releases | M |
 | **RSS reader (folders)** | existing FeedConfig | a full feed-reader mode w/ folders + unread | M |
 | **Economic calendar** | *needs source research* | Fed/CPI/earnings dates; candidate: an ICS or scrape | M |
 | **Countdown / events** | none (local) | pinned countdowns | S |
@@ -454,7 +557,9 @@ depth on request; they're intentionally uniform.
 2. **§1 Crypto suite** — detail drawer → indicators → global/F&G/trending →
    portfolio → smarter alerts. (Your #1.)
 3. **§2 Sports** — live scores → standings → follow teams. (Your #2.)
-4. **§3 News** — Google News queries → richer reader → topic detail. (Your #3.)
+4. **§3 News** — Google News queries → richer reader → topic detail, plus the
+   **gaming** and **tech-ranked** topics (§3.5–3.6, small RSS/API adds) and the
+   **Socials hub** (§3.7). (Your #3 + tech/gaming/socials.)
 5. **§4 Stocks/FX + At-a-Glance hero**, then **§0.4 dashboard pages** to hold the
    now-large board.
 6. **§5 intel/utility widgets** and **§6 refinements**, picked off as desired.
@@ -473,6 +578,14 @@ coverage before it's called done — same bar as everything shipped so far.
 | Sports | `site.api.espn.com` | `/apis/site/v2/sports/{sport}/{league}/scoreboard`, `/apis/v2/sports/{sport}/{league}/standings`, `…/teams/{team}/schedule` |
 | Sports meta | `thesportsdb.com` | `/api/v1/json/3/…` (test key 3) |
 | News search | `news.google.com` | `/rss/search?q=…`, `/rss/headlines/section/topic/{TOPIC}` |
+| Gaming (news) | RSS | IGN `feeds.ign.com/ign/games-all`, Polygon, Eurogamer, PC Gamer, Kotaku, RPS, GameSpot |
+| Gaming (free) | `store-site-backend-static.ak.epicgames.com` | `/freeGamesPromotions?locale=en-US` |
+| Gaming (deals) | `store.steampowered.com` | `/api/featuredcategories/`, `/api/appdetails?appids=` |
+| Tech (ranked) | `hacker-news.firebaseio.com` | `/v0/topstories.json`, `/v0/item/{id}.json` |
+| Tech (ranked) | `lobste.rs` | `/hottest.json` |
+| Social | `reddit.com` | `/r/{sub}/hot.json?limit=…` (send User-Agent) |
+| Social | Mastodon instance | `/api/v1/timelines/public?limit=…` (public, no auth) |
+| Social | `public.api.bsky.app` | `/xrpc/app.bsky.feed.getAuthorFeed?actor={handle}` (public) |
 | Stocks/FX | `stooq.com` | `/q/l/?s={sym}&f=sd2t2ohlcv&e=csv`, `/q/d/l/?s={sym}&i=d` |
 | FX | `api.frankfurter.app` | `/latest?from=USD&to=EUR` |
 | Weather alerts | `api.weather.gov` | `/alerts/active?point={lat},{lon}` (US) |
@@ -480,7 +593,6 @@ coverage before it's called done — same bar as everything shipped so far.
 | Earthquakes | `earthquake.usgs.gov` | `/earthquakes/feed/v1.0/summary/2.5_day.geojson` |
 | Space weather | `services.swpc.noaa.gov` | `/products/noaa-planetary-k-index.json` |
 | Flights | `opensky-network.org` | `/api/states/all?lamin=&lomin=&lamax=&lomax=` |
-| Social | `reddit.com` | `/r/{sub}/hot.json?limit=…` (send User-Agent) |
 
 *All are proxied through `server.py`, cached with per-endpoint TTLs, and backed
 by a `sample_data.json` fixture so the dashboard stays fully usable offline.*

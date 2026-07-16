@@ -278,6 +278,11 @@ export const $resumeFailedSessionId = atom<string | null>(null)
 export const $resumeExhaustedSessionId = atom<string | null>(null)
 export const $currentModel = atom(storedString(COMPOSER_MODEL_KEY) ?? '')
 export const $currentProvider = atom(storedString(COMPOSER_PROVIDER_KEY) ?? '')
+// True when the user explicitly picked a model via selectModel (the picker UI).
+// A picker selection equal to the current default is still an explicit pick —
+// the next external default change must not overwrite it. Reset to false when
+// refreshCurrentModel(force=true) reseeds from the new profile's default.
+export const $currentModelExplicitlySet = atom(false)
 export const $currentReasoningEffort = atom(storedString(COMPOSER_EFFORT_KEY) ?? '')
 export const $currentServiceTier = atom('')
 export const $currentFastMode = atom(storedBoolean(COMPOSER_FAST_KEY, false))

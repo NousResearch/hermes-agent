@@ -275,6 +275,101 @@ def test_reassign_running_requires_reclaim_and_closes_run(ready_task):
         assert kb.latest_run(conn, ready_task).outcome == "reclaimed"
 
 
+def test_reassign_current_running_card_hands_off_without_signaling_self(
+    ready_task, monkeypatch,
+):
+    from pathlib import Path
+
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "config.yaml").write_text(
+        "platform_toolsets:\n  cli:\n    - kanban\n"
+    )
+    monkeypatch.setenv("HERMES_KANBAN_TASK", ready_task)
+
+    with kb.connect() as conn:
+        assert kb.assign_task(conn, ready_task, "test-orchestrator")
+        kb.claim_task(conn, ready_task)
+        current_run = kb.latest_run(conn, ready_task)
+        assert current_run is not None
+        run_id = current_run.id
+        conn.execute(
+            "UPDATE tasks SET worker_pid = ? WHERE id = ?",
+            (os.getpid(), ready_task),
+        )
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
+
+    termination_calls = []
+
+    def fake_terminate(pid, claim_lock, *, signal_fn=None):
+        termination_calls.append((pid, claim_lock, signal_fn))
+        return {
+            "prev_pid": pid,
+            "host_local": True,
+            "termination_attempted": True,
+            "terminated": False,
+            "sigkill": False,
+        }
+
+    monkeypatch.setattr(kb, "_terminate_reclaimed_worker", fake_terminate)
+
+    result = json.loads(kt._handle_reassign({
+        "task_id": ready_task,
+        "profile": "worker-code",
+        "reclaim": True,
+    }))
+
+    assert result["ok"] is True
+    assert result["assignee"] == "worker-code"
+    assert result["status"] == "ready"
+    assert termination_calls == []
+    with kb.connect() as conn:
+        task = kb.get_task(conn, ready_task)
+        run = kb.latest_run(conn, ready_task)
+        reclaimed = [
+            event for event in kb.list_events(conn, ready_task)
+            if event.kind == "reclaimed"
+        ]
+    assert task is not None
+    assert run is not None
+    assert reclaimed and reclaimed[-1].payload is not None
+    assert task.assignee == "worker-code"
+    assert task.worker_pid is None
+    assert run.outcome == "reclaimed"
+    assert reclaimed[-1].payload["self_handoff"] is True
+
+    # The old orchestrator process is still alive long enough to receive the
+    # tool result. Once the dispatcher claims the ready card for worker-code,
+    # stale calls from that old run must not reclaim the new worker.
+    with kb.connect() as conn:
+        assert kb.claim_task(conn, ready_task)
+        new_run = kb.latest_run(conn, ready_task)
+        assert new_run is not None
+        conn.execute(
+            "UPDATE tasks SET worker_pid = ? WHERE id = ?",
+            (424242, ready_task),
+        )
+    stale = json.loads(kt._handle_reassign({
+        "task_id": ready_task,
+        "profile": "worker-code",
+        "reclaim": True,
+    }))
+    assert "stale task-scoped orchestrator" in stale.get("error", "")
+    assert termination_calls == []
+    with kb.connect() as conn:
+        task = kb.get_task(conn, ready_task)
+        run = kb.latest_run(conn, ready_task)
+    assert task is not None
+    assert run is not None
+    assert task.assignee == "worker-code"
+    assert task.status == "running"
+    assert task.worker_pid == 424242
+    assert run.id == new_run.id
+    assert run.ended_at is None
+
+
 def test_reassign_validates_and_workers_are_rejected(ready_task, monkeypatch):
     from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
@@ -301,11 +396,24 @@ def test_task_scoped_explicit_orchestrator_can_call_admin_handler(
     )
     monkeypatch.setenv("HERMES_KANBAN_TASK", ready_task)
 
+    from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        assert kb.assign_task(conn, ready_task, "test-orchestrator")
+        assert kb.claim_task(conn, ready_task)
+        run = kb.latest_run(conn, ready_task)
+        assert run is not None
+        conn.execute(
+            "UPDATE tasks SET worker_pid = ? WHERE id = ?",
+            (os.getpid(), ready_task),
+        )
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run.id))
 
     result = json.loads(kt._handle_reassign({
         "task_id": ready_task,
         "profile": "new-profile",
+        "reclaim": True,
     }))
     assert result["ok"] is True
     assert result["assignee"] == "new-profile"

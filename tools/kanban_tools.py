@@ -373,6 +373,8 @@ def _default_notifier_profile() -> str:
 
 
 def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
+    import sys
+    print(f'\nDBG _require_orchestrator_tool({tool_name!r}) task_id={os.environ.get("HERMES_KANBAN_TASK")!r} run_id={os.environ.get("HERMES_KANBAN_RUN_ID")!r} profile={os.environ.get("HERMES_PROFILE")!r} profile_name={os.environ.get("HERMES_PROFILE_NAME")!r}', file=sys.stderr)
     """Belt-and-suspenders runtime guard for orchestrator-only handlers.
 
     The check_fn (`_check_kanban_orchestrator_mode`) keeps these tools
@@ -380,12 +382,49 @@ def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
     or test harness routes a worker to one of them anyway, return a
     structured tool_error so the model gets a clear refusal instead of
     silently mutating board state from a worker context.
+
+    Task-scoped orchestrators get one additional freshness check. A self-
+    reassign intentionally ends their run while the process may still be alive
+    long enough to receive the tool result. Any later admin call from that old
+    process must be rejected, otherwise it can reclaim the new assignee's run.
     """
     if _is_task_scoped_worker_context():
         return tool_error(
             f"{tool_name} is orchestrator-only; dispatcher-spawned workers "
             "must use kanban_complete, kanban_block, kanban_heartbeat, or "
             "kanban_comment for their assigned task."
+        )
+
+    task_id = os.environ.get("HERMES_KANBAN_TASK")
+    if not task_id:
+        return None
+    run_id = _worker_run_id(task_id)
+    profile = _default_notifier_profile()
+    try:
+        kb, conn = _connect()
+        try:
+            task = kb.get_task(conn, task_id)
+        finally:
+            conn.close()
+    except Exception as exc:
+        logger.warning(
+            "%s could not validate task-scoped orchestrator freshness: %r",
+            tool_name, exc,
+        )
+        return tool_error(
+            f"{tool_name}: could not validate task-scoped orchestrator context"
+        )
+    if (
+        task is None
+        or run_id is None
+        or task.status != "running"
+        or task.current_run_id != run_id
+        or task.assignee != profile
+    ):
+        return tool_error(
+            f"{tool_name}: stale task-scoped orchestrator context for "
+            f"{task_id}; the run ended or ownership changed. Stop this process "
+            "without mutating the board again."
         )
     return None
 

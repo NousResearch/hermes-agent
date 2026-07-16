@@ -3772,9 +3772,29 @@ def reclaim_task(
         # Nothing to reclaim — already ready / blocked / done.
         return False
     prev_lock = row["claim_lock"]
-    termination = _terminate_reclaimed_worker(
-        row["worker_pid"], prev_lock, signal_fn=signal_fn,
-    )
+    worker_pid = row["worker_pid"]
+    self_handoff = bool(worker_pid and int(worker_pid) == os.getpid())
+    if self_handoff:
+        # A task-scoped orchestrator may intentionally reassign its own
+        # canonical card in place. Signaling worker_pid here would terminate
+        # this process before the DB transition and tool response land,
+        # leaving the card owned by the orchestrator and producing a false
+        # clean-exit protocol violation. Release the claim atomically below;
+        # the current process will exit normally after returning the tool
+        # result, while the dispatcher can pick the ready card up under the
+        # new assignee.
+        termination = {
+            "prev_pid": int(worker_pid),
+            "host_local": True,
+            "termination_attempted": False,
+            "terminated": False,
+            "sigkill": False,
+            "self_handoff": True,
+        }
+    else:
+        termination = _terminate_reclaimed_worker(
+            worker_pid, prev_lock, signal_fn=signal_fn,
+        )
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'ready', claim_lock = NULL, "

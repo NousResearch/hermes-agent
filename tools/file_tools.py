@@ -1053,6 +1053,8 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                     "docker_forward_env": config.get("docker_forward_env", []),
                     "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
                     "docker_network": config.get("docker_network", True),
+                    "container_network": config.get("container_network", "on"),
+                    "container_network_allowlist": config.get("container_network_allowlist", []),
                 }
 
             ssh_config = None

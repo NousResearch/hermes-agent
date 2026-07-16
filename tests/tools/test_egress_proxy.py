@@ -6,7 +6,6 @@ import socket
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 
 import pytest
 
@@ -403,6 +402,20 @@ def test_proxy_returns_502_when_upstream_unreachable():
     assert resp.split(b"\r\n", 1)[0].split(b" ")[1] == b"502"
 
 
+def test_expected_network_name_matches_provisioning():
+    """expected_network_name must be pure and agree with the provisioning
+    naming (same canonicalization + hash), so the Docker reuse guard can
+    validate a persisted container without touching docker."""
+    assert egress_proxy.expected_network_name(["B.com", " a.com "]) == (
+        egress_proxy.expected_network_name(["a.com", "b.com"])
+    )
+    name = egress_proxy.expected_network_name(["github.com"])
+    assert name.startswith(egress_proxy.EGRESS_NETWORK_PREFIX)
+    assert name == egress_proxy._names(["github.com"])[0]
+    # Different allowlists must map to different networks (stale-container detection).
+    assert name != egress_proxy.expected_network_name(["pypi.org"])
+
+
 # ── config wiring: the settings must actually reach the sandbox layer ──
 
 
@@ -426,17 +439,117 @@ def test_get_env_config_egress_defaults(monkeypatch):
     assert cfg["container_network_allowlist"] == []
 
 
-def test_startup_bridges_map_egress_env_vars():
-    """Regression guard for the config.yaml → env-var bridge.
+# ── creation paths: all three sandbox creators must wire egress settings ──
+
+
+def _drive_creation_path(monkeypatch, invoke):
+    """Run *invoke* with egress env vars set and ``_DockerEnvironment`` faked,
+    returning the kwargs that actually reached the DockerEnvironment class.
+
+    Exercises the real ``_get_env_config()`` → ``container_config`` →
+    ``_create_environment`` chain, so a creation path that drops the egress
+    keys from its ``container_config`` dict fails here with
+    ``network_mode=None`` instead of shipping a full-network sandbox.
+    """
+    import tools.terminal_tool as tt
+
+    captured = {}
+
+    class _DummyEnv:
+        cwd = "/root"
+        cwd_owner = None
+
+        def execute(self, *args, **kwargs):
+            return {"output": "", "exit_code": 0}
+
+    def _fake_docker_env(**kwargs):
+        captured.update(kwargs)
+        return _DummyEnv()
+
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_CONTAINER_NETWORK", "allowlist")
+    monkeypatch.setenv("TERMINAL_CONTAINER_NETWORK_ALLOWLIST", '["github.com"]')
+    monkeypatch.delenv("TERMINAL_CWD", raising=False)
+    monkeypatch.setattr(tt, "_DockerEnvironment", _fake_docker_env)
+    monkeypatch.setattr(tt, "_maybe_reap_docker_orphans", lambda cc: None)
+    monkeypatch.setattr(tt, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(tt, "_active_environments", {})
+    monkeypatch.setattr(tt, "_last_activity", {})
+    invoke()
+    assert captured, "creation path never reached DockerEnvironment"
+    return captured
+
+
+def test_terminal_path_egress_reaches_docker_environment(monkeypatch):
+    import tools.terminal_tool as tt
+
+    captured = _drive_creation_path(
+        monkeypatch,
+        lambda: tt.terminal_tool(command="pwd", task_id="egress-term", force=True),
+    )
+    assert captured["network_mode"] == "allowlist"
+    assert captured["network_allowlist"] == ["github.com"]
+
+
+def test_code_execution_path_egress_reaches_docker_environment(monkeypatch):
+    from tools.code_execution_tool import _get_or_create_env
+
+    captured = _drive_creation_path(
+        monkeypatch, lambda: _get_or_create_env("egress-exec"),
+    )
+    assert captured["network_mode"] == "allowlist"
+    assert captured["network_allowlist"] == ["github.com"]
+
+
+def test_file_tools_path_egress_reaches_docker_environment(monkeypatch):
+    import tools.file_tools as ft
+
+    monkeypatch.setattr(ft, "_file_ops_cache", {})
+    monkeypatch.setattr(ft, "_last_known_cwd", {})
+    captured = _drive_creation_path(
+        monkeypatch, lambda: ft._get_file_ops("egress-files"),
+    )
+    assert captured["network_mode"] == "allowlist"
+    assert captured["network_allowlist"] == ["github.com"]
+
+
+def test_cli_bridge_exports_egress_env_vars(tmp_path, monkeypatch):
+    """Regression guard for the config.yaml → env-var bridge (CLI startup).
 
     The sandbox layer once shipped fully unit-tested but inert, because the
-    two startup maps below never bridged container_network*. They are local
-    dicts inside functions, so assert on the source directly.
+    startup bridges never mapped container_network*. Drive the real
+    ``cli.load_cli_config()`` and assert the env vars terminal_tool reads
+    actually get set (the gateway bridge has its own behavioral test in
+    tests/gateway/test_config_env_bridge_authority.py).
     """
-    repo = Path(__file__).resolve().parents[2]
-    for rel in ("cli.py", "gateway/run.py"):
-        src = (repo / rel).read_text(encoding="utf-8")
-        assert '"container_network": "TERMINAL_CONTAINER_NETWORK"' in src, rel
-        assert (
-            '"container_network_allowlist": "TERMINAL_CONTAINER_NETWORK_ALLOWLIST"' in src
-        ), rel
+    import json
+    import os
+    from unittest import mock
+
+    import yaml
+
+    import cli
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(yaml.safe_dump({
+        "terminal": {
+            "backend": "docker",
+            "container_network": "allowlist",
+            "container_network_allowlist": ["github.com", "pypi.org"],
+        },
+    }))
+
+    # load_cli_config bridges many terminal keys into os.environ; snapshot
+    # and restore the whole environment so nothing leaks into other tests.
+    with mock.patch.dict(os.environ):
+        os.environ["HERMES_HOME"] = str(hermes_home)
+        os.environ.pop("TERMINAL_CONTAINER_NETWORK", None)
+        os.environ.pop("TERMINAL_CONTAINER_NETWORK_ALLOWLIST", None)
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        cli.load_cli_config()
+
+        assert os.environ["TERMINAL_CONTAINER_NETWORK"] == "allowlist"
+        assert json.loads(os.environ["TERMINAL_CONTAINER_NETWORK_ALLOWLIST"]) == [
+            "github.com", "pypi.org",
+        ]

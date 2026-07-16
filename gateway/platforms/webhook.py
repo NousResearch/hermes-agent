@@ -58,6 +58,10 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
 )
+from gateway.platforms.webhook_filters import (
+    DEFAULT_SCRIPT_TIMEOUT_SECONDS,
+    WebhookRouteProcessor,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,12 +77,29 @@ _BUILTIN_DELIVER_PLATFORMS = {
     "qqbot", "yuanbao",
 }
 
-DEFAULT_HOST = "0.0.0.0"
+# Default bind host. ``None`` tells aiohttp/asyncio's ``create_server`` to bind
+# BOTH address families (IPv4 + IPv6) — the portable dual-stack default.
+#
+# Why not "0.0.0.0" (the old default) or "::"?
+#   - "0.0.0.0" binds IPv4 ONLY. On IPv6-only private networks — notably Fly.io
+#     6PN, where an agent's ``<app>.internal`` name resolves to an ``fdaa:…``
+#     IPv6 address — an IPv4-only listener is unreachable. That is exactly why
+#     hosted-agent webhook routes were publicly unreachable: the edge router
+#     reverse-proxies to ``<app>.internal:8644`` over 6PN (IPv6) but the adapter
+#     was listening on 0.0.0.0 (v4 only) → connection refused.
+#   - "::" is NOT a safe fix: on hosts where the kernel sets IPV6_V6ONLY=1
+#     (verified on Fly machines), binding "::" yields an IPv6-ONLY socket, which
+#     then breaks the IPv4 loopback health check (``curl 127.0.0.1:8644/health``)
+#     and the AF_INET port-conflict probe in connect().
+#   - ``None`` asks the event loop to create a listening socket per resolved
+#     family, so both 127.0.0.1 (v4) and the 6PN fdaa (v6) are served regardless
+#     of the bindv6only sysctl. Users can still pin a specific host via
+#     ``platforms.webhook.extra.host``.
+DEFAULT_HOST = None
 DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
 _RATE_WINDOW_SECONDS = 60.0
-
 # Hostnames/IP literals that only serve connections originating on the same
 # machine. Anything else is treated as a public bind for safety-rail purposes.
 _LOOPBACK_HOSTS = frozenset({
@@ -90,7 +111,7 @@ _LOOPBACK_HOSTS = frozenset({
 })
 
 
-def _is_loopback_host(host: str) -> bool:
+def _is_loopback_host(host: Optional[str]) -> bool:
     """True when `host` binds only to the local machine.
 
     Covers IPv4 loopback, the standard `localhost` alias, IPv6 loopback in
@@ -113,7 +134,11 @@ class WebhookAdapter(BasePlatformAdapter):
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WEBHOOK)
-        self._host: str = config.extra.get("host", DEFAULT_HOST)
+        # ``host`` may be None (dual-stack default) or a user-pinned string.
+        # A config value of empty string / null is normalised to None so it
+        # also means "bind all families" rather than an invalid "" host.
+        _cfg_host = config.extra.get("host", DEFAULT_HOST)
+        self._host: Optional[str] = _cfg_host or None
         self._port: int = int(config.extra.get("port", DEFAULT_PORT))
         self._global_secret: str = config.extra.get("secret", "")
         self._static_routes: Dict[str, dict] = config.extra.get("routes", {})
@@ -155,6 +180,15 @@ class WebhookAdapter(BasePlatformAdapter):
         self._max_body_bytes: int = int(
             config.extra.get("max_body_bytes", 1_048_576)
         )  # 1MB
+        self._script_timeout_seconds: int = int(
+            config.extra.get(
+                "script_timeout_seconds",
+                DEFAULT_SCRIPT_TIMEOUT_SECONDS,
+            )
+        )
+        self._route_processor = WebhookRouteProcessor(
+            script_timeout_seconds=self._script_timeout_seconds
+        )
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -213,27 +247,39 @@ class WebhookAdapter(BasePlatformAdapter):
             "/p/{profile}/webhooks/{route_name}", self._handle_webhook
         )
 
-        # Port conflict detection — fail fast if port is already in use
-        import socket as _socket
-        try:
-            with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _s:
-                _s.settimeout(1)
-                _s.connect(('127.0.0.1', self._port))
-            logger.error('[webhook] Port %d already in use. Set a different port in config.yaml: platforms.webhook.port', self._port)
-            return False
-        except (ConnectionRefusedError, OSError):
-            pass  # port is free
-
         self._runner = web.AppRunner(app)
         await self._runner.setup()
-        site = web.TCPSite(self._runner, self._host, self._port)
-        await site.start()
+        # Do not probe only one address family before binding. With the
+        # dual-stack default, an IPv6-only listener can already own this port
+        # while 127.0.0.1 still looks free. Also disable SO_REUSEADDR for the
+        # listener: on macOS, two wildcard/specific sockets with SO_REUSEADDR
+        # can silently split traffic while both servers report success.
+        site = web.TCPSite(
+            self._runner,
+            self._host,
+            self._port,
+            reuse_address=False,
+        )
+        try:
+            await site.start()
+        except OSError as exc:
+            await self._runner.cleanup()
+            self._runner = None
+            logger.error(
+                "[webhook] Could not bind %s:%d: %s. "
+                "Set a different host or port in config.yaml under "
+                "platforms.webhook.extra.",
+                self._host or "all IPv4+IPv6 interfaces",
+                self._port,
+                exc,
+            )
+            return False
         self._mark_connected()
 
         route_names = ", ".join(self._routes.keys()) or "(none configured)"
         logger.info(
             "[webhook] Listening on %s:%d — routes: %s",
-            self._host,
+            self._host or "* (all interfaces, IPv4+IPv6)",
             self._port,
             route_names,
         )
@@ -570,6 +616,45 @@ class WebhookAdapter(BasePlatformAdapter):
             return web.json_response(
                 {"status": "ignored", "event": event_type}
             )
+
+        if not self._route_processor.route_filters_match(
+            route_config, payload, event_type, request.headers
+        ):
+            logger.info(
+                "[webhook] filtered event=%s route=%s",
+                event_type,
+                route_name,
+            )
+            return web.json_response(
+                {
+                    "status": "ignored",
+                    "reason": "filter",
+                    "route": route_name,
+                }
+            )
+
+        if route_config.get("script"):
+            # run_route_script shells out (subprocess.run, up to its timeout);
+            # run it in a worker thread so it can't block the gateway event loop.
+            keep, transformed_payload = await asyncio.to_thread(
+                self._route_processor.run_route_script,
+                route_config.get("script"),
+                payload,
+            )
+            if not keep:
+                logger.info(
+                    "[webhook] script ignored event=%s route=%s",
+                    event_type,
+                    route_name,
+                )
+                return web.json_response(
+                    {
+                        "status": "ignored",
+                        "reason": "script",
+                        "route": route_name,
+                    }
+                )
+            payload = transformed_payload or payload
 
         # Format prompt from template
         prompt_template = route_config.get("prompt", "")

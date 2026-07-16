@@ -182,12 +182,20 @@ tail -f "${HERMES_HOME:-$HOME/.hermes}/logs/gateway.log"
 
 ## Filtering to specific actions
 
-GitHub sends `pull_request` events for many actions: `opened`, `synchronize`, `reopened`, `closed`, `labeled`, etc. The `events` list filters only by the `X-GitHub-Event` header value — it cannot filter by action sub-type at the routing level.
+GitHub sends `pull_request` events for many actions: `opened`, `synchronize`, `reopened`, `closed`, `labeled`, etc. The `events` list filters by the `X-GitHub-Event` header value, and route-level `filters` can narrow by payload fields such as `action`.
 
 The prompt in Step 1 already handles this by instructing the agent to stop early for `closed` and `labeled` events.
 
 :::warning The agent still runs and consumes tokens
-The "stop here" instruction prevents a meaningful review, but the agent still runs to completion for every `pull_request` event regardless of action. GitHub webhooks can only filter by event type (`pull_request`, `push`, `issues`, etc.) — not by action sub-type (`opened`, `closed`, `labeled`). There is no routing-level filter for sub-actions. For high-volume repos, accept this cost or filter upstream with a GitHub Actions workflow that calls your webhook URL conditionally.
+The "stop here" instruction prevents a meaningful review, but the agent still runs to completion for every `pull_request` event regardless of action. Prefer filtering before the agent wakes:
+
+```yaml
+filters:
+  - field: "action"
+    in: ["opened", "synchronize", "reopened"]
+```
+
+For high-volume repositories, you can still filter upstream with a GitHub Actions workflow that calls your webhook URL conditionally.
 :::
 
 > There is no Jinja2 or conditional template syntax. `{field}` and `{nested.field}` are the only substitutions supported. Anything else is passed verbatim to the agent.
@@ -303,7 +311,6 @@ platforms:
   webhook:
     enabled: true
     extra:
-      host: "0.0.0.0"         # bind address (default: 0.0.0.0)
       port: 8644               # listen port (default: 8644)
       secret: ""               # optional global fallback secret
       rate_limit: 30           # requests per minute per route

@@ -165,6 +165,20 @@ def _toolset_allowed_for_platform(ts_key: str, platform: str) -> bool:
     return allowed is None or platform in allowed
 
 
+def _toolset_configuration_platform(ts_key: str, default: str = "cli") -> str:
+    """Return the platform a platform-less configuration UI should target.
+
+    Most configurable toolsets retain the historical desktop/CLI target. A
+    toolset restricted away from that platform must instead be configured on
+    one of its supported platforms; otherwise the shared save helper correctly
+    drops it and the UI reports a successful no-op.
+    """
+    allowed = _TOOLSET_PLATFORM_RESTRICTIONS.get(ts_key)
+    if not allowed or default in allowed:
+        return default
+    return sorted(allowed)[0]
+
+
 def _get_effective_configurable_toolsets():
     """Return CONFIGURABLE_TOOLSETS + any plugin-provided toolsets.
 
@@ -321,6 +335,15 @@ TOOL_CATEGORIES = {
                 "env_vars": [],
                 "tts_provider": "piper",
                 "post_setup": "piper",
+            },
+            {
+                "name": "DeepInfra TTS",
+                "badge": "paid",
+                "tag": "Chatterbox, Qwen3-TTS, … — live catalog from api.deepinfra.com",
+                "env_vars": [
+                    {"key": "DEEPINFRA_API_KEY", "prompt": "DeepInfra API key", "url": "https://deepinfra.com/dash/api_keys"},
+                ],
+                "tts_provider": "deepinfra",
             },
         ],
     },
@@ -1612,6 +1635,28 @@ def enabled_mcp_server_names(config: dict) -> Set[str]:
     }
 
 
+def _exempt_explicit_platform_native(
+    default_off: Set[str], platform: str, *, explicitly_configured: bool
+) -> None:
+    """Let platform-native default-off toolsets through on explicit config.
+
+    Toolsets that are both in ``_DEFAULT_OFF_TOOLSETS`` and restricted to
+    ``platform`` via ``_TOOLSET_PLATFORM_RESTRICTIONS`` (currently
+    ``discord``/``discord_admin`` on the discord platform) are the platform's
+    own native tools. They are kept off for *unconfigured* platforms (security
+    opt-in), but once a user explicitly saves a toolset list for the platform
+    the composite they chose (e.g. ``hermes-discord``, which contains those
+    tools) is an opt-in — stripping them silently defeats the explicit
+    configuration (#35527). Mutates ``default_off`` in place.
+    """
+    if not explicitly_configured:
+        return
+    for ts in list(default_off):
+        allowed = _TOOLSET_PLATFORM_RESTRICTIONS.get(ts)
+        if allowed is not None and platform in allowed:
+            default_off.discard(ts)
+
+
 def _get_platform_tools(
     config: dict,
     platform: str,
@@ -1623,6 +1668,11 @@ def _get_platform_tools(
 
     platform_toolsets = config.get("platform_toolsets") or {}
     toolset_names = platform_toolsets.get(platform)
+    # Track whether the user explicitly saved a toolset list for this platform
+    # (vs. falling back to the platform default). An explicit composite (e.g.
+    # ``hermes-discord``) is an opt-in to the platform's native default-off
+    # toolsets — see _exempt_explicit_platform_native (#35527).
+    explicitly_configured = isinstance(toolset_names, list)
 
     if toolset_names is None or not isinstance(toolset_names, list):
         plat_info = PLATFORMS.get(platform)
@@ -1686,6 +1736,9 @@ def _get_platform_tools(
                 default_off.remove(platform)
             if "homeassistant" in default_off and os.getenv("HASS_TOKEN"):
                 default_off.remove("homeassistant")
+            _exempt_explicit_platform_native(
+                default_off, platform, explicitly_configured=explicitly_configured
+            )
             expanded -= default_off
 
             enabled_toolsets |= expanded
@@ -1748,6 +1801,9 @@ def _get_platform_tools(
         # strip the entry we just added.
         if x_search_auto_enabled and "x_search" in default_off:
             default_off.remove("x_search")
+        _exempt_explicit_platform_native(
+            default_off, platform, explicitly_configured=explicitly_configured
+        )
         enabled_toolsets -= default_off
 
     # Recover non-configurable platform toolsets (e.g. discord, feishu_doc,
@@ -1797,8 +1853,8 @@ def _get_platform_tools(
     # has been saved for that platform (tracked via known_plugin_toolsets).
     # Unknown plugins default to enabled; known-but-absent = disabled.
     if plugin_ts_keys:
-        known_map = config.get("known_plugin_toolsets", {})
-        known_for_platform = set(known_map.get(platform, []))
+        known_map = config.get("known_plugin_toolsets", {}) or {}
+        known_for_platform = set(known_map.get(platform, []) or [])
         for pts in plugin_ts_keys:
             if pts in toolset_names:
                 # Explicitly listed in config — enabled
@@ -1947,7 +2003,10 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     # Track which plugin toolsets are "known" for this platform so we can
     # distinguish "new plugin, default enabled" from "user disabled it".
     if plugin_keys:
-        config.setdefault("known_plugin_toolsets", {})
+        # setdefault does NOT replace a present-but-null key ("known_plugin_toolsets:"
+        # in config.yaml parses to None) — normalize before indexing into it.
+        if not isinstance(config.get("known_plugin_toolsets"), dict):
+            config["known_plugin_toolsets"] = {}
         config["known_plugin_toolsets"][platform] = sorted(plugin_keys)
 
     # Reconcile with agent.disabled_toolsets. _get_platform_tools() applies

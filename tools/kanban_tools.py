@@ -82,16 +82,14 @@ def _check_kanban_mode() -> bool:
 
 
 def _check_kanban_orchestrator_mode() -> bool:
-    """Board-routing tools (kanban_list, kanban_unblock) are intentionally
-    hidden from task workers.
+    """Expose board-routing tools only to profiles that explicitly opt in.
 
-    Dispatcher-spawned workers should close their own task via the
-    lifecycle tools (complete/block/heartbeat), not enumerate or unblock
-    board state. Profiles that explicitly opt into the kanban toolset
-    and are NOT scoped to a single task are the orchestrator surface.
+    Kanban orchestrators are themselves dispatcher-spawned tasks, so
+    ``HERMES_KANBAN_TASK`` cannot distinguish a router card from a focused
+    worker. The profile's configured ``toolsets: [kanban]`` is the capability
+    boundary; regular worker profiles receive lifecycle tools through the
+    dispatcher but do not carry this explicit config opt-in.
     """
-    if os.environ.get("HERMES_KANBAN_TASK"):
-        return False
     return _profile_has_kanban_toolset()
 
 
@@ -367,7 +365,7 @@ def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
     structured tool_error so the model gets a clear refusal instead of
     silently mutating board state from a worker context.
     """
-    if os.environ.get("HERMES_KANBAN_TASK"):
+    if os.environ.get("HERMES_KANBAN_TASK") and not _profile_has_kanban_toolset():
         return tool_error(
             f"{tool_name} is orchestrator-only; dispatcher-spawned workers "
             "must use kanban_complete, kanban_block, kanban_heartbeat, or "

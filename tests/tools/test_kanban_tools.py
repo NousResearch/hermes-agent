@@ -84,12 +84,14 @@ def test_kanban_worker_env_overrides_profile_toolset_filter(monkeypatch, tmp_pat
     assert "kanban_list" not in names
 
 
-def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_path):
-    """Task scope wins over profile config for board-routing tools.
+def test_task_scoped_orchestrator_with_kanban_toolset_sees_board_routing(
+    monkeypatch, tmp_path,
+):
+    """A router card keeps its admin surface when its profile explicitly
+    opts into ``toolsets: [kanban]``.
 
-    Even if a worker process happens to also have ``toolsets: [kanban]``
-    in its config, the HERMES_KANBAN_TASK env var means it's a focused
-    worker and must not see kanban_list / kanban_unblock.
+    Kanban orchestrators are themselves dispatcher-spawned tasks, so
+    HERMES_KANBAN_TASK alone cannot distinguish them from focused workers.
     """
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
     home = tmp_path / ".hermes"
@@ -105,15 +107,16 @@ def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_p
     schema = registry.get_definitions(set(resolve_toolset("kanban")), quiet=True)
     names = {s["function"].get("name") for s in schema if "function" in s}
     kanban = {n for n in names if n and n.startswith("kanban_")}
-    assert {
+    expected_admin = {
         "kanban_list",
         "kanban_unblock",
         "kanban_reassign",
         "kanban_archive",
         "kanban_notify_subscribe",
-    }.isdisjoint(kanban), (
-        f"Board-routing tools leaked into worker schema: "
-        f"{kanban & {'kanban_list', 'kanban_unblock'}}"
+    }
+    assert expected_admin.issubset(kanban), (
+        f"Task-scoped orchestrator is missing admin tools: "
+        f"{expected_admin - kanban}"
     )
 
 
@@ -243,6 +246,25 @@ def test_reassign_validates_and_workers_are_rejected(ready_task, monkeypatch):
     })).get("error", "")
     with kb.connect() as conn:
         assert kb.get_task(conn, ready_task).assignee == "old-profile"
+
+
+def test_task_scoped_explicit_orchestrator_can_call_admin_handler(
+    ready_task, monkeypatch,
+):
+    from pathlib import Path
+
+    home = Path(os.environ["HERMES_HOME"])
+    (home / "config.yaml").write_text("toolsets:\n  - kanban\n")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", ready_task)
+
+    from tools import kanban_tools as kt
+
+    result = json.loads(kt._handle_reassign({
+        "task_id": ready_task,
+        "profile": "new-profile",
+    }))
+    assert result["ok"] is True
+    assert result["assignee"] == "new-profile"
 
 
 def test_archive_prevalidates_idempotently_and_deduplicates(ready_task):

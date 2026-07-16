@@ -1,0 +1,119 @@
+{
+  "cases": [
+    {
+      "name": "interactive main turn stamps session",
+      "agent": {
+        "provider": "claude-apr",
+        "session_id": "sid-live",
+        "platform": "discord",
+        "_delegate_depth": 0
+      },
+      "aux_task": null
+    },
+    {
+      "name": "subagent main turn is background",
+      "agent": {
+        "provider": "claude-apr",
+        "session_id": "sid-child",
+        "platform": "discord",
+        "_delegate_depth": 1
+      },
+      "aux_task": null
+    },
+    {
+      "name": "cron principal is background",
+      "agent": {
+        "provider": "claude-apr",
+        "session_id": "sid-cron",
+        "platform": "cron",
+        "_delegate_depth": 0
+      },
+      "aux_task": null
+    },
+    {
+      "name": "headless env fallback is background",
+      "agent": {
+        "provider": "claude-apr",
+        "session_id": "sid-env",
+        "platform": null,
+        "_delegate_depth": 0
+      },
+      "env": {
+        "HERMES_SESSION_SOURCE": "cron"
+      },
+      "aux_task": null
+    },
+    {
+      "name": "interactive env fallback is interactive",
+      "agent": {
+        "provider": "claude-apr",
+        "session_id": "sid-env-live",
+        "platform": "",
+        "_delegate_depth": 0
+      },
+      "env": {
+        "HERMES_SESSION_SOURCE": "telegram"
+      },
+      "aux_task": null
+    },
+    {
+      "name": "no source signal is background",
+      "agent": {
+        "provider": "claude-apr",
+        "session_id": "sid-nosignal",
+        "platform": "",
+        "_delegate_depth": 0
+      },
+      "aux_task": null
+    },
+    {
+      "name": "critical aux on live principal is interactive",
+      "agent": {
+        "provider": "claude-apr",
+        "session_id": "sid-aux-live",
+        "platform": "desktop",
+        "_delegate_depth": 0
+      },
+      "aux_task": "compression"
+    },
+    {
+      "name": "offpath aux on delegated principal is background",
+      "agent": {
+        "provider": "claude-apr",
+        "session_id": "sid-aux-child",
+        "platform": "slack",
+        "_delegate_depth": 2
+      },
+      "aux_task": "title"
+    },
+    {
+      "name": "missing session still stamps lane",
+      "agent": {
+        "provider": "claude-apr",
+        "session_id": null,
+        "platform": "web",
+        "_delegate_depth": 0
+      },
+      "aux_task": null
+    },
+    {
+      "name": "direct anthropic has no routing headers",
+      "agent": {
+        "provider": "anthropic",
+        "session_id": "sid-direct",
+        "platform": "discord",
+        "_delegate_depth": 0
+      },
+      "aux_task": null
+    },
+    {
+      "name": "missing provider attr is safe",
+      "agent": {
+        "session_id": "sid-no-provider",
+        "platform": "discord",
+        "_delegate_depth": 0
+      },
+      "aux_task": null
+    }
+  ]
+}

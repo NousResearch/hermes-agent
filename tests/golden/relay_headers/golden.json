@@ -1,0 +1,240 @@
+{
+  "16975a18cafcf8146dd16d897d9950d848ccd1f27726b8ee1e0a53a5ab4ad602": {
+    "input": {
+      "agent": {
+        "_delegate_depth": 0,
+        "platform": "cron",
+        "provider": "claude-apr",
+        "session_id": "sid-cron"
+      },
+      "aux_task": null,
+      "name": "cron principal is background"
+    },
+    "name": "cron principal is background",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": {
+        "x-hermes-lane": "background",
+        "x-hermes-lane-src": "platform=cron;delegate_depth=0;aux_task=-",
+        "x-hermes-session": "sid-cron"
+      }
+    }
+  },
+  "2bca84d4d1b86d2349276e8e3e77d2450e30e7095da6156bd90fed281a1d7a3c": {
+    "input": {
+      "agent": {
+        "_delegate_depth": 0,
+        "platform": "discord",
+        "session_id": "sid-no-provider"
+      },
+      "aux_task": null,
+      "name": "missing provider attr is safe"
+    },
+    "name": "missing provider attr is safe",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": {}
+    }
+  },
+  "31f952e8c31c1cee32296d78d036a0a915b548908568ec2c3585a80a0127b4f2": {
+    "input": {
+      "agent": {
+        "_delegate_depth": 0,
+        "platform": null,
+        "provider": "claude-apr",
+        "session_id": "sid-env"
+      },
+      "aux_task": null,
+      "env": {
+        "HERMES_SESSION_SOURCE": "cron"
+      },
+      "name": "headless env fallback is background"
+    },
+    "name": "headless env fallback is background",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": {
+        "x-hermes-lane": "background",
+        "x-hermes-lane-src": "platform=cron;delegate_depth=0;aux_task=-",
+        "x-hermes-session": "sid-env"
+      }
+    }
+  },
+  "44d788fa9b8609692dc7b4e83f189cefe7703198ffcc31bb105cd29f53acc752": {
+    "input": {
+      "agent": {
+        "_delegate_depth": 0,
+        "platform": "discord",
+        "provider": "anthropic",
+        "session_id": "sid-direct"
+      },
+      "aux_task": null,
+      "name": "direct anthropic has no routing headers"
+    },
+    "name": "direct anthropic has no routing headers",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": {}
+    }
+  },
+  "4c4504e4f04662368f3f60394af4cb1c2a0fe7968eb50c5211d3abb64ac5ff4a": {
+    "input": {
+      "agent": {
+        "_delegate_depth": 1,
+        "platform": "discord",
+        "provider": "claude-apr",
+        "session_id": "sid-child"
+      },
+      "aux_task": null,
+      "name": "subagent main turn is background"
+    },
+    "name": "subagent main turn is background",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": {
+        "x-hermes-lane": "background",
+        "x-hermes-lane-src": "platform=discord;delegate_depth=1;aux_task=-",
+        "x-hermes-session": "sid-child"
+      }
+    }
+  },
+  "95ce3314c7350b82823af8b3afb445ed9158419dab5b7c7d7e80fdd6248a112e": {
+    "input": {
+      "agent": {
+        "_delegate_depth": 0,
+        "platform": "",
+        "provider": "claude-apr",
+        "session_id": "sid-env-live"
+      },
+      "aux_task": null,
+      "env": {
+        "HERMES_SESSION_SOURCE": "telegram"
+      },
+      "name": "interactive env fallback is interactive"
+    },
+    "name": "interactive env fallback is interactive",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": {
+        "x-hermes-lane": "interactive",
+        "x-hermes-lane-src": "platform=telegram;delegate_depth=0;aux_task=-",
+        "x-hermes-session": "sid-env-live"
+      }
+    }
+  },
+  "96756c4154e3eda39c4c2a9c3f26eaab786093b8508aca88c3e8712f73abd1ac": {
+    "input": {
+      "agent": {
+        "_delegate_depth": 2,
+        "platform": "slack",
+        "provider": "claude-apr",
+        "session_id": "sid-aux-child"
+      },
+      "aux_task": "title",
+      "name": "offpath aux on delegated principal is background"
+    },
+    "name": "offpath aux on delegated principal is background",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": {
+        "x-hermes-lane": "background",
+        "x-hermes-lane-src": "platform=slack;delegate_depth=2;aux_task=title",
+        "x-hermes-session": "sid-aux-child"
+      }
+    }
+  },
+  "a418a329887776ed700925a97271b14fb4fe17d8002da4c6ed9532f97e768e27": {
+    "input": {
+      "agent": {
+        "_delegate_depth": 0,
+        "platform": "",
+        "provider": "claude-apr",
+        "session_id": "sid-nosignal"
+      },
+      "aux_task": null,
+      "name": "no source signal is background"
+    },
+    "name": "no source signal is background",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": {
+        "x-hermes-lane": "background",
+        "x-hermes-lane-src": "platform=-;delegate_depth=0;aux_task=-",
+        "x-hermes-session": "sid-nosignal"
+      }
+    }
+  },
+  "b752a048b11d1abb33cbcef98f383c8ad4eb6c08be9b0744374f824b1bba5fb6": {
+    "input": {
+      "agent": {
+        "_delegate_depth": 0,
+        "platform": "web",
+        "provider": "claude-apr",
+        "session_id": null
+      },
+      "aux_task": null,
+      "name": "missing session still stamps lane"
+    },
+    "name": "missing session still stamps lane",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": {
+        "x-hermes-lane": "interactive",
+        "x-hermes-lane-src": "platform=web;delegate_depth=0;aux_task=-"
+      }
+    }
+  },
+  "bf6945939b122a822be103b2ec7feb69e10b7f0fef99fbf115b691b4a4759844": {
+    "input": {
+      "agent": {
+        "_delegate_depth": 0,
+        "platform": "desktop",
+        "provider": "claude-apr",
+        "session_id": "sid-aux-live"
+      },
+      "aux_task": "compression",
+      "name": "critical aux on live principal is interactive"
+    },
+    "name": "critical aux on live principal is interactive",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": {
+        "x-hermes-lane": "interactive",
+        "x-hermes-lane-src": "platform=desktop;delegate_depth=0;aux_task=compression",
+        "x-hermes-session": "sid-aux-live"
+      }
+    }
+  },
+  "bfdafca31690d752406b1eaa8700ad9d73f8595908481308bcb0edd21c958a82": {
+    "input": {
+      "agent": {
+        "_delegate_depth": 0,
+        "platform": "discord",
+        "provider": "claude-apr",
+        "session_id": "sid-live"
+      },
+      "aux_task": null,
+      "name": "interactive main turn stamps session"
+    },
+    "name": "interactive main turn stamps session",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": {
+        "x-hermes-lane": "interactive",
+        "x-hermes-lane-src": "platform=discord;delegate_depth=0;aux_task=-",
+        "x-hermes-session": "sid-live"
+      }
+    }
+  }
+}

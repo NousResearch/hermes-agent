@@ -14,6 +14,7 @@ import hermes_cli.gateway as gateway_cli
 from gateway import status
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
+    GATEWAY_FATAL_CONFIG_EXIT_CODE,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
 )
 
@@ -435,6 +436,7 @@ class TestGeneratedSystemdUnits:
         assert "ExecStop=" not in unit
         assert "ExecReload=/bin/kill -USR1 $MAINPID" in unit
         assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
+        assert f"RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}" in unit
         # TimeoutStopSec must exceed the default drain_timeout (60s) so
         # systemd doesn't SIGKILL the cgroup before post-interrupt cleanup
         # (tool subprocess kill, adapter disconnect) runs — issue #8202.
@@ -546,6 +548,7 @@ class TestGeneratedSystemdUnits:
         assert "ExecStop=" not in unit
         assert "ExecReload=/bin/kill -USR1 $MAINPID" in unit
         assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
+        assert f"RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}" in unit
         # TimeoutStopSec must exceed the default drain_timeout (60s) so
         # systemd doesn't SIGKILL the cgroup before post-interrupt cleanup
         # (tool subprocess kill, adapter disconnect) runs — issue #8202.
@@ -793,7 +796,10 @@ class TestLaunchdServiceRecovery:
         calls = []
         domain = gateway_cli._launchd_domain()
         target = f"{domain}/{label}"
-        gui_target = f"gui/{os.getuid()}/{label}"
+        probe_calls = [
+            ["launchctl", "print", f"{candidate}/{label}"]
+            for candidate in gateway_cli._launchd_domain_candidates()
+        ]
 
         def fake_run(cmd, check=False, **kwargs):
             if cmd and cmd[0] == "launchctl":
@@ -809,8 +815,7 @@ class TestLaunchdServiceRecovery:
 
         assert calls == [
             ["launchctl", "kickstart", target],
-            ["launchctl", "print", target],
-            ["launchctl", "print", gui_target],
+            *probe_calls,
             ["launchctl", "bootstrap", domain, str(plist_path)],
             ["launchctl", "kickstart", target],
         ]
@@ -824,7 +829,10 @@ class TestLaunchdServiceRecovery:
         calls = []
         domain = gateway_cli._launchd_domain()
         target = f"{domain}/{label}"
-        gui_target = f"gui/{os.getuid()}/{label}"
+        probe_calls = [
+            ["launchctl", "print", f"{candidate}/{label}"]
+            for candidate in gateway_cli._launchd_domain_candidates()
+        ]
 
         def fake_run(cmd, check=False, **kwargs):
             if cmd and cmd[0] == "launchctl":
@@ -840,8 +848,7 @@ class TestLaunchdServiceRecovery:
 
         assert calls == [
             ["launchctl", "kickstart", target],
-            ["launchctl", "print", target],
-            ["launchctl", "print", gui_target],
+            *probe_calls,
             ["launchctl", "bootstrap", domain, str(plist_path)],
             ["launchctl", "kickstart", target],
         ]
@@ -1013,8 +1020,8 @@ class TestLaunchdServiceRecovery:
         gateway_cli.launchd_status()
 
         output = capsys.readouterr().out
-        assert "Gateway service is loaded (gui/" in output
-        assert "pid = 123" in output
+        assert "Gateway is supervised by launchd (gui/" in output
+        assert "PID 123" in output
 
     def test_launchd_restart_uses_gui_domain_when_service_is_loaded_there(self, monkeypatch):
         label = gateway_cli.get_launchd_label()
@@ -1065,7 +1072,10 @@ class TestLaunchdServiceRecovery:
         calls = []
         domain = gateway_cli._launchd_domain()
         target = f"{domain}/{label}"
-        gui_target = f"gui/{os.getuid()}/{label}"
+        probe_calls = [
+            ["launchctl", "print", f"{candidate}/{label}"]
+            for candidate in gateway_cli._launchd_domain_candidates()
+        ]
 
         def fake_run(cmd, check=False, **kwargs):
             if cmd and cmd[0] == "launchctl":
@@ -1083,8 +1093,7 @@ class TestLaunchdServiceRecovery:
 
         assert calls == [
             ["launchctl", "kickstart", target],
-            ["launchctl", "print", target],
-            ["launchctl", "print", gui_target],
+            *probe_calls,
             ["launchctl", "bootstrap", domain, str(plist_path)],
             ["launchctl", "kickstart", target],
         ]
@@ -1199,6 +1208,10 @@ class TestLaunchdServiceRecovery:
         label = gateway_cli.get_launchd_label()
         domain = gateway_cli._launchd_domain()
         target = f"{domain}/{label}"
+        probe_calls = [
+            ["launchctl", "print", f"{candidate}/{label}"]
+            for candidate in gateway_cli._launchd_domain_candidates()
+        ]
 
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
         monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 5.0)
@@ -1226,6 +1239,7 @@ class TestLaunchdServiceRecovery:
 
         assert calls == [
             ["launchctl", "kickstart", "-k", target],
+            *probe_calls,
             ["launchctl", "bootout", target],
             ["launchctl", "bootstrap", domain, str(plist_path)],
             ["launchctl", "kickstart", target],

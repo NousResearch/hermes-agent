@@ -80,7 +80,7 @@ def test_feishu_load_settings_falls_back_to_env_when_extra_missing(monkeypatch):
     ],
 )
 def test_feishu_load_settings_merges_extra_allowed_users(monkeypatch, extra_allowed_users):
-    from gateway.platforms.feishu import FeishuAdapter
+    from plugins.platforms.feishu.adapter import FeishuAdapter
 
     monkeypatch.setenv("FEISHU_APP_ID", "cli_test")
     monkeypatch.setenv("FEISHU_APP_SECRET", "secret_test")

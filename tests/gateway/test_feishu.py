@@ -755,7 +755,7 @@ class TestAdapterModule(unittest.TestCase):
         sys.modules["lark_oapi.ws"] = fake_ws_module
         sys.modules["lark_oapi.ws.client"] = fake_client_module
         try:
-            from gateway.platforms import feishu as feishu_module
+            from plugins.platforms.feishu import adapter as feishu_module
 
             with patch.object(feishu_module.asyncio, "sleep", side_effect=_stop_after_first_idle):
                 feishu_module._run_official_feishu_ws_client(fake_client, fake_adapter)
@@ -810,7 +810,7 @@ class TestAdapterModule(unittest.TestCase):
         sys.modules["lark_oapi.ws"] = fake_ws_module
         sys.modules["lark_oapi.ws.client"] = fake_client_module
         try:
-            from gateway.platforms import feishu as feishu_module
+            from plugins.platforms.feishu import adapter as feishu_module
 
             with (
                 patch.object(feishu_module.asyncio, "sleep", side_effect=_fast_sleep),
@@ -827,7 +827,7 @@ class TestAdapterModule(unittest.TestCase):
     @patch.dict(os.environ, {}, clear=True)
     def test_websocket_thread_done_marks_retryable_fatal(self):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         callback_loop = SimpleNamespace(is_closed=lambda: False)
@@ -844,7 +844,10 @@ class TestAdapterModule(unittest.TestCase):
             adapter._running = True
             adapter._loop = callback_loop
 
-            with patch("gateway.platforms.feishu.asyncio.run_coroutine_threadsafe", side_effect=_run_threadsafe):
+            with patch(
+                "plugins.platforms.feishu.adapter.asyncio.run_coroutine_threadsafe",
+                side_effect=_run_threadsafe,
+            ):
                 adapter._on_websocket_thread_done(future)
 
             self.assertFalse(adapter._running)

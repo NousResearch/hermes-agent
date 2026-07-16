@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import { useState } from 'react'
 import type * as React from 'react'
 
 import { startSessionDrag } from '@/app/chat/session-drag'
@@ -64,8 +65,14 @@ export function SidebarSessionRow({
   className,
   style,
   ref,
+  onBlurCapture,
+  onFocusCapture,
+  onPointerEnter,
+  onPointerLeave,
   ...rest
 }: SidebarSessionRowProps) {
+  const [hasFocusWithin, setHasFocusWithin] = useState(false)
+  const [isPointerOver, setIsPointerOver] = useState(false)
   const { t } = useI18n()
   const r = t.sidebar.row
   const title = sessionTitle(session)
@@ -83,6 +90,7 @@ export function SidebarSessionRow({
   const isUnread = useStore($unreadFinishedSessionIds).includes(session.id)
   // True when a terminal(background=true) process is alive in this session.
   const hasBackground = useStore($backgroundRunningSessionIds).includes(session.id)
+  const showActions = hasFocusWithin || isPointerOver
 
   // Resolve the dot's display state once — the four signals are mutually
   // exclusive by priority, so threading them as booleans through wrappers just
@@ -110,12 +118,35 @@ export function SidebarSessionRow({
     >
       <SidebarRowShell
         actions={
-          <div className="relative z-2 grid w-[1.375rem] place-items-center" data-row-actions>
+          <div className="relative z-2 flex w-14 items-center justify-end gap-0.5" data-row-actions>
             {!isWorking && (
-              <span className="pointer-events-none absolute right-6 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100">
+              <span
+                className="pointer-events-none absolute right-0 top-1/2 w-12 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) transition-opacity duration-100"
+                style={{ opacity: showActions ? 0 : 1 }}
+              >
                 {age}
               </span>
             )}
+            <Button
+              aria-label={r.archive}
+              className={cn(
+                'size-5 rounded-[4px] bg-transparent text-(--ui-text-tertiary) transition-[background-color,color,opacity] duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 [&_svg]:size-3.5!',
+                showActions ? 'pointer-events-auto' : 'pointer-events-none'
+              )}
+              onClick={event => {
+                event.preventDefault()
+                event.stopPropagation()
+                triggerHaptic('selection')
+                onArchive()
+              }}
+              size="icon"
+              style={{ opacity: showActions ? 1 : 0 }}
+              title={r.archive}
+              type="button"
+              variant="ghost"
+            >
+              <Codicon name="archive" size="0.875rem" />
+            </Button>
             <SessionActionsMenu
               onArchive={onArchive}
               onBranch={onBranch}
@@ -128,7 +159,10 @@ export function SidebarSessionRow({
             >
               <Button
                 aria-label={r.actionsFor(title)}
-                className="size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!"
+                className={cn(
+                  'size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground [&_svg]:size-3.5!',
+                  showActions && 'text-(--ui-text-tertiary)'
+                )}
                 size="icon"
                 title={r.sessionActions}
                 variant="ghost"
@@ -148,6 +182,17 @@ export function SidebarSessionRow({
           className
         )}
         data-working={isWorking ? 'true' : undefined}
+        onBlurCapture={event => {
+          if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) {
+            setHasFocusWithin(false)
+          }
+
+          onBlurCapture?.(event)
+        }}
+        onFocusCapture={event => {
+          setHasFocusWithin(true)
+          onFocusCapture?.(event)
+        }}
         onPointerDown={event => {
           // Reorder drags belong to dnd-kit (the grab handle); the ⋯ actions
           // cluster keeps its own gestures. Everything else on the row —
@@ -162,13 +207,21 @@ export function SidebarSessionRow({
 
           startSessionDrag({ id: session.id, profile: session.profile || 'default', title }, event)
         }}
+        onPointerEnter={event => {
+          setIsPointerOver(true)
+          onPointerEnter?.(event)
+        }}
+        onPointerLeave={event => {
+          setIsPointerOver(false)
+          onPointerLeave?.(event)
+        }}
         ref={ref}
         style={style}
         {...rest}
       >
         {isWorking && !needsInput && <span aria-hidden="true" className="arc-border" />}
         <SidebarRowBody
-          className={cn('z-0 group-hover:pr-12', branchStem && 'pl-3.5')}
+          className={cn('z-0 pr-12', branchStem && 'pl-3.5')}
           // Middle-click = open in a new tab (browser muscle memory). Swallow
           // the mousedown so Chromium doesn't enter autoscroll mode.
           onAuxClick={event => {

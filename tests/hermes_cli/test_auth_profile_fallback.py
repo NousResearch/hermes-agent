@@ -12,6 +12,7 @@ authenticated only at the global root.
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -450,3 +451,71 @@ def test_write_credential_pool_targets_profile_not_global(profile_env):
 
     # Subsequent read returns profile (shadows global).
     assert [e["id"] for e in read_credential_pool("openrouter")] == ["prof-new"]
+
+
+def test_provider_state_transaction_locks_global_fallback_before_use(
+    profile_env,
+    monkeypatch,
+):
+    """Profile refreshes lock the root source before provider-specific locks."""
+    import hermes_cli.auth as auth
+
+    _write(
+        profile_env["global"] / "auth.json",
+        _make_auth_store(providers={"nous": {"access_token": "global-token"}}),
+    )
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={}))
+
+    entered = []
+    real_file_lock = auth._file_lock
+
+    @contextmanager
+    def recording_file_lock(lock_path, holder, timeout_seconds, timeout_message):
+        entered.append(lock_path)
+        with real_file_lock(
+            lock_path,
+            holder,
+            timeout_seconds,
+            timeout_message,
+        ):
+            yield
+
+    monkeypatch.setattr(auth, "_file_lock", recording_file_lock)
+
+    with auth._provider_state_transaction("nous") as (_store, state, source):
+        assert state == {"access_token": "global-token"}
+        assert source == profile_env["global"] / "auth.json"
+
+    assert entered[:2] == [
+        profile_env["profile"] / "auth.lock",
+        profile_env["global"] / "auth.lock",
+    ]
+
+
+def test_auth_lock_reentrancy_is_scoped_after_profile_context_switch(profile_env):
+    """Changing profile context cannot inherit another store's lock depth."""
+    import hermes_cli.auth as auth
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    profile_b = profile_env["global"] / "profiles" / "reviewer"
+    profile_b.mkdir(parents=True)
+    profile_b_lock = profile_b / "auth.lock"
+
+    with auth._auth_store_lock():
+        holder_a = auth._auth_lock_holder_for(profile_env["profile"] / "auth.json")
+        assert getattr(holder_a, "depth", 0) == 1
+
+        token = set_hermes_home_override(profile_b)
+        try:
+            holder_b = auth._auth_lock_holder_for(profile_b / "auth.json")
+            assert holder_b is not holder_a
+            assert getattr(holder_b, "depth", 0) == 0
+            assert not profile_b_lock.exists()
+
+            with auth._auth_store_lock():
+                assert profile_b_lock.exists()
+                assert getattr(holder_b, "depth", 0) == 1
+        finally:
+            reset_hermes_home_override(token)
+
+    assert getattr(holder_a, "depth", 0) == 0

@@ -131,6 +131,32 @@ def _fake_runner(thread_meta):
     return runner
 
 
+def _streaming_delivery_adapter():
+    return SimpleNamespace(
+        name="test",
+        extract_media=BasePlatformAdapter.extract_media,
+        extract_images=BasePlatformAdapter.extract_images,
+        extract_local_files=BasePlatformAdapter.extract_local_files,
+        send=AsyncMock(return_value=SendResult(success=True, message_id="notice")),
+        send_multiple_images=AsyncMock(
+            return_value=SendResult(success=True, message_id="images")
+        ),
+        send_voice=AsyncMock(return_value=SendResult(success=True, message_id="voice")),
+        send_document=AsyncMock(return_value=SendResult(success=True, message_id="doc")),
+        send_image_file=AsyncMock(return_value=SendResult(success=True, message_id="image")),
+        send_video=AsyncMock(return_value=SendResult(success=True, message_id="video")),
+    )
+
+
+def _assert_no_streaming_delivery(adapter):
+    adapter.send.assert_not_awaited()
+    adapter.send_multiple_images.assert_not_awaited()
+    adapter.send_voice.assert_not_awaited()
+    adapter.send_document.assert_not_awaited()
+    adapter.send_image_file.assert_not_awaited()
+    adapter.send_video.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_streaming_delivery_routes_telegram_flac_media_tag_to_document_sender(tmp_path, monkeypatch):
     event = _event(thread_id="topic-1")
@@ -204,6 +230,62 @@ async def test_streaming_delivery_reports_missing_explicit_media_without_file_se
     adapter.send_voice.assert_not_awaited()
     adapter.send_document.assert_not_awaited()
     adapter.send_video.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_streaming_delivery_silences_missing_media_outside_strict_allowlist(
+    tmp_path, monkeypatch
+):
+    event = _event(thread_id="topic-1")
+    allowed_root = tmp_path / "media-cache"
+    allowed_root.mkdir()
+    missing_file = tmp_path / "outside" / "missing.pdf"
+    monkeypatch.setattr(
+        "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+        (allowed_root,),
+    )
+    monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")
+    monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "0")
+    adapter = _streaming_delivery_adapter()
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner({"thread_id": "topic-1"}),
+        f"MEDIA:{missing_file}",
+        event,
+        adapter,
+    )
+
+    _assert_no_streaming_delivery(adapter)
+
+
+@pytest.mark.asyncio
+async def test_streaming_delivery_silences_missing_media_under_non_strict_denylist(
+    tmp_path, monkeypatch
+):
+    event = _event(thread_id="topic-1")
+    allowed_root = tmp_path / "media-cache"
+    allowed_root.mkdir()
+    denied_root = tmp_path / "denied"
+    missing_file = denied_root / "missing.pdf"
+    monkeypatch.setattr(
+        "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+        (allowed_root,),
+    )
+    monkeypatch.setattr(
+        "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
+        (denied_root,),
+    )
+    monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "0")
+    adapter = _streaming_delivery_adapter()
+
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner({"thread_id": "topic-1"}),
+        f"MEDIA:{missing_file}",
+        event,
+        adapter,
+    )
+
+    _assert_no_streaming_delivery(adapter)
 
 
 @pytest.mark.asyncio

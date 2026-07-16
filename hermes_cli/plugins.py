@@ -1258,6 +1258,20 @@ class PluginManager:
         self._context_engine = None  # Set by a plugin via register_context_engine()
         self._plugin_commands: Dict[str, dict] = {}  # Slash commands registered by plugins
         self._discovered: bool = False
+        # Serializes initial discovery so a concurrent first caller cannot
+        # observe ``_discovered = True`` (set up front as a same-thread
+        # re-entrancy guard) and start invoking hooks before
+        # ``_discover_and_load_inner()`` has finished registering callbacks
+        # (teknium1 review on #64188). Re-entrant (RLock) so a plugin's
+        # register() transitively triggering discovery on the SAME thread
+        # still works.
+        self._discovery_lock = threading.RLock()
+        # Thread id currently running a discovery sweep. Used as a same-thread
+        # re-entrancy guard: a plugin's register() can transitively call
+        # discover_plugins() on the SAME thread, and we must let that fall
+        # through (returning immediately) rather than recursing or deadlocking,
+        # WITHOUT prematurely publishing _discovered=True to other threads.
+        self._discovering_thread: Optional[int] = None
         self._cli_ref = None  # Set by CLI after plugin discovery
         # Plugin skill registry: qualified name → metadata dict.
         self._plugin_skills: Dict[str, Dict[str, Any]] = {}
@@ -1285,10 +1299,35 @@ class PluginManager:
         """
         if self._discovered and not force:
             return
+        # Same-thread re-entrancy: a plugin's register() called during the
+        # sweep may transitively trigger discovery again on this thread. Let
+        # it fall through immediately — the in-progress sweep owns completion.
+        if self._discovering_thread == threading.get_ident():
+            return
+        with self._discovery_lock:
+            # Re-check after acquiring: a concurrent first caller may have
+            # completed discovery while we waited on the lock. Because
+            # _discovered is only published AFTER the sweep fully finishes,
+            # a racing caller either does real work here or observes a fully
+            # built manager — never a half-built one.
+            if self._discovered and not force:
+                return
+            self._discovering_thread = threading.get_ident()
+            try:
+                self._discover_and_load_locked(force=force)
+            finally:
+                self._discovering_thread = None
+
+    def _discover_and_load_locked(self, force: bool = False) -> None:
         if env_var_enabled("HERMES_SAFE_MODE"):
             logger.info("HERMES_SAFE_MODE=1 — plugin discovery skipped")
             self._discovered = True
             return
+        # NOTE: _discovered is published only after the sweep below completes
+        # (not up front). Same-thread re-entrancy is handled by
+        # _discovering_thread in discover_and_load, so we no longer need the
+        # early _discovered=True re-entrancy guard that used to expose a
+        # half-built manager to concurrent first callers.
         if force:
             # Unload from global registries BEFORE clearing manager bookkeeping,
             # so force-reload does not leave stale tools/platforms (#60050).
@@ -1304,13 +1343,11 @@ class PluginManager:
             self._aux_tasks.clear()
             self._slack_action_handlers.clear()
             self._context_engine = None
-        # Set the flag up front as a re-entrancy guard (a plugin's register()
-        # can transitively trigger discovery again), but reset it if the sweep
-        # raises so a failed scan is NOT cached as "discovered with an empty
-        # registry" — callers swallow the exception and would otherwise be
-        # permanently stranded on the early-return above (the "No web provider
-        # configured" class of failures).
-        self._discovered = True
+        # Publish _discovered only after the sweep succeeds. A failed scan must
+        # NOT be cached as "discovered with an empty registry" — callers swallow
+        # the exception and would otherwise be permanently stranded on the
+        # early-return above (the "No web provider configured" class of
+        # failures).
         try:
             self._discover_and_load_inner()
             if force:
@@ -1320,6 +1357,7 @@ class PluginManager:
         except BaseException:
             self._discovered = False
             raise
+        self._discovered = True
 
     def _unload_global_plugin_registrations(self) -> None:
         """Remove plugin tools/platforms from process-global registries.

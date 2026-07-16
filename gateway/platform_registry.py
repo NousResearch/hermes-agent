@@ -181,6 +181,11 @@ class PlatformRegistry:
         # actually asks for that platform (gateway start, cron delivery,
         # `hermes setup`/`gateway status`, send_message).
         self._deferred: dict[str, Callable[[], None]] = {}
+        # Displaced entries preserved on override so unregister() can restore
+        # the prior adapter (e.g. a built-in shadowed by a plugin that is later
+        # disabled) instead of leaving the name unbound (teknium1 review on
+        # #64188). LIFO stack per name for chained overrides.
+        self._displaced: dict[str, list[PlatformEntry]] = {}
 
     # -- deferred loading ----------------------------------------------------
 
@@ -244,13 +249,32 @@ class PlatformRegistry:
                 prev.source,
                 entry.source,
             )
+            # Preserve the displaced adapter so unregister() can restore it.
+            self._displaced.setdefault(entry.name, []).append(prev)
         self._entries[entry.name] = entry
         logger.debug("Registered platform adapter: %s (%s)", entry.name, entry.source)
 
     def unregister(self, name: str) -> bool:
-        """Remove a platform entry.  Returns True if it existed."""
+        """Remove a platform entry.  Returns True if it existed.
+
+        If the entry had displaced a prior adapter via override, the most
+        recently displaced entry is restored rather than leaving the name
+        unbound (teknium1 review on #64188).
+        """
         self._deferred.pop(name, None)
-        return self._entries.pop(name, None) is not None
+        existed = self._entries.pop(name, None) is not None
+        stack = self._displaced.get(name)
+        if stack:
+            restored = stack.pop()
+            if not stack:
+                self._displaced.pop(name, None)
+            self._entries[name] = restored
+            logger.info(
+                "Platform '%s': restored displaced adapter (%s) after removal",
+                name,
+                restored.source,
+            )
+        return existed
 
     def get(self, name: str) -> Optional[PlatformEntry]:
         """Look up a platform entry by name."""

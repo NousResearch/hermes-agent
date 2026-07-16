@@ -225,6 +225,12 @@ class ToolRegistry:
         # code that defined the handler, independent of WHEN the register() call
         # happens (sync during load, or a delayed/threaded callback afterwards).
         self._plugin_override_policy: Dict[str, bool] = {}
+        # When an override=True register() displaces an existing entry, stash
+        # the displaced ToolEntry here keyed by name so a later deregister()
+        # (e.g. plugin disabled / force-reload teardown) can restore the
+        # original instead of leaving the slot empty (teknium1 review on
+        # #64188 / #60050). LIFO stack per name handles chained overrides.
+        self._displaced_tools: Dict[str, List["ToolEntry"]] = {}
         self._toolset_checks: Dict[str, Callable] = {}
         self._toolset_aliases: Dict[str, str] = {}
         # MCP dynamic refresh can mutate the registry while other threads are
@@ -422,6 +428,10 @@ class ToolRegistry:
                         "(override=True opt-in)",
                         name, toolset, existing.toolset,
                     )
+                    # Preserve the displaced entry so removing the overriding
+                    # tool later restores the original (e.g. a built-in tool
+                    # shadowed by a plugin that is subsequently disabled).
+                    self._displaced_tools.setdefault(name, []).append(existing)
                 else:
                     # Reject shadowing — prevent plugins/MCP from overwriting
                     # built-in tools or vice versa.
@@ -508,6 +518,26 @@ class ToolRegistry:
                         f"opt-in (allow_tool_override)."
                     )
             del self._tools[name]
+            # If this entry had displaced a prior one (override=True), restore
+            # the most-recently displaced entry instead of leaving the slot
+            # empty (teknium1 review on #64188). Restoration is a direct map
+            # write — it re-instates the original built-in/tool that was there
+            # before the override, and does not re-run override policy checks.
+            stack = self._displaced_tools.get(name)
+            if stack:
+                restored = stack.pop()
+                if not stack:
+                    self._displaced_tools.pop(name, None)
+                self._tools[name] = restored
+                if restored.check_fn and restored.toolset not in self._toolset_checks:
+                    self._toolset_checks[restored.toolset] = restored.check_fn
+                self._generation += 1
+                logger.info(
+                    "Tool '%s': restored displaced toolset '%s' after removal "
+                    "of overriding entry",
+                    name, restored.toolset,
+                )
+                return
             # Drop the toolset check and aliases if this was the last tool in
             # that toolset.
             toolset_still_exists = any(

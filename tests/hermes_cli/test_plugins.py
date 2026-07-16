@@ -917,6 +917,121 @@ class TestLazyDiscoverAndSingleton:
         plat_reg.unregister.assert_called_with("zombie_platform")
 
 
+class TestRegistryOverrideRestore:
+    """Displaced entries are restored on removal (teknium1 review on #64188).
+
+    Uses the REAL registries rather than mocks so the actual replace/restore
+    lifecycle is exercised.
+    """
+
+    def _schema(self, name):
+        return {"name": name, "description": f"{name} desc", "parameters": {}}
+
+    def test_tool_override_then_deregister_restores_builtin(self):
+        from tools.registry import ToolRegistry
+
+        reg = ToolRegistry()
+
+        def builtin_handler():  # pragma: no cover - identity marker only
+            return "builtin"
+
+        def plugin_handler():  # pragma: no cover - identity marker only
+            return "plugin"
+
+        reg.register(
+            name="shared_tool", toolset="builtins",
+            schema=self._schema("shared_tool"), handler=builtin_handler,
+            check_fn=None,
+        )
+        # Non-plugin caller override is permitted without opt-in.
+        reg.register(
+            name="shared_tool", toolset="plugin_ts",
+            schema=self._schema("shared_tool"), handler=plugin_handler,
+            check_fn=None, override=True,
+        )
+        assert reg.get_entry("shared_tool").toolset == "plugin_ts"
+
+        # Removing the overriding entry restores the original built-in.
+        reg.deregister("shared_tool")
+        restored = reg.get_entry("shared_tool")
+        assert restored is not None
+        assert restored.toolset == "builtins"
+        assert restored.handler is builtin_handler
+
+    def test_tool_no_displacement_deregisters_clean(self):
+        from tools.registry import ToolRegistry
+
+        reg = ToolRegistry()
+        reg.register(
+            name="solo_tool", toolset="builtins",
+            schema=self._schema("solo_tool"), handler=lambda: None,
+            check_fn=None,
+        )
+        reg.deregister("solo_tool")
+        assert reg.get_entry("solo_tool") is None
+
+    def test_platform_override_then_unregister_restores(self):
+        from gateway.platform_registry import PlatformRegistry, PlatformEntry
+
+        reg = PlatformRegistry()
+        builtin = PlatformEntry(
+            name="chat", label="Chat",
+            adapter_factory=lambda cfg: None, check_fn=lambda: True,
+            source="builtin",
+        )
+        plugin = PlatformEntry(
+            name="chat", label="Chat",
+            adapter_factory=lambda cfg: None, check_fn=lambda: True,
+            source="plugin",
+        )
+        reg.register(builtin)
+        reg.register(plugin)
+        assert reg.get("chat").source == "plugin"
+
+        reg.unregister("chat")
+        restored = reg.get("chat")
+        assert restored is not None
+        assert restored.source == "builtin"
+
+
+class TestDiscoveryConcurrency:
+    """Initial discovery is serialized so concurrent first callers never see a
+    half-built manager (teknium1 review on #64188)."""
+
+    def test_concurrent_first_discovery_completes_before_invoke(self, monkeypatch):
+        import threading
+        import concurrent.futures
+        from hermes_cli.plugins import PluginManager
+
+        mgr = PluginManager()
+        observed_incomplete = []
+
+        def slow_inner(self_inner):
+            # Simulate the window between _discovered=True and callback
+            # registration; a racing caller must NOT proceed past the lock.
+            import time
+            time.sleep(0.05)
+            self_inner._hooks.setdefault("on_x", []).append(lambda **k: "ok")
+
+        monkeypatch.setattr(PluginManager, "_discover_and_load_inner", slow_inner)
+        monkeypatch.setattr(
+            PluginManager, "_re_register_shell_hooks_after_force",
+            lambda s: None,
+        )
+
+        def worker():
+            mgr.discover_and_load()
+            # By the time discover_and_load returns, hooks must be registered.
+            if not mgr._hooks.get("on_x"):
+                observed_incomplete.append(True)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+            list(ex.map(lambda _: worker(), range(8)))
+
+        assert not observed_incomplete
+        assert mgr._hooks.get("on_x")
+
+
 class TestPreToolCallBlocking:
     """Tests for the pre_tool_call block directive helper."""
 

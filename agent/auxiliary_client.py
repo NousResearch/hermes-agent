@@ -6942,6 +6942,7 @@ def _build_call_kwargs(
                     supports_reasoning=reasoning_config is not None,
                     model=model,
                     base_url=effective_base,
+                    api_key=api_key if isinstance(api_key, str) else "",
                 )
             )
             profile_reasoning_extra = profile_reasoning_extra or {}

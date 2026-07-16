@@ -7,7 +7,9 @@ nothing when reasoning was *enabled*, so a configured ``reasoning_effort``
 was silently dropped for every custom endpoint.
 
 These tests pin the wire-shape contract:
-  - disabled            → extra_body.think = False
+  - disabled verified Ollama → extra_body.think = False + top-level
+                                reasoning_effort="none"
+  - disabled generic relay → omit both disabled-reasoning controls
   - enabled + effort    → top-level reasoning_effort (native OpenAI-compat
                           format GLM/ARK expect), passed through verbatim
                           including ``max``/``xhigh``
@@ -48,7 +50,7 @@ class TestCustomReasoningWireShape:
         assert eb == {}
         assert tl == {}
 
-    def test_disabled_sends_think_false(self, custom_profile):
+    def test_disabled_verified_ollama_sends_disabled_controls(self, custom_profile, monkeypatch):
         """enabled=False → reasoning_effort='none' top-level + think=False.
 
         Both fields are required: Ollama's /v1/chat/completions silently
@@ -56,19 +58,46 @@ class TestCustomReasoningWireShape:
         but respects top-level reasoning_effort (#25758). think=False stays
         for proxies and the native /api/chat path.
         """
+        monkeypatch.setattr(
+            "agent.model_metadata.detect_local_server_type", lambda *_args, **_kwargs: "ollama"
+        )
         eb, tl = custom_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": False}, model="glm-5.2"
+            reasoning_config={"enabled": False}, model="glm-5.2", base_url="http://127.0.0.1:11434/v1"
         )
         assert eb == {"think": False}
         assert tl == {"reasoning_effort": "none"}
 
-    def test_effort_none_sends_think_false(self, custom_profile):
-        """effort='none' is the disable alias → same dual emission."""
-        eb, tl = custom_profile.build_api_kwargs_extras(
-            reasoning_config={"enabled": True, "effort": "none"}, model="glm-5.2"
+    @pytest.mark.parametrize(
+        "base_url",
+        [
+            "https://api.groq.com/openai/v1",
+            "https://not-ollama.example/v1",
+            "http://127.0.0.1:11434/v1",
+        ],
+        ids=["groq", "url-containing-ollama", "non-ollama-port-11434"],
+    )
+    def test_disabled_non_ollama_endpoint_omits_both_controls(
+        self, custom_profile, monkeypatch, base_url
+    ):
+        """Only a positive Ollama probe may enable either disabled control."""
+        probe_calls = []
+
+        def _not_ollama(url, *, api_key=""):
+            probe_calls.append((url, api_key))
+            return None
+
+        monkeypatch.setattr(
+            "agent.model_metadata.detect_local_server_type", _not_ollama
         )
-        assert eb == {"think": False}
-        assert tl == {"reasoning_effort": "none"}
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "none"},
+            model="glm-5.2",
+            base_url=base_url,
+            api_key="custom-key",
+        )
+        assert "think" not in eb
+        assert "reasoning_effort" not in tl
+        assert probe_calls == [(base_url, "custom-key")]
 
     @pytest.mark.parametrize(
         "effort", ["minimal", "low", "medium", "high", "xhigh", "max"]

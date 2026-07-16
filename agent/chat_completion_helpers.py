@@ -1183,6 +1183,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             request_overrides=agent.request_overrides,
             session_id=getattr(agent, "session_id", None),
             provider_profile=_profile,
+            api_key=agent.api_key if isinstance(agent.api_key, str) else "",
             ollama_num_ctx=agent._ollama_num_ctx,
             # Context forwarded to profile hooks:
             provider_preferences=_prefs or None,

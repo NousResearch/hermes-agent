@@ -232,7 +232,7 @@ class SocketServer:
         self._queue = queue
         self._executor = executor
         self._config = config or {}
-        self._stamp_secret: bytes = b""  # defense-in-depth stamp secret
+        self._stamp_secrets: dict[int, bytes] = {}  # pid -> secret (multi-process safe)
         self._running = False
         self._request_server: Optional[socket.socket] = None
         self._control_server: Optional[socket.socket] = None
@@ -371,7 +371,7 @@ class SocketServer:
                 pass
 
     def _handle_stamp_init(self, client: socket.socket, req: dict):
-        """Register stamp secret from plugin for defense-in-depth verification."""
+        """Register stamp secret from plugin, keyed by peer PID."""
         secret_b64 = req.get("secret", "")
         if not secret_b64:
             _send_json(client, {"status": "error", "error": "secret required"})
@@ -384,8 +384,15 @@ class SocketServer:
         if len(secret) < 16:
             _send_json(client, {"status": "error", "error": "secret too short"})
             return
-        self._stamp_secret = secret
-        logger.info("stamp secret registered (%d bytes)", len(secret))
+        try:
+            cred = client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+            pid, _, _ = struct.unpack("3i", cred)
+        except Exception:
+            pid = 0
+        self._stamp_secrets[pid] = secret
+        if len(self._stamp_secrets) > 100:
+            self._stamp_secrets.clear()
+        logger.info("stamp secret registered for pid=%d (%d bytes)", pid, len(secret))
         _send_json(client, {"status": "ok"})
     def _handle_sudo_request(self, client: socket.socket, req: dict):
         """Handle a sudo request：入队列→等待审批→执行→返回结果"""
@@ -448,7 +455,7 @@ class SocketServer:
         _store_result(entry.req_id, {"status": "approved", "req_id": entry.req_id, "result": exec_result})
 
     def _handle_sudo_execute(self, client: socket.socket, req: dict):
-        """Handle direct execution with defense-in-depth stamp verification (HMAC-SHA256)."""
+        """Handle direct execution with defense-in-depth stamp verification."""
         command = req.get("command", "")
         reason = req.get("reason", "direct execution")
         origin = req.get("origin", {})
@@ -460,34 +467,36 @@ class SocketServer:
             _send_json(client, {"status": "error", "error": "command required"})
             return
 
-        # Defense-in-depth: verify HMAC stamp
-        if not self._stamp_secret:
-            _send_json(client, {
-                "status": "error",
-                "error": "REJECTED: no stamp secret registered",
-            })
-            logger.warning("sudo_execute REJECTED: no stamp secret")
+        try:
+            cred = client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+            pid, _, _ = struct.unpack("3i", cred)
+        except Exception:
+            pid = 0
+        secret = self._stamp_secrets.get(pid)
+        if not secret:
+            _send_json(client, {"status": "error",
+                "error": "REJECTED: no stamp secret for this process"})
+            logger.warning("sudo_execute REJECTED: no secret for pid=%d", pid)
             return
 
         expected = hmac.new(
-            self._stamp_secret, command.encode(), hashlib.sha256,
+            secret, command.encode(), hashlib.sha256,
         ).hexdigest()
         if not hmac.compare_digest(stamp, expected):
-            _send_json(client, {
-                "status": "error",
-                "error": "REJECTED: invalid stamp",
-            })
-            logger.warning("sudo_execute REJECTED: stamp mismatch cmd=%s", command[:60])
+            _send_json(client, {"status": "error",
+                "error": "REJECTED: invalid stamp"})
+            logger.warning("sudo_execute REJECTED: stamp mismatch pid=%d cmd=%s",
+                           pid, command[:60])
             return
 
-        logger.info("sudo_execute cmd=%s reason=%s stamp=OK", command[:60], reason[:30])
+        logger.info("sudo_execute cmd=%s reason=%s pid=%d stamp=OK",
+                     command[:60], reason[:30], pid)
         audit.request("direct", command, origin.get("channel", "vip_sudo"))
 
         exec_result = self._executor.execute(command)
 
         _send_json(client, {"status": "approved", "result": exec_result})
         logger.info("sudo_execute done exit_code=%d", exec_result.get("exit_code", -1))
-
     # ── Control socket handler（含 UID 验证）──
 
     def _serve_control(self):

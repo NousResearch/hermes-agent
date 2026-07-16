@@ -83,6 +83,99 @@ async def test_set_config_option_persists_edit_approval_policy_without_advertisi
 
 
 # ---------------------------------------------------------------------------
+# set_session_mode / set_config_option — ACP notification emission
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_set_session_mode_emits_current_mode_update(agent):
+    """After set_session_mode, a current_mode_update notification must be sent
+    so ACP clients (AionCore) can confirm the observed value.
+
+    Regression: AionCore polls config_snapshot() for 10s waiting for the
+    advertised mode to match the requested value. Without this notification
+    the poll times out and the UI shows "Failed to apply setting."
+    """
+    new_resp = await agent.new_session(cwd="/tmp")
+
+    sent_updates: list[tuple[str, Any]] = []
+    mock_conn = AsyncMock()
+    mock_conn.session_update = AsyncMock(
+        side_effect=lambda session_id, update: sent_updates.append((session_id, update))
+    )
+    agent._conn = mock_conn
+
+    await agent.set_session_mode(mode_id="accept_edits", session_id=new_resp.session_id)
+
+    assert len(sent_updates) == 1, "expected exactly one session_update notification"
+    sid, update = sent_updates[0]
+    assert sid == new_resp.session_id
+    assert update.session_update == "current_mode_update"
+    assert update.current_mode_id == "accept_edits"
+
+
+@pytest.mark.asyncio
+async def test_set_session_mode_emits_current_mode_update_dont_ask(agent):
+    """The dont_ask mode must also emit a notification."""
+    new_resp = await agent.new_session(cwd="/tmp")
+
+    sent_updates: list[tuple[str, Any]] = []
+    mock_conn = AsyncMock()
+    mock_conn.session_update = AsyncMock(
+        side_effect=lambda session_id, update: sent_updates.append((session_id, update))
+    )
+    agent._conn = mock_conn
+
+    await agent.set_session_mode(mode_id="dont_ask", session_id=new_resp.session_id)
+
+    assert len(sent_updates) == 1
+    _, update = sent_updates[0]
+    assert update.session_update == "current_mode_update"
+    assert update.current_mode_id == "dont_ask"
+
+
+@pytest.mark.asyncio
+async def test_set_config_option_emits_current_mode_update_for_edit_approval(agent):
+    """set_config_option with edit_approval_policy must also emit a
+    current_mode_update since it changes the session mode internally."""
+    new_resp = await agent.new_session(cwd="/tmp")
+
+    sent_updates: list[tuple[str, Any]] = []
+    mock_conn = AsyncMock()
+    mock_conn.session_update = AsyncMock(
+        side_effect=lambda session_id, update: sent_updates.append((session_id, update))
+    )
+    agent._conn = mock_conn
+
+    await agent.set_config_option(
+        "edit_approval_policy",
+        new_resp.session_id,
+        "session",
+    )
+
+    assert len(sent_updates) == 1
+    _, update = sent_updates[0]
+    assert update.session_update == "current_mode_update"
+    assert update.current_mode_id == "dont_ask"
+
+
+@pytest.mark.asyncio
+async def test_set_session_mode_no_notification_when_no_conn(agent):
+    """When no ACP client is connected, the mode change must still succeed
+    without errors (graceful degradation)."""
+    new_resp = await agent.new_session(cwd="/tmp")
+    agent._conn = None
+
+    resp = await agent.set_session_mode(
+        mode_id="dont_ask", session_id=new_resp.session_id
+    )
+
+    assert isinstance(resp, SetSessionModeResponse)
+    state = agent.session_manager.get_session(new_resp.session_id)
+    assert getattr(state, "mode", None) == "dont_ask"
+
+
+# ---------------------------------------------------------------------------
 # initialize
 # ---------------------------------------------------------------------------
 

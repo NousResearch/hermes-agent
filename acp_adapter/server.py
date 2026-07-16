@@ -41,6 +41,7 @@ from acp.schema import (
     PromptCapabilities,
     PromptResponse,
     ResumeSessionResponse,
+    CurrentModeUpdate,
     SetSessionConfigOptionResponse,
     SetSessionModelResponse,
     SetSessionModeResponse,
@@ -733,6 +734,30 @@ class HermesACPAgent(acp.Agent):
                 "Could not build ACP session provenance for %s", acp_session_id, exc_info=True
             )
             return None
+
+    async def _send_current_mode_update(self, session_id: str, mode_id: str) -> None:
+        """Send a current_mode_update notification to the connected ACP client.
+
+        ACP clients like AionCore poll the session's advertised mode snapshot
+        after a set_mode/set_config_option call to confirm the change took
+        effect. Without this notification the snapshot is never updated and
+        the poll times out (10s), causing the UI to show
+        "Failed to apply setting. The previous state is still shown."
+        """
+        if not self._conn:
+            return
+        try:
+            update = CurrentModeUpdate(current_mode_id=mode_id, session_update="current_mode_update")
+            await self._conn.session_update(
+                session_id=session_id,
+                update=update,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to send ACP current_mode_update for session %s",
+                session_id,
+                exc_info=True,
+            )
 
     async def _send_session_info_update(
         self,
@@ -2051,6 +2076,7 @@ class HermesACPAgent(acp.Agent):
         setattr(state, "mode", normalized_mode)
         self.session_manager.save_session(session_id)
         logger.info("Session %s: mode switched to %s", session_id, normalized_mode)
+        await self._send_current_mode_update(session_id, normalized_mode)
         return SetSessionModeResponse()
 
     async def set_config_option(
@@ -2073,4 +2099,6 @@ class HermesACPAgent(acp.Agent):
             setattr(state, "config_options", options)
         self.session_manager.save_session(session_id)
         logger.info("Session %s: config option %s updated", session_id, config_id)
+        if str(config_id) == self._EDIT_APPROVAL_POLICY_CONFIG_ID:
+            await self._send_current_mode_update(session_id, mode)
         return SetSessionConfigOptionResponse(config_options=[])

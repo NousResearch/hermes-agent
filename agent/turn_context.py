@@ -265,13 +265,23 @@ def build_turn_context(
 
     # P2.1 host contract: a turn-scoped execution_id tagged onto every ordinary
     # per-turn hook so plugins can tell live turns from background forks without
-    # prompt-text/turn-id heuristics. The fork overrides this (sets its own
-    # before run_conversation), so only seed it when the agent has not already
-    # been tagged by the caller (e.g. background_review sets _execution_kind).
-    if not getattr(agent, "_execution_id", None):
-        agent._execution_id = uuid.uuid4().hex
-    if not hasattr(agent, "_execution_kind"):
+    # prompt-text/turn-id heuristics.
+    #
+    # A fork stamps a caller-supplied context on its agent BEFORE run_conversation
+    # (background_review sets _execution_kind="background_review" + _execution_id
+    # = ReviewExecutionContext.execution_id); preserve that verbatim so every
+    # hook firing in the fork shares one id. An ordinary live turn instead gets a
+    # FRESH execution_id EACH turn — the provenance is per-turn, so a reused live
+    # agent must not carry its first turn's id forward.
+    _caller_kind = getattr(agent, "_execution_kind", None)
+    if _caller_kind and _caller_kind != "live":
+        # Fork (or any caller-tagged) context: keep it; only fill an id if the
+        # caller tagged the kind but left the id unset.
+        if not getattr(agent, "_execution_id", None):
+            agent._execution_id = uuid.uuid4().hex
+    else:
         agent._execution_kind = "live"
+        agent._execution_id = uuid.uuid4().hex
 
     # Reset retry counters and iteration budget at the start of each turn.
     agent._invalid_tool_retries = 0

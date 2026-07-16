@@ -411,6 +411,10 @@ def finalize_turn(
                 conversation_history=list(messages),
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
+                # P2.1: same execution provenance as the other per-turn hooks so
+                # a background fork's post_llm_call is deterministically tagged.
+                execution_kind=getattr(agent, "_execution_kind", "live"),
+                execution_id=getattr(agent, "_execution_id", None),
             )
         except Exception as exc:
             logger.warning("post_llm_call hook failed: %s", exc)
@@ -541,6 +545,10 @@ def finalize_turn(
             interrupted=interrupted,
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
+            # P2.1: same execution provenance as the other per-turn hooks so a
+            # background fork's on_session_end is deterministically tagged.
+            execution_kind=getattr(agent, "_execution_kind", "live"),
+            execution_id=getattr(agent, "_execution_id", None),
         )
     except Exception as exc:
         logger.warning("on_session_end hook failed: %s", exc)

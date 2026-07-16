@@ -13,6 +13,7 @@ This file tests that the tool surfaces:
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -264,6 +265,10 @@ class TestSystemPromptActiveProfile:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="Symlinks require elevated privileges on Windows",
+)
 class TestSymlinkedProfilesDir:
     @pytest.fixture
     def symlinked_hermes(self, tmp_path, monkeypatch):

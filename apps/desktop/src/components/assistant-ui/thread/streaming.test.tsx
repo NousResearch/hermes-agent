@@ -3,6 +3,8 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { useEffect, useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { setKeepReasoningExpanded } from '@/store/reasoning-view'
+
 import { Thread } from '.'
 
 const createdAt = new Date('2026-05-01T00:00:00.000Z')
@@ -524,6 +526,30 @@ describe('assistant-ui streaming renderer', () => {
     expect(disclosures[1].querySelector('button')?.getAttribute('aria-expanded')).toBe('true')
     expect(container.textContent).not.toContain('Complete first thought.')
     expect(container.textContent).toContain('Interim answer.')
+  })
+
+  it('keeps a completed reasoning disclosure collapsed by default', () => {
+    const { container } = render(<ReasoningHarness />)
+
+    const toggle = within(container).getByRole('button', { name: /thinking/i })
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeNull()
+  })
+
+  it('keeps a completed reasoning disclosure expanded when the preference is on', () => {
+    setKeepReasoningExpanded(true)
+
+    try {
+      const { container } = render(<ReasoningHarness />)
+
+      const toggle = within(container).getByRole('button', { name: /thinking/i })
+      expect(toggle.getAttribute('aria-expanded')).toBe('true')
+      expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toBe(
+        'The user is asking what this file is.'
+      )
+    } finally {
+      setKeepReasoningExpanded(false)
+    }
   })
 
   it('does not render an inline todo panel — todos live in the composer status stack', () => {

@@ -4,6 +4,7 @@ import {
   useAuiState,
   useMessagePartReasoning
 } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
 import { type ComponentProps, type FC, type ReactNode, useEffect, useRef, useState } from 'react'
 
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
@@ -16,6 +17,7 @@ import { GeneratedImage } from '@/components/chat/generated-image-result'
 import { useI18n } from '@/i18n'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
+import { $keepReasoningExpanded } from '@/store/reasoning-view'
 
 const ImageGenerateTool: FC<ToolCallMessagePartProps> = ({ args, result }) => {
   const aspectRatio = typeof args?.aspect_ratio === 'string' ? args.aspect_ratio : undefined
@@ -54,14 +56,17 @@ const ThinkingDisclosure: FC<{
   // `null` = no explicit user toggle yet, defer to the streaming default.
   // The default is "auto-open while streaming, auto-collapse when done" so
   // reasoning surfaces a live preview without manual interaction. The first
-  // explicit toggle wins from then on.
+  // explicit toggle wins from then on. When the "keep reasoning expanded"
+  // preference is on, the resting default flips to open so a finished turn
+  // stays expanded — the explicit toggle still wins.
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
+  const keepExpanded = useStore($keepReasoningExpanded)
   const elapsed = useElapsedSeconds(pending, timerKey)
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
   const enterRef = useEnterAnimation(messageRunning, timerKey)
 
-  const open = userOpen ?? pending
+  const open = userOpen ?? (keepExpanded || pending)
   const isPreview = pending && userOpen === null
 
   // While the preview is live, pin the scroll container to the bottom on

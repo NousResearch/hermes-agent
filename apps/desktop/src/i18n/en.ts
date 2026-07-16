@@ -406,6 +406,8 @@ export const en: Translations = {
       colorModeDesc: 'Pick a fixed mode or let Hermes follow your system setting.',
       toolViewTitle: 'Tool Call Display',
       toolViewDesc: 'Product hides raw tool payloads; Technical shows full input/output.',
+      keepReasoningExpandedTitle: 'Keep Reasoning Expanded',
+      keepReasoningExpandedDesc: 'The "Thinking" section stays open after a response instead of auto-collapsing.',
       uiScaleTitle: 'UI Scale',
       uiScaleDesc: (percent: number) =>
         `Scales text and controls across the whole app. Cmd/Ctrl with +, - and 0 also works. Current: ${percent}%.`,

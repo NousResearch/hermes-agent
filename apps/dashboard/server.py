@@ -85,6 +85,14 @@ NEWS_SOURCES: dict[str, list[dict[str, str]]] = {
         {"name": "Variety", "url": "https://variety.com/feed/"},
         {"name": "BBC Entertainment", "url": "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml"},
     ],
+    "gaming": [
+        {"name": "IGN", "url": "https://feeds.ign.com/ign/games-all"},
+        {"name": "Polygon", "url": "https://www.polygon.com/rss/index.xml"},
+        {"name": "Eurogamer", "url": "https://www.eurogamer.net/feed"},
+        {"name": "PC Gamer", "url": "https://www.pcgamer.com/rss/"},
+        {"name": "Rock Paper Shotgun", "url": "https://www.rockpapershotgun.com/feed"},
+        {"name": "GameSpot", "url": "https://www.gamespot.com/feeds/news/"},
+    ],
 }
 # "top" aggregates the first feed of every topic.
 NEWS_SOURCES["top"] = [sources[0] for sources in NEWS_SOURCES.values()]

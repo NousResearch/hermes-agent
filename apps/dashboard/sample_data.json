@@ -363,6 +363,43 @@
     "source": "ScienceDaily",
     "age_minutes": 180
    }
+  ],
+  "gaming": [
+   {
+    "title": "Long-awaited RPG sequel finally gets a release date at showcase",
+    "url": "https://example.com/sample/gaming-1",
+    "summary": "The studio confirmed a spring launch across PC and consoles after years of teasers.",
+    "source": "IGN",
+    "age_minutes": 22
+   },
+   {
+    "title": "Indie roguelike becomes surprise hit, tops the charts this week",
+    "url": "https://example.com/sample/gaming-2",
+    "summary": "Built by a three-person team, the deckbuilder has sold over a million copies.",
+    "source": "Polygon",
+    "age_minutes": 48
+   },
+   {
+    "title": "Major engine update promises big performance gains for open-world titles",
+    "url": "https://example.com/sample/gaming-3",
+    "summary": "Developers say draw distances and load times improve sharply on mid-range hardware.",
+    "source": "PC Gamer",
+    "age_minutes": 75
+   },
+   {
+    "title": "Competitive shooter unveils new season with reworked maps",
+    "url": "https://example.com/sample/gaming-4",
+    "summary": "The overhaul rebalances several weapons and adds a ranked co-op mode.",
+    "source": "Eurogamer",
+    "age_minutes": 110
+   },
+   {
+    "title": "Beloved handheld gets a surprise firmware update adding cloud saves",
+    "url": "https://example.com/sample/gaming-5",
+    "summary": "The feature had been the community's most requested for over a year.",
+    "source": "GameSpot",
+    "age_minutes": 140
+   }
   ]
  },
  "weather": {

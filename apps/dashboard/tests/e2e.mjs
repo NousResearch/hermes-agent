@@ -168,6 +168,14 @@ await page.waitForFunction(() =>
 await page.waitForSelector(".news-item");
 check("topic switch renders items", (await page.locator(".news-item").count()) > 2);
 
+// gaming is a first-class news topic
+await page.locator(".widget-news .tab", { hasText: "Gaming" }).click();
+await page.waitForFunction(() =>
+  document.querySelector('.widget-news .tab[aria-selected="true"]')?.textContent === "Gaming",
+  null, { timeout: 5000 });
+await page.waitForSelector(".news-item");
+check("gaming news topic renders", (await page.locator(".news-item").count()) >= 2);
+
 // ---- tasks -------------------------------------------------------------------
 const taskInput = page.locator(".task-form .input");
 await taskInput.fill("E2E: buy coffee beans");

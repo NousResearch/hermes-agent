@@ -179,6 +179,11 @@ class SampleFallbackTests(unittest.TestCase):
         self.assertEqual(data["source"], "sample")
         self.assertIn("note", data)
 
+    def test_gaming_is_a_default_topic(self):
+        self.assertIn("gaming", self.api.feeds.topics())
+        data = self.api.news({"topic": ["gaming"], "limit": ["10"]})
+        self.assertTrue(data["items"])
+
     def test_cache_hit_returns_same_object(self):
         first = self.api.news({"topic": ["top"], "limit": ["10"]})
         second = self.api.news({"topic": ["top"], "limit": ["10"]})

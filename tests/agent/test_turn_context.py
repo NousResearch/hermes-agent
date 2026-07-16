@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.agent_runtime_helpers import TURN_USER_MARKER_KEY
 from agent.context_compressor import ContextCompressor
 from agent.turn_context import TurnContext, build_turn_context
 from hermes_state import SessionDB
@@ -202,8 +203,13 @@ def test_returns_turn_context_with_user_message_appended():
     ctx = _build(agent)
     assert isinstance(ctx, TurnContext)
     assert ctx.user_message == "hello"
-    # The user turn was appended and indexed.
-    assert ctx.messages[-1] == {"role": "user", "content": "hello"}
+    # The user turn was appended and indexed. It also carries a per-turn glue
+    # marker (used to re-find it across compaction/repair at request assembly).
+    _last = ctx.messages[-1]
+    assert _last["role"] == "user"
+    assert _last["content"] == "hello"
+    assert _last[TURN_USER_MARKER_KEY] == ctx.current_turn_user_marker
+    assert ctx.current_turn_user_marker  # non-empty
     assert ctx.current_turn_user_idx == len(ctx.messages) - 1
     assert ctx.active_system_prompt == "SYSTEM"
 
@@ -267,7 +273,14 @@ def test_turn_start_replaces_stale_parent_history_with_compression_child():
     assert agent._current_turn_id.startswith("compression-child:")
     log_context.assert_called_once_with("compression-child")
     assert ctx.conversation_history == compacted_history
-    assert ctx.messages == compacted_history + [{"role": "user", "content": "hello"}]
+    # The child's history is adopted verbatim, with this turn's user message
+    # appended. Compared field-wise rather than as a whole dict because the
+    # appended message also carries the per-turn glue marker.
+    assert ctx.messages[:-1] == compacted_history
+    _last = ctx.messages[-1]
+    assert _last["role"] == "user"
+    assert _last["content"] == "hello"
+    assert _last[TURN_USER_MARKER_KEY] == ctx.current_turn_user_marker
     assert all(message.get("content") != "stale parent" for message in ctx.messages)
 
 

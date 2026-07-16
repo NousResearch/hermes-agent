@@ -135,10 +135,12 @@ def test_current_user_turn_is_persisted_before_provider_call(agent):
     assert observed[0][0] == "persist"
     assert observed[1][0] == "provider"
     persisted_messages = observed[0][1]
-    assert persisted_messages[-1] == {
-        "role": "user",
-        "content": "new message that must survive a crash",
-    }
+    # Compared field-wise: the live message also carries the per-turn glue
+    # marker, which is internal bookkeeping stripped from the outgoing API copy
+    # and never written to the transcript row (the flush persists named columns).
+    _last = persisted_messages[-1]
+    assert _last["role"] == "user"
+    assert _last["content"] == "new message that must survive a crash"
 
 
 class TestHTTP413Compression:

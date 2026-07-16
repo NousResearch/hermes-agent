@@ -115,10 +115,9 @@ def _resolve_request_toolset_override(
 ) -> tuple[Optional[List[str]], Optional[str]]:
     """Resolve a request-local toolset restriction.
 
-    ``None`` means "use the api_server platform default".  A list, including
-    an empty list, is an explicit per-request restriction.  Requests may only
-    disable tools or restrict to a subset of the platform-enabled toolsets;
-    they cannot expand the API-server tool surface.
+    ``None`` means "use the api_server platform default". Requests may only
+    restrict to a non-empty subset of the platform-enabled toolsets; they
+    cannot disable every schema or expand the API-server tool surface.
     """
     requested: Optional[Any] = None
 
@@ -126,7 +125,7 @@ def _resolve_request_toolset_override(
         requested = body.get("enabled_toolsets")
     elif "toolsets" in body:
         requested = body.get("toolsets")
-    elif body.get("tools") == [] or body.get("tool_choice") == "none":
+    elif body.get("tool_choice") == "none":
         requested = []
 
     if requested is None:
@@ -134,6 +133,8 @@ def _resolve_request_toolset_override(
 
     if not isinstance(requested, list):
         return None, "enabled_toolsets/toolsets must be an array of toolset names"
+    if not requested:
+        return None, "enabled_toolsets/toolsets must be a non-empty subset"
 
     clean: List[str] = []
     for idx, item in enumerate(requested):
@@ -1312,6 +1313,8 @@ class APIServerAdapter(BasePlatformAdapter):
     def _request_toolset_override_response(
         self,
         body: Dict[str, Any],
+        *,
+        allow_override: bool = True,
     ) -> tuple[Optional[List[str]], Optional[Any]]:
         override, error = _resolve_request_toolset_override(
             body,
@@ -1319,6 +1322,14 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         if error:
             return None, web.json_response(_openai_error(error, code="invalid_toolsets"), status=400)
+        if override is not None and not allow_override:
+            return None, web.json_response(
+                _openai_error(
+                    "Toolsets cannot change during a persistent session",
+                    code="session_toolsets_immutable",
+                ),
+                status=400,
+            )
         return override, None
 
     def _create_agent(
@@ -1987,7 +1998,7 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
-        toolset_override, toolset_err = self._request_toolset_override_response(body)
+        toolset_override, toolset_err = self._request_toolset_override_response(body, allow_override=False)
         if toolset_err is not None:
             return toolset_err
         history = self._conversation_history_for_session(session_id)
@@ -2035,7 +2046,7 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
-        toolset_override, toolset_err = self._request_toolset_override_response(body)
+        toolset_override, toolset_err = self._request_toolset_override_response(body, allow_override=False)
         if toolset_err is not None:
             return toolset_err
 

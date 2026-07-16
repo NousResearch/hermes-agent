@@ -17,23 +17,33 @@ def test_request_toolsets_absent_keeps_platform_default():
     assert error is None
 
 
+def test_empty_standard_tools_input_keeps_platform_default():
+    override, error = api_server._resolve_request_toolset_override(
+        {"tools": []},
+        platform_enabled_toolsets=["web", "terminal"],
+    )
+
+    assert override is None
+    assert error is None
+
+
 @pytest.mark.parametrize(
     "body",
     [
-        {"tools": []},
         {"tool_choice": "none"},
         {"enabled_toolsets": []},
         {"toolsets": []},
     ],
 )
-def test_request_can_disable_all_tools(body):
+def test_request_rejects_disable_all_tool_inputs(body):
     override, error = api_server._resolve_request_toolset_override(
         body,
         platform_enabled_toolsets=["web", "terminal"],
     )
 
-    assert override == []
-    assert error is None
+    assert override is None
+    assert error is not None
+    assert "non-empty" in error
 
 
 def test_request_can_restrict_to_enabled_subset_only():
@@ -146,7 +156,7 @@ def _minimal_adapter(monkeypatch):
     return adapter
 
 
-def test_chat_completions_handler_passes_empty_tool_override(monkeypatch):
+def test_chat_completions_empty_standard_tools_uses_platform_default(monkeypatch):
     async def run_case():
         captured = {}
         adapter = _minimal_adapter(monkeypatch)
@@ -165,12 +175,44 @@ def test_chat_completions_handler_passes_empty_tool_override(monkeypatch):
         response = await adapter._handle_chat_completions(request)
 
         assert response.status == 200
-        assert captured["enabled_toolsets_override"] == []
+        assert captured["enabled_toolsets_override"] is None
 
     asyncio.run(run_case())
 
 
-def test_responses_handler_passes_empty_tool_override(monkeypatch):
+def test_concurrent_stateless_requests_do_not_leak_toolset_overrides(monkeypatch):
+    async def run_case():
+        captured = {}
+        adapter = _minimal_adapter(monkeypatch)
+
+        async def fake_run_agent(**kwargs):
+            captured[kwargs["user_message"]] = kwargs["enabled_toolsets_override"]
+            await asyncio.sleep(0)
+            return {"final_response": "ok", "completed": True, "session_id": "sid"}, {}
+
+        setattr(adapter, "_run_agent", fake_run_agent)
+        default_request = FakeRequest({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "default"}],
+        })
+        restricted_request = FakeRequest({
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "restricted"}],
+            "enabled_toolsets": ["web"],
+        })
+
+        responses = await asyncio.gather(
+            adapter._handle_chat_completions(default_request),
+            adapter._handle_chat_completions(restricted_request),
+        )
+
+        assert [response.status for response in responses] == [200, 200]
+        assert captured == {"default": None, "restricted": ["web"]}
+
+    asyncio.run(run_case())
+
+
+def test_responses_handler_rejects_empty_toolset_before_agent_run(monkeypatch):
     async def run_case():
         captured = {}
         adapter = _minimal_adapter(monkeypatch)
@@ -189,38 +231,50 @@ def test_responses_handler_passes_empty_tool_override(monkeypatch):
 
         response = await adapter._handle_responses(request)
 
-        assert response.status == 200
-        assert captured["enabled_toolsets_override"] == []
+        assert response.status == 400
+        assert captured == {}
 
     asyncio.run(run_case())
 
 
-def test_session_chat_handler_passes_empty_tool_override(monkeypatch):
+def test_session_chat_rejects_toolset_schema_change_before_history_load(monkeypatch):
     async def run_case():
-        captured = {}
+        side_effects = {"history": 0, "agent": 0}
         adapter = _minimal_adapter(monkeypatch)
         adapter._get_existing_session_or_404 = lambda session_id: ({"id": session_id}, None)
-        adapter._conversation_history_for_session = lambda session_id: []
+
+        def fake_history(session_id):
+            side_effects["history"] += 1
+            return []
+
+        adapter._conversation_history_for_session = fake_history
 
         async def fake_run_agent(**kwargs):
-            captured.update(kwargs)
+            side_effects["agent"] += 1
             return {"final_response": "ok", "completed": True, "session_id": "sid"}, {}
 
         adapter._run_agent = fake_run_agent
-        request = FakeRequest(
-            {"message": "probe", "toolsets": []},
+        first = FakeRequest(
+            {"message": "first"},
+            match_info={"session_id": "sid"},
+        )
+        second = FakeRequest(
+            {"message": "second", "enabled_toolsets": ["web"]},
             match_info={"session_id": "sid"},
         )
 
-        response = await adapter._handle_session_chat(request)
+        first_response = await adapter._handle_session_chat(first)
+        second_response = await adapter._handle_session_chat(second)
 
-        assert response.status == 200
-        assert captured["enabled_toolsets_override"] == []
+        assert first_response.status == 200
+        assert second_response.status == 400
+        assert second_response.data["error"]["code"] == "session_toolsets_immutable"
+        assert side_effects == {"history": 1, "agent": 1}
 
     asyncio.run(run_case())
 
 
-def test_runs_handler_passes_empty_tool_override_to_created_agent(monkeypatch):
+def test_runs_handler_rejects_disable_all_before_agent_creation(monkeypatch):
     async def run_case():
         captured = {}
         adapter = _minimal_adapter(monkeypatch)
@@ -246,8 +300,8 @@ def test_runs_handler_passes_empty_tool_override_to_created_agent(monkeypatch):
         response = await adapter._handle_runs(request)
         await asyncio.sleep(0.05)
 
-        assert response.status == 202
-        assert captured["enabled_toolsets_override"] == []
+        assert response.status == 400
+        assert captured == {}
 
     asyncio.run(run_case())
 
@@ -275,7 +329,7 @@ def _install_fake_gateway_run(monkeypatch):
     )
 
 
-def test_create_agent_uses_request_local_toolset_override(monkeypatch):
+def test_create_agent_uses_request_local_toolset_subset(monkeypatch):
     captured = {}
 
     class FakeAIAgent:
@@ -289,9 +343,9 @@ def test_create_agent_uses_request_local_toolset_override(monkeypatch):
     adapter._ensure_session_db = lambda: None
     adapter._get_platform_enabled_toolsets = lambda: ["web", "terminal"]
 
-    adapter._create_agent(enabled_toolsets_override=[])
+    adapter._create_agent(enabled_toolsets_override=["web"])
 
-    assert captured["enabled_toolsets"] == []
+    assert captured["enabled_toolsets"] == ["web"]
 
 
 def test_create_agent_defaults_to_platform_toolsets_when_no_override(monkeypatch):

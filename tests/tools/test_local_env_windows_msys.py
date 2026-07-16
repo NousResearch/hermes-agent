@@ -167,7 +167,7 @@ class TestFindBashWindows:
         monkeypatch.setattr(
             local_mod.os.path,
             "isfile",
-            lambda path: path == r"C:\Program Files\Git\bin\bash.exe",
+            lambda path: path.replace("/", "\\") == r"C:\Program Files\Git\bin\bash.exe",
         )
         monkeypatch.setattr(local_mod, "_bash_starts", lambda _path: True)
 

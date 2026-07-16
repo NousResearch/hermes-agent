@@ -176,11 +176,11 @@ def _is_write_denied(path: str) -> bool:
 def _write_denied_error(path: str, verb: str | None = None) -> str | None:
     native_path = _windows_bash_path_to_drive(path)
     for candidate in (path, native_path):
-        if _shared_is_write_denied(candidate):
-            return f"{verb or 'Write'} denied: path is protected"
         denied = get_write_denied_error(candidate, verb=verb)
         if denied:
             return denied
+        if _shared_is_write_denied(candidate):
+            return f"{verb or 'Write'} denied: path is protected"
     return None
 
 

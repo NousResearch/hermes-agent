@@ -83,7 +83,7 @@ def _prepare_slash_worker_runtime() -> None:
         logger=logger,
         thread_name="slash-worker-mcp-discovery",
     )
-    wait_for_mcp_discovery()
+    wait_for_mcp_discovery(timeout=8.0)
 
 
 def _start_parent_death_watchdog(original_ppid, parent_create_time) -> None:

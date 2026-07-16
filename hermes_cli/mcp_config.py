@@ -26,6 +26,7 @@ from hermes_cli.config import (
 from hermes_cli.colors import Colors, color
 from hermes_constants import display_hermes_home
 from hermes_cli.mcp_security import validate_mcp_server_entry
+from hermes_cli.plugins import invoke_hook
 from tools.mcp_tool import _ENV_VAR_PATTERN, _env_ref_name
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,11 @@ def _save_mcp_server(name: str, server_config: dict) -> bool:
     shell+egress payloads rather than whitelisting command families.
     """
     issues = validate_mcp_server_entry(name, server_config)
+    for ret in invoke_hook("pre_mcp_add", name=name, server_config=server_config):
+        if isinstance(ret, str):
+            issues.append(ret)
+        elif isinstance(ret, (list, tuple)):
+            issues.extend(str(x) for x in ret if x)
     if issues:
         for issue in issues:
             _warning(issue)

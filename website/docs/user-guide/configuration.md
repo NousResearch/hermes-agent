@@ -592,7 +592,7 @@ skills:
   external_read_only: true   # default: false
 ```
 
-When enabled, external skills remain available to the system prompt index, `skills_list`, `skill_view`, and slash commands. Every `skill_manage` mutation is refused when the skill is externally owned or its resolved target is outside `<active HERMES_HOME>/skills`. Writes through a local symlink are refused; `remove_file` may still unlink a final symlink entry without modifying its target. For the default profile this is `~/.hermes/skills`; named profiles use `~/.hermes/profiles/<name>/skills`. New skills still go to the active profile's local skills directory.
+When enabled, external skills remain available to the system prompt index, `skills_list`, `skill_view`, and slash commands. Every `skill_manage` mutation is refused when the skill is externally owned or its resolved target is outside `<active HERMES_HOME>/skills`. Writes through a local symlink are refused; if the active skills directory is itself a symlink, all `skill_manage` mutations are refused while reads remain available. `remove_file` may still unlink a final symlink entry without modifying its target. For the default profile this is `~/.hermes/skills`; named profiles use `~/.hermes/profiles/<name>/skills`. New skills still go to the active profile's local skills directory.
 
 This setting does not restrict ordinary file or terminal tools. It is a safety boundary for Hermes-managed procedural memory, not a filesystem sandbox. Curator already excludes configured external skill directories from autonomous maintenance.
 

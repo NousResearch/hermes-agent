@@ -687,8 +687,9 @@ skills:
   # Optional skill_manage ownership boundary. When true, external skills stay
   # discoverable/readable but skill_manage mutations are limited to skills and
   # resolved targets under this profile's HERMES_HOME/skills/. This also blocks
-  # writes through local symlinks to external files. remove_file may still
-  # unlink the final symlink entry itself. Ordinary file/terminal tools are
+  # writes through local symlinks to external files. If HERMES_HOME/skills is
+  # itself a symlink, all skill_manage mutations are refused. remove_file may
+  # still unlink a final symlink entry itself. Ordinary file/terminal tools are
   # unaffected. Default: false (preserves external skill updates).
   external_read_only: false
 

@@ -447,7 +447,7 @@ skills:
   external_read_only: true   # 默认：false
 ```
 
-启用后，外部 skills 仍可用于系统提示词索引、`skills_list`、`skill_view` 和斜杠命令。当 skill 由外部目录拥有，或解析后的修改目标位于 `<active HERMES_HOME>/skills` 之外时，Hermes 会拒绝所有 `skill_manage` 修改。通过本地符号链接写入会被拒绝；`remove_file` 仍可仅删除最后一级符号链接本身，而不会修改其目标。默认 profile 使用 `~/.hermes/skills`；命名 profile 使用 `~/.hermes/profiles/<name>/skills`。新 skills 仍写入当前 profile 的本地 skills 目录。
+启用后，外部 skills 仍可用于系统提示词索引、`skills_list`、`skill_view` 和斜杠命令。当 skill 由外部目录拥有，或解析后的修改目标位于 `<active HERMES_HOME>/skills` 之外时，Hermes 会拒绝所有 `skill_manage` 修改。通过本地符号链接写入会被拒绝；如果当前 skills 目录本身是符号链接，Hermes 会拒绝所有 `skill_manage` 修改，但仍允许读取。`remove_file` 仍可仅删除最后一级符号链接本身，而不会修改其目标。默认 profile 使用 `~/.hermes/skills`；命名 profile 使用 `~/.hermes/profiles/<name>/skills`。新 skills 仍写入当前 profile 的本地 skills 目录。
 
 此设置不限制普通文件工具或终端工具。它是 Hermes 管理程序性记忆时使用的安全边界，不是文件系统沙箱。Curator 已经排除配置的外部 skill 目录，不会对其执行自动维护。
 

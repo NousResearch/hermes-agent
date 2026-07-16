@@ -241,7 +241,7 @@ skills:
 ### 工作原理
 
 - **默认在本地创建并就地更新**：新的 agent 创建的 skills 写入 `<active HERMES_HOME>/skills`。现有 skills 在找到的位置被修改，包括 `external_dirs` 下的 skills，当 agent 使用 `skill_manage` 操作（如 `patch`、`edit`、`write_file`、`remove_file` 或 `delete`）时。
-- **可选的只读边界**：设置 `skills.external_read_only: true` 后，外部 skills 仍可被发现和读取，但当 skill 由外部目录拥有，或解析后的写入目标位于 `<active HERMES_HOME>/skills` 之外时，Hermes 会拒绝所有 `skill_manage` 修改。通过本地符号链接写入会被拒绝；`remove_file` 仍可仅删除最后一级符号链接本身，而不会修改其目标。默认 profile 使用 `~/.hermes/skills`；命名 profile 使用 `~/.hermes/profiles/<name>/skills`。
+- **可选的只读边界**：设置 `skills.external_read_only: true` 后，外部 skills 仍可被发现和读取，但当 skill 由外部目录拥有，或解析后的写入目标位于 `<active HERMES_HOME>/skills` 之外时，Hermes 会拒绝所有 `skill_manage` 修改。通过本地符号链接写入会被拒绝；如果当前 skills 目录本身是符号链接，Hermes 会拒绝所有 `skill_manage` 修改，但仍允许读取。`remove_file` 仍可仅删除最后一级符号链接本身，而不会修改其目标。默认 profile 使用 `~/.hermes/skills`；命名 profile 使用 `~/.hermes/profiles/<name>/skills`。
 - **Curator 与符号链接**：Curator 已经排除配置的外部 skill 目录。它仍可归档包含符号链接的普通本地 skill；移动 skill 只会移动链接，不会修改外部目标。skill 目录本身是符号链接时，现有的递归删除保护仍会阻止归档或删除。
 - **不是文件系统沙箱**：`external_read_only` 仅适用于 `skill_manage`。普通文件工具和终端工具的访问权限保持不变，因此用户仍可在明确需要时直接编辑规范的外部 skills。
 - **本地优先**：如果同一 skill 名称同时存在于本地目录和外部目录中，本地版本优先。

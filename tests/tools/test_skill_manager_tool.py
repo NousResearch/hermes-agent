@@ -809,6 +809,40 @@ def _configure_external_profile(
     return local, external
 
 
+def _configure_symlinked_skills_root(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    read_only: bool,
+):
+    """Create a profile whose active skills root points to external storage."""
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    canonical = tmp_path / "canonical-skills"
+    canonical.mkdir()
+    local = hermes_home / "skills"
+    try:
+        local.symlink_to(canonical, target_is_directory=True)
+    except OSError:
+        pytest.skip("Symlinks not supported")
+
+    # Include the resolved target as an external root. Discovery deliberately
+    # de-duplicates it against the resolved local root, which is the ownership
+    # edge case this profile reproduces.
+    (hermes_home / "config.yaml").write_text(
+        "skills:\n"
+        f"  external_dirs:\n    - {canonical}\n"
+        f"  external_read_only: {'true' if read_only else 'false'}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    from agent.skill_utils import _external_dirs_cache_clear
+
+    _external_dirs_cache_clear()
+    return local, canonical
+
+
 class TestExternalSkillMutations:
     """Verify default external updates and the opt-in ownership boundary.
 
@@ -817,6 +851,58 @@ class TestExternalSkillMutations:
     caused agents to create duplicate copies in ~/.hermes/skills/ as a
     workaround.
     """
+
+    @pytest.mark.parametrize("action", ["create", "patch"])
+    def test_external_read_only_refuses_symlinked_active_skills_root(
+        self, tmp_path, monkeypatch, action
+    ):
+        _, canonical = _configure_symlinked_skills_root(
+            tmp_path, monkeypatch, read_only=True
+        )
+        existing = _write_external_skill(canonical, "linked-root-skill")
+
+        if action == "create":
+            result = json.loads(
+                skill_manage(
+                    action="create",
+                    name="new-skill",
+                    content=VALID_SKILL_CONTENT.replace(
+                        "name: test-skill", "name: new-skill"
+                    ),
+                )
+            )
+            assert not (canonical / "new-skill").exists()
+        else:
+            result = json.loads(
+                skill_manage(
+                    action="patch",
+                    name="linked-root-skill",
+                    old_string="OLD_MARKER",
+                    new_string="NEW_MARKER",
+                )
+            )
+            assert "OLD_MARKER" in (existing / "SKILL.md").read_text(
+                encoding="utf-8"
+            )
+
+        assert result["success"] is False
+        assert "external_read_only" in result["error"]
+        assert "symlink" in result["error"].lower()
+
+    def test_external_read_only_keeps_symlinked_active_root_readable(
+        self, tmp_path, monkeypatch
+    ):
+        _, canonical = _configure_symlinked_skills_root(
+            tmp_path, monkeypatch, read_only=True
+        )
+        _write_external_skill(canonical, "linked-root-skill")
+
+        from tools.skills_tool import skill_view
+
+        result = json.loads(skill_view("linked-root-skill"))
+
+        assert result["success"] is True
+        assert "OLD_MARKER" in result["content"]
 
     def test_external_read_only_refuses_configured_root_under_local(
         self, tmp_path, monkeypatch

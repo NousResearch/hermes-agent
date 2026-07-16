@@ -804,6 +804,22 @@ def _external_read_only_preflight(
     if action not in _SKILL_MUTATION_ACTIONS or not _external_read_only_enabled():
         return None
 
+    local_root = _skills_dir()
+    if local_root.is_symlink():
+        try:
+            resolved_local_root = str(local_root.resolve())
+        except (OSError, RuntimeError) as exc:
+            resolved_local_root = f"unresolved: {exc}"
+        return {
+            "success": False,
+            "error": (
+                f"Refusing skill_manage {action} for skill '{name}': the active "
+                f"Hermes skills directory '{local_root}' is a symlink to "
+                f"'{resolved_local_root}', and skills.external_read_only is enabled. "
+                "Skills under that root remain readable."
+            ),
+        }
+
     if action == "create":
         # Let the action handler return the established validation error for
         # malformed names/categories rather than replacing it with a path error.
@@ -842,7 +858,7 @@ def _external_read_only_preflight(
         }
 
     try:
-        local_root = _skills_dir().resolve()
+        local_root = local_root.resolve()
         resolved_skill_dir = skill_dir.resolve()
         resolved_target = (
             target.parent.resolve() / target.name

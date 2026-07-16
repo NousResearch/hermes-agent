@@ -951,11 +951,23 @@ class TelegramAdapter(BasePlatformAdapter):
                 offset += len(fallback_text)
         text_links = (metadata or {}).get("telegram_text_links")
         if isinstance(text_links, dict):
-            for label, url in text_links.items():
-                label_text, target = str(label or ""), str(url or "")
+            link_specs = ({"label": label, "url": url} for label, url in text_links.items())
+        elif isinstance(text_links, (list, tuple)):
+            link_specs = (entry for entry in text_links if isinstance(entry, dict))
+        else:
+            link_specs = ()
+        for spec in link_specs:
+            label_text = str(spec.get("label") or "")
+            target = str(spec.get("url") or "")
+            requested_offset = spec.get("offset")
+            try:
+                offset = int(requested_offset)
+            except (TypeError, ValueError):
                 offset = content.find(label_text)
-                if label_text and target.startswith("https://") and offset >= 0:
-                    entities.append(MessageEntity(type="text_link", offset=utf16_len(content[:offset]), length=utf16_len(label_text), url=target))
+            if content[offset:offset + len(label_text)] != label_text:
+                offset = content.find(label_text)
+            if label_text and target.startswith("https://") and offset >= 0:
+                entities.append(MessageEntity(type="text_link", offset=utf16_len(content[:offset]), length=utf16_len(label_text), url=target))
         return entities
 
     def _remember_custom_emoji_rejection(self, metadata: Optional[Dict[str, Any]]) -> None:

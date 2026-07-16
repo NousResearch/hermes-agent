@@ -59,13 +59,19 @@ _KANBAN_STATUS_RENDERER_VERSION = "2026-07-15.5"
 # Entity-only changes (such as Telegram text links) do not alter the rendered
 # text hash. Bump this version so existing durable indexes receive the new
 # entities on their next refresh instead of remaining visually stale forever.
-_KANBAN_ACTIVE_INDEX_RENDERER_VERSION = "2026-07-16.2"
+_KANBAN_ACTIVE_INDEX_RENDERER_VERSION = "2026-07-16.3"
 
 
 def _active_index_link_label(item: tuple[Any, ...]) -> str:
     """Return the rendered, mobile-safe title span used by an index entry."""
     task, timeline = item[1], item[2]
     return _clean_text(user_facing_title(task, timeline, str(getattr(task, "id", ""))), 72)
+
+
+def _active_index_title_line(item: tuple[Any, ...], *, now: int) -> str:
+    """Return an entry's first rendered line, including its state icon."""
+    rendered = render_kanban_active_task_index([item], now=now)
+    return rendered.split("\n\n", 1)[-1].splitlines()[0]
 
 
 
@@ -1248,12 +1254,24 @@ class GatewayKanbanWatchersMixin:
         if not callable(getattr(adapter, "pin_message", None)):
             return 0
         items = await asyncio.to_thread(self._kanban_active_index_items, lane)
-        text = render_kanban_active_task_index(items)
+        now = int(time.time())
+        text = render_kanban_active_task_index(items, now=now)
         metadata = _kanban_active_index_route_metadata(adapter, lane, items)
-        links = {
-            _active_index_link_label(item): str(item[5])
-            for item in items if len(item) > 5 and item[5]
-        }
+        links: list[dict[str, Any]] = []
+        title_line_offsets: dict[str, int] = {}
+        for item in items:
+            if len(item) <= 5 or not item[5]:
+                continue
+            label = _active_index_link_label(item)
+            title_line = _active_index_title_line(item, now=now)
+            search_from = title_line_offsets.get(title_line, 0)
+            line_offset = text.find(title_line, search_from)
+            if line_offset < 0:
+                continue
+            title_line_offsets[title_line] = line_offset + len(title_line)
+            label_offset = line_offset + title_line.find(label)
+            if label_offset >= line_offset:
+                links.append({"label": label, "url": str(item[5]), "offset": label_offset})
         if links:
             metadata["telegram_text_links"] = links
         render_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()

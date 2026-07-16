@@ -8,6 +8,7 @@ import { openSources } from "./sources.js";
 import { openCalendars } from "./calendars.js";
 import { openEvolve } from "./evolve.js";
 import { openRouting } from "./routing.js";
+import { openDetail } from "./detail.js";
 
 import { openViewer } from "./viewer.js";
 import { summarizeButton } from "./summarize.js";
@@ -146,6 +147,15 @@ function renderCard(item) {
       onclick: () => ctx.triggerRefresh(),
     }, "↻"),
   );
+  // Widgets that export a detail() renderer get an expand-to-window control.
+  if (typeof spec.detail === "function") {
+    controls.append(
+      h("button.icon-btn.widget-expand", {
+        type: "button", title: "Expand", "aria-label": `Expand ${spec.title}`,
+        onclick: () => openDetail(spec, ctx),
+      }, "⤢"),
+    );
+  }
   if (editMode) {
     controls.prepend(
       h("button.icon-btn", {

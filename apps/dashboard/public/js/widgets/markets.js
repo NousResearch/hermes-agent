@@ -1,10 +1,105 @@
 import { h, clear, sparkline, fmtPrice, toast } from "../utils.js";
+import { openDetail } from "../detail.js";
+import { candleChart } from "../chart.js";
 
-export default {
+const CHART_RANGES = [["1", "1D"], ["7", "7D"], ["30", "30D"], ["90", "90D"], ["365", "1Y"]];
+
+const fmtBig = (n) => {
+  if (n == null) return "—";
+  const abs = Math.abs(n);
+  if (abs >= 1e12) return `$${(n / 1e12).toFixed(2)}T`;
+  if (abs >= 1e9) return `$${(n / 1e9).toFixed(2)}B`;
+  if (abs >= 1e6) return `$${(n / 1e6).toFixed(2)}M`;
+  return `$${fmtPrice(n)}`;
+};
+
+const pct = (v) => {
+  if (v == null) return h("span.muted", {}, "—");
+  const up = v >= 0;
+  return h("span", { class: up ? "delta-up" : "delta-down" },
+    `${up ? "+" : ""}${v.toFixed(2)}%`);
+};
+
+// Shared detail renderer: a coin drawer with stats, a range-selectable candle
+// chart (with SMA/Bollinger overlays) and the technical read-outs. Opened by a
+// market-row click (ctx.detailCoin set) or the widget's ⤢ button (first coin).
+async function renderCoinDetail(body, ctx) {
+  const watchlist = ctx.store.state.markets?.ids || ["bitcoin"];
+  let coinId = ctx.detailCoin || watchlist[0];
+  let days = "30";
+
+  const draw = async () => {
+    clear(body).append(h("div.widget-loading", {}, "COMPILING…"));
+    let detail; let chart;
+    try {
+      [detail, chart] = await Promise.all([ctx.api.cryptoCoin(coinId), ctx.api.cryptoChart(coinId, days)]);
+    } catch (err) {
+      clear(body).append(h("div.widget-error", {}, `Coin data unavailable: ${err.message}`));
+      return;
+    }
+    const picker = h("select.select", {
+      "aria-label": "Coin",
+      onchange: (ev) => { coinId = ev.target.value; draw(); },
+    }, watchlist.map((id) => h("option", { value: id, selected: id === coinId }, id)));
+
+    const stat = (label, value) => h("div.coin-stat", {},
+      h("div.muted.small", {}, label), h("div.coin-stat-v", {}, value));
+
+    const ov = chart.overlays || {};
+    const overlays = [
+      { points: ov.sma20, color: "var(--accent)", dash: "3 3" },
+      { points: ov.sma50, color: "#c98500", dash: "3 3" },
+      { points: ov.bollUpper, color: "var(--muted)", width: 0.7 },
+      { points: ov.bollLower, color: "var(--muted)", width: 0.7 },
+    ].filter((o) => (o.points || []).some((v) => v != null));
+
+    const rangeTabs = h("div.tabs", { role: "tablist" },
+      CHART_RANGES.map(([d, label]) => h("button.tab", {
+        type: "button", role: "tab", "aria-selected": String(d === days),
+        onclick: () => { days = d; draw(); },
+      }, label)));
+
+    const chartWrap = h("div.coin-chart-wrap", {},
+      candleChart(chart.candles, { width: 560, height: 220, overlays }));
+
+    const signals = h("div.coin-signals", {},
+      (chart.signals || []).map((s) => h("div.coin-signal", { class: `coin-signal tone-${s.tone}` },
+        h("span.muted.small", {}, s.label), h("span", {}, s.value))));
+
+    clear(body).append(
+      h("div.coin-head", {},
+        picker,
+        h("div.coin-price", {}, `$${fmtPrice(detail.price ?? 0)}`),
+        pct(detail.changes?.["24h"]),
+        detail.rank ? h("span.coin-rank", {}, `RANK #${detail.rank}`) : null,
+      ),
+      rangeTabs,
+      chartWrap,
+      h("div.coin-signals-label.muted.small", {}, "TECHNICALS · informational only"),
+      signals,
+      h("div.coin-stats", {},
+        stat("Market cap", fmtBig(detail.marketCap)),
+        stat("24h volume", fmtBig(detail.volume)),
+        stat("Circulating", detail.supply ? Math.round(detail.supply).toLocaleString() : "—"),
+        stat("Max supply", detail.maxSupply ? Math.round(detail.maxSupply).toLocaleString() : "—"),
+        stat("ATH", `${fmtBig(detail.ath)} (${detail.athChange != null ? detail.athChange.toFixed(0) : "—"}%)`),
+        stat("ATL", `${fmtBig(detail.atl)} (${detail.atlChange != null ? "+" + detail.atlChange.toFixed(0) : "—"}%)`),
+        stat("1h", pct(detail.changes?.["1h"])),
+        stat("7d", pct(detail.changes?.["7d"])),
+        stat("30d", pct(detail.changes?.["30d"])),
+        stat("1y", pct(detail.changes?.["1y"])),
+      ),
+    );
+  };
+  await draw();
+}
+
+const exportRef = {
   type: "markets",
   title: "Markets",
   icon: "📈",
   defaultSize: "m",
+  detail: renderCoinDetail,
 
   render(body, ctx) {
     const { store } = ctx;
@@ -55,7 +150,15 @@ export default {
         }, `${up ? "▲" : "▼"} ${up ? "+" : ""}${asset.change24h.toFixed(2)}%`);
 
         rows.append(
-          h("div.market-row", { role: "row" },
+          h("button.market-row", {
+            role: "row", type: "button",
+            title: `${asset.name} — details`,
+            onclick: () => {
+              if (editing) return;
+              ctx.detailCoin = asset.id || asset.name.toLowerCase();
+              openDetail(exportRef, ctx);
+            },
+          },
             h("div.market-id", {},
               h("div.market-symbol", {}, asset.symbol),
               h("div.muted.small", {}, asset.name),
@@ -65,10 +168,10 @@ export default {
               h("div.market-value", {}, `$${fmtPrice(asset.price)}`),
               change,
             ),
-            editing ? h("button.icon-btn", {
-              type: "button", title: "Remove from watchlist",
+            editing ? h("span.icon-btn", {
+              title: "Remove from watchlist",
               "aria-label": `Remove ${asset.name} from watchlist`,
-              onclick: () => removeAsset(asset),
+              onclick: (ev) => { ev.stopPropagation(); removeAsset(asset); },
             }, "✕") : null,
           ),
         );
@@ -96,3 +199,5 @@ export default {
     ctx.every(3 * 60_000, draw);
   },
 };
+
+export default exportRef;

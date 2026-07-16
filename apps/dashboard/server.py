@@ -41,6 +41,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import assistant as assistant_module
+import indicators
 from automations import Automations
 from evolve import Reflection
 from ics import parse_ics
@@ -672,6 +673,8 @@ def sample_weather(name: str | None = None) -> dict:
 def sample_markets(ids: list[str] | None = None) -> dict:
     data = json.loads(json.dumps(SAMPLES["markets"]))
     data["source"] = "sample"
+    for a in data["assets"]:
+        a.setdefault("id", a["name"].lower())
     if ids:
         wanted = {i.lower() for i in ids}
         subset = [a for a in data["assets"]
@@ -978,6 +981,7 @@ def live_markets(ids: list[str] | None = None) -> dict:
         step = max(1, len(spark) // 40)
         assets.append(
             {
+                "id": coin.get("id", coin["name"].lower()),
                 "symbol": coin["symbol"].upper(),
                 "name": coin["name"],
                 "price": coin["current_price"],
@@ -988,6 +992,119 @@ def live_markets(ids: list[str] | None = None) -> dict:
     if not assets:
         raise RuntimeError("empty market response")
     return {"source": "live", "assets": assets}
+
+
+# ---------------------------------------------------------------------------
+# Crypto: per-coin detail + OHLC chart with technical indicators
+# ---------------------------------------------------------------------------
+COIN_TTL = 90
+COIN_CHART_TTL = 5 * 60
+_CHART_DAYS = {"1": 1, "7": 7, "30": 30, "90": 90, "365": 365}
+
+
+def live_coin_detail(coin_id: str) -> dict:
+    url = (f"https://api.coingecko.com/api/v3/coins/{coin_id}"
+           "?localization=false&tickers=false&market_data=true"
+           "&community_data=false&developer_data=false")
+    raw = json.loads(fetch_url(url))
+    m = raw.get("market_data") or {}
+
+    def usd(block):
+        return (block or {}).get("usd")
+
+    return {
+        "source": "live",
+        "id": raw.get("id", coin_id),
+        "symbol": (raw.get("symbol") or "").upper(),
+        "name": raw.get("name", coin_id),
+        "rank": raw.get("market_cap_rank"),
+        "price": usd(m.get("current_price")),
+        "marketCap": usd(m.get("market_cap")),
+        "volume": usd(m.get("total_volume")),
+        "supply": m.get("circulating_supply"),
+        "totalSupply": m.get("total_supply"),
+        "maxSupply": m.get("max_supply"),
+        "ath": usd(m.get("ath")),
+        "athChange": usd(m.get("ath_change_percentage")),
+        "atl": usd(m.get("atl")),
+        "atlChange": usd(m.get("atl_change_percentage")),
+        "changes": {
+            "1h": (m.get("price_change_percentage_1h_in_currency") or {}).get("usd"),
+            "24h": m.get("price_change_percentage_24h"),
+            "7d": m.get("price_change_percentage_7d"),
+            "30d": m.get("price_change_percentage_30d"),
+            "1y": m.get("price_change_percentage_1y"),
+        },
+    }
+
+
+def _chart_payload(coin_id: str, days: int, candles: list[dict], source: str) -> dict:
+    closes = [c["c"] for c in candles]
+    sma20 = indicators.sma(closes, 20)
+    sma50 = indicators.sma(closes, 50)
+    boll = indicators.bollinger(closes, 20, 2.0)
+    return {
+        "source": source,
+        "id": coin_id,
+        "days": days,
+        "candles": candles,
+        "overlays": {
+            "sma20": sma20, "sma50": sma50,
+            "bollUpper": boll["upper"], "bollLower": boll["lower"],
+        },
+        "signals": indicators.read_signals(closes),
+    }
+
+
+def live_coin_chart(coin_id: str, days: int) -> dict:
+    url = (f"https://api.coingecko.com/api/v3/coins/{coin_id}/ohlc"
+           f"?vs_currency=usd&days={days}")
+    raw = json.loads(fetch_url(url))
+    candles = [
+        {"t": int(row[0]), "o": row[1], "h": row[2], "l": row[3], "c": row[4]}
+        for row in raw if isinstance(row, list) and len(row) >= 5
+    ]
+    if len(candles) < 2:
+        raise RuntimeError("empty ohlc response")
+    return _chart_payload(coin_id, days, candles, "live")
+
+
+def _synth_candles(seed: str, days: int, base: float) -> list[dict]:
+    """Deterministic pseudo-random candles so offline/e2e have a real chart."""
+    import random
+    rng = random.Random(f"{seed}:{days}")
+    n = 60
+    price = base
+    now = int(datetime.now(timezone.utc).timestamp() * 1000)
+    step = max(1, days) * 86400 * 1000 // n
+    out = []
+    for i in range(n):
+        drift = rng.uniform(-0.03, 0.03)
+        o = price
+        c = max(0.01, price * (1 + drift))
+        hi = max(o, c) * (1 + rng.uniform(0, 0.015))
+        lo = min(o, c) * (1 - rng.uniform(0, 0.015))
+        out.append({"t": now - (n - i) * step, "o": round(o, 4), "h": round(hi, 4),
+                    "l": round(lo, 4), "c": round(c, 4)})
+        price = c
+    return out
+
+
+def sample_coin_detail(coin_id: str) -> dict:
+    base = {"bitcoin": 112840, "ethereum": 4188, "solana": 216.4}.get(coin_id, 100.0)
+    return {
+        "source": "sample", "id": coin_id, "symbol": coin_id[:4].upper(),
+        "name": coin_id.title(), "rank": 1, "price": base,
+        "marketCap": base * 19_000_000, "volume": base * 400_000,
+        "supply": 19_000_000, "totalSupply": 21_000_000, "maxSupply": 21_000_000,
+        "ath": base * 1.4, "athChange": -28.5, "atl": base * 0.02, "atlChange": 4200.0,
+        "changes": {"1h": 0.2, "24h": 2.41, "7d": 5.1, "30d": -3.2, "1y": 64.0},
+    }
+
+
+def sample_coin_chart(coin_id: str, days: int) -> dict:
+    base = {"bitcoin": 112840, "ethereum": 4188, "solana": 216.4}.get(coin_id, 100.0)
+    return _chart_payload(coin_id, days, _synth_candles(coin_id, days, base), "sample")
 
 
 # ---------------------------------------------------------------------------
@@ -1201,6 +1318,27 @@ class Api:
             key, MARKETS_TTL,
             lambda: live_markets(ids),
             lambda: sample_markets(ids),
+        )
+
+    def crypto_coin(self, params: dict) -> dict:
+        coin_id = re.sub(r"[^a-z0-9-]", "", params.get("id", ["bitcoin"])[0].lower())[:40]
+        if not coin_id:
+            raise ApiError(400, "missing coin id")
+        return self._cached(
+            f"coin:{coin_id}", COIN_TTL,
+            lambda: live_coin_detail(coin_id),
+            lambda: sample_coin_detail(coin_id),
+        )
+
+    def crypto_chart(self, params: dict) -> dict:
+        coin_id = re.sub(r"[^a-z0-9-]", "", params.get("id", ["bitcoin"])[0].lower())[:40]
+        if not coin_id:
+            raise ApiError(400, "missing coin id")
+        days = _CHART_DAYS.get(params.get("days", ["30"])[0], 30)
+        return self._cached(
+            f"coinchart:{coin_id}:{days}", COIN_CHART_TTL,
+            lambda: live_coin_chart(coin_id, days),
+            lambda: sample_coin_chart(coin_id, days),
         )
 
     def worldstate(self, params: dict) -> dict:
@@ -1611,6 +1749,8 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/weather": "weather",
         "/api/geocode": "geocode",
         "/api/markets": "markets",
+        "/api/crypto/coin": "crypto_coin",
+        "/api/crypto/chart": "crypto_chart",
         "/api/worldstate": "worldstate",
         "/api/reader": "reader",
         "/api/health": "health",

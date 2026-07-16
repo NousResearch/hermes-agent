@@ -483,6 +483,24 @@ await page.evaluate(async (base) => {
 await page.waitForSelector(".cal-event-ext", { state: "detached", timeout: 10000 });
 check("unsubscribe clears external events", true);
 
+// ---- crypto detail drawer (chart + indicators) ----------------------------------
+await page.waitForSelector(".market-row");
+await page.locator(".market-row").first().click();
+await page.waitForSelector(".detail-pop .coin-price", { timeout: 8000 });
+check("coin detail opens with price", /\$[\d,]/.test(await page.locator(".coin-price").innerText()));
+check("coin detail renders a candle chart", (await page.locator(".coin-chart-wrap rect").count()) > 10);
+check("coin detail shows technical signals", (await page.locator(".coin-signal").count()) >= 3);
+check("coin detail shows stat grid", (await page.locator(".coin-stat").count()) >= 6);
+// range switch re-renders the chart without closing the drawer
+await page.locator(".detail-pop .tab", { hasText: "7D" }).click();
+await page.waitForFunction(() =>
+  document.querySelector('.detail-pop .tab[aria-selected="true"]')?.textContent === "7D",
+  null, { timeout: 5000 });
+check("coin detail range switch works", (await page.locator(".coin-chart-wrap rect").count()) > 10);
+await page.keyboard.press("Escape");
+await page.waitForSelector(".detail-pop", { state: "detached" });
+check("coin detail closes", true);
+
 // ---- markets watchlist editor ---------------------------------------------------
 await page.waitForSelector(".market-row");
 const marketCountBefore = await page.locator(".market-row").count();

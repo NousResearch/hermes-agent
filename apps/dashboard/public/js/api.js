@@ -130,6 +130,8 @@ export const api = {
   chatStream: (messages, context, onDelta) =>
     streamJSON("/api/assistant/chat-stream", { messages, context }, onDelta),
   runTool: (name, input) => postJSON("/api/assistant/tool", { name, input }),
+  cryptoCoin: (id) => getJSON("/api/crypto/coin", { id }),
+  cryptoChart: (id, days) => getJSON("/api/crypto/chart", { id, days }),
   backupNow: () => postJSON("/api/backup", {}),
   backupGet: (name) => getJSON("/api/backup/get", { name }),
   backupImport: (snapshot) => postJSON("/api/backup/import", { snapshot }),

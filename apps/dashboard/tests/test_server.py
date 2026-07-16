@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import assistant  # noqa: E402
 import ics  # noqa: E402
+import indicators as ind  # noqa: E402
 import router as router_mod  # noqa: E402
 import evolve as evolve_mod  # noqa: E402
 import server  # noqa: E402
@@ -1190,6 +1191,54 @@ class RouterTests(unittest.TestCase):
         # bad id rejected
         with self.assertRaises(server.ApiError):
             api.routing_set({"overrides": {"deep": "bad id!"}})
+
+
+class IndicatorTests(unittest.TestCase):
+    def test_sma_exact(self):
+        out = ind.sma([1, 2, 3, 4, 5], 3)
+        self.assertEqual(out, [None, None, 2.0, 3.0, 4.0])
+
+    def test_ema_seed_and_length(self):
+        out = ind.ema([1, 2, 3, 4, 5], 3)
+        self.assertIsNone(out[0]); self.assertIsNone(out[1])
+        self.assertAlmostEqual(out[2], 2.0)          # seeded with SMA of first 3
+        # k = 0.5 → next = 4*0.5 + 2*0.5 = 3.0, then 5*0.5 + 3*0.5 = 4.0
+        self.assertAlmostEqual(out[3], 3.0)
+        self.assertAlmostEqual(out[4], 4.0)
+
+    def test_rsi_all_gains_is_100_all_losses_is_0(self):
+        up = list(range(1, 30))
+        down = list(range(30, 1, -1))
+        self.assertEqual(ind.rsi(up)[-1], 100.0)
+        self.assertEqual(ind.rsi(down)[-1], 0.0)
+
+    def test_rsi_warmup_is_none(self):
+        vals = [1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1]  # len 15, period 14
+        r = ind.rsi(vals, 14)
+        self.assertTrue(all(v is None for v in r[:14]))
+        self.assertIsNotNone(r[14])
+
+    def test_macd_line_is_ema_diff(self):
+        vals = [float(i) for i in range(1, 60)]
+        m = ind.macd(vals)
+        ef = ind.ema(vals, 12)[-1]
+        es = ind.ema(vals, 26)[-1]
+        self.assertAlmostEqual(m["macd"][-1], ef - es, places=6)
+
+    def test_bollinger_symmetry(self):
+        vals = [float(i % 5) for i in range(40)]
+        b = ind.bollinger(vals, 20, 2)
+        i = 30
+        self.assertAlmostEqual(b["upper"][i] - b["mid"][i], b["mid"][i] - b["lower"][i], places=9)
+
+    def test_read_signals_shape(self):
+        vals = [float(i) for i in range(1, 80)]
+        sigs = ind.read_signals(vals)
+        labels = {s["label"] for s in sigs}
+        self.assertIn("RSI(14)", labels)
+        self.assertIn("MACD", labels)
+        for s in sigs:
+            self.assertIn(s["tone"], ("up", "down", "neutral"))
 
 
 class EvolveTests(unittest.TestCase):

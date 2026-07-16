@@ -55,7 +55,10 @@ export function isRemoteReauthError(error: string | null | undefined): boolean {
 // — see isRemoteReauthError). Only re-establishing the remote session fixes it;
 // the local Retry/Repair buttons can't. 'cloud' counts as remote (it resolves to
 // a remote oauth backend), so a lapsed cloud session is the same failure.
-export function isRemoteReauthFailure(config: DesktopConnectionConfig | null | undefined, error?: string | null): boolean {
+export function isRemoteReauthFailure(
+  config: DesktopConnectionConfig | null | undefined,
+  error?: string | null
+): boolean {
   return (
     isRemoteConfig(config) &&
     config!.remoteAuthMode === 'oauth' &&

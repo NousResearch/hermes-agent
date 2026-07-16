@@ -76,7 +76,11 @@ export function SessionSwitcher() {
               }}
               ref={selected ? activeRef : undefined}
             >
-              <SwitcherDot attention={attentionIds.has(session.id)} working={workingIds.has(session.id)} unread={unreadIds.has(session.id)} />
+              <SwitcherDot
+                attention={attentionIds.has(session.id)}
+                unread={unreadIds.has(session.id)}
+                working={workingIds.has(session.id)}
+              />
               <span className="min-w-0 flex-1 truncate">{sessionTitle(session)}</span>
               {i < 9 && (
                 <span

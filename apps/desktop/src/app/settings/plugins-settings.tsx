@@ -64,7 +64,7 @@ function PluginRow({ record }: { record: PluginRecord }) {
         record.status === 'error' ? (
           <span className="text-(--ui-danger,#f87171)">{record.error}</span>
         ) : (
-          record.file ?? record.id
+          (record.file ?? record.id)
         )
       }
       title={

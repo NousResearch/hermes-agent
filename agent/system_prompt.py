@@ -463,9 +463,16 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # CLI), None lets build_context_files_prompt fall back to the launch
         # dir — the user's real cwd there, but the install dir for the gateway
         # daemon, which is why the gateway sets TERMINAL_CWD.
+        #
+        # allow_install_tree_fallback: for cli/tui the launch dir IS the
+        # user's shell cwd, so an in-tree fallback is a deliberate choice
+        # (developing Hermes). Every other surface (desktop chat panel,
+        # gateway daemons) self-spawns into the install tree, where the
+        # fallback would inject this repo's contributor AGENTS.md (#64590).
         context_files_prompt = _r.build_context_files_prompt(
             cwd=resolve_context_cwd(), skip_soul=_soul_loaded,
-            context_length=_ctx_len)
+            context_length=_ctx_len,
+            allow_install_tree_fallback=agent.platform in ("cli", "tui"))
         if context_files_prompt:
             context_parts.append(context_files_prompt)
 

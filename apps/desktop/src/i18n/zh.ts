@@ -1832,6 +1832,7 @@ export const zh: Translations = {
       needsInput: '需要你输入',
       waitingForAnswer: '正在等待你的回答',
       finishedUnread: '已完成 — 未读',
+      backgroundRunning: '后台任务运行中',
       handoffOrigin: platform => `从 ${platform} 转接`,
       renamed: '已重命名',
       renameFailed: '重命名失败',

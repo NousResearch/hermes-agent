@@ -54,6 +54,47 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
         # Should have been called at least twice (primary + fallback)
         assert call_count["n"] >= 2
 
+    def test_auth_fallback_passes_model_and_explicit_api_mode_atomically(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli.auth import AuthError
+
+        (tmp_path / "config.yaml").write_text(
+            "model:\n  provider: openai-codex\n"
+            "fallback_model:\n  provider: openrouter\n"
+            "  model: gpt-5.6-codex\n"
+            "  api_mode: codex_app_server\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+        calls = []
+
+        def fake_resolve(**kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise AuthError("primary unavailable")
+            return {
+                "api_key": "fallback-key",
+                "base_url": "https://openrouter.ai/api/v1",
+                "provider": "openrouter",
+                "api_mode": kwargs.get("explicit_api_mode") or "chat_completions",
+                "command": None,
+                "args": None,
+                "credential_pool": None,
+            }
+
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            side_effect=fake_resolve,
+        ):
+            from gateway.run import _resolve_runtime_agent_kwargs
+
+            result = _resolve_runtime_agent_kwargs()
+
+        assert calls[1]["target_model"] == "gpt-5.6-codex"
+        assert calls[1]["explicit_api_mode"] == "codex_app_server"
+        assert result["api_mode"] == "codex_app_server"
+
     def test_auth_error_no_fallback_raises(self, tmp_path, monkeypatch):
         """When primary fails and no fallback configured, RuntimeError is raised."""
         from hermes_cli.auth import AuthError

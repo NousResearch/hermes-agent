@@ -7864,7 +7864,8 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
     monkeypatch.setattr(urllib.request, "urlopen", _opener)
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         with patch(
-            "hermes_cli.browser_connect.try_launch_chrome_debug", return_value=True
+            "hermes_cli.browser_connect.launch_chrome_debug",
+            return_value=ChromeDebugLaunch(launched=True),
         ):
             resp = server.handle_request(
                 {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
@@ -9803,3 +9804,216 @@ def test_get_usage_clamps_post_compression_sentinel():
     usage = server._get_usage(agent)
     assert "context_used" not in usage
     assert "context_percent" not in usage
+
+
+def test_session_create_rejects_unresolved_explicit_profile(monkeypatch):
+    """The discovery-to-create race must fail closed.
+
+    A profile deleted or renamed after the client discovered it used to resolve
+    to ``None`` and silently scope the new session to the launch profile while
+    the client believed it was profile-scoped. An explicit profile that does
+    not resolve is now rejected before any session state is claimed.
+    """
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    before = set(server._sessions)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.create",
+            "params": {"cols": 80, "profile": "ghost-profile-that-does-not-exist"},
+        }
+    )
+
+    assert resp["error"]["code"] == 4041
+    assert resp["error"]["message"] == "profile not found: ghost-profile-that-does-not-exist"
+    assert set(server._sessions) == before
+
+
+def test_session_create_rejects_invalid_profile_before_path_resolution(monkeypatch):
+    """Path-like profile input cannot escape the profile namespace."""
+    from hermes_cli import profiles as profiles_mod
+
+    resolved = []
+    monkeypatch.setattr(
+        profiles_mod,
+        "get_profile_dir",
+        lambda name: resolved.append(name) or Path("/tmp/outside-profile-root"),
+    )
+    before = set(server._sessions)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.create",
+            "params": {"cols": 80, "profile": "../../outside-profile-root"},
+        }
+    )
+
+    assert resp["error"]["code"] == 4041
+    assert set(server._sessions) == before
+    assert resolved == []
+
+
+def test_session_create_echoes_effective_profile(monkeypatch, tmp_path):
+    """session.create returns the authoritative effective profile scope.
+
+    Clients that request an explicit profile compare this echo against their
+    request before trusting the session ("" = launch profile).
+    """
+    from hermes_cli import profiles as profiles_mod
+
+    profile_home = tmp_path / "profiles" / "research"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_completion_cwd", lambda params=None: str(tmp_path))
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda name: profile_home)
+
+    scoped = server.handle_request(
+        {"id": "1", "method": "session.create", "params": {"cols": 80, "profile": "research"}}
+    )
+    scoped_sid = scoped["result"]["session_id"]
+    try:
+        assert scoped["result"]["profile"] == "research"
+        assert server._sessions[scoped_sid]["profile_home"] == str(profile_home)
+    finally:
+        server._sessions.pop(scoped_sid, None)
+
+    launch = server.handle_request(
+        {"id": "2", "method": "session.create", "params": {"cols": 80}}
+    )
+    launch_sid = launch["result"]["session_id"]
+    try:
+        assert launch["result"]["profile"] == ""
+        assert server._sessions[launch_sid]["profile_home"] is None
+    finally:
+        server._sessions.pop(launch_sid, None)
+
+
+def test_session_resume_rejects_unresolved_explicit_profile(monkeypatch):
+    """Resume rejects a stale explicit profile before touching any database."""
+    touched = []
+
+    class FakeDB:
+        def get_session(self, target):
+            touched.append(target)
+            return {"id": target}
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.resume",
+            "params": {"session_id": "any", "profile": "ghost-profile-that-does-not-exist"},
+        }
+    )
+
+    assert resp["error"]["code"] == 4041
+    assert resp["error"]["message"] == "profile not found: ghost-profile-that-does-not-exist"
+    assert touched == []
+
+
+def test_session_resume_echoes_effective_profile(monkeypatch):
+    """Successful resumes echo the validated effective profile scope."""
+
+    class FakeDB:
+        def get_session(self, target):
+            return {"id": target}
+
+        def reopen_session(self, target):
+            pass
+
+        def get_messages_as_conversation(self, target, include_ancestors=False):
+            return [{"role": "user", "content": "hello"}]
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.resume", "params": {"session_id": "tip"}}
+    )
+    sid = resp["result"]["session_id"]
+    try:
+        assert resp["result"]["profile"] == ""
+        assert resp["result"]["resumed"] == "tip"
+        assert resp["result"]["session_key"] == "tip"
+        assert sid and sid != "tip"
+    finally:
+        server._sessions.pop(sid, None)
+
+
+def test_gateway_ready_advertises_session_profile_capability():
+    """The optional profile-session contract has one canonical capability."""
+    assert server.GATEWAY_CAPABILITIES["session_profiles"] is True
+
+
+def test_session_resume_does_not_reuse_same_key_from_another_profile(
+    monkeypatch, tmp_path
+):
+    """Durable ids are profile-local and cannot identify a live session alone."""
+    import hermes_state
+    from hermes_cli import profiles as profiles_mod
+
+    target = "same-durable-id"
+    profile_home = tmp_path / "profiles" / "research"
+    profile_home.mkdir(parents=True)
+
+    class FakeDB:
+        def __init__(self, db_path=None):
+            assert db_path == profile_home / "state.db"
+
+        def get_session(self, session_id):
+            assert session_id == target
+            return {"id": target, "cwd": str(tmp_path)}
+
+        def resolve_resume_session_id(self, session_id):
+            return session_id
+
+        def reopen_session(self, session_id):
+            assert session_id == target
+
+        def get_messages_as_conversation(self, session_id, include_ancestors=False):
+            assert session_id == target
+            return [{"role": "user", "content": "research profile history"}]
+
+    launch_sid = "launch-live-id"
+    launch_session = server._deferred_session_record(
+        target,
+        cols=80,
+        cwd=str(tmp_path),
+        history=[{"role": "user", "content": "launch profile history"}],
+        lease=None,
+        profile_home=None,
+    )
+    server._sessions[launch_sid] = launch_session
+    monkeypatch.setattr(profiles_mod, "get_profile_dir", lambda _name: profile_home)
+    monkeypatch.setattr(hermes_state, "SessionDB", FakeDB)
+    monkeypatch.setattr(server, "_claim_active_session_slot", lambda *a, **k: (None, None))
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.resume",
+                "params": {"session_id": target, "profile": "research"},
+            }
+        )
+        result = resp["result"]
+        scoped_sid = result["session_id"]
+
+        assert scoped_sid != launch_sid
+        assert result["profile"] == "research"
+        assert result["messages"] == [
+            {"role": "user", "text": "research profile history"}
+        ]
+        assert server._sessions[scoped_sid]["profile_home"] == str(profile_home)
+        assert server._sessions[launch_sid] is launch_session
+    finally:
+        for sid, session in list(server._sessions.items()):
+            if session is launch_session or session.get("session_key") == target:
+                server._sessions.pop(sid, None)

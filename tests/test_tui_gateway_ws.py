@@ -1,4 +1,5 @@
 import asyncio
+import json
 import threading
 import time
 
@@ -40,6 +41,34 @@ def test_ws_startup_starts_background_mcp_discovery(monkeypatch):
         server._sessions.clear()
 
     assert calls == [{"logger": ws_mod._log, "thread_name": "tui-ws-mcp-discovery"}]
+
+
+def test_ws_gateway_ready_advertises_session_profile_capability(monkeypatch):
+    """Remote clients receive the capability before sending scoped RPCs."""
+    sent = []
+    monkeypatch.setattr(
+        mcp_startup,
+        "start_background_mcp_discovery",
+        lambda **_kwargs: None,
+    )
+
+    class FakeWS:
+        async def accept(self):
+            pass
+
+        async def send_text(self, line):
+            sent.append(json.loads(line))
+
+        async def receive_text(self):
+            raise ws_mod._WebSocketDisconnect()
+
+        async def close(self):
+            pass
+
+    asyncio.run(ws_mod.handle_ws(FakeWS()))
+
+    assert sent[0]["params"]["type"] == "gateway.ready"
+    assert sent[0]["params"]["payload"]["capabilities"]["session_profiles"] is True
 
 
 def _run_disconnect(monkeypatch, seed):

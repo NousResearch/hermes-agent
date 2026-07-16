@@ -224,6 +224,7 @@ export interface SetupStatusResponse {
 
 export interface SessionCreateResponse {
   info?: SessionInfo & { config_warning?: string; credential_warning?: string }
+  profile?: string
   session_id: string
 }
 
@@ -232,6 +233,7 @@ export interface SessionResumeResponse {
   info?: SessionInfo
   message_count?: number
   messages: GatewayTranscriptMessage[]
+  profile?: string
   resumed?: string
   running?: boolean
   session_id: string
@@ -614,7 +616,11 @@ export interface SpawnTreeLoadResponse {
 }
 
 export type GatewayEvent =
-  | { payload?: { skin?: GatewaySkin }; session_id?: string; type: 'gateway.ready' }
+  | {
+      payload?: { capabilities?: Record<string, boolean>; skin?: GatewaySkin }
+      session_id?: string
+      type: 'gateway.ready'
+    }
   | { payload?: GatewaySkin; session_id?: string; type: 'skin.changed' }
   | { payload: SessionInfo; session_id?: string; type: 'session.info' }
   | { payload?: { text?: string }; session_id?: string; type: 'thinking.delta' }

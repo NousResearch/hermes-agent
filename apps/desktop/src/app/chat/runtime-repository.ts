@@ -17,6 +17,7 @@ export function useRuntimeMessageRepository(messages: ChatMessage[]): ExportedMe
   return useMemo(() => {
     const items: { message: ThreadMessage; parentId: string | null }[] = []
     const branchParentByGroup = new Map<string, string | null>()
+    const seenIds = new Set<string>()
     let visibleParentId: string | null = null
     let headId: string | null = null
 
@@ -38,11 +39,37 @@ export function useRuntimeMessageRepository(messages: ChatMessage[]): ExportedMe
         cacheRef.current.set(message, runtimeMessage)
       }
 
-      items.push({ message: runtimeMessage, parentId })
+      // assistant-ui's MessageRepository keys every node by id and throws on
+      // `performOp/link` if the same id appears twice in a parent chain. The
+      // adapter derives ids as `${timestamp}-${index}-${role}`, which is unique
+      // within a single toChatMessages() pass but CAN collide once two passes
+      // are merged (resume-reconcile grafting a re-fetched transcript onto the
+      // live stream, or a hidden rewind branch that shares a sibling's id). One
+      // duplicate id crashes the whole renderer, so this funnel — the only
+      // caller of fromBranchableArray — is where id-uniqueness is enforced.
+      // Render-only: suffix the runtime node's id without touching the
+      // $messages store, preserving every message instead of dropping one.
+      let uniqueId = runtimeMessage.id
+
+      if (seenIds.has(uniqueId)) {
+        let suffix = 1
+
+        while (seenIds.has(`${uniqueId}#${suffix}`)) {
+          suffix += 1
+        }
+
+        uniqueId = `${uniqueId}#${suffix}`
+      }
+
+      seenIds.add(uniqueId)
+
+      const uniqueMessage = uniqueId === runtimeMessage.id ? runtimeMessage : { ...runtimeMessage, id: uniqueId }
+
+      items.push({ message: uniqueMessage, parentId })
 
       if (!message.hidden) {
-        visibleParentId = message.id
-        headId = message.id
+        visibleParentId = uniqueId
+        headId = uniqueId
       }
     }
 

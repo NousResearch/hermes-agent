@@ -78,6 +78,7 @@ import re
 import random
 import secrets
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -1294,6 +1295,9 @@ CREATE TABLE IF NOT EXISTS verifier_result_authorizations (
     contract_id TEXT NOT NULL,
     pr_url      TEXT NOT NULL,
     nonce_digest TEXT NOT NULL,
+    supervisor_owner TEXT,
+    verifier_root TEXT,
+    cleanup_error TEXT,
     state       TEXT NOT NULL,
     reason_code TEXT NOT NULL,
     created_at  INTEGER NOT NULL,
@@ -2084,6 +2088,36 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                 conn, "kanban_notify_subs", "notifier_profile", "notifier_profile TEXT"
             )
 
+    auth_table_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='verifier_result_authorizations'"
+    ).fetchone() is not None
+    if auth_table_exists:
+        auth_cols = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(verifier_result_authorizations)")
+        }
+        if "supervisor_owner" not in auth_cols:
+            _add_column_if_missing(
+                conn,
+                "verifier_result_authorizations",
+                "supervisor_owner",
+                "supervisor_owner TEXT",
+            )
+        if "verifier_root" not in auth_cols:
+            _add_column_if_missing(
+                conn,
+                "verifier_result_authorizations",
+                "verifier_root",
+                "verifier_root TEXT",
+            )
+        if "cleanup_error" not in auth_cols:
+            _add_column_if_missing(
+                conn,
+                "verifier_result_authorizations",
+                "cleanup_error",
+                "cleanup_error TEXT",
+            )
+
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.
     # Synthesize a matching task_runs row so subsequent end-run / heartbeat
@@ -2413,6 +2447,7 @@ _VERIFIER_TRANSITIONS = {
     "fail": ("authorized", "failed"),
     "reconcile": ("reserved", "reconciled"),
 }
+_VERIFIER_TERMINAL_STATES = frozenset({"applied", "failed", "reconciled"})
 
 
 @dataclass(frozen=True)
@@ -2571,40 +2606,180 @@ def apply_verifier_supervisor_result(
     for field in ("task_id", "run_id", "claim_lock", "contract_id", "pr_url", "nonce"):
         if payload.get(field) != binding.get(field):
             return VerifierSupervisorResult(False, None, f"binding_mismatch:{field}")
-    consumed = consume_verifier_result(
-        conn, authorization_id=authorization_id, **binding
-    )
-    if consumed.state != "consumed":
-        return VerifierSupervisorResult(False, None, consumed.reason)
     action = payload["action"]
     summary = payload.get("summary") or ""
-    if action == "complete":
-        if not complete_task(
-            conn,
-            str(binding["task_id"]),
-            result=summary or None,
-            summary=summary or None,
-            expected_run_id=int(binding["run_id"]),
-        ):
-            return VerifierSupervisorResult(False, action, "apply_failed")
-    elif action == "re-block":
-        reason = payload.get("reason") or summary or "verifier requested re-block"
-        if not block_task(
-            conn,
-            str(binding["task_id"]),
-            reason=reason,
-            kind="needs_input",
-            expected_run_id=int(binding["run_id"]),
-        ):
-            return VerifierSupervisorResult(False, action, "apply_failed")
-    else:  # defensive; parser already rejects this
-        return VerifierSupervisorResult(False, None, "invalid_action")
-    applied = apply_verifier_result(
-        conn, authorization_id=authorization_id, **binding
+    applied = _apply_verifier_supervisor_result_atomic(
+        conn,
+        authorization_id=authorization_id,
+        binding=binding,
+        action=action,
+        summary=summary,
+        reason=payload.get("reason") or "",
     )
     if applied.state != "applied":
         return VerifierSupervisorResult(False, action, applied.reason)
+    if action == "complete":
+        _clear_failure_counter(conn, str(binding["task_id"]))
+        recompute_ready(conn)
     return VerifierSupervisorResult(True, action, "applied")
+
+
+def _apply_verifier_supervisor_result_atomic(
+    conn: sqlite3.Connection,
+    *,
+    authorization_id: int,
+    binding: dict[str, Any],
+    action: str,
+    summary: str,
+    reason: str,
+) -> VerifierAuthorization:
+    """Apply a verifier terminal action and authorization CAS in one txn."""
+    task_id = str(binding["task_id"])
+    run_id = int(binding["run_id"])
+    claim_lock = str(binding["claim_lock"])
+    now = int(time.time())
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT * FROM verifier_result_authorizations WHERE id = ?",
+            (authorization_id,),
+        ).fetchone()
+        if row is None:
+            return VerifierAuthorization(authorization_id, "missing", "authorization_not_found")
+        if row["state"] in _VERIFIER_TERMINAL_STATES:
+            return _authorization_result(row, f"already_{row['state']}")
+        mismatch = _authorization_binding_reason(
+            conn,
+            row,
+            task_id=task_id,
+            run_id=run_id,
+            claim_lock=claim_lock,
+            contract_id=str(binding["contract_id"]),
+            pr_url=str(binding["pr_url"]),
+            nonce=str(binding["nonce"]),
+        )
+        if mismatch is not None:
+            return _authorization_result(row, mismatch)
+        if row["state"] != "started":
+            return _authorization_result(row, f"invalid_transition:{row['state']}->applied")
+
+        if action == "complete":
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status = 'done',
+                       result = ?,
+                       completed_at = ?,
+                       current_run_id = NULL,
+                       claim_lock = NULL,
+                       claim_expires = NULL,
+                       worker_pid = NULL,
+                       block_kind = NULL,
+                       block_recurrences = 0
+                 WHERE id = ?
+                   AND status = 'running'
+                   AND current_run_id = ?
+                   AND claim_lock = ?
+                """,
+                (summary or None, now, task_id, run_id, claim_lock),
+            )
+            if cur.rowcount != 1:
+                return _authorization_result(row, "apply_failed")
+            conn.execute(
+                """
+                UPDATE task_runs
+                   SET status = 'done',
+                       outcome = 'completed',
+                       summary = ?,
+                       ended_at = ?,
+                       claim_lock = NULL,
+                       claim_expires = NULL,
+                       worker_pid = NULL
+                 WHERE id = ?
+                   AND task_id = ?
+                   AND status = 'running'
+                   AND claim_lock = ?
+                """,
+                (summary or None, now, run_id, task_id, claim_lock),
+            )
+            _append_event(
+                conn,
+                task_id,
+                "completed",
+                {
+                    "result_len": len(summary) if summary else 0,
+                    "summary": (summary.strip().splitlines()[0][:400] if summary else None),
+                },
+                run_id=run_id,
+            )
+        elif action == "re-block":
+            block_reason = reason or summary or "verifier requested re-block"
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status = 'blocked',
+                       current_run_id = NULL,
+                       claim_lock = NULL,
+                       claim_expires = NULL,
+                       worker_pid = NULL,
+                       block_kind = 'needs_input',
+                       block_recurrences = CASE
+                           WHEN block_kind = 'needs_input' THEN block_recurrences + 1
+                           ELSE 1
+                       END,
+                       block_evidence = NULL,
+                       guard_bypass = NULL
+                 WHERE id = ?
+                   AND status = 'running'
+                   AND current_run_id = ?
+                   AND claim_lock = ?
+                """,
+                (task_id, run_id, claim_lock),
+            )
+            if cur.rowcount != 1:
+                return _authorization_result(row, "apply_failed")
+            conn.execute(
+                """
+                UPDATE task_runs
+                   SET status = 'blocked',
+                       outcome = 'blocked',
+                       summary = ?,
+                       ended_at = ?,
+                       claim_lock = NULL,
+                       claim_expires = NULL,
+                       worker_pid = NULL
+                 WHERE id = ?
+                   AND task_id = ?
+                   AND status = 'running'
+                   AND claim_lock = ?
+                """,
+                (block_reason, now, run_id, task_id, claim_lock),
+            )
+            _append_event(
+                conn,
+                task_id,
+                "blocked",
+                {"reason": block_reason, "kind": "needs_input", "recurrences": 1},
+                run_id=run_id,
+            )
+        else:
+            return VerifierAuthorization(authorization_id, row["state"], "invalid_action")
+
+        cur = conn.execute(
+            "UPDATE verifier_result_authorizations "
+            "SET state = 'applied', reason_code = 'apply', updated_at = ? "
+            "WHERE id = ? AND state = 'started'",
+            (now, authorization_id),
+        )
+        if cur.rowcount != 1:
+            return _authorization_result(row, "compare_and_swap_failed")
+        _append_event(
+            conn,
+            task_id,
+            "verifier_authorization",
+            {"authorization_id": authorization_id, "state": "applied"},
+            run_id=run_id,
+        )
+        return VerifierAuthorization(authorization_id, "applied", "apply")
 
 
 def _nonce_digest(nonce: str) -> str:
@@ -2790,6 +2965,196 @@ def fail_verifier_result(conn: sqlite3.Connection, *, authorization_id: int, **b
 
 def reconcile_verifier_result(conn: sqlite3.Connection, *, authorization_id: int, **binding: Any) -> VerifierAuthorization:
     return _transition_verifier_result(conn, authorization_id=authorization_id, action="reconcile", **binding)
+
+
+def reconcile_verifier_authorizations(
+    conn: sqlite3.Connection,
+    *,
+    owner_id: str,
+    live_owner_ids: Optional[set[str]] = None,
+) -> list[int]:
+    """Reconcile durable verifier authorizations after supervisor restart.
+
+    A reserved authorization is pre-start state. If its supervisor owner is
+    missing or dead and the task/run/claim binding still matches, restore it to
+    ``authorized`` so spawn can retry from a clean point. Live owners keep
+    their reservation. Post-start rows whose owner is missing or dead are
+    fail-closed once.
+    """
+    _ = owner_id  # Retained for callers from the owner-scoped implementation.
+    live_owner_ids = set(live_owner_ids or set())
+    restored: list[int] = []
+    now = int(time.time())
+    with write_txn(conn):
+        rows = conn.execute(
+            "SELECT id, task_id, run_id, state, supervisor_owner "
+            "FROM verifier_result_authorizations "
+            "WHERE state = 'reserved'",
+        ).fetchall()
+        for row in rows:
+            supervisor_owner = row["supervisor_owner"]
+            if supervisor_owner and supervisor_owner in live_owner_ids:
+                continue
+            full_row = conn.execute(
+                "SELECT * FROM verifier_result_authorizations WHERE id = ?",
+                (row["id"],),
+            ).fetchone()
+            if full_row is None:
+                continue
+            run = conn.execute(
+                "SELECT status, claim_lock FROM task_runs WHERE id = ? AND task_id = ?",
+                (int(full_row["run_id"]), full_row["task_id"]),
+            ).fetchone()
+            task = conn.execute(
+                "SELECT status, current_run_id, claim_lock FROM tasks WHERE id = ?",
+                (full_row["task_id"],),
+            ).fetchone()
+            if (
+                run is None
+                or run["status"] != "running"
+                or run["claim_lock"] != full_row["claim_lock"]
+                or task is None
+                or task["status"] != "running"
+                or task["current_run_id"] != int(full_row["run_id"])
+                or task["claim_lock"] != full_row["claim_lock"]
+            ):
+                continue
+            cur = conn.execute(
+                "UPDATE verifier_result_authorizations "
+                "SET state = 'authorized', reason_code = 'pre_start_restore', "
+                "supervisor_owner = NULL, verifier_root = NULL, updated_at = ? "
+                "WHERE id = ? AND state = 'reserved' "
+                "AND supervisor_owner IS ?",
+                (now, row["id"], supervisor_owner),
+            )
+            if cur.rowcount != 1:
+                continue
+            restored.append(int(row["id"]))
+            _append_event(
+                conn,
+                row["task_id"],
+                "verifier_authorization_reconciled",
+                {
+                    "authorization_id": int(row["id"]),
+                    "from_state": "reserved",
+                    "to_state": "authorized",
+                    "reason": "pre_start_restore",
+                },
+                run_id=int(row["run_id"]),
+            )
+        rows = conn.execute(
+            "SELECT id, task_id, run_id, state, supervisor_owner "
+            "FROM verifier_result_authorizations "
+            "WHERE state = 'started'",
+        ).fetchall()
+        for row in rows:
+            supervisor_owner = row["supervisor_owner"]
+            if supervisor_owner and supervisor_owner in live_owner_ids:
+                continue
+            reason = "post_start_owner_missing"
+            summary = f"verifier result channel failed: {reason}"
+            cur = conn.execute(
+                "UPDATE verifier_result_authorizations "
+                "SET state = 'reconciled', reason_code = ?, updated_at = ? "
+                "WHERE id = ? AND state = 'started'",
+                (reason, now, row["id"]),
+            )
+            if cur.rowcount != 1:
+                continue
+            task_cur = conn.execute(
+                """
+                UPDATE tasks
+                       SET status = 'blocked',
+                       current_run_id = NULL,
+                       claim_lock = NULL,
+                       claim_expires = NULL,
+                       worker_pid = NULL,
+                       block_kind = 'needs_input',
+                       block_recurrences = CASE
+                           WHEN block_kind = 'needs_input' THEN block_recurrences + 1
+                           ELSE 1
+                       END,
+                       block_evidence = NULL,
+                       guard_bypass = NULL
+                 WHERE id = ?
+                   AND status = 'running'
+                   AND current_run_id = ?
+                """,
+                (row["task_id"], row["run_id"]),
+            )
+            if task_cur.rowcount == 1:
+                conn.execute(
+                    """
+                    UPDATE task_runs
+                       SET status = 'blocked',
+                           ended_at = ?,
+                           outcome = 'blocked',
+                           summary = ?
+                     WHERE id = ?
+                       AND task_id = ?
+                       AND status = 'running'
+                    """,
+                    (now, summary, row["run_id"], row["task_id"]),
+                )
+                _append_event(
+                    conn,
+                    row["task_id"],
+                    "blocked",
+                    {"reason": summary, "kind": "needs_input", "recurrences": 1},
+                    run_id=int(row["run_id"]),
+                )
+            restored.append(int(row["id"]))
+            _append_event(
+                conn,
+                row["task_id"],
+                "verifier_authorization_reconciled",
+                {
+                    "authorization_id": int(row["id"]),
+                    "from_state": "started",
+                    "to_state": "reconciled",
+                    "reason": reason,
+                },
+                run_id=int(row["run_id"]),
+            )
+    return restored
+
+
+def _live_verifier_supervisor_owner_ids(conn: sqlite3.Connection) -> set[str]:
+    owners: set[str] = set()
+    host = socket.gethostname()
+    rows = conn.execute(
+        "SELECT DISTINCT supervisor_owner FROM verifier_result_authorizations "
+        "WHERE supervisor_owner IS NOT NULL "
+        "AND state IN ('reserved', 'started')"
+    ).fetchall()
+    for row in rows:
+        owner = str(row["supervisor_owner"] or "")
+        owner_host, sep, raw_pid = owner.rpartition(":")
+        if not sep or owner_host != host:
+            continue
+        try:
+            pid = int(raw_pid)
+        except ValueError:
+            continue
+        if _pid_alive(pid):
+            owners.add(owner)
+    return owners
+
+
+def reconcile_verifier_dispatch_state(
+    conn: sqlite3.Connection,
+    *,
+    board: Optional[str] = None,
+) -> None:
+    """Run verifier cleanup/restart reconciliation for a dispatch tick."""
+    live_owner_ids = _live_verifier_supervisor_owner_ids(conn)
+    reconcile_verifier_authorizations(
+        conn,
+        owner_id=_claimer_id(),
+        live_owner_ids=live_owner_ids,
+    )
+    reconcile_verifier_roots(conn, board=board)
+    reconcile_orphan_verifier_roots(board=board)
 
 
 # ---------------------------------------------------------------------------
@@ -8562,6 +8927,8 @@ def _dispatch_once_locked(
     reap_worker_zombies()
 
     result = DispatchResult()
+    if not dry_run:
+        reconcile_verifier_dispatch_state(conn, board=board)
     result.reclaimed = release_stale_claims(conn)
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
@@ -9279,11 +9646,313 @@ def _verifier_failure_reblock(
         )
 
 
+def _reconcile_verifier_authorization_failure(
+    *,
+    db_path: Path,
+    authorization_id: int,
+    binding: dict[str, Any],
+    reason: str,
+) -> None:
+    try:
+        with connect(db_path=db_path) as conn:
+            with write_txn(conn):
+                row = conn.execute(
+                    "SELECT * FROM verifier_result_authorizations WHERE id = ?",
+                    (authorization_id,),
+                ).fetchone()
+                if row is None or row["state"] in _VERIFIER_TERMINAL_STATES:
+                    return
+                mismatch = _authorization_static_binding_reason(
+                    row,
+                    task_id=str(binding["task_id"]),
+                    run_id=int(binding["run_id"]),
+                    claim_lock=str(binding["claim_lock"]),
+                    contract_id=str(binding["contract_id"]),
+                    pr_url=str(binding["pr_url"]),
+                    nonce=str(binding["nonce"]),
+                )
+                if mismatch is not None:
+                    return
+                cur = conn.execute(
+                    "UPDATE verifier_result_authorizations "
+                    "SET state = 'reconciled', reason_code = ?, updated_at = ? "
+                    "WHERE id = ? AND state IN ('authorized', 'reserved', 'started', 'consumed')",
+                    (reason, int(time.time()), authorization_id),
+                )
+                if cur.rowcount == 1:
+                    task_cur = conn.execute(
+                        """
+                        UPDATE tasks
+                           SET status = 'blocked',
+                               current_run_id = NULL,
+                               claim_lock = NULL,
+                               claim_expires = NULL,
+                               worker_pid = NULL,
+                               block_kind = 'needs_input',
+                               block_recurrences = CASE
+                                   WHEN block_kind = 'needs_input' THEN block_recurrences + 1
+                                   ELSE 1
+                               END,
+                               block_evidence = NULL,
+                               guard_bypass = NULL
+                         WHERE id = ?
+                           AND status = 'running'
+                           AND current_run_id = ?
+                           AND claim_lock = ?
+                        """,
+                        (
+                            str(binding["task_id"]),
+                            int(binding["run_id"]),
+                            str(binding["claim_lock"]),
+                        ),
+                    )
+                    if task_cur.rowcount == 1:
+                        summary = f"verifier result channel failed: {reason}"
+                        conn.execute(
+                            """
+                            UPDATE task_runs
+                               SET status = 'blocked',
+                                   outcome = 'blocked',
+                                   summary = ?,
+                                   ended_at = ?,
+                                   claim_lock = NULL,
+                                   claim_expires = NULL,
+                                   worker_pid = NULL
+                             WHERE id = ?
+                               AND task_id = ?
+                               AND status = 'running'
+                               AND claim_lock = ?
+                            """,
+                            (
+                                summary,
+                                int(time.time()),
+                                int(binding["run_id"]),
+                                str(binding["task_id"]),
+                                str(binding["claim_lock"]),
+                            ),
+                        )
+                        _append_event(
+                            conn,
+                            str(binding["task_id"]),
+                            "blocked",
+                            {"reason": summary, "kind": "needs_input", "recurrences": 1},
+                            run_id=int(binding["run_id"]),
+                        )
+                    _append_event(
+                        conn,
+                        str(binding["task_id"]),
+                        "verifier_authorization_reconciled",
+                        {
+                            "authorization_id": authorization_id,
+                            "from_state": row["state"],
+                            "to_state": "reconciled",
+                            "reason": reason,
+                        },
+                        run_id=int(binding["run_id"]),
+                    )
+    except Exception:
+        _log.warning(
+            "kanban verifier supervisor failed to mark authorization %s reconciled",
+            authorization_id,
+            exc_info=True,
+        )
+
+
+def _cleanup_verifier_root(
+    *,
+    db_path: Path,
+    authorization_id: int,
+    task_id: str,
+    run_id: int,
+    verifier_root: Optional[Path],
+) -> None:
+    if verifier_root is None:
+        return
+    root = Path(verifier_root)
+    try:
+        _remove_verifier_root_if_safe(root, db_path=db_path)
+    except FileNotFoundError:
+        return
+    except Exception as exc:
+        reason = f"{type(exc).__name__}: {exc}"
+        try:
+            with connect(db_path=db_path) as conn:
+                with write_txn(conn):
+                    conn.execute(
+                        "UPDATE verifier_result_authorizations "
+                        "SET cleanup_error = ?, verifier_root = COALESCE(verifier_root, ?), "
+                        "updated_at = ? WHERE id = ?",
+                        (
+                            reason[:_CTX_MAX_FIELD_BYTES],
+                            str(root),
+                            int(time.time()),
+                            authorization_id,
+                        ),
+                    )
+                    _append_event(
+                        conn,
+                        task_id,
+                        "verifier_root_cleanup_failed",
+                        {
+                            "authorization_id": authorization_id,
+                            "reason": reason[:512],
+                        },
+                        run_id=run_id,
+                    )
+        except Exception:
+            _log.warning(
+                "kanban verifier cleanup failed for %s and audit failed",
+                root,
+                exc_info=True,
+            )
+
+
+def reconcile_verifier_roots(
+    conn: sqlite3.Connection,
+    *,
+    board: Optional[str] = None,
+) -> list[int]:
+    """Retry verifier root cleanup for durable cleanup failures."""
+    cleaned: list[int] = []
+    rows = conn.execute(
+        "SELECT id, task_id, run_id, verifier_root FROM verifier_result_authorizations "
+        "WHERE cleanup_error IS NOT NULL AND verifier_root IS NOT NULL "
+        "AND state IN ('applied', 'failed', 'reconciled')"
+    ).fetchall()
+    for row in rows:
+        root = Path(row["verifier_root"])
+        try:
+            if root.exists():
+                _remove_verifier_root_if_safe(root, db_path=kanban_db_path(board=board))
+            with write_txn(conn):
+                conn.execute(
+                    "UPDATE verifier_result_authorizations "
+                    "SET cleanup_error = NULL, updated_at = ? WHERE id = ?",
+                    (int(time.time()), row["id"]),
+                )
+                _append_event(
+                    conn,
+                    row["task_id"],
+                    "verifier_root_cleanup_retried",
+                    {"authorization_id": int(row["id"]), "result": "cleaned"},
+                    run_id=int(row["run_id"]),
+                )
+            cleaned.append(int(row["id"]))
+        except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+            with write_txn(conn):
+                conn.execute(
+                    "UPDATE verifier_result_authorizations "
+                    "SET cleanup_error = ?, updated_at = ? WHERE id = ?",
+                    (reason[:_CTX_MAX_FIELD_BYTES], int(time.time()), row["id"]),
+                )
+                _append_event(
+                    conn,
+                    row["task_id"],
+                    "verifier_root_cleanup_failed",
+                    {"authorization_id": int(row["id"]), "reason": reason[:512]},
+                    run_id=int(row["run_id"]),
+                )
+    return cleaned
+
+
+def _expected_verifier_roots_parent_for_db_path(db_path: Path) -> Path:
+    db_parent = Path(db_path).expanduser().resolve(strict=False).parent
+    if db_parent == kanban_home().resolve(strict=False):
+        return (board_dir(DEFAULT_BOARD) / "verifier-roots").resolve(strict=False)
+    return (db_parent / "verifier-roots").resolve(strict=False)
+
+
+def _remove_verifier_root_if_safe(root: Path, *, db_path: Path) -> None:
+    expected_parent = _expected_verifier_roots_parent_for_db_path(db_path)
+    root_path = Path(root).expanduser()
+    if not root_path.name.startswith("run-"):
+        raise RuntimeError(f"refusing to clean non-verifier root {root_path}")
+    try:
+        actual_parent = root_path.parent.resolve(strict=True)
+    except FileNotFoundError:
+        actual_parent = root_path.parent.resolve(strict=False)
+    if actual_parent != expected_parent:
+        raise RuntimeError(f"refusing to clean verifier root outside {expected_parent}: {root_path}")
+    if root_path.is_symlink():
+        root_path.unlink()
+    else:
+        shutil.rmtree(root_path)
+
+
+def reconcile_orphan_verifier_roots(*, board: Optional[str] = None) -> list[str]:
+    parent = _verifier_roots_parent(board=board)
+    if not parent.exists() or parent.is_symlink():
+        return []
+    with connect(db_path=kanban_db_path(board=board)) as conn:
+        referenced = {
+            str(Path(row["verifier_root"]))
+            for row in conn.execute(
+                "SELECT verifier_root FROM verifier_result_authorizations "
+                "WHERE verifier_root IS NOT NULL "
+                "AND (state IN ('authorized', 'reserved', 'started', 'consumed') "
+                "     OR cleanup_error IS NOT NULL)"
+            ).fetchall()
+        }
+    removed: list[str] = []
+    for child in parent.iterdir():
+        if not child.name.startswith("run-"):
+            continue
+        if str(child) in referenced:
+            continue
+        if child.is_symlink():
+            child.unlink()
+        elif child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+        removed.append(child.name)
+    return removed
+
+
 def _close_fd_quietly(fd: int) -> None:
     try:
         os.close(fd)
     except OSError:
         pass
+
+
+def _verifier_roots_parent(*, board: Optional[str]) -> Path:
+    if _normalize_board_slug(board) == DEFAULT_BOARD:
+        return kanban_home() / "kanban" / "verifier-roots"
+    return board_dir(_normalize_board_slug(board) or get_current_board()) / "verifier-roots"
+
+
+def _create_verifier_root(*, board: Optional[str]) -> Path:
+    parent = _verifier_roots_parent(board=board)
+    if parent.exists() and parent.is_symlink():
+        raise RuntimeError(f"verifier root parent is a symlink: {parent}")
+    parent.mkdir(parents=True, exist_ok=True)
+    if parent.is_symlink():
+        raise RuntimeError(f"verifier root parent is a symlink: {parent}")
+    parent_resolved = parent.resolve(strict=True)
+    for _attempt in range(10):
+        root = parent / f"run-{secrets.token_hex(12)}"
+        try:
+            os.mkdir(root, 0o700)
+        except FileExistsError:
+            continue
+        try:
+            os.chmod(root, 0o700)
+        except OSError:
+            pass
+        resolved = root.resolve(strict=True)
+        if resolved.parent != parent_resolved or root.is_symlink():
+            shutil.rmtree(root, ignore_errors=True)
+            raise RuntimeError(f"verifier root escaped parent: {root}")
+        tmp = root / "tmp"
+        tmp.mkdir(mode=0o700)
+        try:
+            os.chmod(tmp, 0o700)
+        except OSError:
+            pass
+        return root
+    raise RuntimeError(f"could not allocate verifier root under {parent}")
 
 
 def _start_verifier_supervisor_waiter(
@@ -9293,72 +9962,102 @@ def _start_verifier_supervisor_waiter(
     db_path: Path,
     authorization_id: int,
     binding: dict[str, Any],
+    verifier_root: Optional[Path] = None,
 ) -> None:
     def _waiter() -> None:
-        rc = None
-        if _IS_WINDOWS:
-            try:
-                rc = proc.wait(timeout=VERIFIER_RESULT_DEADLINE_SECONDS)
-            except AttributeError:
-                rc = None
-            except subprocess.TimeoutExpired:
+        try:
+            rc = None
+            if _IS_WINDOWS:
                 try:
-                    proc.kill()
-                except Exception:
-                    pass
-                rc = "timeout"
+                    rc = proc.wait(timeout=VERIFIER_RESULT_DEADLINE_SECONDS)
+                except AttributeError:
+                    rc = None
+                except subprocess.TimeoutExpired:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    rc = "timeout"
+                if rc not in (None, 0):
+                    _close_fd_quietly(read_fd)
+                    failure_reason = "timeout" if rc == "timeout" else f"exit:{rc}"
+                    _reconcile_verifier_authorization_failure(
+                        db_path=db_path,
+                        authorization_id=authorization_id,
+                        binding=binding,
+                        reason=failure_reason,
+                    )
+                    _verifier_failure_reblock(
+                        db_path=db_path,
+                        task_id=str(binding["task_id"]),
+                        run_id=int(binding["run_id"]),
+                        reason=failure_reason,
+                    )
+                    return
+                raw = _read_verifier_result_pipe(read_fd)
+            else:
+                raw = _read_verifier_result_pipe(read_fd)
+                try:
+                    rc = proc.wait(timeout=5)
+                except AttributeError:
+                    rc = None
+                except subprocess.TimeoutExpired:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    rc = "timeout"
             if rc not in (None, 0):
-                _close_fd_quietly(read_fd)
+                failure_reason = "timeout" if rc == "timeout" else f"exit:{rc}"
+                _reconcile_verifier_authorization_failure(
+                    db_path=db_path,
+                    authorization_id=authorization_id,
+                    binding=binding,
+                    reason=failure_reason,
+                )
                 _verifier_failure_reblock(
                     db_path=db_path,
                     task_id=str(binding["task_id"]),
                     run_id=int(binding["run_id"]),
-                    reason="timeout" if rc == "timeout" else f"exit:{rc}",
+                    reason=failure_reason,
                 )
                 return
-            raw = _read_verifier_result_pipe(read_fd)
-        else:
-            raw = _read_verifier_result_pipe(read_fd)
             try:
-                rc = proc.wait(timeout=5)
-            except AttributeError:
-                rc = None
-            except subprocess.TimeoutExpired:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-                rc = "timeout"
-        if rc not in (None, 0):
-            _verifier_failure_reblock(
-                db_path=db_path,
-                task_id=str(binding["task_id"]),
-                run_id=int(binding["run_id"]),
-                reason="timeout" if rc == "timeout" else f"exit:{rc}",
-            )
-            return
-        try:
-            with connect(db_path=db_path) as conn:
-                applied = apply_verifier_supervisor_result(
-                    conn,
+                with connect(db_path=db_path) as conn:
+                    applied = apply_verifier_supervisor_result(
+                        conn,
+                        authorization_id=authorization_id,
+                        binding=binding,
+                        raw_frame=raw,
+                    )
+            except Exception as exc:
+                _log.warning(
+                    "kanban verifier supervisor crashed applying result for %s: %s",
+                    binding.get("task_id"),
+                    exc,
+                    exc_info=True,
+                )
+                return
+            if not applied.ok:
+                _reconcile_verifier_authorization_failure(
+                    db_path=db_path,
                     authorization_id=authorization_id,
                     binding=binding,
-                    raw_frame=raw,
+                    reason=applied.reason,
                 )
-        except Exception as exc:
-            _log.warning(
-                "kanban verifier supervisor crashed applying result for %s: %s",
-                binding.get("task_id"),
-                exc,
-                exc_info=True,
-            )
-            return
-        if not applied.ok:
-            _verifier_failure_reblock(
+                _verifier_failure_reblock(
+                    db_path=db_path,
+                    task_id=str(binding["task_id"]),
+                    run_id=int(binding["run_id"]),
+                    reason=applied.reason,
+                )
+        finally:
+            _cleanup_verifier_root(
                 db_path=db_path,
+                authorization_id=authorization_id,
                 task_id=str(binding["task_id"]),
                 run_id=int(binding["run_id"]),
-                reason=applied.reason,
+                verifier_root=verifier_root,
             )
 
     thread = threading.Thread(
@@ -9376,6 +10075,7 @@ def _build_verifier_child_env(
     contract: dict,
     binding: dict[str, Any],
     writer_fd: int,
+    verifier_root: Path,
     result_endpoint: Optional[int] = None,
 ) -> dict[str, str]:
     keep_names = {
@@ -9398,6 +10098,11 @@ def _build_verifier_child_env(
         if key in keep_names or key.startswith(("OPENAI_", "ANTHROPIC_", "GITHUB_"))
     }
     env["HERMES_IGNORE_USER_CONFIG"] = "1"
+    env["HERMES_HOME"] = str(verifier_root)
+    env["HOME"] = str(verifier_root)
+    env["TMPDIR"] = str(verifier_root / "tmp")
+    env["TMP"] = str(verifier_root / "tmp")
+    env["TEMP"] = str(verifier_root / "tmp")
     if workspace and os.path.isabs(workspace) and os.path.isdir(workspace):
         env["TERMINAL_CWD"] = workspace
     env["HERMES_KANBAN_VERIFY_ONLY"] = "1"
@@ -9451,6 +10156,7 @@ def _spawn_verifier_supervisor(
         nonce=nonce,
     )
     db_path = kanban_db_path(board=board)
+    owner_id = _claimer_id()
     with connect(db_path=db_path) as conn:
         auth = authorize_verifier_result(conn, **binding)
         if auth.state not in {"authorized", "reserved", "started"} or auth.id <= 0:
@@ -9459,8 +10165,23 @@ def _spawn_verifier_supervisor(
             reserved = reserve_verifier_result(conn, authorization_id=auth.id, **binding)
             if reserved.state != "reserved":
                 raise RuntimeError(f"verifier authorization reserve failed: {reserved.reason}")
+        verifier_root = _create_verifier_root(board=board)
+        with write_txn(conn):
+            conn.execute(
+                "UPDATE verifier_result_authorizations "
+                "SET supervisor_owner = ?, verifier_root = ?, updated_at = ? "
+                "WHERE id = ? AND state = 'reserved'",
+                (owner_id, str(verifier_root), int(time.time()), auth.id),
+            )
         started = start_verifier_result(conn, authorization_id=auth.id, **binding)
         if started.state != "started":
+            _cleanup_verifier_root(
+                db_path=db_path,
+                authorization_id=auth.id,
+                task_id=task.id,
+                run_id=int(binding["run_id"]),
+                verifier_root=verifier_root,
+            )
             raise RuntimeError(f"verifier authorization start failed: {started.reason}")
         authorization_id = auth.id
 
@@ -9474,6 +10195,7 @@ def _spawn_verifier_supervisor(
         contract=task.verification_contract,
         binding=binding,
         writer_fd=writer_fd,
+        verifier_root=verifier_root,
         result_endpoint=result_endpoint,
     )
     contract_json = env["HERMES_KANBAN_VERIFY_CONTRACT"]
@@ -9531,6 +10253,13 @@ def _spawn_verifier_supervisor(
             os.close(writer_fd)
         except OSError:
             pass
+        _cleanup_verifier_root(
+            db_path=db_path,
+            authorization_id=authorization_id,
+            task_id=task.id,
+            run_id=int(binding["run_id"]),
+            verifier_root=verifier_root,
+        )
         raise RuntimeError(
             "`hermes` executable not found on PATH. "
             "Install Hermes Agent or activate its venv before running the kanban dispatcher."
@@ -9545,6 +10274,13 @@ def _spawn_verifier_supervisor(
             os.close(writer_fd)
         except OSError:
             pass
+        _cleanup_verifier_root(
+            db_path=db_path,
+            authorization_id=authorization_id,
+            task_id=task.id,
+            run_id=int(binding["run_id"]),
+            verifier_root=verifier_root,
+        )
         raise
     else:
         log_f.close()
@@ -9559,6 +10295,7 @@ def _spawn_verifier_supervisor(
         db_path=db_path,
         authorization_id=authorization_id,
         binding=binding,
+        verifier_root=verifier_root,
     )
     return proc.pid
 

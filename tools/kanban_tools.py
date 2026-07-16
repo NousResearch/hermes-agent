@@ -956,7 +956,7 @@ def _handle_attach_url(args: dict, **kw) -> str:
     content_type = args.get("content_type")
     board = args.get("board")
     try:
-        data, fetched_ct = _download_url_with_cap(url, kb._MAX_ATTACHMENT_BYTES)
+        data, fetched_ct = _download_url_with_cap(url, kb.KANBAN_ATTACHMENT_MAX_BYTES)
     except ValueError as e:
         return tool_error(f"kanban_attach_url: {e}")
     except Exception as e:

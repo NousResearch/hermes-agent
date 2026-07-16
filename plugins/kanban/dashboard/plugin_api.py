@@ -666,7 +666,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
 # ``ValueError`` there; the upload handler's ``except ValueError`` below maps
 # it to a 400, preserving the previous response.
 from hermes_cli.kanban_db import (  # noqa: E402
-    _MAX_ATTACHMENT_BYTES,
+    KANBAN_ATTACHMENT_MAX_BYTES,
     _collision_free_path,
     _safe_attachment_name,
 )
@@ -726,13 +726,13 @@ async def upload_task_attachment(
                     if not chunk:
                         break
                     total += len(chunk)
-                    if total > _MAX_ATTACHMENT_BYTES:
+                    if total > KANBAN_ATTACHMENT_MAX_BYTES:
                         out.close()
                         dest_path.unlink(missing_ok=True)
                         raise HTTPException(
                             status_code=413,
                             detail=(
-                                f"attachment exceeds {_MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB limit"
+                                f"attachment exceeds {KANBAN_ATTACHMENT_MAX_BYTES // (1024 * 1024)} MB limit"
                             ),
                         )
                     out.write(chunk)

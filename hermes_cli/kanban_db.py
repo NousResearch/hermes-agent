@@ -2963,11 +2963,10 @@ def list_comments(conn: sqlite3.Connection, task_id: str) -> list[Comment]:
 # Attachments
 # ---------------------------------------------------------------------------
 
-# Cap a single attachment so a runaway upload can't fill the disk. 25 MB
-# comfortably covers PDFs, images, and source docs — the kanban use case.
-# Shared by the dashboard HTTP endpoint, the agent toolset, and the CLI so
-# the limit cannot drift between surfaces.
-_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+# The attachment size cap is the module-level ``KANBAN_ATTACHMENT_MAX_BYTES``
+# (defined near the top of this file) — one constant shared by the dashboard
+# HTTP endpoint, the agent toolset, and the CLI so the limit cannot drift
+# between surfaces.
 
 
 class AttachmentTooLarge(ValueError):
@@ -3045,7 +3044,7 @@ def store_attachment_bytes(
     is removed before re-raising.
     """
     if max_bytes is None:
-        max_bytes = _MAX_ATTACHMENT_BYTES
+        max_bytes = KANBAN_ATTACHMENT_MAX_BYTES
     if len(data) > max_bytes:
         raise AttachmentTooLarge(
             f"attachment exceeds {max_bytes // (1024 * 1024)} MB limit"

@@ -2302,7 +2302,7 @@ def test_attach_rejects_oversize(worker_env, monkeypatch):
     from tools import kanban_tools as kt
 
     # Shrink the cap so we don't have to build a 25 MB payload.
-    monkeypatch.setattr(kb, "_MAX_ATTACHMENT_BYTES", 8)
+    monkeypatch.setattr(kb, "KANBAN_ATTACHMENT_MAX_BYTES", 8)
     out = kt._handle_attach({
         "filename": "big.bin",
         "content_base64": base64.b64encode(b"0123456789").decode(),
@@ -2451,7 +2451,7 @@ def test_attach_url_rejects_oversize_stream(worker_env, monkeypatch):
         def log_message(self, *a):
             pass
 
-    monkeypatch.setattr(kb, "_MAX_ATTACHMENT_BYTES", 1024)
+    monkeypatch.setattr(kb, "KANBAN_ATTACHMENT_MAX_BYTES", 1024)
     srv = http.server.HTTPServer(("127.0.0.1", 0), _Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     try:

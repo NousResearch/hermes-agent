@@ -19078,7 +19078,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent_history, observed_group_context = _build_gateway_agent_history(
                 history,
                 channel_prompt=channel_prompt,
-                inject_timestamps=_message_timestamps_enabled(_load_gateway_config()),
+                inject_timestamps=_message_timestamps_enabled(user_config),
             )
 
             # FTS write-corruption guard (#50502): when message persistence

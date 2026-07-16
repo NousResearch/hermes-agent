@@ -770,7 +770,7 @@ class EmailAdapter(BasePlatformAdapter):
 
 
 # Plugin glue: register() exposes the platform via the registry; EMAIL_* env → PlatformConfig seeding stays in core.
-async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False):
+async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None, force_document=False, subject=None):
     """Out-of-process Email delivery via SMTP (one-shot); standalone_sender_fn contract."""
     extra = getattr(pconfig, "extra", {}) or {}
     address, password = extra.get("address") or _get_secret("EMAIL_ADDRESS", ""), _get_secret("EMAIL_PASSWORD", "")
@@ -781,7 +781,11 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
         return send_error("Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)")
     try:
         msg = MIMEText(message, "plain", "utf-8")
-        for key, value in (("From", address), ("To", chat_id), ("Subject", "Hermes Agent"), ("Date", formatdate(localtime=True))):
+        if isinstance(subject, str) and subject.strip():
+            email_subject = subject.replace("\r", " ").replace("\n", " ")
+        else:
+            email_subject = "Hermes Agent"
+        for key, value in (("From", address), ("To", chat_id), ("Subject", email_subject), ("Date", formatdate(localtime=True))):
             msg[key] = value
         server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL)
         server.login(address, password)

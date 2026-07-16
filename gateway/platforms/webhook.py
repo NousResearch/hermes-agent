@@ -247,21 +247,33 @@ class WebhookAdapter(BasePlatformAdapter):
             "/p/{profile}/webhooks/{route_name}", self._handle_webhook
         )
 
-        # Port conflict detection — fail fast if port is already in use
-        import socket as _socket
-        try:
-            with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _s:
-                _s.settimeout(1)
-                _s.connect(('127.0.0.1', self._port))
-            logger.error('[webhook] Port %d already in use. Set a different port in config.yaml: platforms.webhook.port', self._port)
-            return False
-        except (ConnectionRefusedError, OSError):
-            pass  # port is free
-
         self._runner = web.AppRunner(app)
         await self._runner.setup()
-        site = web.TCPSite(self._runner, self._host, self._port)
-        await site.start()
+        # Do not probe only one address family before binding. With the
+        # dual-stack default, an IPv6-only listener can already own this port
+        # while 127.0.0.1 still looks free. Also disable SO_REUSEADDR for the
+        # listener: on macOS, two wildcard/specific sockets with SO_REUSEADDR
+        # can silently split traffic while both servers report success.
+        site = web.TCPSite(
+            self._runner,
+            self._host,
+            self._port,
+            reuse_address=False,
+        )
+        try:
+            await site.start()
+        except OSError as exc:
+            await self._runner.cleanup()
+            self._runner = None
+            logger.error(
+                "[webhook] Could not bind %s:%d: %s. "
+                "Set a different host or port in config.yaml under "
+                "platforms.webhook.extra.",
+                self._host or "all IPv4+IPv6 interfaces",
+                self._port,
+                exc,
+            )
+            return False
         self._mark_connected()
 
         route_names = ", ".join(self._routes.keys()) or "(none configured)"

@@ -2787,12 +2787,15 @@ class FeishuAdapter(BasePlatformAdapter):
 
         # Validate delegation admin identity: the button click must come
         # from the configured admin user, not just any member of the chat.
+        # Compare against operator.user_id (the internal Feishu user ID used
+        # in config), NOT open_id which is the cross-tenant application ID.
         expected_admin_uid = str(state.get("admin_user_id", "") or "")
-        if expected_admin_uid and open_id and open_id != expected_admin_uid:
+        _clicker_uid = str(getattr(operator, "user_id", "") or "")
+        if expected_admin_uid and _clicker_uid and _clicker_uid != expected_admin_uid:
             logger.warning(
                 "[Feishu] Unauthorized approval click: expected admin %s, "
                 "got %s (approval_id=%s)",
-                expected_admin_uid, open_id, approval_id,
+                expected_admin_uid, _clicker_uid, approval_id,
             )
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 

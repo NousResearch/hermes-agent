@@ -1558,6 +1558,78 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     })
   })
 
+  it('submits a non-default-profile file after its own delayed route commit', async () => {
+    $connection.set({ mode: 'remote' } as never)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:application/pdf;base64,JVBERi0=') }
+    })
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = '/?profile=recruiter'
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'file.attach') {
+        // A background profile's route commits after its session + gateway are
+        // ready. Upload latency makes that create-owned navigation observable
+        // here; it is not the user switching to another chat.
+        routeToken = '/stored-recruiter?profile=recruiter'
+
+        return {
+          attached: true,
+          ref_text: '@file:.hermes/desktop-attachments/candidate.pdf',
+          uploaded: true
+        } as never
+      }
+
+      return {} as never
+    })
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = 'rt-recruiter'
+      selectedStoredSessionIdRef.current = 'stored-recruiter'
+
+      return 'rt-recruiter'
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    expect(
+      await handle!.submitText('', {
+        attachments: [
+          {
+            id: 'file:candidate.pdf',
+            kind: 'file',
+            label: 'candidate.pdf',
+            path: 'C:\\Users\\Admin\\Downloads\\candidate.pdf'
+          }
+        ]
+      })
+    ).toBe(true)
+    expect(calls.find(call => call.method === 'prompt.submit')?.params).toMatchObject({
+      session_id: 'rt-recruiter',
+      text: '@file:.hermes/desktop-attachments/candidate.pdf'
+    })
+  })
+
   it('aborts when the user switches sessions during the tail of a successful create', async () => {
     // createBackendSessionForSend awaits once more (armed-YOLO apply) AFTER
     // committing the refs and returning a real id, so a switch in that window

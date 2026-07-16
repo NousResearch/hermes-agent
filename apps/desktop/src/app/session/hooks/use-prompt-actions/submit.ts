@@ -139,15 +139,22 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
       // Pin the session context for the whole async submit pipeline. Without
       // this, a fast session switch during session.resume / file.attach can
-      // redirect the user's text into a different chat (#54527). Mutable —
-      // not const — because a new-chat submit legitimately re-homes to the
-      // session it creates (see the re-pin after createBackendSessionForSend).
+      // redirect the user's text into a different chat (#54527).
       const startingActiveSessionId = activeSessionIdRef.current
       let startingStoredSessionId = selectedStoredSessionIdRef.current
-      let startingRouteToken = getRouteToken()
+      const startingRouteToken = getRouteToken()
+
+      // Before a runtime session exists, the route is part of the submit's
+      // identity. Once this submit creates and pins a real session, its own
+      // navigation may commit later (notably after a background-profile swap
+      // while file.attach awaits I/O). From then on the stable stored/runtime
+      // ids are authoritative; treating the delayed route commit as drift
+      // aborts the first file send and strands an empty session.
+      let guardRouteToken = true
 
       const sessionContextDrifted = (): boolean =>
-        selectedStoredSessionIdRef.current !== startingStoredSessionId || getRouteToken() !== startingRouteToken
+        selectedStoredSessionIdRef.current !== startingStoredSessionId ||
+        (guardRouteToken && getRouteToken() !== startingRouteToken)
 
       // One submit in flight per session — drop any concurrent re-fire so a
       // stalled turn can't stack the same prompt into multiple real turns.
@@ -332,9 +339,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         }
 
         // Re-pin the baseline to the created chat for the rest of the
-        // pipeline; the closures (seedOptimistic et al) see the new value.
+        // pipeline; the closures (seedOptimistic et al) see the new value. The
+        // create's own route navigation can commit asynchronously, so stable
+        // session ids — not the still-settling route — guard this phase.
         startingStoredSessionId = selectedStoredSessionIdRef.current
-        startingRouteToken = getRouteToken()
+        guardRouteToken = false
 
         seedOptimistic(sessionId)
       }

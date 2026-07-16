@@ -498,8 +498,10 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
 
       event.preventDefault()
       event.stopPropagation()
+      // Insert into and focus the SAME composer — 'active' — so a tile that owns
+      // focus keeps it instead of the ref landing in a tile but main stealing focus.
       requestComposerInsertRefs([ref])
-      requestComposerFocus('main')
+      requestComposerFocus('active')
     }
 
     window.addEventListener('keydown', onKeyDown, { capture: true })

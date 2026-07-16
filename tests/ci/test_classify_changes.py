@@ -28,10 +28,11 @@ DEFAULT = {
     "scan": True,
     "deps": True,
     "mcp_catalog": False,
+    "ci_review": True,
 }
 
 
-def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, mcp_catalog=False, docker_meta=False) -> dict[str, bool]:
+def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, mcp_catalog=False, docker_meta=False, ci_review=False) -> dict[str, bool]:
     return {
         "python": python,
         "frontend": frontend,
@@ -40,6 +41,7 @@ def _lanes(python=False, frontend=False, site=False, scan=False, deps=False, mcp
         "scan": scan,
         "deps": deps,
         "mcp_catalog": mcp_catalog,
+        "ci_review": ci_review,
     }
 
 
@@ -71,6 +73,48 @@ CASES = {
     "mcp_catalog.py → mcp_catalog": (
         ["hermes_cli/mcp_catalog.py"],
         _lanes(python=True, scan=True, mcp_catalog=True),
+    ),
+    # CI-sensitive files require explicit review label.
+    "eslint config → ci_review": (
+        ["apps/desktop/eslint.config.mjs"],
+        _lanes(frontend=True, ci_review=True),
+    ),
+    "shared eslint config → ci_review": (
+        ["eslint.config.shared.mjs"],
+        _lanes(python=True, ci_review=True),
+    ),
+    "ui-tui eslint config → ci_review": (
+        ["ui-tui/eslint.config.mjs"],
+        _lanes(frontend=True, ci_review=True),
+    ),
+    "web eslint config → ci_review": (
+        ["web/eslint.config.js"],
+        _lanes(frontend=True, ci_review=True),
+    ),
+    "shared package eslint config → ci_review": (
+        ["apps/shared/eslint.config.mjs"],
+        _lanes(frontend=True, ci_review=True),
+    ),
+    "bootstrap-installer eslint config → ci_review": (
+        ["apps/bootstrap-installer/eslint.config.mjs"],
+        _lanes(frontend=True, ci_review=True),
+    ),
+    "prettier config → ci_review": (
+        [".prettierrc"],
+        _lanes(python=True, ci_review=True),
+    ),
+    "workflow yml → ci_review (also fail-open all)": (
+        [".github/workflows/typecheck.yml"],
+        DEFAULT,
+    ),
+    "composite action → ci_review (also fail-open all)": (
+        [".github/actions/retry/action.yml"],
+        DEFAULT,
+    ),
+    # Normal desktop source doesn't trigger ci_review.
+    "desktop src → no ci_review": (
+        ["apps/desktop/src/app.tsx"],
+        _lanes(frontend=True),
     ),
     # Fail open: CI-config / empty / blank diffs run everything.
     ".github change → all": ([".github/workflows/tests.yml"], DEFAULT),

@@ -125,6 +125,22 @@ class TestPostDeliveryCallbackChaining:
         # Correct generation still finds it.
         assert adapter.pop_post_delivery_callback("s", generation=5) is not None
 
+    def test_bare_callback_popped_with_generation(self, adapter):
+        """A callback registered without generation (bare callable) should
+        still be returned when popped with a generation — registration
+        before session activation means "any generation is acceptable"."""
+        fired = []
+        adapter.register_post_delivery_callback(
+            "s", lambda: fired.append("bare"), generation=None
+        )
+        # Pop with a generation value — should still get the callback.
+        cb = adapter.pop_post_delivery_callback("s", generation=5)
+        assert cb is not None
+        _invoke(cb)
+        assert fired == ["bare"]
+        # One-shot: callback should be removed after pop.
+        assert adapter.pop_post_delivery_callback("s") is None
+
     def test_empty_session_key_is_noop(self, adapter):
         adapter.register_post_delivery_callback("", lambda: None)
         assert adapter._post_delivery_callbacks == {}

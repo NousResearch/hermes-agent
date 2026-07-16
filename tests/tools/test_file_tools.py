@@ -6,6 +6,7 @@ handling without requiring a running terminal environment.
 
 import json
 import logging
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from tools.file_tools import (
@@ -27,7 +28,7 @@ class TestReadFileHandler:
         result = json.loads(read_file_tool("/tmp/test.txt"))
         assert result["content"] == "line1\nline2"
         assert result["total_lines"] == 2
-        mock_ops.read_file.assert_called_once_with("/tmp/test.txt", 1, 500)
+        mock_ops.read_file.assert_called_once_with(str(Path("/tmp/test.txt").resolve()), 1, 500)
 
     @patch("tools.file_tools._get_file_ops")
     def test_custom_offset_and_limit(self, mock_get):
@@ -40,7 +41,7 @@ class TestReadFileHandler:
 
         from tools.file_tools import read_file_tool
         read_file_tool("/tmp/big.txt", offset=10, limit=20)
-        mock_ops.read_file.assert_called_once_with("/tmp/big.txt", 10, 20)
+        mock_ops.read_file.assert_called_once_with(str(Path("/tmp/big.txt").resolve()), 10, 20)
 
     @patch("tools.file_tools._get_file_ops")
     def test_invalid_offset_and_limit_are_normalized_before_dispatch(self, mock_get):
@@ -53,7 +54,7 @@ class TestReadFileHandler:
 
         from tools.file_tools import read_file_tool
         read_file_tool("/tmp/big.txt", offset=0, limit=0)
-        mock_ops.read_file.assert_called_once_with("/tmp/big.txt", 1, 1)
+        mock_ops.read_file.assert_called_once_with(str(Path("/tmp/big.txt").resolve()), 1, 1)
 
     @patch("tools.file_tools._get_file_ops")
     def test_exception_returns_error_json(self, mock_get):
@@ -425,6 +426,57 @@ class TestSearchHandler:
         from tools.file_tools import search_tool
         result = json.loads(search_tool(pattern="x"))
         assert "error" in result
+
+
+class TestTaskRootReadDispatch:
+    """Public reads must not dispatch a validated relative path in another cwd."""
+
+    @staticmethod
+    def _shared_backend_cwd(tmp_path, monkeypatch):
+        import tools.file_tools as file_tools
+        import tools.terminal_tool as terminal_tool
+        from tools.environments.local import LocalEnvironment
+        from tools.file_operations import ShellFileOperations
+
+        task_id = "task-a"
+        task_a_workspace = tmp_path / "task-a-workspace"
+        task_b_hermes_home = tmp_path / "task-b-hermes-home"
+        task_a_workspace.mkdir()
+        task_b_hermes_home.mkdir()
+        marker = "FIXTURE-LEAK"
+        (task_b_hermes_home / "auth.json").write_text(marker + "\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(task_b_hermes_home))
+        monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+        monkeypatch.setattr(terminal_tool, "_active_environments", {})
+        monkeypatch.setattr(file_tools, "_file_ops_cache", {})
+        terminal_tool.register_task_env_overrides(task_id, {"cwd": str(task_a_workspace)})
+
+        file_ops = ShellFileOperations(
+            LocalEnvironment(cwd=str(task_b_hermes_home), timeout=15),
+            cwd=str(task_b_hermes_home),
+        )
+        monkeypatch.setattr(file_tools, "_get_file_ops", lambda _task_id: file_ops)
+
+        resolved = task_a_workspace / "auth.json"
+        assert file_tools._resolve_path_for_task("auth.json", task_id) == resolved
+        assert file_tools.get_read_block_error(str(resolved)) is None
+        assert file_tools.get_read_block_error(str(task_b_hermes_home / "auth.json")) is not None
+        return file_tools, task_id, marker
+
+    def test_read_file_does_not_return_marker_from_shared_backend_cwd(self, tmp_path, monkeypatch):
+        file_tools, task_id, marker = self._shared_backend_cwd(tmp_path, monkeypatch)
+
+        result = json.loads(file_tools.read_file_tool("auth.json", task_id=task_id))
+
+        assert marker not in result.get("content", ""), result
+
+    def test_search_does_not_return_marker_from_shared_backend_cwd(self, tmp_path, monkeypatch):
+        file_tools, task_id, marker = self._shared_backend_cwd(tmp_path, monkeypatch)
+
+        result = json.loads(file_tools.search_tool(marker, path="auth.json", task_id=task_id))
+
+        assert marker not in json.dumps(result), result
 
 
 # ---------------------------------------------------------------------------

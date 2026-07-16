@@ -141,6 +141,78 @@ def test_fresh_agent_finalizes_provider_tools_into_first_surface():
     assert getattr(agent, "_tool_search_allowed_names", None) is None
 
 
+def test_fresh_agent_active_tool_search_builds_catalog_with_provider_tools():
+    """#47119 review: exercise an ACTIVE deferred catalog on a fresh agent.
+
+    A real MCP-toolset schema is registered in the live registry (so
+    ``is_deferrable_tool_name`` classifies it deferrable) and returned from the
+    build-time ``get_tool_definitions``, alongside a memory-provider schema
+    injected post-build. With Tool Search forced on, the finalized first
+    surface must defer the MCP schema into the session catalog while keeping
+    the provider schema directly visible — proving the assembly ran AFTER
+    provider injection, not on the early registry-only snapshot.
+    """
+    provider = ToolProvidingMemoryProvider()
+    cfg = {
+        "memory": {"provider": "recording"},
+        "agent": {},
+        "tools": {"tool_search": {"enabled": "on"}},
+    }
+    deferrable_def = {
+        "type": "function",
+        "function": {
+            "name": "mcp_initsrv_lookup",
+            "description": "Look up a record from the init-test MCP server",
+            "parameters": {"type": "object", "properties": {"id": {"type": "string"}}},
+        },
+    }
+
+    from tools.registry import registry
+
+    registry.register(
+        name="mcp_initsrv_lookup",
+        toolset="mcp-initsrv",
+        schema=deferrable_def["function"],
+        handler=lambda args, task_id=None, **kw: "{}",
+    )
+    try:
+        with (
+            patch("hermes_cli.config.load_config", return_value=cfg),
+            patch("plugins.memory.load_memory_provider", return_value=provider),
+            patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+            patch("run_agent.get_tool_definitions", return_value=[deferrable_def]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            from run_agent import AIAgent
+
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                enabled_toolsets=["memory"],
+            )
+    finally:
+        registry.deregister("mcp_initsrv_lookup")
+
+    visible_names = {tool["function"]["name"] for tool in getattr(agent, "tools", [])}
+    assert visible_names == getattr(agent, "valid_tool_names", None)
+    # The registered MCP schema is deferred out of the model-facing array…
+    assert "mcp_initsrv_lookup" not in visible_names
+    # …into the finalized session catalog, reachable through the bridge tools.
+    assert {"tool_search", "tool_describe", "tool_call"} <= visible_names
+    catalog = getattr(agent, "_tool_search_catalog", None)
+    assert catalog is not None
+    assert [entry.name for entry in catalog] == ["mcp_initsrv_lookup"]
+    assert getattr(agent, "_tool_search_allowed_names", None) == frozenset(
+        {"mcp_initsrv_lookup"}
+    )
+    # The provider schema, injected after the registry snapshot, stays directly
+    # visible in the SAME finalized surface (it is not registry-deferrable).
+    assert "provider_stats" in visible_names
+
+
 class CoreShadowProvider:
     """Provider that tries to register tools shadowing built-in core tools."""
 

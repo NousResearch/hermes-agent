@@ -119,7 +119,7 @@ def test_dispatcher_caps_live_workers_across_active_boards(monkeypatch, tmp_path
     monkeypatch.setattr(kb, "has_spawnable_review", lambda conn: False)
     monkeypatch.setattr(
         "gateway.kanban_watchers._acquire_singleton_lock",
-        lambda path: (None, "unavailable"),
+        lambda path: (object(), "held"),
     )
 
     def dispatch_once(conn, **kwargs):
@@ -154,3 +154,233 @@ def test_dispatcher_caps_live_workers_across_active_boards(monkeypatch, tmp_path
         ("second", 6, 6, 3),
     ]
     assert sum(running.values()) == 20
+
+
+def test_dispatcher_caps_profile_workers_across_active_boards(monkeypatch, tmp_path):
+    """One profile's live-worker cap is shared by every gateway-owned board."""
+    import asyncio
+
+    import hermes_cli.config as config
+    import hermes_cli.profiles as profiles
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path))
+    for slug in ("first", "second"):
+        kb.create_board(slug)
+        with kb.connect(board=slug) as conn:
+            kb.create_task(conn, title=slug, assignee="alpha")
+
+    runner = GatewayKanbanWatchersMixin()
+    runner._running = True
+    monkeypatch.setattr(
+        config,
+        "load_config",
+        lambda: {
+            "kanban": {
+                "dispatch_in_gateway": True,
+                "dispatch_interval_seconds": 1,
+                "auto_decompose": False,
+                "max_in_progress_per_profile": 1,
+            }
+        },
+    )
+    monkeypatch.setattr(
+        kb,
+        "list_boards",
+        lambda include_archived=False: [{"slug": "first"}, {"slug": "second"}],
+    )
+    monkeypatch.setattr(kb, "_default_spawn", lambda *args, **kwargs: None)
+    monkeypatch.setattr(profiles, "profile_exists", lambda _profile: True)
+    monkeypatch.setattr(
+        "gateway.kanban_watchers._acquire_singleton_lock",
+        lambda path: (object(), "held"),
+    )
+    sleep_calls = 0
+
+    async def no_sleep(_delay):
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls == 2:
+            runner._running = False
+
+    monkeypatch.setattr("gateway.kanban_watchers.asyncio.sleep", no_sleep)
+    asyncio.run(runner._kanban_dispatcher_watcher())
+
+    running = 0
+    for slug in ("first", "second"):
+        with kb.connect(board=slug) as conn:
+            running += conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
+            ).fetchone()[0]
+    assert running == 1
+
+
+def test_capped_dispatcher_skips_tick_when_board_enumeration_fails(monkeypatch, tmp_path):
+    """Aggregate caps must not dispatch from a partial board list."""
+    import asyncio
+    from types import SimpleNamespace
+
+    import hermes_cli.config as config
+    from hermes_cli import kanban_db as kb
+
+    runner = GatewayKanbanWatchersMixin()
+    runner._running = True
+    dispatched = []
+
+    class Connection:
+        def execute(self, query):
+            return SimpleNamespace(fetchone=lambda: (0,))
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        config,
+        "load_config",
+        lambda: {"kanban": {
+            "dispatch_in_gateway": True,
+            "dispatch_interval_seconds": 1,
+            "auto_decompose": False,
+            "max_spawn": 1,
+        }},
+    )
+    monkeypatch.setattr(kb, "list_boards", lambda include_archived=False: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(kb, "connect", lambda *, board: Connection())
+    monkeypatch.setattr(kb, "kanban_home", lambda: tmp_path)
+    monkeypatch.setattr(kb, "kanban_db_path", lambda board: tmp_path / board)
+    monkeypatch.setattr(kb, "reap_worker_zombies", lambda: (setattr(runner, "_running", False), [])[-1])
+    monkeypatch.setattr(kb, "dispatch_once", lambda conn, **kwargs: dispatched.append(kwargs))
+    monkeypatch.setattr(
+        "gateway.kanban_watchers._acquire_singleton_lock",
+        lambda path: (object(), "held"),
+    )
+
+    async def no_sleep(_delay):
+        pass
+
+    monkeypatch.setattr("gateway.kanban_watchers.asyncio.sleep", no_sleep)
+    asyncio.run(runner._kanban_dispatcher_watcher())
+
+    assert dispatched == []
+
+
+def test_dispatcher_fails_closed_when_singleton_lock_is_unavailable(monkeypatch, tmp_path):
+    """A dispatcher must not run without its cross-process admission lock."""
+    import asyncio
+    from types import SimpleNamespace
+
+    import hermes_cli.config as config
+    from hermes_cli import kanban_db as kb
+
+    runner = GatewayKanbanWatchersMixin()
+    runner._running = True
+    dispatched = []
+
+    class Connection:
+        def execute(self, query):
+            return SimpleNamespace(fetchone=lambda: (0,))
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        config,
+        "load_config",
+        lambda: {"kanban": {
+            "dispatch_in_gateway": True,
+            "dispatch_interval_seconds": 1,
+            "auto_decompose": False,
+        }},
+    )
+    monkeypatch.setattr(kb, "list_boards", lambda include_archived=False: [{"slug": "only"}])
+    monkeypatch.setattr(kb, "connect", lambda *, board: Connection())
+    monkeypatch.setattr(kb, "kanban_home", lambda: tmp_path)
+    monkeypatch.setattr(kb, "kanban_db_path", lambda board: tmp_path / board)
+    monkeypatch.setattr(kb, "reap_worker_zombies", lambda: (setattr(runner, "_running", False), [])[-1])
+    monkeypatch.setattr(kb, "dispatch_once", lambda conn, **kwargs: dispatched.append(kwargs))
+    monkeypatch.setattr(
+        "gateway.kanban_watchers._acquire_singleton_lock",
+        lambda path: (None, "unavailable"),
+    )
+
+    async def no_sleep(_delay):
+        pass
+
+    monkeypatch.setattr("gateway.kanban_watchers.asyncio.sleep", no_sleep)
+    asyncio.run(runner._kanban_dispatcher_watcher())
+
+    assert dispatched == []
+
+
+def test_capped_dispatcher_rotates_board_admission_across_ticks(monkeypatch, tmp_path):
+    """A continuously ready first board cannot starve the next board at cap one."""
+    import asyncio
+    from types import SimpleNamespace
+
+    import hermes_cli.config as config
+    from hermes_cli import kanban_db as kb
+
+    runner = GatewayKanbanWatchersMixin()
+    runner._running = True
+    running = {"first": 0, "second": 0}
+    spawned = []
+    sleep_calls = 0
+
+    class Connection:
+        def __init__(self, board):
+            self.board = board
+
+        def execute(self, query):
+            return SimpleNamespace(fetchone=lambda: (running[self.board],))
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        config,
+        "load_config",
+        lambda: {"kanban": {
+            "dispatch_in_gateway": True,
+            "dispatch_interval_seconds": 1,
+            "auto_decompose": False,
+            "max_spawn": 1,
+        }},
+    )
+    monkeypatch.setattr(
+        kb, "list_boards", lambda include_archived=False: [
+            {"slug": "first"}, {"slug": "second"},
+        ],
+    )
+    monkeypatch.setattr(kb, "connect", lambda *, board: Connection(board))
+    monkeypatch.setattr(kb, "kanban_home", lambda: tmp_path)
+    monkeypatch.setattr(kb, "kanban_db_path", lambda board: tmp_path / board)
+    monkeypatch.setattr(kb, "reap_worker_zombies", lambda: [])
+    monkeypatch.setattr(kb, "has_spawnable_ready", lambda conn: False)
+    monkeypatch.setattr(kb, "has_spawnable_review", lambda conn: False)
+    monkeypatch.setattr(
+        "gateway.kanban_watchers._acquire_singleton_lock",
+        lambda path: (object(), "held"),
+    )
+
+    def dispatch_once(conn, **kwargs):
+        if kwargs["max_spawn"] > running[conn.board]:
+            running[conn.board] += 1
+            spawned.append(conn.board)
+        return SimpleNamespace(
+            spawned=[], reclaimed=0, crashed=[], timed_out=[], promoted=0, auto_blocked=[],
+        )
+
+    monkeypatch.setattr(kb, "dispatch_once", dispatch_once)
+
+    async def no_sleep(_delay):
+        nonlocal sleep_calls
+        sleep_calls += 1
+        if sleep_calls == 2:
+            running.update(first=0, second=0)
+        elif sleep_calls == 3:
+            runner._running = False
+
+    monkeypatch.setattr("gateway.kanban_watchers.asyncio.sleep", no_sleep)
+    asyncio.run(runner._kanban_dispatcher_watcher())
+
+    assert spawned == ["first", "second"]

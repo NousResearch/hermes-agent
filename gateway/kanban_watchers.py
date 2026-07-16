@@ -76,8 +76,8 @@ def _acquire_singleton_lock(lock_path) -> "tuple[Optional[object], str]":
     :func:`_release_singleton_lock` when done. ``(None, "contended")`` when
     another process holds the lock (caller must NOT dispatch). ``(None,
     "unavailable")`` when locking cannot be performed (non-POSIX filesystem
-    without flock, or the status.py helpers are unimportable) — caller falls
-    back to config-only control.
+    without flock, or the status.py helpers are unimportable) — caller must
+    fail closed and not dispatch.
     """
     try:
         from gateway.status import _try_acquire_file_lock  # deferred; same package
@@ -801,20 +801,20 @@ class GatewayKanbanWatchersMixin:
         self._kanban_dispatcher_lock_handle = None
         _lock_path = _kb.kanban_home() / "kanban" / ".dispatcher.lock"
         _lock_handle, _lock_state = _acquire_singleton_lock(_lock_path)
-        if _lock_state == "contended":
-            logger.info(
-                "kanban dispatcher: another gateway already holds the dispatcher "
-                "lock (%s); this gateway will NOT dispatch.", _lock_path,
-            )
+        if _lock_state != "held":
+            if _lock_state == "contended":
+                logger.info(
+                    "kanban dispatcher: another gateway already holds the dispatcher "
+                    "lock (%s); this gateway will NOT dispatch.", _lock_path,
+                )
+            else:
+                logger.warning(
+                    "kanban dispatcher: advisory lock unavailable at %s; this "
+                    "gateway will NOT dispatch.", _lock_path,
+                )
             return
-        if _lock_state == "held":
-            self._kanban_dispatcher_lock_handle = _lock_handle  # hold for process lifetime
-            logger.info("kanban dispatcher: holding singleton dispatcher lock (%s)", _lock_path)
-        else:
-            logger.warning(
-                "kanban dispatcher: advisory lock unavailable at %s; proceeding "
-                "on config control alone.", _lock_path,
-            )
+        self._kanban_dispatcher_lock_handle = _lock_handle  # hold for process lifetime
+        logger.info("kanban dispatcher: holding singleton dispatcher lock (%s)", _lock_path)
 
         try:
             interval = float(kanban_cfg.get("dispatch_interval_seconds", 60) or 60)
@@ -947,6 +947,7 @@ class GatewayKanbanWatchersMixin:
         disabled_corrupt_boards: dict[
             str, tuple[tuple[str, int | None, int | None], float]
         ] = {}
+        admission_turn = 0
 
         def _board_db_fingerprint(slug: str) -> tuple[str, int | None, int | None]:
             path = _kb.kanban_db_path(slug)
@@ -972,17 +973,30 @@ class GatewayKanbanWatchersMixin:
                 or "database disk image is malformed" in msg
             )
 
-        def _running_count_for_board(slug: str) -> "Optional[int]":
-            """Read one board's live running count for the global admission cap."""
+        def _running_state_for_board(
+            slug: str,
+        ) -> "Optional[tuple[int, dict[str, int]]]":
+            """Read one board's live global and per-profile worker counts."""
             conn = None
             try:
                 conn = _kb.connect(board=slug)
-                return int(conn.execute(
+                total = int(conn.execute(
                     "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
                 ).fetchone()[0])
+                profiles = {}
+                if max_in_progress_per_profile is not None:
+                    profiles = {
+                        row["assignee"]: int(row["n"])
+                        for row in conn.execute(
+                            "SELECT assignee, COUNT(*) AS n FROM tasks "
+                            "WHERE status = 'running' AND assignee IS NOT NULL "
+                            "GROUP BY assignee"
+                        )
+                    }
+                return total, profiles
             except Exception as exc:
                 logger.warning(
-                    "kanban dispatcher: cannot read running count for board %s; "
+                    "kanban dispatcher: cannot read running state for board %s; "
                     "skipping aggregate dispatch this tick (%s)", slug, exc,
                 )
                 return None
@@ -998,6 +1012,7 @@ class GatewayKanbanWatchersMixin:
             *,
             board_max_spawn: "Optional[int]" = max_spawn,
             board_max_in_progress: "Optional[int]" = max_in_progress,
+            aggregate_profile_running: "Optional[dict[str, int]]" = None,
         ) -> "Optional[object]":
             """Run one dispatch_once for a specific board.
 
@@ -1048,6 +1063,7 @@ class GatewayKanbanWatchersMixin:
                     stale_timeout_seconds=stale_timeout_seconds,
                     default_assignee=default_assignee,
                     max_in_progress_per_profile=max_in_progress_per_profile,
+                    aggregate_in_progress_per_profile=aggregate_profile_running,
                 )
             except sqlite3.DatabaseError as exc:
                 if _is_corrupt_board_db_error(exc):
@@ -1093,26 +1109,52 @@ class GatewayKanbanWatchersMixin:
             when users create a new board mid-run: no restart required,
             the next tick picks it up automatically.
             """
-            try:
-                boards = _kb.list_boards(include_archived=False)
-            except Exception:
-                boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+            nonlocal admission_turn
             # Both limits are live worker ceilings in dispatch_once. The
             # singleton gateway owns their aggregate admission across boards,
             # while direct delegate_task work remains outside this Kanban path.
-            aggregate_capped = max_spawn is not None or max_in_progress is not None
+            aggregate_capped = any(
+                cap is not None
+                for cap in (
+                    max_spawn,
+                    max_in_progress,
+                    max_in_progress_per_profile,
+                )
+            )
+            try:
+                boards = _kb.list_boards(include_archived=False)
+            except Exception:
+                if aggregate_capped:
+                    logger.warning(
+                        "kanban dispatcher: cannot enumerate boards; skipping "
+                        "aggregate-capped dispatch this tick"
+                    )
+                    return []
+                boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
+            if aggregate_capped and boards:
+                offset = admission_turn % len(boards)
+                boards = boards[offset:] + boards[:offset]
+                admission_turn += 1
             board_running: dict[str, int] = {}
+            board_profile_running: dict[str, dict[str, int]] = {}
+            profile_running: dict[str, int] = {}
             total_running = 0
             if aggregate_capped:
                 for b in boards:
                     slug = b.get("slug") or _kb.DEFAULT_BOARD
-                    running = _running_count_for_board(slug)
-                    if running is None:
+                    state = _running_state_for_board(slug)
+                    if state is None:
                         # Do not hand a fresh per-board allowance to the
                         # remaining boards when the aggregate is unknown.
                         return []
+                    running, profiles = state
                     board_running[slug] = running
+                    board_profile_running[slug] = profiles
                     total_running += running
+                    for assignee, count in profiles.items():
+                        profile_running[assignee] = (
+                            profile_running.get(assignee, 0) + count
+                        )
 
             out: list[tuple[str, "Optional[object]"]] = []
             for b in boards:
@@ -1128,6 +1170,7 @@ class GatewayKanbanWatchersMixin:
                     slug,
                     board_max_spawn=_board_cap(max_spawn),
                     board_max_in_progress=_board_cap(max_in_progress),
+                    aggregate_profile_running=profile_running,
                 )
                 out.append((slug, result))
                 if aggregate_capped:
@@ -1135,11 +1178,21 @@ class GatewayKanbanWatchersMixin:
                     # board leaves its unused slots available to the next one.
                     # This also accounts for stale/crashed workers reclaimed by
                     # dispatch_once without guessing from result fields.
-                    updated_running = _running_count_for_board(slug)
-                    if updated_running is None:
+                    state = _running_state_for_board(slug)
+                    if state is None:
                         break
+                    updated_running, updated_profiles = state
                     total_running += updated_running - running
                     board_running[slug] = updated_running
+                    for assignee, count in board_profile_running.get(slug, {}).items():
+                        profile_running[assignee] -= count
+                        if profile_running[assignee] == 0:
+                            del profile_running[assignee]
+                    for assignee, count in updated_profiles.items():
+                        profile_running[assignee] = (
+                            profile_running.get(assignee, 0) + count
+                        )
+                    board_profile_running[slug] = updated_profiles
             return out
 
         def _ready_nonempty() -> bool:

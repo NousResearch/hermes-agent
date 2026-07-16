@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -113,9 +114,9 @@ def select_tests(repo: Path, changed_files: list[str], manifest_tests: list[str]
         if mod:
             seeds = _expand_init_reexports(repo, {mod})
             seen = set(seeds)
-            queue = list(seeds)
+            queue = deque(seeds)
             while queue:
-                current = queue.pop(0)
+                current = queue.popleft()
                 for consumer in reverse.get(current, set()):
                     if consumer in seen:
                         continue
@@ -143,8 +144,11 @@ def format_report(report: CatchupReport) -> str:
 
 
 def run_catchup(repo: Path, *, max_commits: int = 50, upstream: str = "origin/main", fork_ref: str = "fork/main") -> CatchupReport:
-    gitops.fetch(repo, "origin")
-    gitops.fetch(repo, "fork")
+    # Fetch the remotes the refs actually name (Greptile: no hardcoded "fork").
+    for ref in (upstream, fork_ref):
+        remote = ref.split("/", 1)[0]
+        if remote and remote != ref:
+            gitops.fetch(repo, remote)
     _ahead, behind = gitops.ahead_behind(repo, fork_ref, upstream)
     if behind > max_commits:
         raise gitops.GitError(f"catchup refuses {behind} commits behind {upstream}; use hermes_parity start")

@@ -287,7 +287,12 @@ def scrub_output(text: str, *, home: Path | None = None, venv: Path | None = Non
     return scrubbed.splitlines()
 
 
-def jsonable_result(result: BisectResult, *, max_lines: int = 80) -> dict[str, object]:
+def jsonable_result(result: BisectResult, *, max_lines: int = 80, venv: Path | None = None) -> dict[str, object]:
+    if venv is None:
+        # Default to the interpreter's venv root (sys.executable = <venv>/bin/python)
+        # so persisted tails always get the $VENV rewrite the spec requires.
+        exe = Path(sys.executable)
+        venv = exe.parent.parent if exe.parent.name == "bin" else None
     return {
         "test": result.test,
         "baseline": result.baseline.value,
@@ -295,9 +300,9 @@ def jsonable_result(result: BisectResult, *, max_lines: int = 80) -> dict[str, o
         "classification": result.classification.value,
         "baseline_runs": [item.value for item in result.baseline_runs],
         "merge_runs": [item.value for item in result.merge_runs],
-        "baseline_output_tail": scrub_output(result.baseline_output, max_lines=max_lines),
-        "merge_output_tail": scrub_output(result.merge_output, max_lines=max_lines),
-        "dep_output_tail": scrub_output(result.dep_output, max_lines=max_lines),
+        "baseline_output_tail": scrub_output(result.baseline_output, max_lines=max_lines, venv=venv),
+        "merge_output_tail": scrub_output(result.merge_output, max_lines=max_lines, venv=venv),
+        "dep_output_tail": scrub_output(result.dep_output, max_lines=max_lines, venv=venv),
     }
 
 

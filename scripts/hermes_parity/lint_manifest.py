@@ -65,17 +65,28 @@ def lint_nodeids(repo: Path, nodeids: Sequence[str]) -> list[str]:
     # above are absent on a CI shard's clean checkout, and a nonexistent path
     # makes subprocess.run raise FileNotFoundError (the test-isolation red).
     python_exe = str(python) if python.exists() else sys.executable
-    proc = subprocess.run(
-        [python_exe, "-m", "pytest", "--collect-only", "-q", "-o", "addopts=", "-p", "no:randomly", *nodeids],
-        cwd=repo,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        check=False,
-    )
-    if proc.returncode == 0 and proc.stdout.strip():
+
+    def collects(batch: Sequence[str]) -> bool:
+        proc = subprocess.run(
+            [python_exe, "-m", "pytest", "--collect-only", "-q", "-o", "addopts=", "-p", "no:randomly", *batch],
+            cwd=repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        return proc.returncode == 0 and bool(proc.stdout.strip())
+
+    # Fast path: one invocation when everything collects. On failure, retry
+    # per-nodeid so the error names ONLY the offender(s), not the whole set
+    # (a single rotted nodeid must not smear every healthy one).
+    if collects(nodeids):
         return []
-    return [f"test nodeid does not collect: {node}" for node in nodeids]
+    return [
+        f"test nodeid does not collect: {node}"
+        for node in nodeids
+        if not collects([node])
+    ]
 
 
 def vacuous_coverage_errors(

@@ -1,6 +1,7 @@
 import type * as React from 'react'
 
 import type { ChatMessage } from '@/lib/chat-messages'
+import type { SessionRuntimeProjectInfo } from '@/types/hermes'
 
 export interface ContextSuggestion {
   text: string
@@ -137,6 +138,7 @@ export interface ClientSessionState {
   messages: ChatMessage[]
   branch: string
   cwd: string
+  project: SessionRuntimeProjectInfo | null
   model: string
   provider: string
   reasoningEffort: string

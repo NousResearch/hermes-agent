@@ -189,6 +189,33 @@ def test_project_info_for_cwd_returns_project_status_payload(tmp_path):
     }
 
 
+def test_session_cwd_set_agentless_reports_unowned_project_null(tmp_path, monkeypatch):
+    owned = tmp_path / "owned"
+    owned.mkdir()
+    _call("projects.create", {"name": "Owned", "folders": [str(owned)]})
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    sid = "agentless-cwd"
+    emitted = []
+    monkeypatch.setattr(server, "_emit", lambda event, session_id, payload: emitted.append((event, session_id, payload)))
+    monkeypatch.setattr(server, "_persist_session_git_meta", lambda *_args, **_kwargs: None)
+    server._sessions[sid] = {
+        "agent": None,
+        "cwd": str(owned),
+        "explicit_cwd": True,
+        "running": False,
+        "session_key": "stored-agentless-cwd",
+    }
+    try:
+        payload = _call("session.cwd.set", {"session_id": sid, "cwd": str(outside)})
+    finally:
+        server._sessions.pop(sid, None)
+
+    assert payload["project"] is None
+    assert emitted == [("session.info", sid, payload)]
+
+
 def test_update_and_archive(tmp_path):
     pid = _call("projects.create", {"name": "Orig", "folders": [str(tmp_path)]})["project"]["id"]
 

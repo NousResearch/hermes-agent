@@ -10,11 +10,13 @@ import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
 import {
   $activeSessionId,
   $currentCwd,
+  $currentProject,
   $messages,
   $newChatWorkspaceTarget,
   $resumeFailedSessionId,
   setActiveSessionId,
   setCurrentCwd,
+  setCurrentProject,
   setMessages,
   setNewChatWorkspaceTarget,
   setResumeFailedSessionId,
@@ -35,6 +37,7 @@ vi.mock('@/hermes', async importOriginal => ({
 }))
 
 const RUNTIME_SESSION_ID = 'rt-new-001'
+const PROJECT = { id: 'p_repo', name: 'Repo', primary_path: '/repo', slug: 'repo' }
 type HarnessHandle = Pick<ReturnType<typeof useSessionActions>, 'createBackendSessionForSend' | 'startFreshSessionDraft'>
 
 function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
@@ -253,6 +256,7 @@ describe('resumeSession failure recovery', () => {
     setResumeFailedSessionId(null)
     setMessages([])
     setSessions([])
+    setCurrentProject(null)
     vi.restoreAllMocks()
   })
 
@@ -378,6 +382,29 @@ describe('resumeSession failure recovery', () => {
     expect(resumeParams).toMatchObject({ source: 'desktop' })
   })
 
+  it('applies project metadata from synchronous resume info', async () => {
+    setCurrentProject({ id: 'p_old', name: 'Old', primary_path: '/old', slug: 'old' })
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return {
+          session_id: 'runtime-1',
+          resumed: params?.session_id,
+          messages: [],
+          info: { branch: 'main', cwd: '/repo', project: PROJECT }
+        } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getSessionMessages).mockResolvedValue({ messages: [] } as never)
+
+    await runResume(requestGateway)
+
+    expect($currentProject.get()).toEqual(PROJECT)
+  })
+
   it('arms the failure latch when resume succeeds with an empty transcript for a non-empty stored session', async () => {
     setSessions([storedSession({ message_count: 4 })])
 
@@ -420,6 +447,7 @@ describe('resumeSession failure recovery', () => {
             pendingBranchGroup: null,
             personality: '',
             provider: '',
+            project: null,
             reasoningEffort: '',
             sawAssistantPayload: false,
             serviceTier: '',
@@ -641,6 +669,7 @@ describe('createBackendSessionForSend workspace target', () => {
     $newChatProfile.set(null)
     $activeGatewayProfile.set('default')
     setCurrentCwd('')
+    setCurrentProject(null)
     setNewChatWorkspaceTarget(undefined)
     vi.restoreAllMocks()
   })
@@ -672,6 +701,22 @@ describe('createBackendSessionForSend workspace target', () => {
     )
 
     expect(params).toMatchObject({ cwd: '/clicked-workspace' })
+  })
+
+  it('clears the project label when starting a fresh draft', async () => {
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+
+    render(<Harness onReady={h => (handle = h)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    setCurrentProject(PROJECT)
+
+    await act(async () => {
+      handle!.startFreshSessionDraft()
+    })
+
+    expect($currentProject.get()).toBeNull()
   })
 
 })

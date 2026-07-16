@@ -13,6 +13,7 @@ import {
   setCurrentFastMode,
   setCurrentModel,
   setCurrentPersonality,
+  setCurrentProject,
   setCurrentProvider,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
@@ -63,6 +64,7 @@ function syncRuntimeMetadataToView(state: ClientSessionState) {
   setCurrentFastMode(state.fast ?? false)
   setYoloActive(state.yolo ?? false)
   setCurrentPersonality(state.personality ?? '')
+  setCurrentProject(state.project ?? null)
 }
 
 export function useSessionStateCache({

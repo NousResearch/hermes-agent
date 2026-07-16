@@ -29,6 +29,7 @@ import {
   setCurrentBranch,
   setCurrentCwd,
   setCurrentCwdTransient,
+  setCurrentProject,
   setCurrentServiceTier,
   setCurrentUsage,
   setFreshDraftReady,
@@ -171,6 +172,7 @@ export function useSessionActions({
       }
 
       setCurrentBranch('')
+      setCurrentProject(null)
       // Never clear the composer here — ChatBar's per-thread draft swap owns it.
       setFreshDraftReady(true)
     },
@@ -438,6 +440,7 @@ export function useSessionActions({
           syncSessionStateToView(cachedRuntimeId, cachedViewState)
           setCurrentCwd(cachedViewState.cwd)
           setCurrentBranch(cachedViewState.branch)
+          setCurrentProject(cachedViewState.project)
           setSessionStartedAt(Date.now())
 
           try {

@@ -13,6 +13,7 @@ import {
   setCurrentFastMode,
   setCurrentModel,
   setCurrentPersonality,
+  setCurrentProject,
   setCurrentProvider,
   setCurrentReasoningEffort,
   setCurrentServiceTier,
@@ -254,7 +255,16 @@ export async function resolveStoredSession(storedSessionId: string): Promise<Ses
 type SessionRuntimeStatePatch = Partial<
   Pick<
     ClientSessionState,
-    'branch' | 'cwd' | 'fast' | 'model' | 'personality' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
+    | 'branch'
+    | 'cwd'
+    | 'fast'
+    | 'model'
+    | 'personality'
+    | 'project'
+    | 'provider'
+    | 'reasoningEffort'
+    | 'serviceTier'
+    | 'yolo'
   >
 >
 
@@ -297,6 +307,11 @@ export function applyRuntimeInfo(info: SessionRuntimeInfo | undefined): SessionR
     sessionState.branch = info.branch || ''
   }
 
+  if (Object.hasOwn(info, 'project')) {
+    setCurrentProject(info.project ?? null)
+    sessionState.project = info.project ?? null
+  }
+
   if (typeof info.personality === 'string') {
     const personality = normalizePersonalityValue(info.personality)
     setCurrentPersonality(personality)
@@ -337,6 +352,7 @@ export function applyStoredSessionPreviewRuntimeInfo(stored: { model?: null | st
   setCurrentServiceTier('')
   setCurrentFastMode(false)
   setYoloActive(false)
+  setCurrentProject(null)
   setCurrentPersonality('')
 }
 

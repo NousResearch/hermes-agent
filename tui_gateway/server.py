@@ -4019,7 +4019,12 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
         info = (
             _session_info(agent, session)
             if agent is not None
-            else {"cwd": resolved, "branch": _git_branch_for_cwd(resolved), "lazy": True}
+            else {
+                "cwd": resolved,
+                "branch": _git_branch_for_cwd(resolved),
+                "project": _project_info_for_cwd(resolved),
+                "lazy": True,
+            }
         )
         _emit("session.info", sid, info)
     except Exception:
@@ -5355,6 +5360,7 @@ def _(rid, params: dict) -> dict:
                 "skills": {},
                 "cwd": _sessions[sid]["cwd"],
                 "branch": _git_branch_for_cwd(_sessions[sid]["cwd"]),
+                "project": _project_info_for_cwd(_sessions[sid]["cwd"]),
                 "lazy": True,
                 "desktop_contract": DESKTOP_BACKEND_CONTRACT,
                 "profile_name": _current_profile_name(),
@@ -5501,6 +5507,7 @@ def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "") -> dict:
     info = {
         "cwd": cwd,
         "branch": _git_branch_for_cwd(cwd),
+        "project": _project_info_for_cwd(cwd),
         "model": model or _resolve_model(),
         "tools": {},
         "skills": {},
@@ -5987,6 +5994,7 @@ def _(rid, params: dict) -> dict:
     info = _session_info(agent, session) if agent is not None else {
         "cwd": cwd,
         "branch": _git_branch_for_cwd(cwd),
+        "project": _project_info_for_cwd(cwd),
         "lazy": True,
     }
     _emit("session.info", params.get("session_id", ""), info)
@@ -6082,8 +6090,10 @@ def _fallback_session_info(session: dict) -> dict:
     agent = session.get("agent")
     if agent is not None:
         return _session_info(agent)
+    cwd = _default_session_cwd()
     return {
-        "cwd": _default_session_cwd(),
+        "cwd": cwd,
+        "project": _project_info_for_cwd(cwd),
         "lazy": True,
         "model": _resolve_model(),
         "skills": {},

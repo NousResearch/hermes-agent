@@ -33,8 +33,8 @@ describe('toTodoPayload', () => {
 
 describe('sessionInfoStatePatch / hasSessionInfoStatePatch', () => {
   it('extracts only present runtime fields', () => {
-    const patch = sessionInfoStatePatch(payload({ model: 'gpt', fast: true, branch: 'main' }))
-    expect(patch).toMatchObject({ model: 'gpt', fast: true, branch: 'main' })
+    const patch = sessionInfoStatePatch(payload({ model: 'gpt', fast: true, branch: 'main', project: null }))
+    expect(patch).toMatchObject({ model: 'gpt', fast: true, branch: 'main', project: null })
     expect(hasSessionInfoStatePatch(patch)).toBe(true)
     expect(hasSessionInfoStatePatch(sessionInfoStatePatch(payload({})))).toBe(false)
   })

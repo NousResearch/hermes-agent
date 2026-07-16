@@ -3,12 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { $sessionsLimit, resetSessionsLimit, SIDEBAR_SESSIONS_PAGE_SIZE } from '@/store/layout'
 import {
   $cronSessions,
+  $currentProject,
   $freshDraftReady,
   $messagingSessions,
   $sessions,
   $sessionsLoading,
   $sessionsTotal,
   setCronSessions,
+  setCurrentProject,
   setFreshDraftReady,
   setMessagingSessions,
   setSessions,
@@ -17,6 +19,8 @@ import {
 } from '@/store/session'
 
 import { $gatewaySwitching, wipeSessionListsForGatewaySwitch } from './gateway-switch'
+
+const PROJECT = { id: 'p_old', name: 'Old', primary_path: '/old', slug: 'old' }
 
 vi.mock('@/lib/query-client', () => ({
   queryClient: { invalidateQueries: vi.fn() }
@@ -31,6 +35,7 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     setMessagingSessions([{ id: 'm1', title: 'tg', profile: 'default' } as never])
     setSessionsLoading(false)
     setFreshDraftReady(false)
+    setCurrentProject(PROJECT)
     $sessionsLimit.set(SIDEBAR_SESSIONS_PAGE_SIZE * 3)
   })
 
@@ -40,6 +45,7 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     setCronSessions([])
     setMessagingSessions([])
     setSessionsLoading(true)
+    setCurrentProject(null)
     $gatewaySwitching.set(false)
   })
 
@@ -52,6 +58,7 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     expect($messagingSessions.get()).toEqual([])
     expect($sessionsLoading.get()).toBe(true)
     expect($sessionsLimit.get()).toBe(SIDEBAR_SESSIONS_PAGE_SIZE)
+    expect($currentProject.get()).toBeNull()
     expect($freshDraftReady.get()).toBe(true)
   })
 })

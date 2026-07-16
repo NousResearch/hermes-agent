@@ -1691,10 +1691,15 @@ async def _send_qqbot(pconfig, chat_id, message):
     except ImportError:
         return _error("QQBot direct send requires httpx. Run: pip install httpx")
 
+    # Resolve credential fallbacks through the profile secret scope (with the
+    # plain-environ fallback for unscoped single-profile runs) so a multiplex
+    # profile's direct send never borrows another profile's QQ credentials.
+    from gateway.config import _getenv
+
     extra = pconfig.extra or {}
-    appid = extra.get("app_id") or os.getenv("QQ_APP_ID", "")
+    appid = extra.get("app_id") or _getenv("QQ_APP_ID", "")
     secret = (pconfig.token or extra.get("client_secret")
-              or os.getenv("QQ_CLIENT_SECRET", ""))
+              or _getenv("QQ_CLIENT_SECRET", ""))
     if not appid or not secret:
         return _error("QQBot: QQ_APP_ID / QQ_CLIENT_SECRET not configured.")
 

@@ -100,3 +100,26 @@ class TestQQSttConfigScope:
             ss.reset_secret_scope(tok)
         assert stt is not None
         assert stt["api_key"] == "profileA-stt-key"
+
+    def test_all_stt_values_read_scope(self, monkeypatch):
+        # Every QQ_STT_* value must come from the scope, not os.environ.
+        monkeypatch.setenv("QQ_STT_API_KEY", "global-stt-key")
+        monkeypatch.setenv("QQ_STT_BASE_URL", "https://global.example/v1")
+        monkeypatch.setenv("QQ_STT_MODEL", "global-asr")
+        ss.set_multiplex_active(True)
+        tok = ss.set_secret_scope(
+            {
+                "QQ_STT_API_KEY": "profileA-stt-key",
+                "QQ_STT_BASE_URL": "https://scoped.example/v1",
+                "QQ_STT_MODEL": "scoped-asr",
+            }
+        )
+        try:
+            adapter = _make_adapter()
+            stt = adapter._resolve_stt_config()
+        finally:
+            ss.reset_secret_scope(tok)
+        assert stt is not None
+        assert stt["api_key"] == "profileA-stt-key"
+        assert stt["base_url"] == "https://scoped.example/v1"
+        assert stt["model"] == "scoped-asr"

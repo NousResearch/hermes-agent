@@ -61,11 +61,11 @@
   {
     "feature": "relay-pool session affinity and lane headers",
     "tests": [
-      "tests/agent/test_pool_affinity_header.py",
-      "tests/golden/relay_headers/golden.json"
+      "tests/agent/test_pool_affinity_header.py"
     ],
     "paths": [
-      "agent/fork_ext/relay_headers.py"
+      "agent/fork_ext/relay_headers.py",
+      "tests/golden/relay_headers/"
     ],
     "why": "Claude API proxy pool requests must keep per-session affinity and classify interactive versus background relay lanes without stamping third-party providers."
   }

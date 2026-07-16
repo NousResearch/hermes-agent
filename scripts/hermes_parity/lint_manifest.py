@@ -106,6 +106,10 @@ def vacuous_coverage_errors(
     if not touched_paths:
         return []
     fork_delta_touched = set(report.changed_paths) & touched_paths
+    # Editing the manifest itself is not uncovered fork-delta drift — the
+    # linter would otherwise go RED on every manifest maintenance commit.
+    fork_delta_touched.discard(str(manifest_path.relative_to(repo)) if manifest_path.is_absolute() else str(manifest_path))
+    fork_delta_touched.discard("docs/sync/fork-features.json")
     if fork_delta_touched:
         return ["vacuous forkdelta coverage: 0 covered paths while fork-delta files were touched"]
     return []

@@ -4929,7 +4929,19 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     # would pull in desktop on every web build. See #38772.
     # When web/ has its own package-lock.json, _workspace_root() returns
     # web_dir itself and --workspace would fail.  See #42973.
-    npm_workspace_args: tuple[str, ...] = () if npm_cwd == web_dir else ("--workspace", "web")
+    #
+    # --include-workspace-root is required for the same reason the updater
+    # installs in a single pass (#64354): _run_npm_install_deterministic
+    # prefers `npm ci`, which wipes node_modules and reifies only the tree it
+    # was given.  cmd_update calls _update_node_dependencies() and then us, so
+    # scoping to --workspace web alone deleted the root deps (agent-browser,
+    # @streamdown) that had just been installed a second earlier — both npm
+    # runs exit 0, so update reported success while browser tools were gone.
+    # The flag adds only the root package's own deps, not sibling workspaces,
+    # so desktop/Electron stays excluded as described above.
+    npm_workspace_args: tuple[str, ...] = (
+        () if npm_cwd == web_dir else ("--workspace", "web", "--include-workspace-root")
+    )
     if _is_termux_startup_environment():
         npm_cwd, npm_workspace_args = _termux_workspace_install_context(web_dir)
     r1 = _run_npm_install_deterministic(

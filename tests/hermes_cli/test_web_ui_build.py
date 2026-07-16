@@ -174,6 +174,37 @@ class TestBuildWebUISkipsWhenFresh:
         assert "--workspace" in install_cmd
         assert install_cmd[install_cmd.index("--workspace") + 1] == "web"
 
+    def test_workspace_scoped_install_keeps_root_deps(self, tmp_path):
+        """--workspace web must carry --include-workspace-root (#64354).
+
+        cmd_update runs _update_node_dependencies() and then _build_web_ui().
+        Both go through _run_npm_install_deterministic, which prefers `npm ci`
+        — and `npm ci` deletes node_modules before reifying only the tree it
+        was given. Scoping this install to web alone therefore pruned the root
+        deps (agent-browser, @streamdown) installed a second earlier, while
+        both npm runs still exited 0, so `hermes update` reported success with
+        browser tools silently missing.
+        """
+        web_dir, _ = _make_web_dir(tmp_path)
+        (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+        mock_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        build_ok = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+             patch("hermes_cli.main.subprocess.run", return_value=mock_cp) as mock_run, \
+             patch("hermes_cli.main._run_with_idle_timeout", return_value=build_ok):
+            result = _build_web_ui(web_dir)
+        assert result is True
+        install_cmd = mock_run.call_args[0][0]
+        assert "--include-workspace-root" in install_cmd
+        # Only the root's own deps come along — sibling workspaces (notably
+        # apps/desktop, which drags in a ~200MB Electron binary) stay excluded.
+        workspaces = [
+            install_cmd[i + 1]
+            for i, arg in enumerate(install_cmd[:-1])
+            if arg == "--workspace"
+        ]
+        assert workspaces == ["web"]
+
     def test_web_install_omits_workspace_when_web_has_own_lockfile(
         self, tmp_path, monkeypatch
     ):
@@ -269,7 +300,14 @@ class TestBuildWebUISkipsWhenFresh:
 
         assert result is True
         args, kwargs = mock_run.call_args
-        assert args[0] == ["/usr/bin/npm", "ci", "--workspace", "web", "--silent"]
+        assert args[0] == [
+            "/usr/bin/npm",
+            "ci",
+            "--workspace",
+            "web",
+            "--include-workspace-root",
+            "--silent",
+        ]
         assert kwargs["cwd"] == tmp_path
 
 

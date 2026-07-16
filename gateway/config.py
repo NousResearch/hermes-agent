@@ -440,6 +440,22 @@ class ChannelOverride:
         )
 
 
+# Canonical map of platforms whose primary credential is ``PlatformConfig.token``
+# and the env var it loads from. Used for empty-token warnings at config
+# validation and by the multiplex primary-startup credential gate in
+# ``gateway.run`` (#64674). Platforms absent from this map authenticate some
+# other way (session files, port-bound webhooks, api_key-only) and must never
+# be skipped for a missing token.
+PLATFORM_TOKEN_ENV_NAMES: dict["Platform", str] = {
+    Platform.TELEGRAM: "TELEGRAM_BOT_TOKEN",
+    Platform.DISCORD: "DISCORD_BOT_TOKEN",
+    Platform.SLACK: "SLACK_BOT_TOKEN",
+    Platform.MATTERMOST: "MATTERMOST_TOKEN",
+    Platform.MATRIX: "MATRIX_ACCESS_TOKEN",
+    Platform.WEIXIN: "WEIXIN_TOKEN",
+}
+
+
 @dataclass
 class PlatformConfig:
     """Configuration for a single messaging platform."""
@@ -1424,14 +1440,7 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
 
     # Warn about empty bot tokens — platforms that loaded an empty string
     # won't connect and the cause can be confusing without a log line.
-    _token_env_names = {
-        Platform.TELEGRAM: "TELEGRAM_BOT_TOKEN",
-        Platform.DISCORD: "DISCORD_BOT_TOKEN",
-        Platform.SLACK: "SLACK_BOT_TOKEN",
-        Platform.MATTERMOST: "MATTERMOST_TOKEN",
-        Platform.MATRIX: "MATRIX_ACCESS_TOKEN",
-        Platform.WEIXIN: "WEIXIN_TOKEN",
-    }
+    _token_env_names = PLATFORM_TOKEN_ENV_NAMES
     for platform, pconfig in config.platforms.items():
         if not pconfig.enabled:
             continue

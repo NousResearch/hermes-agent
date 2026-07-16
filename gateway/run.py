@@ -1513,16 +1513,9 @@ def _platform_has_bot_credential(platform: "Platform", platform_config: "Platfor
     Platforms that do not use ``PlatformConfig.token`` always return True so we
     never skip them here (Signal session paths, port-binding HTTP adapters, etc.).
     """
-    # Keep in sync with gateway.config token env map used for empty-token warnings.
-    token_platforms = {
-        Platform.TELEGRAM,
-        Platform.DISCORD,
-        Platform.SLACK,
-        Platform.MATTERMOST,
-        Platform.MATRIX,
-        Platform.WEIXIN,
-    }
-    if platform not in token_platforms:
+    from gateway.config import PLATFORM_TOKEN_ENV_NAMES
+
+    if platform not in PLATFORM_TOKEN_ENV_NAMES:
         return True
     token = getattr(platform_config, "token", None) or ""
     if isinstance(token, str) and token.strip():
@@ -7232,6 +7225,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         # Initialize and connect each configured platform
         _multiplex_on = bool(getattr(self.config, "multiplex_profiles", False))
+        _multiplex_skipped_platforms: list[Platform] = []
         for platform, platform_config in self.config.platforms.items():
             if await self._abort_startup_if_shutdown_requested():
                 return True
@@ -7251,6 +7245,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "provide the token will still connect.",
                     platform.value,
                 )
+                _multiplex_skipped_platforms.append(platform)
                 continue
             enabled_platform_count += 1
             
@@ -7395,6 +7390,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return True
         except Exception as e:
             logger.error("Secondary-profile adapter startup failed: %s", e, exc_info=True)
+
+        # A platform we skipped on the primary for a missing credential was
+        # supposed to be picked up by a secondary profile that owns the token.
+        # If none did, the platform is enabled in config.yaml yet silently
+        # unserved — surface it loudly so the operator sees a config problem
+        # instead of a quiet dead channel (#64674 follow-up).
+        for _skipped in _multiplex_skipped_platforms:
+            _served_by_secondary = any(
+                _skipped in _profile_map
+                for _profile_map in self._profile_adapters.values()
+            )
+            if not _served_by_secondary:
+                logger.warning(
+                    "%s is enabled but no profile (default or secondary) "
+                    "provided a bot credential for it — the platform is not "
+                    "being served. Add its token to the profile that should "
+                    "own it, or disable the platform.",
+                    _skipped.value,
+                )
 
         if connected_count == 0:
             if startup_nonretryable_errors:

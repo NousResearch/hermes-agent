@@ -141,6 +141,34 @@ def test_t_explicit_lang():
     assert i18n.t("approval.denied", lang="pl").endswith("Odrzucono")
 
 
+def test_polish_catalog_has_no_known_literal_translation_regressions():
+    """Keep machine-translation artifacts out of user-visible Polish copy."""
+    import re
+
+    text = "\n".join(str(value) for value in _flatten(_load_raw("pl")).values())
+    forbidden = [
+        r"modelk",
+        r"Bliźnięt",
+        r"\bBieganie\b",
+        r"\bBiegnij\b",
+        r"\bWłaz\b",
+        r"\bTarło\b",
+        r"Zremis",
+        r"\boddział",
+        r"żeton",
+        r"kompozytor",
+        r"zaplecz",
+        r"Pulpit Hermes",
+        r"Centrum dowodzenia",
+        r"\bbramk",
+        r"\bmonit(?:u|em|ach|ami|y|ów|owi|cie|owanie|owania)?\b",
+        r"zachęt",
+        r"narzędzi\(a\)|serwera\(ów\)|umiejętność\(i\)",
+    ]
+    for pattern in forbidden:
+        assert not re.search(pattern, text, flags=re.IGNORECASE), pattern
+
+
 def test_t_formats_placeholders():
     msg = i18n.t("gateway.draining", lang="en", count=3)
     assert "3" in msg

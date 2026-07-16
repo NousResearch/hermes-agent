@@ -104,6 +104,29 @@ class TestBrowserWaitTextMode:
         assert result["found"] is False
         assert "No browser session" in result["error"]
 
+    def test_envelope_keys_do_not_count_as_page_text(self):
+        from tools.browser_tool import browser_wait
+
+        # Every snapshot reply contains '"success": true' in its JSON
+        # envelope. Waiting for a common word like "success" must match the
+        # parsed page content only — never the envelope — or the wait returns
+        # found=true on any page whatsoever.
+        with patch(
+            "tools.browser_tool.browser_snapshot",
+            return_value=_snapshot_json("Loading…"),
+        ):
+            result = json.loads(browser_wait(seconds=0.3, text="success"))
+
+        assert result["found"] is False
+
+        with patch(
+            "tools.browser_tool.browser_snapshot",
+            return_value=_snapshot_json("Payment success — order confirmed"),
+        ):
+            result = json.loads(browser_wait(seconds=0.3, text="success"))
+
+        assert result["found"] is True
+
     def test_failed_snapshot_containing_needle_is_not_a_match(self):
         from tools.browser_tool import browser_wait
 

@@ -96,6 +96,10 @@ def test_memory_context_is_strictly_redacted_before_summary_llm(monkeypatch):
     prefix_secret = "sk-" + "b" * 30
     query_secret = "opaque-query-secret"
     userinfo_value = "opaque-userinfo-value"
+    hyphen_client_secret = "HYPHEN_CLIENT_SECRET"
+    hyphen_access_secret = "HYPHEN_ACCESS_SECRET"
+    hyphen_api_secret = "HYPHEN_API_SECRET"
+    encoded_hyphen_secret = "ENCODED_HYPHEN_SECRET"
     prompts = []
 
     def mock_call_llm(**kwargs):
@@ -109,7 +113,11 @@ def test_memory_context_is_strictly_redacted_before_summary_llm(monkeypatch):
             memory_context=(
                 f"api key: {prefix_secret}\n"
                 f"callback: https://example.test/cb?token={query_secret}\n"
-                f"endpoint: https://user:{userinfo_value}@example.test/private"
+                f"endpoint: https://user:{userinfo_value}@example.test/private\n"
+                f"hyphen-client: /resume?client-secret={hyphen_client_secret}\n"
+                f"hyphen-access: /resume?Access-Token={hyphen_access_secret}\n"
+                f"hyphen-api: /resume?api-key={hyphen_api_secret}\n"
+                f"encoded-hyphen: /resume?client%2Dsecret={encoded_hyphen_secret}"
             ),
         )
 
@@ -118,8 +126,16 @@ def test_memory_context_is_strictly_redacted_before_summary_llm(monkeypatch):
     assert prefix_secret not in prompt
     assert query_secret not in prompt
     assert userinfo_value not in prompt
+    assert hyphen_client_secret not in prompt
+    assert hyphen_access_secret not in prompt
+    assert hyphen_api_secret not in prompt
+    assert encoded_hyphen_secret not in prompt
     assert "token=***" in prompt
     assert "https://user:***@example.test/private" in prompt
+    assert "client-secret=***" in prompt
+    assert "Access-Token=***" in prompt
+    assert "api-key=***" in prompt
+    assert "client%2Dsecret=***" in prompt
 
 
 def test_memory_context_reserved_markers_cannot_escape_data_frame():

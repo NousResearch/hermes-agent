@@ -13,7 +13,7 @@ pip install -e '.[agui]'            # or: pip install 'hermes-agent[agui]'
 hermes model                        # pick provider/model, set credentials
 
 # 3. Start the server (binds http://127.0.0.1:8000 by default)
-hermes-agui                         # equivalently: python -m agui_adapter
+hermes agui                         # equivalently: hermes-agui / python -m agui_adapter
 ```
 
 That's the whole thing on a local machine. `hermes-agui` **reuses your existing
@@ -30,8 +30,8 @@ Starting Hermes AG-UI adapter on 127.0.0.1:8000
 Point any AG-UI client at **`http://127.0.0.1:8000/`** (the run endpoint is
 `POST /`; there's also `GET /health`).
 
-> There is no `hermes agui` subcommand — start it with `hermes-agui` or
-> `python -m agui_adapter`.
+> `hermes agui`, the `hermes-agui` script, and `python -m agui_adapter` are
+> equivalent entry points.
 
 ## Connecting a client
 
@@ -53,37 +53,57 @@ the CopilotKit repo for a complete working example.)
 
 ## Configuration
 
-All configuration is via environment variables — nothing is required for the
-local quick start above.
+Behavioral settings live in the `agui` section of `config.yaml`
+(`~/.hermes/config.yaml`), alongside every other Hermes setting — nothing is
+required for the local quick start above. The **only AG-UI-specific** environment
+variable is the session token, because it's a secret (Hermes reserves `.env` for
+secrets). Run `hermes setup agui` for the interactive configuration flow, or
+edit the section directly:
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `HERMES_AGUI_HOST` | `127.0.0.1` | Bind interface. Any non-loopback value requires a token (see Security). |
-| `PORT` / `HERMES_AGUI_PORT` | `8000` | Listen port (`PORT` wins — PaaS convention). |
-| `HERMES_AGUI_SESSION_TOKEN` | — | Required off-loopback; optional defense-in-depth on loopback. |
-| `HERMES_AGUI_TOOLSETS` | `hermes-acp` | Comma-separated Hermes toolsets to enable for the agent. |
-| `HERMES_AGUI_MODEL` | *(hermes config default)* | Override the model. |
-| `HERMES_AGUI_PROVIDER` | *(hermes config)* | Override the provider. |
-| `HERMES_AGUI_API_MODE` | *(auto)* | `chat_completions` or `responses`. |
-| `HERMES_AGUI_BASE_URL` / `OPENAI_BASE_URL` | — | **Bypass** the hermes resolver and send every LLM call straight to this OpenAI-compatible endpoint. |
-| `HERMES_AGUI_API_KEY` / `OPENAI_API_KEY` | — | Key for the explicit-endpoint path above. |
+```yaml
+# ~/.hermes/config.yaml
+agui:
+  host: 127.0.0.1          # bind interface; any non-loopback value requires a token
+  port: 8000               # listen port
+  toolsets: [hermes-acp]   # Hermes toolsets exposed to the agent
+  # Optional model overrides — leave blank to defer to your `hermes model` config:
+  provider: ""             # e.g. "custom" for an OpenAI-compatible endpoint
+  model: ""                # e.g. "gpt-4o"
+  api_mode: ""             # "chat_completions" or "responses"
+  base_url: ""             # set to bypass the resolver and call this endpoint directly
+```
+
+| Setting | Where | Default | Purpose |
+|---|---|---|---|
+| `agui.host` | `config.yaml` | `127.0.0.1` | Bind interface. Non-loopback requires a token (see Security). |
+| `agui.port` | `config.yaml` | `8000` | Listen port. |
+| `agui.toolsets` | `config.yaml` | `[hermes-acp]` | Hermes toolsets enabled for the agent. |
+| `agui.provider` / `model` / `api_mode` / `base_url` | `config.yaml` | *(your `hermes model` config)* | Optional per-adapter model overrides; blank defers to the resolver. |
+| `HERMES_AGUI_SESSION_TOKEN` | **`.env`** (secret) | — | Required off-loopback; optional defense-in-depth on loopback. |
+| `--host` / `--port` / `--token` | `hermes agui` flags | — | Override the above per invocation. |
 
 **Two ways it finds a provider:**
 
-- **Default (local use):** no `*_BASE_URL` set → provider, credentials, and model
+- **Default (local use):** `agui.base_url` blank → provider, credentials, and model
   are resolved per run from your `hermes model` config, exactly like the Hermes
   CLI. This is the zero-config path.
-- **Explicit endpoint:** set `HERMES_AGUI_BASE_URL` (or `OPENAI_BASE_URL`) → the
-  hermes resolver is skipped and all calls go to that URL. This is how the
-  CopilotKit showcase points at a mock LLM, and how you'd target a self-hosted
-  OpenAI-compatible server.
+- **Explicit endpoint:** set `agui.base_url` → the hermes resolver is skipped and
+  all calls go to that OpenAI-compatible URL (credentials from `OPENAI_API_KEY`).
+  This is how the CopilotKit showcase points at a mock LLM, and how you'd target a
+  self-hosted OpenAI-compatible server.
 
 Example — point at a local OpenAI-compatible endpoint instead of your Hermes
 config:
 
+```yaml
+# ~/.hermes/config.yaml
+agui:
+  base_url: http://localhost:4010/v1
+  model: gpt-4o
+```
+
 ```bash
-OPENAI_BASE_URL=http://localhost:4010/v1 OPENAI_API_KEY=sk-… \
-  HERMES_AGUI_MODEL=gpt-4o hermes-agui
+OPENAI_API_KEY=sk-… hermes agui   # OPENAI_API_KEY is a secret, so it stays in the environment
 ```
 
 ## Security
@@ -148,19 +168,19 @@ script. It does **not** fire for:
   gap**: Hermes core exposes no file-edit approval hook this adapter can call, so
   gating it here would require a Hermes-core change — out of scope for this
   adapter. To gate file edits, **drop `write_file`/`patch` from
-  `HERMES_AGUI_TOOLSETS`**, or run on an isolated `env_type`.
+  `agui.toolsets`** (in `config.yaml`), or run on an isolated `env_type`.
 
 To make the interrupt cover **all** local code execution: run the default
 (`manual`) `approvals.mode` on a non-isolated `env_type`, and set
-`HERMES_AGUI_TOOLSETS` to a toolset that **excludes `execute_code`,
-`delegate_task`, `write_file`, and `patch`**. Those are kept in the default
-toolset for capability parity; excluding them is the operator's hardening lever.
+`agui.toolsets` to a toolset that **excludes `execute_code`, `delegate_task`,
+`write_file`, and `patch`**. Those are kept in the default toolset for
+capability parity; excluding them is the operator's hardening lever.
 </details>
 
 **Reverse proxy / embedding notes.** The Host guard rejects any `Host` that
-doesn't match `HERMES_AGUI_HOST`, so a proxy must either forward a matching
-`Host` or you set `HERMES_AGUI_HOST` to the public hostname (which then requires
-a token, since it's non-loopback). If you call `create_app(bound_host=…)`
+doesn't match `agui.host`, so a proxy must either forward a matching `Host` or
+you set `agui.host` to the public hostname (which then requires a token, since
+it's non-loopback). If you call `create_app(bound_host=…)`
 directly instead of using `hermes-agui`, pass the real serve interface — the
 token/Host checks are enforced against that value.
 

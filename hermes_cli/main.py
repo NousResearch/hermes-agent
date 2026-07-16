@@ -12348,21 +12348,19 @@ def cmd_agui(args):
         print("Hermes AG-UI check OK")
         return
 
-    # Convenience flags map onto the HERMES_AGUI_* env the entry reads.
-    if getattr(args, "agui_host", None):
-        os.environ["HERMES_AGUI_HOST"] = args.agui_host
-    if getattr(args, "agui_port", None) is not None:
-        os.environ["HERMES_AGUI_PORT"] = str(args.agui_port)
-    if getattr(args, "agui_token", None):
-        os.environ["HERMES_AGUI_SESSION_TOKEN"] = args.agui_token
-
     try:
         from agui_adapter.entry import main as agui_main
     except ImportError:
         print("AG-UI dependencies not installed.", file=sys.stderr)
         print("Install them with:  pip install -e '.[agui]'", file=sys.stderr)
         sys.exit(1)
-    agui_main()
+    # Flags override config.yaml (`agui` section) / the token env var per
+    # invocation — no HERMES_AGUI_* behavioral env vars involved.
+    agui_main(
+        host=getattr(args, "agui_host", None),
+        port=getattr(args, "agui_port", None),
+        token=getattr(args, "agui_token", None),
+    )
 
 
 def cmd_tools(args):

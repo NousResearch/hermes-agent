@@ -112,38 +112,62 @@ _registered_frontend_names: set[str] = set()
 _reg_lock = threading.Lock()
 
 
+def _load_agui_config() -> dict:
+    """Return the ``agui`` section of ``config.yaml`` (empty dict if unavailable).
+
+    Behavioral adapter settings live here, not in environment variables (Hermes
+    reserves ``.env`` for secrets). A missing/invalid config is non-fatal: the
+    caller falls back to the ``DEFAULT_CONFIG`` defaults baked into each field.
+    """
+    try:
+        from hermes_cli.config import load_config
+        section = load_config().get("agui")
+        return section if isinstance(section, dict) else {}
+    except Exception:  # noqa: BLE001 - hermes CLI unavailable / bad config is non-fatal
+        logger.debug("load_config() failed for the agui section; using defaults", exc_info=True)
+        return {}
+
+
 class AgentConfig:
     """Deployment-level settings shared across runs.
 
-    By default the adapter plugs into the local Hermes setup: provider,
-    credentials, and ``api_mode`` are resolved per run from the ``hermes model``
-    config + auth pools via
+    Behavioral settings come from the ``agui`` section of ``config.yaml`` (see
+    ``DEFAULT_CONFIG`` in ``hermes_cli.config``); the only environment input is
+    the session token, which is a secret. By default the adapter plugs into the
+    local Hermes setup: provider, credentials, and ``api_mode`` are resolved per
+    run from the ``hermes model`` config + auth pools via
     ``hermes_cli.runtime_provider.resolve_runtime_provider`` (see
     ``build_run_agent`` / ``_resolve_agent_settings``).
 
-    Env vars override that resolution. In particular an explicit endpoint
-    (``HERMES_AGUI_BASE_URL`` / ``OPENAI_BASE_URL``, or a ``base_url`` set on the
-    instance) bypasses the resolver entirely and talks directly to that URL —
-    which is what the aimock e2e tests and self-hosted OpenAI-compatible
-    deployments rely on.
+    The ``agui`` config keys ``provider`` / ``model`` / ``api_mode`` /
+    ``base_url`` are optional per-adapter overrides; left blank they defer to
+    that resolver. Setting ``base_url`` pins an explicit OpenAI-compatible
+    endpoint and bypasses the resolver entirely — the self-hosted / aimock-e2e
+    path (tests set these fields directly on the instance).
     """
 
     def __init__(self) -> None:
-        # Explicit endpoint override. When set, the hermes provider resolver is
-        # skipped and the agent talks directly to this base_url.
-        self.base_url = os.environ.get("HERMES_AGUI_BASE_URL") or os.environ.get("OPENAI_BASE_URL")
-        # Explicit credential override. Only consulted on the explicit-endpoint
-        # path; on the resolver path the resolved provider supplies the key.
-        self.api_key = os.environ.get("HERMES_AGUI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+        cfg = _load_agui_config()
+        # Explicit endpoint override (config.yaml `agui.base_url`). When set, the
+        # hermes provider resolver is skipped and the agent talks directly to it.
+        self.base_url = (cfg.get("base_url") or "").strip() or None
+        # Credentials are secrets, never a behavioral config key: resolved from
+        # hermes auth on the resolver path, or OPENAI_API_KEY for an explicit
+        # base_url (self-hosted / aimock).
+        self.api_key = os.environ.get("OPENAI_API_KEY")
         # Model override; empty means "use the hermes config default model".
-        self.model = os.environ.get("HERMES_AGUI_MODEL") or ""
+        self.model = (cfg.get("model") or "").strip()
         # Provider override; None means "let the hermes config / resolver decide".
-        self.provider = os.environ.get("HERMES_AGUI_PROVIDER") or None
+        self.provider = (cfg.get("provider") or "").strip() or None
         # API-mode override; None means resolver-derived (or Hermes auto-detect
         # on the explicit-endpoint path).
-        self.api_mode = os.environ.get("HERMES_AGUI_API_MODE") or None
-        raw_toolsets = os.environ.get("HERMES_AGUI_TOOLSETS", "hermes-acp")
-        self.enabled_toolsets = [t for t in (raw_toolsets.split(",") if raw_toolsets else []) if t.strip()]
+        self.api_mode = (cfg.get("api_mode") or "").strip() or None
+        toolsets = cfg.get("toolsets")
+        if isinstance(toolsets, str):
+            toolsets = toolsets.split(",")
+        if not isinstance(toolsets, list):
+            toolsets = ["hermes-acp"]
+        self.enabled_toolsets = [str(t).strip() for t in toolsets if str(t).strip()]
 
 
 def set_current_agent(agent) -> contextvars.Token:

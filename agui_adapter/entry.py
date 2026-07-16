@@ -2,15 +2,18 @@
 
 Usage::
 
-    python -m agui_adapter          # or: hermes-agui
-    PORT=8000 hermes-agui
+    hermes agui                     # or: hermes-agui / python -m agui_adapter
+    hermes agui --host 0.0.0.0 --port 8000 --token "$(openssl rand -hex 32)"
 
-Environment:
-    PORT / HERMES_AGUI_PORT   listen port (default 8000)
-    HERMES_AGUI_HOST          listen host (default 127.0.0.1)
+Configuration:
+    Behavioral settings live in the ``agui`` section of ``config.yaml``
+    (``host``, ``port``, ``toolsets`` + optional ``provider`` / ``model`` /
+    ``api_mode`` / ``base_url`` model overrides). See ``DEFAULT_CONFIG`` in
+    ``hermes_cli.config`` and ``session.AgentConfig``. The ``hermes agui`` flags
+    (``--host`` / ``--port`` / ``--token``) override those per invocation.
+
+Environment (secrets only):
     HERMES_AGUI_SESSION_TOKEN  required off-loopback; optional loopback defense-in-depth
-    OPENAI_BASE_URL           LLM endpoint (aimock in tests)
-    HERMES_AGUI_MODEL/PROVIDER/API_KEY/TOOLSETS   see session.AgentConfig
 """
 
 from __future__ import annotations
@@ -33,16 +36,47 @@ def _setup_logging() -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
-def main(argv: list[str] | None = None) -> None:
+def _load_listener_config() -> tuple[str, int]:
+    """Resolve (host, port) from the ``agui`` section of ``config.yaml``.
+
+    Behavioral settings, so they come from config — not the environment. A
+    missing/invalid config falls back to the loopback defaults.
+    """
+    host, port = "127.0.0.1", 8000
+    try:
+        from hermes_cli.config import load_config
+        section = load_config().get("agui")
+        if isinstance(section, dict):
+            host = str(section.get("host") or host)
+            port = int(section.get("port") or port)
+    except Exception:  # noqa: BLE001 - hermes CLI unavailable / bad config is non-fatal
+        logging.getLogger(__name__).debug("load_config() failed; using listener defaults", exc_info=True)
+    return host, port
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    host: str | None = None,
+    port: int | None = None,
+    token: str | None = None,
+) -> None:
+    """Start the AG-UI server.
+
+    ``host`` / ``port`` / ``token`` are the ``hermes agui`` CLI overrides; when
+    omitted, host/port come from ``config.yaml`` (``agui`` section) and the
+    token from the ``HERMES_AGUI_SESSION_TOKEN`` environment variable (a secret).
+    """
     _setup_logging()
     import uvicorn
 
     from agui_adapter.auth import require_token_or_refuse
     from agui_adapter.server import create_app
 
-    host = os.environ.get("HERMES_AGUI_HOST", "127.0.0.1")
-    port = int(os.environ.get("PORT") or os.environ.get("HERMES_AGUI_PORT") or "8000")
-    token = os.environ.get("HERMES_AGUI_SESSION_TOKEN") or None
+    cfg_host, cfg_port = _load_listener_config()
+    host = host or cfg_host
+    port = int(port) if port is not None else cfg_port
+    token = token or os.environ.get("HERMES_AGUI_SESSION_TOKEN") or None
     # main() is the authoritative fail-closed guard: it passes the SAME host to both
     # require_token_or_refuse and uvicorn.run below, so a network-accessible bind
     # without a usable token refuses to start. create_app() also re-checks against

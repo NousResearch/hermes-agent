@@ -906,6 +906,20 @@ DEFAULT_CONFIG = {
     # sessions (no live client) so accumulated agents don't pile up under memory
     # pressure. Reopening one re-resumes it from disk. 0/null disables.
     "max_live_sessions": 16,
+    # AG-UI HTTP/SSE adapter (`hermes agui`). Behavioral settings only — the
+    # session token is a secret and lives in .env (HERMES_AGUI_SESSION_TOKEN),
+    # never here. `provider`/`model`/`api_mode`/`base_url` are optional
+    # per-adapter overrides; left blank they defer to the top-level `model`
+    # config + provider resolver (same pattern as the `auxiliary` section).
+    "agui": {
+        "host": "127.0.0.1",
+        "port": 8000,
+        "toolsets": ["hermes-acp"],
+        "provider": "",
+        "model": "",
+        "api_mode": "",
+        "base_url": "",
+    },
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).
@@ -3113,6 +3127,17 @@ REQUIRED_ENV_VARS = {}
 
 # Optional environment variables that enhance functionality
 OPTIONAL_ENV_VARS = {
+    # ── AG-UI adapter (`hermes agui`) ──
+    # Secret, so it belongs in .env. All other AG-UI settings are behavioral
+    # and live under the `agui` section of config.yaml.
+    "HERMES_AGUI_SESSION_TOKEN": {
+        "description": "Session token required when `hermes agui` binds a non-loopback address (an open bind to a terminal-capable agent is RCE). Generate with `openssl rand -hex 32`.",
+        "prompt": "AG-UI session token (only needed for a networked bind)",
+        "url": None,
+        "password": True,
+        "category": "setting",
+        "advanced": True,
+    },
     # ── Provider (handled in provider selection, not shown in checklists) ──
     "NOUS_BASE_URL": {
         "description": "Nous Portal base URL override",
@@ -4775,7 +4800,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "moa", "custom_providers", "context", "memory", "gateway",
-    "sessions", "streaming", "updates", "mcp_servers",
+    "sessions", "streaming", "updates", "mcp_servers", "agui",
 }
 
 # Valid fields inside a custom_providers list entry
@@ -7360,6 +7385,26 @@ def show_config():
         ssh_user = get_env_value('TERMINAL_SSH_USER')
         print(f"  SSH host:     {ssh_host or '(not set)'}")
         print(f"  SSH user:     {ssh_user or '(not set)'}")
+
+    # AG-UI adapter
+    print()
+    print(color("◆ AG-UI Adapter", Colors.CYAN, Colors.BOLD))
+    agui = config.get("agui", {})
+    if not isinstance(agui, dict):
+        agui = {}
+    agui_toolsets = agui.get("toolsets") or ["hermes-acp"]
+    if isinstance(agui_toolsets, str):
+        agui_toolsets_display = agui_toolsets
+    elif isinstance(agui_toolsets, list):
+        agui_toolsets_display = ", ".join(str(item) for item in agui_toolsets)
+    else:
+        agui_toolsets_display = "hermes-acp"
+    print(f"  Listener:     {agui.get('host', '127.0.0.1')}:{agui.get('port', 8000)}")
+    print(f"  Toolsets:     {agui_toolsets_display}")
+    agui_model = agui.get("model") or "(main Hermes model)"
+    print(f"  Model:        {agui_model}")
+    agui_token = get_env_value("HERMES_AGUI_SESSION_TOKEN")
+    print(f"  Session token:{' configured' if agui_token else ' not configured'}")
     
     # Timezone
     print()
@@ -7442,6 +7487,7 @@ def show_config():
     print(color("  hermes config edit     # Edit config file", Colors.DIM))
     print(color("  hermes config set <key> <value>", Colors.DIM))
     print(color("  hermes setup           # Run setup wizard", Colors.DIM))
+    print(color("  hermes setup agui      # Configure the AG-UI adapter", Colors.DIM))
     print()
 
 

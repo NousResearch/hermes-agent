@@ -165,10 +165,11 @@ def test_entry_main_refuses_non_loopback_without_token(monkeypatch):
 
     called = {}
     monkeypatch.setattr("uvicorn.run", lambda *a, **k: called.setdefault("run", True))
-    monkeypatch.setenv("HERMES_AGUI_HOST", "0.0.0.0")
     monkeypatch.delenv("HERMES_AGUI_SESSION_TOKEN", raising=False)
+    # host comes from the --host flag (config.yaml is the other source); the
+    # token is the only environment input and is absent here.
     with pytest.raises(SystemExit):
-        entry.main()
+        entry.main(host="0.0.0.0")
     assert "run" not in called  # refused before ever reaching uvicorn.run
 
 
@@ -188,9 +189,8 @@ def test_entry_main_passes_same_host_to_guard_and_uvicorn(monkeypatch):
         captured.update(k)
 
     monkeypatch.setattr("uvicorn.run", _fake_run)
-    monkeypatch.setenv("HERMES_AGUI_HOST", "0.0.0.0")
     monkeypatch.setenv("HERMES_AGUI_SESSION_TOKEN", "x" * 32)
-    entry.main()
+    entry.main(host="0.0.0.0")
     assert captured["host"] == "0.0.0.0"
     assert captured["app"] is not None  # create_app(bound_host="0.0.0.0", token) built
 

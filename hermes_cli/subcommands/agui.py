@@ -16,27 +16,29 @@ def build_agui_parser(subparsers, *, cmd_agui: Callable) -> None:
         help="Run Hermes as an AG-UI HTTP/SSE server",
         description=(
             "Start Hermes as an AG-UI server so AG-UI clients (e.g. CopilotKit) "
-            "can drive it over HTTP/SSE. Env-driven, the same as the `hermes-agui` "
-            "script (and `python -m agui_adapter`); the flags below are convenience "
-            "overrides for the common HERMES_AGUI_* environment variables."
+            "can drive it over HTTP/SSE. Behavioral settings live in the `agui` "
+            "section of config.yaml (host, port, toolsets, model overrides); the "
+            "flags below override them per invocation. Equivalent to the "
+            "`hermes-agui` script and `python -m agui_adapter`."
         ),
     )
     agui_parser.add_argument(
         "--host",
         dest="agui_host",
-        help="Bind host (default 127.0.0.1; sets HERMES_AGUI_HOST). "
-             "A non-loopback host requires --token.",
+        help="Bind host, overriding config.yaml `agui.host` (default 127.0.0.1). "
+             "A non-loopback host requires a session token.",
     )
     agui_parser.add_argument(
         "--port",
         dest="agui_port",
         type=int,
-        help="Listen port (default 8000; sets HERMES_AGUI_PORT).",
+        help="Listen port, overriding config.yaml `agui.port` (default 8000).",
     )
     agui_parser.add_argument(
         "--token",
         dest="agui_token",
-        help="Session token (sets HERMES_AGUI_SESSION_TOKEN; required off-loopback).",
+        help="Session token, overriding $HERMES_AGUI_SESSION_TOKEN "
+             "(required off-loopback).",
     )
     agui_parser.add_argument(
         "--check",

@@ -41,9 +41,10 @@ def require_token_or_refuse(host: str, token: Optional[str]) -> None:
         return  # loopback: OS boundary is the authorization
     if not _usable(token):
         logger.error(
-            "Refusing to start: HERMES_AGUI_HOST=%s is network-accessible, so "
-            "HERMES_AGUI_SESSION_TOKEN is required and must be >=%d chars. This "
-            "endpoint can dispatch terminal-capable agent work; an open or "
+            "Refusing to start: bind host %s (config.yaml `agui.host` or --host) "
+            "is network-accessible, so a session token is required and must be "
+            ">=%d chars. Set the HERMES_AGUI_SESSION_TOKEN secret (or --token). "
+            "This endpoint can dispatch terminal-capable agent work; an open or "
             "guessable bind is remote code execution. Generate a strong secret "
             "(e.g. `openssl rand -hex 32`).",
             host, _MIN_TOKEN_LEN,

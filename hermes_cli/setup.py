@@ -7,6 +7,7 @@ Modular wizard with independently-runnable sections:
   3. Agent Settings — iterations, compression, session reset
   4. Messaging Platforms — connect Telegram, Discord, etc.
   5. Tools — configure TTS, web search, image generation, etc.
+  6. AG-UI — expose Hermes over HTTP/SSE to AG-UI clients
 
 Config files are stored in ~/.hermes/ for easy access.
 """
@@ -2211,6 +2212,123 @@ def setup_tools(config: dict, first_install: bool = False):
 
 
 # =============================================================================
+# Section 6: AG-UI Adapter
+# =============================================================================
+
+
+def setup_agui(config: dict) -> None:
+    """Configure the AG-UI HTTP/SSE adapter.
+
+    Listener and agent behavior is persisted under ``agui`` in config.yaml.
+    The session token is the sole adapter secret and remains in .env.
+    """
+    from gateway.platforms.base import is_network_accessible
+    from hermes_cli.auth import has_usable_secret
+
+    defaults = DEFAULT_CONFIG["agui"]
+    configured = config.get("agui")
+    current = dict(defaults)
+    if isinstance(configured, dict):
+        current.update(configured)
+
+    print_header("AG-UI Adapter")
+    print_info("Expose Hermes to AG-UI clients over HTTP/SSE.")
+    print_info("Behavioral settings are saved in config.yaml; the session token")
+    print_info("is stored as a secret in .env.")
+
+    current_host = str(current.get("host") or defaults["host"])
+    host = prompt("Bind host", current_host)
+
+    try:
+        port = int(current.get("port", defaults["port"]))
+        if not 1 <= port <= 65535:
+            raise ValueError
+    except (TypeError, ValueError):
+        port = int(defaults["port"])
+    port_input = prompt("Listen port", str(port))
+    try:
+        candidate_port = int(port_input)
+        if not 1 <= candidate_port <= 65535:
+            raise ValueError
+        port = candidate_port
+    except (TypeError, ValueError):
+        print_warning(f"Invalid port '{port_input}', keeping {port}")
+
+    current_toolsets = current.get("toolsets")
+    if isinstance(current_toolsets, str):
+        current_toolsets = [
+            item.strip() for item in current_toolsets.split(",") if item.strip()
+        ]
+    elif not isinstance(current_toolsets, list):
+        current_toolsets = defaults["toolsets"]
+    toolsets_input = prompt(
+        "Toolsets (comma-separated)",
+        ", ".join(str(item) for item in current_toolsets),
+    )
+    toolsets = [item.strip() for item in toolsets_input.split(",") if item.strip()]
+
+    override_keys = ("provider", "model", "api_mode", "base_url")
+    has_overrides = any(str(current.get(key) or "").strip() for key in override_keys)
+    model_choice = prompt_choice(
+        "Model configuration:",
+        [
+            "Use the main Hermes model configuration (recommended)",
+            "Configure AG-UI-specific model/endpoint overrides",
+        ],
+        1 if has_overrides else 0,
+    )
+
+    if model_choice == 1:
+        overrides = {
+            "provider": prompt(
+                "Provider override (blank = main config)",
+                str(current.get("provider") or ""),
+            ),
+            "model": prompt(
+                "Model override (blank = main config)",
+                str(current.get("model") or ""),
+            ),
+            "api_mode": prompt(
+                "API mode override (blank = auto)",
+                str(current.get("api_mode") or ""),
+            ),
+            "base_url": prompt(
+                "Base URL override (blank = resolved provider)",
+                str(current.get("base_url") or ""),
+            ),
+        }
+    else:
+        overrides = {key: "" for key in override_keys}
+
+    config["agui"] = {
+        "host": host,
+        "port": port,
+        "toolsets": toolsets,
+        **overrides,
+    }
+
+    if is_network_accessible(host):
+        existing_token = get_env_value("HERMES_AGUI_SESSION_TOKEN")
+        if has_usable_secret(existing_token, min_length=16):
+            print_success("A usable AG-UI session token is already configured.")
+        else:
+            print_warning("A network-accessible bind requires a strong session token.")
+            token = prompt("Session token (minimum 16 characters)", password=True)
+            if has_usable_secret(token, min_length=16):
+                save_env_value("HERMES_AGUI_SESSION_TOKEN", token)
+                print_success("AG-UI session token saved to .env.")
+            else:
+                print_warning(
+                    "No usable token was saved; hermes agui will refuse to start "
+                    "on this bind."
+                )
+    else:
+        print_info("Loopback bind selected; a session token is optional.")
+
+    print_success("AG-UI settings updated.")
+
+
+# =============================================================================
 # Post-Migration Section Skip Logic
 # =============================================================================
 
@@ -2619,6 +2737,7 @@ SETUP_SECTIONS = [
     ("gateway", "Messaging Platforms (Gateway)", setup_gateway),
     ("tools", "Tools", setup_tools),
     ("agent", "Agent Settings", setup_agent_settings),
+    ("agui", "AG-UI Adapter", setup_agui),
 ]
 
 
@@ -2859,7 +2978,7 @@ def run_setup_wizard(args):
         print_info("Press Enter to keep it, or type a new value to change it.")
         print_info("")
         print_info("Tip: jump straight to a section with 'hermes setup model|terminal|")
-        print_info("     gateway|tools|agent', or fill only missing items with --quick.")
+        print_info("     gateway|tools|agent|agui', or fill only missing items with --quick.")
         # Fall through to the "Full Setup — run all sections" block below.
         # --reconfigure is now the default on existing installs; the flag
         # is preserved for backwards compatibility but is a no-op here.

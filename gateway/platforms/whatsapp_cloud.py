@@ -33,7 +33,7 @@ Optional / Phase-3+:
 - WHATSAPP_CLOUD_APP_SECRET       (HMAC key for X-Hub-Signature-256)
 - WHATSAPP_CLOUD_WABA_ID          (analytics / future use)
 - WHATSAPP_CLOUD_VERIFY_TOKEN     (hub.verify_token shared secret)
-- WHATSAPP_CLOUD_WEBHOOK_HOST     (default 0.0.0.0)
+- WHATSAPP_CLOUD_WEBHOOK_HOST     (default 127.0.0.1; set explicitly for public ingress)
 - WHATSAPP_CLOUD_WEBHOOK_PORT     (default 8090)
 - WHATSAPP_CLOUD_WEBHOOK_PATH     (default /whatsapp/webhook)
 - WHATSAPP_CLOUD_API_VERSION      (default v20.0)
@@ -86,7 +86,7 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_API_VERSION = "v20.0"
-DEFAULT_WEBHOOK_HOST = "0.0.0.0"
+DEFAULT_WEBHOOK_HOST = "127.0.0.1"
 DEFAULT_WEBHOOK_PORT = 8090
 DEFAULT_WEBHOOK_PATH = "/whatsapp/webhook"
 GRAPH_API_BASE = "https://graph.facebook.com"

@@ -21,6 +21,12 @@ import pytest
 from gateway.config import Platform
 
 
+def test_default_webhook_host_is_loopback():
+    from gateway.platforms.whatsapp_cloud import DEFAULT_WEBHOOK_HOST
+
+    assert DEFAULT_WEBHOOK_HOST == "127.0.0.1"
+
+
 @pytest.fixture(autouse=True)
 def _whatsapp_open_optin(monkeypatch):
     """Opt into WhatsApp allow-all for the file's dispatch-mechanics tests.

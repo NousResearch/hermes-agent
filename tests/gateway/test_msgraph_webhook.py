@@ -9,6 +9,12 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig, _apply_env_o
 from gateway.platforms.msgraph_webhook import AIOHTTP_AVAILABLE, MSGraphWebhookAdapter
 
 
+def test_default_host_is_loopback():
+    from gateway.platforms.msgraph_webhook import DEFAULT_HOST
+
+    assert DEFAULT_HOST == "127.0.0.1"
+
+
 def _make_adapter(**extra_overrides) -> MSGraphWebhookAdapter:
     extra = {
         "host": "127.0.0.1",

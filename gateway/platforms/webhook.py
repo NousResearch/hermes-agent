@@ -77,7 +77,7 @@ _BUILTIN_DELIVER_PLATFORMS = {
     "qqbot", "yuanbao",
 }
 
-DEFAULT_HOST = "0.0.0.0"
+DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8644
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
@@ -106,6 +106,15 @@ def _is_loopback_host(host: str) -> bool:
     return host.strip().lower() in _LOOPBACK_HOSTS
 
 
+def _explicit_bool(value: Any) -> bool:
+    """Accept only explicit boolean consent, never generic object truthiness."""
+    if value is True:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "on"}
+    return False
+
+
 def check_webhook_requirements() -> bool:
     """Check if webhook adapter dependencies are available."""
     return AIOHTTP_AVAILABLE
@@ -118,6 +127,9 @@ class WebhookAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.WEBHOOK)
         self._host: str = config.extra.get("host", DEFAULT_HOST)
         self._port: int = int(config.extra.get("port", DEFAULT_PORT))
+        self._allow_public_bind: bool = _explicit_bool(
+            config.extra.get("allow_public_bind", False)
+        )
         self._global_secret: str = config.extra.get("secret", "")
         self._static_routes: Dict[str, dict] = config.extra.get("routes", {})
         self._dynamic_routes: Dict[str, dict] = {}
@@ -209,6 +221,13 @@ class WebhookAdapter(BasePlatformAdapter):
                         f"deliver is '{deliver}'. Direct delivery requires a "
                         f"real target (telegram, discord, slack, github_comment, etc.)."
                     )
+
+        if not _is_loopback_host(self._host) and not self._allow_public_bind:
+            raise ValueError(
+                f"[webhook] Refusing non-loopback bind '{self._host}' without "
+                "explicit allow_public_bind=true. Public webhook ingress must "
+                "use authenticated routes and explicit operator consent."
+            )
 
         # client_max_size makes aiohttp enforce the cap on every read path,
         # including Transfer-Encoding: chunked bodies that carry no

@@ -7,11 +7,18 @@ import stat
 from argparse import Namespace
 
 from hermes_cli.webhook import (
-    webhook_command,
     _load_subscriptions,
     _save_subscriptions,
+    _setup_hint,
     _subscriptions_path,
+    webhook_command,
 )
+
+
+def test_setup_hint_defaults_to_loopback_and_documents_public_consent():
+    hint = _setup_hint()
+    assert 'host: "127.0.0.1"' in hint
+    assert "allow_public_bind: true" in hint
 
 
 @pytest.fixture(autouse=True)

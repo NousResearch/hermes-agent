@@ -1096,6 +1096,13 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
 
             @self._client.event
+            async def on_raw_thread_update(payload):
+                thread_metadata = payload.data.get("thread_metadata", {})
+                if not thread_metadata.get("archived", False):
+                    return
+                await adapter_self._reset_archived_thread_sessions(payload.thread_id)
+
+            @self._client.event
             async def on_message(message: DiscordMessage):
                 # Block until _resolve_allowed_usernames has swapped
                 # any raw usernames in DISCORD_ALLOWED_USERS for numeric
@@ -6123,6 +6130,59 @@ class DiscordAdapter(BasePlatformAdapter):
                 if resp.status != 200:
                     raise Exception(f"HTTP {resp.status}")
                 return await resp.read()
+
+    async def _reset_archived_thread_sessions(self, thread_id) -> int:
+        """Reset any stored sessions that belong to an archived Discord thread."""
+        session_store = getattr(self, "_session_store", None)
+        if not session_store:
+            return 0
+
+        thread_id = str(thread_id).strip()
+        if not thread_id:
+            return 0
+
+        reset_thread_sessions = getattr(session_store, "reset_thread_sessions", None)
+        if not callable(reset_thread_sessions):
+            return 0
+
+        try:
+            from gateway.config import Platform
+            reset_keys = reset_thread_sessions(thread_id, platform=Platform.DISCORD)
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(
+                "[%s] Failed to reset archived Discord thread %s: %s",
+                self.name,
+                thread_id,
+                e,
+                exc_info=True,
+            )
+            return 0
+
+        reset_count = len(reset_keys) if isinstance(reset_keys, list) else (reset_keys if isinstance(reset_keys, int) else 0)
+        
+        if reset_count:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(
+                "[%s] Discord thread archived - reset %d session(s) for thread %s",
+                self.name,
+                reset_count,
+                thread_id,
+            )
+            
+            if isinstance(reset_keys, list):
+                try:
+                    from gateway.run import _gateway_runner_ref
+                    runner = _gateway_runner_ref()
+                    if runner and hasattr(runner, "_evict_cached_agent"):
+                        for key in reset_keys:
+                            runner._evict_cached_agent(key)
+                except Exception as ex:
+                    logger.warning("Failed to evict cached agents: %s", ex)
+                    
+        return reset_count
 
     async def _handle_message(self, message: DiscordMessage, role_authorized: bool = False) -> None:
         """Handle incoming Discord messages."""

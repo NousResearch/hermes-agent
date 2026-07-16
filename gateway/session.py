@@ -2319,6 +2319,33 @@ class SessionStore:
 
         return new_entry
 
+    def reset_thread_sessions(self, thread_id: str, platform: Optional[Platform] = None) -> list:
+        """Reset every session that belongs to a thread.
+
+        This is used by Discord thread lifecycle hooks so archived threads start
+        with a fresh session on their next message.
+        """
+        thread_id = str(thread_id).strip()
+        if not thread_id:
+            return 0
+
+        with self._lock:
+            self._ensure_loaded_locked()
+            session_keys = [
+                entry.session_key
+                for entry in self._entries.values()
+                if entry.origin
+                and entry.origin.thread_id == thread_id
+                and entry.origin.chat_type == "thread"
+                and (platform is None or entry.origin.platform == platform or entry.platform == platform)
+            ]
+
+        reset_keys = []
+        for session_key in session_keys:
+            if self.reset_session(session_key):
+                reset_keys.append(session_key)
+        return reset_keys
+
     def switch_session(self, session_key: str, target_session_id: str) -> Optional[SessionEntry]:
         """Switch a session key to point at an existing session ID.
 

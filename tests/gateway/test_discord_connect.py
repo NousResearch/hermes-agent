@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import PlatformConfig, Platform
 
 
 class _FakeAllowedMentions:
@@ -1076,3 +1076,41 @@ async def test_safe_sync_detects_contexts_drift():
     fake_http.edit_global_command.assert_not_awaited()
     fake_http.delete_global_command.assert_awaited_once_with(999, 77)
     fake_http.upsert_global_command.assert_awaited_once_with(999, desired)
+
+
+@pytest.mark.asyncio
+async def test_archived_thread_update_resets_thread_sessions(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    intents = SimpleNamespace(message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False)
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+
+    created = {}
+
+    def fake_bot_factory(*, command_prefix, intents, proxy=None, allowed_mentions=None, **_):
+        created["bot"] = FakeBot(intents=intents, proxy=proxy, allowed_mentions=allowed_mentions)
+        return created["bot"]
+
+    monkeypatch.setattr(discord_platform.commands, "Bot", fake_bot_factory)
+    monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
+
+    session_store = MagicMock()
+    session_store.reset_thread_sessions.return_value = ['key1', 'key2']
+    adapter.set_session_store(session_store)
+
+    ok = await adapter.connect()
+    assert ok is True
+    assert "on_raw_thread_update" in created["bot"]._events
+
+    payload = SimpleNamespace(
+        thread_id="thread-42",
+        data={"thread_metadata": {"archived": True}}
+    )
+    await created["bot"]._events["on_raw_thread_update"](payload)
+
+    session_store.reset_thread_sessions.assert_called_once_with("thread-42", platform=Platform.DISCORD)
+
+    await adapter.disconnect()

@@ -305,6 +305,8 @@ function appendProfileParam(url: string, profile?: string): string {
 }
 
 type NousSessionValidity = "valid" | "terminal" | "unknown";
+// Untrusted wire shape from older or malformed agents. api.getStatus() converts
+// this into the normalized StatusResponse contract below.
 type RawStatusResponse = Omit<StatusResponse, "nous_session_valid"> & {
   nous_session_valid?: unknown;
 };
@@ -1799,6 +1801,7 @@ export interface PlatformStatus {
   updated_at: string;
 }
 
+/** Normalized dashboard status returned by api.getStatus(). */
 export interface StatusResponse {
   active_sessions: number;
   /** Phase 7: ``true`` when the dashboard's OAuth gate is engaged
@@ -1817,7 +1820,7 @@ export interface StatusResponse {
    * ``valid`` means usable credentials are present; ``unknown`` means
    * indeterminate, transient/non-terminal auth state, or a missing/unrecognized
    * value normalized at the API boundary. */
-  nous_session_valid?: NousSessionValidity;
+  nous_session_valid: NousSessionValidity;
   config_path: string;
   config_version: number;
   env_path: string;

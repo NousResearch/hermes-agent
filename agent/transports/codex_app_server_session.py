@@ -61,6 +61,30 @@ _HERMES_TO_CODEX_PERMISSION_PROFILE = {
 }
 
 
+_LEAF_REASONING_EFFORTS = frozenset({
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+})
+
+
+def _normalize_leaf_effort(effort: Any) -> Optional[str]:
+    if effort is None:
+        return None
+    if not isinstance(effort, str):
+        raise ValueError(f"Unsupported Codex reasoning effort: {effort!r}")
+    normalized = effort.strip().lower()
+    if not normalized:
+        return None
+    if normalized not in _LEAF_REASONING_EFFORTS:
+        raise ValueError(f"Unsupported Codex reasoning effort: {effort!r}")
+    return normalized
+
+
 @dataclass
 class TurnResult:
     """Result of one user→assistant→tool turn through the codex app-server."""
@@ -204,6 +228,8 @@ class CodexAppServerSession:
         cwd: Optional[str] = None,
         codex_bin: str = "codex",
         codex_home: Optional[str] = None,
+        model: Optional[str] = None,
+        effort: Optional[str] = None,
         permission_profile: Optional[str] = None,
         approval_callback: Optional[Callable[..., str]] = None,
         on_event: Optional[Callable[[dict], None]] = None,
@@ -213,6 +239,8 @@ class CodexAppServerSession:
         self._cwd = cwd or os.getcwd()
         self._codex_bin = codex_bin
         self._codex_home = codex_home
+        self._model = (model.strip() or None) if isinstance(model, str) else None
+        self._effort = _normalize_leaf_effort(effort)
         self._permission_profile = (
             permission_profile or _HERMES_TO_CODEX_PERMISSION_PROFILE.get(
                 os.environ.get("HERMES_TERMINAL_SECURITY_MODE", "auto"),
@@ -268,6 +296,8 @@ class CodexAppServerSession:
         # Users who want a write-capable profile configure it in their
         # ~/.codex/config.toml the same way they would for any codex usage.
         params: dict[str, Any] = {"cwd": self._cwd}
+        if self._model:
+            params["model"] = self._model
         result = self._client.request("thread/start", params, timeout=15)
         # Cross-fill thread.id/sessionId — different codex versions have
         # serialized this under either key. Mirrors openclaw beta.8's
@@ -408,12 +438,15 @@ class CodexAppServerSession:
         # Send turn/start with the user input. Text-only for now (codex
         # supports rich content but Hermes' text path is the common case).
         try:
+            params: dict[str, Any] = {
+                "threadId": self._thread_id,
+                "input": [{"type": "text", "text": user_input_text}],
+            }
+            if self._effort is not None:
+                params["effort"] = self._effort
             ts = self._client.request(
                 "turn/start",
-                {
-                    "threadId": self._thread_id,
-                    "input": [{"type": "text", "text": user_input_text}],
-                },
+                params,
                 timeout=10,
             )
         except CodexAppServerError as exc:

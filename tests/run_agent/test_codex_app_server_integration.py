@@ -378,6 +378,48 @@ class TestRunConversationCodexPath:
 
         assert captured["cwd"] == str(tmp_path)
 
+    @pytest.mark.parametrize(
+        "reasoning_config",
+        [
+            {"enabled": True, "effort": "xhigh"},
+            {"effort": "xhigh"},
+            {"enabled": None, "effort": "xhigh"},
+        ],
+        ids=["enabled", "enabled-omitted", "enabled-none"],
+    )
+    def test_session_receives_agent_model_and_reasoning_effort(
+        self, monkeypatch, reasoning_config
+    ):
+        captured = self._capture_routing_agent(monkeypatch)
+        agent = _make_codex_agent(
+            model="gpt-5.4",
+            reasoning_config=reasoning_config,
+        )
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("think hard")
+
+        assert captured["model"] == "gpt-5.4"
+        assert captured["effort"] == "xhigh"
+
+    @pytest.mark.parametrize(
+        "agent_kwargs",
+        [
+            {},
+            {"reasoning_config": {"enabled": False, "effort": "high"}},
+        ],
+        ids=["absent", "disabled"],
+    )
+    def test_session_receives_no_effort_when_reasoning_is_not_enabled(
+        self, monkeypatch, agent_kwargs
+    ):
+        captured = self._capture_routing_agent(monkeypatch)
+        agent = _make_codex_agent(**agent_kwargs)
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("do not force reasoning")
+
+        assert "effort" in captured
+        assert captured["effort"] is None
+
     def _capture_routing_agent(self, monkeypatch):
         """Build a codex agent with a CodexAppServerSession stub that captures
         the request_routing passed at construction time, so we can assert how
@@ -581,6 +623,24 @@ class TestReviewForkApiModeDowngrade:
 
 
 class TestErrorHandling:
+    def test_invalid_effort_returns_partial_without_starting_subprocess(self):
+        agent = _make_codex_agent(
+            reasoning_config={"enabled": True, "effort": "ultra"},
+        )
+
+        with patch(
+            "agent.transports.codex_app_server_session.CodexAppServerClient"
+        ) as client_factory:
+            result = agent.run_conversation("hi")
+
+        assert result["completed"] is False
+        assert result["partial"] is True
+        assert "Unsupported Codex reasoning effort" in result["error"]
+        assert result["api_calls"] == 0
+        assert "codex-runtime auto" in result["final_response"]
+        assert getattr(agent, "_codex_session", "missing") is None
+        client_factory.assert_not_called()
+
     def test_session_exception_returns_partial_with_error(self, monkeypatch):
         def boom_run_turn(self, user_input, **kwargs):
             raise RuntimeError("subprocess died")

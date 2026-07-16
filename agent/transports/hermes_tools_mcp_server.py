@@ -161,6 +161,8 @@ def _build_server() -> Any:
         ) from exc
 
     # Discover Hermes tools so dispatch works.
+    import tools.kanban_tools  # noqa: F401
+
     from model_tools import (
         get_tool_definitions,
         handle_function_call,

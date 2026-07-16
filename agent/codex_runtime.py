@@ -612,6 +612,22 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
     return on_event
 
 
+def _codex_app_server_failure_result(
+    messages: List[Dict[str, Any]], exc: Exception
+) -> Dict[str, Any]:
+    return {
+        "final_response": (
+            f"Codex app-server turn failed: {exc}. "
+            f"Fall back to default runtime with `/codex-runtime auto`."
+        ),
+        "messages": messages,
+        "api_calls": 0,
+        "completed": False,
+        "partial": True,
+        "error": str(exc),
+    }
+
+
 def run_codex_app_server_turn(
     agent,
     *,
@@ -677,15 +693,30 @@ def run_codex_app_server_turn(
         # users see no live tool-progress or interim commentary while
         # codex_app_server is running — only the final answer (#33200).
         # Supersedes the narrower item/started-only bridge from #38835.
-        agent._codex_session = CodexAppServerSession(
-            cwd=cwd,
-            approval_callback=approval_callback,
-            request_routing=_ServerRequestRouting(
-                auto_approve_exec=auto_approve_requests,
-                auto_approve_apply_patch=auto_approve_requests,
-            ),
-            on_event=make_codex_app_server_event_bridge(agent),
+        reasoning_config = getattr(agent, "reasoning_config", None)
+        effort = (
+            reasoning_config.get("effort")
+            if isinstance(reasoning_config, dict)
+            and reasoning_config.get("enabled") is not False
+            else None
         )
+        try:
+            session = CodexAppServerSession(
+                cwd=cwd,
+                model=agent.model,
+                effort=effort,
+                approval_callback=approval_callback,
+                request_routing=_ServerRequestRouting(
+                    auto_approve_exec=auto_approve_requests,
+                    auto_approve_apply_patch=auto_approve_requests,
+                ),
+                on_event=make_codex_app_server_event_bridge(agent),
+            )
+        except ValueError as exc:
+            logger.error("codex app-server session configuration failed: %s", exc)
+            agent._codex_session = None
+            return _codex_app_server_failure_result(messages, exc)
+        agent._codex_session = session
 
     # NOTE: the user message is ALREADY appended to messages by the
     # standard run_conversation() flow (line ~11823) before the early
@@ -702,17 +733,7 @@ def run_codex_app_server_turn(
         except Exception:
             pass
         agent._codex_session = None
-        return {
-            "final_response": (
-                f"Codex app-server turn failed: {exc}. "
-                f"Fall back to default runtime with `/codex-runtime auto`."
-            ),
-            "messages": messages,
-            "api_calls": 0,
-            "completed": False,
-            "partial": True,
-            "error": str(exc),
-        }
+        return _codex_app_server_failure_result(messages, exc)
 
     # If the turn signalled the underlying client is wedged (deadline
     # blown, post-tool watchdog tripped, OAuth refresh died, subprocess

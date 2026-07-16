@@ -786,4 +786,28 @@ def resolve_provider_full(
     except Exception:
         pass
 
+    # 4. Plugin ProviderProfile registry (model-provider plugins)
+    try:
+        from providers import get_provider_profile as _get_plugin_profile
+        profile = _get_plugin_profile(canonical)
+        if profile is not None and profile.auth_type == "api_key":
+            _api_mode_to_transport = {
+                "chat_completions": "openai_chat",
+                "codex_responses": "codex_responses",
+                "anthropic_messages": "anthropic_messages",
+                "bedrock_converse": "bedrock_converse",
+            }
+            transport = _api_mode_to_transport.get(profile.api_mode, "openai_chat")
+            return ProviderDef(
+                id=canonical,
+                name=profile.display_name or canonical,
+                transport=transport,
+                api_key_env_vars=profile.env_vars,
+                base_url=profile.base_url,
+                auth_type=profile.auth_type,
+                source="plugin",
+            )
+    except Exception:
+        pass
+
     return None

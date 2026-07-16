@@ -167,6 +167,7 @@ description: Check forecasts and weather alerts.
 triggers:
   - weather forecast
   - severe weather alert
+  - inspect weather for [LOCATION]
 ---
 ```
 
@@ -176,6 +177,12 @@ overlap. Trigger activation runs through the common agent entry point, so it
 applies consistently to the CLI, gateway platforms, and API server. The
 original user message—not the injected skill body—is retained in the durable
 transcript.
+
+Triggers are literal phrases except for bracketed placeholders. A placeholder
+such as `[URL]`, `[LOCATION]`, or `[owner/repo]` matches exactly one
+non-whitespace argument. For example, `pentest [URL]` matches
+`pentest https://example.test`, while `investigate [owner/repo]` matches
+`investigate NousResearch/hermes-agent`.
 
 For namespaced metadata, `metadata.hermes.triggers` is also accepted. Changes to
 `skills.loading` take effect in new sessions.
@@ -188,7 +195,7 @@ name: my-skill
 description: Brief description of what this skill does
 version: 1.0.0
 platforms: [macos, linux]     # Optional — restrict to specific OS platforms
-triggers:                      # Optional — exact phrases used in routed mode
+triggers:                      # Optional — literal phrases; [NAME] matches one argument
   - natural language trigger
 metadata:
   hermes:

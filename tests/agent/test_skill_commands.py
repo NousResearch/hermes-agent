@@ -179,6 +179,51 @@ class TestScanSkillCommands:
         assert matched[0] == "/fx-watch"
         assert matched[2] == "EUR/USD"
 
+    @pytest.mark.parametrize(
+        ("trigger", "message"),
+        [
+            ("pentest [URL]", "Please pentest https://example.test/login"),
+            (
+                "test [URL] for vulnerabilities",
+                "Test https://example.test for vulnerabilities before release",
+            ),
+            (
+                "investigate [owner/repo]",
+                "Investigate NousResearch/hermes-agent for suspicious commits",
+            ),
+        ],
+    )
+    def test_finds_triggered_skill_with_single_argument_placeholder(
+        self, tmp_path, trigger, message
+    ):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "security-review",
+                frontmatter_extra=f'triggers: ["{trigger}"]\n',
+            )
+            scan_skill_commands()
+            matched = find_triggered_skill_command(message)
+
+        assert matched is not None
+        assert matched[0] == "/security-review"
+        assert matched[2] == trigger
+
+    def test_trigger_placeholder_does_not_span_multiple_arguments(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(
+                tmp_path,
+                "repository-review",
+                frontmatter_extra='triggers: ["investigate [owner/repo] history"]\n',
+            )
+            scan_skill_commands()
+
+            matched = find_triggered_skill_command(
+                "Investigate NousResearch hermes-agent history"
+            )
+
+        assert matched is None
+
     def test_trigger_respects_required_tool_conditions(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(

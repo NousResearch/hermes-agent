@@ -6370,6 +6370,23 @@ class AIAgent:
         )
         from agent.skill_commands import expand_triggered_skill_message
 
+        # Hidden /moa turns carry the real user prompt inside an encoded
+        # transport marker. Normalize that transport before routed trigger
+        # matching, then pass the decoded config through so the conversation
+        # loop does not decode the already-expanded skill scaffolding again.
+        if moa_config is None:
+            try:
+                from hermes_cli.moa_config import decode_moa_turn
+
+                decoded_message, decoded_moa_config = decode_moa_turn(user_message)
+                if decoded_moa_config is not None:
+                    user_message = decoded_message
+                    moa_config = decoded_moa_config
+                    if persist_user_message is None:
+                        persist_user_message = decoded_message
+            except Exception:
+                pass
+
         available_tools = set(getattr(self, "valid_tool_names", set()) or set())
         available_toolsets = {
             toolset

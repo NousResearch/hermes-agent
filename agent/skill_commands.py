@@ -27,6 +27,7 @@ _skill_commands_platform: Optional[str] = None
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
 _SKILL_TRIGGER_WORD = re.compile(r"^\w[\w\s-]*\w$|^\w$")
+_SKILL_TRIGGER_PLACEHOLDER = re.compile(r"\[[^\[\]\s]+\]")
 
 # ---------------------------------------------------------------------------
 # Skill-scaffolding markers and the canonical extractor.
@@ -169,9 +170,23 @@ def _extract_skill_triggers(frontmatter: Dict[str, Any]) -> list[str]:
 
 @lru_cache(maxsize=2048)
 def _compile_skill_trigger_pattern(trigger: str) -> re.Pattern[str]:
-    """Build a boundary-aware regex for a skill trigger phrase."""
+    """Build a boundary-aware regex for a skill trigger phrase.
+
+    Bracketed tokens such as ``[URL]`` and ``[owner/repo]`` are placeholders
+    for exactly one non-whitespace argument. Everything else is matched
+    literally, with declaration whitespace allowed to expand in user input.
+    """
     normalized = re.sub(r"\s+", " ", trigger.strip())
-    body = r"\s+".join(re.escape(part) for part in normalized.split(" "))
+    body_parts: list[str] = []
+    cursor = 0
+    for match in _SKILL_TRIGGER_PLACEHOLDER.finditer(normalized):
+        literal = normalized[cursor:match.start()]
+        body_parts.append(r"\s+".join(re.escape(part) for part in literal.split(" ")))
+        body_parts.append(r"\S+")
+        cursor = match.end()
+    literal = normalized[cursor:]
+    body_parts.append(r"\s+".join(re.escape(part) for part in literal.split(" ")))
+    body = "".join(body_parts)
     if _SKILL_TRIGGER_WORD.fullmatch(normalized):
         pattern = rf"\b{body}\b"
     else:

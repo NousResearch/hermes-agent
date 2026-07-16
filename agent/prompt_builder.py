@@ -70,8 +70,14 @@ def _scan_context_content(content: str, filename: str) -> str:
     if findings and set(findings).issubset(_LINE_REDACTABLE_CONTEXT_FINDINGS):
         sanitized_lines = []
         redacted_findings = set()
+        blocking_findings = set()
         for line in content.splitlines(keepends=True):
             line_findings = _scan_for_threats(line, scope="context")
+            blocking_findings.update(
+                finding
+                for finding in line_findings
+                if finding not in _LINE_REDACTABLE_CONTEXT_FINDINGS
+            )
             line_redactions = [
                 finding
                 for finding in line_findings
@@ -90,7 +96,9 @@ def _scan_context_content(content: str, filename: str) -> str:
             )
 
         sanitized_content = "".join(sanitized_lines)
-        if redacted_findings and not _scan_for_threats(
+        if blocking_findings:
+            findings = sorted(set(findings) | blocking_findings)
+        elif redacted_findings and not _scan_for_threats(
             sanitized_content, scope="context"
         ):
             logger.warning(

@@ -157,7 +157,10 @@ All context files are scanned for potential prompt injection before being includ
 - **Secret file access**: `cat .env`, `cat credentials`
 - **Invisible characters**: zero-width spaces, bidirectional overrides, word joiners
 
-If any threat pattern is detected, the file is blocked:
+If a command-shaped credential-exfiltration or secret-read pattern is the only
+finding on a line, Hermes replaces that line with a `[BLOCKED LINE: ...]`
+placeholder and preserves the surrounding context. Any other threat finding
+blocks the entire file:
 
 ```
 [BLOCKED: AGENTS.md contained potential prompt injection (prompt_injection). Content not loaded.]

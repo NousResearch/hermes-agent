@@ -775,6 +775,55 @@ class TestBuildCallKwargsMaxTokens:
         )
         assert "max_tokens" not in kw3
 
+    @pytest.mark.parametrize(
+        "provider,model,base_url",
+        [
+            ("gemini", "gemini-2.5-pro", None),
+            ("google", "gemini-2.5-flash", None),
+            (
+                "custom",
+                "gemini-2.5-pro",
+                "https://generativelanguage.googleapis.com/v1beta",
+            ),
+        ],
+    )
+    def test_keeps_max_tokens_for_gemini_native(self, provider, model, base_url):
+        # Native generateContent maps max_tokens → maxOutputTokens; when it is
+        # omitted Gemini applies a fixed 65,535-token ceiling, which silently
+        # turned MoA's reference_max_tokens into a no-op for gemini advisors.
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider=provider,
+            model=model,
+            messages=[{"role": "user", "content": "hi"}],
+            max_tokens=600,
+            base_url=base_url,
+        )
+        assert kwargs["max_tokens"] == 600
+        assert "max_completion_tokens" not in kwargs
+
+    def test_omits_max_tokens_for_gemini_model_on_openai_compatible_endpoint(self):
+        # Control: the gemini branch keys on provider/base_url, never the model
+        # name. A gemini model served through an OpenAI-compatible endpoint
+        # keeps the default omission behavior (#34530), including Gemini's own
+        # /openai compatibility endpoint.
+        from agent.auxiliary_client import _build_call_kwargs
+
+        for provider, base_url in [
+            ("openrouter", "https://openrouter.ai/api/v1"),
+            ("custom", "https://generativelanguage.googleapis.com/v1beta/openai"),
+        ]:
+            kwargs = _build_call_kwargs(
+                provider=provider,
+                model="google/gemini-2.5-pro",
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=600,
+                base_url=base_url,
+            )
+            assert "max_tokens" not in kwargs
+            assert "max_completion_tokens" not in kwargs
+
 
 class TestNousTagsScoping:
     def test_tags_injected_when_provider_is_nous(self, monkeypatch):

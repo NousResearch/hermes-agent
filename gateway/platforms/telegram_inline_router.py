@@ -70,7 +70,7 @@ class InlineToolRegistry:
     def _load(self) -> None:
         try:
             import yaml
-            with open(self._path) as fh:
+            with open(self._path, encoding="utf-8") as fh:
                 data = yaml.safe_load(fh) or {}
             self._tools = data.get("tools", [])
             logger.info("[inline_router] loaded %d tools from %s", len(self._tools), self._path)

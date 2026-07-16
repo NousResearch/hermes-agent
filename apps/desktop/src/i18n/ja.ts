@@ -2180,6 +2180,23 @@ export const ja = defineLocale({
       openStarmap: 'メモリグラフを開く',
       turnRunning: '実行中',
       currentTurnElapsed: '現在のターン経過時間',
+      codexUsage: 'Codex 使用状況',
+      codexUsageLabel: remaining => `Codex 残り${remaining}%`,
+      openCodexUsage: 'Codex 使用状況の詳細を開く',
+      codexUsagePanel: {
+        openUsage: 'Codex 使用状況を開く',
+        plan: plan => `${plan} プラン`,
+        refresh: 'Codex 使用状況を更新',
+        remaining: remaining => `残り ${remaining}%`,
+        resets: time => `${time}にリセット`,
+        stale: '使用状況を更新できませんでした。最後に取得できた結果を表示しています。',
+        subscription: 'ChatGPT サブスクリプション',
+        title: 'Codex 使用状況',
+        unavailable: '利用不可',
+        updated: time => `更新: ${time}`,
+        updatedUnknown: '更新時刻は不明です',
+        used: used => `${used}% 使用済み`
+      },
       contextUsage: 'コンテキスト使用状況',
       contextUsagePanel: {
         categories: {

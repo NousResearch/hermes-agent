@@ -237,6 +237,29 @@ def test_codex_usage_treats_wham_used_percent_as_used_not_remaining(monkeypatch)
     assert "86% used" not in rendered
 
 
+def test_serialize_account_usage_snapshot_is_json_safe(codex_usage_payload, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _FakeClient(calls, codex_usage_payload),
+    )
+
+    snapshot = account_usage.fetch_account_usage(
+        "openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="live-agent-token",
+    )
+
+    assert snapshot is not None
+    payload = account_usage.serialize_account_usage_snapshot(snapshot)
+    assert payload["provider"] == "openai-codex"
+    assert payload["plan"] == "Plus"
+    assert payload["windows"][0]["used_percent"] == 21
+    assert payload["windows"][0]["reset_at"].endswith("+00:00")
+    assert "token" not in repr(payload).lower()
+
+
 # ── Banked rate-limit reset credits (`/usage reset`) ─────────────────────────
 
 

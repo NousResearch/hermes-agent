@@ -2422,6 +2422,23 @@ export const zh: Translations = {
       openStarmap: '打开记忆图谱',
       turnRunning: '运行中',
       currentTurnElapsed: '当前回合已用时间',
+      codexUsage: 'Codex 用量',
+      codexUsageLabel: remaining => `Codex 剩余 ${remaining}%`,
+      openCodexUsage: '打开 Codex 用量详情',
+      codexUsagePanel: {
+        openUsage: '打开 Codex 用量页面',
+        plan: plan => `${plan} 方案`,
+        refresh: '刷新 Codex 用量',
+        remaining: remaining => `剩余 ${remaining}%`,
+        resets: time => `${time}重置`,
+        stale: '无法刷新用量。正在显示上次成功获取的结果。',
+        subscription: 'ChatGPT 订阅',
+        title: 'Codex 用量',
+        unavailable: '不可用',
+        updated: time => `更新于 ${time}`,
+        updatedUnknown: '更新时间不可用',
+        used: used => `已用 ${used}%`
+      },
       contextUsage: '上下文用量',
       contextUsagePanel: {
         categories: {

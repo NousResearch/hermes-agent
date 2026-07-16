@@ -2244,6 +2244,23 @@ export const en: Translations = {
       openStarmap: 'Open memory graph',
       turnRunning: 'Running',
       currentTurnElapsed: 'Current turn elapsed',
+      codexUsage: 'Codex usage',
+      codexUsageLabel: remaining => `Codex ${remaining}% left`,
+      openCodexUsage: 'Open Codex usage details',
+      codexUsagePanel: {
+        openUsage: 'Open Codex Usage',
+        plan: plan => `${plan} plan`,
+        refresh: 'Refresh Codex usage',
+        remaining: remaining => `${remaining}% remaining`,
+        resets: time => `resets ${time}`,
+        stale: 'Usage could not be refreshed. Showing the last successful result.',
+        subscription: 'ChatGPT subscription',
+        title: 'Codex Usage',
+        unavailable: 'Unavailable',
+        updated: time => `Updated ${time}`,
+        updatedUnknown: 'Updated time unavailable',
+        used: used => `${used}% used`
+      },
       contextUsage: 'Context usage',
       contextUsagePanel: {
         categories: {

@@ -497,6 +497,28 @@ export interface UsageStats {
   total: number
 }
 
+export interface AccountUsageWindow {
+  detail?: null | string
+  label: string
+  reset_at?: null | string
+  used_percent?: null | number
+}
+
+export interface AccountUsageSnapshot {
+  details: string[]
+  fetched_at: string
+  plan?: null | string
+  provider: string
+  source: string
+  title: string
+  unavailable_reason?: null | string
+  windows: AccountUsageWindow[]
+}
+
+export interface AccountUsageResponse {
+  account_usage?: AccountUsageSnapshot | null
+}
+
 /** One graph node in the star map (learned skill or memory chunk). */
 export interface StarmapNode {
   id: string

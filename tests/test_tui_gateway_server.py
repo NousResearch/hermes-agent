@@ -2629,6 +2629,71 @@ def _session(agent=None, **extra):
     }
 
 
+def test_session_account_usage_returns_normalized_secret_free_snapshot(monkeypatch):
+    agent = types.SimpleNamespace(
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="oauth-secret",
+    )
+    server._sessions["usage-sid"] = _session(agent=agent)
+    captured = {}
+
+    def _fetch(provider, *, base_url=None, api_key=None):
+        from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+
+        captured.update(provider=provider, base_url=base_url, api_key=api_key)
+        return AccountUsageSnapshot(
+            provider="openai-codex",
+            source="usage_api",
+            fetched_at=datetime.fromisoformat("2026-07-16T01:02:03+00:00"),
+            plan="Plus",
+            windows=(AccountUsageWindow(label="Session", used_percent=27),),
+        )
+
+    monkeypatch.setattr("agent.account_usage.fetch_account_usage", _fetch)
+    try:
+        response = server._methods["session.account_usage"](
+            "r1", {"session_id": "usage-sid"}
+        )
+    finally:
+        server._sessions.pop("usage-sid", None)
+
+    payload = response["result"]["account_usage"]
+    assert captured == {
+        "provider": "openai-codex",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "api_key": "oauth-secret",
+    }
+    assert payload["plan"] == "Plus"
+    assert payload["windows"] == [
+        {
+            "label": "Session",
+            "used_percent": 27,
+            "reset_at": None,
+            "detail": None,
+        }
+    ]
+    assert "oauth-secret" not in repr(payload)
+
+
+def test_session_account_usage_hides_unavailable_or_unbuilt_accounts(monkeypatch):
+    server._sessions["usage-sid"] = _session(agent=types.SimpleNamespace())
+    monkeypatch.setattr("agent.account_usage.fetch_account_usage", lambda *a, **k: None)
+    try:
+        unavailable = server._methods["session.account_usage"](
+            "r1", {"session_id": "usage-sid"}
+        )
+        server._sessions["usage-sid"]["agent"] = None
+        unbuilt = server._methods["session.account_usage"](
+            "r2", {"session_id": "usage-sid"}
+        )
+    finally:
+        server._sessions.pop("usage-sid", None)
+
+    assert unavailable["result"] == {"account_usage": None}
+    assert unbuilt["result"] == {"account_usage": None}
+
+
 def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
     calls = {"hooks": []}
 

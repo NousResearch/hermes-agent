@@ -2111,6 +2111,23 @@ export const zhHant = defineLocale({
       openStarmap: '開啟記憶圖譜',
       turnRunning: '執行中',
       currentTurnElapsed: '目前回合已用時間',
+      codexUsage: 'Codex 使用量',
+      codexUsageLabel: remaining => `Codex 剩餘 ${remaining}%`,
+      openCodexUsage: '開啟 Codex 使用量詳細資料',
+      codexUsagePanel: {
+        openUsage: '開啟 Codex 使用量頁面',
+        plan: plan => `${plan} 方案`,
+        refresh: '重新整理 Codex 使用量',
+        remaining: remaining => `剩餘 ${remaining}%`,
+        resets: time => `${time}重設`,
+        stale: '無法重新整理使用量。正在顯示上次成功取得的結果。',
+        subscription: 'ChatGPT 訂閱',
+        title: 'Codex 使用量',
+        unavailable: '無法使用',
+        updated: time => `更新於 ${time}`,
+        updatedUnknown: '無法取得更新時間',
+        used: used => `已用 ${used}%`
+      },
       contextUsage: '上下文使用量',
       contextUsagePanel: {
         categories: {

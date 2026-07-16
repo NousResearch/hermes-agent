@@ -1867,6 +1867,23 @@ export interface Translations {
       openStarmap: string
       turnRunning: string
       currentTurnElapsed: string
+      codexUsage: string
+      codexUsageLabel: (remaining: number) => string
+      openCodexUsage: string
+      codexUsagePanel: {
+        openUsage: string
+        plan: (plan: string) => string
+        refresh: string
+        remaining: (remaining: number) => string
+        resets: (time: string) => string
+        stale: string
+        subscription: string
+        title: string
+        unavailable: string
+        updated: (time: string) => string
+        updatedUnknown: string
+        used: (used: number) => string
+      }
       contextUsage: string
       contextUsagePanel: {
         categories: {

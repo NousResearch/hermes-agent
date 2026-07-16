@@ -120,6 +120,34 @@ def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, mark
     return lines
 
 
+def serialize_account_usage_snapshot(snapshot: AccountUsageSnapshot) -> dict[str, Any]:
+    """Return the secret-free JSON wire shape used by UI clients.
+
+    Datetimes are normalized to ISO-8601 strings here instead of asking each
+    surface to understand Python objects.  The snapshot never contains the
+    credential used to fetch it, so this is safe to send across the gateway to
+    an unprivileged renderer.
+    """
+    return {
+        "provider": snapshot.provider,
+        "source": snapshot.source,
+        "fetched_at": snapshot.fetched_at.isoformat(),
+        "title": snapshot.title,
+        "plan": snapshot.plan,
+        "windows": [
+            {
+                "label": window.label,
+                "used_percent": window.used_percent,
+                "reset_at": window.reset_at.isoformat() if window.reset_at else None,
+                "detail": window.detail,
+            }
+            for window in snapshot.windows
+        ],
+        "details": list(snapshot.details),
+        "unavailable_reason": snapshot.unavailable_reason,
+    }
+
+
 def _fmt_usd(d: float) -> str:
     return f"${d:,.2f}"
 

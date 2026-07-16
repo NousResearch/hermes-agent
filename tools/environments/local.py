@@ -490,6 +490,17 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
 
     _apply_windows_msys_bash_env_defaults(sanitized)
 
+    try:
+        from agent.delegation_context import (
+            is_delegated_child_context,
+            scrub_kanban_env,
+        )
+
+        if is_delegated_child_context():
+            sanitized = scrub_kanban_env(sanitized)
+    except Exception:
+        pass
+
     return sanitized
 
 

@@ -312,8 +312,15 @@ def test_run_one_job_skips_secret_scope_without_multiplex(monkeypatch, tmp_path)
     monkeypatch.setattr(s, "_deliver_result", lambda *a, **k: None)
     monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: None)
 
+    # set_multiplex_active writes a module-level global (deployment mode, not a
+    # per-task value), so restore whatever was there rather than assuming the
+    # default — a leak here would silently change every test that runs after.
+    _prev_multiplex = ss.is_multiplex_active()
     ss.set_multiplex_active(False)
-    ok = s.run_one_job({"id": "j8", "name": "t"})
+    try:
+        ok = s.run_one_job({"id": "j8", "name": "t"})
+    finally:
+        ss.set_multiplex_active(_prev_multiplex)
 
     assert ok is True
     # The user-facing symptom first: under the unconditional scope this was
@@ -340,6 +347,7 @@ def test_run_one_job_env_scope_restored_after_run_without_multiplex(monkeypatch,
     monkeypatch.setattr(s, "_deliver_result", lambda *a, **k: None)
     monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: None)
 
+    _prev_multiplex = ss.is_multiplex_active()
     ss.set_multiplex_active(False)
     sentinel = {"AMBIENT": "outer"}
     token = ss.set_secret_scope(sentinel)
@@ -350,3 +358,4 @@ def test_run_one_job_env_scope_restored_after_run_without_multiplex(monkeypatch,
         assert ss.current_secret_scope() is sentinel
     finally:
         ss.reset_secret_scope(token)
+        ss.set_multiplex_active(_prev_multiplex)

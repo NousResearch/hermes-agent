@@ -44,7 +44,7 @@ both sides. Verify: `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:800
 (non-000 means something is listening; whether it's Unreal is a different
 question — check the Output Log).
 
-### 4. "Connection refused" mid-session
+### 4b. "Connection refused" mid-session
 
 The editor was closed, crashed, or the server was stopped
 (`ModelContextProtocol.StopServer`). Don't retry the tool in a loop — tell

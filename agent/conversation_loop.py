@@ -1062,12 +1062,26 @@ def run_conversation(
                 f"📦 Pre-API compression: ~{request_pressure_tokens:,} tokens "
                 f"near the context/output limit. Compacting before the next model call."
             )
+            pre_compression_message_count = len(messages)
             messages, active_system_prompt = agent._compress_context(
                 messages,
                 system_message,
                 approx_tokens=request_pressure_tokens,
                 task_id=effective_task_id,
             )
+            if len(messages) >= pre_compression_message_count:
+                # _compress_context documents an unchanged message count as a
+                # no-op (most importantly, another path owns the session's
+                # compression lock). Do not immediately call it two more times
+                # with the same transcript and spam three identical lifecycle
+                # messages. The request proceeds through the existing provider
+                # path, which preserves historical behavior after the old
+                # three-attempt backstop was exhausted.
+                compression_attempts = 3
+                logger.info(
+                    "Pre-API compression made no progress; suppressing "
+                    "duplicate attempts for this turn"
+                )
             # Reset retry/empty-response state so the compacted request
             # gets a fresh chance instead of inheriting stale recovery
             # counters from the pre-compaction history.

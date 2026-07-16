@@ -4228,6 +4228,49 @@ class TestRunConversation:
         assert hook_events[0]["retryable"] is False
         assert hook_events[0]["reason"] == FailoverReason.content_policy_blocked.value
 
+    def test_pre_api_compression_noop_is_not_retried_three_times(self, agent):
+        """A contended/no-op compression emits one attempt, not three."""
+        self._setup_agent(agent)
+        agent.compression_enabled = True
+        agent.context_compressor.should_compress = MagicMock(return_value=True)
+        agent.context_compressor.should_defer_preflight_to_real_usage = MagicMock(
+            return_value=False
+        )
+        agent.context_compressor.get_active_compression_failure_cooldown = MagicMock(
+            return_value=None
+        )
+        response = _mock_response(content="Continued", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = response
+
+        def no_op_compression(messages, *_args, **_kwargs):
+            return messages, agent._cached_system_prompt
+
+        with (
+            patch(
+                "agent.conversation_loop.estimate_request_tokens_rough",
+                return_value=241_007,
+            ),
+            patch.object(
+                agent,
+                "_compress_context",
+                side_effect=no_op_compression,
+            ) as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(
+                "hello",
+                conversation_history=[
+                    {"role": "user", "content": "earlier"},
+                    {"role": "assistant", "content": "earlier reply"},
+                ],
+            )
+
+        assert result["final_response"] == "Continued"
+        assert mock_compress.call_count == 1
+        assert agent.client.chat.completions.create.call_count == 1
+
     def test_ollama_small_runtime_context_fails_before_api_call(self, agent, caplog):
         self._setup_agent(agent)
         agent.model = "qwen3.5:9b"

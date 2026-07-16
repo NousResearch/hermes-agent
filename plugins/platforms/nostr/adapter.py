@@ -1,14 +1,15 @@
-"""Nostr platform adapter for Hermes Agent."""
+"""Nostr platform adapter for Hermes Agent — plugin."""
 
 import asyncio
 import json
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
 from nostr_sdk import Kind, Keys, Message, Filter, Tag, EventBuilder, Client, NostrSigner
 
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult, Platform
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
+from gateway.platforms.base import Platform
 from gateway.session import SessionSource
 
 logger = logging.getLogger(__name__)
@@ -18,36 +19,31 @@ class NostrAdapter(BasePlatformAdapter):
     """Nostr platform adapter."""
 
     def __init__(self, config):
-        super().__init__(config, Platform.NOSTR)
-        self.relays = []  # list of relay URLs
+        super().__init__(config, Platform("nostr"))
+        self.relays = []
         self.client: Optional[Client] = None
         self.keys: Optional[Keys] = None
-        self.nsec: Optional[str] = None  # private key in nsec format
-        self.pubkey: Optional[str] = None  # public key in hex
+        self.nsec: Optional[str] = None
+        self.pubkey: Optional[str] = None
         self._listening = False
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Nostr relays."""
         try:
-            # Get configuration
             relays = self.config.extra.get("relays", [])
             if not relays:
-                # Try to get from environment variables
                 import os
                 relays_str = os.getenv("NOSTR_RELAYS", "")
                 if relays_str:
                     relays = [r.strip() for r in relays_str.split(",") if r.strip()]
                 else:
-                    # Default relays
                     relays = [
                         "wss://relay.damus.io",
                         "wss://relay.primal.net",
                         "wss://relay.snort.social",
                     ]
-
             self.relays = relays
 
-            # Get private key from config or environment
             nsec = self.config.extra.get("nsec")
             if not nsec:
                 import os
@@ -60,18 +56,14 @@ class NostrAdapter(BasePlatformAdapter):
             self.keys = Keys.from_nsec(nsec)
             self.pubkey = self.keys.public_key().to_hex()
 
-            # Create Nostr client
             signer = NostrSigner.keys(self.keys)
             self.client = Client(signer)
 
-            # Add relays
             for relay in self.relays:
                 self.client.add_relay(relay)
 
-            # Connect to relays
             await self.client.connect()
 
-            # Set up listener for incoming messages
             self._listening = True
             asyncio.create_task(self._listen_for_messages())
 
@@ -83,7 +75,6 @@ class NostrAdapter(BasePlatformAdapter):
             return False
 
     async def disconnect(self):
-        """Disconnect from Nostr relays."""
         self._listening = False
         if self.client:
             await self.client.disconnect()
@@ -94,28 +85,23 @@ class NostrAdapter(BasePlatformAdapter):
         logger.info("Disconnected from Nostr relays")
 
     async def _listen_for_messages(self):
-        """Listen for incoming Nostr events and dispatch them as messages."""
         if not self.client:
             return
 
-        # Filter for kind 4 (encrypted direct messages) and kind 1 (text notes) that mention us
         filter_obj = Filter().kind([4, 1])
 
         async def message_handler(message):
             if not self._listening:
                 return
-
             try:
-                if message.type == MessageType.EVENT:
-                    event_dict = message.as_json_dict()
-                    await self._process_event(event_dict)
-            except Exception as e:
-                logger.exception(f"Error processing Nostr event: {e}")
+                event_dict = message.as_json_dict()
+                await self._process_event(event_dict)
+            except Exception:
+                pass
 
         await self.client.handle_notifications(message_handler)
 
     async def _process_event(self, event_dict: dict):
-        """Process an incoming Nostr event and dispatch as a message if it's for us."""
         try:
             event_id = event_dict.get("id")
             pubkey = event_dict.get("pubkey")
@@ -124,38 +110,27 @@ class NostrAdapter(BasePlatformAdapter):
             tags = event_dict.get("tags", [])
             created_at = event_dict.get("created_at")
 
-            # We only want to process events that are directed to us (our pubkey)
-            # For kind 4 (encrypted direct messages), we can decrypt and see if it's for us.
-            # For kind 1, we can check if there's a 'p' tag with our pubkey (mention).
-
             if kind == 4:
-                # Encrypted direct message
                 if not self.keys:
                     return
                 try:
-                    # Decrypt the message
                     decrypted = self.keys.decrypt(content, pubkey)
-                    plaintext = decrypted
-                    await self._handle_incoming_message(pubkey, plaintext, event_id, created_at)
+                    await self._handle_incoming_message(pubkey, decrypted, event_id, created_at)
                 except Exception as e:
                     logger.warning(f"Failed to decrypt Nostr event {event_id}: {e}")
             elif kind == 1:
-                # Plain text note - check if it mentions us
-                # We'll look for a 'p' tag that matches our pubkey
                 our_pubkey_tag = [t for t in tags if t[0] == 'p' and t[1] == self.pubkey]
                 if our_pubkey_tag:
-                    # This is a mention directed at us
                     await self._handle_incoming_message(pubkey, content, event_id, created_at)
 
         except Exception as e:
             logger.exception(f"Error in _process_event: {e}")
 
     async def _handle_incoming_message(self, sender_pubkey: str, content: str, event_id: str, timestamp: int):
-        """Handle an incoming message and dispatch to the gateway."""
         try:
             dt = datetime.fromtimestamp(timestamp)
             source = SessionSource(
-                platform=Platform.NOSTR,
+                platform=Platform("nostr"),
                 chat_id=sender_pubkey,
                 user_id=sender_pubkey,
                 user_name=sender_pubkey[:8] + "...",
@@ -176,57 +151,37 @@ class NostrAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None
     ) -> SendResult:
-        """Send a text message via Nostr."""
         if not self.client or not self.keys:
             return SendResult(success=False, error="Not connected to Nostr relays")
-
         try:
-            recipient_pubkey = chat_id
-
-            ciphertext = self.keys.encrypt(recipient_pubkey, content)
+            ciphertext = self.keys.encrypt(chat_id, content)
             event_builder = EventBuilder(Kind.EncryptedDirectMessage, ciphertext)
-            event_builder.tag(Tag.pubkey(recipient_pubkey))
+            event_builder.tag(Tag.pubkey(chat_id))
             signed_event = event_builder.sign_with_keys(self.keys)
             await self.client.send_event(signed_event)
-
             return SendResult(success=True, message_id=signed_event.id().to_hex())
-
         except Exception as e:
             logger.exception(f"Failed to send Nostr message: {e}")
             return SendResult(success=False, error=f"Failed to send message: {str(e)}")
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """Send a typing indicator. Nostr doesn't have a native typing indicator, so we skip."""
-        # Nostr doesn't have a standard for typing indicators.
-        # We could send a custom event kind, but for now we do nothing.
         pass
 
     async def send_image(self, chat_id: str, image_url: str, caption: str = "", reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Send an image via Nostr. We'll send a text message with the image URL and caption."""
         text = f"{caption}\n{image_url}" if caption else image_url
         return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
 
     async def get_chat_info(self, chat_id: str) -> dict:
-        """Get information about a chat (user)."""
-        # We can try to fetch the user's profile (kind 0) from relays
         if not self.client:
             return {"name": chat_id, "type": "user", "chat_id": chat_id}
-
         try:
-            # Fetch the metadata event (kind 0) for the user
             filter_obj = Filter().author(chat_id).kind(0)
             events = await self.client.query(filter_obj, timeout=5)
             if events:
-                # Take the most recent
                 event = events[0]
                 profile = json.loads(event.content())
                 name = profile.get("display_name", profile.get("name", chat_id))
-                return {
-                    "name": name,
-                    "type": "user",
-                    "chat_id": chat_id,
-                    "profile": profile
-                }
+                return {"name": name, "type": "user", "chat_id": chat_id, "profile": profile}
             else:
                 return {"name": chat_id, "type": "user", "chat_id": chat_id}
         except Exception as e:
@@ -235,9 +190,24 @@ class NostrAdapter(BasePlatformAdapter):
 
 
 def check_nostr_requirements() -> bool:
-    """Check if the nostr-sdk is installed."""
     try:
         import nostr_sdk
         return True
     except ImportError:
         return False
+
+
+def register(ctx):
+    ctx.register_platform(
+        name="nostr",
+        label="Nostr",
+        adapter_factory=lambda cfg: NostrAdapter(cfg),
+        check_fn=check_nostr_requirements,
+        required_env=["NOSTR_NSEC"],
+        install_hint="pip install nostr-sdk",
+        emoji="📯",
+        platform_hint=(
+            "You are chatting via Nostr. Messages are sent as encrypted "
+            "direct messages (NIP-04). Keep responses concise."
+        ),
+    )

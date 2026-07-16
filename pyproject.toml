@@ -244,6 +244,7 @@ termux-all = [
   "hermes-agent[sms]",
   "hermes-agent[web]",
 ]
+nostr = ["nostr-sdk>=0.29,<0.32"]
 dingtalk = ["dingtalk-stream==0.24.3", "alibabacloud-dingtalk==2.2.42", "qrcode==7.4.2"]
 feishu = ["lark-oapi==1.5.3", "qrcode==7.4.2"]
 google = [

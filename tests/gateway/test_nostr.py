@@ -1,4 +1,4 @@
-"""Tests for the Nostr platform adapter."""
+"""Tests for the Nostr platform adapter (plugin)."""
 
 import types
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -11,11 +11,7 @@ from gateway.config import PlatformConfig
 
 
 def _make_fake_nostr_sdk():
-    """Create fake nostr_sdk modules for testing.
-
-    The adapter does ``from nostr_sdk import Kind, Keys, Message, Filter,
-    Tag, EventBuilder, Client, NostrSigner`` at module-import time.
-    """
+    """Create fake nostr_sdk modules for testing."""
     nostr_sdk = types.ModuleType("nostr_sdk")
     nostr_sdk.Kind = MagicMock()
     nostr_sdk.Keys = MagicMock()
@@ -29,19 +25,15 @@ def _make_fake_nostr_sdk():
 
 
 def _import_nostr_module():
-    """Import gateway.platforms.nostr with a fake nostr_sdk so the module is
-    properly registered in sys.modules and accessible as an attribute of
-    the gateway.platforms package for patching."""
-    import gateway.platforms as _gw_platforms
     with patch.dict("sys.modules", _make_fake_nostr_sdk()):
-        import gateway.platforms.nostr as _nostr_mod
-        _gw_platforms.nostr = _nostr_mod
-        return _nostr_mod
+        import plugins.platforms.nostr.adapter as _mod
+        return _mod
 
 
-_nostr_mod = _import_nostr_module()
-NostrAdapter = _nostr_mod.NostrAdapter
-check_nostr_requirements = _nostr_mod.check_nostr_requirements
+_mod = _import_nostr_module()
+
+NostrAdapter = _mod.NostrAdapter
+check_nostr_requirements = _mod.check_nostr_requirements
 
 
 def _config(relays=None, nsec=None):
@@ -51,13 +43,6 @@ def _config(relays=None, nsec=None):
     if nsec:
         extra["nsec"] = nsec
     return PlatformConfig(enabled=True, extra=extra)
-
-
-def _make_adapter(**kwargs):
-    """Create a NostrAdapter with fake nostr_sdk modules in sys.modules."""
-    with patch.dict("sys.modules", _make_fake_nostr_sdk()):
-        from gateway.platforms.nostr import NostrAdapter as NA
-        return NA(_config(**kwargs))
 
 
 class TestNostrRequirements:
@@ -82,23 +67,14 @@ class TestNostrConnect:
         mock_client.connect = AsyncMock()
 
         with (
-            patch(
-                "gateway.platforms.nostr.Keys.from_nsec",
-                return_value=mock_keys,
-            ) as mock_from_nsec,
-            patch(
-                "gateway.platforms.nostr.NostrSigner.keys",
-                return_value=MagicMock(),
-            ),
-            patch(
-                "gateway.platforms.nostr.Client",
-                return_value=mock_client,
-            ),
-            patch(
-                "gateway.platforms.nostr.asyncio.create_task",
-                new=MagicMock(),
-            ),
+            patch.object(_mod, "Keys") as mock_keys_cls,
+            patch.object(_mod, "NostrSigner") as _,
+            patch.object(_mod, "Client", return_value=mock_client),
+            patch.object(_mod, "asyncio") as mock_asyncio,
         ):
+            mock_keys_cls.from_nsec.return_value = mock_keys
+            mock_asyncio.create_task = MagicMock()
+
             adapter = NostrAdapter(_config(nsec="nsec1test"))
             result = await adapter.connect()
 
@@ -110,37 +86,47 @@ class TestNostrConnect:
             "wss://relay.primal.net",
             "wss://relay.snort.social",
         ]
-        mock_from_nsec.assert_called_once_with("nsec1test")
+        mock_keys_cls.from_nsec.assert_called_once_with("nsec1test")
+        mock_client.connect.assert_awaited_once()
+
+    async def test_connect_success_with_is_reconnect(self):
+        mock_keys = MagicMock()
+        mock_keys.public_key().to_hex.return_value = "abc123"
+        mock_client = MagicMock()
+        mock_client.connect = AsyncMock()
+
+        with (
+            patch.object(_mod, "Keys") as mock_keys_cls,
+            patch.object(_mod, "NostrSigner") as _,
+            patch.object(_mod, "Client", return_value=mock_client),
+            patch.object(_mod, "asyncio") as mock_asyncio,
+        ):
+            mock_keys_cls.from_nsec.return_value = mock_keys
+            mock_asyncio.create_task = MagicMock()
+
+            adapter = NostrAdapter(_config(nsec="nsec1test"))
+            result = await adapter.connect(is_reconnect=True)
+
+        assert result is True
         mock_client.connect.assert_awaited_once()
 
     async def test_connect_uses_config_relays(self):
         mock_keys = MagicMock()
         mock_keys.public_key().to_hex.return_value = "abc123"
-        mock_client = AsyncMock()
+        mock_client = MagicMock()
+        mock_client.connect = AsyncMock()
 
         with (
-            patch(
-                "gateway.platforms.nostr.Keys.from_nsec",
-                return_value=mock_keys,
-            ),
-            patch(
-                "gateway.platforms.nostr.NostrSigner.keys",
-                return_value=MagicMock(),
-            ),
-            patch(
-                "gateway.platforms.nostr.Client",
-                return_value=mock_client,
-            ),
-            patch(
-                "gateway.platforms.nostr.asyncio.create_task",
-                new=MagicMock(),
-            ),
+            patch.object(_mod, "Keys") as mock_keys_cls,
+            patch.object(_mod, "NostrSigner") as _,
+            patch.object(_mod, "Client", return_value=mock_client),
+            patch.object(_mod, "asyncio") as mock_asyncio,
         ):
+            mock_keys_cls.from_nsec.return_value = mock_keys
+            mock_asyncio.create_task = MagicMock()
+
             adapter = NostrAdapter(
-                _config(
-                    nsec="nsec1test",
-                    relays=["wss://custom.relay"],
-                )
+                _config(nsec="nsec1test", relays=["wss://custom.relay"])
             )
             result = await adapter.connect()
 
@@ -154,10 +140,8 @@ class TestNostrConnect:
         assert adapter.nsec is None
 
     async def test_connect_fails_on_exception(self):
-        with patch(
-            "gateway.platforms.nostr.Keys.from_nsec",
-            side_effect=Exception("bad key"),
-        ):
+        with patch.object(_mod, "Keys") as mock_keys_cls:
+            mock_keys_cls.from_nsec.side_effect = Exception("bad key")
             adapter = NostrAdapter(_config(nsec="nsec1bad"))
             result = await adapter.connect()
         assert result is False
@@ -196,9 +180,7 @@ class TestNostrSend:
         mock_signed = MagicMock()
         mock_signed.id().to_hex.return_value = "event123"
 
-        with patch(
-            "gateway.platforms.nostr.EventBuilder",
-        ) as mock_eb:
+        with patch.object(_mod, "EventBuilder") as mock_eb:
             mock_eb.return_value.sign_with_keys.return_value = mock_signed
             adapter = NostrAdapter(_config())
             adapter.client = mock_client
@@ -351,9 +333,7 @@ class TestNostrProcessEvent:
         async def fake_handle(sender, content, event_id, timestamp):
             handled.append((sender, content, event_id, timestamp))
 
-        with patch.object(
-            adapter, "_handle_incoming_message", fake_handle,
-        ):
+        with patch.object(adapter, "_handle_incoming_message", fake_handle):
             await adapter._process_event({
                 "id": "evt001",
                 "pubkey": "sender_pk",
@@ -378,9 +358,7 @@ class TestNostrProcessEvent:
         async def fake_handle(sender, content, event_id, timestamp):
             handled.append((sender, content, event_id, timestamp))
 
-        with patch.object(
-            adapter, "_handle_incoming_message", fake_handle,
-        ):
+        with patch.object(adapter, "_handle_incoming_message", fake_handle):
             await adapter._process_event({
                 "id": "evt001",
                 "pubkey": "sender_pk",
@@ -401,9 +379,7 @@ class TestNostrProcessEvent:
         async def fake_handle(sender, content, event_id, timestamp):
             handled.append((sender, content, event_id, timestamp))
 
-        with patch.object(
-            adapter, "_handle_incoming_message", fake_handle,
-        ):
+        with patch.object(adapter, "_handle_incoming_message", fake_handle):
             await adapter._process_event({
                 "id": "evt002",
                 "pubkey": "sender_pk",
@@ -425,9 +401,7 @@ class TestNostrProcessEvent:
         async def fake_handle(sender, content, event_id, timestamp):
             handled.append((sender, content, event_id, timestamp))
 
-        with patch.object(
-            adapter, "_handle_incoming_message", fake_handle,
-        ):
+        with patch.object(adapter, "_handle_incoming_message", fake_handle):
             await adapter._process_event({
                 "id": "evt003",
                 "pubkey": "sender_pk",

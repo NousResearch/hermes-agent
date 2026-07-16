@@ -15,6 +15,7 @@ import {
   sessionPinId,
   setCurrentCwd,
   setSelectedStoredSessionId,
+  setSessionUnread,
   workspaceCwdForNewSession
 } from './session'
 import {
@@ -326,16 +327,13 @@ describe('unread finished sessions', () => {
     $selectedStoredSessionId.set(null)
   })
 
-  it('marks a session unread when its turn finishes in the background', () => {
-    $selectedStoredSessionId.set('other-session')
-
+  it('does not infer unread from a working transition without transcript visibility context', () => {
+    setSelectedStoredSessionId(() => 'other-session')
     const working = makeState({ busy: true, storedSessionId: 's1' })
     publishSessionState('rt1', working)
-
     const idle = { ...working, busy: false }
     publishSessionState('rt1', idle)
-
-    expect($unreadFinishedSessionIds.get()).toEqual(['s1'])
+    expect($unreadFinishedSessionIds.get()).toEqual([])
   })
 
   it('does NOT mark unread when the finishing session is the active one', () => {
@@ -359,18 +357,15 @@ describe('unread finished sessions', () => {
     expect($unreadFinishedSessionIds.get()).toEqual([])
   })
 
-  it('clears unread when the user opens the session', () => {
-    $selectedStoredSessionId.set('other')
-
-    const working = makeState({ busy: true, storedSessionId: 's1' })
-    publishSessionState('rt1', working)
-
-    const idle = { ...working, busy: false }
-    publishSessionState('rt1', idle)
-
+  it('preserves unread on selection until the transcript is visibly acknowledged', () => {
+    setSelectedStoredSessionId(() => 'other')
+    setSessionUnread('s1', true)
     expect($unreadFinishedSessionIds.get()).toEqual(['s1'])
 
-    setSelectedStoredSessionId('s1')
+    setSelectedStoredSessionId(() => 's1')
+    expect($unreadFinishedSessionIds.get()).toEqual(['s1'])
+
+    setSessionUnread('s1', false)
     expect($unreadFinishedSessionIds.get()).toEqual([])
   })
 })

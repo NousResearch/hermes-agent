@@ -33,7 +33,6 @@ import { $activeGatewayProfile, normalizeProfileKey } from './profile'
 import {
   $activeSessionId,
   $selectedStoredSessionId,
-  $unreadFinishedSessionIds,
   setActiveSessionStoredIdRotation
 } from './session'
 import { isSecondaryWindow } from './windows'
@@ -145,19 +144,11 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
     clearSettled(storedId)
   } else if (!next.busy && wasWorking) {
     markSettled(storedId)
-
-    if (storedId !== $selectedStoredSessionId.get()) {
-      const cur = $unreadFinishedSessionIds.get()
-
-      if (!cur.includes(storedId)) {
-        $unreadFinishedSessionIds.set([...cur, storedId])
-      }
-    }
   }
 }
 
 /** Publish one session's state. Automatically fires transition side-effects
- *  (watchdog arm/disarm, settle grace, unread marker, compression id rotation)
+ *  (watchdog arm/disarm, settle grace, compression id rotation)
  *  by diffing previous vs next — callers never need to manually call a
  *  transition handler. */
 export function publishSessionState(runtimeId: string, state: ClientSessionState) {

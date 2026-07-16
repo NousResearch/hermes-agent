@@ -507,6 +507,24 @@ export function useMessageStream({
         }
       })
 
+      // A terminal result in another chat/profile (or while the window is
+      // unfocused) remains actionable until that transcript is actually seen.
+      // Store the durable id so the profile rail can join it to $sessions even
+      // though gateway events themselves are keyed by runtime id.
+      if (!completedState.interrupted) {
+        const viewedNow =
+          activeSessionIdRef.current === sessionId &&
+          typeof window !== 'undefined' &&
+          currentView === 'chat' &&
+          !$threadScrolledUp.get() &&
+          typeof document !== 'undefined' &&
+          !document.hidden &&
+          typeof document.hasFocus === 'function' &&
+          document.hasFocus()
+
+        setSessionUnread(completedState.storedSessionId, !viewedNow)
+      }
+
       scheduleSessionsRefresh()
 
       if (compactedTurnRef.current.delete(sessionId)) {
@@ -577,6 +595,7 @@ export function useMessageStream({
           currentView === 'chat' &&
           !$threadScrolledUp.get() &&
           typeof document !== 'undefined' &&
+          !document.hidden &&
           typeof document.hasFocus === 'function' &&
           document.hasFocus()
 

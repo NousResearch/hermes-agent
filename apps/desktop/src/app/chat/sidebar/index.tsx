@@ -96,8 +96,8 @@ import {
   sessionPinId,
   setCurrentCwd
 } from '@/store/session'
-import { $focusedStoredSessionId, type SplitDir } from '@/store/session-states'
 import { $sessionActivityIds } from '@/store/session-activity'
+import { $focusedStoredSessionId, type SplitDir } from '@/store/session-states'
 
 import {
   type AppView,

@@ -18,6 +18,7 @@ const BACKGROUND_RUNTIME_ID = 'runtime-background'
 const BACKGROUND_STORED_ID = 'stored-background'
 
 let focused = true
+let hidden = false
 let currentView: AppView = 'chat'
 let handleEvent: ((event: RpcEvent) => void) | null = null
 
@@ -80,11 +81,13 @@ function fail(sessionId: string) {
 describe('useMessageStream unread completion tracking', () => {
   beforeEach(() => {
     focused = true
+    hidden = false
     currentView = 'chat'
     handleEvent = null
     $unreadFinishedSessionIds.set([])
     $threadScrolledUp.set(false)
     vi.spyOn(globalThis.document, 'hasFocus').mockImplementation(() => focused)
+    vi.spyOn(globalThis.document, 'hidden', 'get').mockImplementation(() => hidden)
   })
 
   afterEach(() => {
@@ -112,6 +115,15 @@ describe('useMessageStream unread completion tracking', () => {
 
   it('marks the active session unread when it completes while the window is unfocused', async () => {
     focused = false
+    await mountStream()
+
+    complete(ACTIVE_RUNTIME_ID)
+
+    expect($unreadFinishedSessionIds.get()).toEqual([ACTIVE_STORED_ID])
+  })
+
+  it('marks the active session unread while the document is hidden despite stale focus state', async () => {
+    hidden = true
     await mountStream()
 
     complete(ACTIVE_RUNTIME_ID)

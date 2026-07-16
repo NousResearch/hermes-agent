@@ -337,16 +337,30 @@ export const setActiveSessionStoredIdRotation = (next: Updater<ActiveSessionStor
   updateAtom($activeSessionStoredIdRotation, next)
 
 // Transient: a background session finished and the user hasn't opened it since.
-// Written by session-states.ts (handleTransition), cleared here on session open.
+// Written by terminal message producers and cleared once the transcript is
+// visibly acknowledged.
 export const $unreadFinishedSessionIds = atom<string[]>([])
 
-export const setSelectedStoredSessionId = (next: Updater<string | null>) => {
-  updateAtom($selectedStoredSessionId, next)
-  // Opening a session clears its unread state — the user is now looking at it.
-  const id = $selectedStoredSessionId.get()
+export const setSelectedStoredSessionId = (next: Updater<string | null>) => updateAtom($selectedStoredSessionId, next)
 
-  if (id && $unreadFinishedSessionIds.get().includes(id)) {
-    $unreadFinishedSessionIds.set($unreadFinishedSessionIds.get().filter(x => x !== id))
+const setSessionUnreadLocal = (sessionId: string, unread: boolean): boolean => {
+  const current = $unreadFinishedSessionIds.get()
+  const present = current.includes(sessionId)
+
+  if (present === unread) {
+    return false
+  }
+
+  $unreadFinishedSessionIds.set(unread ? [...current, sessionId] : current.filter(id => id !== sessionId))
+
+  return true
+}
+
+onSessionUnreadChanged(setSessionUnreadLocal)
+
+export function setSessionUnread(sessionId: string | null | undefined, unread: boolean) {
+  if (sessionId && setSessionUnreadLocal(sessionId, unread)) {
+    broadcastSessionUnreadChanged(sessionId, unread)
   }
 }
 

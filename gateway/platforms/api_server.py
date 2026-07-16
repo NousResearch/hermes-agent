@@ -1919,6 +1919,8 @@ class APIServerAdapter(BasePlatformAdapter):
         if db.get_session(fork_id):
             return web.json_response(_openai_error(f"Session already exists: {fork_id}", code="session_exists"), status=409)
 
+        fork_source = self._normalize_session_source(source.get("source")) or "api_server"
+
         # Match the CLI /branch semantics: mark the original as branched, then
         # create a child session that carries the transcript forward. This uses
         # SessionDB's native parent_session_id/end_reason visibility model rather
@@ -1926,7 +1928,7 @@ class APIServerAdapter(BasePlatformAdapter):
         db.end_session(source_id, "branched")
         db.create_session(
             fork_id,
-            "api_server",
+            fork_source,
             model=source.get("model"),
             system_prompt=source.get("system_prompt"),
             parent_session_id=source_id,

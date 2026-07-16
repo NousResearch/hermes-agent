@@ -170,16 +170,24 @@ async def test_session_crud_and_message_history(adapter, session_db):
 
 
 @pytest.mark.asyncio
-async def test_session_api_preserves_hermes_web_source_and_allows_source_correction(adapter, session_db):
+async def test_session_api_preserves_first_party_sources_and_rejects_invalid_sources(adapter, session_db):
     app = _create_session_app(adapter)
     async with TestClient(TestServer(app)) as cli:
-        created = await cli.post(
+        web_created = await cli.post(
             "/api/sessions",
             json={"id": "hermes-web-source-session", "source": "hermes_web", "title": "Hermes Web source"},
         )
-        assert created.status == 201, await created.text()
-        created_payload = await created.json()
-        assert created_payload["session"]["source"] == "hermes_web"
+        assert web_created.status == 201, await web_created.text()
+        web_payload = await web_created.json()
+        assert web_payload["session"]["source"] == "hermes_web"
+
+        browser_created = await cli.post(
+            "/api/sessions",
+            json={"id": "hermes-browser-source-session", "source": "hermes_browser"},
+        )
+        assert browser_created.status == 201, await browser_created.text()
+        browser_payload = await browser_created.json()
+        assert browser_payload["session"]["source"] == "hermes_browser"
 
         stale_client = await cli.post(
             "/api/sessions",
@@ -189,6 +197,14 @@ async def test_session_api_preserves_hermes_web_source_and_allows_source_correct
         stale_payload = await stale_client.json()
         assert stale_payload["session"]["source"] == "hermes_web"
 
+        invalid_create = await cli.post(
+            "/api/sessions",
+            json={"id": "invalid-source-session", "source": "desktop"},
+        )
+        assert invalid_create.status == 400
+        invalid_create_payload = await invalid_create.json()
+        assert invalid_create_payload["error"]["code"] == "invalid_session_source"
+
         legacy_id = session_db.create_session("hermes-web-legacy-source", "api_server")
         corrected = await cli.patch(
             f"/api/sessions/{legacy_id}",
@@ -196,6 +212,14 @@ async def test_session_api_preserves_hermes_web_source_and_allows_source_correct
         )
         assert corrected.status == 200, await corrected.text()
         corrected_payload = await corrected.json()
+
+        invalid_patch = await cli.patch(
+            f"/api/sessions/{legacy_id}",
+            json={"source": "desktop"},
+        )
+        assert invalid_patch.status == 400
+        invalid_patch_payload = await invalid_patch.json()
+        assert invalid_patch_payload["error"]["code"] == "invalid_session_source"
 
     assert corrected_payload["session"]["source"] == "hermes_web"
     assert session_db.get_session("hermes-web-legacy-source")["source"] == "hermes_web"
@@ -223,7 +247,7 @@ async def test_session_messages_follow_compression_tip(adapter, session_db):
 
 @pytest.mark.asyncio
 async def test_session_fork_uses_current_sessiondb_branch_primitives(adapter, session_db):
-    source_id = session_db.create_session("source-session", "api_server", model="test-model")
+    source_id = session_db.create_session("source-session", "hermes_web", model="test-model")
     session_db.set_session_title(source_id, "Original")
     session_db.append_message(source_id, "user", "first path")
     session_db.append_message(source_id, "assistant", "answer")
@@ -238,9 +262,23 @@ async def test_session_fork_uses_current_sessiondb_branch_primitives(adapter, se
     assert payload["object"] == "hermes.session"
     assert fork["id"] != source_id
     assert fork["parent_session_id"] == source_id
+    assert fork["source"] == "hermes_web"
     assert fork["title"] == "Alternative"
     assert [m["content"] for m in session_db.get_messages(fork["id"])] == ["first path", "answer"]
     assert session_db.get_session(source_id)["end_reason"] == "branched"
+
+
+@pytest.mark.asyncio
+async def test_session_fork_falls_back_to_api_server_for_non_client_source(adapter, session_db):
+    source_id = session_db.create_session("legacy-source-session", "desktop")
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(f"/api/sessions/{source_id}/fork", json={})
+        assert resp.status == 201
+        payload = await resp.json()
+
+    assert payload["session"]["source"] == "api_server"
 
 
 @pytest.mark.asyncio

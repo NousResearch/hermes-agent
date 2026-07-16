@@ -336,9 +336,9 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/sessions` | List sessions (paginated — `limit`, `offset`, `source`, `include_children`) |
-| `POST` | `/api/sessions` | Create an empty session |
+| `POST` | `/api/sessions` | Create an empty session; accepts an optional client `source` |
 | `GET` | `/api/sessions/{id}` | Read session metadata |
-| `PATCH` | `/api/sessions/{id}` | Update title or `end_reason` |
+| `PATCH` | `/api/sessions/{id}` | Update `title`, `end_reason`, or client `source` |
 | `DELETE` | `/api/sessions/{id}` | Delete a session |
 | `GET` | `/api/sessions/{id}/messages` | Message history for a session |
 | `POST` | `/api/sessions/{id}/fork` | Branch the session via `SessionDB` lineage (matches CLI `/branch` semantics) |
@@ -346,6 +346,8 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 | `POST` | `/api/sessions/{id}/chat/stream` | SSE wrapper over a single turn — emits `assistant.delta`, `tool.started`, `tool.completed`, `run.completed` events |
 
 `/v1/capabilities` advertises the full surface via `session_*` feature flags and `endpoints.session_*` entries so external UIs can detect support and fall back safely. Inline images are supported in `chat` and `chat/stream` payloads (multimodal-aware path).
+
+The public client `source` values are `api_server`, `hermes_web`, and `hermes_browser`. `POST /api/sessions` defaults to `api_server` when `source` is omitted, while first-party IDs beginning with `hermes-web-` or `hermes-browser-` are categorized automatically. `PATCH /api/sessions/{id}` rejects any other `source` value with `invalid_session_source`. Forks preserve a validated first-party source from their parent and otherwise fall back to `api_server`.
 
 ```bash
 # fork a session and run one turn

@@ -3568,6 +3568,53 @@ def _apply_model_switch(
         raise ValueError(result.error_message or "model switch failed")
 
     if agent:
+        # A no-op switch — the agent is already on the exact model+provider the
+        # switch resolved to — must short-circuit BEFORE the expensive-model
+        # confirmation gate and BEFORE the commit side effects. Two reasons this
+        # is placed here, ahead of both gates:
+        #   1. Running the commit side effects (agent.switch_model, marker
+        #      append, history_version bump, worker restart, session.info emit)
+        #      on a same-model "switch" injected a synthetic user message and
+        #      tripped the "history_version mismatch — output NOT written" path,
+        #      burning a full API call on brand-new sessions (the desktop
+        #      reconnect junk-session bug).
+        #   2. Detecting the no-op before the expensive-model gate avoids a
+        #      spurious confirmation dialog when a user re-selects the model
+        #      they are already on (an already-active model is never a NEW
+        #      expense to confirm).
+        # The per-turn config sync (_sync_agent_model_with_config) is the common
+        # trigger: config.yaml carries "claude-apr/claude-opus-4-8" while
+        # agent.model is the bare "claude-opus-4-8", so its own early-out misses
+        # and it calls through to here with a target identical to the live
+        # agent. Compare the RESOLVED target (post switch_model parsing) so a
+        # provider-prefixed vs bare spelling of the same model is caught.
+        _cur_model = getattr(agent, "model", "") or ""
+        _cur_provider = getattr(agent, "provider", "") or ""
+        _same_provider = (
+            not result.target_provider or result.target_provider == _cur_provider
+        )
+        if result.new_model == _cur_model and _same_provider:
+            # Mirror the real-switch commit's persistence for the override so a
+            # later rebuild (resume / _reset_session_agent) re-derives the same
+            # model — the ONLY side effects a no-op legitimately performs.
+            if pin_session_override and isinstance(session, dict):
+                session["model_override"] = {
+                    "model": result.new_model,
+                    "provider": result.target_provider,
+                    "base_url": result.base_url,
+                    "api_key": result.api_key,
+                    "api_mode": result.api_mode,
+                }
+                _persist_live_session_runtime(session)
+            if persist_global:
+                _persist_model_switch(result)
+            return {
+                "value": result.new_model,
+                "warning": result.warning_message or "",
+                "confirm_required": False,
+            }
+
+    if agent:
         try:
             from hermes_cli.context_switch_guard import merge_preflight_compression_warning
 
@@ -9562,6 +9609,19 @@ def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
     if err:
         return err
+    # Reject blank submits before any agent work happens. A buggy or stale
+    # client (e.g. a desktop app stuck in a reconnect loop) can fire
+    # prompt.submit with empty text; without this guard the gateway builds a
+    # full agent and burns a complete API call (system prompt + tool schemas,
+    # ~50k tokens) to answer nothing, leaving a junk session row behind.
+    # An empty text IS legitimate when images are attached — the turn runs on
+    # the vision content — so only reject when there is nothing sendable.
+    if (
+        session is not None
+        and (not isinstance(text, str) or not text.strip())
+        and not session.get("attached_images")
+    ):
+        return _err(rid, 4020, "text required (empty prompt rejected)")
     isolation_cfg = _load_dashboard_process_isolation_config()
     turn_isolation = _session_uses_compute_host(session, isolation_cfg)
     # Re-bind to the current client transport for this request. This keeps

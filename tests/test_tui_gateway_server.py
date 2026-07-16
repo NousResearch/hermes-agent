@@ -1859,6 +1859,120 @@ def test_config_sync_failure_emits_error_once_per_edit(monkeypatch):
     assert "broken/model" in emits[0][1]["message"]
 
 
+def test_apply_model_switch_noop_target_skips_side_effects(monkeypatch):
+    # A switch whose RESOLVED target equals the agent's current model+provider
+    # is a no-op: it must NOT append the model-switch marker, bump
+    # history_version, restart the slash worker, or emit session.info. Those
+    # side effects on a same-model "switch" injected a synthetic user message
+    # and tripped the "history_version mismatch — output NOT written" path,
+    # burning a full API call on brand-new sessions (the desktop reconnect
+    # junk-session bug). This exercises the REAL _apply_model_switch, with only
+    # switch_model (models.dev I/O) stubbed to echo the current identity.
+    from hermes_cli import model_switch as _ms
+
+    agent = types.SimpleNamespace(model="claude-opus-4-8", provider="claude-apr")
+
+    def _boom_switch(**kwargs):
+        raise AssertionError("agent.switch_model must NOT be called on a no-op")
+
+    agent.switch_model = _boom_switch
+
+    session = _session(agent=agent)
+    session["history"] = [{"role": "user", "content": "hi"}]
+    session["history_version"] = 0
+
+    def _fake_switch_model(**kwargs):
+        return _ms.ModelSwitchResult(
+            success=True,
+            new_model="claude-opus-4-8",
+            target_provider="claude-apr",
+        )
+
+    monkeypatch.setattr(_ms, "switch_model", _fake_switch_model)
+    fired = {"marker": 0, "worker": 0, "info": 0, "persist": 0, "expensive": 0}
+    monkeypatch.setattr(
+        server, "_append_model_switch_marker", lambda *a, **k: fired.__setitem__("marker", fired["marker"] + 1)
+    )
+    monkeypatch.setattr(
+        server, "_restart_slash_worker", lambda *a, **k: fired.__setitem__("worker", fired["worker"] + 1)
+    )
+    monkeypatch.setattr(
+        server, "_persist_live_session_runtime", lambda *a, **k: fired.__setitem__("persist", fired["persist"] + 1)
+    )
+    monkeypatch.setattr(server, "_persist_live_session_system_prompt", lambda *a, **k: None)
+    monkeypatch.setattr(
+        server, "_emit", lambda ev, *a, **k: fired.__setitem__("info", fired["info"] + 1) if ev == "session.info" else None
+    )
+    # A no-op must NOT even reach the expensive-model gate (no spurious confirm
+    # dialog when re-selecting the already-active model). If the guard fired the
+    # gate, this stub would bump the counter.
+    import hermes_cli.model_cost_guard as _cost_guard
+    monkeypatch.setattr(
+        _cost_guard, "expensive_model_warning",
+        lambda *a, **k: fired.__setitem__("expensive", fired["expensive"] + 1),
+    )
+
+    # confirm_expensive_model=False is the interactive default — the path that
+    # would otherwise trip the expensive-model gate.
+    result = server._apply_model_switch(
+        "sid", session, "claude-opus-4-8 --provider claude-apr",
+        confirm_expensive_model=False, pin_session_override=True, persist_override=False,
+    )
+
+    assert result["value"] == "claude-opus-4-8"
+    assert result["confirm_required"] is False
+    assert fired["marker"] == 0, "no marker appended on a no-op switch"
+    assert fired["worker"] == 0, "slash worker not restarted on a no-op switch"
+    assert fired["info"] == 0, "no session.info emit on a no-op switch"
+    assert fired["expensive"] == 0, "no-op must short-circuit before the expensive-model gate"
+    assert fired["persist"] == 1, "no-op with pin_session_override must persist the override"
+    assert session["history_version"] == 0, "history_version must not bump on a no-op"
+    assert session["history"] == [{"role": "user", "content": "hi"}]
+    assert session["model_override"]["model"] == "claude-opus-4-8"
+
+
+def test_apply_model_switch_real_change_still_commits(monkeypatch):
+    # Guard the no-op fast path doesn't swallow a REAL switch: when the resolved
+    # target differs from the agent's current model, the commit side effects
+    # (switch_model, marker, worker restart) must still run.
+    from hermes_cli import model_switch as _ms
+
+    switched = {"called": False}
+
+    def _real_switch(**kwargs):
+        switched["called"] = True
+        agent.model = kwargs["new_model"]
+        agent.provider = kwargs["new_provider"]
+
+    agent = types.SimpleNamespace(model="claude-opus-4-8", provider="claude-apr")
+    agent.switch_model = _real_switch
+    session = _session(agent=agent)
+
+    monkeypatch.setattr(
+        _ms, "switch_model",
+        lambda **k: _ms.ModelSwitchResult(
+            success=True, new_model="gpt-5.6-sol", target_provider="openai-codex"
+        ),
+    )
+    fired = {"marker": 0}
+    monkeypatch.setattr(
+        server, "_append_model_switch_marker", lambda *a, **k: fired.__setitem__("marker", fired["marker"] + 1)
+    )
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_persist_live_session_runtime", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_persist_live_session_system_prompt", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_session_info", lambda *a, **k: {})
+
+    server._apply_model_switch(
+        "sid", session, "gpt-5.6-sol --provider openai-codex",
+        confirm_expensive_model=True, pin_session_override=False, persist_override=False,
+    )
+
+    assert switched["called"] is True, "a real model change must call switch_model"
+    assert fired["marker"] == 1, "a real switch must append the marker"
+
+
 def test_config_sync_config_wins_over_env_seed(monkeypatch):
     # Hosted instances set HERMES_INFERENCE_MODEL as a provision-time seed;
     # the per-turn sync must follow config.yaml edits, not stay pinned to it.
@@ -4690,6 +4804,69 @@ def test_prompt_submit_sets_approval_session_key(monkeypatch):
 
     assert resp["result"]["status"] == "streaming"
     assert captured["session_key"] == "session-key"
+
+
+def test_prompt_submit_rejects_empty_text(monkeypatch):
+    # A blank submit (stale/looping client) must be rejected BEFORE any agent
+    # build or API call — no full-context turn burned to answer nothing, no
+    # junk session row. Regression for the desktop reconnect-loop empty-turn.
+    built = []
+    monkeypatch.setattr(
+        server, "_start_agent_build", lambda sid, session: built.append(sid)
+    )
+    server._sessions["sid"] = _session(agent=types.SimpleNamespace())
+    try:
+        for blank in ("", "   ", "\n\t "):
+            resp = server.handle_request(
+                {
+                    "id": "1",
+                    "method": "prompt.submit",
+                    "params": {"session_id": "sid", "text": blank},
+                }
+            )
+            assert "error" in resp, f"blank {blank!r} should be rejected"
+            assert resp["error"]["code"] == 4020
+        assert built == [], "no agent build for an empty prompt"
+        assert server._sessions["sid"].get("running") is not True
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_prompt_submit_allows_empty_text_with_attached_images(monkeypatch):
+    # Empty text is legitimate when images are attached — the turn runs on the
+    # vision content. The guard must not reject that path.
+    reached = []
+    monkeypatch.setattr(
+        server, "_start_agent_build", lambda sid, session: reached.append(sid)
+    )
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)
+    monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
+    monkeypatch.setattr(server, "_wait_agent", lambda session, rid: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            pass  # don't actually run the turn; we only assert the guard passed
+
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    server._sessions["sid"] = _session(
+        agent=types.SimpleNamespace(model="m"), attached_images=["/tmp/x.png"]
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": ""},
+            }
+        )
+        assert "error" not in resp, resp
+        assert reached == ["sid"], "image-only submit must reach the agent build"
+    finally:
+        server._sessions.pop("sid", None)
 
 
 def test_prompt_submit_expands_context_refs(monkeypatch):

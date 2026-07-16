@@ -114,6 +114,11 @@ class TurnContext:
     plugin_user_context: str = ""
     # External-memory prefetch result, reused across loop iterations.
     ext_prefetch_cache: str = ""
+    # Semantic-recall block (jcode-style): top-K similar past turns in this
+    # session, formatted as an ephemeral context block appended to the user
+    # message at API-call time only. Empty when semantic recall is disabled,
+    # the backend is unhealthy, or no turns have been recorded yet.
+    recall_block: str = ""
 
 
 def build_turn_context(
@@ -603,6 +608,31 @@ def build_turn_context(
         except Exception:
             pass
 
+    # Semantic recall (jcode-style): build the recall block for this turn's
+    # user message. Appended to the user message at API-call time, never
+    # baked into the cached system prompt. Never raises — failures here
+    # would block the entire conversation.
+    recall_block = ""
+    _recall_service = getattr(agent, "_recall_service", None)
+    if _recall_service is not None:
+        # Bind session_id at turn time — init_agent may have built
+        # the service before the session row was committed.
+        if agent.session_id and not _recall_service.session_id:
+            _recall_service.bind_session_id(agent.session_id)
+        try:
+            _query_text = (
+                original_user_message
+                if isinstance(original_user_message, str)
+                else ""
+            )
+            recall_block = _recall_service.ephemeral_block(_query_text) or ""
+            # Record the just-arrived user turn so subsequent turns can
+            # recall it. Skipped if empty / non-string (multimodal parts).
+            if _query_text.strip():
+                _recall_service.record_turn("user", _query_text)
+        except Exception:
+            recall_block = ""
+
     return TurnContext(
         user_message=user_message,
         original_user_message=original_user_message,
@@ -615,4 +645,5 @@ def build_turn_context(
         should_review_memory=should_review_memory,
         plugin_user_context=plugin_user_context,
         ext_prefetch_cache=ext_prefetch_cache,
+        recall_block=recall_block,
     )

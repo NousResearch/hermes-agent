@@ -510,6 +510,69 @@ def managed_scope_check() -> None:
         check_info(f"managed dir set via HERMES_MANAGED_DIR={managed_dir}")
 
 
+def recall_check() -> None:
+    """Surface semantic-recall status (adopted from jcode).
+
+    Reports whether the feature is enabled, which backend is configured,
+    whether the backend is actually healthy (numpy backend may degrade to
+    noop when sentence-transformers/torch are unavailable), and how many
+    embeddings are stored. Errors here are swallowed — doctor must keep
+    running even if recall is broken.
+    """
+    try:
+        from agent.recall import build_recall_service, recall_health_summary
+        from agent.file_safety import _resolve_active_profile_name
+        from hermes_constants import get_hermes_home
+        from hermes_cli.config import load_config, cfg_get
+
+        # Note: cfg_get takes (cfg_dict, *keys). We load the config
+        # explicitly because cfg_get doesn't fall back to disk.
+        try:
+            cfg = load_config() or {}
+        except Exception:
+            cfg = {}
+        recall_cfg = cfg_get(cfg, "memory", "semantic_recall", default={}) or {}
+        if not isinstance(recall_cfg, dict):
+            recall_cfg = {}
+        profile = _resolve_active_profile_name()
+        profile_dir = get_hermes_home() / "profiles" / profile
+        service = build_recall_service(profile_dir=profile_dir,
+                                       config=recall_cfg)
+        try:
+            h = recall_health_summary(service)
+            if not h["enabled"]:
+                check_info(
+                    "Semantic recall: disabled "
+                    "(enable via `hermes config set "
+                    "memory.semantic_recall.enabled true`)"
+                )
+                return
+            status_text = (
+                f"Semantic recall: enabled=true backend={h['backend']} "
+                f"healthy={h['backend_healthy']} "
+                f"embeddings={h['embeddings_stored']}/{h['max_rows']} "
+                f"top_k={h['top_k']}"
+            )
+            if h["backend_healthy"]:
+                check_ok(status_text)
+            else:
+                check_warn(
+                    status_text,
+                    f"backend={h['backend']} degraded to noop — install "
+                    "sentence-transformers for full recall",
+                )
+        finally:
+            if service.store is not None:
+                service.store.close()
+    except Exception as exc:
+        check_warn(
+            "Semantic recall: status unavailable",
+            f"doctor recall probe failed: {type(exc).__name__}: {exc}",
+        )
+
+
+
+
 def run_doctor(args):
     """Run diagnostic checks."""
     should_fix = getattr(args, 'fix', False)
@@ -692,6 +755,8 @@ def run_doctor(args):
     _section("Configuration Files")
     # Managed scope (administrator-pinned config/env), when present.
     managed_scope_check()
+    # Semantic recall (jcode feature adoption)
+    recall_check()
     # Check ~/.hermes/.env (primary location for user config)
     env_path = HERMES_HOME / '.env'
     if env_path.exists():

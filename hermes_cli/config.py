@@ -1143,6 +1143,13 @@ DEFAULT_CONFIG = {
         # default is 1800s) plus runtime slack.  Set to 0 to disable the
         # gate and restore pre-fix behaviour (always inject).
         "gateway_auto_continue_freshness": 3600,
+        # Worktree conflict notifications (jcode adoption).
+        # When two agents run in parallel worktrees on the same repo,
+        # notify a peer when one edits a file the other has recently read.
+        # Default false — opt-in to avoid surprising users who haven't
+        # asked for cross-agent coordination. Also accepts
+        # ``hermes --conflict-notify`` on the command line.
+        "worktree_conflict_notifications": False,
         # How user-attached images are presented to the main model on each turn.
         #   "auto"   — attach natively when the active model reports
         #              supports_vision=True AND the user hasn't explicitly
@@ -2245,6 +2252,30 @@ DEFAULT_CONFIG = {
         # "hindsight", "holographic", "retaindb", "byterover".
         # Only ONE external provider is allowed at a time.
         "provider": "",
+        # Semantic recall (jcode-style): per-turn embedding of user +
+        # assistant turns with cosine retrieval. Independent of
+        # memory_enabled / USER.md — this is a per-session turn-recall
+        # surface, not durable cross-session memory.
+        #   enabled  (default false) — turn on automatic recall injection.
+        #   backend  (default "fastembed") — "noop" disables embedding,
+        #                              "fastembed" downloads a 25 MB ONNX
+        #                              model on first use (no torch dep),
+        #                              "numpy" uses sentence-transformers
+        #                              (~500 MB total via torch).
+        #   top_k    (default 5)      — number of recalled turns per turn.
+        #   max_turns (default 200)   — sliding-window size of the on-disk store.
+        #   max_tokens (default 1500) — hard cap on the recall block size.
+        # When the configured backend is unavailable (e.g. fastembed
+        # not installed, network down on first use), recall silently
+        # degrades to noop — no error, no injection.
+        "semantic_recall": {
+            "enabled": False,
+            "backend": "fastembed",
+            "model": "BAAI/bge-small-en-v1.5",
+            "top_k": 5,
+            "max_turns": 200,
+            "max_tokens": 1500,
+        },
     },
 
     # Subagent delegation — override the provider:model used by delegate_task

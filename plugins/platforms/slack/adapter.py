@@ -4453,6 +4453,7 @@ class SlackAdapter(BasePlatformAdapter):
             if (
                 self._slack_ignore_other_user_mentions()
                 and not is_mentioned
+                and not self._slack_message_mentions_self(routing_text, self_uids)
                 and self._slack_message_addressed_to_other_user(routing_text, self_uids)
             ):
                 logger.debug(
@@ -6765,6 +6766,21 @@ class SlackAdapter(BasePlatformAdapter):
         if not match:
             return False
         return match.group(1) not in self_uids
+
+    def _slack_message_mentions_self(self, text: str, self_uids: set) -> bool:
+        """Return True when ``text`` @-mentions this bot anywhere in the message.
+
+        Matches both mention markups — ``<@U123>`` and the pipe form
+        ``<@U123|name>`` — so the ignore_other_user_mentions gate treats a
+        pipe-form bot mention as "also mentioned" even though the exact-markup
+        ``is_mentioned`` check only recognises ``<@U123>``.
+        """
+        if not text:
+            return False
+        return any(
+            re.search(rf"<@{re.escape(uid)}(?:\|[^>]*)?>", text)
+            for uid in self_uids
+        )
 
     def _slack_free_response_channels(self) -> set:
         """Return channel IDs where no @mention is required."""

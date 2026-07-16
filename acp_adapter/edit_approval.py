@@ -24,13 +24,18 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class EditProposal:
-    """A proposed single-file edit that can be shown to an ACP client."""
+    """A proposed file edit that can be shown to an ACP client."""
 
     tool_name: str
     path: str
     old_text: str | None
     new_text: str
     arguments: dict[str, Any]
+    # The individual target file paths this proposal touches. For single-file
+    # proposals this is ``(path,)``; for multi-file V4A patches ``path`` is a
+    # human-readable ", "-joined display string, while ``target_paths`` preserves
+    # each real path so security decisions can evaluate them independently.
+    target_paths: tuple[str, ...] = ()
 
 
 EditApprovalRequester = Callable[[EditProposal], bool]
@@ -117,6 +122,7 @@ def _proposal_for_write_file(arguments: dict[str, Any]) -> EditProposal:
         old_text=_read_text_if_exists(path),
         new_text=str(content),
         arguments=dict(arguments),
+        target_paths=(path,),
     )
 
 
@@ -150,6 +156,7 @@ def _proposal_for_patch_replace(arguments: dict[str, Any]) -> EditProposal:
         old_text=old_text,
         new_text=new_text,
         arguments=dict(arguments),
+        target_paths=(path,),
     )
 
 
@@ -197,6 +204,9 @@ def _proposal_for_patch_v4a(arguments: dict[str, Any]) -> EditProposal:
         # and denied patches cannot mutate.
         new_text=patch_body,
         arguments=dict(arguments),
+        # Preserve every real target path (not just the joined display string) so
+        # a mixed patch touching a sensitive or out-of-workspace file is caught.
+        target_paths=tuple(paths),
     )
 
 
@@ -233,36 +243,65 @@ def _is_sensitive_auto_approve_path(path: str) -> bool:
     return False
 
 
+def _proposal_target_paths(proposal: EditProposal) -> tuple[str, ...]:
+    """Every real file path a proposal touches, for path-based security checks.
+
+    Falls back to the display ``path`` for any proposal constructed without an
+    explicit ``target_paths`` so the check is never silently skipped.
+    """
+    return proposal.target_paths or (proposal.path,)
+
+
+def _path_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
 def should_auto_approve_edit(proposal: EditProposal, policy: str, cwd: str | None = None) -> bool:
     """Return whether an ACP edit proposal may bypass the prompt for this session.
 
     This is intentionally session-scoped and conservative: sensitive paths still
-    ask even under autonomous policies.
+    ask even under autonomous policies. Every individual target path is evaluated
+    independently, so a multi-file V4A patch is auto-approved only when *all* of
+    its targets qualify -- a single sensitive or out-of-workspace file forces the
+    prompt.
     """
 
     policy = str(policy or AUTO_APPROVE_ASK).strip()
-    if policy == AUTO_APPROVE_ASK or _is_sensitive_auto_approve_path(proposal.path):
+    if policy == AUTO_APPROVE_ASK:
         return False
-    path = Path(proposal.path).expanduser().resolve(strict=False)
+
+    targets = _proposal_target_paths(proposal)
+    # Any sensitive target (shell rc, credentials, .git/.ssh, home dotfile, ...)
+    # forces the prompt, even inside a mixed multi-file patch.
+    if any(_is_sensitive_auto_approve_path(target) for target in targets):
+        return False
+
     if policy == AUTO_APPROVE_SESSION:
         return True
+
     if policy == AUTO_APPROVE_WORKSPACE:
         # `/tmp` is the POSIX path but tempfile.gettempdir() is the real one on
         # every platform: `/private/tmp` on macOS (because `/tmp` is a symlink
         # and Path.resolve() follows it) and the per-user Temp dir on Windows.
         tmp_root = Path(tempfile.gettempdir()).resolve(strict=False)
-        try:
-            path.relative_to(tmp_root)
-            return True
-        except ValueError:
-            pass
-        if cwd:
-            root = Path(cwd).expanduser().resolve(strict=False)
-            try:
-                path.relative_to(root)
-                return True
-            except ValueError:
-                return False
+        workspace_root = (
+            Path(cwd).expanduser().resolve(strict=False) if cwd else None
+        )
+        # Auto-approve only if EVERY target is inside the temp dir or workspace;
+        # one out-of-scope target in a multi-file patch forces the prompt.
+        for target in targets:
+            resolved = Path(target).expanduser().resolve(strict=False)
+            if _path_within(resolved, tmp_root):
+                continue
+            if workspace_root is not None and _path_within(resolved, workspace_root):
+                continue
+            return False
+        return True
+
     return False
 
 

@@ -9,6 +9,7 @@ from pathlib import Path
 from acp_adapter.edit_approval import (
     EditProposal,
     build_acp_edit_tool_call,
+    build_edit_proposal,
     clear_edit_approval_requester,
     set_edit_approval_requester,
     should_auto_approve_edit,
@@ -267,3 +268,110 @@ def test_workspace_auto_approval_allows_workspace_and_tmp_but_not_sensitive(tmp_
         "session",
         str(tmp_path),
     )
+
+
+def _v4a_multifile_patch(*paths: str) -> str:
+    body = ["*** Begin Patch"]
+    for p in paths:
+        body.append(f"*** Update File: {p}")
+        body.append("@@")
+        body.append("+x")
+    body.append("*** End Patch")
+    return "\n".join(body) + "\n"
+
+
+def test_shell_and_config_rc_files_are_sensitive(tmp_path):
+    # New protected names added by this PR: writing any of these runs code or
+    # redirects trust at the next shell/login/tool invocation.
+    for name in (
+        ".bashrc",
+        ".bash_profile",
+        ".profile",
+        ".zshrc",
+        ".zshenv",
+        ".gitconfig",
+        ".npmrc",
+        ".pypirc",
+        ".netrc",
+        ".envrc",
+    ):
+        target = tmp_path / name
+        assert not should_auto_approve_edit(
+            EditProposal("write_file", str(target), None, "x", {}),
+            "session",
+            str(tmp_path),
+        ), f"{name} should be treated as sensitive"
+
+
+def test_persistence_and_credential_dir_paths_are_sensitive(tmp_path):
+    for rel in (
+        ".config/autostart/evil.desktop",
+        ".config/systemd/user/evil.service",
+        ".ssh/authorized_keys",
+        ".git/config",
+    ):
+        target = tmp_path / rel
+        assert not should_auto_approve_edit(
+            EditProposal("write_file", str(target), None, "x", {}),
+            "session",
+            str(tmp_path),
+        ), f"{rel} should be treated as sensitive"
+
+
+def test_v4a_proposal_preserves_individual_target_paths(tmp_path):
+    a = tmp_path / "a.py"
+    b = tmp_path / "pkg" / "b.py"
+    proposal = build_edit_proposal(
+        "patch", {"mode": "patch", "patch": _v4a_multifile_patch(str(a), str(b))}
+    )
+    assert proposal is not None
+    # Individual real paths are preserved for security checks...
+    assert proposal.target_paths == (str(a), str(b))
+    # ...while the display path stays the joined, human-readable string.
+    assert proposal.path == f"{a}, {b}"
+
+
+def test_multifile_v4a_patch_with_sensitive_target_not_last_is_not_auto_approved(tmp_path):
+    # Regression for the joined-display-string bug: the sensitive file is NOT the
+    # trailing path, so parsing ", ".join(paths) as one Path previously saw only
+    # "app.py" and auto-approved -- editing .bashrc with no prompt.
+    sensitive = tmp_path / ".bashrc"
+    normal = tmp_path / "app.py"
+    proposal = build_edit_proposal(
+        "patch",
+        {"mode": "patch", "patch": _v4a_multifile_patch(str(sensitive), str(normal))},
+    )
+    assert proposal is not None
+    assert proposal.target_paths == (str(sensitive), str(normal))
+    # Even the most permissive non-ask policies must now force the prompt.
+    assert not should_auto_approve_edit(proposal, "session", str(tmp_path))
+    assert not should_auto_approve_edit(proposal, "workspace_session", str(tmp_path))
+
+
+def test_multifile_v4a_patch_with_out_of_workspace_target_is_not_auto_approved(tmp_path):
+    # The same joined-string flaw defeated the workspace-containment check: a
+    # patch touching a file outside the workspace could still auto-approve.
+    inside = tmp_path / "a.py"
+    outside = Path(tmp_path.anchor) / "hermes_escape_dir_xyz" / "b.py"
+    proposal = build_edit_proposal(
+        "patch",
+        {"mode": "patch", "patch": _v4a_multifile_patch(str(inside), str(outside))},
+    )
+    assert proposal is not None
+    # workspace policy: one out-of-scope target forces the prompt.
+    assert not should_auto_approve_edit(proposal, "workspace_session", str(tmp_path))
+    # session policy trusts any non-sensitive path, so it still auto-approves.
+    assert should_auto_approve_edit(proposal, "session", str(tmp_path))
+
+
+def test_multifile_v4a_patch_all_safe_workspace_paths_auto_approves(tmp_path):
+    # Ensure the stricter per-target logic does not over-block legitimate
+    # multi-file patches entirely inside the workspace.
+    a = tmp_path / "a.py"
+    b = tmp_path / "pkg" / "b.py"
+    proposal = build_edit_proposal(
+        "patch", {"mode": "patch", "patch": _v4a_multifile_patch(str(a), str(b))}
+    )
+    assert proposal is not None
+    assert should_auto_approve_edit(proposal, "workspace_session", str(tmp_path))
+    assert should_auto_approve_edit(proposal, "session", str(tmp_path))

@@ -1787,21 +1787,29 @@ class SessionDB:
         try:
             cursor.execute(title_index_sql)
         except sqlite3.IntegrityError:
-            cursor.execute(
-                """UPDATE sessions AS older
-                   SET title = NULL
-                   WHERE title IS NOT NULL
-                     AND EXISTS (
-                         SELECT 1 FROM sessions AS newer
-                         WHERE newer.title = older.title
-                           AND newer.rowid > older.rowid
-                     )"""
-            )
-            logger.warning(
-                "Cleared %d duplicate session title(s) while restoring the unique index",
-                cursor.rowcount,
-            )
-            cursor.execute(title_index_sql)
+            # The index is an optimization — its creation must never abort
+            # opening the database, so the repair itself is also guarded.
+            try:
+                cursor.execute(
+                    """UPDATE sessions AS older
+                       SET title = NULL
+                       WHERE title IS NOT NULL
+                         AND EXISTS (
+                             SELECT 1 FROM sessions AS newer
+                             WHERE newer.title = older.title
+                               AND newer.rowid > older.rowid
+                         )"""
+                )
+                logger.warning(
+                    "Cleared %d duplicate session title(s) while restoring the unique index",
+                    cursor.rowcount,
+                )
+                cursor.execute(title_index_sql)
+            except sqlite3.Error:
+                logger.exception(
+                    "Could not repair duplicate session titles; "
+                    "unique title index not created"
+                )
         except sqlite3.OperationalError:
             pass  # Index already exists
 

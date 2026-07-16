@@ -1863,9 +1863,13 @@ def _dedupe_active_idempotency_keys(conn: sqlite3.Connection) -> None:
     cheap on the common case (no duplicates): the GROUP BY scan is the only
     cost when there is nothing to fix.
     """
+    # Empty-string keys mean "no idempotency" and are excluded from the UNIQUE
+    # partial index, so multiple active '' rows are legal — never archive them
+    # as duplicates. Mirror the index predicate here.
     dupe_keys = conn.execute(
         "SELECT idempotency_key FROM tasks "
-        "WHERE idempotency_key IS NOT NULL AND status != 'archived' "
+        "WHERE idempotency_key IS NOT NULL AND idempotency_key != '' "
+        "AND status != 'archived' "
         "GROUP BY idempotency_key HAVING COUNT(*) > 1"
     ).fetchall()
     if not dupe_keys:
@@ -2052,7 +2056,10 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     # that ``create_task`` turns into a "return the canonical existing task"
     # response instead of a silently-inserted duplicate. Archived rows are
     # excluded so a key can be legitimately reused once its original task is
-    # archived, matching the pre-existing fast-path SELECT semantics. Kept
+    # archived, matching the pre-existing fast-path SELECT semantics. Empty
+    # ('') keys are also excluded: ``create_task`` treats "" as "no key" and
+    # normalises it to NULL, but legacy DBs may still hold '' rows, and those
+    # must stay non-unique (multiple keyless tasks are legal). Kept
     # under the SAME index name (drop + recreate, not rename) so callers that
     # only inspect ``sqlite_master`` for ``idx_tasks_idempotency`` see no
     # difference.
@@ -2071,7 +2078,8 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_idempotency "
             "ON tasks(idempotency_key) "
-            "WHERE idempotency_key IS NOT NULL AND status != 'archived'"
+            "WHERE idempotency_key IS NOT NULL AND idempotency_key != '' "
+            "AND status != 'archived'"
         )
     else:
         conn.execute(
@@ -2527,6 +2535,13 @@ def create_task(
         branch_name = str(branch_name).strip() or None
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
+    # An empty / whitespace-only idempotency key means "no idempotency" — the
+    # fast-path lookup and IntegrityError recovery below both gate on
+    # ``if idempotency_key`` (falsy for ""). Normalise to NULL so the column
+    # stores NULL rather than ''; the UNIQUE partial index excludes NULLs, so a
+    # second keyless create still succeeds instead of colliding on a stored ''.
+    if idempotency_key is not None:
+        idempotency_key = str(idempotency_key).strip() or None
 
     # Resolve an optional first-class Project link. A project-linked task is
     # anchored to the project's primary repo as a git worktree, so its branch

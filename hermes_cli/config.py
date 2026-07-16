@@ -3374,8 +3374,18 @@ DEFAULT_CONFIG = {
             "access_token_env": "BWS_ACCESS_TOKEN",
             # UUID of the BSM project to sync from.
             "project_id": "",
-            # Seconds to cache fetched secrets in-process.  0 disables.
+            # Seconds to reuse a fresh disk/memory cache entry before contacting
+            # Bitwarden again. 0 disables normal fresh-cache reuse.
             "cache_ttl_seconds": 300,
+            # Optional encrypted last-good fallback for network/timeout outages.
+            # When enabled, successful BWS fetches write AES-GCM encrypted cache
+            # material under ~/.hermes/cache/. If a later startup cannot reach
+            # Bitwarden due to NETWORK/TIMEOUT, Hermes may use this encrypted
+            # cache for up to max_stale_seconds. Auth failures do not fall back.
+            "encrypted_cache": {
+                "enabled": False,
+                "max_stale_seconds": 0,
+            },
             # When True, BSM values overwrite existing env vars.  Default
             # True because the point of using BSM is centralized rotation —
             # if .env had the final say, rotating in Bitwarden wouldn't

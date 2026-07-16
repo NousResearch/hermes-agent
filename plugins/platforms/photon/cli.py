@@ -318,9 +318,13 @@ def _cmd_status(_args: argparse.Namespace) -> int:
 
 
 def _refresh_status_numbers() -> None:
-    phone, assigned = photon_auth.load_user_numbers()
-    if phone and assigned:
-        return
+    """Refresh cached Photon user routing before showing status.
+
+    Photon shared-line assignments can change, and older setup retries could
+    leave ``photon_user.assigned_phone_number`` pointing at a stale shared line.
+    Always ask Spectrum for the current user row when credentials are available
+    so ``hermes photon status`` does not tell the operator to text a dead line.
+    """
     spectrum_id, project_secret = photon_auth.load_project_credentials()
     if not spectrum_id or not project_secret:
         return

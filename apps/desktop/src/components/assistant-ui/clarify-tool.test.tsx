@@ -81,6 +81,12 @@ function renderLiveClarify() {
   return request
 }
 
+function focusClarifySurface(index = 0) {
+  const surface = globalThis.document.querySelectorAll('[data-clarify-focus-scope]')[index]
+
+  ;(surface as HTMLElement).focus()
+}
+
 describe('readClarifyResult', () => {
   it('reads question + user_response from the tool JSON payload', () => {
     expect(
@@ -211,6 +217,19 @@ describe('ClarifyTool keyboard navigation', () => {
     fireEvent.keyDown(window, { key: 'ArrowUp' })
     expect(document.activeElement).toBe(other)
     expect((other as HTMLTextAreaElement).value).toBe('canary')
+  })
+
+  it('does not let Enter answer an unfocused clarify card', async () => {
+    const request = renderLiveClarify()
+
+    renderClarify(<ClarifyTool {...liveClarifyProps()} />)
+    focusClarifySurface(0)
+    fireEvent.keyDown(window, { key: '2' })
+    fireEvent.keyDown(window, { key: 'Enter' })
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledTimes(1)
+    })
   })
 
   it('does not intercept keyboard events while an action button has focus', () => {

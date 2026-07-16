@@ -77,6 +77,31 @@ export function readClarifyResult(result: unknown): ClarifyResult {
 
 const letterFor = (index: number): string => String.fromCharCode(65 + index)
 
+let clarifySurfaceSequence = 0
+const clarifySurfaceOrder: number[] = []
+let activeClarifySurface: number | null = null
+
+function registerClarifySurface(id: number): () => void {
+  clarifySurfaceOrder.push(id)
+  activeClarifySurface ??= id
+
+  return () => {
+    const index = clarifySurfaceOrder.indexOf(id)
+
+    if (index >= 0) {
+      clarifySurfaceOrder.splice(index, 1)
+    }
+
+    if (activeClarifySurface === id) {
+      activeClarifySurface = clarifySurfaceOrder[0] ?? null
+    }
+  }
+}
+
+const claimClarifySurface = (id: number): void => {
+  activeClarifySurface = id
+}
+
 const OPTION_ROW_CLASS =
   'flex w-full items-start gap-2 rounded-[0.25rem] px-1.5 py-1 text-left disabled:cursor-not-allowed disabled:opacity-50'
 
@@ -220,6 +245,22 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   const [activeIndex, setActiveIndex] = useState(0)
   const [otherFocused, setOtherFocused] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const surfaceRef = useRef<HTMLDivElement | null>(null)
+  const surfaceIdRef = useRef<number | null>(null)
+
+  if (surfaceIdRef.current === null) {
+    surfaceIdRef.current = clarifySurfaceSequence++
+  }
+
+  useEffect(() => {
+    const surfaceId = surfaceIdRef.current
+
+    if (surfaceId === null) {
+      return
+    }
+
+    return registerClarifySurface(surfaceId)
+  }, [])
 
   // Race: tool.start fires a tick before clarify.request, so request_id
   // arrives slightly after the tool block mounts. Hold the whole panel on a
@@ -355,6 +396,14 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
       }
 
       const active = document.activeElement as HTMLElement | null
+      const surfaceId = surfaceIdRef.current
+
+      // Only the active clarify surface may consume window-level navigation.
+      // The first mounted surface is the fallback owner when focus is in the
+      // chat body; pointer/focus interaction transfers ownership explicitly.
+      if (surfaceId === null || activeClarifySurface !== surfaceId) {
+        return
+      }
 
       if (
         active &&
@@ -436,7 +485,22 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   }
 
   return (
-    <ClarifyShell className="grid gap-2 px-2.5 py-2">
+    <ClarifyShell
+      className="grid gap-2 px-2.5 py-2"
+      data-clarify-focus-scope=""
+      onFocusCapture={() => {
+        if (surfaceIdRef.current !== null) {
+          claimClarifySurface(surfaceIdRef.current)
+        }
+      }}
+      onPointerDown={() => {
+        if (surfaceIdRef.current !== null) {
+          claimClarifySurface(surfaceIdRef.current)
+        }
+      }}
+      ref={surfaceRef}
+      tabIndex={0}
+    >
       <div className="flex items-start gap-2">
         <span className="flex-1 whitespace-pre-wrap font-medium leading-(--conversation-line-height)">{question}</span>
         <MessageQuestion aria-hidden className="mt-px size-4 shrink-0 text-(--ui-text-tertiary)" />

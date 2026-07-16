@@ -132,6 +132,7 @@ import {
   MIN_WIDTH as WINDOW_MIN_WIDTH
 } from './window-state'
 import { hiddenWindowsChildOptions } from './windows-child-options'
+import { resolveGitBinary as resolveGitBinaryImpl } from './windows-git-binary'
 import {
   buildPathExtCandidates,
   chooseUpdaterArgs,
@@ -1831,37 +1832,13 @@ function makeDashboardReadyFile() {
 // PATH), so a bare spawn('git') ENOENTs and self-update checks fail with
 // "Couldn't check for updates". Mirror findGitBash: PortableGit first, then
 // standard Git-for-Windows locations, then PATH. Cached after first probe.
-let _gitBinaryCache = null
-
 function resolveGitBinary() {
-  if (_gitBinaryCache) {
-    return _gitBinaryCache
-  }
-
-  if (!IS_WINDOWS) {
-    _gitBinaryCache = findOnPath('git') || 'git'
-
-    return _gitBinaryCache
-  }
-
-  const localAppData = process.env.LOCALAPPDATA || ''
-  const candidates = []
-
-  if (localAppData) {
-    candidates.push(path.join(localAppData, 'hermes', 'git', 'cmd', 'git.exe'))
-    candidates.push(path.join(localAppData, 'hermes', 'git', 'bin', 'git.exe'))
-  }
-
-  candidates.push(path.join(process.env['ProgramFiles'] || 'C:\\Program Files', 'Git', 'cmd', 'git.exe'))
-  candidates.push(path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'cmd', 'git.exe'))
-
-  if (localAppData) {
-    candidates.push(path.join(localAppData, 'Programs', 'Git', 'cmd', 'git.exe'))
-  }
-
-  _gitBinaryCache = candidates.find(fileExists) || findOnPath('git') || 'git'
-
-  return _gitBinaryCache
+  return resolveGitBinaryImpl({
+    isWindows: IS_WINDOWS,
+    fileExists,
+    findOnPath,
+    env: process.env
+  })
 }
 
 // resolveGhBinary — locate the GitHub CLI. GUI-launched apps get a minimal PATH

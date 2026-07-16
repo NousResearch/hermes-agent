@@ -180,19 +180,24 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # ── Stable tier ────────────────────────────────────────────────
     stable_parts: List[str] = []
 
-    # Try SOUL.md as primary identity unless the caller explicitly skipped it.
+    # Load SOUL.md unless the caller explicitly skipped it. The session-stable
+    # identity resolver owns whether SOUL replaces or supplements the identity.
     # Some execution modes (cron) still want HERMES_HOME persona while keeping
     # cwd project instructions disabled.
     _soul_loaded = False
     if agent.load_soul_identity or not agent.skip_context_files:
         _soul_content = _r.load_soul_md(_ctx_len)
         if _soul_content:
-            stable_parts.append(_soul_content)
             _soul_loaded = True
 
-    if not _soul_loaded:
-        # Fallback to hardcoded identity
-        stable_parts.append(DEFAULT_AGENT_IDENTITY)
+    from agent.beta_identity import ResolvedIdentity
+
+    identity = getattr(
+        agent,
+        "_resolved_identity",
+        ResolvedIdentity(mode="hermes", prompt=DEFAULT_AGENT_IDENTITY),
+    )
+    stable_parts.append(identity.compose(_soul_content if _soul_loaded else None))
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)

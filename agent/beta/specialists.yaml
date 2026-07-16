@@ -1,0 +1,104 @@
+specialists:
+  - id: infra
+    name: Infrastructure
+    description: Diagnoses hosts, operating systems, networks, storage, and capacity.
+    capabilities: [infrastructure, linux, networking, storage, performance]
+    keywords: [cpu, disk, host, server, latency, network, memory]
+    allowed_toolsets: [terminal, file, web]
+    blocked_tools: [delegate_task, clarify, memory, send_message, execute_code]
+    max_risk: medium
+    memory_access: read_write
+    memory_scope: specialist:infra
+    max_concurrency: 2
+    enabled: true
+
+  - id: dba
+    name: Database Administrator
+    description: Diagnoses database performance, locking, queries, indexes, and configuration.
+    capabilities: [database, postgresql, mysql, sql, locks, query-performance]
+    keywords: [postgresql, postgres, database, query, sql, lock, index, replication]
+    allowed_toolsets: [terminal, file, web]
+    blocked_tools: [delegate_task, clarify, memory, send_message, execute_code]
+    max_risk: medium
+    memory_access: read_write
+    memory_scope: specialist:dba
+    max_concurrency: 2
+    enabled: true
+
+  - id: security
+    name: Security
+    description: Reviews vulnerabilities, access controls, secrets, and security posture.
+    capabilities: [security, vulnerability, access-control, secrets, threat-analysis]
+    keywords: [security, vulnerability, cve, firewall, permission, secret, attack]
+    allowed_toolsets: [terminal, file, web]
+    blocked_tools: [delegate_task, clarify, memory, send_message, execute_code]
+    max_risk: medium
+    memory_access: read_write
+    memory_scope: specialist:security
+    max_concurrency: 1
+    enabled: true
+
+  - id: monitoring
+    name: Monitoring
+    description: Correlates metrics, logs, traces, alerts, and service health.
+    capabilities: [monitoring, metrics, logs, tracing, alerting, observability, performance]
+    keywords: [metric, log, trace, alert, latency, throughput, dashboard]
+    allowed_toolsets: [terminal, file, web]
+    blocked_tools: [delegate_task, clarify, memory, send_message, execute_code]
+    max_risk: low
+    memory_access: read_write
+    memory_scope: specialist:monitoring
+    max_concurrency: 3
+    enabled: true
+
+  - id: dev
+    name: Software Development
+    description: Implements and diagnoses application code, tests, and software design.
+    capabilities: [software-development, debugging, testing, architecture, code-review]
+    keywords: [code, bug, test, application, api, refactor, implement]
+    allowed_toolsets: [terminal, file, web]
+    blocked_tools: [delegate_task, clarify, memory, send_message]
+    max_risk: medium
+    memory_access: read_write
+    memory_scope: specialist:dev
+    max_concurrency: 3
+    enabled: true
+
+  - id: devops
+    name: DevOps
+    description: Handles delivery pipelines, containers, deployment plans, and automation.
+    capabilities: [devops, ci-cd, containers, deployment, automation, cloud]
+    keywords: [deploy, pipeline, docker, kubernetes, ci, cd, terraform, cloud]
+    allowed_toolsets: [terminal, file, web]
+    blocked_tools: [delegate_task, clarify, memory, send_message, execute_code]
+    max_risk: medium
+    memory_access: read_write
+    memory_scope: specialist:devops
+    max_concurrency: 2
+    enabled: true
+
+  - id: memory
+    name: Memory Steward
+    description: Classifies durable knowledge and maintains scoped technical memory.
+    capabilities: [memory, knowledge-management, classification, retrieval]
+    keywords: [remember, memory, preference, decision, knowledge, recall]
+    allowed_toolsets: [memory, session_search, file]
+    blocked_tools: [delegate_task, clarify, send_message, execute_code]
+    max_risk: low
+    memory_access: read_write
+    memory_scope: specialist:memory
+    max_concurrency: 1
+    enabled: true
+
+  - id: qa-auditor
+    name: QA Auditor
+    description: Validates evidence, tests claims, and reviews conflicting specialist findings.
+    capabilities: [quality-assurance, audit, verification, testing, evidence-review]
+    keywords: [audit, verify, validate, conflict, evidence, quality, test]
+    allowed_toolsets: [terminal, file, web]
+    blocked_tools: [delegate_task, clarify, memory, send_message, execute_code]
+    max_risk: low
+    memory_access: read
+    memory_scope: specialist:qa-auditor
+    max_concurrency: 2
+    enabled: true

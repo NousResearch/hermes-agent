@@ -336,6 +336,7 @@ locales = ["locales/*.yaml"]
 "optional-mcps/n8n" = ["optional-mcps/n8n/manifest.yaml"]
 
 [tool.setuptools.package-data]
+agent = ["beta/*.yaml"]
 hermes_cli = ["web_dist/**/*", "tui_dist/**/*", "scripts/install.sh", "scripts/install.ps1"]
 gateway = ["assets/**/*"]
 plugins = [

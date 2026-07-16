@@ -1354,6 +1354,10 @@ def init_agent(
         _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}
+    from agent.beta_identity import resolve_agent_identity
+    from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+
+    agent._resolved_identity = resolve_agent_identity(DEFAULT_AGENT_IDENTITY, _agent_cfg)
     try:
         agent._tool_guardrails = ToolCallGuardrailController(
             ToolCallGuardrailConfig.from_mapping(

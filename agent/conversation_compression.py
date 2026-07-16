@@ -42,6 +42,17 @@ from agent.model_metadata import estimate_request_tokens_rough
 
 logger = logging.getLogger(__name__)
 
+
+def _session_source_hint(default: str = "cli") -> str:
+    """Task-local HERMES_SESSION_SOURCE first; process env only if unbound."""
+    try:
+        from gateway.session_context import resolve_session_source_hint
+
+        return resolve_session_source_hint(default)
+    except Exception:
+        return os.environ.get("HERMES_SESSION_SOURCE") or default
+
+
 # Stable marker the gateway matches on to re-tag the auto-compaction lifecycle
 # status as ``kind="compacting"`` (tui_gateway/server.py::_status_update), so
 # drivers like the desktop app can show an explicit "Summarizing…" indicator
@@ -895,7 +906,7 @@ def compress_context(
                     try:
                         agent._session_db.create_session(
                             session_id=agent.session_id,
-                            source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                            source=agent.platform or _session_source_hint(),
                             model=agent.model,
                             model_config=agent._session_init_model_config,
                             parent_session_id=old_session_id,

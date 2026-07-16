@@ -28,6 +28,16 @@ from agent.thread_scoped_output import thread_scoped_silence
 logger = logging.getLogger(__name__)
 
 
+def _session_source_hint(default: str = "cli") -> str:
+    """Task-local HERMES_SESSION_SOURCE first; process env only if unbound."""
+    try:
+        from gateway.session_context import resolve_session_source_hint
+
+        return resolve_session_source_hint(default)
+    except Exception:
+        return os.environ.get("HERMES_SESSION_SOURCE") or default
+
+
 # ---------------------------------------------------------------------------
 # Background-review aux-model selector + routed digest.
 #
@@ -604,7 +614,7 @@ def build_memory_write_metadata(
         ),
         "session_id": agent.session_id or "",
         "parent_session_id": agent._parent_session_id or "",
-        "platform": agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+        "platform": agent.platform or _session_source_hint(),
         "tool_name": "memory",
     }
     if task_id:

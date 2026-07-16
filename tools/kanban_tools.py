@@ -124,7 +124,16 @@ def _stamp_worker_session_metadata(
     """Add trusted worker session id metadata for this worker's own task."""
     if os.environ.get("HERMES_KANBAN_TASK") != task_id:
         return metadata
-    session_id = os.environ.get("HERMES_SESSION_ID")
+    try:
+        from gateway.session_context import get_session_env
+
+        # get_session_env already falls back to process env when the
+        # ContextVar is unbound. After clear_session_vars it returns ""
+        # on purpose; do not re-read os.environ here or a stale sibling
+        # HERMES_SESSION_ID resurrects after clear.
+        session_id = get_session_env("HERMES_SESSION_ID", "")
+    except Exception:
+        session_id = os.environ.get("HERMES_SESSION_ID")
     if not session_id:
         return metadata
     stamped = dict(metadata or {})
@@ -857,9 +866,17 @@ def _handle_create(args: dict, **kw) -> str:
     parents = args.get("parents") or []
     tenant = args.get("tenant") or os.environ.get("HERMES_TENANT")
     # Stamp the originating session id when the agent loop runs under
-    # ACP (which sets HERMES_SESSION_ID before invoking tools). NULL on
-    # CLI / dashboard paths and on legacy hosts that don't set the env.
-    session_id = args.get("session_id") or os.environ.get("HERMES_SESSION_ID")
+    # ACP / gateway. Prefer task-local session context (get_session_env
+    # falls back to process env only when unbound; after clear it stays "").
+    if args.get("session_id"):
+        session_id = args.get("session_id")
+    else:
+        try:
+            from gateway.session_context import get_session_env
+
+            session_id = get_session_env("HERMES_SESSION_ID", "")
+        except Exception:
+            session_id = os.environ.get("HERMES_SESSION_ID")
     priority = args.get("priority")
     # Resolve workspace. If the caller passed one explicitly, honor it.
     # Otherwise, a dispatcher-spawned worker (HERMES_KANBAN_TASK set)

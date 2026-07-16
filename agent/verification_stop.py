@@ -113,16 +113,17 @@ def _session_is_messaging_surface() -> bool:
     non-messaging surface.
     """
     try:
-        from gateway.session_context import get_session_env
-
-        platform = (
-            os.getenv("HERMES_PLATFORM")
-            or get_session_env("HERMES_SESSION_PLATFORM", "")
+        from gateway.session_context import (
+            resolve_session_platform_hint,
+            resolve_session_source_hint,
         )
-        source = get_session_env("HERMES_SESSION_SOURCE", "")
+
+        platform = resolve_session_platform_hint()
+        source = resolve_session_source_hint(default="")
     except Exception:
-        platform = os.getenv("HERMES_PLATFORM", "") or os.environ.get(
-            "HERMES_SESSION_PLATFORM", ""
+        platform = (
+            os.getenv("HERMES_PLATFORM", "")
+            or os.environ.get("HERMES_SESSION_PLATFORM", "")
         )
         source = os.environ.get("HERMES_SESSION_SOURCE", "")
     for identity in (platform, source):

@@ -376,12 +376,8 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     if not isinstance(skills_cfg, dict):
         return set()
 
-    from gateway.session_context import get_session_env
-    resolved_platform = (
-        platform
-        or os.getenv("HERMES_PLATFORM")
-        or get_session_env("HERMES_SESSION_PLATFORM")
-    )
+    from gateway.session_context import resolve_session_platform_hint
+    resolved_platform = platform or resolve_session_platform_hint()
     global_disabled = _normalize_string_set(skills_cfg.get("disabled"))
     if resolved_platform:
         platform_disabled = (skills_cfg.get("platform_disabled") or {}).get(

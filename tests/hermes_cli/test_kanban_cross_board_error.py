@@ -167,6 +167,35 @@ def test_cross_board_hint_names_owning_board(kanban_home, monkeypatch):
     assert "hermes kanban boards switch alpha" in hint
 
 
+def test_cross_board_hint_with_db_pinned_to_active(kanban_home, monkeypatch):
+    """The hint must still find the owning board when the dispatcher has
+    pinned ``HERMES_KANBAN_DB`` to the active board (#65128).
+
+    Dispatcher-spawned workers always carry this pin (see
+    ``kanban_db.py`` worker env handoff). A naive scan that reconnects via
+    ``connect(board=other)`` honours the pin, reopens the active board's
+    DB, and never finds the task — so the scan must bypass the env
+    override with an explicit ``db_path``.
+    """
+    kb.create_board("default")
+    kb.create_board("alpha")
+    # Create the task on "alpha" BEFORE the DB pin is set, otherwise
+    # ``connect(board="alpha")`` inside _task_on_board would itself be
+    # hijacked by the pin and write the task to the default board.
+    tid = _task_on_board("alpha")
+
+    # Pin the active ("default") board's DB exactly as the dispatcher does.
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(kb.kanban_db_path(board="default")))
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "default")
+
+    with kb.connect(board="default") as conn:
+        hint = kc._cross_board_hint(conn, [tid])
+
+    assert hint is not None
+    assert "board 'alpha'" in hint
+    assert "hermes kanban boards switch alpha" in hint
+
+
 def test_task_ids_parsed_from_unknown_task_message():
     assert kc._task_ids_from_unknown_task_message("unknown task t_abc123") == [
         "t_abc123"

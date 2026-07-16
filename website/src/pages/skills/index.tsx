@@ -756,7 +756,7 @@ export default function SkillsDashboard() {
                       : undefined
                   }
                 >
-                  {src === "all" ? "All" : conf?.label || src}
+                  {src === "all" ? "全部" : conf?.label || src}
                   <span className={styles.srcCount}>{count}</span>
                 </button>
               );

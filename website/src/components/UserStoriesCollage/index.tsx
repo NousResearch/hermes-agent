@@ -193,7 +193,7 @@ export default function UserStoriesCollage(): JSX.Element {
           className={`${styles.filterBtn} ${activeCategory === 'all' ? styles.filterActive : ''}`}
           onClick={() => setActiveCategory('all')}
         >
-          All<span className={styles.filterCount}>{allStories.length}</span>
+          全部<span className={styles.filterCount}>{allStories.length}</span>
         </button>
         {Object.entries(CATEGORIES)
           .filter(([key]) => categoryCounts[key])
@@ -224,7 +224,7 @@ export default function UserStoriesCollage(): JSX.Element {
           onClick={() => setActiveSource('all')}
           style={{ fontSize: '0.72rem' }}
         >
-          All sources
+          全部来源
         </button>
         {Object.entries(SOURCE_LABELS)
           .filter(([key]) => sourceCounts[key])

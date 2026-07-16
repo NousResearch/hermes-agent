@@ -365,13 +365,15 @@ Body:
 Review behavior:
 
 1. Robin waits until there are at least `min_items_before_review` items.
-2. It prefers unrated items first.
-3. Then lower-rated items.
-4. Then items with the fewest total prior surfaces.
-5. It skips items surfaced within `review_cooldown_days`.
-6. Scheduled recall is the default: `python3 scripts/review.py --state-dir <state-dir>` increments `times_surfaced`, sets `last_surfaced`, and keeps `_awaiting_rating` as `false`.
-7. Active review is explicit: `python3 scripts/review.py --state-dir <state-dir> --active-review` increments `times_surfaced`, sets `last_surfaced`, and marks `_awaiting_rating` as `true`.
-8. A subsequent `--rate` call for that actively surfaced item overwrites the previous rating and sets `_awaiting_rating` back to `false` without incrementing `times_surfaced` again.
+2. It skips items surfaced within `review_cooldown_days`.
+3. It prefers items with the fewest total prior surfaces.
+4. It prefers never-surfaced items before previously surfaced items, then prefers the oldest prior surface.
+5. If another topic is eligible, it avoids surfacing the same topic that was surfaced most recently.
+6. Ratings are only a late tie-breaker; they do not lead scheduled recall ordering.
+7. Robin lightly randomizes within the best eligible pool so overloaded topics do not dominate recall.
+8. Scheduled recall is the default: `python3 scripts/review.py --state-dir <state-dir>` increments `times_surfaced`, sets `last_surfaced`, and keeps `_awaiting_rating` as `false`.
+9. Active review is explicit: `python3 scripts/review.py --state-dir <state-dir> --active-review` increments `times_surfaced`, sets `last_surfaced`, and marks `_awaiting_rating` as `true`.
+10. A subsequent `--rate` call for that actively surfaced item overwrites the previous rating and sets `_awaiting_rating` back to `false` without incrementing `times_surfaced` again.
 
 If `--rate` is called directly on an item that was not surfaced first, Robin still sets `last_surfaced`, increments `times_surfaced`, and keeps `_awaiting_rating` as `false`.
 

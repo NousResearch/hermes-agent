@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 from datetime import datetime, timedelta, timezone
 
 from robin.models import Entry
@@ -17,12 +18,38 @@ def parse_timestamp(value: str) -> datetime:
     return timestamp
 
 
+def _most_recent_surfaced_topic(index: dict) -> str | None:
+    latest_topic: str | None = None
+    latest_timestamp: datetime | None = None
+    for item in index.get("items", {}).values():
+        last_surfaced = item.get("last_surfaced")
+        if not last_surfaced:
+            continue
+        parsed = parse_timestamp(last_surfaced)
+        if latest_timestamp is None or parsed > latest_timestamp:
+            latest_timestamp = parsed
+            latest_topic = item.get("topic")
+    return latest_topic
+
+
+def _candidate_sort_key(item: dict, entry: Entry) -> tuple[int, int, datetime, tuple[int, int], str]:
+    last_surfaced = item.get("last_surfaced")
+    rating = item.get("rating")
+    return (
+        item.get("times_surfaced", 0),
+        0 if last_surfaced is None else 1,
+        parse_timestamp(last_surfaced) if last_surfaced else datetime.min.replace(tzinfo=timezone.utc),
+        (0, rating) if rating is not None else (1, 6),
+        entry.entry_id,
+    )
+
+
 def pick_best_candidate(index: dict, entries: list[Entry], config: dict) -> tuple[dict, Entry] | None:
     entries_by_id = {entry.entry_id: entry for entry in entries}
     cooldown_days = config.get("review_cooldown_days", 60)
     cutoff = datetime.now(timezone.utc) - timedelta(days=cooldown_days)
 
-    candidates: list[tuple[tuple[int, int, int, str], dict, Entry]] = []
+    candidates: list[tuple[dict, Entry]] = []
     for entry_id, item in index.get("items", {}).items():
         entry = entries_by_id.get(entry_id)
         if entry is None:
@@ -32,21 +59,21 @@ def pick_best_candidate(index: dict, entries: list[Entry], config: dict) -> tupl
         if last_surfaced and parse_timestamp(last_surfaced) > cutoff:
             continue
 
-        rating = item.get("rating")
-        times_surfaced = item.get("times_surfaced", 0)
-        score = (
-            0 if rating is None else 1,
-            rating if rating is not None else 0,
-            times_surfaced,
-            entry.entry_id,
-        )
-        candidates.append((score, item, entry))
+        candidates.append((item, entry))
 
     if not candidates:
         return None
 
-    _, item, entry = min(candidates, key=lambda candidate: candidate[0])
-    return item, entry
+    most_recent_topic = _most_recent_surfaced_topic(index)
+    if most_recent_topic is not None:
+        alternate_topic_candidates = [candidate for candidate in candidates if candidate[1].topic != most_recent_topic]
+        if alternate_topic_candidates:
+            candidates = alternate_topic_candidates
+
+    candidates.sort(key=lambda candidate: _candidate_sort_key(candidate[0], candidate[1]))
+    minimum_times_surfaced = candidates[0][0].get("times_surfaced", 0)
+    top_pool = [candidate for candidate in candidates if candidate[0].get("times_surfaced", 0) == minimum_times_surfaced][:10]
+    return random.choice(top_pool)
 
 
 def mark_surfaced(index: dict, entry_id: str, *, awaiting_rating: bool = False) -> dict:

@@ -26,12 +26,27 @@ def index_path(explicit_state_dir: str | None = None) -> Path:
     return state_dir(explicit_state_dir) / "robin-review-index.json"
 
 
+def _confined_subpath(root: Path, value: str, field: str) -> Path:
+    """Resolve a configured subdirectory, refusing to leave the state directory.
+
+    Absolute values (``Path(root) / "/etc"`` discards the base) and ``..`` escapes
+    would otherwise let topic/media operations touch paths outside the state root.
+    """
+    root = root.resolve()
+    candidate = (root / value).resolve()
+    if candidate != root and root not in candidate.parents:
+        raise SystemExit(
+            f"Config {field}={value!r} must be a relative path inside the state directory."
+        )
+    return candidate
+
+
 def topics_path(config: dict, explicit_state_dir: str | None = None) -> Path:
-    return state_dir(explicit_state_dir) / config.get("topics_dir", "topics")
+    return _confined_subpath(state_dir(explicit_state_dir), config.get("topics_dir", "topics"), "topics_dir")
 
 
 def media_path(config: dict, explicit_state_dir: str | None = None) -> Path:
-    return state_dir(explicit_state_dir) / config.get("media_dir", "media")
+    return _confined_subpath(state_dir(explicit_state_dir), config.get("media_dir", "media"), "media_dir")
 
 
 def load_config(explicit_state_dir: str | None = None) -> dict:

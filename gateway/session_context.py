@@ -327,13 +327,30 @@ def get_session_env(name: str, default: str = "") -> str:
     return os.getenv(name, default)
 
 
+def set_async_delivery_supported(supported: bool) -> None:
+    """Declare whether the current context can deliver a background completion.
+
+    Standalone setter for callers that are not full gateway adapters and so
+    never go through ``set_session_vars`` — e.g. ``hermes -z`` oneshot runs,
+    whose process exits as soon as the single turn ends and therefore has no
+    channel left to route a detached subagent result or terminal watcher
+    notification back into the conversation. Binding ``False`` here makes
+    ``delegate_task background=true`` fall back to synchronous execution and
+    ``terminal`` refuse notify_on_complete/watch_patterns, instead of
+    orphaning work on a daemon thread that dies with the process.
+    """
+    _SESSION_ASYNC_DELIVERY.set(bool(supported))
+
+
 def async_delivery_supported() -> bool:
     """Whether the current session can deliver a background completion later.
 
-    Returns ``False`` only when the active session was explicitly bound by a
-    stateless adapter (the API server) that cannot route a notification back to
-    the agent after the turn ends. CLI, cron, and the real gateway platforms —
-    and any path that never bound the contextvar — return ``True``.
+    Returns ``False`` only when the active session was explicitly bound as
+    unable to route a notification back to the agent after the turn ends —
+    stateless adapters (the API server) via ``set_session_vars``, and oneshot
+    ``hermes -z`` runs via ``set_async_delivery_supported``. Interactive CLI,
+    cron, and the real gateway platforms — and any path that never bound the
+    contextvar — return ``True``.
 
     Tools that promise async delivery (``terminal`` notify_on_complete /
     watch_patterns, ``delegate_task`` background=True) consult this before

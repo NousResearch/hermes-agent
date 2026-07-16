@@ -220,6 +220,20 @@ def run_oneshot(
     os.environ["HERMES_YOLO_MODE"] = "1"
     os.environ["HERMES_ACCEPT_HOOKS"] = "1"
 
+    # Oneshot is a stateless one-turn channel: this process exits right after
+    # the response prints, so background delegations (daemon threads in THIS
+    # process) and terminal completion watchers would be orphaned mid-flight
+    # with no channel to deliver their results. Declare that up front so
+    # delegate_task downgrades background=true to synchronous execution and
+    # terminal refuses notify_on_complete — same contract as the stateless
+    # API server adapter.
+    try:
+        from gateway.session_context import set_async_delivery_supported
+
+        set_async_delivery_supported(False)
+    except Exception:
+        pass
+
     # Redirect stderr AND stdout to devnull for the entire call tree.
     # We'll print the final response to the real stdout at the end.
     real_stdout = sys.stdout

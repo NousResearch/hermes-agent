@@ -55,8 +55,25 @@ describe('external link helpers', () => {
   it('filters out local/non-http targets for title fetches', () => {
     expect(isTitleFetchable('https://www.expedia.com/things-to-do/foo')).toBe(true)
     expect(isTitleFetchable('http://localhost:5174')).toBe(false)
+    expect(isTitleFetchable('http://127')).toBe(false)
+    expect(isTitleFetchable('http://0.0.0.127/')).toBe(false)
+    expect(isTitleFetchable('http://127.1')).toBe(false)
+    expect(isTitleFetchable('http://2130706433')).toBe(false)
+    expect(isTitleFetchable('http://10.0.0.1')).toBe(false)
+    expect(isTitleFetchable('http://192.168.1.1')).toBe(false)
+    expect(isTitleFetchable('http://[::1]')).toBe(false)
+    expect(isTitleFetchable('http://[fc00::1]')).toBe(false)
+    expect(isTitleFetchable('https://8.8.8.8')).toBe(true)
     expect(isTitleFetchable('file:///tmp/demo.html')).toBe(false)
     expect(isTitleFetchable('mailto:hello@example.com')).toBe(false)
+  })
+
+  it('does not ask Electron to fetch titles for blocked local targets', async () => {
+    const bridge = vi.fn().mockResolvedValue('unexpected')
+    installDesktopBridge({ fetchLinkTitle: bridge as unknown as Window['hermesDesktop']['fetchLinkTitle'] })
+
+    await expect(fetchLinkTitle('http://127')).resolves.toBe('')
+    expect(bridge).not.toHaveBeenCalled()
   })
 
   it('deduplicates in-flight title fetches and caches results', async () => {

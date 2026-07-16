@@ -1,3 +1,4 @@
+import { isLinkTitleFetchableUrl } from '@hermes/shared'
 import type { ComponentProps, ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 
@@ -19,8 +20,6 @@ const URL_RE =
 const EXPLICIT_URL_RE = /(?:https?:\/\/|www\.)[^\s<>"'`]+[^\s<>"'`.,;:!?)]/gi
 
 const DOMAIN_RE = /^(?:www\.)?[a-z0-9](?:[a-z0-9-]*\.)+[a-z]{2,}(?::\d+)?(?:[/?#][^\s]*)?$/i
-const SKIP_PROTO_RE = /^(?:file|data|mailto|javascript|blob|chrome|about|hermes):/i
-const LOCAL_HOST_RE = /^(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?$/i
 
 const ERROR_TITLE_RE =
   /\b(?:access denied|attention required|captcha|error|forbidden|just a moment|request blocked|too many requests)\b/i
@@ -112,13 +111,7 @@ export function urlSlugTitleLabel(value: string): string {
 }
 
 export function isTitleFetchable(value: string): boolean {
-  if (!value || SKIP_PROTO_RE.test(value)) {
-    return false
-  }
-
-  const url = parseUrl(value)
-
-  return Boolean(url && /^https?:$/.test(url.protocol) && !LOCAL_HOST_RE.test(url.host))
+  return isLinkTitleFetchableUrl(normalizeExternalUrl(value))
 }
 
 export function fetchLinkTitle(url: string): Promise<string> {

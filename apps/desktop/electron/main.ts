@@ -4018,6 +4018,12 @@ function filenameFromUrl(rawUrl, fallback = 'image') {
 }
 
 // Link title resolution — curl (tier 1) → hidden BrowserWindow (tier 2).
+// Use bundle-time require here so the Electron composite project does not pull
+// the shared workspace's source tree under its own rootDir.
+const { isLinkTitleFetchableUrl } = require('@hermes/shared') as {
+  isLinkTitleFetchableUrl: (value: string) => boolean
+}
+
 const titleCache = new Map()
 const titleInflight = new Map()
 const TITLE_CACHE_LIMIT = 500
@@ -4276,6 +4282,11 @@ function usableTitle(value: string): string {
 
 function fetchLinkTitle(rawUrl) {
   const url = String(rawUrl || '').trim()
+
+  if (!isLinkTitleFetchableUrl(url)) {
+    return Promise.resolve('')
+  }
+
   const key = canonicalTitleCacheKey(url)
 
   if (!key) {

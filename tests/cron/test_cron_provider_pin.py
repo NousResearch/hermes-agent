@@ -153,6 +153,21 @@ class TestProviderDriftGuard:
         assert error is None
         assert agent_constructed is True
 
+    def test_explicit_inheritance_accepts_provider_drift(self, tmp_path):
+        """A user opt-in to live profile config bypasses the spend guard."""
+        job = _base_job(
+            provider_snapshot="openrouter",
+            inherit_model_config=True,
+        )
+
+        success, output, final_response, error, agent_constructed = \
+            _run_with_current_provider(job, "nous", tmp_path)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        assert agent_constructed is True
+
 
 class TestCreateJobSnapshot:
     """create_job captures provider_snapshot for unpinned agent jobs only."""
@@ -241,6 +256,22 @@ class TestCreateJobSnapshot:
             )
         assert job["model"] == "my-model"
         assert job["model_snapshot"] is None
+
+    def test_inherited_config_skips_both_snapshots(self, monkeypatch):
+        jobs = self._isolate_storage(monkeypatch)
+        resolver = MagicMock(return_value={"provider": "openrouter"})
+
+        with patch("hermes_cli.runtime_provider.resolve_runtime_provider", resolver):
+            job = jobs.create_job(
+                prompt="do a thing",
+                schedule="every 1 hour",
+                inherit_model_config=True,
+            )
+
+        assert job["inherit_model_config"] is True
+        assert job["provider_snapshot"] is None
+        assert job["model_snapshot"] is None
+        resolver.assert_not_called()
 
 
 def _run_with_current_provider_and_model(job, current_provider, current_model, tmp_path):

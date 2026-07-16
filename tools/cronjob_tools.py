@@ -478,7 +478,7 @@ def _validate_cron_base_url(
             resolve_requested_provider,
             _get_named_custom_provider,
         )
-        from hermes_cli.auth import PROVIDER_REGISTRY
+        from hermes_cli.auth import PROVIDER_REGISTRY, resolve_provider
         from utils import base_url_host_matches, base_url_hostname
     except Exception:
         # Can't resolve provider metadata -> fail closed.
@@ -508,9 +508,16 @@ def _validate_cron_base_url(
         )
     try:
         resolved = resolve_requested_provider(prov)
+        canonical = resolve_provider(resolved)
     except Exception:
-        resolved = prov
-    pconfig = PROVIDER_REGISTRY.get(resolved) if isinstance(resolved, str) else None
+        canonical = prov
+    if canonical == "custom":
+        # Local-server aliases such as ``ollama`` and ``vllm`` resolve to the
+        # same keyless/host-gated custom runtime as bare ``custom``. Treat them
+        # identically here so the endpoint required to override a cloud-backed
+        # profile is not rejected by the security guard.
+        return None
+    pconfig = PROVIDER_REGISTRY.get(canonical) if isinstance(canonical, str) else None
     known_host = base_url_hostname(getattr(pconfig, "inference_base_url", "") if pconfig else "")
     if known_host and base_url_host_matches(bu, known_host):
         return None
@@ -578,6 +585,7 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "model": job.get("model"),
         "provider": job.get("provider"),
         "base_url": job.get("base_url"),
+        "inherit_model_config": bool(job.get("inherit_model_config")),
         "schedule": job.get("schedule_display") or "?",
         "repeat": _repeat_display(job),
         "deliver": job.get("deliver", "local"),
@@ -670,6 +678,7 @@ def cronjob(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
+    inherit_model_config: Optional[bool] = None,
     reason: Optional[str] = None,
     script: Optional[str] = None,
     context_from: Optional[Union[str, List[str]]] = None,
@@ -684,6 +693,15 @@ def cronjob(
 
     try:
         normalized = (action or "").strip().lower()
+
+        if inherit_model_config is True and any(
+            value is not None for value in (model, provider, base_url)
+        ):
+            return tool_error(
+                "inherit_model_config=True cannot be combined with model, "
+                "provider, or base_url overrides",
+                success=False,
+            )
 
         if normalized == "create":
             if not schedule:
@@ -744,6 +762,7 @@ def cronjob(
                 model=_normalize_optional_job_value(model),
                 provider=_normalize_optional_job_value(provider),
                 base_url=_normalize_optional_job_value(base_url, strip_trailing_slash=True),
+                inherit_model_config=bool(inherit_model_config),
                 script=_normalize_optional_job_value(script),
                 context_from=context_from,
                 enabled_toolsets=enabled_toolsets or None,
@@ -869,12 +888,35 @@ def cronjob(
                 canonical_skills = _canonical_skills(skill, skills)
                 updates["skills"] = canonical_skills
                 updates["skill"] = canonical_skills[0] if canonical_skills else None
-            if model is not None:
-                updates["model"] = _normalize_optional_job_value(model)
-            if provider is not None:
-                updates["provider"] = _normalize_optional_job_value(provider)
-            if base_url is not None:
-                updates["base_url"] = _normalize_optional_job_value(base_url, strip_trailing_slash=True)
+            inference_override_supplied = any(
+                value is not None for value in (model, provider, base_url)
+            )
+            if inherit_model_config is True:
+                # Inheritance and overrides are mutually exclusive modes. Clear
+                # every pinned axis atomically so no stale endpoint/provider can
+                # shadow the active profile at the next run.
+                updates.update(
+                    {
+                        "model": None,
+                        "provider": None,
+                        "base_url": None,
+                        "inherit_model_config": True,
+                    }
+                )
+            else:
+                if model is not None:
+                    updates["model"] = _normalize_optional_job_value(model)
+                if provider is not None:
+                    updates["provider"] = _normalize_optional_job_value(provider)
+                if base_url is not None:
+                    updates["base_url"] = _normalize_optional_job_value(
+                        base_url, strip_trailing_slash=True
+                    )
+                if inference_override_supplied:
+                    # Supplying any explicit axis selects override mode.
+                    updates["inherit_model_config"] = False
+                elif inherit_model_config is False:
+                    updates["inherit_model_config"] = False
             # Re-validate the EFFECTIVE provider/base_url on EVERY update, not
             # only when this update supplies provider/base_url. A job persisted
             # before this guard (or written directly to the jobs store) may
@@ -1024,7 +1066,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "model": {
                 "type": "object",
-                "description": "Optional per-job model override. If provider is omitted, the current main provider is pinned at creation time so the job stays stable.",
+                "description": "Optional per-job inference override. If provider is omitted, the current main provider is pinned at creation time so the job stays stable. For local/custom providers, include base_url so execution does not fall back to the active profile endpoint.",
                 "properties": {
                     "provider": {
                         "type": "string",
@@ -1033,9 +1075,17 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                     "model": {
                         "type": "string",
                         "description": "Model name (e.g. 'anthropic/claude-sonnet-4', 'claude-sonnet-4')"
+                    },
+                    "base_url": {
+                        "type": "string",
+                        "description": "Endpoint for this override (for example 'http://localhost:11434/v1' for local Ollama). Required when the provider name alone does not identify a configured endpoint."
                     }
                 },
                 "required": ["model"]
+            },
+            "inherit_model_config": {
+                "type": "boolean",
+                "description": "Explicitly opt this job into following the active profile's provider, model, endpoint, and current credentials at every run. Unlike a legacy unpinned job, profile provider/model changes are accepted instead of failing closed on drift. On update, True atomically clears existing model/provider/base_url overrides; supplying an override later disables inheritance."
             },
             "script": {
                 "type": "string",
@@ -1133,7 +1183,8 @@ registry.register(
         skills=args.get("skills"),
         model=_mo[1],
         provider=_mo[0] or args.get("provider"),
-        base_url=args.get("base_url"),
+        base_url=(args.get("model") or {}).get("base_url") or args.get("base_url"),
+        inherit_model_config=args.get("inherit_model_config"),
         reason=args.get("reason"),
         script=args.get("script"),
         context_from=args.get("context_from"),

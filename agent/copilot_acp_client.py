@@ -32,6 +32,7 @@ from tools.environments.local import hermes_subprocess_env
 
 ACP_MARKER_BASE_URL = "acp://copilot"
 _DEFAULT_TIMEOUT_SECONDS = 900.0
+_EMPTY_PROMPT_LATE_UPDATE_GRACE_SECONDS = 0.5
 
 _TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 _TOOL_CALL_JSON_RE = re.compile(r"\{\s*\"id\"\s*:\s*\"[^\"]+\"\s*,\s*\"type\"\s*:\s*\"function\"\s*,\s*\"function\"\s*:\s*\{.*?\}\s*\}", re.DOTALL)
@@ -104,6 +105,11 @@ def _build_subprocess_env() -> dict[str, str]:
     # provider credentials. Route through the central helper so Tier-1 secrets
     # (gateway bot tokens, GitHub auth, infra) are still stripped (#29157).
     env = hermes_subprocess_env(inherit_credentials=True)
+    # ACP is a request transport, not an interactive CLI lifecycle. Allowing the
+    # child to replace its own executable while a prompt is in flight can end a
+    # valid session without emitting assistant chunks. Users can explicitly opt
+    # back in, but stable subprocesses are the safe default.
+    env.setdefault("COPILOT_AUTO_UPDATE", "false")
     home = _resolve_home_dir()
     env["HOME"] = home
     from hermes_constants import apply_subprocess_home_env
@@ -474,6 +480,12 @@ class CopilotACPClient:
             prompt_text,
             timeout_seconds=_effective_timeout,
         )
+        if not response_text.strip() and not reasoning_text.strip():
+            raise RuntimeError(
+                "Copilot ACP session/prompt completed without assistant content or reasoning. "
+                "The ACP transport returned success but emitted no usable agent_message_chunk "
+                "or agent_thought_chunk events."
+            )
 
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
 
@@ -612,6 +624,33 @@ class CopilotACPClient:
                 raise RuntimeError(f"Copilot ACP process exited early: {stderr_text}")
             raise TimeoutError(f"Timed out waiting for Copilot ACP response to {method}.")
 
+        def _drain_late_server_messages(
+            *,
+            deadline: float,
+            text_parts: list[str],
+            reasoning_parts: list[str],
+        ) -> None:
+            while time.monotonic() < deadline:
+                remaining = deadline - time.monotonic()
+                try:
+                    msg = inbox.get(timeout=min(0.05, max(0.0, remaining)))
+                except queue.Empty:
+                    if proc.poll() is not None:
+                        break
+                    continue
+                # The prompt result is terminal for request/response traffic.
+                # Only collect asynchronous output here; handling a late server
+                # request could write to stdin and exceed the bounded deadline.
+                if msg.get("method") != "session/update":
+                    continue
+                self._handle_server_message(
+                    msg,
+                    process=proc,
+                    cwd=self._acp_cwd,
+                    text_parts=text_parts,
+                    reasoning_parts=reasoning_parts,
+                )
+
         try:
             _request(
                 "initialize",
@@ -643,6 +682,7 @@ class CopilotACPClient:
 
             text_parts: list[str] = []
             reasoning_parts: list[str] = []
+            prompt_deadline = time.monotonic() + timeout_seconds
             _request(
                 "session/prompt",
                 {
@@ -654,6 +694,18 @@ class CopilotACPClient:
                         }
                     ],
                 },
+                text_parts=text_parts,
+                reasoning_parts=reasoning_parts,
+            )
+            # ACP normally sends all updates before the prompt result. Tolerate a
+            # bounded late-notification race before closing the session, including
+            # partial responses whose final chunks arrive late. The grace period
+            # never extends the caller's prompt timeout.
+            _drain_late_server_messages(
+                deadline=min(
+                    prompt_deadline,
+                    time.monotonic() + _EMPTY_PROMPT_LATE_UPDATE_GRACE_SECONDS,
+                ),
                 text_parts=text_parts,
                 reasoning_parts=reasoning_parts,
             )

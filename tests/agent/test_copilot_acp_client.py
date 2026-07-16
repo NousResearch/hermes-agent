@@ -5,12 +5,14 @@ from __future__ import annotations
 import io
 import json
 import os
+import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agent.copilot_acp_client import CopilotACPClient
+from agent.copilot_acp_client import CopilotACPClient, _build_subprocess_env
 
 
 class _FakeProcess:
@@ -55,6 +57,17 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
         self.assertEqual(dict(tool_call)["id"], "call_read")
         self.assertEqual(dict(tool_call.function)["name"], "read_file")
         self.assertEqual(choice.message.content, "I'll inspect that.")
+
+    def test_empty_successful_prompt_raises_transport_error(self) -> None:
+        with patch.object(self.client, "_run_prompt", return_value=("", "")):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "completed without assistant content or reasoning",
+            ):
+                self.client._create_chat_completion(
+                    model="gpt-5.6-terra",
+                    messages=[{"role": "user", "content": "hello"}],
+                )
 
     def test_stream_true_returns_iterable_text_chunks(self) -> None:
         with patch.object(self.client, "_run_prompt", return_value=("Hello from ACP", "")):
@@ -282,6 +295,96 @@ def _fake_popen_capture(captured):
         captured["kwargs"] = kwargs
         raise FileNotFoundError("copilot not found")
     return _fake
+
+
+def _write_late_update_fake_acp(tmp_path):
+    server_script = tmp_path / "fake_acp.py"
+    server_script.write_text(
+        textwrap.dedent(
+            """
+            import json
+            import sys
+            import time
+
+            def emit_chunk(text):
+                print(
+                    json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "method": "session/update",
+                            "params": {
+                                "sessionId": "late-update-session",
+                                "update": {
+                                    "sessionUpdate": "agent_message_chunk",
+                                    "content": {"type": "text", "text": text},
+                                },
+                            },
+                        }
+                    ),
+                    flush=True,
+                )
+
+            for line in sys.stdin:
+                request = json.loads(line)
+                method = request.get("method")
+                request_id = request.get("id")
+                if method == "initialize":
+                    result = {"protocolVersion": 1}
+                elif method == "session/new":
+                    result = {"sessionId": "late-update-session"}
+                elif method == "session/prompt":
+                    prompt = request["params"]["prompt"][0]["text"]
+                    if prompt == "early-and-late":
+                        emit_chunk("early ")
+                    print(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": {}}), flush=True)
+                    time.sleep(0.25)
+                    emit_chunk("late" if prompt == "early-and-late" else "late assistant text")
+                    continue
+                else:
+                    result = {}
+                print(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result}), flush=True)
+            """
+        )
+    )
+    return server_script
+
+
+def _late_update_client(tmp_path):
+    return CopilotACPClient(
+        acp_command=sys.executable,
+        acp_args=[str(_write_late_update_fake_acp(tmp_path))],
+        acp_cwd=str(tmp_path),
+    )
+
+
+def test_run_prompt_collects_late_update_after_successful_prompt_result(tmp_path):
+    assert _late_update_client(tmp_path)._run_prompt("hello", timeout_seconds=2) == (
+        "late assistant text",
+        "",
+    )
+
+
+def test_run_prompt_collects_final_late_update_after_early_chunk(tmp_path):
+    assert _late_update_client(tmp_path)._run_prompt(
+        "early-and-late",
+        timeout_seconds=2,
+    ) == ("early late", "")
+
+
+def test_run_prompt_disables_copilot_auto_update_by_default(monkeypatch):
+    monkeypatch.delenv("COPILOT_AUTO_UPDATE", raising=False)
+
+    env = _build_subprocess_env()
+
+    assert env["COPILOT_AUTO_UPDATE"] == "false"
+
+
+def test_run_prompt_preserves_explicit_copilot_auto_update_setting(monkeypatch):
+    monkeypatch.setenv("COPILOT_AUTO_UPDATE", "true")
+
+    env = _build_subprocess_env()
+
+    assert env["COPILOT_AUTO_UPDATE"] == "true"
 
 
 def test_run_prompt_preserves_real_home_when_profile_home_available(monkeypatch, tmp_path):

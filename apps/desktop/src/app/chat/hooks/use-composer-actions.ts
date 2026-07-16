@@ -39,9 +39,9 @@ function blobExtension(blob: Blob): string {
 const RECENT_IMAGE_PASTE_DEDUPE_MS = 1500
 
 export async function imageBlobDedupeKey(blob: Blob, data: Uint8Array): Promise<string> {
-  // A macOS screenshot can arrive twice as different File/Blob objects, with
-  // different names or lastModified values. Dedupe by content only so the same
-  // clipboard image collapses across those representations.
+  // The composer already collapses mirrored items/files inside one DataTransfer.
+  // This content key spans separate attachImageBlob calls, where the same macOS
+  // screenshot can arrive with different File metadata.
   const digestInput = Uint8Array.from(data).buffer
   const digest = await crypto.subtle.digest('SHA-256', digestInput)
   const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')

@@ -265,16 +265,20 @@ describe('recent image paste dedupe', () => {
     expect(rememberRecentImageBlobPaste(seen, key, 2601)).toBe(true)
   })
 
-  it('keys pasted images by bytes as well as metadata', async () => {
+  it('keeps distinct same-size images even when their File metadata matches', async () => {
+    const seen = new Map<string, number>()
     const a = new File([new Uint8Array([1, 2, 3])], 'paste.png', { type: 'image/png', lastModified: 1 })
     const b = new File([new Uint8Array([1, 2, 4])], 'paste.png', { type: 'image/png', lastModified: 1 })
     const aKey = await imageBlobDedupeKey(a, new Uint8Array([1, 2, 3]))
     const bKey = await imageBlobDedupeKey(b, new Uint8Array([1, 2, 4]))
 
     expect(aKey).not.toBe(bKey)
+    expect(rememberRecentImageBlobPaste(seen, aKey, 1000)).toBe(true)
+    expect(rememberRecentImageBlobPaste(seen, bKey, 1200)).toBe(true)
   })
 
-  it('collapses byte-identical pasted images even when File metadata differs', async () => {
+  it('dedupes byte-identical images across paste callbacks when File metadata differs', async () => {
+    const seen = new Map<string, number>()
     const data = new Uint8Array([1, 2, 3, 4])
     const file = new File([data], 'Screenshot 1.png', { type: 'image/png', lastModified: 1 })
     const mirroredBlob = new File([data], 'Screenshot 2.png', { type: 'image/png', lastModified: 2 })
@@ -282,6 +286,9 @@ describe('recent image paste dedupe', () => {
     const mirroredKey = await imageBlobDedupeKey(mirroredBlob, data)
 
     expect(fileKey).toBe(mirroredKey)
+    expect(fileKey).toContain('sha256:')
+    expect(rememberRecentImageBlobPaste(seen, fileKey, 1000)).toBe(true)
+    expect(rememberRecentImageBlobPaste(seen, mirroredKey, 1200)).toBe(false)
   })
 
   it('allows retrying the same pasted image after a save failure clears its key', () => {

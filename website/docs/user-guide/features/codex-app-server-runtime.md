@@ -389,7 +389,9 @@ This runtime is **opt-in beta**. Working as of Hermes Agent 2026.5 + Codex CLI 0
 - Hermes web_search through codex (verified live: "OpenAI Codex CLI – Getting Started" returned end-to-end)
 - Live assistant deltas, reasoning, and stable-ID tool start/completion events in
   the TUI and gateways. The completion-only history projector remains separate,
-  so resumed sessions hydrate the same tool cards shown during the turn.
+  so resumed sessions hydrate the same tool cards shown during the turn. Gateway
+  commentary remains visible when token streaming is disabled, and live tool
+  events are forwarded before an approval request is handled.
 
 Known limitations:
 

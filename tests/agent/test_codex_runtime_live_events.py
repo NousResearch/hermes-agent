@@ -17,6 +17,7 @@ from agent.transports.codex_event_projector import _deterministic_call_id
 def _recording_agent():
     calls = {
         "stream": [],
+        "interim": [],
         "reasoning": [],
         "tool_progress": [],
         "tool_start": [],
@@ -24,6 +25,11 @@ def _recording_agent():
     }
     agent = SimpleNamespace(
         _fire_stream_delta=lambda text: calls["stream"].append(text),
+        stream_delta_callback=calls["stream"].append,
+        _stream_callback=None,
+        interim_assistant_callback=lambda text, *, already_streamed=False: calls[
+            "interim"
+        ].append((text, already_streamed)),
         _fire_reasoning_delta=lambda text: calls["reasoning"].append(text),
         tool_progress_callback=lambda *args, **kwargs: calls["tool_progress"].append((
             args,
@@ -58,7 +64,22 @@ def test_agent_message_and_reasoning_deltas_are_forwarded_live():
     )
 
     assert calls["stream"] == ["Working"]
+    assert calls["interim"] == []
     assert calls["reasoning"] == ["Thinking", "Summary"]
+
+
+def test_agent_message_delta_uses_interim_callback_without_streaming():
+    agent, calls = _recording_agent()
+    agent.stream_delta_callback = None
+    agent._stream_callback = None
+
+    _codex_live_event(
+        agent,
+        {"method": "item/agentMessage/delta", "params": {"delta": "Working"}},
+    )
+
+    assert calls["stream"] == []
+    assert calls["interim"] == [("Working", False)]
 
 
 def test_command_start_and_complete_fire_both_callback_contracts():

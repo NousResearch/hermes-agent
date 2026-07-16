@@ -220,8 +220,20 @@ def _codex_live_event(agent, note: dict) -> None:
     if method == "item/agentMessage/delta":
         delta = params.get("delta")
         if delta:
+            text = str(delta)
+            streaming_available = any(
+                getattr(agent, callback_name, None) is not None
+                for callback_name in ("stream_delta_callback", "_stream_callback")
+            )
             try:
-                agent._fire_stream_delta(str(delta))
+                if streaming_available:
+                    agent._fire_stream_delta(text)
+                else:
+                    interim_callback = getattr(
+                        agent, "interim_assistant_callback", None
+                    )
+                    if interim_callback is not None:
+                        interim_callback(text, already_streamed=False)
             except Exception:  # Callback implementations are external to this bridge.
                 logger.debug("codex message-delta callback raised", exc_info=True)
         return

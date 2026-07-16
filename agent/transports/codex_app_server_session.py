@@ -235,6 +235,15 @@ class CodexAppServerSession:
         self._pending_file_changes: dict[str, str] = {}
         self._closed = False
 
+    def _emit_live_event(self, note: dict) -> None:
+        """Forward one notification to the optional display callback."""
+        if self._on_event is None:
+            return
+        try:
+            self._on_event(note)
+        except Exception:  # pragma: no cover - display callback boundary
+            logger.debug("on_event callback raised", exc_info=True)
+
     # ---------- lifecycle ----------
 
     def ensure_started(self) -> str:
@@ -505,6 +514,7 @@ class CodexAppServerSession:
                     pending = self._client.take_notification(timeout=0)
                     if pending is None:
                         break
+                    self._emit_live_event(pending)
                     _apply_token_usage_notification(result, pending)
                     _apply_compaction_notification(result, pending)
                     self._track_pending_file_change(pending)
@@ -536,11 +546,7 @@ class CodexAppServerSession:
                 continue
 
             method = note.get("method", "")
-            if self._on_event is not None:
-                try:
-                    self._on_event(note)
-                except Exception:  # pragma: no cover - display callback
-                    logger.debug("on_event callback raised", exc_info=True)
+            self._emit_live_event(note)
 
             _apply_token_usage_notification(result, note)
             _apply_compaction_notification(result, note)

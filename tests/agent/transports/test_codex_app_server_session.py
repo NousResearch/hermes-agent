@@ -766,11 +766,16 @@ class TestApprovalPromptEnrichment:
             turn={"id": "tu1", "status": "completed", "error": None},
         )
         captured = {}
+        live_events = []
         def cb(command, description, *, allow_permanent=True):
             captured["command"] = command
             captured["description"] = description
             return "once"
-        s = make_session(client, approval_callback=cb)
+        s = make_session(
+            client,
+            approval_callback=cb,
+            on_event=live_events.append,
+        )
         s.run_turn("hi", turn_timeout=1.0)
         # Both add and update kinds should be in the summary
         assert "1 add" in captured["command"] or "1 add" in captured["description"]
@@ -778,6 +783,10 @@ class TestApprovalPromptEnrichment:
         # And at least one of the paths
         joined = captured["command"] + " " + captured["description"]
         assert "/tmp/new.py" in joined or "/tmp/old.py" in joined
+        assert [event["method"] for event in live_events] == [
+            "item/started",
+            "turn/completed",
+        ]
 
     def test_apply_patch_prompt_works_without_cached_summary(self):
         """When approval arrives before item/started (or without changes

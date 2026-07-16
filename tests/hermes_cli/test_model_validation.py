@@ -299,21 +299,15 @@ class TestFetchApiModels:
         assert probe["probed_url"] is None
 
     def test_probe_api_models_tries_v1_fallback(self):
-        class _Client:
+        class _Resp:
             def __enter__(self):
                 return self
 
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-            def get(self, url, headers=None):
-                calls.append(url)
-                if url.endswith("/v1/models"):
-                    response = MagicMock()
-                    response.raise_for_status.return_value = None
-                    response.json.return_value = {"data": [{"id": "local-model"}]}
-                    return response
-                raise Exception("404")
+            def read(self):
+                return '{"data": [{"id": "local-model"}]}'
 
         calls = []
 

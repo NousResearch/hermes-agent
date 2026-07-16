@@ -21,11 +21,14 @@ on the real OS.
 import os
 from unittest.mock import patch
 
+import pytest
+
 from tools.environments.base import BaseEnvironment
 from tools.environments import local as local_mod
 from tools.environments.local import (
     LocalEnvironment,
     _bash_safe_path,
+    _find_bash,
     _git_bash_bin_dirs,
     _make_run_env,
     _msys_to_windows_path,
@@ -110,7 +113,7 @@ class TestQuoteCwdForWindowsBash:
 
         assert env._quote_cwd_for_cd(r"C:\Users\NVIDIA") == "/c/Users/NVIDIA"
 
-    def test_windows_cwd_is_quoted_as_wsl_bash_path(self, monkeypatch, tmp_path):
+    def test_windows_cwd_uses_git_bash_path_despite_legacy_style_attribute(self, monkeypatch, tmp_path):
         monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
 
         with patch.object(
@@ -120,7 +123,7 @@ class TestQuoteCwdForWindowsBash:
 
         env.windows_bash_path_style = "wsl"
 
-        assert env._quote_cwd_for_cd(r"C:\Users\NVIDIA") == "/mnt/c/Users/NVIDIA"
+        assert env._quote_cwd_for_cd(r"C:\Users\NVIDIA") == "/c/Users/NVIDIA"
 
     def test_preserves_tilde_expansion_forms(self, monkeypatch):
         monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
@@ -184,7 +187,7 @@ class TestFindBashWindows:
         with pytest.raises(RuntimeError, match="Git Bash not found"):
             _find_bash()
 
-    def test_windows_session_files_are_quoted_as_wsl_bash_paths(
+    def test_windows_session_files_are_quoted_as_git_bash_paths(
         self, monkeypatch, tmp_path,
     ):
         monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
@@ -201,8 +204,8 @@ class TestFindBashWindows:
 
         script = env._wrap_command("pwd", r"C:\Users\NVIDIA")
 
-        assert "source /mnt/c/Users/NVIDIA/.hermes/cache/terminal/snap.sh" in script
-        assert "pwd -P > /mnt/c/Users/NVIDIA/.hermes/cache/terminal/cwd.txt" in script
+        assert "source /c/Users/NVIDIA/.hermes/cache/terminal/snap.sh" in script
+        assert "pwd -P > /c/Users/NVIDIA/.hermes/cache/terminal/cwd.txt" in script
 
 
 # ---------------------------------------------------------------------------
@@ -465,10 +468,11 @@ class TestGitBashCoreutilsOnPath:
         dirs = _git_bash_bin_dirs()
 
         # usr/bin is the load-bearing coreutils dir; mingw64 precedes it.
-        assert "/pg/usr/bin" in dirs
-        assert dirs.index("/pg/mingw64/bin") < dirs.index("/pg/usr/bin")
+        normalized_dirs = [path.replace("\\", "/") for path in dirs]
+        assert "/pg/usr/bin" in normalized_dirs
+        assert normalized_dirs.index("/pg/mingw64/bin") < normalized_dirs.index("/pg/usr/bin")
         # Non-existent dirs (mingw32, usr/local/bin) are excluded.
-        assert "/pg/mingw32/bin" not in dirs
+        assert "/pg/mingw32/bin" not in normalized_dirs
 
     def test_derives_dirs_from_mingit_usr_bin_layout(self, monkeypatch):
         monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
@@ -480,8 +484,9 @@ class TestGitBashCoreutilsOnPath:
         dirs = _git_bash_bin_dirs()
 
         # MinGit ships bash under usr\bin; root must still resolve to /mg.
-        assert "/mg/usr/bin" in dirs
-        assert "/mg/mingw64/bin" in dirs
+        normalized_dirs = [path.replace("\\", "/") for path in dirs]
+        assert "/mg/usr/bin" in normalized_dirs
+        assert "/mg/mingw64/bin" in normalized_dirs
 
     def test_empty_off_windows(self, monkeypatch):
         monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)

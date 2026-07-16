@@ -3951,7 +3951,10 @@ def probe_api_models(
         try:
             req = urllib.request.Request(url, headers=headers)
             with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
-                data = json.loads(resp.read().decode())
+                payload = resp.read()
+                if isinstance(payload, bytes):
+                    payload = payload.decode()
+                data = json.loads(payload)
                 return {
                     "models": [m.get("id", "") for m in data.get("data", [])],
                     "probed_url": url,

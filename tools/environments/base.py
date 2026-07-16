@@ -1100,9 +1100,13 @@ class BaseEnvironment(ABC):
         proc = self._run_bash(
             wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
         )
-        result = self._wait_for_process(
-            proc, timeout=effective_timeout, bounded_capture=bounded_capture
-        )
+        try:
+            result = self._wait_for_process(
+                proc, timeout=effective_timeout, bounded_capture=bounded_capture
+            )
+        except (KeyboardInterrupt, SystemExit):
+            self._kill_process(proc)
+            raise
         self._update_cwd(result)
 
         return result

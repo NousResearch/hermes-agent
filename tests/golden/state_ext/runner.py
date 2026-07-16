@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from hermes_state import SessionDB
+from scripts.refactor_equiv.sandbox_guard import require_sandboxed_home
 
 
 def run_case(case: dict):
@@ -49,7 +50,7 @@ def _run_denorm_case(case: dict):
 
 
 def _run_title_search_case(case: dict):
-    db_path = Path(os.environ["HERMES_HOME"]) / (case["name"].replace(" ", "_") + ".db")
+    db_path = require_sandboxed_home() / (case["name"].replace(" ", "_") + ".db")
     db = SessionDB(db_path=db_path)
     try:
         _seed_title_search_fixture(db)
@@ -124,7 +125,7 @@ def _helper(name: str):
 
 
 def _write_dashboard_flag(enabled: bool) -> None:
-    config_path = Path(os.environ["HERMES_HOME"]) / "config.yaml"
+    config_path = require_sandboxed_home() / "config.yaml"
     config_path.write_text(
         "dashboard:\n"
         f"  session_list_denorm: {json.dumps(enabled)}\n",

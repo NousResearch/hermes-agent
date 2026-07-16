@@ -313,7 +313,10 @@ class CarbonVoiceAdapter(BasePlatformAdapter):
 
     # ── Lifecycle ────────────────────────────────────────────────────────
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        # ``is_reconnect`` (cold boot vs gateway-driven reconnect) needs no
+        # special handling here: the disk cursor makes both paths identical —
+        # we always catch up from the last processed message either way.
         if not self._pat or self._api is None:
             logger.error("carbonvoice: CARBONVOICE_PAT not set")
             return False

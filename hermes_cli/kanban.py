@@ -2228,6 +2228,19 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         from hermes_cli.config import load_config
         _cfg = load_config()
         _kanban_cfg = _cfg.get("kanban", {}) if isinstance(_cfg, dict) else {}
+        if not isinstance(_kanban_cfg, dict):
+            _kanban_cfg = {}
+        if (
+            not getattr(args, "dry_run", False)
+            and _kanban_cfg.get("dispatch_in_gateway", True)
+        ):
+            print(
+                "kanban: manual dispatch is disabled while "
+                "kanban.dispatch_in_gateway=true; use the singleton gateway "
+                "(`hermes gateway start`) or set it to false first.",
+                file=sys.stderr,
+            )
+            return 2
         default_assignee = (_kanban_cfg.get("default_assignee") or "").strip() or None
 
         def _coerce_positive_int(value):
@@ -2250,6 +2263,14 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             _kanban_cfg.get("max_spawn")
         )
     except Exception:
+        if not getattr(args, "dry_run", False):
+            print(
+                "kanban: manual dispatch is disabled while "
+                "kanban.dispatch_in_gateway=true; use the singleton gateway "
+                "(`hermes gateway start`) or set it to false first.",
+                file=sys.stderr,
+            )
+            return 2
         default_assignee = None
         max_in_progress_per_profile = None
         max_in_progress = None

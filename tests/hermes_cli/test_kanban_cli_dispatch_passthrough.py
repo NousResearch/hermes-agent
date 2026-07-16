@@ -71,6 +71,88 @@ def test_cli_dispatch_passes_max_in_progress_from_config(isolated_kanban_home, m
     assert captured.get("max_in_progress_per_profile") == 2
 
 
+def test_cli_dispatch_refuses_mutation_when_gateway_owns_dispatch(
+    isolated_kanban_home, monkeypatch, capsys,
+):
+    """Manual dispatch must not race the gateway-owned dispatcher."""
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"dispatch_in_gateway": True}},
+    )
+    dispatch_once = MagicMock()
+    monkeypatch.setattr(kanban_db, "dispatch_once", dispatch_once)
+
+    rc = kb_cli.kanban_command(argparse.Namespace(
+        kanban_action="dispatch", dry_run=False, max=None,
+        failure_limit=2, json=False,
+    ))
+
+    assert rc == 2
+    assert capsys.readouterr().err == (
+        "kanban: manual dispatch is disabled while "
+        "kanban.dispatch_in_gateway=true; use the singleton gateway "
+        "(`hermes gateway start`) or set it to false first.\n"
+    )
+    dispatch_once.assert_not_called()
+
+
+def test_cli_dispatch_allows_dry_run_when_gateway_owns_dispatch(
+    isolated_kanban_home, monkeypatch,
+):
+    """Dry-run remains an inspection path while the gateway dispatches."""
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"dispatch_in_gateway": True}},
+    )
+    captured = {}
+    monkeypatch.setattr(
+        kanban_db,
+        "dispatch_once",
+        lambda conn, **kwargs: (captured.update(kwargs), kanban_db.DispatchResult())[1],
+    )
+
+    rc = kb_cli.kanban_command(argparse.Namespace(
+        kanban_action="dispatch", dry_run=True, max=None,
+        failure_limit=2, json=False,
+    ))
+
+    assert rc == 0
+    assert captured["dry_run"] is True
+
+
+def test_cli_dispatch_allows_mutation_when_gateway_dispatch_is_disabled(
+    isolated_kanban_home, monkeypatch,
+):
+    """Explicitly disabling embedded dispatch preserves manual dispatch."""
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"dispatch_in_gateway": False}},
+    )
+    captured = {}
+    monkeypatch.setattr(
+        kanban_db,
+        "dispatch_once",
+        lambda conn, **kwargs: (captured.update(kwargs), kanban_db.DispatchResult())[1],
+    )
+
+    rc = kb_cli.kanban_command(argparse.Namespace(
+        kanban_action="dispatch", dry_run=False, max=None,
+        failure_limit=2, json=False,
+    ))
+
+    assert rc == 0
+    assert captured["dry_run"] is False
+
+
 def test_cli_max_flag_overrides_config_max_spawn(isolated_kanban_home, monkeypatch):
     """--max on the CLI takes precedence over kanban.max_spawn in config.
     The CLI flag is the explicit operator signal; config is the default."""

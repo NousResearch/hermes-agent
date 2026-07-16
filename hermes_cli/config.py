@@ -3110,21 +3110,29 @@ DEFAULT_CONFIG = {
 
     # ``hermes update`` behaviour.
     "updates": {
-        # Run a full ``hermes backup``-style zip of HERMES_HOME before every
-        # ``hermes update``.  Backups land in ``<HERMES_HOME>/backups/`` and
-        # can be restored with ``hermes import <path>``.  Off by default:
-        # zipping a large HERMES_HOME (sessions DB, caches, skills) can add
-        # minutes to every update.  The #48200 incident — a ``hermes update
-        # --yes`` run that computed a wrong path and silently wiped the
-        # user's ``.env``, ``MEMORY.md``, ``kanban.db``, custom skills, and
-        # scripts — is the reason this knob exists; enable it (here, or via
-        # ``--backup`` for a single run) if you want that safety net.
-        "pre_update_backup": False,
-        # How many pre-update backup zips to retain.  Older ones are pruned
-        # automatically after each successful backup.  Values below 1 are
-        # floored to 1 — the backup just created is always preserved.  To
-        # disable backups entirely, set ``pre_update_backup: false`` above
-        # rather than ``backup_keep: 0``.
+        # Pre-update safety backup — ONE consolidated mechanism, three modes:
+        #
+        #   quick (default) — snapshot critical small state files (pairing
+        #     JSONs, cron jobs, config.yaml, .env, auth.json, per-profile
+        #     DBs) into <HERMES_HOME>/state-snapshots/ before the update.
+        #     Files over 1 GiB (e.g. a bloated state.db) are skipped with a
+        #     warning so the snapshot stays fast. Restore via ``/snapshot``.
+        #     This is the #15733 (lost pairing data) / #34600 (emptied cron
+        #     jobs) safety net.
+        #   full — the quick snapshot PLUS a full ``hermes backup``-style zip
+        #     of HERMES_HOME into <HERMES_HOME>/backups/, restorable with
+        #     ``hermes import``. Can add minutes on large homes. This is the
+        #     #48200 (wrong-path wipe) safety net. ``--backup`` forces this
+        #     for a single run.
+        #   off — no pre-update backup of any kind. ``--no-backup`` forces
+        #     this for a single run.
+        #
+        # Legacy boolean values are honored: true -> full, false -> off.
+        "pre_update_backup": "quick",
+        # How many full pre-update backup zips to retain (mode ``full``).
+        # Older ones are pruned automatically after each successful backup.
+        # Values below 1 are floored to 1 — the backup just created is
+        # always preserved. The quick snapshot always keeps exactly 1.
         "backup_keep": 5,
         # What `hermes update` does with uncommitted local changes to the
         # source tree when it runs NON-interactively — i.e. triggered from

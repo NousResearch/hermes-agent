@@ -794,17 +794,50 @@ def create_quick_snapshot(
     label: Optional[str] = None,
     hermes_home: Optional[Path] = None,
     keep: Optional[int] = None,
+    max_file_size: Optional[int] = None,
 ) -> Optional[str]:
     """Create a quick state snapshot of critical files.
 
     Copies STATE_FILES to a timestamped directory under state-snapshots/.
     Auto-prunes old snapshots beyond the keep limit.
 
+    Args:
+        max_file_size: When set, individual files larger than this many bytes
+            are skipped (with a printed warning) instead of copied. Used by
+            the pre-update safety snapshot so a multi-GB ``state.db`` can
+            never stall ``hermes update`` or silently eat disk — the small
+            pairing/cron/config files the snapshot exists to protect are
+            always captured. ``None`` (default) copies everything, which
+            preserves manual ``/snapshot`` and ``hermes backup --quick``
+            behavior.
+
     Returns:
         Snapshot ID (timestamp-based), or None if no files found.
     """
     home = hermes_home or get_hermes_home()
     root = _quick_snapshot_root(home)
+
+    def _too_large(path: Path, rel_name: str) -> bool:
+        """True (and warn) when ``path`` exceeds the max_file_size cap."""
+        if max_file_size is None:
+            return False
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return False
+        if size <= max_file_size:
+            return False
+        print(
+            f"  ⚠ Snapshot: skipping {rel_name} "
+            f"({_format_size(size)} exceeds {_format_size(max_file_size)} limit)"
+        )
+        logger.warning(
+            "Quick snapshot skipped %s: %d bytes exceeds %d byte limit",
+            rel_name,
+            size,
+            max_file_size,
+        )
+        return True
 
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     snap_id = f"{ts}-{label}" if label else ts
@@ -831,6 +864,8 @@ def create_quick_snapshot(
                 # the board databases + their metadata to restore a board.
                 if "/workspaces/" in f"/{sub_rel}/" or "/attachments/" in f"/{sub_rel}/":
                     continue
+                if _too_large(sub, sub_rel):
+                    continue
                 dst = snap_dir / sub_rel
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 try:
@@ -848,6 +883,9 @@ def create_quick_snapshot(
             continue
 
         if not src.is_file():
+            continue
+
+        if _too_large(src, rel):
             continue
 
         dst = snap_dir / rel
@@ -1239,7 +1277,7 @@ def _prune_pre_update_backups(backup_dir: Path, keep: int) -> int:
     than no backup at all (and the wrapper in ``main.py`` would still print
     a misleading ``Saved: <path>`` line for a file that no longer exists).
     Operators who genuinely don't want a backup should set
-    ``updates.pre_update_backup: false`` in config — that gates creation.
+    ``updates.pre_update_backup: off`` in config — that gates creation.
     """
     keep = max(keep, 1)
     if not backup_dir.exists():

@@ -379,6 +379,67 @@ def test_mark_exhausted_and_rotate_persists_status(tmp_path, monkeypatch):
     assert persisted["last_error_code"] == 402
 
 
+def test_unmatched_api_key_hint_rotates_without_benching_innocent_key(tmp_path, monkeypatch):
+    """An api_key_hint matching no entry must not quarantine a healthy key.
+
+    Regression: when the hint was unmatched (key rotated away, or a wrapper
+    whose runtime key differs), mark_exhausted_and_rotate fell through to
+    current()/_select_unlocked() — on a freshly loaded pool that selects the
+    NEXT healthy key and benched it for the full cooldown TTL, punishing an
+    innocent credential.  Now it rotates without marking anything.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "sk-ant-api-primary",
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "secondary",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "sk-ant-api-secondary",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool, STATUS_DEAD, STATUS_EXHAUSTED
+
+    # Freshly loaded pool: current() is None, exactly the shape of the bug.
+    pool = load_pool("anthropic")
+
+    next_entry = pool.mark_exhausted_and_rotate(
+        status_code=429,
+        api_key_hint="sk-ant-api-rotated-away",
+    )
+
+    # A fresh selection is still handed back so the caller can retry...
+    assert next_entry is not None
+
+    # ...but no credential was benched, in memory or on disk.
+    assert all(
+        entry.last_status not in (STATUS_EXHAUSTED, STATUS_DEAD)
+        for entry in pool.entries()
+    )
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    for persisted in auth_payload["credential_pool"]["anthropic"]:
+        assert persisted.get("last_status") not in (STATUS_EXHAUSTED, STATUS_DEAD)
+        assert persisted.get("last_error_code") is None
+
+
 def test_token_invalidated_marks_credential_dead(tmp_path, monkeypatch):
     """OpenAI Codex token_invalidated must mark the credential DEAD, not exhausted.
 

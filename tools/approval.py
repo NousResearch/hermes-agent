@@ -8,6 +8,7 @@ This module is the single source of truth for the dangerous command system:
 - Permanent allowlist persistence (config.yaml)
 """
 
+import ast
 import contextvars
 import fnmatch
 import functools
@@ -3074,6 +3075,105 @@ def check_all_command_guards(command: str, env_type: str,
             "user_approved": True, "description": combined_desc}
 
 
+# Dangerous Python operations that bypass terminal() approval when used
+# inside execute_code scripts.  Detected via AST walk with import tracking
+# so both ``os.remove(x)`` and ``from os import remove; remove(x)`` are
+# caught.  ctypes is listed as a whole-module gate: any import of ctypes
+# triggers the guard because ctypes.CDLL provides unrestricted syscall
+# access that bypasses every Python-level check.
+_EXEC_CODE_DANGEROUS_CALLS = frozenset({
+    # File / directory deletion
+    ("os", "remove"),
+    ("os", "unlink"),
+    ("shutil", "rmtree"),
+    # Arbitrary command execution (bypasses terminal() DANGEROUS_PATTERNS)
+    ("os", "system"),
+    ("os", "popen"),
+    ("subprocess", "run"),
+    ("subprocess", "call"),
+    ("subprocess", "Popen"),
+    ("subprocess", "check_output"),
+    ("subprocess", "check_call"),
+})
+
+# Modules whose mere import triggers the guard (even without calling
+# specific functions).  ctypes qualifies — ``ctypes.CDLL(None).unlink(...)``
+# requires no os.remove to bypass every check.
+_EXEC_CODE_SUSPICIOUS_IMPORTS = frozenset({"ctypes"})
+
+
+def _execute_code_has_dangerous_ops(code: str) -> bool:
+    """Return True if *code* contains operations that bypass terminal()
+    / DANGEROUS_PATTERNS approval: dangerous module.func calls,
+    suspicious imports (ctypes), or their aliased equivalents.
+
+    Two-pass scan:
+    1. Collect all imports → ``{local_name: (module, attr)}`` mapping
+    2. Walk call nodes, checking both ``ast.Attribute`` and ``ast.Name``
+       against the mapping.
+
+    Immune to whitespace / comments / string literals (``ast.parse``).
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return False
+
+    # ── Pass 1: collect imports ──────────────────────────────
+    # local_name → (module, attr_or_None_if_wildcard)
+    imports: dict = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                name = alias.asname or alias.name
+                imports[name] = (alias.name, None)
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            for alias in node.names:
+                name = alias.asname or alias.name
+                if alias.name == "*":
+                    continue  # star import — too broad, skip
+                imports[name] = (module, alias.name)
+
+    # ── Check for suspicious whole-module imports ────────────
+    for _local_name, (_module, _attr) in imports.items():
+        if _module in _EXEC_CODE_SUSPICIOUS_IMPORTS:
+            return True
+
+    # ── Pass 2: walk call nodes ──────────────────────────────
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+
+        # Direct module.func:  os.remove(x)
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            key = (func.value.id, func.attr)
+            if key in _EXEC_CODE_DANGEROUS_CALLS:
+                return True
+
+        # Aliased name:  from os import remove  →  remove(x)
+        if isinstance(func, ast.Name):
+            if func.id in imports:
+                resolved = imports[func.id]
+                if resolved in _EXEC_CODE_DANGEROUS_CALLS:
+                    return True
+
+        # Aliased attribute:  import subprocess as sp  →  sp.run(x)
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            base = func.value.id
+            if base in imports:
+                _m, _a = imports[base]
+                if _a is None:       # wildcard: "import sp" → (sp, None)
+                    key = (_m, func.attr)
+                else:
+                    key = (_m, _a)
+                if key in _EXEC_CODE_DANGEROUS_CALLS:
+                    return True
+
+    return False
+
+
 def check_execute_code_guard(code: str, env_type: str,
                              has_host_access: bool = False) -> dict:
     """Approve an execute_code script before its child process is spawned.
@@ -3142,8 +3242,17 @@ def check_execute_code_guard(code: str, env_type: str,
     #     (context now propagates into the RPC thread, #33057); a whole-script
     #     prompt would fire on every execute_code call.
     #   * Local non-interactive non-gateway: documented limitation above.
+    #
+    #   Before auto-approving CLI sessions, scan for dangerous Python API
+    #   calls (os.remove / subprocess.run / ctypes / ...) that bypass
+    #   terminal() DANGEROUS_PATTERNS entirely (#49578).  Pure-data scripts
+    #   (pandas, json, report generation) still pass through without
+    #   prompting.
     if not is_gateway and not is_ask:
-        return {"approved": True, "message": None}
+        if not _execute_code_has_dangerous_ops(code):
+            return {"approved": True, "message": None}
+        # Dangerous ops detected — fall through to approval prompt below
+        # so the user can make an explicit decision.
 
     session_key = get_current_session_key()
     # Built only now (past the early-return gates) so the common non-approval

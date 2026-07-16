@@ -1991,3 +1991,58 @@ class TestLateEnvRepointScopesStore:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "env-home"))
         store = jobs._current_cron_store()
         assert store.jobs_file == patched_dir / "jobs.json"
+
+    def test_public_io_after_late_env_repoint_leaves_old_file_untouched(
+        self, tmp_path, monkeypatch
+    ):
+        """The public API, not the store internals: save_jobs()/load_jobs()
+        called after a post-import HERMES_HOME repoint must operate on the NEW
+        home's jobs.json and leave the import-time file byte-identical.
+
+        The "import-time home" is SIMULATED at a tmp location by patching the
+        module constants and the import-time snapshot together (so they still
+        compare equal and the deliberate-repoint branch does not fire). The
+        test must never touch the real import-time jobs.json: if this module
+        was first imported before the suite's env isolation applied, that
+        path IS the developer's live file — writing a sentinel there is
+        exactly the incident this PR exists to prevent."""
+        import cron.jobs as jobs
+
+        sim_old_home = tmp_path / "import-time-home"
+        sim_cron = sim_old_home / "cron"
+        monkeypatch.setattr(jobs, "HERMES_DIR", sim_old_home)
+        monkeypatch.setattr(jobs, "CRON_DIR", sim_cron)
+        monkeypatch.setattr(jobs, "JOBS_FILE", sim_cron / "jobs.json")
+        monkeypatch.setattr(jobs, "OUTPUT_DIR", sim_cron / "output")
+        monkeypatch.setattr(
+            jobs, "_IMPORT_STORE",
+            jobs._CronStorePaths(jobs.CRON_DIR, jobs.JOBS_FILE, jobs.OUTPUT_DIR),
+        )
+
+        # Plant a sentinel at the (simulated) import-time location — the file
+        # a late-patching fixture used to clobber.
+        old_file = jobs.JOBS_FILE
+        old_file.parent.mkdir(parents=True, exist_ok=True)
+        sentinel = '[{"id": "sentinel-do-not-touch"}]'
+        old_file.write_text(sentinel, encoding="utf-8")
+
+        new_home = tmp_path / "late-home"
+        monkeypatch.setenv("HERMES_HOME", str(new_home))
+
+        job = {
+            "id": "lateenvjob01",
+            "name": "late-env",
+            "prompt": None,
+            "schedule_display": None,
+            "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+            "enabled": True,
+        }
+        save_jobs([job])
+
+        # public read round-trips from the NEW home...
+        loaded = load_jobs()
+        assert [j["id"] for j in loaded] == ["lateenvjob01"]
+        new_file = new_home.resolve() / "cron" / "jobs.json"
+        assert new_file.is_file()
+        # ...and the import-time file is byte-identical to the sentinel.
+        assert old_file.read_text(encoding="utf-8") == sentinel

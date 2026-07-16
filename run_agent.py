@@ -3492,7 +3492,12 @@ class AIAgent:
         try:
             sync_kwargs = {"session_id": self.session_id or ""}
             if messages is not None:
-                sync_kwargs["messages"] = messages
+                # Snapshot: sync_all hands this list to a background worker
+                # thread while the conversation loop keeps appending to the
+                # live list — iterating the shared list there races with the
+                # next turn ("list changed size during iteration"). Same
+                # idiom as _spawn_background_review's messages_snapshot.
+                sync_kwargs["messages"] = list(messages)
             self._memory_manager.sync_all(
                 user_text,
                 response_text,

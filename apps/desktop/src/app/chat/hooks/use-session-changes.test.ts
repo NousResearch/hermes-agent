@@ -10,6 +10,7 @@ import {
   advanceCursorAfterRows,
   appendFetchedMessages,
   createSessionChangesController,
+  adoptZombieFooters,
   discardUnstampedOptimisticTranscriptRows,
   dropZombieOptimisticRows,
   extractCommittedMessageIds,
@@ -581,14 +582,38 @@ describe('reconnect-seam zombie optimistic rows (severed message.complete stamp)
     ]
     const remaining = dropZombieOptimisticRows(zombies, [textMessage('500', 'user', 'continue')])
 
-    expect(remaining.map(row => row.id)).toEqual(['user-b'])
+    expect(remaining.messages.map(row => row.id)).toEqual(['user-b'])
+  })
+
+
+  it('transplants the zombie footer onto the adopting committed twin', () => {
+    // The runtime footer travels ONLY on the message.complete frame and lives
+    // on the streamed optimistic row; DB rows never carry it. Sweeping a
+    // footer-bearing zombie must NOT lose the footer (live regression
+    // 2026-07-16: footer visible live, gone after the poll adopted the twin).
+    const zombie = { ...textMessage('assistant-stream-7', 'assistant', 'the reply'), footer: 'model · 5% · 3s' }
+    const result = appendFetchedMessages([zombie], [
+      { id: 800, role: 'assistant', content: 'the reply' }
+    ])
+
+    expect(result.messages.map(row => row.id)).toEqual(['800'])
+    expect(result.messages[0].footer).toBe('model · 5% · 3s')
+  })
+
+  it('does not graft a footer onto a committed row that already has one', () => {
+    const zombie = { ...textMessage('assistant-stream-8', 'assistant', 'x'), footer: 'zombie-footer' }
+    const committed = { ...textMessage('900', 'assistant', 'x'), footer: 'own-footer' }
+    const adopted = adoptZombieFooters([committed], new Map([['assistant\u0000x', 'zombie-footer']]))
+
+    expect(adopted[0].footer).toBe('own-footer')
+    void zombie
   })
 
   it('role must match for a zombie drop (same text, different role stays)', () => {
     const zombies = [textMessage('assistant-stream-3', 'assistant', 'ok')]
     const remaining = dropZombieOptimisticRows(zombies, [textMessage('600', 'user', 'ok')])
 
-    expect(remaining.map(row => row.id)).toEqual(['assistant-stream-3'])
+    expect(remaining.messages.map(row => row.id)).toEqual(['assistant-stream-3'])
   })
 
   it('MEDIA-tag edge: raw streamed zombie matches its media-rendered committed twin', () => {

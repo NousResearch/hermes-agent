@@ -135,8 +135,14 @@ export function appendFetchedMessages(
   // Reconnect-seam zombie sweep: when a committed twin of an un-stamped
   // optimistic row arrives (the message.complete stamp was severed by a
   // backend restart / WS reconnect), drop the zombie so the committed row
-  // doesn't paint as a duplicate. No-op when nothing is appendable.
-  const base = appendable.length ? dropZombieOptimisticRows(current, appendable) : [...current]
+  // doesn't paint as a duplicate — and transplant the zombie's runtime footer
+  // onto the adopting committed row (footers travel only on the completion
+  // frame; DB rows never carry them). No-op when nothing is appendable.
+  const swept = appendable.length
+    ? dropZombieOptimisticRows(current, appendable)
+    : { messages: [...current], adoptedFooters: new Map<string, string>() }
+  const base = swept.messages
+  const adopted = adoptZombieFooters(appendable, swept.adoptedFooters)
 
   for (const message of appendable) {
     renderedIds.add(message.id)
@@ -152,8 +158,8 @@ export function appendFetchedMessages(
   }
 
   return {
-    cursor: advanceCursorAfterRows(0, fetchedRows, appendable, renderedIds),
-    messages: orderCommittedMessages([...base, ...appendable]),
+    cursor: advanceCursorAfterRows(0, fetchedRows, adopted, renderedIds),
+    messages: orderCommittedMessages([...base, ...adopted]),
     renderedIds
   }
 }
@@ -241,7 +247,7 @@ export function isOptimisticRowId(id: string): boolean {
 export function dropZombieOptimisticRows(
   current: readonly ChatMessage[],
   incoming: readonly ChatMessage[]
-): ChatMessage[] {
+): { messages: ChatMessage[]; adoptedFooters: Map<string, string> } {
   // Normalize both sides through renderMediaTags: committed assistant rows
   // arrive via toChatMessages/assistantTextPart (MEDIA: lines already turned
   // into markdown links) while a zombie's streamed text may still be raw.
@@ -262,11 +268,18 @@ export function dropZombieOptimisticRows(
     incomingBudget.set(key, (incomingBudget.get(key) ?? 0) + 1)
   }
 
+  // Footer transplant: the runtime footer travels ONLY on the message.complete
+  // frame and lives on the streamed (optimistic) row — DB rows never carry it.
+  // Dropping a footer-bearing zombie in favor of its footer-less committed
+  // twin silently loses the footer, so harvest it here and let the caller
+  // graft it onto the adopting committed row (keyed by content).
+  const adoptedFooters = new Map<string, string>()
+
   if (!incomingBudget.size) {
-    return [...current]
+    return { messages: [...current], adoptedFooters }
   }
 
-  return current.filter(message => {
+  const messages = current.filter(message => {
     if (!isOptimisticRowId(message.id) || message.pending) {
       return true
     }
@@ -286,7 +299,42 @@ export function dropZombieOptimisticRows(
 
     incomingBudget.set(key, budget - 1)
 
+    if (message.footer && !adoptedFooters.has(key)) {
+      adoptedFooters.set(key, message.footer)
+    }
+
     return false
+  })
+
+  return { messages, adoptedFooters }
+}
+
+/** Graft footers harvested from swept zombies onto their adopting committed twins. */
+export function adoptZombieFooters(
+  rows: readonly ChatMessage[],
+  adoptedFooters: ReadonlyMap<string, string>
+): ChatMessage[] {
+  if (!adoptedFooters.size) {
+    return [...rows]
+  }
+
+  const remaining = new Map(adoptedFooters)
+
+  return rows.map(row => {
+    if (row.footer || row.role !== 'assistant') {
+      return row
+    }
+
+    const key = `${row.role}\u0000${renderMediaTags(chatMessageText(row)).trim()}`
+    const footer = remaining.get(key)
+
+    if (!footer) {
+      return row
+    }
+
+    remaining.delete(key)
+
+    return { ...row, footer }
   })
 }
 

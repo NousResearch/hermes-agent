@@ -60,6 +60,7 @@ AUTHOR_MAP = {
     "changhyun.min@gmail.com": "minchang",  # PR #42231 salvage (providers: add Upstage Solar)
     "neo@neodeMac-mini.local": "neo-claw-bot",  # PR #58465 salvage (moa: drop empty user turns from advisory view)
     "2024104039@mails.szu.edu.cn": "pixel4039",  # PR #64420 salvage (streaming: retry zero-chunk streams)
+    "marceloparra.hm@gmail.com": "marcelohildebrand",  # PR #42346 salvage (lmstudio: JIT load mode)
     "m.guttmann@journaway.com": "mguttmann",  # PR #63738 salvage (Anthropic setup-token pool auth normalization)
     "VrtxOmega@pm.me": "VrtxOmega",  # PR #43809 salvage (desktop: WSL folder-picker path bridge)
     "gn00742754@gmail.com": "SemonCat",  # PR #56786 salvage (Slack Agent View manifests and Assistant APIs)
@@ -2002,6 +2003,7 @@ AUTHOR_MAP = {
     "i@dex.moe": "dexhunter",  # PR #60339 salvage (skills snapshot manifest speedup)
     "1torhan@protonmail.com": "uzaylisak",  # PR #29988 salvage (detect_local_server_type process-lifetime cache)
     "zhchl@hermes-agent.local": "8294",  # PR #50572 salvage (honor config context_length on banner)
+    "yansh2017@gmail.com": "ya-nsh",  # PR #26790 salvage (normalize local terminal relative cwd; #26783)
 }
 
 

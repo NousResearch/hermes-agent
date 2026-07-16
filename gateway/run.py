@@ -13338,6 +13338,11 @@ class GatewayRunner(
                                             getattr(_comp, "_last_summary_error", None)
                                             or "unknown error"
                                         )
+                                        # Force-redact: provider exception text
+                                        # may contain credentials; this message
+                                        # reaches gateway users directly.
+                                        from agent.redact import redact_sensitive_text
+                                        _err = redact_sensitive_text(_err, force=True)
                                         _warn_msg = (
                                             "⚠️ Context compression aborted "
                                             f"({_err}). No messages were dropped — "

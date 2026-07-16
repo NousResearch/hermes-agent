@@ -2624,3 +2624,68 @@ def test_run_codex_stream_retired_request_stops_firing_callbacks(monkeypatch):
 
     assert streamed == ["keep"]
     assert "DROPPED" not in streamed
+
+
+def test_run_conversation_codex_no_nudge_for_replayable_interim(monkeypatch):
+    """An interim that carries visible content replays fine - the nudge
+    must not fire and pollute the conversation."""
+    agent = _build_agent(monkeypatch)
+    requests = []
+    responses = [
+        _codex_incomplete_message_response("Partial visible content."),
+        _codex_message_response("Done."),
+    ]
+
+    def _fake_api_call(api_kwargs):
+        requests.append(api_kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation("analyze repo")
+
+    assert result["completed"] is True
+    replay_input = requests[1]["input"]
+    assert not any(
+        isinstance(item, dict)
+        and item.get("role") == "user"
+        and "only internal reasoning" in str(item.get("content"))
+        for item in replay_input
+    )
+
+@pytest.mark.parametrize("verbosity", ["low", "medium", "high"])
+def test_build_api_kwargs_codex_text_verbosity(monkeypatch, verbosity):
+    """Real config loading reaches the normalized Responses payload."""
+    from hermes_constants import get_hermes_home
+
+    config_path = get_hermes_home() / "config.yaml"
+    config_path.write_text(f'agent:\n  text_verbosity: " {verbosity} "\n')
+    agent = _build_agent(monkeypatch)
+
+    kwargs = agent._build_api_kwargs(
+        [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "Ping"},
+        ]
+    )
+
+    assert kwargs["text"] == {"verbosity": verbosity}
+
+
+@pytest.mark.parametrize("agent_config", [{}, {"text_verbosity": ""}, {"text_verbosity": None}])
+def test_build_api_kwargs_codex_text_verbosity_empty_no_injection(monkeypatch, agent_config):
+    """Missing, empty and null settings leave verbosity to the provider."""
+    import yaml
+    from hermes_constants import get_hermes_home
+
+    (get_hermes_home() / "config.yaml").write_text(yaml.safe_dump({"agent": agent_config}))
+    agent = _build_agent(monkeypatch)
+
+    kwargs = agent._build_api_kwargs(
+        [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "Ping"},
+        ]
+    )
+
+    assert "text" not in kwargs

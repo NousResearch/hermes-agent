@@ -336,7 +336,7 @@ def _steer_deferred_tool_result_text(tool_name: str) -> str:
     )
 
 
-def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
+def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> bool:
     """Execute multiple tool calls concurrently using a thread pool.
 
     Results are collected in the original tool-call order and appended to
@@ -345,6 +345,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     ``finalize=False`` skips the end-of-batch aggregate budget enforcement
     and /steer injection — used when this call is one segment of a larger
     mixed batch and the segmented dispatcher owns the turn-end work.
+
+    Returns ``True`` if a pending /steer was consumed while this batch ran,
+    so a segmented dispatcher can defer later segments (see
+    ``execute_tool_calls_segmented``).
     """
     tool_calls = assistant_message.tool_calls
     num_tools = len(tool_calls)
@@ -368,7 +372,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 messages,
                 stage=f"cancelled tool result {tc.function.name}",
             )
-        return
+        return False
 
     # ── Parse args + pre-execution bookkeeping ───────────────────────
     parsed_calls = []  # list of (tool_call, function_name, function_args, middleware_trace, block_result, blocked_by_guardrail)
@@ -868,6 +872,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             spinner.stop(f"⚡ {completed}/{num_tools} tools completed in {total_dur:.1f}s total")
 
     # ── Post-execution: display per-tool results ─────────────────────
+    steer_consumed = False
     for i, (tc, name, args, middleware_trace, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
         r = results[i]
         blocked = False
@@ -1063,7 +1068,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # ── Per-tool /steer drain ───────────────────────────────────
         # Same as the sequential path: drain between each collected
         # result so the steer lands as early as possible.
-        agent._apply_pending_steer_to_tool_results(messages, 1)
+        if agent._apply_pending_steer_to_tool_results(messages, 1):
+            steer_consumed = True
 
     # ── Per-turn aggregate budget enforcement ─────────────────────────
     num_tools = len(parsed_calls)
@@ -1076,19 +1082,27 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     # agent sees it on its next iteration. Runs AFTER budget enforcement
     # so the steer marker is never truncated. See steer() for details.
     if finalize and num_tools > 0:
-        agent._apply_pending_steer_to_tool_results(messages, num_tools)
+        if agent._apply_pending_steer_to_tool_results(messages, num_tools):
+            steer_consumed = True
+
+    return steer_consumed
 
 
 
-def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> None:
+def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, *, finalize: bool = True) -> bool:
     """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools.
 
     ``finalize=False`` skips the end-of-batch aggregate budget enforcement
     and /steer injection — used when this call is one segment of a larger
     mixed batch and the segmented dispatcher owns the turn-end work.
+
+    Returns ``True`` if a pending /steer was consumed while this batch ran,
+    so a segmented dispatcher can defer later segments (see
+    ``execute_tool_calls_segmented``).
     """
     # Resolve the context-scaled tool-output budget once per turn.
     _tool_budget = _budget_for_agent(agent)
+    steer_consumed = False
     for i, tool_call in enumerate(assistant_message.tool_calls, 1):
         # SAFETY: check interrupt BEFORE starting each tool.
         # If the user sent "stop" during a previous tool's execution,
@@ -1130,7 +1144,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 messages,
                 stage=f"invalid tool arguments {function_name}",
             )
-            agent._apply_pending_steer_to_tool_results(messages, 1)
+            if agent._apply_pending_steer_to_tool_results(messages, 1):
+                steer_consumed = True
             continue
 
         # Tool Search unwrap — see execute_tool_calls_concurrent for full
@@ -1749,6 +1764,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # injection lands as soon as a tool finishes — not after the
         # entire batch.  The model sees it on the next API iteration.
         _steer_consumed = agent._apply_pending_steer_to_tool_results(messages, 1)
+        if _steer_consumed:
+            steer_consumed = True
 
         # If a steer was consumed, stop executing the rest of the batch so
         # the model can act on the user's guidance before more tools run.
@@ -1822,12 +1839,15 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     # See _execute_tool_calls_parallel for the rationale. Same hook,
     # applied to sequential execution as well.
     if finalize and num_tools_seq > 0:
-        agent._apply_pending_steer_to_tool_results(messages, num_tools_seq)
+        if agent._apply_pending_steer_to_tool_results(messages, num_tools_seq):
+            steer_consumed = True
+
+    return steer_consumed
 
 
 
 
-def execute_tool_calls_segmented(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, segments=None) -> None:
+def execute_tool_calls_segmented(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0, segments=None) -> bool:
     """Execute a mixed tool-call batch as ordered parallel/sequential segments.
 
     ``segments`` is the ``(kind, calls)`` plan from
@@ -1849,24 +1869,64 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
     result per call, so an interrupt during segment *k* drains segments
     *k+1..n* without executing them while preserving one result per
     tool_call_id.
+
+    /steer semantics: the segment executors return ``True`` when a pending
+    steer was consumed, and their internal breakout only covers the segment
+    they ran. Without dispatcher-level handling a steer consumed in segment
+    *k* would still let segments *k+1..n* execute — defeating the breakout
+    for mixed batches. So once a segment reports a consumed steer (or a steer
+    is still pending at a segment boundary), every call in the remaining
+    segments is deferred with a placeholder result, preserving one result per
+    tool_call_id. A hard interrupt supersedes the steer break, mirroring the
+    sequential path: the segments' own interrupt pre-flight then owns the
+    drain. Returns ``True`` if a steer was consumed anywhere in the batch.
+    Fixes #28172 (segmented path).
     """
     from types import SimpleNamespace
 
     if segments is None:
         segments = _plan_tool_batch_segments(assistant_message.tool_calls)
 
-    for kind, calls in segments:
+    steer_consumed = False
+    for seg_index, (kind, calls) in enumerate(segments):
+        steer_break = seg_index > 0 and not agent._interrupt_requested and (
+            steer_consumed or getattr(agent, "_pending_steer", None) is not None
+        )
+        if steer_break:
+            remaining = sum(len(c) for _, c in segments[seg_index:])
+            agent._vprint(
+                f"{agent.log_prefix}🧭 Steer consumed — deferring {remaining} "
+                f"tool call(s) in later segment(s) so the model can process the steer",
+                force=True,
+            )
+            for _, deferred_calls in segments[seg_index:]:
+                for tc in deferred_calls:
+                    deferred_name = tc.function.name
+                    messages.append(make_tool_result_message(
+                        deferred_name,
+                        _steer_deferred_tool_result_text(deferred_name),
+                        tc.id,
+                    ))
+                    _flush_session_db_after_tool_progress(
+                        agent,
+                        messages,
+                        stage=f"deferred tool result {deferred_name}",
+                    )
+            break
+
         segment_message = SimpleNamespace(tool_calls=list(calls))
         if kind == "parallel":
-            execute_tool_calls_concurrent(
+            segment_steer = execute_tool_calls_concurrent(
                 agent, segment_message, messages, effective_task_id, api_call_count,
                 finalize=False,
             )
         else:
-            execute_tool_calls_sequential(
+            segment_steer = execute_tool_calls_sequential(
                 agent, segment_message, messages, effective_task_id, api_call_count,
                 finalize=False,
             )
+        if segment_steer:
+            steer_consumed = True
 
     # ── Whole-turn finalize (budget + /steer) ─────────────────────────
     total_tools = len(assistant_message.tool_calls)
@@ -1877,7 +1937,10 @@ def execute_tool_calls_segmented(agent, assistant_message, messages: list, effec
             env=get_active_env(effective_task_id),
             config=_tool_budget,
         )
-        agent._apply_pending_steer_to_tool_results(messages, total_tools)
+        if agent._apply_pending_steer_to_tool_results(messages, total_tools):
+            steer_consumed = True
+
+    return steer_consumed
 
 
 __all__ = [

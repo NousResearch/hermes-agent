@@ -457,6 +457,71 @@ class TestSkillView:
         assert "Current date: !`printf SHOULD_NOT_RUN`" in result["content"]
         assert "Current date: SHOULD_NOT_RUN" not in result["content"]
 
+    def test_preprocess_failure_surfaces_warning_for_template_vars(self, tmp_path):
+        """A raised preprocess_skill_content must not fall back silently
+        when the content contains supported ${HERMES_*} tokens."""
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_preprocessing.preprocess_skill_content",
+                side_effect=RuntimeError("preprocess exploded"),
+            ),
+        ):
+            _make_skill(
+                tmp_path,
+                "broken-preprocess",
+                body="Run ${HERMES_SKILL_DIR}/scripts/do.sh",
+            )
+            raw = skill_view("broken-preprocess", task_id="session-123")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["content"].startswith("[WARNING: Skill preprocessing failed")
+        # The raw, unprocessed content is preserved after the banner.
+        assert "Run ${HERMES_SKILL_DIR}/scripts/do.sh" in result["content"]
+
+    def test_preprocess_failure_surfaces_warning_for_inline_shell(self, tmp_path):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_preprocessing.preprocess_skill_content",
+                side_effect=RuntimeError("preprocess exploded"),
+            ),
+        ):
+            _make_skill(
+                tmp_path,
+                "broken-inline",
+                body="Current date: !`date +%Y-%m-%d`",
+            )
+            raw = skill_view("broken-inline")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["content"].startswith("[WARNING: Skill preprocessing failed")
+        assert "!`date +%Y-%m-%d`" in result["content"]
+
+    def test_preprocess_failure_no_warning_for_plain_shell_syntax(self, tmp_path):
+        """${HOME} is ordinary shell parameter expansion — the preprocessor
+        never touches it, so its presence must not trigger the banner."""
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "agent.skill_preprocessing.preprocess_skill_content",
+                side_effect=RuntimeError("preprocess exploded"),
+            ),
+        ):
+            _make_skill(
+                tmp_path,
+                "plain-shell",
+                body="Run ${HOME}/bin/tool --flag && echo ${PATH}",
+            )
+            raw = skill_view("plain-shell")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "[WARNING" not in result["content"]
+        assert "Run ${HOME}/bin/tool --flag" in result["content"]
+
     def test_view_nonexistent_skill(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "other-skill")

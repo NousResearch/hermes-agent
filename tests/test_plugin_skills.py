@@ -385,3 +385,65 @@ class TestBundleContextBanner:
         self._setup_bundle(tmp_path)
         result = json.loads(skill_view("myplugin:foo"))
         assert "foo body." in result["content"]
+
+
+class TestPluginSkillPreprocessFailureWarning:
+    """Plugin skills must surface the same preprocess-failure warning as
+    local skills instead of silently serving raw content."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self, tmp_path, monkeypatch):
+        from hermes_cli import plugins as plugins_mod
+        from hermes_cli.plugins import PluginManager
+
+        self.pm = PluginManager()
+        monkeypatch.setattr(plugins_mod, "_plugin_manager", self.pm)
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", empty)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    def _register_skill(self, tmp_path, body):
+        d = tmp_path / "plugins" / "myplugin" / "skills" / "tokened"
+        d.mkdir(parents=True, exist_ok=True)
+        md = d / "SKILL.md"
+        md.write_text(
+            f"---\nname: tokened\ndescription: tokened desc\n---\n\n{body}\n"
+        )
+        self.pm._plugin_skills["myplugin:tokened"] = {
+            "path": md, "plugin": "myplugin", "bare_name": "tokened", "description": "",
+        }
+
+    def test_raised_preprocess_surfaces_warning(self, tmp_path):
+        from unittest.mock import patch
+
+        from tools.skills_tool import skill_view
+
+        self._register_skill(tmp_path, "Run ${HERMES_SKILL_DIR}/scripts/do.sh")
+        with patch(
+            "agent.skill_preprocessing.preprocess_skill_content",
+            side_effect=RuntimeError("preprocess exploded"),
+        ):
+            result = json.loads(skill_view("myplugin:tokened"))
+
+        assert result["success"] is True
+        # Banner is present (after the bundle-context banner) and the raw
+        # content is preserved.
+        assert "[WARNING: Skill preprocessing failed" in result["content"]
+        assert "Run ${HERMES_SKILL_DIR}/scripts/do.sh" in result["content"]
+
+    def test_raised_preprocess_no_warning_for_plain_shell(self, tmp_path):
+        from unittest.mock import patch
+
+        from tools.skills_tool import skill_view
+
+        self._register_skill(tmp_path, "Run ${HOME}/bin/tool --flag")
+        with patch(
+            "agent.skill_preprocessing.preprocess_skill_content",
+            side_effect=RuntimeError("preprocess exploded"),
+        ):
+            result = json.loads(skill_view("myplugin:tokened"))
+
+        assert result["success"] is True
+        assert "[WARNING" not in result["content"]
+        assert "Run ${HOME}/bin/tool --flag" in result["content"]

@@ -269,6 +269,7 @@ def _added_line_security_scan_command() -> str:
         "            hits.append('redacted-hit')\n"
         "            continue\n"
         "        if not path.is_file():\n"
+        "            hits.append('redacted-hit')\n"
         "            continue\n"
         "        raw=path.read_bytes()\n"
         "    except (OSError, ValueError):\n"

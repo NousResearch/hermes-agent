@@ -1041,6 +1041,83 @@ def test_generated_security_scan_rejects_gitlink_entries(tmp_path):
     assert scanned.stderr == ""
 
 
+def test_generated_security_scan_rejects_untracked_nested_repository(tmp_path):
+    mod = _load_bundle()
+    bash = _bash_or_skip()
+    command = mod._added_line_security_scan_command()
+    parent = tmp_path / "parent"
+    nested = parent / "vendor" / "nested"
+    _init_git_repo(parent)
+    readme = parent / "README.md"
+    readme.write_text("baseline\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "--", readme.name],
+        cwd=parent,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "parent baseline"],
+        cwd=parent,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    _init_git_repo(nested)
+    secret_file = nested / "secret.py"
+    secret_file.write_text("safe = True\n", encoding="utf-8")
+    (nested / ".gitattributes").write_text("secret.py filter=hide\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "--", ".gitattributes", secret_file.name],
+        cwd=nested,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "nested baseline"],
+        cwd=nested,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    (nested / "hide-filter.sh").write_text(
+        "#!/bin/sh\nprintf ran > filter-ran.txt\nprintf 'safe = True\\n'\n", encoding="utf-8"
+    )
+    subprocess.run(
+        ["git", "config", "filter.hide.clean", "sh hide-filter.sh"],
+        cwd=nested,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    term = "api" + "_key"
+    marker = "nested-repo-dummy-value"
+    secret_file.write_text(f'{term} = "{marker}"\n', encoding="utf-8")
+
+    scanned = subprocess.run(
+        [bash, "-lc", command],
+        cwd=parent,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+
+    assert scanned.returncode == 1
+    assert "redacted-hit" in scanned.stdout
+    assert marker not in scanned.stdout
+    assert marker not in scanned.stderr
+    assert not (nested / "filter-ran.txt").exists()
+
+
 @pytest.mark.parametrize("index_flag", ["--assume-unchanged", "--skip-worktree"])
 def test_generated_security_scan_rejects_hidden_index_flags(tmp_path, index_flag):
     mod = _load_bundle()

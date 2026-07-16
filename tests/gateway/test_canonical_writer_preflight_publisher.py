@@ -120,6 +120,11 @@ def test_plan_is_secret_free_self_digest_and_performs_only_reads(monkeypatch):
     }
     credential = _plan()["credential_provenance"]
     reads: list[str] = []
+    ca_reads = []
+
+    def read_trusted(path, **kwargs):
+        ca_reads.append((path, kwargs))
+        return b"ca" if path == publisher.DATABASE_CA_PATH else b""
 
     monkeypatch.setattr(publisher, "_require_root_linux", lambda: reads.append("root"))
     monkeypatch.setattr(
@@ -137,11 +142,7 @@ def test_plan_is_secret_free_self_digest_and_performs_only_reads(monkeypatch):
         "load_release_manifest",
         lambda _revision: (SimpleNamespace(artifact_sha256="3" * 64), b"manifest"),
     )
-    monkeypatch.setattr(
-        publisher,
-        "_read_trusted_file",
-        lambda path, **_kwargs: b"ca" if path == publisher.DATABASE_CA_PATH else b"",
-    )
+    monkeypatch.setattr(publisher, "_read_trusted_file", read_trusted)
     monkeypatch.setattr(
         publisher,
         "_credential_identity",
@@ -171,6 +172,20 @@ def test_plan_is_secret_free_self_digest_and_performs_only_reads(monkeypatch):
     assert "secret-value-must-not-appear" not in rendered
     assert result["credential_provenance"]["content_or_digest_recorded"] is False
     assert result["invariants"]["services_started"] is False
+    assert ca_reads == [
+        (
+            publisher.DATABASE_CA_PATH,
+            {
+                "expected_uid": 0,
+                "expected_gid": publisher.CANARY_WRITER_GID,
+                "allowed_modes": frozenset({0o440}),
+                "maximum": 2 * 1024 * 1024,
+                "allowed_parent_gids": frozenset(
+                    {0, publisher.CANARY_WRITER_GID}
+                ),
+            },
+        )
+    ]
 
 
 def test_cli_is_strict_and_failure_never_echoes_input(capsys):

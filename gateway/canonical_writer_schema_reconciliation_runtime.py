@@ -220,6 +220,7 @@ def _read_fixed_ca() -> bytes:
         expected_gid=CANARY_WRITER_GID,
         allowed_modes=frozenset({0o440}),
         maximum=2 * 1024 * 1024,
+        allowed_parent_gids=frozenset({0, CANARY_WRITER_GID}),
     )
 
 

@@ -517,6 +517,7 @@ def plan_writer_preflight_publication(
         expected_gid=CANARY_WRITER_GID,
         allowed_modes=frozenset({0o440}),
         maximum=2 * 1024 * 1024,
+        allowed_parent_gids=frozenset({0, CANARY_WRITER_GID}),
     )
     _credential_stat, credential = _credential_identity()
     service_state = _capture_service_snapshot(runner=_service_runner)

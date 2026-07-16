@@ -316,6 +316,32 @@ def test_owner_pin_mismatch_fails_closed(monkeypatch: pytest.MonkeyPatch):
         runtime._derived_owner_identity()
 
 
+def test_fixed_ca_read_allows_only_writer_group_parent_chain(monkeypatch):
+    calls = []
+
+    def read_trusted(path, **kwargs):
+        calls.append((path, kwargs))
+        return b"trusted-ca"
+
+    monkeypatch.setattr(runtime, "_read_trusted_file", read_trusted)
+
+    assert runtime._read_fixed_ca() == b"trusted-ca"
+    assert calls == [
+        (
+            foundation.DATABASE_CA_PATH,
+            {
+                "expected_uid": 0,
+                "expected_gid": runtime.CANARY_WRITER_GID,
+                "allowed_modes": frozenset({0o440}),
+                "maximum": 2 * 1024 * 1024,
+                "allowed_parent_gids": frozenset(
+                    {0, runtime.CANARY_WRITER_GID}
+                ),
+            },
+        )
+    ]
+
+
 def test_prepare_runtime_builds_secret_free_pre_database_gate(tmp_path: Path):
     database_calls: list[str] = []
     dependencies = _dependencies(

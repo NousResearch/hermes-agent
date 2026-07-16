@@ -340,7 +340,11 @@ def _host_activation_lock():
             os.close(descriptor)
 
 
-def _validate_root_parent_chain(path: Path) -> None:
+def _validate_root_parent_chain(
+    path: Path,
+    *,
+    allowed_parent_gids: frozenset[int] = frozenset({0}),
+) -> None:
     current = path
     while True:
         try:
@@ -351,7 +355,7 @@ def _validate_root_parent_chain(path: Path) -> None:
             stat.S_ISLNK(item.st_mode)
             or not stat.S_ISDIR(item.st_mode)
             or item.st_uid != 0
-            or item.st_gid != 0
+            or item.st_gid not in allowed_parent_gids
             or stat.S_IMODE(item.st_mode) & 0o022
             or _list_xattrs(current)
         ):
@@ -402,10 +406,14 @@ def _read_trusted_file(
     maximum: int,
     trusted_parents: bool = True,
     allow_empty: bool = False,
+    allowed_parent_gids: frozenset[int] = frozenset({0}),
 ) -> bytes:
     path = _absolute_path(os.fspath(path_value), "trusted file path")
     if trusted_parents:
-        _validate_root_parent_chain(path.parent)
+        _validate_root_parent_chain(
+            path.parent,
+            allowed_parent_gids=allowed_parent_gids,
+        )
     try:
         before = os.lstat(path)
     except OSError as exc:
@@ -457,7 +465,10 @@ def _read_trusted_file(
         ):
             raise RuntimeError("trusted activation file changed after read")
         if trusted_parents:
-            _validate_root_parent_chain(path.parent)
+            _validate_root_parent_chain(
+                path.parent,
+                allowed_parent_gids=allowed_parent_gids,
+            )
         return raw
     finally:
         os.close(descriptor)
@@ -2716,12 +2727,15 @@ def _verify_native_preflight_inputs(
             _validate_root_parent_chain(artifact.target_path.parent)
     database = plan.value["database"]
     ca_path = Path(database["ca_path"])
+    if ca_path != DEFAULT_DATABASE_CA_PATH:
+        raise RuntimeError("native database CA path is not production-pinned")
     ca = _read_trusted_file(
         ca_path,
         expected_uid=0,
         expected_gid=CANARY_WRITER_GID,
         allowed_modes=frozenset({0o400, 0o440, 0o444}),
         maximum=_MAX_CONFIG_BYTES,
+        allowed_parent_gids=frozenset({0, CANARY_WRITER_GID}),
     )
     if _sha256_bytes(ca) != database["ca_sha256"]:
         raise RuntimeError("native database CA digest drifted")
@@ -4438,6 +4452,7 @@ def _verify_final_artifacts(plan: ActivationPlan) -> None:
         expected_gid=CANARY_WRITER_GID,
         allowed_modes=frozenset({0o400, 0o440, 0o444}),
         maximum=_MAX_CONFIG_BYTES,
+        allowed_parent_gids=frozenset({0, CANARY_WRITER_GID}),
     )
     if _sha256_bytes(ca) != plan.digests.database_ca_sha256:
         raise RuntimeError("final activation database CA drifted")

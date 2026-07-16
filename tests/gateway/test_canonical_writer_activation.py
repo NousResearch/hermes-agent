@@ -98,6 +98,93 @@ def test_activation_lock_is_under_root_controlled_run_not_world_writable_run_loc
     assert activation.ACTIVATION_LOCK_PATH == Path("/run/muncho-writer-activation.lock")
 
 
+def _parent_stat(*, mode: int, uid: int = 0, gid: int = 0):
+    return SimpleNamespace(
+        st_mode=stat.S_IFDIR | mode,
+        st_uid=uid,
+        st_gid=gid,
+    )
+
+
+def test_ca_parent_writer_group_requires_explicit_opt_in(monkeypatch):
+    observed = {
+        Path("/"): _parent_stat(mode=0o755),
+        Path("/etc"): _parent_stat(mode=0o755),
+        Path("/etc/muncho"): _parent_stat(mode=0o755),
+        Path("/etc/muncho/trust"): _parent_stat(
+            mode=0o750,
+            gid=activation.CANARY_WRITER_GID,
+        ),
+    }
+    monkeypatch.setattr(activation.os, "lstat", lambda path: observed[Path(path)])
+    monkeypatch.setattr(activation, "_list_xattrs", lambda _path: ())
+
+    with pytest.raises(PermissionError, match="root-controlled"):
+        activation._validate_root_parent_chain(Path("/etc/muncho/trust"))
+
+    activation._validate_root_parent_chain(
+        Path("/etc/muncho/trust"),
+        allowed_parent_gids=frozenset({0, activation.CANARY_WRITER_GID}),
+    )
+
+
+@pytest.mark.parametrize(
+    ("mode", "uid", "gid", "xattrs"),
+    (
+        (0o770, 0, activation.CANARY_WRITER_GID, ()),
+        (0o752, 0, activation.CANARY_WRITER_GID, ()),
+        (0o750, 1, activation.CANARY_WRITER_GID, ()),
+        (0o750, 0, 993, ()),
+        (0o750, 0, activation.CANARY_WRITER_GID, ("security.acl",)),
+    ),
+)
+def test_ca_parent_opt_in_preserves_integrity_checks(
+    monkeypatch,
+    mode,
+    uid,
+    gid,
+    xattrs,
+):
+    monkeypatch.setattr(
+        activation.os,
+        "lstat",
+        lambda _path: _parent_stat(mode=mode, uid=uid, gid=gid),
+    )
+    monkeypatch.setattr(activation, "_list_xattrs", lambda _path: xattrs)
+
+    with pytest.raises(PermissionError, match="root-controlled"):
+        activation._validate_root_parent_chain(
+            Path("/etc/muncho/trust"),
+            allowed_parent_gids=frozenset({0, activation.CANARY_WRITER_GID}),
+        )
+
+
+def test_trusted_file_rechecks_explicit_parent_groups(tmp_path, monkeypatch):
+    trusted = tmp_path / "ca.pem"
+    trusted.write_bytes(b"trusted-ca")
+    trusted.chmod(0o440)
+    checks = []
+    allowed = frozenset({0, activation.CANARY_WRITER_GID})
+    monkeypatch.setattr(
+        activation,
+        "_validate_root_parent_chain",
+        lambda path, *, allowed_parent_gids: checks.append(
+            (path, allowed_parent_gids)
+        ),
+    )
+    monkeypatch.setattr(activation, "_list_xattrs", lambda _path: ())
+
+    assert activation._read_trusted_file(
+        trusted,
+        expected_uid=os.getuid(),
+        expected_gid=os.getgid(),
+        allowed_modes=frozenset({0o440}),
+        maximum=1024,
+        allowed_parent_gids=allowed,
+    ) == b"trusted-ca"
+    assert checks == [(tmp_path, allowed), (tmp_path, allowed)]
+
+
 def test_renewed_owner_approvals_are_append_only_receipt_addressed():
     first = _owner_approval("activation", "a" * 64)
     renewed = activation.OwnerApprovalReceipt.from_mapping({
@@ -572,7 +659,11 @@ def test_atomic_install_link_race_never_unlinks_existing_target(
     target.write_bytes(existing)
     target.chmod(0o400)
 
-    monkeypatch.setattr(activation, "_validate_root_parent_chain", lambda _path: None)
+    monkeypatch.setattr(
+        activation,
+        "_validate_root_parent_chain",
+        lambda _path, **_kwargs: None,
+    )
     monkeypatch.setattr(activation, "_fsync_directory", lambda _path: None)
     monkeypatch.setattr(activation.os, "fchown", lambda *_args: None)
     real_link = os.link
@@ -1530,9 +1621,23 @@ def test_packaged_preflight_requires_fresh_initial_collector_but_attests_db_befo
                 "expected_gid": activation.CANARY_WRITER_GID,
                 "allowed_modes": frozenset({0o400, 0o440, 0o444}),
                 "maximum": activation._MAX_CONFIG_BYTES,
+                "allowed_parent_gids": frozenset(
+                    {0, activation.CANARY_WRITER_GID}
+                ),
             },
         )
     ]
+
+    plan.value["database"]["ca_path"] = "/etc/muncho/other-ca.pem"
+    trusted_reads.clear()
+    with pytest.raises(RuntimeError, match="CA path is not production-pinned"):
+        activation._verify_native_preflight_inputs(
+            plan,
+            runner=lambda _command: None,
+            require_installed=require_installed,
+            require_original_boot=False,
+        )
+    assert trusted_reads == []
 
 
 def test_final_preflight_reads_database_ca_with_writer_group(monkeypatch):
@@ -1586,6 +1691,9 @@ def test_final_preflight_reads_database_ca_with_writer_group(monkeypatch):
                 "expected_gid": activation.CANARY_WRITER_GID,
                 "allowed_modes": frozenset({0o400, 0o440, 0o444}),
                 "maximum": activation._MAX_CONFIG_BYTES,
+                "allowed_parent_gids": frozenset(
+                    {0, activation.CANARY_WRITER_GID}
+                ),
             },
         )
     ]

@@ -216,9 +216,13 @@ def _read_trusted_root_file(
     allowed_modes: frozenset[int],
     maximum: int,
     expected_gid: int = 0,
+    allowed_parent_gids: frozenset[int] = frozenset({0}),
 ) -> bytes:
     path = _absolute_normalized_path(path_value, "trusted root file")
-    _validate_root_parent_chain(path.parent)
+    _validate_root_parent_chain(
+        path.parent,
+        allowed_parent_gids=allowed_parent_gids,
+    )
     before = os.lstat(path)
     if (
         stat.S_ISLNK(before.st_mode)
@@ -1363,7 +1367,11 @@ def _require_root_linux() -> None:
         raise RuntimeError("writer_activation_write_requires_linux")
 
 
-def _validate_root_parent_chain(path: Path) -> None:
+def _validate_root_parent_chain(
+    path: Path,
+    *,
+    allowed_parent_gids: frozenset[int] = frozenset({0}),
+) -> None:
     current = path
     while True:
         item = os.lstat(current)
@@ -1371,7 +1379,7 @@ def _validate_root_parent_chain(path: Path) -> None:
             stat.S_ISLNK(item.st_mode)
             or not stat.S_ISDIR(item.st_mode)
             or item.st_uid != 0
-            or item.st_gid != 0
+            or item.st_gid not in allowed_parent_gids
             or stat.S_IMODE(item.st_mode) & 0o022
         ):
             raise PermissionError("activation parent path is not root-controlled")
@@ -1610,6 +1618,7 @@ def build_and_stage_native_observation_plan(
         allowed_modes=frozenset({0o400, 0o440, 0o444}),
         maximum=_MAX_CONFIG_BYTES,
         expected_gid=CANARY_WRITER_GID,
+        allowed_parent_gids=frozenset({0, CANARY_WRITER_GID}),
     )
     unit_spec = WriterOnlyUnitSpec(
         database_ip_allow=(f"{sql_private_ip}/32",),
@@ -1662,24 +1671,27 @@ def build_and_stage_native_observation_plan(
     )
     if reparsed.sha256 != plan.sha256 or reparsed.to_mapping() != plan.to_mapping():
         raise RuntimeError("native observation plan roundtrip drifted")
-    for path, expected, modes, expected_gid in (
+    for path, expected, modes, expected_gid, allowed_parent_gids in (
         (
             DEFAULT_WRITER_CONFIG_SOURCE_PATH,
             writer_raw,
             frozenset({0o400}),
             0,
+            frozenset({0}),
         ),
         (
             DEFAULT_GATEWAY_CONFIG_SOURCE_PATH,
             gateway_raw,
             frozenset({0o400}),
             0,
+            frozenset({0}),
         ),
         (
             DEFAULT_DATABASE_CA_PATH,
             database_ca_raw,
             frozenset({0o400, 0o440, 0o444}),
             CANARY_WRITER_GID,
+            frozenset({0, CANARY_WRITER_GID}),
         ),
     ):
         if _read_trusted_root_file(
@@ -1687,6 +1699,7 @@ def build_and_stage_native_observation_plan(
             allowed_modes=modes,
             maximum=_MAX_CONFIG_BYTES,
             expected_gid=expected_gid,
+            allowed_parent_gids=allowed_parent_gids,
         ) != expected:
             raise RuntimeError("native planning input rotated before staging")
     final_collector_receipt = load_config_collector_receipt(
@@ -1841,6 +1854,7 @@ def build_and_stage_final_activation_plan(
         allowed_modes=frozenset({0o400, 0o440, 0o444}),
         maximum=_MAX_CONFIG_BYTES,
         expected_gid=CANARY_WRITER_GID,
+        allowed_parent_gids=frozenset({0, CANARY_WRITER_GID}),
     )
 
     release_manifest_file_sha256 = hashlib.sha256(
@@ -1930,24 +1944,27 @@ def build_and_stage_final_activation_plan(
     ):
         raise RuntimeError("final activation plan roundtrip drifted")
 
-    for path, expected, modes, expected_gid in (
+    for path, expected, modes, expected_gid, allowed_parent_gids in (
         (
             DEFAULT_WRITER_CONFIG_SOURCE_PATH,
             writer_raw,
             frozenset({0o400}),
             0,
+            frozenset({0}),
         ),
         (
             DEFAULT_GATEWAY_CONFIG_SOURCE_PATH,
             gateway_raw,
             frozenset({0o400}),
             0,
+            frozenset({0}),
         ),
         (
             DEFAULT_DATABASE_CA_PATH,
             database_ca_raw,
             frozenset({0o400, 0o440, 0o444}),
             CANARY_WRITER_GID,
+            frozenset({0, CANARY_WRITER_GID}),
         ),
     ):
         if _read_trusted_root_file(
@@ -1955,6 +1972,7 @@ def build_and_stage_final_activation_plan(
             allowed_modes=modes,
             maximum=_MAX_CONFIG_BYTES,
             expected_gid=expected_gid,
+            allowed_parent_gids=allowed_parent_gids,
         ) != expected:
             raise RuntimeError("final planning input rotated before staging")
     final_collector_receipt = load_config_collector_receipt(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import stat
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,6 +34,90 @@ from gateway.canonical_writer_release_contract import (
 REVISION = "a" * 40
 SQL_PRIVATE_IP = "10.91.0.3"
 SQL_TLS_SERVER_NAME = "db.muncho.internal"
+
+
+def _parent_stat(*, mode: int, uid: int = 0, gid: int = 0):
+    return SimpleNamespace(
+        st_mode=stat.S_IFDIR | mode,
+        st_uid=uid,
+        st_gid=gid,
+    )
+
+
+def test_planner_ca_parent_writer_group_requires_explicit_opt_in(monkeypatch):
+    observed = {
+        Path("/"): _parent_stat(mode=0o755),
+        Path("/etc"): _parent_stat(mode=0o755),
+        Path("/etc/muncho"): _parent_stat(mode=0o755),
+        Path("/etc/muncho/trust"): _parent_stat(
+            mode=0o750,
+            gid=planner.CANARY_WRITER_GID,
+        ),
+    }
+    monkeypatch.setattr(planner.os, "lstat", lambda path: observed[Path(path)])
+
+    with pytest.raises(PermissionError, match="root-controlled"):
+        planner._validate_root_parent_chain(Path("/etc/muncho/trust"))
+
+    planner._validate_root_parent_chain(
+        Path("/etc/muncho/trust"),
+        allowed_parent_gids=frozenset({0, planner.CANARY_WRITER_GID}),
+    )
+
+
+@pytest.mark.parametrize(
+    ("mode", "uid", "gid"),
+    (
+        (0o770, 0, planner.CANARY_WRITER_GID),
+        (0o752, 0, planner.CANARY_WRITER_GID),
+        (0o750, 1, planner.CANARY_WRITER_GID),
+        (0o750, 0, 993),
+    ),
+)
+def test_planner_ca_parent_opt_in_preserves_integrity_checks(
+    monkeypatch,
+    mode,
+    uid,
+    gid,
+):
+    monkeypatch.setattr(
+        planner.os,
+        "lstat",
+        lambda _path: _parent_stat(mode=mode, uid=uid, gid=gid),
+    )
+
+    with pytest.raises(PermissionError, match="root-controlled"):
+        planner._validate_root_parent_chain(
+            Path("/etc/muncho/trust"),
+            allowed_parent_gids=frozenset({0, planner.CANARY_WRITER_GID}),
+        )
+
+
+def test_planner_trusted_reader_forwards_explicit_parent_groups(monkeypatch):
+    checks = []
+    allowed = frozenset({0, planner.CANARY_WRITER_GID})
+
+    def missing(_path):
+        raise FileNotFoundError
+
+    monkeypatch.setattr(
+        planner,
+        "_validate_root_parent_chain",
+        lambda path, *, allowed_parent_gids: checks.append(
+            (path, allowed_parent_gids)
+        ),
+    )
+    monkeypatch.setattr(planner.os, "lstat", missing)
+
+    with pytest.raises(FileNotFoundError):
+        planner._read_trusted_root_file(
+            planner.DEFAULT_DATABASE_CA_PATH,
+            allowed_modes=frozenset({0o440}),
+            maximum=1024,
+            expected_gid=planner.CANARY_WRITER_GID,
+            allowed_parent_gids=allowed,
+        )
+    assert checks == [(planner.DEFAULT_DATABASE_CA_PATH.parent, allowed)]
 
 
 def _file_entry(path: str, payload: bytes, *, mode: str = "0444") -> TreeEntry:
@@ -444,6 +529,7 @@ def test_final_builder_cross_binds_and_exclusively_stages_fixed_plan(monkeypatch
         planner.DEFAULT_GATEWAY_CONFIG_SOURCE_PATH: gateway_raw,
         planner.DEFAULT_DATABASE_CA_PATH: database_ca_raw,
     }
+    trusted_reads = []
     staged: list[tuple[Path, bytes]] = []
 
     monkeypatch.setattr(planner, "_require_root_linux", lambda: None)
@@ -467,11 +553,11 @@ def test_final_builder_cross_binds_and_exclusively_stages_fixed_plan(monkeypatch
         "load_release_manifest",
         lambda revision: (release, release_raw),
     )
-    monkeypatch.setattr(
-        planner,
-        "_read_trusted_root_file",
-        lambda path, **_kwargs: trusted_files[path],
-    )
+    def read_trusted(path, **kwargs):
+        trusted_reads.append((path, kwargs))
+        return trusted_files[path]
+
+    monkeypatch.setattr(planner, "_read_trusted_root_file", read_trusted)
     monkeypatch.setattr(planner, "load_service_config", lambda path: _writer_config())
     monkeypatch.setattr(planner, "_validate_writer_only_policy", lambda value: None)
     monkeypatch.setattr(planner.os.path, "lexists", lambda path: False)
@@ -494,6 +580,105 @@ def test_final_builder_cross_binds_and_exclusively_stages_fixed_plan(monkeypatch
     assert all(name.endswith("_sha256") for name in result)
     assert len(required_bindings) == 1
     assert required_bindings[0]["sql_private_ip"] == SQL_PRIVATE_IP
+    ca_reads = [
+        kwargs
+        for path, kwargs in trusted_reads
+        if path == planner.DEFAULT_DATABASE_CA_PATH
+    ]
+    assert len(ca_reads) == 2
+    assert all(
+        kwargs["expected_gid"] == planner.CANARY_WRITER_GID
+        and kwargs["allowed_parent_gids"]
+        == frozenset({0, planner.CANARY_WRITER_GID})
+        for kwargs in ca_reads
+    )
+
+
+def test_native_builder_scopes_writer_group_parents_to_ca(monkeypatch):
+    release = _release()
+    writer_raw = b"{}"
+    gateway_raw = b"{}"
+    ca_raw = b"test-ca"
+
+    class CollectorReceipt:
+        sha256 = "7" * 64
+        value = {
+            "database": {
+                "host": SQL_PRIVATE_IP,
+                "tls_server_name": SQL_TLS_SERVER_NAME,
+            }
+        }
+
+        def require_bindings(self, **_kwargs):
+            return None
+
+        def to_mapping(self):
+            return {"receipt_sha256": self.sha256, **self.value}
+
+    trusted = {
+        planner.DEFAULT_WRITER_CONFIG_SOURCE_PATH: writer_raw,
+        planner.DEFAULT_GATEWAY_CONFIG_SOURCE_PATH: gateway_raw,
+        planner.DEFAULT_DATABASE_CA_PATH: ca_raw,
+    }
+    reads = []
+
+    def read_trusted(path, **kwargs):
+        reads.append((path, kwargs))
+        return trusted[path]
+
+    monkeypatch.setattr(planner, "_require_root_linux", lambda: None)
+    monkeypatch.setattr(
+        planner,
+        "load_config_collector_receipt",
+        lambda **_kwargs: CollectorReceipt(),
+    )
+    monkeypatch.setattr(
+        planner,
+        "load_release_manifest",
+        lambda _revision: (
+            release,
+            planner._canonical_bytes(release.to_mapping()) + b"\n",
+        ),
+    )
+    monkeypatch.setattr(planner, "_read_trusted_root_file", read_trusted)
+    monkeypatch.setattr(planner, "load_service_config", lambda _path: _writer_config())
+    monkeypatch.setattr(planner, "_validate_writer_only_policy", lambda _value: None)
+    monkeypatch.setattr(planner, "_current_boot_id_sha256", lambda: "b" * 64)
+    monkeypatch.setattr(
+        planner,
+        "current_host_identity_sha256",
+        lambda: "c" * 64,
+    )
+    monkeypatch.setattr(
+        planner,
+        "_validated_preexisting_native_outputs",
+        lambda _outputs: set(),
+    )
+    monkeypatch.setattr(planner, "_write_atomic_root_staged_file", lambda *_args: None)
+
+    planner.build_and_stage_native_observation_plan(
+        revision=REVISION,
+        external_iam_policy_sha256="f" * 64,
+        config_collector_receipt_sha256="7" * 64,
+    )
+
+    ca_reads = [
+        kwargs
+        for path, kwargs in reads
+        if path == planner.DEFAULT_DATABASE_CA_PATH
+    ]
+    assert len(ca_reads) == 2
+    assert all(
+        kwargs["expected_gid"] == planner.CANARY_WRITER_GID
+        and kwargs["allowed_parent_gids"]
+        == frozenset({0, planner.CANARY_WRITER_GID})
+        for kwargs in ca_reads
+    )
+    assert all(
+        kwargs.get("allowed_parent_gids", frozenset({0})) == frozenset({0})
+        for path, kwargs in reads
+        if path != planner.DEFAULT_DATABASE_CA_PATH
+    )
 
 
 def test_final_builder_fails_before_inputs_when_durable_digest_differs(monkeypatch):

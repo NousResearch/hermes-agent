@@ -155,6 +155,43 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
+# Bound-but-not-listening sockets reserved for pending OAuth callback flows,
+# keyed by port. Holding the socket from port-selection time until
+# _wait_for_callback adopts it closes the TOCTOU window where another process
+# could grab the port between _find_free_port() closing its probe socket and
+# HTTPServer binding minutes later (#22161). Bounded FIFO so repeated
+# build_oauth_auth calls (reconnect loops) cannot leak fds.
+_reserved_sockets: "dict[int, socket.socket]" = {}
+_MAX_RESERVED_SOCKETS = 8
+
+
+def _reserve_callback_port() -> int:
+    """Pick an ephemeral callback port and keep its socket bound.
+
+    Returns the port. The bound (not yet listening) socket is parked in
+    ``_reserved_sockets`` so no other process can bind the port before
+    ``_wait_for_callback`` adopts it. Adoption (or ``server_close``) owns
+    the socket's lifetime from there.
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", 0))
+    except OSError:
+        s.close()
+        raise
+    port = s.getsockname()[1]
+    # Evict oldest reservations past the cap (dict preserves insertion order).
+    while len(_reserved_sockets) >= _MAX_RESERVED_SOCKETS:
+        _, stale = next(iter(_reserved_sockets.items()))
+        _reserved_sockets.pop(next(iter(_reserved_sockets)), None)
+        try:
+            stale.close()
+        except OSError:
+            pass
+    _reserved_sockets[port] = s
+    return port
+
+
 def _is_interactive() -> bool:
     """Return True if we can reasonably expect to interact with a user."""
     if not _oauth_interactive_enabled.get():
@@ -659,13 +696,29 @@ async def _wait_for_callback() -> tuple[str, str | None]:
     # We just need to poll for the result.
     handler_cls, result = _make_callback_handler()
 
-    # Start a temporary server on the known port.
-    # allow_reuse_address prevents TIME_WAIT on the socket after the flow
-    # completes, so the next OAuth flow on the same port can bind immediately
-    # (fixes #44590).
+    # Start a temporary server on the known port, adopting the socket
+    # reserved at port-selection time when one exists. Holding the bound
+    # socket from _reserve_callback_port() until here closes the TOCTOU
+    # window where another process could steal the port between selection
+    # and bind (#22161). allow_reuse_address is set BEFORE binding (setting
+    # it after the constructor has already bound is a no-op) so a lingering
+    # TIME_WAIT socket from a previous flow cannot block the next one
+    # (#44590).
     try:
-        server = HTTPServer(("127.0.0.1", _oauth_port), handler_cls)
-        server.allow_reuse_address = True
+        server = HTTPServer(
+            ("127.0.0.1", _oauth_port), handler_cls, bind_and_activate=False
+        )
+        reserved = _reserved_sockets.pop(_oauth_port, None)
+        if reserved is not None:
+            # Adopt the reserved (already bound) socket and start listening.
+            server.socket.close()
+            server.socket = reserved
+            server.server_address = reserved.getsockname()
+            server.server_activate()
+        else:
+            server.allow_reuse_address = True
+            server.server_bind()
+            server.server_activate()
     except OSError:
         # Port already in use — the server from build_oauth_auth is running.
         # Fall back to polling the server started by build_oauth_auth.
@@ -840,7 +893,10 @@ def _configure_callback_port(cfg: dict) -> int:
     """
     global _oauth_port
     requested = int(cfg.get("redirect_port", 0))
-    port = _find_free_port() if requested == 0 else requested
+    # Ephemeral selection reserves the bound socket until _wait_for_callback
+    # adopts it, closing the select→bind TOCTOU race (#22161). An explicit
+    # user-pinned port is used as-is.
+    port = _reserve_callback_port() if requested == 0 else requested
     cfg["_resolved_port"] = port
     _oauth_port = port  # legacy consumer: _wait_for_callback reads this
     return port

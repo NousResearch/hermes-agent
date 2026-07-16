@@ -146,3 +146,23 @@ def record_ack(worktree: Path, path: str, reason: str) -> ParityState:
     updated = ParityState(tree_sha=gitops.tree_sha(worktree), data=data)
     save_state(worktree, updated)
     return updated
+
+
+def has_vacuous_ack(worktree: Path) -> bool:
+    current = load_state(worktree, invalidate_on_tree_change=False)
+    if not current:
+        return False
+    ack = current.data.get("vacuous_coverage_ack") or {}
+    return bool(ack.get("reason"))
+
+
+def record_vacuous_ack(worktree: Path, reason: str) -> ParityState:
+    current = load_state(worktree, invalidate_on_tree_change=False)
+    data = dict(current.data) if current else {}
+    data["vacuous_coverage_ack"] = {
+        "reason": reason,
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+    updated = ParityState(tree_sha=gitops.tree_sha(worktree), data=data)
+    save_state(worktree, updated)
+    return updated

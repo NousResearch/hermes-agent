@@ -1259,6 +1259,30 @@ class TestMCPServerTask:
 
         asyncio.run(_test())
 
+    def test_wait_for_lazy_reconnect_handles_closed_loop_race(self):
+        """A closed loop during waiter cleanup must not leak RuntimeError."""
+        from tools.mcp_tool import MCPServerTask
+
+        class _ClosedLoopTask:
+            def done(self):
+                return False
+
+            def cancel(self):
+                raise RuntimeError("Event loop is closed")
+
+        async def _test():
+            server = MCPServerTask("srv")
+            with patch(
+                "tools.mcp_tool.asyncio.create_task",
+                side_effect=[_ClosedLoopTask(), _ClosedLoopTask()],
+            ), patch(
+                "tools.mcp_tool.asyncio.wait",
+                new=AsyncMock(return_value=(set(), set())),
+            ):
+                await server._wait_for_lazy_reconnect()
+
+        asyncio.run(_test())
+
     def test_stdio_recycle_reason_uses_max_lifetime(self):
         from tools.mcp_tool import MCPServerTask
 
@@ -1599,6 +1623,35 @@ class TestShutdown:
         assert len(_servers) == 0
         # Parallel: ~1s, not ~3s. Allow some margin.
         assert elapsed < 2.5, f"Shutdown took {elapsed:.1f}s, expected ~1s (parallel)"
+
+    def test_shutdown_drains_parked_server_task_before_closing_loop(self):
+        """The loop owner must clean up a parked MCPServerTask as a last resort."""
+        import tools.mcp_tool as mcp_mod
+        from tools.mcp_tool import MCPServerTask, _servers, shutdown_mcp_servers
+
+        _servers.clear()
+        mcp_mod._ensure_mcp_loop()
+        loop = mcp_mod._mcp_loop
+        server = MCPServerTask("parked")
+
+        async def _start_parked_task():
+            server._task = asyncio.create_task(server._wait_for_lazy_reconnect())
+            await asyncio.sleep(0)
+
+        asyncio.run_coroutine_threadsafe(
+            _start_parked_task(), loop
+        ).result(timeout=2)
+        parked_task = server._task
+        _servers["parked"] = server
+
+        try:
+            with patch.object(MCPServerTask, "shutdown", new=AsyncMock()):
+                shutdown_mcp_servers()
+        finally:
+            mcp_mod._mcp_loop = None
+            mcp_mod._mcp_thread = None
+
+        assert parked_task.done()
 
 
 # ---------------------------------------------------------------------------

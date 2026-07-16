@@ -335,6 +335,7 @@ _MAX_BACKOFF_SECONDS = 60
 # can ever reach the circuit-breaker half-open probe or _signal_reconnect.
 _PARKED_RETRY_INTERVAL = 300     # seconds between parked self-probes
 _RECYCLED_RECONNECT_TIMEOUT = 15.0
+_MCP_LOOP_DRAIN_TIMEOUT = 5.0
 
 # Keepalive cadence for HTTP/SSE sessions. The MCP spec lets a server expire
 # idle sessions on any TTL it chooses (Streamable HTTP "Session Management"),
@@ -2963,11 +2964,16 @@ class MCPServerTask:
         finally:
             for task in (shutdown_task, reconnect_task):
                 if not task.done():
-                    task.cancel()
                     try:
-                        await task
-                    except (asyncio.CancelledError, Exception):
+                        task.cancel()
+                    except RuntimeError:
+                        # Event loop already closed (benign shutdown race).
                         pass
+                    else:
+                        try:
+                            await task
+                        except (asyncio.CancelledError, Exception):
+                            pass
 
 
 # ---------------------------------------------------------------------------
@@ -5611,6 +5617,48 @@ def _stop_mcp_loop_if_idle() -> bool:
     return _stop_mcp_loop(only_if_idle=True)
 
 
+def _drain_mcp_loop_tasks(loop: asyncio.AbstractEventLoop) -> None:
+    """Cancel and await tasks left behind before closing the MCP loop.
+
+    The normal shutdown path asks each server to unwind its task first, but a
+    bounded shutdown wait can still leave a parked waiter behind. Drain those
+    tasks while the loop is still running so their ``finally``
+    blocks can finish before ``loop.close()``.
+    """
+    if loop.is_closed() or not loop.is_running():
+        return
+
+    async def _cancel_pending_tasks() -> None:
+        current = asyncio.current_task()
+        pending = {
+            task
+            for task in asyncio.all_tasks(loop)
+            if task is not current and not task.done()
+        }
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    from concurrent.futures import TimeoutError as FutureTimeoutError
+
+    future = asyncio.run_coroutine_threadsafe(_cancel_pending_tasks(), loop)
+    try:
+        future.result(timeout=_MCP_LOOP_DRAIN_TIMEOUT)
+    except FutureTimeoutError:
+        logger.warning(
+            "MCP event loop drain timed out after %.1fs",
+            _MCP_LOOP_DRAIN_TIMEOUT,
+        )
+        future.cancel()
+    except RuntimeError as exc:
+        # A loop can race with an external shutdown caller. The existing
+        # exception handler covers callbacks after close; this handles the
+        # scheduling boundary.
+        if "Event loop is closed" not in str(exc):
+            logger.debug("MCP event loop drain skipped: %s", exc)
+
+
 def _stop_mcp_loop(*, only_if_idle: bool = False) -> bool:
     """Stop the background event loop and join its thread."""
     global _mcp_loop, _mcp_thread
@@ -5623,6 +5671,7 @@ def _stop_mcp_loop(*, only_if_idle: bool = False) -> bool:
         _mcp_loop = None
         _mcp_thread = None
     if loop is not None:
+        _drain_mcp_loop_tasks(loop)
         loop.call_soon_threadsafe(loop.stop)
         if thread is not None:
             thread.join(timeout=5)

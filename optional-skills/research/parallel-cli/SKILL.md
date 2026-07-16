@@ -1,8 +1,8 @@
 ---
 name: parallel-cli
-description: Optional vendor skill for Parallel CLI — agent-native web search, extraction, deep research, enrichment, FindAll, and monitoring. Prefer JSON output and non-interactive flows.
-version: 1.1.1
-author: Hermes Agent
+description: Use Parallel for web research, enrichment, and monitoring.
+version: 1.2.0
+author: George Pickett (@grp06), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
@@ -11,317 +11,239 @@ metadata:
     related_skills: [duckduckgo-search, mcporter]
 ---
 
-# Parallel CLI
+# Parallel CLI Skill
 
-Use `parallel-cli` when the user explicitly wants Parallel, or when a terminal-native workflow would benefit from Parallel's vendor-specific stack for web search, extraction, deep research, enrichment, entity discovery, or monitoring.
+Use `parallel-cli` through Hermes's `terminal` tool when the user explicitly requests Parallel or needs Parallel-specific research, enrichment, entity discovery, or monitoring. For ordinary one-off lookups, prefer Hermes native `web_search` and `web_extract`.
 
-This is an optional third-party workflow, not a Hermes core capability.
+Parallel is a hosted service with a free tier and paid usage. This skill covers agent-safe, non-interactive CLI workflows; it does not replace Hermes's native web tools.
 
-Important expectations:
-- Parallel is a paid service with a free tier, not a fully free local tool.
-- It overlaps with Hermes native `web_search` / `web_extract`, so do not prefer it by default for ordinary lookups.
-- Prefer this skill when the user mentions Parallel specifically or needs capabilities like Parallel's enrichment, FindAll, or monitor workflows.
+## When to Use
 
-`parallel-cli` is designed for agents:
-- JSON output via `--json`
-- Non-interactive command execution
-- Async long-running jobs with `--no-wait`, `status`, and `poll`
-- Research and enrichment context chaining with `--previous-interaction-id`
-- Search, extract, research, enrichment, entity discovery, and monitoring in one CLI
+Use this skill when:
 
-## When to use it
+- The user mentions Parallel or `parallel-cli`.
+- The task needs structured enrichment, FindAll entity discovery, or recurring monitors.
+- A long-running research job should be launched asynchronously and resumed by ID.
+- Search or extraction results need to be saved as authoritative JSON for later use.
 
-Prefer this skill when:
-- The user explicitly mentions Parallel or `parallel-cli`
-- The task needs richer workflows than a simple one-shot search/extract pass
-- You need async deep research jobs that can be launched and polled later
-- You need structured enrichment, FindAll entity discovery, or monitoring
+Do not use it by default for simple web lookups when Hermes native tools are sufficient.
 
-Prefer Hermes native `web_search` / `web_extract` for quick one-off lookups when Parallel is not specifically requested.
+## Prerequisites
 
-## Installation
-
-Try the least invasive install path available for the environment.
-
-### Homebrew
+Run the preflight through `terminal`:
 
 ```bash
-brew install parallel-web/tap/parallel-cli
+parallel-cli --version
+parallel-cli auth --json
+parallel-cli <command-group> --help
 ```
 
-### npm
+The commands below are verified against `parallel-cli` 0.7.1. If a documented command is missing, identify the install method and upgrade through that same method before retrying.
 
-```bash
-npm install -g parallel-web-cli
-```
+Install with one method appropriate to the active terminal backend:
 
-### Python package
+| Method | Command |
+|---|---|
+| Homebrew | `brew install parallel-web/tap/parallel-cli` |
+| npm | `npm install -g parallel-web-cli` |
+| uv | `uv tool install "parallel-web-tools[cli]"` |
+| pipx | `pipx install "parallel-web-tools[cli]"` |
+| pip | `pip install "parallel-web-tools[cli]"` |
 
-```bash
-pip install "parallel-web-tools[cli]"
-```
-
-### Standalone installer
+Linux and macOS also support the standalone installer:
 
 ```bash
 curl -fsSL https://parallel.ai/install.sh | bash
 ```
 
-If you want an isolated Python install, `pipx` can also work:
+### Authentication
 
-```bash
-pipx install "parallel-web-tools[cli]"
-pipx ensurepath
-```
+If `parallel-cli auth --json` reports `authenticated: false`, choose the flow that matches the runtime.
 
-The commands below are verified against `parallel-cli` 0.7.1. If a command or option is missing, upgrade through the same installation method used above before retrying.
-
-Standalone, Homebrew, and npm installs support direct enrichment arguments, but not YAML configs, `enrich plan`, or deployment commands. Those features require the appropriate Python extras.
-
-## Authentication
-
-Interactive login:
+For an attended local session:
 
 ```bash
 parallel-cli login
 ```
 
-Headless / SSH with a person available to authorize:
-
-```bash
-parallel-cli login --no-browser --json
-```
-
-This command emits a `device_code` event, then waits while polling for authorization. When Hermes starts the login, run it as a background process, poll once to show the user the verification URL and code, then poll until it emits `auth_success`. It does not require a PTY.
-
-For unattended CI or automation, use an API key instead of starting device login:
-
-```bash
-export PARALLEL_API_KEY="***"
-```
-
-Verify current auth status:
-
-```bash
-parallel-cli auth
-```
-
-## Core rule set
-
-1. Always prefer `--json` when you need machine-readable output.
-2. Prefer explicit arguments and non-interactive flows.
-3. For long-running jobs, use `--no-wait` and then `status` / `poll`.
-4. Cite only URLs returned by the CLI output.
-5. Save large JSON outputs to a temp file when follow-up questions are likely.
-6. Use background processes only for genuinely long-running workflows; otherwise run in foreground.
-7. Prefer Hermes native tools unless the user wants Parallel specifically or needs Parallel-only workflows.
-
-## Quick reference
+For headless or SSH sessions with a person available to authorize, start the device flow with:
 
 ```text
-parallel-cli
-├── auth
-├── login
-├── logout
-├── search
-├── extract / fetch
-├── research run|status|poll|processors
-├── enrich run|status|poll|suggest (+ plan/deploy with Python extras)
-├── findall run|entity-search|ingest|status|poll|result|enrich|extend|schema|cancel
-└── monitor create|list|get|update|cancel|events|trigger
+terminal(command="parallel-cli login --no-browser --json", background=true, notify_on_complete=true)
 ```
 
-## Common flags and patterns
+Then:
 
-Commonly useful flags:
-- `--json` for structured output
-- `--no-wait` for async jobs
-- `--previous-interaction-id <id>` for research or enrichment follow-ups that reuse earlier context
-- `--max-results <n>` for search result count
-- `--mode turbo|basic|advanced` for search behavior
-- `--include-domains domain1.com,domain2.com`
-- `--exclude-domains domain1.com,domain2.com`
-- `--after-date YYYY-MM-DD`
+1. Call `process(action="poll", session_id="...")` until the `device_code` event appears.
+2. Show the user `verification_uri_complete`, or the verification URL plus `user_code`.
+3. Wait for the user to authorize.
+4. Poll or wait on the same process until it emits `auth_success`.
+5. Re-run `parallel-cli auth --json`; continue only when `authenticated` is `true`.
 
-Read from stdin when convenient:
+The device flow does not require a PTY. For unattended CI or automation, set `PARALLEL_API_KEY` securely instead of starting device login. Never print the key.
+
+## How to Run
+
+1. Use `terminal` for every `parallel-cli` command.
+2. Prefer `--json` when Hermes must parse stdout.
+3. Use `-o` for large or reusable results, then read the saved file instead of relying on possibly truncated terminal output.
+4. Choose a writable output path valid for the active terminal backend; do not assume a Unix temp directory exists.
+5. Use `--no-wait` for long jobs, capture the returned identifier, and resume with `status` or `poll`.
+6. Cite only URLs present in the returned Parallel payload.
+
+## Quick Reference
+
+| User need | Command | State to retain |
+|---|---|---|
+| Current fact or webpage results | `search` | Saved JSON path when used |
+| Content from known URLs | `extract` | Saved JSON path when used |
+| Synthesized investigation | `research run` | `run_id`, `interaction_id` |
+| Add fields to existing rows | `enrich run` | `taskgroup_id` |
+| Fast company/person list | `findall entity-search` | `entity_set_id` |
+| Comprehensive entity dataset | `findall run` | `findall_id` |
+| Recurring change detection | `monitor` | `monitor_id`, `event_group_id`, `next_cursor` |
+
+Common flags:
+
+- `--json`: print machine-readable output.
+- `-o` / `--output`: save authoritative output to a file.
+- `--no-wait`: return immediately after creating a long-running job.
+- `--previous-interaction-id <interaction_id>`: reuse prior research context in a research or enrichment request.
+
+## Procedure
+
+### Search
+
+Use a natural-language objective for intent and repeated `-q` flags for important literal queries:
 
 ```bash
-echo "What is the latest funding for Anthropic?" | parallel-cli search - --json
-echo "Research question" | parallel-cli research run - --json
+parallel-cli search \
+  "Identify the latest React 19 changes and primary sources" \
+  -q "React 19 release notes" \
+  -q "React 19 migration" \
+  --mode basic \
+  --max-results 10 \
+  --excerpt-max-chars-total 27000 \
+  --json \
+  -o react-19-search.json
 ```
 
-## Search
+Use `turbo` for simple, latency-sensitive English or Japanese lookups, `basic` for the default balance, and `advanced` for harder multi-step searches. Add `--location us` for geography-sensitive results, `--after-date YYYY-MM-DD` for recency, or include/exclude domain filters when source scope matters.
 
-Use for current web lookups with structured results.
+Read the saved JSON and extract each result's title, URL, date, and useful excerpts. Skip navigation noise and never invent a citation.
+
+### Extract
+
+Use extraction when the URL is already known:
 
 ```bash
-parallel-cli search "What is Anthropic's latest AI model?" --json
-parallel-cli search "SEC filings for Apple" --include-domains sec.gov --json
-parallel-cli search "bitcoin price" --after-date 2026-01-01 --max-results 10 --json
-parallel-cli search "latest browser benchmarks" --mode turbo --json
-parallel-cli search "AI coding agent enterprise reviews" --mode advanced --json
+parallel-cli extract https://example.com \
+  --objective "Find pricing and plan limits" \
+  -q "pricing" \
+  --json \
+  -o extracted-page.json
 ```
 
-Use `turbo` for the fastest pass, `basic` for the default balance, and `advanced` for deeper searches.
+Use `--full-content` for long articles or PDFs when excerpts are insufficient. If the response contains errors or no results, report the failure rather than fabricating content.
 
-Useful constraints:
-- `--include-domains` to narrow trusted sources
-- `--exclude-domains` to strip noisy domains
-- `--after-date` for recency filtering
-- `--max-results` when you need broader coverage
+### Research
 
-If you expect follow-up questions, save output:
-
-```bash
-parallel-cli search "latest React 19 changes" --json -o /tmp/react-19-search.json
-```
-
-When summarizing results:
-- lead with the answer
-- include dates, names, and concrete facts
-- cite only returned sources
-- avoid inventing URLs or source titles
-
-## Extraction
-
-Use to pull clean content or markdown from a URL.
-
-```bash
-parallel-cli extract https://example.com --json
-parallel-cli extract https://company.com --objective "Find pricing info" --json
-parallel-cli extract https://example.com --full-content --json
-parallel-cli fetch https://example.com --json
-```
-
-Use `--objective` when the page is broad and you only need one slice of information.
-
-## Deep research
-
-Use for deeper multi-step research tasks that may take time.
-
-Common processor tiers:
-- `lite` / `base` for faster, cheaper passes
-- `core` / `pro` for more thorough synthesis
-- `ultra` for the heaviest research jobs
-
-### Synchronous
+Launch long research asynchronously:
 
 ```bash
 parallel-cli research run \
-  "Compare the leading AI coding agents by pricing, model support, and enterprise controls" \
-  --processor core \
+  "Compare leading AI coding agents by pricing, model support, and enterprise controls" \
+  --processor pro-fast \
+  --text \
+  --no-wait \
   --json
 ```
 
-### Async launch + poll
+Capture both returned fields:
+
+- `run_id` controls `status` and `poll`.
+- `interaction_id` carries context into a later research or enrichment request.
 
 ```bash
-parallel-cli research run \
-  "Compare the leading AI coding agents by pricing, model support, and enterprise controls" \
-  --processor ultra \
+parallel-cli research status <run_id> --json
+parallel-cli research poll <run_id> --timeout 540 -o research-report
+parallel-cli research run "Drill into the top result" \
+  --previous-interaction-id <interaction_id> \
+  --no-wait \
+  --json
+```
+
+`research poll -o research-report` writes `research-report.json` and also writes `research-report.md` when the task used `--text`. If polling times out, the server-side task continues; reuse the same `run_id`.
+
+### Enrich
+
+Use enrichment when the input entities already exist. Ask for suggested columns only when the user's desired output is unclear:
+
+```bash
+parallel-cli enrich suggest "Find CEO and recent funding" --json
+```
+
+Start a non-interactive inline run:
+
+```bash
+parallel-cli enrich run \
+  --data '[{"company":"Anthropic"},{"company":"Mistral"}]' \
+  --intent "Find headquarters and employee count" \
+  --target enriched.csv \
+  --no-wait \
+  --json
+```
+
+Capture `taskgroup_id`, then poll to a JSON file:
+
+```bash
+parallel-cli enrich status <taskgroup_id> --json
+parallel-cli enrich poll <taskgroup_id> --timeout 540 -o enriched-results.json
+```
+
+For files, replace `--data` with `--source-type`, `--source`, and explicit `--source-columns`. A prior research `interaction_id` may be passed with `--previous-interaction-id`; enrichment does not return a new interaction ID.
+
+### FindAll
+
+Use synchronous entity search only for a fast, best-effort company or person list:
+
+```bash
+parallel-cli findall entity-search \
+  "AI startups in healthcare" \
+  --entity-type companies \
+  --match-limit 25 \
+  -o healthcare-ai-entities.json
+```
+
+Capture `entity_set_id`. Entity-search results are not individually verified and the ID cannot be used with full FindAll enrichment or extension.
+
+Use a full run for comprehensive discovery, match evaluation, exclusions, enrichment, or entity types beyond companies and people:
+
+```bash
+parallel-cli findall run \
+  "Find AI coding agent startups with enterprise offerings" \
+  --generator core \
+  --match-limit 25 \
   --no-wait \
   --json
 
-parallel-cli research status trun_xxx --json
-parallel-cli research poll trun_xxx --json
-parallel-cli research processors --json
+parallel-cli findall status <findall_id> --json
+parallel-cli findall poll <findall_id> --timeout 540 -o findall-results.json
 ```
 
-### Context chaining / follow-up
+Capture `findall_id`. Filter obvious placeholder entities and validate falsifiable criteria before presenting results.
 
-```bash
-parallel-cli research run "What are the top AI coding agents?" --json
-parallel-cli research run \
-  "What enterprise controls does the top-ranked one offer?" \
-  --previous-interaction-id trun_xxx \
-  --json
-```
+### Monitor
 
-Recommended Hermes workflow:
-1. launch with `--no-wait --json`
-2. capture the returned run/task ID
-3. if the user wants to continue other work, keep moving
-4. later call `status` or `poll`
-5. summarize the final report with citations from the returned sources
-
-## Enrichment
-
-Use when the user has CSV/JSON/tabular inputs and wants additional columns inferred from web research.
-
-### Suggest columns
-
-```bash
-parallel-cli enrich suggest "Find the CEO and annual revenue" --json
-```
-
-### Plan a config
-
-`enrich plan` and YAML config files require a Python install with the `cli` extra. Check `parallel-cli enrich --help`; if `plan` is absent, use direct `enrich run` arguments instead.
-
-```bash
-parallel-cli enrich plan -o config.yaml
-```
-
-### Inline data
-
-```bash
-parallel-cli enrich run \
-  --data '[{"company": "Anthropic"}, {"company": "Mistral"}]' \
-  --target enriched.csv \
-  --intent "Find headquarters and employee count" \
-  --json
-```
-
-### Non-interactive file run
-
-```bash
-parallel-cli enrich run \
-  --source-type csv \
-  --source companies.csv \
-  --target enriched.csv \
-  --source-columns '[{"name": "company", "description": "Company name"}]' \
-  --intent "Find the CEO and annual revenue"
-```
-
-### YAML config run
-
-```bash
-parallel-cli enrich run config.yaml
-```
-
-### Status / polling
-
-```bash
-parallel-cli enrich status <task_group_id> --json
-parallel-cli enrich poll <task_group_id> --json
-```
-
-Use explicit JSON arrays for column definitions when operating non-interactively.
-Validate the output file before reporting success.
-
-## FindAll
-
-Use for web-scale entity discovery when the user wants a discovered dataset rather than a short answer.
-
-```bash
-parallel-cli findall entity-search "AI startups in healthcare" --entity-type companies -n 25 --json
-parallel-cli findall run "Find AI coding agent startups with enterprise offerings" --json
-parallel-cli findall run "AI startups in healthcare" -n 25 --json
-parallel-cli findall status <run_id> --json
-parallel-cli findall poll <run_id> --json
-parallel-cli findall result <run_id> --json
-parallel-cli findall schema <run_id> --json
-```
-
-Use `entity-search` for a synchronous, best-effort ranked list. Use `run` for comprehensive discovery with match evaluation, polling, and enrichment.
-
-## Monitor
-
-Use for ongoing change detection over time.
+Confirm the query, frequency, and webhook before creating a persistent monitor:
 
 ```bash
 parallel-cli monitor create "Track Tesla SEC filings" --frequency 1d --json
-parallel-cli monitor list -n 10 --json
+```
+
+Capture `monitor_id` and verify creation with `get` rather than scanning the list:
+
+```bash
 parallel-cli monitor get <monitor_id> --json
 parallel-cli monitor events <monitor_id> --json
 parallel-cli monitor events <monitor_id> --event-group-id <event_group_id> --json
@@ -330,86 +252,27 @@ parallel-cli monitor trigger <monitor_id> --json
 parallel-cli monitor cancel <monitor_id> --json
 ```
 
-Frequency uses `<n><unit>` with `h`, `d`, or `w` (for example `1h`, `1d`, or `1w`). Confirm the query, frequency, and webhook before creating a monitor.
-
-`list` returns active monitors by default; add `--status active --status cancelled` when cancelled monitors are also needed. Normal event-list responses are newest-first and may include `next_cursor`; pass it back with `--cursor` for the next page. When `--event-group-id` is set, pagination parameters are ignored.
-
-Monitor queries and snapshot task-run IDs are immutable. Create a new monitor to change them. `trigger` starts a real off-schedule run without changing the regular schedule and only emits an event when it detects a material change.
-
-Always confirm before `cancel`; cancellation is irreversible.
-
-## Recommended Hermes usage patterns
-
-### Fast answer with citations
-1. Run `parallel-cli search ... --json`
-2. Parse titles, URLs, dates, excerpts
-3. Summarize with inline citations from the returned URLs only
-
-### URL investigation
-1. Run `parallel-cli extract URL --json`
-2. If needed, rerun with `--objective` or `--full-content`
-3. Quote or summarize the extracted markdown
-
-### Long research workflow
-1. Run `parallel-cli research run ... --no-wait --json`
-2. Store the returned ID
-3. Continue other work or periodically poll
-4. Summarize the final report with citations
-
-### Structured enrichment workflow
-1. Inspect the input file and columns
-2. Use `enrich suggest` or provide explicit enriched columns
-3. Run `enrich run`
-4. Poll for completion if needed
-5. Validate the output file before reporting success
-
-## Error handling and exit codes
-
-The CLI documents these exit codes:
-- `0` success
-- `2` bad input
-- `3` auth error
-- `4` API error
-- `5` timeout
-
-If you hit auth errors:
-1. check `parallel-cli auth`
-2. for attended login, run `parallel-cli login` or the background `parallel-cli login --no-browser --json` flow above
-3. for unattended CI or automation, set `PARALLEL_API_KEY`
-4. verify `parallel-cli` is on `PATH`
-
-## Maintenance
-
-Check current auth / install state:
-
-```bash
-parallel-cli auth
-parallel-cli --help
-```
-
-Upgrade through the original installation method:
-
-```bash
-# Shell installer
-parallel-cli update
-
-# Homebrew
-brew upgrade parallel-cli
-
-# npm
-npm update -g parallel-web-cli
-
-# pip / pipx
-pip install --upgrade "parallel-web-tools[cli]"
-pipx upgrade parallel-web-tools
-```
+Events are newest-first. When a response includes `next_cursor`, pass it back with `--cursor`; pagination is ignored when `--event-group-id` is set. Monitor queries and snapshot task-run IDs are immutable, and `trigger` emits an event only when it detects a material change. Always obtain explicit user confirmation before `cancel`, which is irreversible.
 
 ## Pitfalls
 
-- Do not omit `--json` unless the user explicitly wants human-formatted output.
-- Do not cite sources not present in the CLI output.
-- Device login requires a person to authorize the returned URL and code; use `PARALLEL_API_KEY` for unattended automation.
-- Prefer foreground execution for short tasks; do not overuse background processes.
-- For large result sets, save JSON to `/tmp/*.json` instead of stuffing everything into context.
-- Do not silently choose Parallel when Hermes native tools are already sufficient.
-- Remember this is a vendor workflow that usually requires account auth and paid usage beyond the free tier.
+- Do not silently choose Parallel when Hermes native web tools are sufficient.
+- Do not omit `--json` when Hermes must parse stdout.
+- Do not rely on large terminal stdout when the command supports `-o`.
+- Do not confuse `run_id` with `interaction_id`, or use a generic research ID for FindAll.
+- Do not use `--previous-interaction-id` outside research and enrichment.
+- Do not treat `entity-search` as comprehensive or assume its `entity_set_id` supports full FindAll operations.
+- Do not start device login when no person is available to authorize it; use `PARALLEL_API_KEY` for unattended work.
+- Do not cancel a monitor without explicit confirmation.
+- Exit codes are `0` success, `2` bad input, `3` authentication, `4` API error, and `5` timeout.
+
+## Verification
+
+- [ ] `parallel-cli auth --json` reports `authenticated: true`.
+- [ ] The selected command exits successfully.
+- [ ] Any requested output file exists and contains valid JSON.
+- [ ] Every asynchronous identifier is captured under its exact field name.
+- [ ] `status` or `poll` confirms completion before final results are reported.
+- [ ] Every citation URL appears in the returned Parallel payload.
+- [ ] A created or updated monitor is confirmed with `monitor get <monitor_id> --json`.
+- [ ] Any irreversible monitor cancellation had explicit user confirmation.

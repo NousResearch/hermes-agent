@@ -285,6 +285,10 @@ class TestDefaultContextLengths:
                         model, provider="kimi-coding", base_url=base_url
                     ) == 1_048_576
 
+    def test_empty_model_uses_fallback_context(self):
+        assert get_model_context_length("") == DEFAULT_FALLBACK_CONTEXT
+        assert get_model_context_length(None) == DEFAULT_FALLBACK_CONTEXT  # type: ignore[arg-type]
+
 
     def test_xai_oauth_grok_build_uses_xai_models_dev_context(self):
         """xAI OAuth should share the xAI provider metadata path.

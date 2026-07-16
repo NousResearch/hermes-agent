@@ -2624,6 +2624,19 @@ def get_model_context_length(
         except ValueError:
             base_url = ""
 
+    # An empty/blank model id can't be meaningfully resolved: every probe
+    # below would either miss or — worse — fuzzy-match an arbitrary catalog
+    # entry (the endpoint matcher's `model in key` check is vacuously true
+    # for ""), returning whatever context length that random entry has and
+    # persisting it under a junk "@<base_url>" cache key. Fall back to the
+    # default immediately instead.
+    if not str(model or "").strip():
+        logger.info(
+            "No model id provided for context length resolution — defaulting to %s tokens.",
+            f"{DEFAULT_FALLBACK_CONTEXT:,}",
+        )
+        return DEFAULT_FALLBACK_CONTEXT
+
     # Normalise provider-prefixed model names (e.g. "local:model-name" →
     # "model-name") so cache lookups and server queries use the bare ID that
     # local servers actually know about.  Ollama "model:tag" colons are preserved.

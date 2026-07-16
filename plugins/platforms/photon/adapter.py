@@ -63,6 +63,8 @@ from gateway.platforms.base import (
 )
 from gateway.platforms.helpers import strip_markdown
 
+from hermes_cli._subprocess_compat import windows_hide_flags
+
 from .auth import load_project_credentials
 
 logger = logging.getLogger(__name__)
@@ -182,6 +184,7 @@ def _reinstall_sidecar_deps() -> None:
             text=True,
             check=False,
             timeout=_NPM_REINSTALL_TIMEOUT,
+            creationflags=windows_hide_flags(),
         )
         if result.returncode != 0:
             logger.warning(
@@ -194,6 +197,7 @@ def _reinstall_sidecar_deps() -> None:
                 text=True,
                 check=False,
                 timeout=_NPM_REINSTALL_TIMEOUT,
+                creationflags=windows_hide_flags(),
             )
     except subprocess.TimeoutExpired:
         # A wedged npm (dead registry, network blackhole) must not stall the
@@ -955,6 +959,7 @@ class PhotonAdapter(BasePlatformAdapter):
                 text=True,
                 timeout=10,
                 check=False,
+                creationflags=windows_hide_flags(),
             )
             if patch.returncode != 0:
                 raise RuntimeError((patch.stderr or patch.stdout or "").strip())
@@ -972,6 +977,7 @@ class PhotonAdapter(BasePlatformAdapter):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             env=env,
+            creationflags=windows_hide_flags(),
             start_new_session=(sys.platform != "win32"),
         )
 

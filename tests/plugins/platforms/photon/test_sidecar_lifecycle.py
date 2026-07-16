@@ -169,3 +169,36 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
     kwargs = spawned["kwargs"]
     assert kwargs["stdin"] is subprocess.PIPE
     assert kwargs["env"]["PHOTON_SIDECAR_WATCH_STDIN"] == "1"
+
+    # Windows console flash prevention — must use the shared hide-flags helper.
+    # Without this, every Photon reconnect pops a black conhost/node window.
+    from hermes_cli._subprocess_compat import windows_hide_flags
+
+    assert kwargs.get("creationflags") == windows_hide_flags()
+
+
+def test_reinstall_sidecar_deps_hides_console_windows(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    """npm ci / npm install self-heal must not flash a console on Windows."""
+    from hermes_cli._subprocess_compat import windows_hide_flags
+
+    (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", tmp_path)
+    monkeypatch.setattr(photon_adapter.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    captured: List[Tuple[List[str], Dict[str, Any]]] = []
+
+    class _Ok:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def _fake_run(cmd: List[str], **kwargs: Any) -> _Ok:
+        captured.append((cmd, kwargs))
+        return _Ok()
+
+    monkeypatch.setattr(photon_adapter.subprocess, "run", _fake_run)
+    photon_adapter._reinstall_sidecar_deps()
+
+    assert captured, "expected npm ci to be invoked"
+    for cmd, kwargs in captured:
+        assert kwargs.get("creationflags") == windows_hide_flags(), (cmd, kwargs)

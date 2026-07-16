@@ -71,7 +71,11 @@ class TestConfigSetReasoningSessionScope:
                 {"key": "reasoning", "session_id": "s1", "value": "none"}
             )
         assert resp["result"]["value"] == "none"
-        assert agent.reasoning_config == {"enabled": False}
+        assert agent.reasoning_config == {
+            "enabled": False,
+            # visibility rides along, resolved from display.show_reasoning
+            "include_thoughts": True,
+        }
         write_key.assert_not_called()
 
     def test_session_scoped_set_updates_create_override_for_lazy_session(self) -> None:

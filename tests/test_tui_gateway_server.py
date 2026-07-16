@@ -4685,7 +4685,12 @@ def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypat
         }
     )
     assert resp_effort["result"]["value"] == "low"
-    assert agent.reasoning_config == {"enabled": True, "effort": "low"}
+    assert agent.reasoning_config == {
+        "enabled": True,
+        "effort": "low",
+        # visibility rides along, resolved from display.show_reasoning
+        "include_thoughts": True,
+    }
     assert server._sessions["sid"]["create_reasoning_override"] == {"enabled": True, "effort": "low"}
     assert server._load_cfg()["agent"]["reasoning_effort"] == "medium"
 
@@ -9446,7 +9451,12 @@ def test_make_agent_uses_session_runtime_overrides(monkeypatch):
     assert resolved == {"requested": "openai-codex", "target_model": "gpt-5.4"}
     assert mock_agent.call_args.kwargs["model"] == "gpt-5.4"
     assert mock_agent.call_args.kwargs["provider"] == "openai-codex"
-    assert mock_agent.call_args.kwargs["reasoning_config"] == {"enabled": True, "effort": "high"}
+    assert mock_agent.call_args.kwargs["reasoning_config"] == {
+        "enabled": True,
+        "effort": "high",
+        # visibility rides along, resolved from display.show_reasoning
+        "include_thoughts": True,
+    }
     assert mock_agent.call_args.kwargs["service_tier"] == "priority"
 
 

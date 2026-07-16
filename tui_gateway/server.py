@@ -2892,10 +2892,46 @@ def _load_reasoning_config(model: str = "") -> dict | None:
     :func:`hermes_constants.resolve_reasoning_config` (per-model override >
     global ``agent.reasoning_effort``; YAML boolean False = disabled).
     Closes #21256.
+
+    Effort only — reasoning VISIBILITY (``include_thoughts``) is attached at
+    the agent-construction sites via ``_annotate_reasoning_visibility`` so
+    this loader stays in lockstep with the gateway/CLI loaders (see the
+    parity test in tests/tui_gateway/test_reasoning_config_per_model.py).
     """
     from hermes_constants import resolve_reasoning_config
 
     return resolve_reasoning_config(_load_cfg(), model)
+
+
+def _annotate_reasoning_visibility(config: dict | None) -> dict | None:
+    """Attach the current display visibility to a reasoning config.
+
+    Returns a copy with ``include_thoughts`` set from
+    ``display.show_reasoning`` — never mutates the input, so stored session
+    overrides don't accumulate stale visibility state. ``None`` stays
+    ``None`` (no thinking_config is emitted at all; Gemini's own default is
+    include_thoughts=false, so nothing leaks).
+    """
+    if config is None:
+        return None
+    return {**config, "include_thoughts": _load_show_reasoning()}
+
+
+def _sync_live_agent_reasoning_visibility(session: dict, show: bool) -> None:
+    """Propagate a `/reasoning show|hide` toggle onto the live cached agent.
+
+    Without this, an existing session's agent keeps the include_thoughts
+    value it was built with and the toggle only takes effect after an agent
+    rebuild — the classic-CLI path syncs the live agent the same way.
+    Effort is never touched.
+    """
+    agent = session.get("agent")
+    if agent is None:
+        return
+    config = getattr(agent, "reasoning_config", None)
+    if not isinstance(config, dict):
+        return
+    agent.reasoning_config = {**config, "include_thoughts": bool(show)}
 
 
 def _load_service_tier() -> str | None:
@@ -4661,8 +4697,12 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "provider_data_collection": getattr(agent, "provider_data_collection", None),
         "openrouter_min_coding_score": getattr(agent, "openrouter_min_coding_score", None),
         "session_id": task_id,
-        "reasoning_config": getattr(agent, "reasoning_config", None)
-        or _load_reasoning_config(str(getattr(agent, "model", "") or "")),
+        # Re-annotate visibility either way: the parent agent's config may
+        # predate a /reasoning show|hide toggle, and the loader is effort-only.
+        "reasoning_config": _annotate_reasoning_visibility(
+            getattr(agent, "reasoning_config", None)
+            or _load_reasoning_config(str(getattr(agent, "model", "") or ""))
+        ),
         "service_tier": getattr(agent, "service_tier", None) or _load_service_tier(),
         "request_overrides": dict(getattr(agent, "request_overrides", {}) or {}),
         "platform": "tui",
@@ -5126,7 +5166,11 @@ def _make_agent(
         # display detail).  See cli.py PR (decoupling fix) for the matching
         # change on the classic CLI side.
         verbose_logging=False,
-        reasoning_config=(
+        # Stored /reasoning overrides and the config loader both carry effort
+        # only; visibility (include_thoughts) is resolved here at build time
+        # so neither ever freezes a stale display state. Gemini/Vertex map it
+        # onto thinking_config so hidden thought summaries are never returned.
+        reasoning_config=_annotate_reasoning_visibility(
             reasoning_config_override
             if reasoning_config_override is not None
             else _load_reasoning_config(str(model or ""))
@@ -11626,6 +11670,7 @@ def _(rid, params: dict) -> dict:
                 _save_cfg(cfg)
                 if session:
                     session["show_reasoning"] = True
+                    _sync_live_agent_reasoning_visibility(session, True)
                 return _ok(rid, {"key": key, "value": "show"})
             if arg in {"hide", "off"}:
                 cfg = _load_cfg()
@@ -11644,6 +11689,7 @@ def _(rid, params: dict) -> dict:
                 _save_cfg(cfg)
                 if session:
                     session["show_reasoning"] = False
+                    _sync_live_agent_reasoning_visibility(session, False)
                 return _ok(rid, {"key": key, "value": "hide"})
 
             # /reasoning full | clamp — parity with the classic CLI's
@@ -11700,7 +11746,10 @@ def _(rid, params: dict) -> dict:
                 # agent.reasoning_effort to the preset default.
                 session["create_reasoning_override"] = parsed
             if session and session.get("agent") is not None:
-                session["agent"].reasoning_config = parsed
+                # Effort changed; visibility rides along unchanged.
+                session["agent"].reasoning_config = (
+                    _annotate_reasoning_visibility(parsed)
+                )
                 _persist_live_session_runtime(session)
                 _emit(
                     "session.info",

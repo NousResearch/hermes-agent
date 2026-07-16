@@ -5508,6 +5508,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return thread_id
 
         seed_error: Exception | None = None
+        seed_msg: Any = None
 
         # Preferred path: create the thread from a visible parent message. A
         # message-anchored public thread is discoverable in Discord's parent
@@ -5542,7 +5543,19 @@ class DiscordAdapter(BasePlatformAdapter):
                 auto_archive_duration=1440,
                 reason=reason,
             )
-            return _track_created_thread(thread)
+            thread_id = _track_created_thread(thread)
+            if seed_msg is not None:
+                delete = getattr(seed_msg, "delete", None)
+                if delete is not None:
+                    try:
+                        await delete()
+                    except Exception as cleanup_error:
+                        logger.debug(
+                            "[%s] Handoff thread %s created via direct fallback, "
+                            "but stale seed cleanup failed: %s",
+                            self.name, thread_id, cleanup_error,
+                        )
+            return thread_id
         except Exception as direct_error:
             logger.warning(
                 "[%s] Handoff thread: seed and direct create failed for "

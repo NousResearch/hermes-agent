@@ -549,9 +549,8 @@ class TestCreateHandoffThread:
         adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
         thread = SimpleNamespace(id=9001)
         seed = SimpleNamespace(
-            create_thread=AsyncMock(
-                side_effect=RuntimeError("Missing Permissions")
-            )
+            create_thread=AsyncMock(side_effect=RuntimeError("Missing Permissions")),
+            delete=AsyncMock(),
         )
         parent = SimpleNamespace(
             send=AsyncMock(return_value=seed),
@@ -570,6 +569,35 @@ class TestCreateHandoffThread:
         parent.send.assert_awaited_once()
         seed.create_thread.assert_awaited_once()
         parent.create_thread.assert_awaited_once()
+        seed.delete.assert_awaited_once_with()
+
+    @pytest.mark.asyncio
+    async def test_direct_fallback_survives_seed_cleanup_failure(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+        thread = SimpleNamespace(id=9001)
+        seed = SimpleNamespace(
+            create_thread=AsyncMock(side_effect=RuntimeError("Missing Permissions")),
+            delete=AsyncMock(side_effect=RuntimeError("cleanup denied")),
+        )
+        parent = SimpleNamespace(
+            send=AsyncMock(return_value=seed),
+            create_thread=AsyncMock(return_value=thread),
+        )
+        adapter._client = SimpleNamespace(
+            get_channel=lambda _channel_id: parent,
+            fetch_channel=AsyncMock(),
+        )
+
+        thread_id = await adapter.create_handoff_thread("123", "Daily brief")
+
+        assert thread_id == "9001"
+        assert "9001" in adapter._threads
+        assert json.loads((tmp_path / "discord_threads.json").read_text()) == ["9001"]
+        parent.create_thread.assert_awaited_once()
+        seed.delete.assert_awaited_once_with()
 
     @pytest.mark.asyncio
     async def test_seed_create_does_not_duplicate_thread_when_tracking_fails(self):

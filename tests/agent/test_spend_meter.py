@@ -1,0 +1,291 @@
+"""Tests for agent.spend_meter — pricing, watermark accrual, thresholds, throttle."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from decimal import Decimal
+from pathlib import Path
+from zoneinfo import ZoneInfo
+from datetime import datetime
+
+import pytest
+
+from agent import spend_meter
+from agent.spend_meter import (
+    SpendConfig,
+    accrue,
+    compute_and_write_throttle,
+    cumulative_cost,
+    day_window,
+    evaluate_thresholds,
+    is_profile_paused,
+    read_throttle,
+    set_override,
+)
+
+TZ = "America/Montevideo"
+# 2026-07-15 12:00:00 local (UTC-3)
+NOON = datetime(2026, 7, 15, 12, 0, 0, tzinfo=ZoneInfo(TZ)).timestamp()
+
+
+def make_cfg(**kwargs) -> SpendConfig:
+    cfg = SpendConfig(
+        timezone=TZ,
+        lane_overrides={"workerA": "api_key", "workerB": "personal_oauth"},
+        throttle_enabled=True,
+    )
+    for key, value in kwargs.items():
+        setattr(cfg, key, value)
+    return cfg
+
+
+def make_db(path: Path, rows: list[dict]) -> Path:
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "CREATE TABLE sessions (id TEXT PRIMARY KEY, model TEXT, billing_provider TEXT,"
+        " input_tokens INT, output_tokens INT, cache_read_tokens INT,"
+        " cache_write_tokens INT, started_at REAL, ended_at REAL)"
+    )
+    for row in rows:
+        conn.execute(
+            "INSERT OR REPLACE INTO sessions VALUES"
+            " (:id, :model, :billing_provider, :input_tokens, :output_tokens,"
+            "  :cache_read_tokens, :cache_write_tokens, :started_at, :ended_at)",
+            {
+                "billing_provider": None,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "ended_at": None,
+                **row,
+            },
+        )
+    conn.commit()
+    conn.close()
+    return path
+
+
+def update_tokens(path: Path, session_id: str, **cols) -> None:
+    conn = sqlite3.connect(path)
+    sets = ", ".join(f"{col} = :{col}" for col in cols)
+    conn.execute(f"UPDATE sessions SET {sets} WHERE id = :id", {"id": session_id, **cols})
+    conn.commit()
+    conn.close()
+
+
+@pytest.fixture(autouse=True)
+def clear_caches():
+    spend_meter._lane_cache.clear()
+    spend_meter._throttle_cache.clear()
+    yield
+    spend_meter._lane_cache.clear()
+    spend_meter._throttle_cache.clear()
+
+
+# ─── Pricing ─────────────────────────────────────────────────────────────────
+
+
+def test_sonnet5_exact_cost():
+    cost, status = cumulative_cost(
+        {
+            "model": "claude-sonnet-5",
+            "input_tokens": 1_000_000,
+            "output_tokens": 100_000,
+            "cache_read_tokens": 500_000,
+            "cache_write_tokens": 200_000,
+        }
+    )
+    # 2.00 + 1.00 + 0.10 + 0.50
+    assert cost == Decimal("3.60")
+    assert status == "estimated"
+
+
+def test_fable5_priced():
+    cost, status = cumulative_cost(
+        {"model": "claude-fable-5", "input_tokens": 100_000, "output_tokens": 10_000}
+    )
+    # 1.00 + 0.50
+    assert cost == Decimal("1.50")
+    assert status == "estimated"
+
+
+def test_reasoning_tokens_not_double_billed():
+    base = {"model": "claude-sonnet-5", "input_tokens": 1000, "output_tokens": 5000}
+    with_reasoning = dict(base, reasoning_tokens=4000)
+    assert cumulative_cost(base) == cumulative_cost(with_reasoning)
+
+
+def test_unpriced_model_reports_gap(monkeypatch):
+    monkeypatch.setattr(spend_meter, "_models_dev_fallback_entry", lambda model: None)
+    cost, status = cumulative_cost(
+        {"model": "claude-imaginary-9", "input_tokens": 1000, "output_tokens": 1000}
+    )
+    assert cost == Decimal("0")
+    assert status == "pricing_gap"
+
+
+# ─── Accrual / watermarks ────────────────────────────────────────────────────
+
+
+def test_accrue_bootstrap_and_delta(tmp_path):
+    cfg = make_cfg()
+    window_start, _, _ = day_window(NOON, TZ)
+    db = make_db(
+        tmp_path / "a.db",
+        [
+            {
+                "id": "s1",
+                "model": "claude-sonnet-5",
+                "input_tokens": 1_000_000,
+                "output_tokens": 0,
+                "started_at": window_start + 60,
+            }
+        ],
+    )
+    dbs = [("workerA", db)]
+
+    ledger = accrue(None, NOON, cfg, dbs=dbs)
+    assert ledger["lanes"]["api_key"]["usd"] == pytest.approx(2.0)
+    assert ledger["profiles"]["workerA"]["usd"] == pytest.approx(2.0)
+
+    # Second poll, no growth → no double counting.
+    ledger = accrue(ledger, NOON + 300, cfg, dbs=dbs)
+    assert ledger["lanes"]["api_key"]["usd"] == pytest.approx(2.0)
+
+    # Growth → only the delta accrues.
+    update_tokens(db, "s1", input_tokens=1_500_000)
+    ledger = accrue(ledger, NOON + 600, cfg, dbs=dbs)
+    assert ledger["lanes"]["api_key"]["usd"] == pytest.approx(3.0)
+
+
+def test_accrue_old_session_starts_at_watermark(tmp_path):
+    cfg = make_cfg()
+    window_start, _, _ = day_window(NOON, TZ)
+    db = make_db(
+        tmp_path / "a.db",
+        [
+            {
+                "id": "old",
+                "model": "claude-sonnet-5",
+                "input_tokens": 10_000_000,
+                "output_tokens": 0,
+                "started_at": window_start - 3600,  # yesterday
+            }
+        ],
+    )
+    dbs = [("workerA", db)]
+    ledger = accrue(None, NOON, cfg, dbs=dbs)
+    # Pre-existing cumulative total must NOT accrue on bootstrap...
+    assert ledger.get("lanes") == {}
+    # ...but growth after bootstrap does.
+    update_tokens(db, "old", input_tokens=11_000_000)
+    ledger = accrue(ledger, NOON + 300, cfg, dbs=dbs)
+    assert ledger["lanes"]["api_key"]["usd"] == pytest.approx(2.0)
+
+
+def test_day_rollover_archives_history(tmp_path):
+    cfg = make_cfg()
+    window_start, window_end, date_str = day_window(NOON, TZ)
+    db = make_db(
+        tmp_path / "a.db",
+        [
+            {
+                "id": "s1",
+                "model": "claude-sonnet-5",
+                "input_tokens": 1_000_000,
+                "output_tokens": 0,
+                "started_at": window_start + 60,
+            }
+        ],
+    )
+    dbs = [("workerA", db)]
+    ledger = accrue(None, NOON, cfg, dbs=dbs)
+
+    tomorrow_noon = window_end + 12 * 3600
+    ledger = accrue(ledger, tomorrow_noon, cfg, dbs=dbs)
+    assert ledger["date"] != date_str
+    assert ledger["history"][date_str]["lanes"]["api_key"]["usd"] == pytest.approx(2.0)
+    assert ledger.get("lanes") == {}  # fresh day
+    # Watermarks survive the rollover: growth still accrues as a delta.
+    update_tokens(db, "s1", input_tokens=2_000_000)
+    ledger = accrue(ledger, tomorrow_noon + 300, cfg, dbs=dbs)
+    assert ledger["lanes"]["api_key"]["usd"] == pytest.approx(2.0)
+
+
+# ─── Thresholds ──────────────────────────────────────────────────────────────
+
+
+def test_thresholds_fire_once(tmp_path):
+    cfg = make_cfg()
+    cfg.lanes["api_key"]["daily_cap_usd"] = 4.0
+    ledger = spend_meter.empty_ledger("2026-07-15", TZ)
+    ledger["lanes"] = {"api_key": {"usd": 2.2}}  # 55%
+
+    alerts = evaluate_thresholds(ledger, cfg)
+    assert [a.threshold for a in alerts] == [0.5]
+    assert evaluate_thresholds(ledger, cfg) == []  # deduped
+
+    ledger["lanes"]["api_key"]["usd"] = 4.5  # >100%
+    alerts = evaluate_thresholds(ledger, cfg)
+    assert [a.threshold for a in alerts] == [0.8, 1.0]
+
+
+def test_profile_cap_threshold():
+    cfg = make_cfg(profile_caps={"workerA": 1.0})
+    ledger = spend_meter.empty_ledger("2026-07-15", TZ)
+    ledger["profiles"] = {"workerA": {"usd": 1.5, "lane": "api_key"}}
+    alerts = evaluate_thresholds(ledger, cfg)
+    assert [a.target for a in alerts] == ["profile:workerA"] * 3
+
+
+# ─── Throttle ────────────────────────────────────────────────────────────────
+
+
+def test_throttle_pause_and_override(tmp_path):
+    cfg = make_cfg()
+    cfg.lanes["api_key"]["daily_cap_usd"] = 1.0
+    ledger = spend_meter.empty_ledger("2026-07-15", TZ)
+    ledger["lanes"] = {"api_key": {"usd": 1.5}}
+    path = tmp_path / "throttle.json"
+
+    compute_and_write_throttle(ledger, cfg, path=path, now=NOON)
+    state = read_throttle(path)
+    assert "api_key" in state.paused_lanes
+    assert is_profile_paused("workerA", state, cfg, now=NOON)
+    assert is_profile_paused("workerB", state, cfg, now=NOON) is None  # other lane
+
+    # Exempt profile never paused even in the paused lane.
+    cfg.exempt_profiles = ["workerA"]
+    assert is_profile_paused("workerA", state, cfg, now=NOON) is None
+    cfg.exempt_profiles = []
+
+    # Resume override lifts the pause and survives recompute while active.
+    set_override("api_key", "resume", NOON + 3600, path=path)
+    state = read_throttle(path)
+    assert is_profile_paused("workerA", state, cfg, now=NOON) is None
+    state = compute_and_write_throttle(ledger, cfg, path=path, now=NOON + 60)
+    assert "api_key" not in state.paused_lanes
+    # Expired override → pause returns.
+    state = compute_and_write_throttle(ledger, cfg, path=path, now=NOON + 7200)
+    assert "api_key" in state.paused_lanes
+
+
+def test_throttle_disabled_writes_nothing_paused(tmp_path):
+    cfg = make_cfg(throttle_enabled=False)
+    cfg.lanes["api_key"]["daily_cap_usd"] = 1.0
+    ledger = spend_meter.empty_ledger("2026-07-15", TZ)
+    ledger["lanes"] = {"api_key": {"usd": 99.0}}
+    path = tmp_path / "throttle.json"
+    state = compute_and_write_throttle(ledger, cfg, path=path, now=NOON)
+    assert state.paused_lanes == {}
+    assert json.loads(path.read_text())["paused"] == {}
+
+
+def test_manual_pause_override(tmp_path):
+    cfg = make_cfg()
+    ledger = spend_meter.empty_ledger("2026-07-15", TZ)
+    path = tmp_path / "throttle.json"
+    set_override("workerA", "pause", None, path=path)
+    compute_and_write_throttle(ledger, cfg, path=path, now=NOON)
+    state = read_throttle(path)
+    assert is_profile_paused("workerA", state, cfg, now=NOON) == "profile workerA manually paused"

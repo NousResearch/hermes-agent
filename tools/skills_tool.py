@@ -69,6 +69,7 @@ Usage:
 import json
 import logging
 import time
+from collections import Counter
 
 from hermes_constants import get_hermes_home, display_hermes_home
 import os
@@ -564,6 +565,8 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     Extract category from skill path based on directory structure.
 
     For paths like: ~/.hermes/skills/mlops/axolotl/SKILL.md -> "mlops"
+    For paths like: ~/.hermes/skills/foundations/runtime/explore/SKILL.md
+    -> "foundations/runtime"
     Also works for external skill dirs configured via skills.external_dirs.
     """
     # Try the active profile skills dir first (respects monkeypatching in tests),
@@ -579,7 +582,7 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
             rel_path = skill_path.relative_to(skills_dir)
             parts = rel_path.parts
             if len(parts) >= 3:
-                return parts[0]
+                return "/".join(parts[:-2])
         except ValueError:
             continue
     return None
@@ -824,6 +827,11 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                 ensure_ascii=False,
             )
 
+        category_counts = Counter(
+            s.get("category") or "general"
+            for s in all_skills
+        )
+
         # Filter by category if specified
         if category:
             all_skills = [s for s in all_skills if s.get("category") == category]
@@ -841,6 +849,7 @@ def skills_list(category: str = None, task_id: str = None) -> str:
                 "success": True,
                 "skills": all_skills,
                 "categories": categories,
+                "category_counts": dict(sorted(category_counts.items())),
                 "count": len(all_skills),
                 "hint": "Use skill_view(name) to see full content, tags, and linked files",
             },
@@ -1683,7 +1692,11 @@ if __name__ == "__main__":
 
 SKILLS_LIST_SCHEMA = {
     "name": "skills_list",
-    "description": "List available skills (name + description). Use skill_view(name) to load full content.",
+    "description": (
+        "List available skills by category (name + description). Use category "
+        "to drill into large category-only skill indexes, then skill_view(name) "
+        "to load full content."
+    ),
     "parameters": {
         "type": "object",
         "properties": {

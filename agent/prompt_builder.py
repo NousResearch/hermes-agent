@@ -1369,6 +1369,9 @@ def _build_snapshot_entry(
 # Skills index
 # =========================================================================
 
+LARGE_SKILL_INDEX_THRESHOLD = 40
+
+
 def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
     """Read a SKILL.md once and return platform compatibility, frontmatter, and description.
 
@@ -1463,9 +1466,9 @@ def build_skills_system_prompt(
 
     ``compact_categories`` (e.g. from the coding posture — see
     agent/coding_context.py) demotes whole categories to a names-only line in
-    the rendered index. Nothing is ever hidden: every skill name stays
-    visible and loadable via ``skill_view`` / ``skills_list``; only the
-    descriptions are dropped, and a footer note explains the demotion.
+    the rendered index for small catalogs. Large catalogs automatically render
+    as category summaries only; the existing ``skills_list(category=...)`` /
+    ``skill_view(name=...)`` flow provides the detailed lazy-loading path.
     """
     skills_dir = get_skills_dir()
     external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
@@ -1619,6 +1622,9 @@ def build_skills_system_prompt(
             except Exception as e:
                 logger.debug("Could not read external skill description %s: %s", desc_file, e)
 
+    total_skill_count = sum(len(items) for items in skills_by_category.values())
+    category_index_only = total_skill_count > LARGE_SKILL_INDEX_THRESHOLD
+
     # Posture-driven category demotion (e.g. non-coding skills while pairing
     # on code). Demoted categories stay in the index as a single names-only
     # line — descriptions are dropped to cut noise, but every skill name
@@ -1630,11 +1636,19 @@ def build_skills_system_prompt(
     # their parent.
     demoted = frozenset(
         cat for cat in skills_by_category
-        if cat.split("/", 1)[0] in (compact_categories or frozenset())
+        if not category_index_only
+        and cat.split("/", 1)[0] in (compact_categories or frozenset())
     )
 
     hidden_note = ""
-    if demoted:
+    if category_index_only:
+        hidden_note = (
+            "\n(Large skill catalog mode: only categories are shown in the "
+            "system prompt. Call skills_list(category='<category>') to inspect "
+            "a relevant category, then skill_view(name) to load the chosen "
+            "skill.)"
+        )
+    elif demoted:
         hidden_note = (
             "\n(Categories marked [names only] are outside the current coding "
             "context, so their descriptions are omitted — the skills work "
@@ -1648,6 +1662,14 @@ def build_skills_system_prompt(
         for category in sorted(skills_by_category.keys()):
             # Deduplicate and sort skills within each category
             seen = set()
+            if category_index_only:
+                count = len({name for name, _ in skills_by_category[category]})
+                cat_desc = category_descriptions.get(category, "")
+                suffix = f" — {cat_desc}" if cat_desc else ""
+                index_lines.append(
+                    f"  {category}: {count} skill{'s' if count != 1 else ''}{suffix}"
+                )
+                continue
             if category in demoted:
                 names = sorted({name for name, _ in skills_by_category[category]})
                 index_lines.append(f"  {category} [names only]: {', '.join(names)}")
@@ -1687,6 +1709,9 @@ def build_skills_system_prompt(
             "After difficult/iterative tasks, offer to save as a skill. "
             "If a skill you loaded was missing steps, had wrong commands, or needed "
             "pitfalls you discovered, update it before finishing.\n"
+            "For large catalogs, the index may show categories only; when a category "
+            "could match the task, call skills_list(category='<category>') before "
+            "deciding no skill applies.\n"
             "\n"
             "<available_skills>\n"
             + "\n".join(index_lines) + "\n"

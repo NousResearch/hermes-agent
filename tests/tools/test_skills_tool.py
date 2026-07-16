@@ -187,6 +187,19 @@ class TestGetCategoryFromPath:
             skill_md.touch()
             assert _get_category_from_path(skill_md) == "mlops"
 
+    def test_nested_categorized_skill(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            skill_md = (
+                tmp_path
+                / "foundations"
+                / "runtime"
+                / "explore-codebase"
+                / "SKILL.md"
+            )
+            skill_md.parent.mkdir(parents=True)
+            skill_md.touch()
+            assert _get_category_from_path(skill_md) == "foundations/runtime"
+
     def test_uncategorized_skill(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             skill_md = tmp_path / "my-skill" / "SKILL.md"
@@ -339,6 +352,7 @@ class TestSkillsList:
         result = json.loads(raw)
         assert result["count"] == 1
         assert result["skills"][0]["name"] == "skill-a"
+        assert result["category_counts"] == {"devops": 1, "mlops": 1}
 
     def test_category_filter_finds_symlinked_category(self, tmp_path):
         external_root = tmp_path / "repo"

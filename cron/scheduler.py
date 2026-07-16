@@ -1612,6 +1612,31 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             )
             in_channel_surface = False
 
+        if in_channel_surface and mirror_this_target and runtime_adapter is not None:
+            # Force flat delivery (D2): the continuable-channel target must
+            # ignore any inherited origin/target thread_id, or the flat
+            # continuable session seeded below (thread_id=None, via
+            # _seed_cron_channel_session) never matches where the brief is
+            # actually delivered — route_thread_id further down in this loop
+            # reads `thread_id` and would otherwise route into the origin
+            # thread instead of flat into the channel.
+            #
+            # Scoped to EXACTLY the target that gets flat-seeded: the origin-
+            # continuable target (`mirror_this_target`) on a live, in_channel-
+            # capable adapter. The `runtime_adapter is not None` guard keeps
+            # this in lockstep with the D6 capability fail-safe (which only runs
+            # with a live adapter) and with the seed itself
+            # (`in_channel_surface and mirror_this_target`, inside the
+            # live-adapter block below): fan-out / broadcast / explicit-thread
+            # targets keep their thread_id (they are not continuable and are
+            # never seeded), and the standalone no-adapter path falls back to
+            # thread delivery — it can never seed the flat session, so
+            # flattening there would drop the brief out of any continuable lane
+            # while also bypassing the D6 capability check. Placed AFTER
+            # mirror_this_target / origin_user_id are computed above — those
+            # need the ORIGINAL thread_id to match the origin conversation.
+            thread_id = None
+
         # For an in_channel delivery the flat continuation session is created
         # explicitly below (the shipped mirror only APPENDS to an existing
         # session, and the flat channel row is otherwise absent for a

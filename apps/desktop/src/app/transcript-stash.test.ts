@@ -12,8 +12,8 @@ import {
   clearStashedTranscripts,
   cullStashedTranscript,
   readStashedTranscript,
-  stashTranscript,
-  stashedTranscriptCount
+  stashedTranscriptCount,
+  stashTranscript
 } from './transcript-stash'
 
 const rows = (id: string): ChatMessage[] => [

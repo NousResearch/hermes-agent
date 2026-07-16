@@ -10,9 +10,6 @@ import { clearQueuedPrompts } from '@/store/composer-queue'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { resolveNewSessionCwd, tombstoneSessions, untombstoneSessions } from '@/store/projects'
-
-import { cullRenderCacheSession, normalizeCachedTranscriptRows, readCachedTranscript } from '../../../render-cache-hydration'
-import { cullStashedTranscript, readStashedTranscript, stashTranscript } from '../../../transcript-stash'
 import {
   $connection,
   $currentCwd,
@@ -47,7 +44,9 @@ import { broadcastSessionsChanged } from '@/store/session-sync'
 import { isWatchWindow } from '@/store/windows'
 import type { SessionCreateResponse, SessionResumeResponse, UsageStats } from '@/types/hermes'
 
+import { cullRenderCacheSession, normalizeCachedTranscriptRows, readCachedTranscript } from '../../../render-cache-hydration'
 import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
+import { cullStashedTranscript, readStashedTranscript, stashTranscript } from '../../../transcript-stash'
 import type { ClientSessionState, SidebarNavItem } from '../../../types'
 
 import {
@@ -375,7 +374,9 @@ export function useSessionActions({
               if (!cachedRows || !isCurrentResume() || $messages.get().length > 0) {
                 return
               }
+
               const painted = normalizeCachedTranscriptRows(cachedRows)
+
               if (painted.length > 0) {
                 setMessages(painted)
               }
@@ -514,12 +515,15 @@ export function useSessionActions({
               if (!rows || !isCurrentResume()) {
                 return
               }
+
               // A live payload may already have landed while the cache read
               // resolved; never clobber it with the cached copy.
               if ($messages.get().length > 0) {
                 return
               }
+
               const painted = normalizeCachedTranscriptRows(rows)
+
               if (painted.length > 0) {
                 setMessages(painted)
               }
@@ -872,6 +876,7 @@ export function useSessionActions({
       // Keep $sessionsTotal in sync so the sidebar's "Load N more" footer
       // doesn't keep claiming the removed row is still on the server.
       setSessionsTotal(prev => Math.max(0, prev - 1))
+
       // Tear down before awaiting so the route effect can't resume the
       // doomed session via the stale /<sid> URL.
       if (wasSelected) {
@@ -900,6 +905,7 @@ export function useSessionActions({
         }
 
         untombstoneSessions([storedSessionId, removed?.id, removed?._lineage_root_id])
+
         if (wasSelected) {
           setFreshDraftReady(false)
           setSelectedStoredSessionId(storedSessionId)
@@ -952,6 +958,7 @@ export function useSessionActions({
       // on the next refresh, so they count as "removed" for the load-more
       // footer math.
       setSessionsTotal(prev => Math.max(0, prev - 1))
+
       if (wasSelected) {
         startFreshSessionDraft(true)
       }

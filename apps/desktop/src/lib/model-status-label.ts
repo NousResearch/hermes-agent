@@ -21,6 +21,43 @@ export function reasoningEffortLabel(effort: string): string {
   return REASONING_LABELS[key] ?? effort
 }
 
+// Hermes' real reasoning levels (see VALID_REASONING_EFFORTS + the
+// `/reasoning` allow-list in `apps/desktop/src/app/settings/constants.ts`);
+// `none` is owned by the Thinking toggle, not the radio. Shared by the
+// composer reasoning pill and the per-row model picker submenu so the two
+// menus cannot drift on which levels exist.
+export const REASONING_EFFORT_OPTIONS = [
+  { value: 'minimal', labelKey: 'minimal' },
+  { value: 'low', labelKey: 'low' },
+  { value: 'medium', labelKey: 'medium' },
+  { value: 'high', labelKey: 'high' },
+  { value: 'xhigh', labelKey: 'xhigh' },
+  { value: 'max', labelKey: 'max' },
+  { value: 'ultra', labelKey: 'ultra' }
+] as const
+
+// Hermes' default effort when none is set (or the value is unknown). Used by
+// the Thinking-off → restore-on toggle, normalizeReasoningEffort, and the
+// pill label fallback.
+export const DEFAULT_REASONING_EFFORT = 'medium'
+
+/** Empty = Hermes default (medium) = on; only an explicit "none" is off. */
+export function isThinkingEnabled(effort: string): boolean {
+  return (effort || DEFAULT_REASONING_EFFORT).trim().toLowerCase() !== 'none'
+}
+
+/** Normalize an effort string for the radio group: 'none' → '' (off), unknown
+ *  → 'medium' (Hermes default). */
+export function normalizeReasoningEffort(effort: string): string {
+  const value = (effort || DEFAULT_REASONING_EFFORT).trim().toLowerCase()
+
+  if (value === 'none') {
+    return ''
+  }
+
+  return REASONING_EFFORT_OPTIONS.some(option => option.value === value) ? value : DEFAULT_REASONING_EFFORT
+}
+
 /** Which model/provider a picker should mark "current". With a live session the
  *  gateway's `model.options` is authoritative; pre-session there is no server
  *  "current", so the sticky composer pick wins over the profile default the
@@ -99,28 +136,29 @@ export function displayModelName(model: string): string {
   return modelDisplayParts(model).name
 }
 
-/** Status bar trigger label — model name plus the live session state (effort/fast). */
-export function formatModelStatusLabel(
-  model: string,
-  options?: { fastMode?: boolean; reasoningEffort?: string }
-): string {
+/** Composer model pill label — the model display name plus a `Fast` suffix
+ *  when the active variant / speed param is in fast mode. Effort is rendered
+ *  by its own pill (see ReasoningPill) so a 10rem pill no longer has to fit
+ *  both at once and the effort isn't truncated on long model names.
+ *
+ *  Returns just the placeholder name when the model is empty. */
+export function formatModelPillLabel(model: string, options?: { fastMode?: boolean }): string {
   const name = displayModelName(model)
 
   if (!model.trim()) {
     return name
   }
 
-  const parts: string[] = []
-
-  // Fast is shown when the speed=fast param is on (options.fastMode) OR the
-  // active model is a `…-fast` variant (fast via a separate model id).
   if (options?.fastMode || /-fast$/i.test(modelBaseId(model))) {
-    parts.push('Fast')
+    return `${name} · Fast`
   }
 
-  // Always surface the effort (empty = Hermes default of medium) so the
-  // current reasoning level is visible at a glance, not just when non-default.
-  parts.push(reasoningEffortLabel(options?.reasoningEffort ?? '') || 'Med')
+  return name
+}
 
-  return `${name} · ${parts.join(' ')}`
+/** Composer reasoning-effort pill label. Empty effort (Hermes default) renders
+ *  as `Med` so the active level is visible at a glance. `none` renders as `Off`
+ *  to make the disabled-thinking state explicit. */
+export function formatReasoningPillLabel(effort: string): string {
+  return reasoningEffortLabel(effort) || 'Med'
 }

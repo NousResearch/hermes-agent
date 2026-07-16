@@ -26,6 +26,13 @@ export interface ChatBarState {
     quickModels?: QuickModelOption[]
     /** Reused status-bar dropdown (built with gateway + selectModel upstream). */
     modelMenuContent?: ReactNode
+    /**
+     * Whether the active model supports a reasoning effort setting. `null` while
+     * model options are still loading — the reasoning pill renders optimistically
+     * (Hermes default = Med) in that window. `false` hides the pill entirely so a
+     * disabled "Med" never lies about capability. Computed upstream in chat/index.
+     */
+    reasoningCapable: boolean | null
   }
   tools: { enabled: boolean; label: string; suggestions?: ContextSuggestion[] }
   voice: { enabled: boolean; active: boolean }
@@ -37,7 +44,7 @@ export interface ChatBarProps {
   focusKey?: string | null
   maxRecordingSeconds?: number
   state: ChatBarState
-  gateway?: HermesGateway | null
+  gateway: HermesGateway | null
   queueSessionKey?: string | null
   sessionId?: string | null
   cwd?: string | null

@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import { useRef } from 'react'
 
 import {
   DropdownMenuItem,
@@ -12,22 +13,16 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
-import { normalize } from '@/lib/text'
+import {
+  DEFAULT_REASONING_EFFORT,
+  isThinkingEnabled,
+  normalizeReasoningEffort,
+  REASONING_EFFORT_OPTIONS
+} from '@/lib/model-status-label'
+import { applyReasoningPatch } from '@/lib/patch-reasoning'
 import { setModelPreset } from '@/store/model-presets'
 import { notifyError } from '@/store/notifications'
-import { $activeSessionId, setCurrentFastMode, setCurrentReasoningEffort } from '@/store/session'
-
-// Hermes' real reasoning levels (see VALID_REASONING_EFFORTS); `none` is owned
-// by the Thinking toggle, not the radio.
-const EFFORT_OPTIONS = [
-  { value: 'minimal', labelKey: 'minimal' },
-  { value: 'low', labelKey: 'low' },
-  { value: 'medium', labelKey: 'medium' },
-  { value: 'high', labelKey: 'high' },
-  { value: 'xhigh', labelKey: 'xhigh' },
-  { value: 'max', labelKey: 'max' },
-  { value: 'ultra', labelKey: 'ultra' }
-] as const
+import { $activeSessionId, setCurrentFastMode } from '@/store/session'
 
 /** How "fast" is achieved for a given model — two different mechanisms:
  *  - `param`: the Anthropic/OpenAI `speed=fast` request parameter.
@@ -107,36 +102,38 @@ export function ModelEditSubmenu({
   const copy = t.shell.modelOptions
   const activeSessionId = useStore($activeSessionId)
 
-  const effortValue = normalizeEffort(effort)
+  // Monotonic generation token — bumped on every effort change. Captured
+  // per-call and re-checked on RPC failure via `applyReasoningPatch`'s
+  // `latestGeneration` accessor so a stale revert (A→B click race where
+  // A's RPC fails after B already committed) does not clobber B. Mirrors
+  // `usageRequestRef` in `app/command-center/index.tsx` and `resumeRequestRef`
+  // in `app/session/hooks/use-session-actions/index.ts`. Independent from
+  // the composer reasoning pill's ref — each component owns its own.
+  const generationRef = useRef(0)
+
+  const effortValue = normalizeReasoningEffort(effort)
   const thinkingOn = isThinkingEnabled(effort)
 
   // Editing always records the model's global preset; the active model also gets
   // it pushed onto the live session. Non-active edits stay preset-only — they do
-  // not switch you to that model.
+  // not switch you to that model. The shared write path is in
+  // `lib/patch-reasoning.ts` (used here and by the composer reasoning pill) so
+  // the generation-counter guard and the revert semantics land in one place.
   const patchReasoning = async (next: string) => {
-    setModelPreset(provider, model, { effort: next })
+    const generation = ++generationRef.current
 
-    if (!isActive) {
-      return
-    }
-
-    setCurrentReasoningEffort(next)
-
-    // Preset-only without a session: `isActive` holds for the global/default
-    // row pre-session, and the gateway's `config.set` falls back to global
-    // config when none matches — so don't reach it (preset + optimistic store
-    // are the whole effect). Same guard in applyModelPreset / toggleFast.
-    if (!activeSessionId) {
-      return
-    }
-
-    try {
-      await requestGateway('config.set', { key: 'reasoning', session_id: activeSessionId, value: next })
-    } catch (err) {
-      setCurrentReasoningEffort(effort)
-      setModelPreset(provider, model, { effort })
-      notifyError(err, copy.updateFailed)
-    }
+    return applyReasoningPatch({
+      failMessage: copy.updateFailed,
+      generation,
+      isActive,
+      latestGeneration: () => generationRef.current,
+      model,
+      next,
+      prev: effort,
+      provider,
+      request: requestGateway,
+      sessionId: activeSessionId
+    })
   }
 
   const toggleFast = (enabled: boolean) => {
@@ -199,7 +196,9 @@ export function ModelEditSubmenu({
               <Switch
                 checked={thinkingOn}
                 className="ml-auto"
-                onCheckedChange={checked => void patchReasoning(checked ? effortValue || 'medium' : 'none')}
+                onCheckedChange={checked =>
+                  void patchReasoning(checked ? effortValue || DEFAULT_REASONING_EFFORT : 'none')
+                }
                 size="xs"
               />
             </DropdownMenuItem>
@@ -215,7 +214,7 @@ export function ModelEditSubmenu({
               <DropdownMenuSeparator className="mx-0" />
               <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.effort}</DropdownMenuLabel>
               <DropdownMenuRadioGroup onValueChange={value => void patchReasoning(value)} value={effortValue}>
-                {EFFORT_OPTIONS.map(option => (
+                {REASONING_EFFORT_OPTIONS.map(option => (
                   <DropdownMenuRadioItem
                     className={dropdownMenuRow}
                     key={option.value}
@@ -234,18 +233,3 @@ export function ModelEditSubmenu({
   )
 }
 
-function isThinkingEnabled(effort: string): boolean {
-  // Empty = Hermes default (medium) = on; only an explicit "none" is off.
-  return normalize(effort || 'medium') !== 'none'
-}
-
-function normalizeEffort(effort: string): string {
-  const value = normalize(effort || 'medium')
-
-  // Thinking off → no effort selected in the radio group.
-  if (value === 'none') {
-    return ''
-  }
-
-  return EFFORT_OPTIONS.some(option => option.value === value) ? value : 'medium'
-}

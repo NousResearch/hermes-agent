@@ -340,6 +340,25 @@ export function ChatView({
     [currentModel, currentProvider, modelOptionsQuery.data]
   )
 
+  // Whether the active model supports a reasoning-effort setting. Default to
+  // `null` (show the pill optimistically) while the options query is in flight;
+  // `false` hides the pill entirely so a disabled "Med" never lies about a
+  // model's capability. Computed against the same payload the picker uses.
+  const reasoningCapable = useMemo<boolean | null>(() => {
+    if (!modelOptionsQuery.data || !currentModel || !currentProvider) {
+      return null
+    }
+    const provider = modelOptionsQuery.data.providers?.find(p => p.slug === currentProvider)
+    if (!provider) {
+      return null
+    }
+    const caps = provider.capabilities?.[currentModel]
+    if (!caps) {
+      return null
+    }
+    return caps.reasoning
+  }, [modelOptionsQuery.data, currentModel, currentProvider])
+
   const chatBarState = useMemo<ChatBarState>(
     () => ({
       model: {
@@ -348,7 +367,8 @@ export function ChatView({
         canSwitch: gatewayOpen,
         loading: !gatewayOpen || (!currentModel && !currentProvider),
         modelMenuContent,
-        quickModels
+        quickModels,
+        reasoningCapable
       },
       tools: {
         enabled: true,
@@ -360,7 +380,15 @@ export function ChatView({
         active: false
       }
     }),
-    [contextSuggestions, currentModel, currentProvider, gatewayOpen, modelMenuContent, quickModels]
+    [
+      contextSuggestions,
+      currentModel,
+      currentProvider,
+      gatewayOpen,
+      modelMenuContent,
+      quickModels,
+      reasoningCapable
+    ]
   )
 
   // Drop files anywhere in the conversation area, not just on the composer

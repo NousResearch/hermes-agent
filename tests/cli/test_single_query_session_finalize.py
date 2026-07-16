@@ -55,6 +55,70 @@ def test_finalize_single_query_releases_session_when_cleanup_fails(monkeypatch):
     assert calls == ["finalize", "cleanup", "release"]
 
 
+def test_finalize_single_query_honcho_hard_exits_after_release(monkeypatch):
+    calls = []
+    honcho_provider = SimpleNamespace(name="honcho")
+    manager = SimpleNamespace(providers=[honcho_provider])
+    fake_agent = SimpleNamespace(_memory_manager=manager)
+    fake_cli = SimpleNamespace(
+        agent=fake_agent,
+        _release_active_session=lambda: calls.append("release"),
+    )
+
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setattr(
+        cli,
+        "_notify_single_query_session_finalize",
+        lambda _cli: calls.append("finalize"),
+    )
+    monkeypatch.setattr(cli, "_run_cleanup", lambda **kwargs: calls.append(("cleanup", kwargs)))
+
+    def fake_exit(code):
+        calls.append(("exit", code))
+        raise SystemExit(code)
+
+    monkeypatch.setattr(cli.os, "_exit", fake_exit)
+
+    with pytest.raises(SystemExit) as exc:
+        cli._finalize_single_query(fake_cli)
+
+    assert exc.value.code == 0
+    assert calls == [
+        "finalize",
+        ("cleanup", {"notify_session_finalize": False}),
+        "release",
+        ("exit", 0),
+    ]
+
+
+def test_finalize_single_query_pytest_env_suppresses_honcho_hard_exit(monkeypatch):
+    calls = []
+    honcho_provider = SimpleNamespace(name="honcho")
+    manager = SimpleNamespace(providers=[honcho_provider])
+    fake_agent = SimpleNamespace(_memory_manager=manager)
+    fake_cli = SimpleNamespace(
+        agent=fake_agent,
+        _release_active_session=lambda: calls.append("release"),
+    )
+
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "tests::test (call)")
+    monkeypatch.setattr(
+        cli,
+        "_notify_single_query_session_finalize",
+        lambda _cli: calls.append("finalize"),
+    )
+    monkeypatch.setattr(cli, "_run_cleanup", lambda **kwargs: calls.append(("cleanup", kwargs)))
+    monkeypatch.setattr(cli.os, "_exit", lambda code: calls.append(("exit", code)))
+
+    cli._finalize_single_query(fake_cli)
+
+    assert calls == [
+        "finalize",
+        ("cleanup", {"notify_session_finalize": False}),
+        "release",
+    ]
+
+
 def test_finalize_single_query_runs_cleanup_when_finalize_hook_fails(monkeypatch):
     calls = []
     fake_agent = SimpleNamespace(session_id="agent-session", platform="cli")

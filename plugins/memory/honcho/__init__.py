@@ -28,6 +28,50 @@ from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
+_DEFAULT_SYNC_IGNORE_PATTERNS = (
+    r"\btemporary test-only\b",
+    r"\bPROD-PILOT-TOOLS-LAZY-[A-Z0-9-]+\b",
+    r"\bPASS HONCHO ACTIVE CLEAN EXIT\b",
+    r"\bDefault-profile Honcho SIGABRT fix verification\b",
+)
+_EXACT_RESPONSE_PROBE_RE = re.compile(
+    r"^\s*(?:reply|respond|say)\s+exactly\s*:?\s*[\"'`“”‘’]?(.{1,120}?)[\"'`“”‘’]?\s*[.!]?\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _normalize_probe_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value.strip().strip("\"'`“”‘’")).casefold()
+
+
+def _is_exact_response_probe(user_content: str, assistant_content: str) -> bool:
+    """Return True for exact-response smoke tests like 'Reply exactly: OK' → 'OK'."""
+    match = _EXACT_RESPONSE_PROBE_RE.match(user_content or "")
+    if not match:
+        return False
+    expected = _normalize_probe_text(match.group(1))
+    actual = _normalize_probe_text(assistant_content or "")
+    return bool(expected and actual == expected)
+
+
+def _should_skip_honcho_sync_turn(
+    user_content: str,
+    assistant_content: str,
+    extra_patterns: Optional[List[str]] = None,
+) -> bool:
+    """Filter temporary verification turns before they become Honcho memories."""
+    if _is_exact_response_probe(user_content, assistant_content):
+        return True
+
+    combined = f"{user_content}\n{assistant_content}"
+    for pattern in (*_DEFAULT_SYNC_IGNORE_PATTERNS, *(extra_patterns or [])):
+        try:
+            if re.search(pattern, combined, re.IGNORECASE | re.DOTALL):
+                return True
+        except re.error:
+            logger.debug("Ignoring invalid Honcho syncIgnorePatterns regex: %s", pattern)
+    return False
+
 
 # ---------------------------------------------------------------------------
 # Tool schemas (moved from tools/honcho_tools.py)
@@ -154,11 +198,12 @@ CONTEXT_SCHEMA = {
 CONCLUDE_SCHEMA = {
     "name": "honcho_conclude",
     "description": (
-        "Write or delete a conclusion about a peer in Honcho's memory. "
+        "Write, inspect, or delete conclusions about a peer in Honcho's memory. "
         "Conclusions are persistent facts that build a peer's profile. "
-        "You MUST pass exactly one of: `conclusion` (to create) or `delete_id` (to delete). "
-        "Passing neither is an error. "
-        "Deletion is only for PII removal — Honcho self-heals incorrect conclusions over time."
+        "Pass exactly one action: `conclusion` to create, `delete_id` to delete one known ID, "
+        "`delete_text` to delete exact-content matches, `delete_tag` to delete conclusions containing a cleanup tag, "
+        "or `list_recent=true` to inspect recent conclusions with IDs. "
+        "Use dry_run=true before broad/tag cleanup unless the user explicitly requested deletion."
     ),
     "parameters": {
         "type": "object",
@@ -169,7 +214,27 @@ CONCLUDE_SCHEMA = {
             },
             "delete_id": {
                 "type": "string",
-                "description": "Conclusion ID to delete for PII removal. Provide this when deleting a conclusion. Do not send it together with conclusion.",
+                "description": "Conclusion ID to delete. Prefer IDs returned by honcho_search or list_recent.",
+            },
+            "delete_text": {
+                "type": "string",
+                "description": "Exact conclusion content to delete. Matches must equal this text after trimming whitespace.",
+            },
+            "delete_tag": {
+                "type": "string",
+                "description": "Cleanup tag/substr to delete matching conclusions, e.g. a synthetic stress-test run ID. Use dry_run first for broad tags.",
+            },
+            "dry_run": {
+                "type": "boolean",
+                "description": "If true, show matching conclusions without deleting. Recommended before delete_text/delete_tag unless deletion was explicitly requested.",
+            },
+            "list_recent": {
+                "type": "boolean",
+                "description": "If true, list recent conclusions with IDs for the selected peer.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum conclusions to inspect/list for list_recent/delete_text/delete_tag. Default 50, max 100.",
             },
             "peer": {
                 "type": "string",
@@ -1228,6 +1293,14 @@ class HonchoMemoryProvider(MemoryProvider):
         msg_limit = self._config.message_max_chars if self._config else 25000
         clean_user_content = sanitize_context(user_content or "").strip()
         clean_assistant_content = sanitize_context(assistant_content or "").strip()
+        ignore_patterns = getattr(self._config, "sync_ignore_patterns", []) if self._config else []
+        if _should_skip_honcho_sync_turn(
+            clean_user_content,
+            clean_assistant_content,
+            ignore_patterns,
+        ):
+            logger.debug("Skipping Honcho sync for temporary verification turn")
+            return
 
         def _sync():
             try:
@@ -1387,22 +1460,72 @@ class HonchoMemoryProvider(MemoryProvider):
 
             elif tool_name == "honcho_conclude":
                 delete_id = (args.get("delete_id") or "").strip()
+                delete_text = (args.get("delete_text") or "").strip()
+                delete_tag = (args.get("delete_tag") or "").strip()
                 conclusion = args.get("conclusion", "").strip()
                 peer = args.get("peer", "user")
+                dry_run = bool(args.get("dry_run", False))
+                list_recent = bool(args.get("list_recent", False))
+                limit = max(1, min(int(args.get("limit", 50)), 100))
 
-                has_delete_id = bool(delete_id)
-                has_conclusion = bool(conclusion)
-                if has_delete_id == has_conclusion:
-                    return tool_error("Exactly one of conclusion or delete_id must be provided.")
+                actions = [bool(conclusion), bool(delete_id), bool(delete_text), bool(delete_tag), list_recent]
+                if sum(1 for item in actions if item) != 1:
+                    return tool_error("Exactly one action must be provided: conclusion, delete_id, delete_text, delete_tag, or list_recent=true.")
 
-                if has_delete_id:
+                if list_recent:
+                    items = self._manager.list_conclusions(self._session_key, peer=peer, size=limit)
+                    return json.dumps({"result": items or [], "count": len(items)})
+
+                if has_delete_id := bool(delete_id):
                     ok = self._manager.delete_conclusion(self._session_key, delete_id, peer=peer)
                     if ok:
-                        return json.dumps({"result": f"Conclusion {delete_id} deleted."})
+                        return json.dumps({"result": f"Conclusion {delete_id} deleted.", "deleted_ids": [delete_id]})
                     return tool_error(f"Failed to delete conclusion {delete_id}.")
+
+                if delete_text or delete_tag:
+                    items = self._manager.list_conclusions(self._session_key, peer=peer, size=limit)
+                    if delete_text:
+                        matches = [item for item in items if (item.get("content") or "").strip() == delete_text]
+                        mode = "delete_text"
+                    else:
+                        matches = [item for item in items if delete_tag in (item.get("content") or "")]
+                        mode = "delete_tag"
+                    if dry_run:
+                        return json.dumps({"result": "dry_run", "mode": mode, "count": len(matches), "matches": matches})
+                    deleted = []
+                    failed = []
+                    for item in matches:
+                        cid = item.get("id")
+                        if not cid:
+                            failed.append(item)
+                            continue
+                        if self._manager.delete_conclusion(self._session_key, cid, peer=peer):
+                            deleted.append(cid)
+                        else:
+                            failed.append(item)
+                    return json.dumps({
+                        "result": f"Deleted {len(deleted)} matching conclusions.",
+                        "mode": mode,
+                        "deleted_ids": deleted,
+                        "failed": failed,
+                        "matched_count": len(matches),
+                    })
+
                 ok = self._manager.create_conclusion(self._session_key, conclusion, peer=peer)
                 if ok:
-                    return json.dumps({"result": f"Conclusion saved for {peer}: {conclusion}"})
+                    response: dict[str, Any] = {"result": f"Conclusion saved for {peer}: {conclusion}"}
+                    query_conclusions = getattr(self._manager, "query_conclusions", None)
+                    if callable(query_conclusions):
+                        matches = query_conclusions(self._session_key, conclusion, peer=peer, top_k=5)
+                        if isinstance(matches, list):
+                            exact = [
+                                item
+                                for item in matches
+                                if isinstance(item, dict)
+                                and (item.get("content") or "").strip() == conclusion
+                            ]
+                            response["matching_conclusions"] = exact or matches
+                    return json.dumps(response)
                 return tool_error("Failed to save conclusion.")
 
             return tool_error(f"Unknown tool: {tool_name}")
@@ -1415,10 +1538,21 @@ class HonchoMemoryProvider(MemoryProvider):
         for t in (self._prefetch_thread, self._sync_thread):
             if t and t.is_alive():
                 t.join(timeout=5.0)
-        # Flush any remaining messages
+        # Flush any remaining messages and stop the session manager's async
+        # writer.  HonchoSessionManager starts a daemon writer thread whenever
+        # writeFrequency=async.  Leaving that thread alive across interpreter
+        # teardown can abort the Hermes CLI after a successful response on WSL
+        # (SIGABRT/exit 134), because the thread may still be inside SDK/HTTP
+        # cleanup while Python finalizes.  Use the manager's graceful shutdown
+        # path instead of flush_all() so the sentinel is sent and the writer is
+        # joined before process exit.
         if self._manager and not (self._init_thread and self._init_thread.is_alive() and not self._session_initialized):
             try:
-                self._manager.flush_all()
+                shutdown = getattr(self._manager, "shutdown", None)
+                if callable(shutdown):
+                    shutdown()
+                else:
+                    self._manager.flush_all()
             except Exception:
                 pass
 

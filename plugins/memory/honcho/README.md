@@ -194,6 +194,7 @@ Pick **[e]** at the prompt to set the three keys directly instead of going throu
 |-----|------|---------|-------------|
 | `writeFrequency` | string/int | `"async"` | `"async"` (background), `"turn"` (sync per turn), `"session"` (batch on end), or integer N (every N turns) |
 | `saveMessages` | bool | `true` | Persist messages to Honcho API |
+| `syncIgnorePatterns` | array | `[]` | Regex patterns for turns that should not be persisted. Built-in guards already skip exact-response probes like `Reply exactly: OK` → `OK` and known temporary Honcho smoke-test markers. Add site-specific probe IDs here. |
 
 ### Session Resolution
 

@@ -173,6 +173,20 @@ def _parse_optional_string(
     return str(value).strip()
 
 
+def _parse_string_list(host_obj: dict, root_obj: dict, key: str) -> list[str]:
+    """Parse a list of non-empty strings with host-level whole-list override."""
+    source = host_obj[key] if key in host_obj else root_obj.get(key)
+    if not isinstance(source, list):
+        return []
+    result = []
+    for item in source:
+        if isinstance(item, str):
+            value = item.strip()
+            if value:
+                result.append(value)
+    return result
+
+
 def _parse_dialectic_depth(host_val, root_val) -> int:
     """Parse dialecticDepth: host wins, then root, then 1. Clamped to 1-3."""
     for val in (host_val, root_val):
@@ -319,6 +333,10 @@ class HonchoClientConfig:
     # Toggles
     enabled: bool = False
     save_messages: bool = True
+    # Regex patterns for turns that should not be written to Honcho at all.
+    # Useful for exact-response smoke tests, provider probes, and other
+    # temporary verification chatter that would otherwise pollute conclusions.
+    sync_ignore_patterns: list[str] = field(default_factory=list)
     # Write frequency: "async" (background thread), "turn" (sync per turn),
     # "session" (flush on session end), or int (every N turns)
     write_frequency: str | int = "async"
@@ -535,6 +553,11 @@ class HonchoClientConfig:
             ),
             enabled=enabled,
             save_messages=save_messages,
+            sync_ignore_patterns=_parse_string_list(
+                host_block,
+                raw,
+                "syncIgnorePatterns",
+            ),
             write_frequency=write_frequency,
             context_tokens=_parse_context_tokens(
                 host_block.get("contextTokens"),

@@ -56,6 +56,12 @@ from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
+from gateway.worker_progress import (
+    WORKER_PROGRESS_QUEUE_KIND,
+    WorkerProgressNotice,
+    notice_from_worker_progress_event,
+    render_worker_progress_notice,
+)
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -17721,7 +17727,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             require_platform_override_for={Platform.MATTERMOST},
         )
         _thinking_enabled = _thinking_mode != "off"
-        needs_progress_queue = tool_progress_enabled or _thinking_enabled
+        worker_progress_enabled = source.platform == Platform.SLACK
+        needs_progress_queue = (
+            tool_progress_enabled or _thinking_enabled or worker_progress_enabled
+        )
 
 
         # Queue for progress messages (thread-safe)
@@ -17729,6 +17738,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
+        worker_progress_seen = [False]
+        worker_progress_last_notice: List[Optional[WorkerProgressNotice]] = [None]
+        worker_progress_last_delivery: List[Optional[threading.Event]] = [None]
         # True when the previously enqueued progress line was a terminal
         # fenced code block — consecutive terminal calls then drop the
         # repeated "💻 terminal" header and render back-to-back blocks.
@@ -17811,6 +17823,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return
             if not progress_queue or not _run_still_current():
                 return
+
+            if worker_progress_enabled:
+                notice = notice_from_worker_progress_event(
+                    event_type,
+                    args=args,
+                    kwargs=kwargs,
+                )
+                if notice is not None:
+                    worker_progress_seen[0] = True
+                    worker_progress_last_notice[0] = notice
+                    delivery = (
+                        threading.Event()
+                        if notice.status in {"complete", "blocked"}
+                        else None
+                    )
+                    worker_progress_last_delivery[0] = delivery
+                    if delivery is not None:
+                        progress_queue.put(
+                            (WORKER_PROGRESS_QUEUE_KIND, notice, delivery)
+                        )
+                    else:
+                        progress_queue.put((WORKER_PROGRESS_QUEUE_KIND, notice))
+                    return
 
             # First-touch onboarding: the first time a tool takes longer than
             # _LONG_TOOL_THRESHOLD_S during a run that's streaming every tool
@@ -18029,6 +18064,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _progress_thread_id == source.thread_id
             else {"thread_id": _progress_thread_id}
         ) if _progress_thread_id else None
+        if (
+            _progress_metadata is not None
+            and source.platform == Platform.SLACK
+            and getattr(source, "scope_id", None)
+        ):
+            _progress_metadata = dict(_progress_metadata)
+            _progress_metadata["slack_team_id"] = str(source.scope_id)
         _progress_metadata = _non_conversational_metadata(_progress_metadata, platform=source.platform)
         _progress_reply_to = (
             event_message_id
@@ -18232,12 +18274,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 progress_lines = groups[-1]
                 return True
 
+            async def _send_or_edit_progress_text(text: str) -> None:
+                nonlocal progress_msg_id, can_edit
+                if can_edit and progress_msg_id is not None:
+                    result = await _edit_progress_message(progress_msg_id, text)
+                    if result.success:
+                        return
+                    _err = (getattr(result, "error", "") or "").lower()
+                    if getattr(result, "retryable", False):
+                        logger.debug(
+                            "[%s] Transient edit failure — keeping can_edit=True",
+                            adapter.name,
+                        )
+                        return
+                    if "flood" in _err or "retry after" in _err:
+                        logger.info(
+                            "[%s] Progress edit flood control, backing off",
+                            adapter.name,
+                        )
+                    else:
+                        can_edit = False
+
+                result = await _send_progress_text(text)
+                if result.success and result.message_id:
+                    progress_msg_id = str(result.message_id)
+                    can_edit = True
+
             while True:
                 try:
                     if not _run_still_current():
                         while not progress_queue.empty():
                             try:
-                                progress_queue.get_nowait()
+                                raw = progress_queue.get_nowait()
+                                if (
+                                    isinstance(raw, tuple)
+                                    and len(raw) >= 3
+                                    and hasattr(raw[2], "set")
+                                ):
+                                    raw[2].set()
                             except Exception:
                                 break
                         return
@@ -18255,6 +18329,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _agent_for_interrupt, "is_interrupted", False
                         ):
                             # Drop this event and continue draining.
+                            if (
+                                isinstance(raw, tuple)
+                                and len(raw) >= 3
+                                and hasattr(raw[2], "set")
+                            ):
+                                raw[2].set()
                             await asyncio.sleep(0)
                             continue
                     except Exception:
@@ -18266,6 +18346,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if progress_lines:
                             progress_lines[-1] = f"{base_msg} (×{count + 1})"
                         msg = progress_lines[-1] if progress_lines else base_msg
+                    elif (
+                        isinstance(raw, tuple)
+                        and len(raw) >= 2
+                        and raw[0] == WORKER_PROGRESS_QUEUE_KIND
+                        and isinstance(raw[1], WorkerProgressNotice)
+                    ):
+                        _worker_done = raw[2] if len(raw) >= 3 else None
+                        try:
+                            msg = render_worker_progress_notice(raw[1])
+                            progress_lines = [msg]
+                            await _send_or_edit_progress_text(msg)
+                            _last_edit_ts = time.monotonic()
+                            await asyncio.sleep(0.3)
+                            if _run_still_current():
+                                await adapter.send_typing(source.chat_id, metadata=_progress_metadata)
+                        finally:
+                            if hasattr(_worker_done, "set"):
+                                _worker_done.set()
+                        continue
                     elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                         # Content bubble just landed on the platform — close off
                         # the current tool-progress bubble so the next tool
@@ -18346,6 +18445,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 and getattr(_flood_result, "message_id", None)
                             ):
                                 _cleanup_msg_ids.append(str(_flood_result.message_id))
+                            if getattr(_flood_result, "success", False) and getattr(
+                                _flood_result, "message_id", None
+                            ):
+                                progress_msg_id = str(_flood_result.message_id)
                     else:
                         if can_edit:
                             # First tool: send all accumulated text as new message
@@ -18388,6 +18491,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 if progress_lines:
                                     progress_lines[-1] = f"{base_msg} (×{count + 1})"
                                     await _roll_progress_overflow_if_needed()
+                            elif (
+                                isinstance(raw, tuple)
+                                and len(raw) >= 2
+                                and raw[0] == WORKER_PROGRESS_QUEUE_KIND
+                                and isinstance(raw[1], WorkerProgressNotice)
+                            ):
+                                _worker_done = raw[2] if len(raw) >= 3 else None
+                                try:
+                                    _worker_text = render_worker_progress_notice(raw[1])
+                                    progress_lines = [_worker_text]
+                                    await _send_or_edit_progress_text(_worker_text)
+                                finally:
+                                    if hasattr(_worker_done, "set"):
+                                        _worker_done.set()
                             elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                                 # Content-bubble marker during drain: close off
                                 # the current progress bubble and start a fresh
@@ -19826,6 +19943,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if needs_progress_queue:
             progress_task = asyncio.create_task(send_progress_messages())
 
+        async def _enqueue_worker_progress_notice_and_wait(
+            notice: WorkerProgressNotice,
+        ) -> None:
+            """Queue a worker-progress card update and wait until it is delivered."""
+            if not progress_queue or not progress_task or progress_task.done():
+                return
+            delivered = threading.Event()
+            progress_queue.put((WORKER_PROGRESS_QUEUE_KIND, notice, delivered))
+            await _wait_for_worker_progress_delivery(delivered)
+
+        async def _wait_for_worker_progress_delivery(
+            delivered: threading.Event | None,
+        ) -> None:
+            if delivered is None:
+                return
+            try:
+                await asyncio.wait_for(asyncio.to_thread(delivered.wait), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.debug(
+                    "Timed out waiting for worker-progress card update to flush"
+                )
+
         # Start the tool-call log writer when tool_progress == "log".
         log_task = None
         if log_mode_enabled:
@@ -20044,6 +20183,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _long_running_mode == "generic"
                     else f"⏳ Working — {_elapsed_mins} min{_status_detail}"
                 )
+                if worker_progress_enabled and progress_queue and worker_progress_seen[0]:
+                    _heartbeat_notice = (
+                        worker_progress_last_notice[0]
+                        or WorkerProgressNotice(phase="preparing", status="active")
+                    )
+                    progress_queue.put(
+                        (
+                            WORKER_PROGRESS_QUEUE_KIND,
+                            _heartbeat_notice,
+                        )
+                    )
+                    continue
                 try:
                     _notify_res = None
                     if _heartbeat_msg_id:
@@ -20596,6 +20747,48 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
+            if (
+                worker_progress_enabled
+                and progress_queue
+                and worker_progress_seen[0]
+                and worker_progress_last_notice[0] is not None
+                and worker_progress_last_notice[0].status in {"complete", "blocked"}
+                and _run_still_current()
+            ):
+                try:
+                    _agent_for_interrupt = agent_holder[0] if agent_holder else None
+                    if not (
+                        _agent_for_interrupt is not None
+                        and getattr(_agent_for_interrupt, "is_interrupted", False)
+                    ):
+                        await _wait_for_worker_progress_delivery(
+                            worker_progress_last_delivery[0]
+                        )
+                except Exception:
+                    pass
+            if (
+                worker_progress_enabled
+                and progress_queue
+                and worker_progress_seen[0]
+                and (
+                    worker_progress_last_notice[0] is None
+                    or worker_progress_last_notice[0].status not in {"complete", "blocked"}
+                )
+                and _run_still_current()
+            ):
+                try:
+                    _final_status = "blocked"
+                    _response_obj = locals().get("response")
+                    if isinstance(_response_obj, dict) and not _response_obj.get("failed"):
+                        _final_status = "complete"
+                    await _enqueue_worker_progress_notice_and_wait(
+                        WorkerProgressNotice(
+                            phase=_final_status,
+                            status=_final_status,
+                        )
+                    )
+                except Exception:
+                    pass
             # Stop progress sender, interrupt monitor, and notification task
             if progress_task:
                 progress_task.cancel()

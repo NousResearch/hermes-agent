@@ -50,6 +50,12 @@ Mode — all at once.
 4. Skip ahead to **Step 6: Install App to Workspace**. The manifest
    handled scopes, events, and slash commands for you.
 
+:::caution Reinstall after manifest changes
+After you save a generated manifest, reinstall the Slack app to the workspace
+when Slack prompts you. Agent view, event subscriptions, scopes, and slash
+commands do not fully take effect until the reinstall completes.
+:::
+
 ### Option B: From scratch (manual)
 
 1. Go to [https://api.slack.com/apps](https://api.slack.com/apps)
@@ -267,6 +273,39 @@ identify a Messages-tab DM and receive the user's active Slack context with a
 turn. Hermes only supplies that context as a label; it does not read the viewed
 channel's history.
 
+### Long-running worker progress in Agent view
+
+In Slack Agent view, long-running delegated or worker-backed work uses one
+editable progress message in the originating thread. Hermes updates that single
+message as the worker moves through safe structured phases, then marks it
+complete or blocked. The card intentionally does **not** show raw shell
+commands, terminal previews, subprocess stdout, log paths, task prompts, goals,
+or secret-shaped strings.
+
+Delegated in-process Hermes subagents can open the card through the existing
+delegation relay. External profile subprocess workers currently cannot emit
+internal phases automatically through the gateway. Until that bridge exists,
+Slack still shows the safe start/heartbeat/final behavior for worker progress
+surfaces that reach the gateway, but it will not claim detailed internal
+subprocess phases it did not receive.
+
+External emitters that integrate with the gateway worker-progress receiving
+surface must use this contract:
+
+```json
+{
+  "event_type": "worker.progress",
+  "phase": "preparing | inspecting | drafting | editing | validating | visual_verification | complete | blocked",
+  "status": "active | complete | blocked",
+  "preview_url": "https://example.com/optional-preview"
+}
+```
+
+Only the finite `phase` and `status` values are rendered. `preview_url` is
+optional and is rendered only for `complete` or `blocked` states, only when it
+is an HTTPS URL without credentials, fragments, or secret-looking path/query
+content. Any other payload fields are treated as untrusted and ignored.
+
 ### Refreshing slash commands after updates
 
 When Hermes adds new commands (e.g. after `hermes update`), regenerate
@@ -282,7 +321,8 @@ Then in Slack:
 2. **Features → App Manifest → Edit**
 3. Paste the new contents of `~/.hermes/slack-manifest.json`
 4. **Save**. Slack will prompt to reinstall the app if scopes or slash
-   commands changed.
+   commands changed. Complete that reinstall before testing the updated
+   Agent view or command surface.
 
 ### Legacy `/hermes <subcommand>` still works
 

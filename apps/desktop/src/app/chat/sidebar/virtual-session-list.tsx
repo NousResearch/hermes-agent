@@ -4,7 +4,8 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { type FC, useCallback, useRef } from 'react'
 
 import type { SessionInfo } from '@/hermes'
-import { type SidebarSessionEntry } from '@/lib/session-branch-tree'
+import type { SidebarSessionEntry } from '@/lib/session-branch-tree'
+import { sessionIdentityKey } from '@/lib/session-identity'
 import { cn } from '@/lib/utils'
 import { sessionPinId } from '@/store/session'
 
@@ -27,10 +28,10 @@ interface VirtualSessionListProps {
   activeSessionId: null | string
   className?: string
   entries: SidebarSessionEntry[]
-  onArchiveSession: (sessionId: string) => void
+  onArchiveSession: (sessionId: string, profile?: null | string) => void
   onBranchSession?: (sessionId: string, profile?: string) => void
-  onDeleteSession: (sessionId: string) => void
-  onResumeSession: (sessionId: string) => void
+  onDeleteSession: (sessionId: string, profile?: null | string) => void
+  onResumeSession: (sessionId: string, profile?: null | string) => void
   onTogglePin: (sessionId: string) => void
   pinned: boolean
   sortable: boolean
@@ -58,7 +59,11 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   const virtualizer = useVirtualizer({
     count: entries.length,
     estimateSize: () => ROW_ESTIMATE_PX,
-    getItemKey: index => entries[index]?.session.id ?? index,
+    getItemKey: index => {
+      const session = entries[index]?.session
+
+      return session ? sessionIdentityKey(session.id, session.profile) : index
+    },
     getScrollElement: () => scrollerRef.current,
     // jsdom-friendly default; the real rect takes over on first observe.
     initialRect: { height: 600, width: 240 },
@@ -79,24 +84,25 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
 
     const { branchStem, session } = entry
     const reorderable = sortable && !branchStem
+    const identityKey = sessionIdentityKey(session.id, session.profile)
 
     const commonProps: SessionRowCommonProps = {
       branchStem,
       isPinned: pinned,
-      isSelected: session.id === activeSessionId,
-      isWorking: workingSessionIdSet.has(session.id),
-      onArchive: () => onArchiveSession(session.id),
+      isSelected: identityKey === activeSessionId,
+      isWorking: workingSessionIdSet.has(identityKey),
+      onArchive: () => onArchiveSession(session.id, session.profile),
       onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
-      onDelete: () => onDeleteSession(session.id),
+      onDelete: () => onDeleteSession(session.id, session.profile),
       onPin: () => onTogglePin(sessionPinId(session)),
-      onResume: () => onResumeSession(session.id),
+      onResume: () => onResumeSession(session.id, session.profile),
       reorderable
     }
 
     return reorderable ? (
       <VirtualSortableRow
         index={virtualItem.index}
-        key={session.id}
+        key={identityKey}
         measureRef={virtualizer.measureElement}
         rowProps={commonProps}
         session={session}
@@ -105,7 +111,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       <SidebarSessionRow
         {...commonProps}
         data-index={virtualItem.index}
-        key={session.id}
+        key={identityKey}
         ref={virtualizer.measureElement}
         session={session}
       />

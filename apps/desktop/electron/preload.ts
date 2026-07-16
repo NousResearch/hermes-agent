@@ -6,7 +6,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   touchBackend: profile => ipcRenderer.invoke('hermes:backend:touch', profile),
   getGatewayWsUrl: profile => ipcRenderer.invoke('hermes:gateway:ws-url', profile),
   openSessionWindow: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openSession', sessionId, opts),
-  openNewSessionWindow: () => ipcRenderer.invoke('hermes:window:openNewSession'),
+  openNewSessionWindow: profile => ipcRenderer.invoke('hermes:window:openNewSession', profile),
   petOverlay: {
     // Main renderer → main process: window lifecycle + drag. `request` is
     // `{ bounds, screen }`; resolves with the screen bounds it actually used.
@@ -184,7 +184,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     return () => ipcRenderer.removeListener('hermes:window-state-changed', listener)
   },
   onFocusSession: callback => {
-    const listener = (_event, sessionId) => callback(sessionId)
+    const listener = (_event, payload) => callback(payload)
     ipcRenderer.on('hermes:focus-session', listener)
 
     return () => ipcRenderer.removeListener('hermes:focus-session', listener)

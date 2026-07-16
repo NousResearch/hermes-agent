@@ -42,9 +42,15 @@ function chatWindowWebPreferences(preloadPath: string) {
 // scratch window; `watch=1` marks a spectator window (e.g. a running subagent's
 // session): the renderer resumes it lazily so the gateway never builds an agent
 // just to stream into it.
-function buildSessionWindowUrl(sessionId: string, { devServer, rendererIndexPath, watch, newSession }: any = {}) {
+function buildSessionWindowUrl(
+  sessionId: string,
+  { devServer, rendererIndexPath, watch, newSession, profile }: any = {}
+) {
   const query = `?win=secondary${newSession ? '&new=1' : ''}${watch ? '&watch=1' : ''}`
-  const route = newSession ? '#/' : `#/${encodeURIComponent(sessionId)}`
+  const profileKey = typeof profile === 'string' ? profile.trim() : ''
+
+  const profileQuery = profileKey ? `?profile=${encodeURIComponent(profileKey)}` : ''
+  const route = newSession ? `#/${profileQuery}` : `#/${encodeURIComponent(sessionId)}${profileQuery}`
 
   if (devServer) {
     const base = devServer.endsWith('/') ? devServer.slice(0, -1) : devServer
@@ -55,7 +61,8 @@ function buildSessionWindowUrl(sessionId: string, { devServer, rendererIndexPath
   return `${pathToFileURL(rendererIndexPath).toString()}${query}${route}`
 }
 
-// A small registry keyed by sessionId that guarantees one window per chat:
+// A small registry keyed by owning profile + sessionId that guarantees one
+// window per chat identity:
 // opening a session that already has a live window focuses it instead of
 // spawning a duplicate, and a window removes itself from the registry when it
 // closes. The actual BrowserWindow construction is injected (the `factory`) so
@@ -63,12 +70,22 @@ function buildSessionWindowUrl(sessionId: string, { devServer, rendererIndexPath
 function createSessionWindowRegistry() {
   const windows = new Map()
 
-  function openOrFocus(sessionId, factory) {
-    const key = typeof sessionId === 'string' ? sessionId.trim() : ''
+  const registryKey = (sessionId, profile) => {
+    const profileKey = typeof profile === 'string' ? profile.trim() || 'default' : 'default'
 
-    if (!key) {
+    return `${profileKey}\u0000${sessionId}`
+  }
+
+  function openOrFocus(sessionId, profileOrFactory, maybeFactory = undefined) {
+    const id = typeof sessionId === 'string' ? sessionId.trim() : ''
+    const profile = typeof profileOrFactory === 'function' ? undefined : profileOrFactory
+    const factory = typeof profileOrFactory === 'function' ? profileOrFactory : maybeFactory
+
+    if (!id || typeof factory !== 'function') {
       return null
     }
+
+    const key = registryKey(id, profile)
 
     const existing = windows.get(key)
 
@@ -87,7 +104,7 @@ function createSessionWindowRegistry() {
       return existing
     }
 
-    const win = factory(key)
+    const win = factory(id)
 
     if (!win) {
       return null
@@ -107,8 +124,8 @@ function createSessionWindowRegistry() {
 
   return {
     openOrFocus,
-    get: key => windows.get(key),
-    has: key => windows.has(key),
+    get: (sessionId, profile = null) => windows.get(registryKey(sessionId, profile)),
+    has: (sessionId, profile = null) => windows.has(registryKey(sessionId, profile)),
     get size() {
       return windows.size
     }

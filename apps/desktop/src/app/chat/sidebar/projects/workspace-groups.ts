@@ -1,5 +1,6 @@
 import type { HermesGitWorktree } from '@/global'
 import type { ProjectInfo, SessionInfo } from '@/hermes'
+import { sessionIdentityKey } from '@/lib/session-identity'
 import { normalize } from '@/lib/text'
 
 // Session grouping is now computed authoritatively on the backend
@@ -452,7 +453,7 @@ export function overlayRepoLanes(
       return { ...g, sessions: [...g.sessions] }
     }
 
-    const kept = g.sessions.filter(s => !removed.has(s.id))
+    const kept = g.sessions.filter(s => !removed.has(sessionIdentityKey(s.id, s.profile)))
 
     changed ||= kept.length !== g.sessions.length
 
@@ -462,7 +463,7 @@ export function overlayRepoLanes(
   for (const session of live) {
     const cwd = (session.cwd || '').trim()
 
-    if (removed.has(session.id) || !cwd) {
+    if (removed.has(sessionIdentityKey(session.id, session.profile)) || !cwd) {
       continue
     }
 
@@ -564,7 +565,7 @@ export function overlayLivePreviews(
   const byProject = new Map<string, SessionInfo[]>()
 
   for (const session of live) {
-    if (removed.has(session.id)) {
+    if (removed.has(sessionIdentityKey(session.id, session.profile))) {
       continue
     }
 
@@ -587,7 +588,10 @@ export function overlayLivePreviews(
     }
 
     const liveRows = byProject.get(node.id) ?? []
-    const base = (node.previewSessions ?? []).filter(session => !removed.has(session.id))
+
+    const base = (node.previewSessions ?? []).filter(
+      session => !removed.has(sessionIdentityKey(session.id, session.profile))
+    )
 
     if (!liveRows.length && !base.length) {
       continue
@@ -597,8 +601,10 @@ export function overlayLivePreviews(
     const map = new Map<string, SessionInfo>()
 
     for (const session of [...liveRows, ...base]) {
-      if (!map.has(session.id)) {
-        map.set(session.id, session)
+      const key = sessionIdentityKey(session.id, session.profile)
+
+      if (!map.has(key)) {
+        map.set(key, session)
       }
     }
 

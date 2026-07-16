@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
 import { $activeGatewayProfile } from '@/store/profile'
+import { $sessions, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import {
@@ -12,7 +13,9 @@ import {
   reconcileResumeMessages,
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
-  toBranchMessages
+  toBranchMessages,
+  upsertOptimisticSession,
+  upsertResolvedSession
 } from './utils'
 
 const msg = (id: string, role: ChatMessage['role'], text: string, extra: Partial<ChatMessage> = {}): ChatMessage =>
@@ -48,6 +51,34 @@ describe('sessionMatchesStoredId', () => {
     expect(sessionMatchesStoredId(session({ id: 'a' }), 'a')).toBe(true)
     expect(sessionMatchesStoredId(session({ id: 'live', _lineage_root_id: 'root' }), 'root')).toBe(true)
     expect(sessionMatchesStoredId(session({ id: 'a' }), 'b')).toBe(false)
+  })
+})
+
+describe('profile-scoped session upserts', () => {
+  beforeEach(() => {
+    setSessions([])
+  })
+
+  it('keeps colliding optimistic ids from other profiles', () => {
+    setSessions([session({ id: 'shared', profile: 'alpha', title: 'Alpha' })])
+
+    upsertOptimisticSession({} as never, 'shared', 'Beta', null, null, undefined, 'beta')
+
+    expect($sessions.get()).toEqual([
+      expect.objectContaining({ id: 'shared', profile: 'beta', title: 'Beta' }),
+      expect.objectContaining({ id: 'shared', profile: 'alpha', title: 'Alpha' })
+    ])
+  })
+
+  it('replaces only the resolved lineage in the owning profile', () => {
+    setSessions([
+      session({ id: 'alpha-tip', _lineage_root_id: 'shared', profile: 'alpha' }),
+      session({ id: 'beta-old', _lineage_root_id: 'shared', profile: 'beta' })
+    ])
+
+    upsertResolvedSession(session({ id: 'beta-new', _lineage_root_id: 'shared', profile: 'beta' }), 'shared')
+
+    expect($sessions.get().map(({ id, profile }) => `${profile}:${id}`)).toEqual(['beta:beta-new', 'alpha:alpha-tip'])
   })
 })
 

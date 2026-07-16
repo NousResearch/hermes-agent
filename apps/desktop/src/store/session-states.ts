@@ -27,10 +27,11 @@ import {
   noteActiveTreeGroup,
   revealTreePane
 } from '@/components/pane-shell/tree/store'
+import { parseSessionIdentityKey, sessionIdentityKey } from '@/lib/session-identity'
 import { readJson, writeJson } from '@/lib/storage'
 
-import { $activeGatewayProfile, normalizeProfileKey } from './profile'
-import { $activeSessionId, $selectedStoredSessionId } from './session'
+import { $activeGatewayProfile, ensureGatewayProfile, normalizeProfileKey } from './profile'
+import { $activeSessionId, $selectedSessionIdentityKey, $selectedStoredSessionId } from './session'
 import { isSecondaryWindow } from './windows'
 
 // ---------------------------------------------------------------------------
@@ -236,15 +237,28 @@ export function sessionTileDelegate(): SessionTileDelegate | null {
  *  it on a zone/edge/strip and the tile goes there (drop-on-a-composer links
  *  instead, handled by the drag resolver). The session LOADED IN MAIN never
  *  opens as a tile (same transcript twice, fighting one runtime — silly). */
-export function openSessionTile(
+export async function openSessionTile(
   storedSessionId: string,
   dir: TileDock = 'right',
   anchor?: string,
-  before?: null | string
-) {
-  const tiles = $sessionTiles.get()
+  before?: null | string,
+  profile?: null | string
+): Promise<void> {
+  const targetProfile = normalizeProfileKey(profile ?? profileKey())
+  const startedOnTargetProfile = targetProfile === profileKey()
 
-  if (storedSessionId === $selectedStoredSessionId.get()) {
+  if (!startedOnTargetProfile) {
+    await ensureGatewayProfile(targetProfile)
+  }
+
+  const tiles = $sessionTiles.get()
+  const activeRuntimeId = $activeSessionId.get()
+  const selectedProfile = activeRuntimeId ? $sessionStates.get()[activeRuntimeId]?.storedSessionProfile : null
+
+  if (
+    storedSessionId === $selectedStoredSessionId.get() &&
+    (normalizeProfileKey(selectedProfile) === targetProfile || (!selectedProfile && startedOnTargetProfile))
+  ) {
     return
   }
 
@@ -269,7 +283,11 @@ export function openSessionTile(
  *  already-open chat JUMPS to its tab instead of reloading it; `false` means the
  *  caller must load it into main. Covers the two dead clicks: an open tile, and
  *  the main session while focus sits on a tile (route unchanged → no reload). */
-export function focusOpenSession(storedSessionId: string): boolean {
+export function focusOpenSession(storedSessionId: string, profile?: null | string): boolean {
+  if (profile != null && normalizeProfileKey(profile) !== profileKey()) {
+    return false
+  }
+
   if ($sessionTiles.get().some(t => t.storedSessionId === storedSessionId)) {
     const paneId = `${TILE_PANE_PREFIX}${storedSessionId}`
     revealTreePane(paneId) // un-dismiss + adopt + front in its group
@@ -315,7 +333,24 @@ export function closeSessionTile(storedSessionId: string) {
  *  backend (resume 404s). Unlike close, it leaves no ⌘⇧T undo (resurrecting it
  *  would just 404 again) and evicts any cached state. This is what clears the
  *  "Session not found" resume spam from stale/cross-profile persisted tiles. */
-export function discardSessionTile(storedSessionId: string) {
+export function discardSessionTile(storedSessionId: string, profile?: null | string) {
+  const targetProfile = normalizeProfileKey(profile ?? profileKey())
+
+  if (targetProfile !== profileKey()) {
+    const tiles = tilesByProfile[targetProfile] ?? []
+    const stored = tiles.filter(t => t.storedSessionId !== storedSessionId)
+
+    if (stored.length > 0) {
+      tilesByProfile[targetProfile] = stored
+    } else {
+      delete tilesByProfile[targetProfile]
+    }
+
+    persistTiles()
+
+    return
+  }
+
   const runtimeId = $sessionTiles.get().find(t => t.storedSessionId === storedSessionId)?.runtimeId
 
   if (runtimeId) {
@@ -357,24 +392,39 @@ export function reopenLastClosedTile(): void {
 
 const TILE_PANE_PREFIX = 'session-tile:'
 
-/** Stored id of the focused session (the interacted zone's tile, else the
- *  primary's selection). Null on a fresh draft. */
-export const $focusedStoredSessionId = computed(
-  [$activeTreeGroup, $layoutTree, $selectedStoredSessionId],
-  (groupId, tree, selected) => {
+/** Profile-aware identity of the focused session (the interacted zone's tile,
+ *  else the primary's selection). Null on a fresh draft. */
+export const $focusedSessionIdentityKey = computed(
+  [$activeTreeGroup, $layoutTree, $selectedSessionIdentityKey, $sessionTiles, $activeGatewayProfile],
+  (groupId, tree, selectedIdentity, tiles, activeProfile) => {
     const active = groupId && tree ? findGroup(tree, groupId)?.active : undefined
 
-    return active?.startsWith(TILE_PANE_PREFIX) ? active.slice(TILE_PANE_PREFIX.length) : selected
+    if (!active?.startsWith(TILE_PANE_PREFIX)) {
+      return selectedIdentity
+    }
+
+    const storedSessionId = active.slice(TILE_PANE_PREFIX.length)
+
+    return sessionIdentityKey(storedSessionId, activeProfile)
   }
+)
+
+/** Stored id of the focused session, retained for gateway APIs that take the
+ *  stored id and profile as separate fields. */
+export const $focusedStoredSessionId = computed($focusedSessionIdentityKey, identity =>
+  identity ? parseSessionIdentityKey(identity).storedSessionId : null
 )
 
 /** Live runtime id of the focused session (a tile's bound runtime, else the
  *  primary's active session). */
 export const $focusedRuntimeId = computed(
-  [$focusedStoredSessionId, $selectedStoredSessionId, $activeSessionId, $sessionTiles],
-  (focused, selected, primaryRuntime, tiles) => {
-    if (focused && focused !== selected) {
-      return tiles.find(t => t.storedSessionId === focused)?.runtimeId ?? null
+  [$focusedSessionIdentityKey, $selectedSessionIdentityKey, $activeSessionId, $sessionTiles],
+  (focusedIdentity, selectedIdentity, primaryRuntime, tiles) => {
+    if (focusedIdentity && focusedIdentity !== selectedIdentity) {
+      return (
+        tiles.find(tile => sessionIdentityKey(tile.storedSessionId, $activeGatewayProfile.get()) === focusedIdentity)
+          ?.runtimeId ?? null
+      )
     }
 
     return primaryRuntime

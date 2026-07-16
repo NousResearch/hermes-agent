@@ -20,6 +20,7 @@ import {
   stopBackgroundProcess
 } from '@/store/composer-status'
 import { $previewStatusBySession, dismissPreviewArtifact } from '@/store/preview-status'
+import { $activeGatewayProfile } from '@/store/profile'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 import { openSessionInNewWindow } from '@/store/windows'
 
@@ -68,6 +69,7 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
   const navigate = useNavigate()
   const itemsBySession = useStore($statusItemsBySession)
   const previewsBySession = useStore($previewStatusBySession)
+  const activeGatewayProfile = useStore($activeGatewayProfile)
   const scrolledUp = useStore($threadScrolledUp)
 
   const groups = useMemo(
@@ -104,7 +106,9 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
   const openAgents = () => navigate(AGENTS_ROUTE)
 
   const openSubagent = (item: ComposerStatusItem) =>
-    item.sessionId ? void openSessionInNewWindow(item.sessionId, { watch: true }) : openAgents()
+    item.sessionId
+      ? void openSessionInNewWindow(item.sessionId, { profile: activeGatewayProfile, watch: true })
+      : openAgents()
 
   // Preview links live as child rows of the background group — a localhost dev
   // server and its preview are the same thing — so they no longer float as an

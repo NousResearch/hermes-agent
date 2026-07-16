@@ -132,6 +132,16 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       const sessionId = route.sessionId
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
 
+      const notificationSession = () => {
+        const state = sessionId ? updateSessionState(sessionId, current => current) : undefined
+
+        return {
+          profile: state?.storedSessionProfile ?? event.profile ?? $activeGatewayProfile.get(),
+          sessionId,
+          storedSessionId: state?.storedSessionId
+        }
+      }
+
       // Mid-turn compaction does not emit another message.start. The first
       // model output or tool event proves summarization has finished and the
       // turn has resumed, so retire the phase label without waiting for the
@@ -511,9 +521,9 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           }
 
           dispatchNativeNotification({
+            ...notificationSession(),
             body: question,
             kind: 'input',
-            sessionId,
             title: translateNow('notifications.native.inputTitle')
           })
         }
@@ -544,13 +554,13 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         dispatchNativeNotification({
+          ...notificationSession(),
           actions: [
             { id: 'approve', text: translateNow('notifications.native.approveAction') },
             { id: 'reject', text: translateNow('notifications.native.rejectAction') }
           ],
           body: command || description,
           kind: 'approval',
-          sessionId,
           title: translateNow('notifications.native.approvalTitle')
         })
       } else if (event.type === 'sudo.request') {
@@ -566,9 +576,9 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           }
 
           dispatchNativeNotification({
+            ...notificationSession(),
             body: translateNow('notifications.native.inputBody'),
             kind: 'input',
-            sessionId,
             title: translateNow('notifications.native.inputTitle')
           })
         }
@@ -593,9 +603,9 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           }
 
           dispatchNativeNotification({
+            ...notificationSession(),
             body: promptText || envVar || translateNow('notifications.native.inputBody'),
             kind: 'input',
-            sessionId,
             title: translateNow('notifications.native.inputTitle')
           })
         }
@@ -677,9 +687,9 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         dispatchNativeNotification({
+          ...notificationSession(),
           body: errorMessage,
           kind: 'turnError',
-          sessionId,
           title: translateNow('notifications.native.turnErrorTitle')
         })
 

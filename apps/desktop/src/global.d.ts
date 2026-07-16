@@ -30,9 +30,12 @@ declare global {
       // with an error code when the sessionId is empty/invalid. `watch` opens
       // a spectator window (lazy resume — no agent build) for live-streaming
       // a running subagent's session.
-      openSessionWindow: (sessionId: string, opts?: { watch?: boolean }) => Promise<{ ok: boolean; error?: string }>
+      openSessionWindow: (
+        sessionId: string,
+        opts?: { profile?: string; watch?: boolean }
+      ) => Promise<{ ok: boolean; error?: string }>
       // Open (or focus) a compact secondary window on the new-session draft.
-      openNewSessionWindow: () => Promise<{ ok: boolean; error?: string }>
+      openNewSessionWindow: (profile?: string) => Promise<{ ok: boolean; error?: string }>
       // The pop-out pet overlay: a transparent always-on-top window hosting only
       // the mascot. The main renderer drives it (open/close/drag + state push);
       // the overlay sends control messages back (pop-in, composer submit).
@@ -187,8 +190,10 @@ declare global {
       ) => () => void
       signalDeepLinkReady?: () => Promise<{ ok: boolean }>
       onWindowStateChanged?: (callback: (payload: HermesWindowState) => void) => () => void
-      onFocusSession?: (callback: (sessionId: string) => void) => () => void
-      onNotificationAction?: (callback: (payload: { actionId: string; sessionId?: string }) => void) => () => void
+      onFocusSession?: (callback: (payload: { profile?: string; sessionId: string }) => void) => () => void
+      onNotificationAction?: (
+        callback: (payload: { actionId: string; profile?: string; runtimeSessionId?: string }) => void
+      ) => () => void
       onPreviewFileChanged: (callback: (payload: HermesPreviewFileChanged) => void) => () => void
       onBackendExit: (callback: (payload: BackendExit) => void) => () => void
       // Soft gateway-mode apply: primary backend was torn down without a window
@@ -625,6 +630,8 @@ export interface HermesNotification {
   silent?: boolean
   kind?: string
   sessionId?: string
+  runtimeSessionId?: string
+  profile?: string
   actions?: { id: string; text: string }[]
 }
 

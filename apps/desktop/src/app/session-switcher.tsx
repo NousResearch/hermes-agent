@@ -36,9 +36,9 @@ export function SessionSwitcher() {
   const attentionIds = new Set(attention)
   const unreadIds = new Set(unread)
 
-  const pick = (sessionId: string) => {
+  const pick = (sessionId: string, profile?: null | string) => {
     closeSwitcher()
-    navigate(sessionRoute(sessionId))
+    navigate(sessionRoute(sessionId, profile))
   }
 
   return createPortal(
@@ -72,7 +72,7 @@ export function SessionSwitcher() {
               key={session.id}
               onMouseDown={e => {
                 e.preventDefault()
-                pick(session.id)
+                pick(session.id, session.profile)
               }}
               ref={selected ? activeRef : undefined}
             >

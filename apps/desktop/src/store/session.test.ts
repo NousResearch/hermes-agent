@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { sessionIdentityKey } from '@/lib/session-identity'
 import type { SessionInfo } from '@/types/hermes'
 
 import {
@@ -11,14 +12,32 @@ import {
   $workingSessionIds,
   applyConfiguredDefaultProjectDir,
   getRecentlySettledSessionIds,
+  getRememberedSessionIdentity,
   mergeSessionPage,
   sessionPinId,
   setCurrentCwd,
+  setRememberedSessionIdentity,
   setSelectedStoredSessionId,
   setSessionAttention,
   setSessionWorking,
   workspaceCwdForNewSession
 } from './session'
+
+describe('remembered session identity', () => {
+  afterEach(() => window.localStorage.removeItem('hermes.desktop.lastSessionId'))
+
+  it('round-trips equal session ids with their owning profile', () => {
+    setRememberedSessionIdentity('shared-id', 'beta')
+
+    expect(getRememberedSessionIdentity()).toEqual({ profile: 'beta', sessionId: 'shared-id' })
+  })
+
+  it('reads legacy bare ids as default-profile identities', () => {
+    window.localStorage.setItem('hermes.desktop.lastSessionId', 'legacy-id')
+
+    expect(getRememberedSessionIdentity()).toEqual({ profile: 'default', sessionId: 'legacy-id' })
+  })
+})
 
 const session = (over: Partial<SessionInfo>): SessionInfo => ({
   archived: false,
@@ -39,47 +58,76 @@ const session = (over: Partial<SessionInfo>): SessionInfo => ({
   ...over
 })
 
+const identity = (id: string, profile = 'default') => sessionIdentityKey(id, profile)
+
 describe('setSessionAttention', () => {
   it('adds and removes a session id without duplicating it', () => {
     $attentionSessionIds.set([])
 
     setSessionAttention('s1', true)
     setSessionAttention('s1', true)
-    expect($attentionSessionIds.get()).toEqual(['s1'])
+    expect($attentionSessionIds.get()).toEqual([identity('s1')])
 
     setSessionAttention('s2', true)
-    expect($attentionSessionIds.get()).toEqual(['s1', 's2'])
+    expect($attentionSessionIds.get()).toEqual([identity('s1'), identity('s2')])
 
     setSessionAttention('s1', false)
-    expect($attentionSessionIds.get()).toEqual(['s2'])
+    expect($attentionSessionIds.get()).toEqual([identity('s2')])
 
     $attentionSessionIds.set([])
   })
 
   it('ignores empty ids and no-op clears', () => {
     $attentionSessionIds.set([])
-
     setSessionAttention(null, true)
     setSessionAttention(undefined, true)
     setSessionAttention('', true)
     setSessionAttention('missing', false)
     expect($attentionSessionIds.get()).toEqual([])
   })
+
+  it('keeps equal stored ids isolated by profile', () => {
+    $attentionSessionIds.set([])
+
+    setSessionAttention('shared', true, 'alpha')
+    setSessionAttention('shared', true, 'beta')
+    setSessionAttention('shared', false, 'alpha')
+
+    expect($attentionSessionIds.get()).toEqual([identity('shared', 'beta')])
+  })
 })
 
 describe('sessionPinId', () => {
   it('uses the live id when there is no compression lineage', () => {
-    expect(sessionPinId(session({ id: 'abc' }))).toBe('abc')
+    expect(sessionPinId(session({ id: 'abc' }))).toBe(identity('abc'))
   })
 
   it('uses the lineage root so a pin survives compression', () => {
     // After auto-compression the entry surfaces under a fresh tip id but keeps
     // the original root — pinning on the root keeps the pin stable.
-    expect(sessionPinId(session({ id: 'tip', _lineage_root_id: 'root' }))).toBe('root')
+    expect(sessionPinId(session({ id: 'tip', _lineage_root_id: 'root' }))).toBe(identity('root'))
+  })
+
+  it('keeps equal lineage roots isolated by profile', () => {
+    expect(sessionPinId(session({ id: 'tip', _lineage_root_id: 'root', profile: 'beta' }))).toBe(
+      identity('root', 'beta')
+    )
   })
 })
 
 describe('mergeSessionPage', () => {
+  it('keeps same-id sessions in different profiles isolated while carrying titles', () => {
+    const alpha = session({ id: 'shared', profile: 'alpha', title: 'Alpha title' })
+    const beta = session({ id: 'shared', profile: 'beta', title: 'Beta title' })
+    const incomingBeta = session({ id: 'shared', profile: 'beta', title: null })
+
+    const merged = mergeSessionPage([alpha, beta], [incomingBeta], [identity('shared', 'alpha')])
+
+    expect(merged).toHaveLength(2)
+    expect(merged.find(item => item.profile === 'beta')?.title).toBe('Beta title')
+    expect(merged.find(item => item.profile === 'alpha')?.title).toBe('Alpha title')
+  })
+
   it('returns the server page untouched when there is nothing to keep', () => {
     const previous = [session({ id: 'a' }), session({ id: 'b' })]
     const incoming = [session({ id: 'a' })]
@@ -261,11 +309,11 @@ describe('getRecentlySettledSessionIds', () => {
     // A turn starts then ends: the working→idle transition grants grace.
     setSessionWorking('s1', true)
     setSessionWorking('s1', false)
-    expect(getRecentlySettledSessionIds()).toEqual(['s1'])
+    expect(getRecentlySettledSessionIds()).toEqual([identity('s1')])
 
     // Still inside the window.
     vi.setSystemTime(29_000)
-    expect(getRecentlySettledSessionIds()).toEqual(['s1'])
+    expect(getRecentlySettledSessionIds()).toEqual([identity('s1')])
 
     // Past the window: the entry is pruned on read.
     vi.setSystemTime(31_000)
@@ -291,7 +339,7 @@ describe('getRecentlySettledSessionIds', () => {
 
     setSessionWorking('s2', true)
     setSessionWorking('s2', false)
-    expect(getRecentlySettledSessionIds()).toEqual(['s2'])
+    expect(getRecentlySettledSessionIds()).toEqual([identity('s2')])
 
     // A new turn for the same session is "working" again — drop it from the
     // settled set so it's tracked as working, not recently-finished.
@@ -317,7 +365,7 @@ describe('unread finished sessions', () => {
     setSelectedStoredSessionId(() => 'other-session')
     setSessionWorking('s1', true)
     setSessionWorking('s1', false)
-    expect($unreadFinishedSessionIds.get()).toEqual(['s1'])
+    expect($unreadFinishedSessionIds.get()).toEqual([identity('s1')])
   })
 
   it('does NOT mark unread when the finishing session is the active one', () => {
@@ -325,6 +373,14 @@ describe('unread finished sessions', () => {
     setSessionWorking('s1', true)
     setSessionWorking('s1', false)
     expect($unreadFinishedSessionIds.get()).toEqual([])
+  })
+
+  it('marks an equal id on another profile unread', () => {
+    setSelectedStoredSessionId(() => 'shared', 'alpha')
+    setSessionWorking('shared', true, 'beta')
+    setSessionWorking('shared', false, 'beta')
+
+    expect($unreadFinishedSessionIds.get()).toEqual([identity('shared', 'beta')])
   })
 
   it('does NOT mark unread on idle→idle re-asserts (no prior working state)', () => {
@@ -338,7 +394,7 @@ describe('unread finished sessions', () => {
     setSelectedStoredSessionId(() => 'other')
     setSessionWorking('s1', true)
     setSessionWorking('s1', false)
-    expect($unreadFinishedSessionIds.get()).toEqual(['s1'])
+    expect($unreadFinishedSessionIds.get()).toEqual([identity('s1')])
 
     setSelectedStoredSessionId(() => 's1')
     expect($unreadFinishedSessionIds.get()).toEqual([])

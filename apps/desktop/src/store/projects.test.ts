@@ -6,6 +6,7 @@ import {
   $activeProjectId,
   $projectScope,
   $projectsRpcAvailable,
+  $removedSessionIds,
   $worktreeRefreshToken,
   ALL_PROJECTS,
   createProject,
@@ -14,8 +15,22 @@ import {
   openProjectCreate,
   pickProjectFolder,
   refreshProjects,
-  refreshWorktrees
+  refreshWorktrees,
+  tombstoneSessions,
+  untombstoneSessions
 } from './projects'
+
+describe('profile-aware session tombstones', () => {
+  beforeEach(() => $removedSessionIds.set(new Set()))
+
+  it('removes only the matching profile identity', () => {
+    tombstoneSessions(['shared-id'], 'alpha')
+    tombstoneSessions(['shared-id'], 'beta')
+    untombstoneSessions(['shared-id'], 'alpha')
+
+    expect([...$removedSessionIds.get()]).toEqual(['beta\u0000shared-id'])
+  })
+})
 
 vi.mock('@/i18n', () => ({
   translateNow: (key: string) => key

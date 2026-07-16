@@ -1,6 +1,7 @@
 import { atom, computed } from 'nanostores'
 
 import { translateNow } from '@/i18n'
+import { sessionIdentityKey } from '@/lib/session-identity'
 import type { TodoItem, TodoStatus } from '@/lib/todos'
 
 import { $gateway } from './gateway'
@@ -52,10 +53,11 @@ export const $backgroundRunningSessionIds = computed([$backgroundStatusBySession
       continue
     }
 
-    const storedId = states[runtimeId]?.storedSessionId
+    const state = states[runtimeId]
+    const storedId = state?.storedSessionId
 
     if (storedId) {
-      ids.add(storedId)
+      ids.add(sessionIdentityKey(storedId, state.storedSessionProfile))
     }
   }
 
@@ -253,10 +255,14 @@ export function reconcileBackgroundProcesses(sid: string, procs: GatewayProcessE
 
   for (const [id, item] of fresh) {
     if (item.state !== 'running' && prevState.get(id) === 'running') {
+      const state = $sessionStates.get()[sid]
+
       dispatchNativeNotification({
         body: item.title,
         kind: 'backgroundDone',
+        profile: state?.storedSessionProfile,
         sessionId: sid,
+        storedSessionId: state?.storedSessionId,
         title: translateNow(
           item.state === 'failed'
             ? 'notifications.native.backgroundFailedTitle'

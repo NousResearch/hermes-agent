@@ -2,11 +2,13 @@ import { cleanup, render } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { sessionIdentityKey } from '@/lib/session-identity'
 import { $resumeExhaustedSessionId, setResumeExhaustedSessionId } from '@/store/session'
 
 import { useRouteResume } from './use-route-resume'
 
 interface HarnessProps {
+  activeGatewayProfile?: string
   activeSessionId: null | string
   activeSessionIdRef: MutableRefObject<null | string>
   creatingSessionRef: MutableRefObject<boolean>
@@ -14,18 +16,31 @@ interface HarnessProps {
   freshDraftReady: boolean
   gatewayState: string
   locationPathname: string
-  resumeSession: (sessionId: string, focus: boolean) => Promise<unknown>
+  resumeSession: (sessionId: string, focus: boolean, profile?: null | string) => Promise<unknown>
   resumeFailedSessionId?: null | string
   resumeExhaustedSessionId?: null | string
   routedSessionId: null | string
+  routedSessionProfile?: null | string
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   selectedStoredSessionId: null | string
   selectedStoredSessionIdRef: MutableRefObject<null | string>
   startFreshSessionDraft: (focus: boolean) => unknown
 }
 
-function RouteResumeHarness({ resumeFailedSessionId = null, resumeExhaustedSessionId = null, ...props }: HarnessProps) {
-  useRouteResume({ ...props, resumeExhaustedSessionId, resumeFailedSessionId })
+function RouteResumeHarness({
+  activeGatewayProfile = 'default',
+  resumeFailedSessionId = null,
+  resumeExhaustedSessionId = null,
+  routedSessionProfile = null,
+  ...props
+}: HarnessProps) {
+  useRouteResume({
+    activeGatewayProfile,
+    ...props,
+    resumeExhaustedSessionId,
+    resumeFailedSessionId,
+    routedSessionProfile
+  })
 
   return null
 }
@@ -41,7 +56,11 @@ describe('useRouteResume', () => {
     const startFreshSessionDraft = vi.fn()
     const activeSessionIdRef: MutableRefObject<null | string> = { current: 'runtime-1' }
     const creatingSessionRef = { current: false }
-    const runtimeIdByStoredSessionIdRef = { current: new Map([['session-1', 'runtime-1']]) }
+
+    const runtimeIdByStoredSessionIdRef = {
+      current: new Map([[sessionIdentityKey('session-1', 'default'), 'runtime-1']])
+    }
+
     const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: 'session-1' }
 
     const { rerender } = render(
@@ -93,7 +112,11 @@ describe('useRouteResume', () => {
     const startFreshSessionDraft = vi.fn()
     const activeSessionIdRef: MutableRefObject<null | string> = { current: 'runtime-1' }
     const creatingSessionRef = { current: false }
-    const runtimeIdByStoredSessionIdRef = { current: new Map([['session-1', 'runtime-1']]) }
+
+    const runtimeIdByStoredSessionIdRef = {
+      current: new Map([[sessionIdentityKey('session-1', 'default'), 'runtime-1']])
+    }
+
     const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: 'session-1' }
 
     const { rerender } = render(
@@ -140,6 +163,63 @@ describe('useRouteResume', () => {
 
     expect(resumeSession).toHaveBeenCalledTimes(1)
     expect(resumeSession).toHaveBeenCalledWith('session-1', true)
+  })
+
+  it('passes the routed profile through to resumeSession', () => {
+    const resumeSession = vi.fn(async () => undefined)
+
+    render(
+      <RouteResumeHarness
+        activeSessionId={null}
+        activeSessionIdRef={{ current: null }}
+        creatingSessionRef={{ current: false }}
+        currentView="chat"
+        freshDraftReady={false}
+        gatewayState="open"
+        locationPathname="/telegram-session"
+        resumeSession={resumeSession}
+        routedSessionId="telegram-session"
+        routedSessionProfile="ubuntu-server"
+        runtimeIdByStoredSessionIdRef={{ current: new Map() }}
+        selectedStoredSessionId={null}
+        selectedStoredSessionIdRef={{ current: null }}
+        startFreshSessionDraft={vi.fn()}
+      />
+    )
+
+    expect(resumeSession).toHaveBeenCalledWith('telegram-session', true, 'ubuntu-server')
+  })
+
+  it('resumes again when only the routed profile changes for the same stored id', () => {
+    const resumeSession = vi.fn(async () => undefined)
+
+    const sharedProps = {
+      activeGatewayProfile: 'alpha',
+      activeSessionId: 'runtime-alpha',
+      activeSessionIdRef: { current: 'runtime-alpha' } as MutableRefObject<null | string>,
+      creatingSessionRef: { current: false },
+      currentView: 'chat',
+      freshDraftReady: false,
+      gatewayState: 'open',
+      locationPathname: '/shared-session',
+      resumeSession,
+      routedSessionId: 'shared-session',
+      runtimeIdByStoredSessionIdRef: {
+        current: new Map([[sessionIdentityKey('shared-session', 'alpha'), 'runtime-alpha']])
+      },
+      selectedStoredSessionId: 'shared-session',
+      selectedStoredSessionIdRef: { current: 'shared-session' } as MutableRefObject<null | string>,
+      startFreshSessionDraft: vi.fn()
+    }
+
+    const { rerender } = render(<RouteResumeHarness {...sharedProps} routedSessionProfile="alpha" />)
+
+    expect(resumeSession).not.toHaveBeenCalled()
+
+    rerender(<RouteResumeHarness {...sharedProps} routedSessionProfile="beta" />)
+
+    expect(resumeSession).toHaveBeenCalledTimes(1)
+    expect(resumeSession).toHaveBeenLastCalledWith('shared-session', true, 'beta')
   })
 
   it('resumes when pathname changes to a routed session', () => {
@@ -197,7 +277,11 @@ describe('useRouteResume', () => {
     const startFreshSessionDraft = vi.fn()
     const activeSessionIdRef: MutableRefObject<null | string> = { current: 'runtime-1' }
     const creatingSessionRef = { current: false }
-    const runtimeIdByStoredSessionIdRef = { current: new Map([['session-1', 'runtime-1']]) }
+
+    const runtimeIdByStoredSessionIdRef = {
+      current: new Map([[sessionIdentityKey('session-1', 'default'), 'runtime-1']])
+    }
+
     const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: 'session-1' }
 
     const { rerender } = render(

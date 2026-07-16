@@ -84,7 +84,7 @@ function paginationItems(page: number, pageCount: number): Array<number | 'ellip
 
 type CellCtx = {
   onOpen: (href: string) => void | Promise<void>
-  onOpenChat: (sessionId: string) => void
+  onOpenChat: (sessionId: string, profile: string) => void
 }
 
 interface ArtifactColumn {
@@ -272,7 +272,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
   const cellCtx: CellCtx = {
     onOpen: openArtifact,
-    onOpenChat: sessionId => navigate(sessionRoute(sessionId))
+    onOpenChat: (sessionId, profile) => navigate(sessionRoute(sessionId, profile))
   }
 
   return (
@@ -337,7 +337,7 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                       failedImage={failedImageIds.has(artifact.id)}
                       key={artifact.id}
                       onImageError={markImageFailed}
-                      onOpenChat={sessionId => navigate(sessionRoute(sessionId))}
+                      onOpenChat={(sessionId, profile) => navigate(sessionRoute(sessionId, profile))}
                     />
                   ))}
                 </div>
@@ -425,7 +425,7 @@ interface ArtifactImageCardProps {
   artifact: ArtifactRecord
   failedImage: boolean
   onImageError: (id: string) => void
-  onOpenChat: (sessionId: string) => void
+  onOpenChat: (sessionId: string, profile: string) => void
 }
 
 function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: ArtifactImageCardProps) {
@@ -494,7 +494,12 @@ function ArtifactImageCard({ artifact, failedImage, onImageError, onOpenChat }: 
         </div>
 
         <div className="flex flex-wrap gap-1.5">
-          <Button onClick={() => onOpenChat(artifact.sessionId)} size="xs" type="button" variant="textStrong">
+          <Button
+            onClick={() => onOpenChat(artifact.sessionId, artifact.profile)}
+            size="xs"
+            type="button"
+            variant="textStrong"
+          >
             <FolderOpen className="size-3" />
             {a.chat}
           </Button>
@@ -597,7 +602,10 @@ function LocationCell({ artifact }: { artifact: ArtifactRecord; ctx: CellCtx }) 
 
 function SessionCell({ artifact, ctx }: { artifact: ArtifactRecord; ctx: CellCtx }) {
   return (
-    <ArtifactCellAction onClick={() => ctx.onOpenChat(artifact.sessionId)} title={artifact.sessionTitle}>
+    <ArtifactCellAction
+      onClick={() => ctx.onOpenChat(artifact.sessionId, artifact.profile)}
+      title={artifact.sessionTitle}
+    >
       <span className="flex min-w-0 flex-col">
         <span className="truncate">{artifact.sessionTitle}</span>
         <span className="truncate text-[0.6875rem] font-normal text-(--ui-text-tertiary)">

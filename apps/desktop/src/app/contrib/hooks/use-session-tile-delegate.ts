@@ -2,6 +2,8 @@ import { useEffect } from 'react'
 
 import { getSessionMessages, PROMPT_SUBMIT_REQUEST_TIMEOUT_MS } from '@/hermes'
 import { toChatMessages } from '@/lib/chat-messages'
+import { sessionIdentityKey } from '@/lib/session-identity'
+import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { publishSessionState, setSessionTileDelegate } from '@/store/session-states'
 import type { SessionResumeResponse } from '@/types/hermes'
 
@@ -12,10 +14,10 @@ import type { GatewayRequester } from '../types'
 type SessionStateCache = ReturnType<typeof useSessionStateCache>
 
 interface SessionTileDelegateParams {
-  archiveSession: (storedSessionId: string) => Promise<unknown>
-  branchStoredSession: (storedSessionId: string) => Promise<unknown>
+  archiveSession: (storedSessionId: string, profile?: null | string) => Promise<unknown>
+  branchStoredSession: (storedSessionId: string, profile?: null | string) => Promise<unknown>
   executeSlashCommand: ReturnType<typeof usePromptActions>['executeSlashCommand']
-  removeSession: (storedSessionId: string) => Promise<unknown>
+  removeSession: (storedSessionId: string, profile?: null | string) => Promise<unknown>
   requestGateway: GatewayRequester
   runtimeIdByStoredSessionIdRef: SessionStateCache['runtimeIdByStoredSessionIdRef']
   sessionStateByRuntimeIdRef: SessionStateCache['sessionStateByRuntimeIdRef']
@@ -42,13 +44,13 @@ export function useSessionTileDelegate({
   useEffect(() => {
     setSessionTileDelegate({
       archiveSession: async storedSessionId => {
-        await archiveSession(storedSessionId)
+        await archiveSession(storedSessionId, $activeGatewayProfile.get())
       },
       branchSession: async storedSessionId => {
-        await branchStoredSession(storedSessionId)
+        await branchStoredSession(storedSessionId, $activeGatewayProfile.get())
       },
       deleteSession: async storedSessionId => {
-        await removeSession(storedSessionId)
+        await removeSession(storedSessionId, $activeGatewayProfile.get())
       },
       executeSlash: async (rawCommand, sessionId) => {
         await executeSlashCommand(rawCommand, { sessionId })
@@ -57,18 +59,27 @@ export function useSessionTileDelegate({
         await requestGateway('session.interrupt', { session_id: runtimeId })
       },
       resumeTile: async storedSessionId => {
-        const existing = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+        const profile = normalizeProfileKey($activeGatewayProfile.get())
+        const existing = runtimeIdByStoredSessionIdRef.current.get(sessionIdentityKey(storedSessionId, profile))
         const cached = existing ? sessionStateByRuntimeIdRef.current.get(existing) : undefined
 
-        if (existing && cached?.storedSessionId === storedSessionId) {
+        if (
+          existing &&
+          cached?.storedSessionId === storedSessionId &&
+          normalizeProfileKey(cached.storedSessionProfile) === profile
+        ) {
           publishSessionState(existing, cached)
 
           return existing
         }
 
         const [prefetch, resumed] = await Promise.all([
-          getSessionMessages(storedSessionId).catch(() => null),
-          requestGateway<SessionResumeResponse>('session.resume', { session_id: storedSessionId, cols: 96 })
+          getSessionMessages(storedSessionId, profile).catch(() => null),
+          requestGateway<SessionResumeResponse>('session.resume', {
+            session_id: storedSessionId,
+            cols: 96,
+            profile
+          })
         ])
 
         const runtimeId = resumed?.session_id
@@ -85,7 +96,8 @@ export function useSessionTileDelegate({
             messages:
               state.messages.length > 0 ? state.messages : toChatMessages(prefetch?.messages ?? resumed?.messages ?? [])
           }),
-          storedSessionId
+          storedSessionId,
+          profile
         )
 
         return runtimeId

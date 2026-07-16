@@ -18,6 +18,7 @@ import {
   toggleSidebarOpen
 } from '@/store/layout'
 import {
+  $activeGatewayProfile,
   $newChatProfile,
   cycleProfile,
   requestProfileCreate,
@@ -91,9 +92,9 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     }
   }
 
-  const goToSession = (sessionId: null | string) => {
-    if (sessionId) {
-      navigate(sessionRoute(sessionId))
+  const goToSession = (target: { profile: string; sessionId: string } | null) => {
+    if (target) {
+      navigate(sessionRoute(target.sessionId, target.profile))
     }
   }
 
@@ -145,7 +146,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       window.dispatchEvent(new CustomEvent('hermes:new-session-shortcut'))
     },
     'session.newTab': () => deps.openNewSessionTab(),
-    'session.newWindow': () => void openNewSessionInNewWindow(),
+    'session.newWindow': () => void openNewSessionInNewWindow($activeGatewayProfile.get()),
     // ⌃Tab cycles the focused session/main tab strip; only a non-tabbed focus
     // falls through to the recent-session switcher.
     'session.next': () => void (cycleTreeTabInFocusedZone(1) || stepSession(1)),

@@ -4,7 +4,7 @@ import { SessionPickerDialog } from '@/components/session-picker'
 import { $gatewayState, $selectedStoredSessionId, $sessionPickerOpen, setSessionPickerOpen } from '@/store/session'
 
 interface SessionPickerOverlayProps {
-  onResume: (storedSessionId: string) => void
+  onResume: (storedSessionId: string, profile?: null | string) => void
 }
 
 /**

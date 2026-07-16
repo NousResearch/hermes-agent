@@ -10,7 +10,7 @@ outputs:
     description: Run Python tests / ruff / ty / windows-footguns.
     value: ${{ steps.classify.outputs.python }}
   frontend:
-    description: Run the TypeScript typecheck matrix + desktop build.
+    description: Run the TypeScript testing matrix + desktop build.
     value: ${{ steps.classify.outputs.frontend }}
   docker_meta:
     description: Docker setup and meta files have changed.
@@ -27,6 +27,9 @@ outputs:
   mcp_catalog:
     description: Require MCP catalog security review label.
     value: ${{ steps.classify.outputs.mcp_catalog }}
+  ci_review:
+    description: Require CI-sensitive file review label.
+    value: ${{ steps.classify.outputs.ci_review }}
 
 runs:
   using: composite

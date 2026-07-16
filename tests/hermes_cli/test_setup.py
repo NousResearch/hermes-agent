@@ -540,3 +540,25 @@ def test_prompt_yes_no_keyboard_interrupt_still_exits(monkeypatch):
     with pytest.raises(SystemExit):
         setup_mod.prompt_yes_no("Install it now?", True)
 
+
+
+
+def test_local_terminal_setup_defaults_to_launch_dir_placeholder(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = load_config()
+    config["terminal"]["backend"] = "docker"
+    config["terminal"].pop("cwd", None)
+
+    def fake_prompt_choice(question, choices, default=0):
+        if question == "Select terminal backend:":
+            return 0
+        raise AssertionError(f"Unexpected prompt_choice call: {question}")
+
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+
+    from hermes_cli.setup import setup_terminal_backend
+
+    setup_terminal_backend(config)
+
+    assert config["terminal"]["backend"] == "local"
+    assert config["terminal"]["cwd"] == "."

@@ -594,14 +594,19 @@ def load_cli_config() -> Dict[str, Any]:
     
     # CWD resolution for CLI/TUI. The gateway has its own config bridge in
     # gateway/run.py but may lazily import cli.py (triggering this code).
-    # Local backend: always os.getcwd(). Use `cd /dir && hermes` to control it.
+    # Local backend: respect an explicit terminal.cwd; otherwise default to
+    # the current process directory so `cd /dir && hermes` still works.
     # Non-local with placeholder: pop so terminal_tool uses its per-backend default.
     # Non-local with explicit path: keep as-is.
     _CWD_PLACEHOLDERS = (".", "auto", "cwd")
     effective_backend = terminal_config.get("env_type", "local")
 
     if effective_backend == "local":
-        terminal_config["cwd"] = os.getcwd()
+        configured_cwd = terminal_config.get("cwd")
+        if isinstance(configured_cwd, str) and configured_cwd.strip() and configured_cwd.strip() not in _CWD_PLACEHOLDERS:
+            terminal_config["cwd"] = os.path.expanduser(configured_cwd.strip())
+        else:
+            terminal_config["cwd"] = os.getcwd()
         defaults["terminal"]["cwd"] = terminal_config["cwd"]
     elif terminal_config.get("cwd") in _CWD_PLACEHOLDERS:
         terminal_config.pop("cwd", None)

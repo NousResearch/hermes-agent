@@ -1227,9 +1227,10 @@ def setup_terminal_backend(config: dict):
     if selected_backend == "local":
         print_success("Terminal backend: Local")
         print_info("Commands run directly on this machine.")
-        # Gateway working directory defaults to home; sudo stays off. Both are
-        # configurable later via `hermes setup terminal` / config.yaml.
-        config["terminal"].setdefault("cwd", str(Path.home()))
+        # Local sessions should start from the launch directory unless the
+        # user explicitly chooses a terminal.cwd. Keep the config at the
+        # placeholder so load_cli_config() resolves it at runtime.
+        config["terminal"].setdefault("cwd", ".")
 
     elif selected_backend == "docker":
         print_success("Terminal backend: Docker")

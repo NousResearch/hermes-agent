@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from difflib import unified_diff
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 from utils import safe_json_loads
 from agent.redact import redact_sensitive_text
@@ -178,6 +178,84 @@ def _truncate_preview(text: str, max_len: int | None) -> str:
             return "." * max_len
         return text[:max_len - 3] + "..."
     return text
+
+
+def sanitize_url_for_display(url: Any) -> str:
+    """Return *url* with userinfo credentials stripped for progress labels.
+
+    Tool-progress surfaces (CLI spinner, TUI, API progress stream, completion
+    lines) must never echo ``user:secret@`` from browser/web tool args.
+
+    ``https://user:secret@example.com/path`` → ``https://example.com/path``
+    Non-URL strings and unparseable input are returned as stripped text.
+    """
+    raw = str(url or "").strip()
+    if not raw:
+        return ""
+    # Fast path: no credential marker in the authority section.
+    if "@" not in raw:
+        return raw
+
+    has_scheme = "://" in raw
+    to_parse = raw if has_scheme else f"//{raw}"
+    try:
+        parsed = urlparse(to_parse)
+    except Exception:
+        return raw
+
+    host = parsed.hostname
+    if not host:
+        return raw
+
+    # Bracket IPv6 literals when rebuilding netloc.
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    netloc = f"{host}:{port}" if port is not None else host
+
+    rebuilt = urlunparse(
+        (
+            parsed.scheme if has_scheme else "",
+            netloc,
+            parsed.path,
+            parsed.params,
+            parsed.query,
+            parsed.fragment,
+        )
+    )
+    if not has_scheme and rebuilt.startswith("//"):
+        rebuilt = rebuilt[2:]
+    return rebuilt
+
+
+def display_url_host(url: Any) -> str:
+    """Host[:port] for compact completion lines; never includes userinfo."""
+    raw = str(url or "").strip()
+    if not raw:
+        return ""
+    try:
+        parsed = urlparse(raw if "://" in raw else f"//{raw}")
+    except Exception:
+        parsed = None
+
+    host = parsed.hostname if parsed is not None else None
+    if not host:
+        cleaned = sanitize_url_for_display(raw)
+        return cleaned.replace("https://", "").replace("http://", "").split("/")[0]
+
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    return f"{host}:{port}" if port is not None else host
+
+
+_URL_PREVIEW_TOOLS = frozenset({"browser_navigate", "web_extract"})
 
 
 _SHELL_SILENT_HEADS = {"cd", "pushd", "popd", "export", "set", "unset", "source", ".", "true", "false", ":"}
@@ -529,6 +607,11 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
     value = args[key]
     if isinstance(value, list):
         value = value[0] if value else ""
+
+    # Browser/web tools surface URLs in spinner/TUI/API progress via this
+    # shared path — strip credentials before any truncation or join.
+    if tool_name in _URL_PREVIEW_TOOLS or key in ("url", "urls"):
+        value = sanitize_url_for_display(value)
 
     preview = _oneline(str(value))
     if not preview:
@@ -1279,22 +1362,6 @@ def get_cute_tool_message(
         limit = _tool_preview_max_len
         return ("..." + p[-(limit-3):]) if len(p) > limit else p
 
-    def _display_url_host(url) -> str:
-        raw = str(url or "").strip()
-        if not raw:
-            return ""
-        parsed = urlparse(raw if "://" in raw else f"//{raw}")
-        host = parsed.hostname
-        if not host:
-            return raw.replace("https://", "").replace("http://", "").split("/")[0]
-        if ":" in host and not host.startswith("["):
-            host = f"[{host}]"
-        try:
-            port = parsed.port
-        except ValueError:
-            port = None
-        return f"{host}:{port}" if port is not None else host
-
     def _wrap(line: str) -> str:
         """Apply skin tool prefix and failure suffix."""
         if skin_prefix != "┊":
@@ -1309,7 +1376,7 @@ def get_cute_tool_message(
         urls = args.get("urls", [])
         if urls:
             url = urls[0] if isinstance(urls, list) else str(urls)
-            domain = _display_url_host(url)
+            domain = display_url_host(url)
             extra = f" +{len(urls)-1}" if len(urls) > 1 else ""
             return _wrap(f"┊ 📄 fetch     {_trunc(domain, 35)}{extra}  {dur}")
         return _wrap(f"┊ 📄 fetch     pages  {dur}")
@@ -1324,7 +1391,7 @@ def get_cute_tool_message(
     if tool_name == "read_file":
         return _wrap(f"┊ 📖 read      {_trunc(build_tool_preview(tool_name, args) or args.get('path', ''), 42)}  {dur}")
     if tool_name == "write_file":
-        return _wrap(f"┊ ✍️  write     {_path(args.get('path', ''))}  {dur}")
+        return _wrap(f"┊ ✏️  write     {_path(args.get('path', ''))}  {dur}")
     if tool_name == "patch":
         return _wrap(f"┊ 🔧 patch     {_path(args.get('path', ''))}  {dur}")
     if tool_name == "search_files":
@@ -1334,7 +1401,7 @@ def get_cute_tool_message(
         return _wrap(f"┊ 🔎 {verb:9} {pattern}  {dur}")
     if tool_name == "browser_navigate":
         url = args.get("url", "")
-        domain = _display_url_host(url)
+        domain = display_url_host(url)
         return _wrap(f"┊ 🌐 navigate  {_trunc(domain, 35)}  {dur}")
     if tool_name == "browser_snapshot":
         mode = "full" if args.get("full") else "compact"

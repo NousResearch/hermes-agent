@@ -315,6 +315,50 @@ class TestCuteToolMessagePreviewLength:
         assert "user:secret" not in line
         assert "example.com" in line
 
+    def test_browser_navigate_preview_and_label_omit_url_userinfo(self):
+        from agent.display import build_tool_label, build_tool_preview
+
+        args = {"url": "https://user:secret@example.com/path"}
+        preview = build_tool_preview("browser_navigate", args)
+        label = build_tool_label("browser_navigate", args)
+
+        assert preview is not None
+        assert "user:secret" not in preview
+        assert "example.com" in preview
+        assert "https://example.com/path" in preview
+
+        assert label is not None
+        assert "user:secret" not in label
+        assert "example.com" in label
+        assert label.startswith("Browsing ")
+
+    def test_web_extract_preview_and_label_omit_url_userinfo(self):
+        from agent.display import build_tool_label, build_tool_preview
+
+        args = {"urls": ["https://user:secret@example.com/docs"]}
+        preview = build_tool_preview("web_extract", args)
+        label = build_tool_label("web_extract", args)
+
+        assert preview is not None
+        assert "user:secret" not in preview
+        assert "example.com" in preview
+        assert "https://example.com/docs" in preview
+
+        assert label is not None
+        assert "user:secret" not in label
+        assert "example.com" in label
+        assert label.startswith("Reading ")
+
+    def test_sanitize_url_for_display_strips_userinfo_only(self):
+        from agent.display import sanitize_url_for_display
+
+        assert (
+            sanitize_url_for_display("https://user:secret@example.com:8443/a?b=1")
+            == "https://example.com:8443/a?b=1"
+        )
+        assert sanitize_url_for_display("https://example.com/ok") == "https://example.com/ok"
+        assert sanitize_url_for_display("") == ""
+
 
 class TestEditDiffPreview:
     def test_extract_edit_diff_for_patch(self):

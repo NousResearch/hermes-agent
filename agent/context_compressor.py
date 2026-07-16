@@ -3116,22 +3116,33 @@ This compaction should PRIORITISE preserving all information related to the focu
         self._last_aux_model_failure_model = None
         self._last_compress_aborted = False
         self._last_compression_made_progress = False
-        # NOTE: do NOT reset _last_summary_auth_failure or
-        # _last_summary_network_failure here.  These flags are set by
-        # _generate_summary() on a terminal failure and are already cleared on
-        # a successful summary.  Resetting them eagerly defeats the cooldown
-        # protection: _generate_summary() returns None from the cooldown
-        # early-return without re-asserting these flags, so the abort guard
-        # below would see False and fall through to the destructive
-        # static-fallback — the exact data-loss #29559 describes.  Letting them
-        # persist across compress() calls is safe because a successful summary
-        # always clears both.
 
         # Manual /compress (force=True) bypasses the failure cooldown so the
         # user can retry immediately after an auto-compress abort.  Without
         # this, /compress would silently no-op for 30-60s after a failure.
         if force:
             self._clear_compression_failure_cooldown()
+
+        # _last_summary_auth_failure / _last_summary_network_failure are set
+        # by _generate_summary() on a terminal failure and cleared on the next
+        # successful summary.  They must NOT be cleared eagerly on every
+        # compress() call: while the failure cooldown is active,
+        # _generate_summary() short-circuits in its cooldown early-return and
+        # returns None WITHOUT re-asserting the flags, so an eager clear would
+        # let the abort guard below see False and fall through to the
+        # destructive static-fallback — the exact #29559 / #25585 data loss.
+        # But letting them persist for the whole session is wrong in the other
+        # direction: after the cooldown lapses, a stale auth/network flag from
+        # a long-resolved blip forces every later generic summary failure onto
+        # the abort path, overriding abort_on_summary_failure=False for the
+        # rest of the session.  Scope the flags to the failure episode: keep
+        # them while the cooldown is armed (the re-entrant call stays on the
+        # abort path), clear them once it has expired (force=True cleared it
+        # just above) so the next real attempt is classified fresh —
+        # _generate_summary() re-asserts them if the error persists.
+        if time.monotonic() >= self._summary_failure_cooldown_until:
+            self._last_summary_auth_failure = False
+            self._last_summary_network_failure = False
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self._protect_head_size(messages) + 3 + 1

@@ -509,6 +509,96 @@ class TestBackup:
             assert "skills/outside-link.txt" not in names
             assert all(zf.read(name) != b"outside secret\n" for name in names)
 
+    def test_postgres_backup_keeps_metadata_but_not_stale_sqlite_state(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        raw_dsn = "postgresql://user:secret@db.example/hermes"
+        (hermes_home / "config.yaml").write_text(
+            """
+sessions:
+  state:
+    backend: postgres
+    postgres:
+      dsn_env: HERMES_STATE_POSTGRES_DSN
+      schema: hermes_state
+""",
+            encoding="utf-8",
+        )
+        (hermes_home / ".env").write_text(
+            f"HERMES_STATE_POSTGRES_DSN={raw_dsn}\n", encoding="utf-8"
+        )
+        (hermes_home / "state.db").write_bytes(b"stale sqlite state")
+        (hermes_home / "notes.txt").write_text("preserve local files\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = tmp_path / "backup.zip"
+        from hermes_cli.backup import run_backup
+
+        run_backup(Namespace(output=str(out_zip)))
+
+        with zipfile.ZipFile(out_zip) as archive:
+            names = archive.namelist()
+            metadata = json.loads(archive.read("state-backend.json"))
+        output = capsys.readouterr().out
+
+        assert "config.yaml" in names
+        assert "notes.txt" in names
+        assert "state.db" not in names
+        assert metadata["state_backends"] == [
+            {
+                "backend": "postgres",
+                "database_dump_included": False,
+                "external_backup_required": True,
+                "profile": "default",
+                "schema": "hermes_state",
+            }
+        ]
+        assert "back up PostgreSQL separately" in output
+        assert raw_dsn not in output
+
+    def test_postgres_backup_covers_named_profiles(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        profile_home = hermes_home / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+        (hermes_home / "config.yaml").write_text("{}\n", encoding="utf-8")
+        (profile_home / "config.yaml").write_text(
+            """
+sessions:
+  state:
+    backend: postgres
+    postgres:
+      schema: hermes_coder_state
+""",
+            encoding="utf-8",
+        )
+        (profile_home / "state.db").write_bytes(b"stale profile sqlite state")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = tmp_path / "backup.zip"
+        from hermes_cli.backup import run_backup
+
+        run_backup(Namespace(output=str(out_zip)))
+
+        with zipfile.ZipFile(out_zip) as archive:
+            names = archive.namelist()
+            metadata = json.loads(archive.read("state-backend.json"))
+
+        assert "profiles/coder/config.yaml" in names
+        assert "profiles/coder/state.db" not in names
+        assert metadata["state_backends"] == [
+            {
+                "backend": "postgres",
+                "database_dump_included": False,
+                "external_backup_required": True,
+                "profile": "coder",
+                "schema": "hermes_coder_state",
+            }
+        ]
+
 
 # ---------------------------------------------------------------------------
 # _validate_backup_zip tests
@@ -1543,6 +1633,47 @@ class TestQuickSnapshot:
             hermes_home=hermes_home, max_file_size=1 << 30
         )
         assert (hermes_home / "state-snapshots" / snap_id / "state.db").exists()
+
+    def test_postgres_snapshot_only_reports_the_current_profile(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot
+
+        (hermes_home / "config.yaml").write_text(
+            """
+sessions:
+  state:
+    backend: postgres
+    postgres:
+      schema: hermes_default_state
+""",
+            encoding="utf-8",
+        )
+        profile_home = hermes_home / "profiles" / "coder"
+        profile_home.mkdir(parents=True)
+        (profile_home / "config.yaml").write_text(
+            """
+sessions:
+  state:
+    backend: postgres
+    postgres:
+      schema: hermes_coder_state
+""",
+            encoding="utf-8",
+        )
+
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+        metadata = json.loads((snap_dir / "manifest.json").read_text())
+
+        assert not (snap_dir / "state.db").exists()
+        assert metadata["state_backends"] == [
+            {
+                "backend": "postgres",
+                "database_dump_included": False,
+                "external_backup_required": True,
+                "profile": "default",
+                "schema": "hermes_default_state",
+            }
+        ]
 
     def test_list_snapshots(self, hermes_home):
         from hermes_cli.backup import create_quick_snapshot, list_quick_snapshots

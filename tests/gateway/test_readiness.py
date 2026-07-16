@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
+import asyncio
+import threading
 from pathlib import Path
 
+import gateway.readiness as readiness_mod
 from gateway.readiness import collect_runtime_readiness
 
 
@@ -15,8 +17,10 @@ def test_collect_runtime_readiness_reports_healthy_local_runtime(tmp_path, monke
         "model:\n  provider: openrouter\n  model: test/model\n",
         encoding="utf-8",
     )
-    with sqlite3.connect(home / "state.db") as conn:
-        conn.execute("CREATE TABLE probe (id INTEGER PRIMARY KEY)")
+    from hermes_state import SessionDB
+
+    db = SessionDB.for_home(home)
+    db.close()
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     result = collect_runtime_readiness(
@@ -101,3 +105,73 @@ def test_collect_runtime_readiness_uses_active_profile_home(tmp_path, monkeypatc
     assert result["checks"]["config"]["status"] == "ok"
     assert not (tmp_path / ".hermes" / "state.db").exists()
     assert os.environ["HERMES_HOME"] == str(profile_home)
+
+
+def test_postgres_readiness_reports_capabilities_without_dsn(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    raw_dsn = "postgresql://user:secret@db.example/hermes"
+    (home / "config.yaml").write_text(
+        """
+sessions:
+  state:
+    backend: postgres
+    postgres:
+      dsn_env: HERMES_STATE_POSTGRES_DSN
+      schema: hermes_state
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_STATE_POSTGRES_DSN", raw_dsn)
+
+    class FakePostgresDB:
+        capabilities = {"core_schema": True, "full_text_search": True}
+
+        def list_gateway_sessions(self, *, active_only):
+            raise AssertionError("readiness must not materialize gateway sessions")
+
+        def close(self):
+            pass
+
+    from hermes_state import SessionDB
+
+    monkeypatch.setattr(
+        SessionDB,
+        "for_home",
+        staticmethod(lambda *_args, **_kwargs: FakePostgresDB()),
+    )
+
+    result = readiness_mod._probe_state_db(home)
+
+    assert result["status"] == "ok"
+    assert result["backend"] == "postgres"
+    assert result["schema"] == "hermes_state"
+    assert result["capabilities"]["core_schema"] is True
+    assert raw_dsn not in json.dumps(result)
+
+
+def test_readiness_defers_state_probe_while_an_event_loop_is_running(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    started = threading.Event()
+    release = threading.Event()
+
+    def fake_probe(probe_home):
+        assert probe_home == home
+        started.set()
+        release.wait(timeout=1)
+        return {"status": "ok", "backend": "sqlite"}
+
+    monkeypatch.setattr(readiness_mod, "_probe_state_db", fake_probe)
+    monkeypatch.setattr(readiness_mod, "_STATE_PROBE_HOME", None)
+    monkeypatch.setattr(readiness_mod, "_STATE_PROBE_RESULT", None)
+    monkeypatch.setattr(readiness_mod, "_STATE_PROBE_FUTURE", None)
+
+    async def collect():
+        return readiness_mod._probe_state_db_without_blocking_event_loop(home)
+
+    result = asyncio.run(collect())
+
+    assert result["detail"] == "probe pending"
+    assert started.wait(timeout=1)
+    release.set()

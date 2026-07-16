@@ -72,6 +72,36 @@ def _configured_model_label(config: dict) -> str:
     return model or "(not set)"
 
 
+def _state_store_status(home: Path, config: dict) -> tuple[str, int | None, dict[str, bool] | None]:
+    """Return configured backend, active gateway-session count, and capabilities."""
+    from hermes_state import SessionDB
+    from state_store import resolve_state_store
+
+    spec = resolve_state_store(home, config, read_only=True)
+    if spec.backend == "sqlite" and not spec.sqlite_path.exists():
+        return "sqlite", 0, None
+
+    try:
+        db = SessionDB.for_home(home, read_only=True, config=config)
+    except Exception:
+        return spec.backend, None, None
+    try:
+        lister = getattr(db, "list_gateway_sessions", None)
+        count = len(lister(active_only=True)) if callable(lister) else None
+        capabilities = getattr(db, "capabilities", None)
+        if spec.backend == "postgres" and capabilities is not None:
+            return (
+                "postgres",
+                count,
+                {str(name): bool(enabled) for name, enabled in capabilities.items()},
+            )
+        return "sqlite", count, None
+    finally:
+        close = getattr(db, "close", None)
+        if callable(close):
+            close()
+
+
 def _effective_provider_label() -> str:
     """Return the provider label matching current CLI runtime resolution."""
     requested = resolve_requested_provider()
@@ -547,23 +577,37 @@ def show_status(args):
     print()
     print(color("◆ Sessions", Colors.CYAN, Colors.BOLD))
 
-    # Gateway session count: state.db is the source of truth (#9006);
-    # fall back to sessions.json for pre-migration installs.
+    # The configured state store is the source of truth; retain the legacy
+    # JSON fallback only for SQLite installs that predate the state database.
     _session_count = None
+    _state_backend = "sqlite"
+    _state_capabilities = None
     try:
-        from hermes_state import SessionDB
-        _db = SessionDB()
-        try:
-            _lister = getattr(_db, "list_gateway_sessions", None)
-            if callable(_lister):
-                _session_count = len(_lister(active_only=True))
-        finally:
-            _db.close()
+        _state_backend, _session_count, _state_capabilities = _state_store_status(
+            get_hermes_home(), config
+        )
     except Exception:
         _session_count = None
 
+    if _state_backend == "postgres":
+        print("  Backend:      PostgreSQL")
+        if _state_capabilities is not None:
+            enabled = [
+                name.replace("_", " ")
+                for name, available in _state_capabilities.items()
+                if available and name not in {"read_only", "migrations"}
+            ]
+            print(
+                "  Capabilities: "
+                + (", ".join(enabled) if enabled else "(none reported)")
+            )
+    else:
+        print("  Backend:      SQLite")
+
     if _session_count is not None and _session_count > 0:
         print(f"  Active:       {_session_count} session(s)")
+    elif _state_backend == "postgres" and _session_count is None:
+        print("  Active:       (state store unavailable)")
     else:
         sessions_file = get_hermes_home() / "sessions" / "sessions.json"
         if sessions_file.exists():

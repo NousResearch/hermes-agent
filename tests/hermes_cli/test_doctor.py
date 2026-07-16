@@ -277,6 +277,61 @@ def test_check_gateway_service_linger_skips_when_service_not_installed(monkeypat
     assert issues == []
 
 
+def test_doctor_checks_configured_postgres_state_without_sqlite_repair(
+    monkeypatch, tmp_path, capsys
+):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    raw_dsn = "postgresql://user:secret@db.example/hermes"
+    (home / "config.yaml").write_text(
+        """
+sessions:
+  state:
+    backend: postgres
+    postgres:
+      dsn_env: HERMES_STATE_POSTGRES_DSN
+      schema: hermes_state
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_STATE_POSTGRES_DSN", raw_dsn)
+
+    class FakePostgresDB:
+        capabilities = {"core_schema": True, "full_text_search": True}
+
+        def list_gateway_sessions(self, *, active_only):
+            return []
+
+        def close(self):
+            pass
+
+    from hermes_state import SessionDB
+
+    monkeypatch.setattr(
+        SessionDB,
+        "for_home",
+        staticmethod(lambda *_args, **_kwargs: FakePostgresDB()),
+    )
+    monkeypatch.setattr(
+        doctor_mod,
+        "_check_sqlite_state_store",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("SQLite repair path must not run for PostgreSQL")
+        ),
+    )
+
+    issues = []
+    assert doctor_mod._check_configured_state_store(
+        home, should_fix=True, issues=issues
+    ) == 0
+
+    output = capsys.readouterr().out
+    assert "PostgreSQL state store is reachable" in output
+    assert "schema 'hermes_state'" in output
+    assert raw_dsn not in output
+    assert issues == []
+
+
 # ── Memory provider section (doctor should only check the *active* provider) ──
 
 

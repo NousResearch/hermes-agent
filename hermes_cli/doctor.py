@@ -510,6 +510,225 @@ def managed_scope_check() -> None:
         check_info(f"managed dir set via HERMES_MANAGED_DIR={managed_dir}")
 
 
+def _sqlite_state_label(home: Path, path: Path) -> str:
+    """Return a stable display label without assuming the default state path."""
+    try:
+        return f"{_DHH}/{path.relative_to(home)}"
+    except ValueError:
+        return "SQLite state database"
+
+
+def _check_sqlite_state_store(
+    home: Path,
+    state_db_path: Path,
+    *,
+    should_fix: bool,
+    issues: list[str],
+) -> int:
+    """Check and optionally repair SQLite-only state-store conditions."""
+    fixed_count = 0
+    state_label = _sqlite_state_label(home, state_db_path)
+    if state_db_path.exists():
+        try:
+            import sqlite3
+
+            conn = sqlite3.connect(str(state_db_path))
+            cursor = conn.execute("SELECT COUNT(*) FROM sessions")
+            count = cursor.fetchone()[0]
+            conn.close()
+            check_ok(f"{state_label} exists ({count} sessions)")
+
+            # FTS write health and schema repair are SQLite-specific. Never
+            # offer them for a configured PostgreSQL state store.
+            from hermes_state import _db_opens_cleanly, repair_state_db_schema
+
+            write_reason = _db_opens_cleanly(state_db_path)
+            if write_reason is not None:
+                check_warn(
+                    f"{state_label} fails a write-health probe (FTS index may be corrupt)",
+                    f"({write_reason})",
+                )
+                if should_fix:
+                    report = repair_state_db_schema(state_db_path)
+                    if report.get("repaired"):
+                        backup_name = (
+                            Path(report["backup_path"]).name
+                            if report.get("backup_path") else "n/a"
+                        )
+                        check_ok(
+                            "Repaired SQLite state FTS write health",
+                            f"(strategy: {report.get('strategy')}; backup: {backup_name})",
+                        )
+                        fixed_count += 1
+                    else:
+                        check_warn(
+                            "SQLite state FTS write-health repair did not recover automatically",
+                            f"({report.get('error')}; backup: {report.get('backup_path')})",
+                        )
+                        issues.append(
+                            "SQLite state FTS write corruption and auto-repair failed - "
+                            "restore from the backup copy beside the state database"
+                        )
+                else:
+                    issues.append(
+                        "SQLite state FTS write corruption - run 'hermes doctor --fix' "
+                        "(or 'hermes sessions repair') to rebuild the FTS index"
+                    )
+        except Exception as exc:
+            from hermes_state import is_malformed_db_error, repair_state_db_schema
+
+            if is_malformed_db_error(exc):
+                check_warn(
+                    f"{state_label} schema is malformed (sessions hidden until repaired)",
+                    f"({exc})",
+                )
+                if should_fix:
+                    report = repair_state_db_schema(state_db_path)
+                    if report.get("repaired"):
+                        try:
+                            import sqlite3
+
+                            conn = sqlite3.connect(str(state_db_path))
+                            count = conn.execute(
+                                "SELECT COUNT(*) FROM sessions"
+                            ).fetchone()[0]
+                            conn.close()
+                        except Exception:
+                            count = "?"
+                        backup_name = (
+                            Path(report["backup_path"]).name
+                            if report.get("backup_path") else "n/a"
+                        )
+                        check_ok(
+                            f"Repaired SQLite state schema ({count} sessions recovered)",
+                            f"(strategy: {report.get('strategy')}; backup: {backup_name})",
+                        )
+                        fixed_count += 1
+                    else:
+                        check_warn(
+                            "SQLite state schema repair did not recover automatically",
+                            f"({report.get('error')}; backup: {report.get('backup_path')})",
+                        )
+                        issues.append(
+                            "SQLite state schema is malformed and auto-repair failed - "
+                            "restore from the backup copy beside the state database"
+                        )
+                else:
+                    issues.append(
+                        "SQLite state schema is malformed - run 'hermes doctor --fix' "
+                        "(or 'hermes sessions repair') to recover hidden sessions"
+                    )
+            else:
+                check_warn(f"{state_label} exists but has issues: {type(exc).__name__}")
+    else:
+        check_info(f"{state_label} not created yet (will be created on first session)")
+
+    # A WAL exists only for SQLite. Its location follows the configured
+    # sqlite_path rather than assuming <HERMES_HOME>/state.db.
+    wal_path = state_db_path.with_name(f"{state_db_path.name}-wal")
+    if wal_path.exists():
+        try:
+            wal_size = wal_path.stat().st_size
+            if wal_size > 50 * 1024 * 1024:
+                check_warn(
+                    f"WAL file is large ({wal_size // (1024 * 1024)} MB)",
+                    "(may indicate missed checkpoints)",
+                )
+                if should_fix:
+                    import sqlite3
+
+                    conn = sqlite3.connect(str(state_db_path))
+                    conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                    conn.close()
+                    new_size = wal_path.stat().st_size if wal_path.exists() else 0
+                    check_ok(
+                        "WAL checkpoint performed "
+                        f"({wal_size // 1024}K -> {new_size // 1024}K)"
+                    )
+                    fixed_count += 1
+                else:
+                    issues.append("Large SQLite WAL file - run 'hermes doctor --fix' to checkpoint")
+            elif wal_size > 10 * 1024 * 1024:
+                check_info(
+                    f"WAL file is {wal_size // (1024 * 1024)} MB "
+                    "(normal for active sessions)"
+                )
+        except Exception:
+            pass
+    return fixed_count
+
+
+def _check_postgres_state_store(home: Path, config: dict, issues: list[str]) -> None:
+    """Report PostgreSQL state health without rendering connection details."""
+    from hermes_state import SessionDB
+    from state_store import resolve_state_store
+
+    spec = resolve_state_store(home, config, read_only=True)
+    try:
+        db = SessionDB.for_home(home, read_only=True, config=config)
+        try:
+            lister = getattr(db, "list_gateway_sessions", None)
+            count = len(lister(active_only=False)) if callable(lister) else None
+            capabilities = {
+                str(name): bool(enabled)
+                for name, enabled in getattr(db, "capabilities", {}).items()
+            }
+        finally:
+            close = getattr(db, "close", None)
+            if callable(close):
+                close()
+    except Exception as exc:
+        check_warn("PostgreSQL state store is unavailable", f"({type(exc).__name__})")
+        issues.append(
+            "PostgreSQL state store is unavailable - verify its configured "
+            "database service and credentials"
+        )
+        return
+
+    if not capabilities.get("core_schema", False):
+        check_warn("PostgreSQL state store lacks the required core schema")
+        issues.append(
+            "PostgreSQL state schema is incomplete - run the supported state migration"
+        )
+        return
+
+    count_detail = f" ({count} gateway sessions)" if count is not None else ""
+    check_ok(f"PostgreSQL state store is reachable{count_detail}")
+    capability_detail = ", ".join(
+        f"{name.replace('_', ' ')}={'yes' if enabled else 'no'}"
+        for name, enabled in sorted(capabilities.items())
+    )
+    check_info(
+        f"PostgreSQL schema '{spec.postgres_schema}'; capabilities: {capability_detail}"
+    )
+
+
+def _check_configured_state_store(
+    home: Path, *, should_fix: bool, issues: list[str]
+) -> int:
+    """Dispatch backend-specific state diagnostics from the explicit home config."""
+    from hermes_cli.config import load_config_for_home
+    from state_store import resolve_state_store
+
+    try:
+        config = load_config_for_home(home)
+        spec = resolve_state_store(home, config, read_only=True)
+    except Exception as exc:
+        check_warn("Configured state store could not be resolved", f"({type(exc).__name__})")
+        issues.append("Configured state store could not be resolved - check config.yaml")
+        return 0
+
+    if spec.backend == "postgres":
+        _check_postgres_state_store(home, config, issues)
+        return 0
+    return _check_sqlite_state_store(
+        home,
+        spec.sqlite_path,
+        should_fix=should_fix,
+        issues=issues,
+    )
+
+
 def run_doctor(args):
     """Run diagnostic checks."""
     should_fix = getattr(args, 'fix', False)
@@ -1228,131 +1447,11 @@ def run_doctor(args):
             check_ok(f"Created {_DHH}/memories/")
             fixed_count += 1
     
-    # Check SQLite session store
-    state_db_path = hermes_home / "state.db"
-    if state_db_path.exists():
-        try:
-            import sqlite3
-            conn = sqlite3.connect(str(state_db_path))
-            cursor = conn.execute("SELECT COUNT(*) FROM sessions")
-            count = cursor.fetchone()[0]
-            conn.close()
-            check_ok(f"{_DHH}/state.db exists ({count} sessions)")
-
-            # FTS write-health probe (#50502): `SELECT COUNT(*)` above succeeds
-            # even when the FTS index is corrupt and every message write fails
-            # through the triggers. `_db_opens_cleanly` now drives a rolled-back
-            # write so this otherwise-silent corruption class is surfaced (and
-            # repaired in place with --fix).
-            from hermes_state import _db_opens_cleanly, repair_state_db_schema
-
-            _write_reason = _db_opens_cleanly(state_db_path)
-            if _write_reason is not None:
-                check_warn(
-                    f"{_DHH}/state.db fails a write-health probe (FTS index may be corrupt)",
-                    f"({_write_reason})",
-                )
-                if should_fix:
-                    report = repair_state_db_schema(state_db_path)
-                    if report.get("repaired"):
-                        backup_name = (
-                            Path(report["backup_path"]).name
-                            if report.get("backup_path") else "n/a"
-                        )
-                        check_ok(
-                            "Repaired state.db FTS write health",
-                            f"(strategy: {report.get('strategy')}; backup: {backup_name})",
-                        )
-                        fixed_count += 1
-                    else:
-                        check_warn(
-                            "state.db FTS write-health repair did not recover automatically",
-                            f"({report.get('error')}; backup: {report.get('backup_path')})",
-                        )
-                        issues.append(
-                            "state.db FTS write corruption and auto-repair failed — "
-                            "restore from the backup copy beside state.db"
-                        )
-                else:
-                    issues.append(
-                        "state.db FTS write corruption — run 'hermes doctor --fix' "
-                        "(or 'hermes sessions repair') to rebuild the FTS index"
-                    )
-        except Exception as e:
-            from hermes_state import is_malformed_db_error, repair_state_db_schema
-
-            if is_malformed_db_error(e):
-                # sqlite_master itself is malformed (e.g. duplicate
-                # messages_fts) — every statement fails before it runs, so
-                # this is NOT a plain FTS-index rebuild. Repair sqlite_master
-                # in place (backup first; sessions/messages preserved).
-                check_warn(
-                    f"{_DHH}/state.db schema is malformed (sessions hidden until repaired)",
-                    f"({e})",
-                )
-                if should_fix:
-                    report = repair_state_db_schema(state_db_path)
-                    if report.get("repaired"):
-                        try:
-                            conn = sqlite3.connect(str(state_db_path))
-                            count = conn.execute(
-                                "SELECT COUNT(*) FROM sessions"
-                            ).fetchone()[0]
-                            conn.close()
-                        except Exception:
-                            count = "?"
-                        backup_name = (
-                            Path(report["backup_path"]).name
-                            if report.get("backup_path") else "n/a"
-                        )
-                        check_ok(
-                            f"Repaired state.db schema ({count} sessions recovered)",
-                            f"(strategy: {report.get('strategy')}; backup: {backup_name})",
-                        )
-                        fixed_count += 1
-                    else:
-                        check_warn(
-                            "state.db schema repair did not recover automatically",
-                            f"({report.get('error')}; backup: {report.get('backup_path')})",
-                        )
-                        issues.append(
-                            "state.db schema malformed and auto-repair failed — "
-                            "restore from the backup copy beside state.db"
-                        )
-                else:
-                    issues.append(
-                        "state.db schema malformed — run 'hermes doctor --fix' "
-                        "(or 'hermes sessions repair') to recover hidden sessions"
-                    )
-            else:
-                check_warn(f"{_DHH}/state.db exists but has issues: {e}")
-    else:
-        check_info(f"{_DHH}/state.db not created yet (will be created on first session)")
-
-    # Check WAL file size (unbounded growth indicates missed checkpoints)
-    wal_path = hermes_home / "state.db-wal"
-    if wal_path.exists():
-        try:
-            wal_size = wal_path.stat().st_size
-            if wal_size > 50 * 1024 * 1024:  # 50 MB
-                check_warn(
-                    f"WAL file is large ({wal_size // (1024*1024)} MB)",
-                    "(may indicate missed checkpoints)"
-                )
-                if should_fix:
-                    import sqlite3
-                    conn = sqlite3.connect(str(state_db_path))
-                    conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-                    conn.close()
-                    new_size = wal_path.stat().st_size if wal_path.exists() else 0
-                    check_ok(f"WAL checkpoint performed ({wal_size // 1024}K → {new_size // 1024}K)")
-                    fixed_count += 1
-                else:
-                    issues.append("Large WAL file — run 'hermes doctor --fix' to checkpoint")
-            elif wal_size > 10 * 1024 * 1024:  # 10 MB
-                check_info(f"WAL file is {wal_size // (1024*1024)} MB (normal for active sessions)")
-        except Exception:
-            pass
+    fixed_count += _check_configured_state_store(
+        hermes_home,
+        should_fix=should_fix,
+        issues=issues,
+    )
 
     _check_gateway_service_linger(issues)
     _check_s6_supervision(issues)

@@ -158,7 +158,14 @@ def _delete_durable_delegation(delegation_id: str) -> None:
 
 
 def _prune_durable_records() -> None:
-    """Bound terminal history, preferring delivered records for deletion."""
+    """Bound terminal history, preferring delivered records for deletion.
+
+    The 50-record history limit (_MAX_RETAINED_COMPLETED) applies only to
+    delivered results. Undelivered results (delivery_state='pending') are
+    protected by the separate 1,000-record limit (_MAX_DURABLE_PENDING)
+    so cleanup can't delete a completed task's result before the parent
+    agent receives it. See issue #65853.
+    """
     now = time.time()
     cutoff = now - _DURABLE_RETENTION_SECONDS
     with _DB_LOCK, _connect() as conn:
@@ -166,17 +173,18 @@ def _prune_durable_records() -> None:
             "DELETE FROM async_delegations WHERE delivery_state='delivered' AND updated_at < ?",
             (cutoff,),
         )
-        terminal_count = conn.execute(
-            "SELECT COUNT(*) FROM async_delegations WHERE state NOT IN ('running','finalizing')"
+        # Count only delivered records toward the 50-record history limit.
+        # Pending (undelivered) records have their own 1,000-record limit below.
+        delivered_count = conn.execute(
+            "SELECT COUNT(*) FROM async_delegations WHERE delivery_state='delivered'"
         ).fetchone()[0]
-        excess = max(0, terminal_count - _MAX_RETAINED_COMPLETED)
+        excess = max(0, delivered_count - _MAX_RETAINED_COMPLETED)
         if excess:
             conn.execute(
                 """DELETE FROM async_delegations WHERE delegation_id IN (
                      SELECT delegation_id FROM async_delegations
-                     WHERE state NOT IN ('running','finalizing')
-                     ORDER BY CASE delivery_state WHEN 'delivered' THEN 0 ELSE 1 END,
-                              updated_at ASC LIMIT ?
+                     WHERE delivery_state='delivered'
+                     ORDER BY updated_at ASC LIMIT ?
                    )""",
                 (excess,),
             )

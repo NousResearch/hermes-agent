@@ -483,8 +483,6 @@ async def test_branch_inside_telegram_topic_rewrites_binding_and_renames_topic(t
         session_id="parent-topic-session",
     )
 
-    runner = _make_runner(session_db=session_db)
-    runner.session_store.get_or_create_session.side_effect = None
     parent_entry = SessionEntry(
         session_key=topic_key,
         session_id="parent-topic-session",
@@ -494,11 +492,6 @@ async def test_branch_inside_telegram_topic_rewrites_binding_and_renames_topic(t
         chat_type="dm",
         origin=topic_source,
     )
-    runner.session_store.get_or_create_session.return_value = parent_entry
-    runner.session_store.load_transcript.return_value = [
-        {"role": "user", "content": "research ozon"},
-        {"role": "assistant", "content": "working"},
-    ]
 
     def _switch_session(session_key, target_session_id):
         return SessionEntry(
@@ -511,13 +504,23 @@ async def test_branch_inside_telegram_topic_rewrites_binding_and_renames_topic(t
             origin=topic_source,
         )
 
-    runner.session_store.switch_session = MagicMock(side_effect=_switch_session)
+    runner = _make_runner(session_db=session_db)
+    runner._async_session_store = SimpleNamespace(
+        _store=runner.session_store,
+        get_or_create_session=AsyncMock(return_value=parent_entry),
+        load_transcript=AsyncMock(return_value=[
+            {"role": "user", "content": "research ozon"},
+            {"role": "assistant", "content": "working"},
+        ]),
+        switch_session=AsyncMock(side_effect=_switch_session),
+    )
 
     result = await runner._handle_branch_command(_make_event("/fork ozon", thread_id="17585"))
 
     assert "Branched to" in result
     assert "ozon" in result
-    branch_id = runner.session_store.switch_session.call_args.args[1]
+    branch_id = runner.async_session_store.switch_session.await_args.args[1]
+    runner.async_session_store.switch_session.assert_awaited_once_with(topic_key, branch_id)
     binding = session_db.get_telegram_topic_binding(
         chat_id="208214988", thread_id="17585",
     )
@@ -529,6 +532,80 @@ async def test_branch_inside_telegram_topic_rewrites_binding_and_renames_topic(t
         thread_id="17585",
         name="ozon",
     )
+
+
+@pytest.mark.asyncio
+async def test_resume_inside_telegram_topic_rewrites_binding(tmp_path):
+    """Regression: /resume must persist the selected session for the topic lane."""
+    session_db = SessionDB(db_path=tmp_path / "state.db")
+    session_db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    session_db.create_session(
+        session_id="current-topic-session",
+        source="telegram",
+        user_id="208214988",
+        chat_id="208214988",
+        chat_type="dm",
+        thread_id="17585",
+    )
+    session_db.create_session(
+        session_id="target-topic-session",
+        source="telegram",
+        user_id="208214988",
+        chat_id="208214988",
+        chat_type="dm",
+        thread_id="17585",
+    )
+    session_db.set_session_title("target-topic-session", "Earlier Topic Work")
+
+    topic_source = _make_source(thread_id="17585")
+    topic_key = build_session_key(topic_source)
+    session_db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="17585",
+        user_id="208214988",
+        session_key=topic_key,
+        session_id="current-topic-session",
+    )
+
+    current_entry = SessionEntry(
+        session_key=topic_key,
+        session_id="current-topic-session",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        origin=topic_source,
+    )
+    target_entry = SessionEntry(
+        session_key=topic_key,
+        session_id="target-topic-session",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        origin=topic_source,
+    )
+    runner = _make_runner(session_db=session_db)
+    runner._async_session_store = SimpleNamespace(
+        _store=runner.session_store,
+        get_or_create_session=AsyncMock(return_value=current_entry),
+        load_transcript=AsyncMock(return_value=[]),
+        switch_session=AsyncMock(return_value=target_entry),
+    )
+
+    result = await runner._handle_resume_command(
+        _make_event("/resume Earlier Topic Work", thread_id="17585")
+    )
+
+    assert "Resumed" in result
+    runner.async_session_store.switch_session.assert_awaited_once_with(
+        topic_key, "target-topic-session"
+    )
+    binding = session_db.get_telegram_topic_binding(
+        chat_id="208214988", thread_id="17585",
+    )
+    assert binding is not None
+    assert binding["session_id"] == "target-topic-session"
 
 
 @pytest.mark.asyncio

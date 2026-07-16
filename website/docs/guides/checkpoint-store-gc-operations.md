@@ -21,13 +21,19 @@ The two-hour grace period protects fresh objects written by another session whil
 
 ## Logs and normal success
 
-Checkpoint-manager messages use the standard Hermes logs under the active profile's Hermes home, not always the default `~/.hermes` directory. Resolve it before inspecting logs or the checkpoint store:
+Checkpoint-manager messages use the standard Hermes logs under the selected profile's Hermes home, not always the default `~/.hermes` directory. Pick one profile explicitly and reuse it for every command in the investigation; do not run a bare `python - <<'PY'` helper and assume it inherited `hermes -p`, because an arbitrary shell may have no `HERMES_HOME` set and will fall back to the default profile.
 
 ```bash
-python - <<'PY'
-from hermes_constants import get_hermes_home
-print(get_hermes_home())
+PROFILE=default  # or the named profile that triggered the checkpoint operation
+HERMES_HOME_PATH=$(python - "$PROFILE" <<'PY'
+import sys
+from hermes_cli.profiles import get_profile_dir
+
+print(get_profile_dir(sys.argv[1]))
 PY
+)
+export HERMES_HOME="$HERMES_HOME_PATH"
+printf 'Inspecting profile %s at %s\n' "$PROFILE" "$HERMES_HOME_PATH"
 ```
 
 Then inspect `<hermes-home>/logs/`:
@@ -36,15 +42,10 @@ Then inspect `<hermes-home>/logs/`:
 - `errors.log` for warning/error evidence;
 - `gateway.log` when the checkpoint operation came from the gateway.
 
-Use `hermes logs --level debug` for live diagnosis. A normal GC exits 0, removes its own `gc.pid`, and leaves no checkpoint GC error. Verify the active profile's store with:
+Use `hermes -p "$PROFILE" logs --level debug` for live diagnosis. A normal GC exits 0, removes its own `gc.pid`, and leaves no checkpoint GC error. Verify the same selected profile's store with:
 
 ```bash
-hermes checkpoints status
-HERMES_HOME_PATH=$(python - <<'PY'
-from hermes_constants import get_hermes_home
-print(get_hermes_home())
-PY
-)
+hermes -p "$PROFILE" checkpoints status
 git --git-dir="$HERMES_HOME_PATH/checkpoints/store" fsck --no-dangling
 ```
 

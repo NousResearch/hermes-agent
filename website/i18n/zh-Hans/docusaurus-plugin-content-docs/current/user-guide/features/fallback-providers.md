@@ -361,7 +361,7 @@ auxiliary:
 
 ## 委派提供商覆盖
 
-由 `delegate_task` 生成的子 Agent 会继承父 Agent 的主备用链。你仍然可以将子 Agent 路由到不同的主提供商:模型对以进行成本优化：
+由 `delegate_task` 生成的子 Agent 会继承父 Agent 的主备用链。如果父 Agent 没有备用链，子 Agent 也没有备用提供商。你仍然可以将子 Agent 路由到不同的主提供商:模型对以进行成本优化：
 
 ```yaml
 delegation:
@@ -408,5 +408,5 @@ cronjob(
 | 审批分类 | 分层（见上文） | `auxiliary.approval` |
 | 标题生成 | 分层（见上文） | `auxiliary.title_generation` |
 | Triage Specifier | 分层（见上文） | `auxiliary.triage_specifier` |
-| 委派 | 仅提供商覆盖（无自动备用） | `delegation.provider` / `delegation.model` |
+| 委派 | 继承父 Agent 的备用链；可选覆盖主提供商/模型 | 父 Agent；主路由覆盖：`delegation.provider` / `delegation.model` |
 | Cron 任务 | 仅每任务提供商覆盖（无自动备用） | 每任务 `provider` / `model` |

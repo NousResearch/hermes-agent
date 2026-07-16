@@ -344,7 +344,7 @@ hermes config set memory.provider hindsight
 echo "HINDSIGHT_API_KEY=your-key" >> ~/.hermes/.env
 ```
 
-安装向导会自动安装依赖，并仅安装所选模式所需的内容（云端用 `hindsight-client`，本地用 `hindsight-all`）。需要 `hindsight-client >= 0.4.22`（会话启动时若版本过旧则自动升级）。
+安装向导会自动安装依赖，并只安装所选模式所需的内容。云端模式安装 `hindsight-client==0.7.2`；本地嵌入模式安装打包运行时组合 `hindsight-client==0.7.2`、`hindsight-embed==0.7.2` 和 `hindsight-api-slim[embedded-db]==0.7.2`。如果本地运行时在首次使用时导入失败，Hermes 会先懒安装这组依赖，再重新探测嵌入模块，只有重探测仍失败时才会禁用本地模式。
 
 **本地模式 UI：** `hindsight-embed -p hermes ui start`
 
@@ -529,7 +529,7 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 | **Honcho** | 云端 | 付费 | 5 | `honcho-ai` | 辩证用户建模 + 会话范围上下文 |
 | **OpenViking** | 自托管 | 免费 | 5 | `openviking` + 服务器 | 文件系统层级 + 分层加载 |
 | **Mem0** | 云端 | 付费 | 3 | `mem0ai` | 服务端 LLM 提取 |
-| **Hindsight** | 云端/本地 | 免费/付费 | 3 | `hindsight-client` | 知识图谱 + reflect 合成 |
+| **Hindsight** | 云端/本地 | 免费/付费 | 3 | 云端：`hindsight-client`；本地嵌入：`hindsight-client` + `hindsight-embed` + `hindsight-api-slim[embedded-db]` | 知识图谱 + reflect 合成 |
 | **Holographic** | 本地 | 免费 | 2 | 无 | HRR 代数 + 信任评分 |
 | **RetainDB** | 云端 | $20/月 | 5 | `requests` | 增量压缩 |
 | **ByteRover** | 本地/云端 | 免费/付费 | 3 | `brv` CLI | 预压缩提取 |

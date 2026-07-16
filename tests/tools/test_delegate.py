@@ -562,7 +562,9 @@ class TestToolNamePreservation(unittest.TestCase):
             captured["acp_command"] = kwargs.get("acp_command")
             captured["acp_args"] = kwargs.get("acp_args")
 
-        mock_which.assert_called_with("copilot")
+        # Branch-owned plugin setup may probe other binaries in the same
+        # process; this test only cares that ACP lookup checked `copilot`.
+        mock_which.assert_any_call("copilot")
         self.assertNotEqual(
             captured["provider"],
             "copilot-acp",

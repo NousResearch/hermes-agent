@@ -414,7 +414,7 @@ hermes config set memory.provider hindsight
 echo "HINDSIGHT_API_KEY=your-key" >> ~/.hermes/.env
 ```
 
-The setup wizard installs dependencies automatically and only installs what's needed for the selected mode (`hindsight-client` for cloud, `hindsight-all` for local). Requires `hindsight-client >= 0.4.22` (auto-upgraded on session start if outdated).
+The setup wizard installs dependencies automatically and only installs what's needed for the selected mode. Cloud mode installs `hindsight-client==0.7.2`; local embedded mode installs the bundled runtime set `hindsight-client==0.7.2`, `hindsight-embed==0.7.2`, and `hindsight-api-slim[embedded-db]==0.7.2`. If a local runtime import fails on first use, Hermes lazy-installs that bundled set, re-probes the embedded modules, and only disables local mode if the re-probe still fails.
 
 **Local mode UI:** `hindsight-embed -p hermes ui start`
 
@@ -620,7 +620,7 @@ hermes memory setup
 | **Honcho** | Cloud | Paid | 5 | `honcho-ai` | Dialectic user modeling + session-scoped context |
 | **OpenViking** | Self-hosted | Free | 5 | `openviking` + server | Filesystem hierarchy + tiered loading |
 | **Mem0** | Cloud/Self-hosted | Free/Paid | 4 | `mem0ai` | Server-side LLM extraction + self-hosted/OSS modes |
-| **Hindsight** | Cloud/Local | Free/Paid | 3 | `hindsight-client` | Knowledge graph + reflect synthesis |
+| **Hindsight** | Cloud/Local | Free/Paid | 3 | cloud: `hindsight-client`; local embedded: `hindsight-client` + `hindsight-embed` + `hindsight-api-slim[embedded-db]` | Knowledge graph + reflect synthesis |
 | **Holographic** | Local | Free | 2 | None | HRR algebra + trust scoring |
 | **RetainDB** | Cloud | $20/mo | 5 | `requests` | Delta compression |
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |

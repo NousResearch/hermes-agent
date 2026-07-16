@@ -1,11 +1,12 @@
 ---
 name: jlpt-study
-description: "JLPT N1-N5 seviyelerinde Japonca kelime, gramer ve kanji çalışması. Kelime listesi, gramer açıklamaları ve quiz modları."
+description: "JLPT N1-N5 Japanese vocab, grammar and kanji study skill"
 version: 1.0.0
 metadata:
   hermes:
     tags: [japanese, jlpt, vocabulary, grammar, kanji, japonca, study, quiz, N5, N4, N3, N2, N1]
-    related_skills: [japanese-turkish-dict]
+    related_skills: [japanese-turkish-dict, jisho]
+    author: wildpencil
 ---
 
 # JLPT Çalışma Asistanı
@@ -45,7 +46,7 @@ http://jlptstudy.net/N2/lists/n2_kanji-list.html
 
 Kullanıcı bir seviye için kelime listesi istediğinde:
 
-1. İlgili `vocab-list.html` URL'ini `WebFetch` ile çek
+1. İlgili `vocab-list.html` URL'ini `web_extract` ile çek
 2. `prompt`: "Extract vocabulary entries. Return as table: number | kanji | reading | meaning. First [N] entries only."
 3. Türkçe çeviri istenirse `japanese-turkish-dict` skill'i veya kendi bilginle destekle
 
@@ -69,7 +70,7 @@ Sayfalama için her seferinde 20–30 kelime sun; kullanıcı "devam" veya sayı
 
 Kullanıcı gramer listesi istediğinde:
 
-1. İlgili `grammar-list.html` URL'ini `WebFetch` ile çek
+1. İlgili `grammar-list.html` URL'ini `web_extract` ile çek
 2. `prompt`: "Extract grammar points with pattern, meaning, and example sentence."
 3. Her gramer noktasını açıkla; örneğin:
    - Yapı: `V+ます`
@@ -80,7 +81,7 @@ Kullanıcı gramer listesi istediğinde:
 
 ### 3. Kanji Çalışma
 
-1. İlgili `kanji-list.html` URL'ini `WebFetch` ile çek
+1. İlgili `kanji-list.html` URL'ini `web_extract` ile çek
 2. Her kanji için: karakter, on-yomi, kun-yomi, Türkçe anlam, örnek kelimeler
 3. Site sadece karakter listesi verir; anlam ve okuyuşları kendi bilginle ekle
 

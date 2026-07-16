@@ -5,6 +5,7 @@ import {
   applyVoiceRecordResponse,
   dismissSensitivePrompt,
   handleIdleHotkeyExit,
+  shouldAllowEscapeInterrupt,
   shouldAllowIdleHotkeyExit,
   shouldFallThroughForScroll
 } from '../app/useInputHandlers.js'
@@ -46,6 +47,27 @@ describe('shouldFallThroughForScroll — keep transcript scrolling alive during 
 
   it('does NOT fall through for unrelated state (no scroll keys held)', () => {
     expect(shouldFallThroughForScroll(baseKey)).toBe(false)
+  })
+})
+
+describe('shouldAllowEscapeInterrupt', () => {
+  const escapeKey = { escape: true }
+
+  it('allows plain Esc to interrupt a busy turn with an active session', () => {
+    expect(shouldAllowEscapeInterrupt(escapeKey, { busy: true, sid: 'session-1' }, false)).toBe(true)
+  })
+
+  it('does not interrupt while an overlay owns Esc', () => {
+    expect(shouldAllowEscapeInterrupt(escapeKey, { busy: true, sid: 'session-1' }, true)).toBe(false)
+  })
+
+  it('is a no-op when idle', () => {
+    expect(shouldAllowEscapeInterrupt(escapeKey, { busy: false, sid: 'session-1' }, false)).toBe(false)
+    expect(shouldAllowEscapeInterrupt(escapeKey, { busy: true, sid: null }, false)).toBe(false)
+  })
+
+  it('ignores non-Esc keys', () => {
+    expect(shouldAllowEscapeInterrupt({ escape: false }, { busy: true, sid: 'session-1' }, false)).toBe(false)
   })
 })
 

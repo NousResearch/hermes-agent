@@ -83,6 +83,14 @@ export function shouldFallThroughForScroll(key: {
   return false
 }
 
+export function shouldAllowEscapeInterrupt(
+  key: { escape?: boolean },
+  live: { busy?: boolean; sid?: null | string },
+  isBlocked: boolean
+): boolean {
+  return Boolean(key.escape && live.busy && live.sid && !isBlocked)
+}
+
 export function applyVoiceRecordResponse(
   response: null | VoiceRecordResponse,
   starting: boolean,
@@ -167,6 +175,14 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const clearSelection = () => {
     terminal.selection.clearSelection()
   }
+
+  const interruptRunningTurn = (sid: string) =>
+    turnController.interruptTurn({
+      appendMessage: actions.appendMessage,
+      gw: gateway.gw,
+      sid,
+      sys: actions.sys
+    })
 
   const cancelOverlayFromCtrlC = () => {
     if (overlay.clarify) {
@@ -472,6 +488,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return voiceRecordToggle()
     }
 
+    if (shouldAllowEscapeInterrupt(key, live, isBlocked)) {
+      return interruptRunningTurn(live.sid!)
+    }
+
     // Queue-edit cancel beats selection-clear for plain Esc: the queue header
     // explicitly promises "Esc cancel", so honoring it takes priority over the
     // implicit selection-dismissal convention. Without an active edit, fall through.
@@ -541,12 +561,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (key.ctrl && ch.toLowerCase() === 'c') {
       if (live.busy && live.sid) {
-        return turnController.interruptTurn({
-          appendMessage: actions.appendMessage,
-          gw: gateway.gw,
-          sid: live.sid,
-          sys: actions.sys
-        })
+        return interruptRunningTurn(live.sid)
       }
 
       if (cState.input || cState.inputBuf.length) {

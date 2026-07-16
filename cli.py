@@ -12101,6 +12101,51 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception:
             pass
 
+    def _escape_interrupt_blocked_by_modal(self) -> bool:
+        return bool(
+            self._secret_state
+            or self._sudo_state
+            or self._approval_state
+            or self._clarify_state
+            or self._slash_confirm_state
+            or self._model_picker_state
+        )
+
+    def _escape_interrupt_available(self) -> bool:
+        return bool(self._agent_running and self.agent and not self._escape_interrupt_blocked_by_modal())
+
+    def _interrupt_agent_from_prompt(
+        self,
+        event,
+        *,
+        force_exit_on_second_ctrl_c: bool = False,
+        now: float | None = None,
+    ) -> bool:
+        if not (self._agent_running and self.agent):
+            return False
+
+        if force_exit_on_second_ctrl_c:
+            now = time.time() if now is None else now
+            if now - self._last_ctrl_c_time < 2.0:
+                print("\n⚡ Force exiting...")
+                self._should_exit = True
+                event.app.exit()
+                return True
+
+            self._last_ctrl_c_time = now
+            print("\n⚡ Interrupting agent... (press Ctrl+C again to force exit)")
+        else:
+            print("\n⚡ Interrupting agent...")
+
+        self.agent.interrupt()
+        event.app.invalidate()
+        return True
+
+    def _handle_escape_interrupt(self, event) -> bool:
+        if not self._escape_interrupt_available():
+            return False
+        return self._interrupt_agent_from_prompt(event)
+
     def _clear_active_overlays_for_interrupt(self) -> None:
         """Drain and clear every input-blocking overlay left by an interrupted agent.
 
@@ -14046,19 +14091,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if _overlay_cleared and not (self._agent_running and self.agent):
                 return
 
-            if self._agent_running and self.agent:
-                if now - self._last_ctrl_c_time < 2.0:
-                    print("\n⚡ Force exiting...")
-                    self._should_exit = True
-                    event.app.exit()
-                    return
-                
-                self._last_ctrl_c_time = now
-                print("\n⚡ Interrupting agent... (press Ctrl+C again to force exit)")
-                self.agent.interrupt()
+            if self._interrupt_agent_from_prompt(
+                event,
+                force_exit_on_second_ctrl_c=True,
+                now=now,
+            ):
+                return
+
             # If there's text or images, clear them (like bash).
             # If everything is already empty, exit.
-            elif event.app.current_buffer.text or self._attached_images:
+            if event.app.current_buffer.text or self._attached_images:
                 event.app.current_buffer.reset()
                 self._attached_images.clear()
                 event.app.invalidate()
@@ -14131,10 +14173,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if _overlay_cleared and not (self._agent_running and self.agent):
                 return
 
-            if self._agent_running and self.agent:
-                print("\n⚡ Interrupting agent...")
-                self.agent.interrupt()
-            elif event.app.current_buffer.text or self._attached_images:
+            if self._interrupt_agent_from_prompt(event):
+                return
+
+            if event.app.current_buffer.text or self._attached_images:
                 event.app.current_buffer.reset()
                 self._attached_images.clear()
                 event.app.invalidate()
@@ -14181,6 +14223,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 event.app.current_buffer.reset()
                 event.app.invalidate()
                 return
+
+        _escape_interrupt_active = Condition(lambda: self._escape_interrupt_available())
+
+        @kb.add('escape', filter=_escape_interrupt_active)
+        def handle_escape_interrupt(event):
+            """ESC interrupts a running response when no modal owns it."""
+            self._handle_escape_interrupt(event)
 
         @kb.add('c-z')
         def handle_ctrl_z(event):

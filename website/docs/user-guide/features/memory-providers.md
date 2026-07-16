@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
+description: "External memory provider plugins — bundled providers plus catalogued standalone providers"
 ---
 
 # Memory Providers
 
-Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships with bundled external memory provider plugins and can install catalogued standalone providers that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -22,7 +22,7 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
+  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory, openbrain
 ```
 
 ## How It Works
@@ -611,6 +611,37 @@ hermes config set memory.provider memori
 hermes memory setup
 ```
 
+## Installable Standalone Providers
+
+Standalone providers live outside the Hermes core repository but can still be discovered from `hermes memory setup`. Selecting one installs its plugin repo through the normal plugin installer, then runs that provider's setup flow.
+
+### OpenBrain
+
+Standalone OpenBrain (OB1) memory provider over MCP Streamable HTTP, with explicit capture tools, recall prefetch, and additive mirroring of Hermes memory writes.
+
+| | |
+|---|---|
+| **Best for** | Sharing an OpenBrain memory backend across Hermes and other MCP-capable agents |
+| **Requires** | `hermes memory setup` can install the standalone plugin, then prompts for an OpenBrain MCP URL or API key |
+| **Data storage** | OpenBrain (OB1) deployment |
+| **Cost** | Depends on your OpenBrain deployment |
+
+**Tools (4):** `openbrain_search` (search thoughts), `openbrain_list` (list recent thoughts), `openbrain_capture` (capture compact facts or decisions), `openbrain_stats` (thought statistics)
+
+**Setup:**
+```bash
+hermes memory setup        # select "openbrain" to install and configure it
+```
+
+Manual install also works:
+```bash
+hermes plugins install longman391/hermes-openbrain-memory-provider --no-enable
+hermes config set memory.provider openbrain
+hermes memory setup
+```
+
+**Source:** [OpenBrain Hermes provider](https://github.com/longman391/hermes-openbrain-memory-provider) · [OpenBrain (OB1)](https://github.com/NateBJones-Projects/OB1)
+
 ---
 
 ## Provider Comparison
@@ -626,6 +657,7 @@ hermes memory setup
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** | Cloud | Paid | 4 | `supermemory` | Context fencing + session graph ingest + multi-container |
 | **Memori** | Cloud | Free/Paid | 5 | `hermes-memori` | Tool-aware memory + structured recall |
+| **OpenBrain** | OpenBrain deployment | Varies | 4 | Standalone plugin | MCP-backed OpenBrain recall + capture |
 
 ## Profile Isolation
 
@@ -635,6 +667,7 @@ Each provider's data is isolated per [profile](/user-guide/profiles):
 - **Config file providers** (Honcho, Mem0, Hindsight, Supermemory) store config in `$HERMES_HOME/` so each profile has its own credentials
 - **Cloud providers** (RetainDB) auto-derive profile-scoped project names
 - **Env var providers** (OpenViking) are configured via each profile's `.env` file
+- **Standalone plugin providers** (OpenBrain) install into `$HERMES_HOME/plugins/` and read profile-local config/env values
 
 ## Building a Memory Provider
 

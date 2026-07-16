@@ -191,6 +191,28 @@ def _get_available_providers() -> list:
         results.append((name, setup_hint, provider))
     return results
 
+def _get_installable_providers(installed: list) -> list[dict]:
+    """Return catalogued standalone providers that are not installed yet."""
+    from hermes_cli.memory_provider_catalog import INSTALLABLE_MEMORY_PROVIDERS
+
+    installed_names = {name for name, _desc, _provider in installed}
+    return [p for p in INSTALLABLE_MEMORY_PROVIDERS if p["name"] not in installed_names]
+
+
+def _install_standalone_provider(entry: dict) -> str | None:
+    """Install a catalogued standalone memory provider and return its plugin name."""
+    from hermes_cli.plugins_cmd import PluginOperationError, _install_plugin_core
+
+    identifier = entry["identifier"]
+    print(f"\n  Installing {entry['label']} from {identifier}...")
+    try:
+        _target, _manifest, installed_name = _install_plugin_core(identifier, force=False)
+    except PluginOperationError as exc:
+        print(f"  Install failed: {exc}\n")
+        return None
+    print(f"  Installed {installed_name}.\n")
+    return installed_name
+
 
 # ---------------------------------------------------------------------------
 # Setup wizard
@@ -208,9 +230,23 @@ def cmd_setup_provider(provider_name: str) -> None:
             break
 
     if not match:
-        print(f"\n  Memory provider '{provider_name}' not found.")
-        print("  Run 'hermes memory setup' to see available providers.\n")
-        return
+        installable = next(
+            (p for p in _get_installable_providers(providers) if p["name"] == provider_name),
+            None,
+        )
+        if installable:
+            installed_name = _install_standalone_provider(installable)
+            if not installed_name:
+                return
+            providers = _get_available_providers()
+            for name, desc, provider in providers:
+                if name == installed_name:
+                    match = (name, desc, provider)
+                    break
+        if not match:
+            print(f"\n  Memory provider '{provider_name}' not found.")
+            print("  Run 'hermes memory setup' to see available providers.\n")
+            return
 
     name, _, provider = match
 
@@ -239,16 +275,19 @@ def cmd_setup(args) -> None:
     from hermes_cli.config import load_config, save_config
 
     providers = _get_available_providers()
+    installable = _get_installable_providers(providers)
 
-    if not providers:
+    if not providers and not installable:
         print("\n  No memory provider plugins detected.")
-        print("  Install a plugin to ~/.hermes/plugins/ and try again.\n")
+        print("  Install a plugin to $HERMES_HOME/plugins/ and try again.\n")
         return
 
     # Build picker items
     items = []
     for name, desc, _ in providers:
         items.append((name, f"— {desc}"))
+    for entry in installable:
+        items.append((entry["label"], f"— {entry['setup_hint']}: {entry['description']}"))
     items.append(("Built-in only", "— MEMORY.md / USER.md (default)"))
 
     builtin_idx = len(items) - 1
@@ -262,14 +301,30 @@ def cmd_setup(args) -> None:
         config["memory"] = {}
 
     # Built-in only
-    if selected >= len(providers):
+    if selected >= len(providers) + len(installable):
         config["memory"]["provider"] = ""
         save_config(config)
         print("\n  ✓ Memory provider: built-in only")
         print("  Saved to config.yaml\n")
         return
 
-    name, _, provider = providers[selected]
+    if selected >= len(providers):
+        entry = installable[selected - len(providers)]
+        _clear_interactive_transition()
+        installed_name = _install_standalone_provider(entry)
+        if not installed_name:
+            return
+        providers = _get_available_providers()
+        provider_match = next(
+            ((name, desc, provider) for name, desc, provider in providers if name == installed_name),
+            None,
+        )
+        if not provider_match:
+            print(f"  Installed {installed_name}, but Hermes could not load it as a memory provider.\n")
+            return
+        name, _, provider = provider_match
+    else:
+        name, _, provider = providers[selected]
 
     _clear_interactive_transition()
 
@@ -471,7 +526,7 @@ def cmd_status(args) -> None:
                         print(line)
         else:
             print("\n  Plugin:    NOT installed ✗")
-            print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")
+            print(f"  Install the '{provider_name}' memory plugin to $HERMES_HOME/plugins/")
 
     if providers:
         print("\n  Installed plugins:")

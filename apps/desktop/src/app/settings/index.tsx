@@ -11,6 +11,7 @@ import {
   Bell,
   Download,
   Globe,
+  ImageIcon,
   Info,
   KeyRound,
   Package,
@@ -28,6 +29,7 @@ import { OverlayMain, OverlayNav, type OverlayNavGroup, OverlaySplitLayout } fro
 import { OverlayView } from '../overlays/overlay-view'
 import { SKILLS_ROUTE } from '../routes'
 
+import { AvatarSettings } from './avatar-settings'
 import { AboutSettings } from './about-settings'
 import { AppearanceSettings } from './appearance-settings'
 import { ConfigSettings } from './config-settings'
@@ -42,6 +44,7 @@ import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
 
 const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   ...SECTIONS.map(s => `config:${s.id}` as SettingsViewId),
+  'avatar',
   'providers',
   'gateway',
   'keys',
@@ -146,6 +149,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       id: 'notifications',
       label: t.settings.nav.notifications,
       onSelect: () => setActiveView('notifications')
+    },
+    {
+      active: activeView === 'avatar',
+      icon: ImageIcon,
+      id: 'avatar',
+      label: t.settings.nav.avatar ?? 'Avatar',
+      onSelect: () => setActiveView('avatar')
     },
     {
       active: activeView === 'providers',
@@ -262,7 +272,9 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         <OverlayNav footer={navFooter} groups={navGroups} />
 
         <OverlayMain className="px-0 pb-0">
-          {activeView === 'config:appearance' ? (
+          {activeView === 'avatar' ? (
+            <AvatarSettings />
+          ) : activeView === 'config:appearance' ? (
             <AppearanceSettings />
           ) : activeView === 'about' ? (
             <AboutSettings />

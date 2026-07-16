@@ -56,6 +56,11 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     get: () => ipcRenderer.invoke('hermes:profile:get'),
     set: name => ipcRenderer.invoke('hermes:profile:set', name)
   },
+  avatar: {
+    get: () => ipcRenderer.invoke('hermes:avatar:get'),
+    set: (dataUrl: string) => ipcRenderer.invoke('hermes:avatar:set', dataUrl),
+    reset: () => ipcRenderer.invoke('hermes:avatar:reset')
+  },
   api: request => ipcRenderer.invoke('hermes:api', request),
   notify: payload => ipcRenderer.invoke('hermes:notify', payload),
   requestMicrophoneAccess: () => ipcRenderer.invoke('hermes:requestMicrophoneAccess'),

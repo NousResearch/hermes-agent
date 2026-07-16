@@ -31,6 +31,7 @@ import { setCronFocusJobId } from '@/store/cron'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { $filePreviewTarget, $previewTarget } from '@/store/preview'
 import { $activeGatewayProfile, $freshSessionRequest, $profileScope, refreshActiveProfile } from '@/store/profile'
+import { $activeProfileName } from '@/store/avatar'
 import { $startWorkSessionRequest, followActiveSessionCwd, resolveNewSessionCwd } from '@/store/projects'
 import {
   $activeSessionId,
@@ -416,6 +417,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     // composer already shows the previous profile's model.
     void refreshCurrentModel(true)
     void refreshActiveProfile()
+    // Sync the avatar store so per-profile avatars follow the active gateway profile.
+    $activeProfileName.set(activeGatewayProfile || 'default')
   }, [activeGatewayProfile, refreshCurrentModel])
 
   // New session anchored to a workspace (sidebar "+" on a project/worktree).

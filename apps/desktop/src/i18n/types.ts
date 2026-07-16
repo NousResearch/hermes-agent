@@ -280,6 +280,7 @@ export interface Translations {
       about: string
       notifications: string
       plugins: string
+      avatar: string
     }
     plugins: {
       title: string
@@ -388,6 +389,26 @@ export interface Translations {
         turnOnFailed: string
         turnOffFailed: string
       }
+    }
+    avatar: {
+      heading: string
+      description: string
+      upload: string
+      change: string
+      remove: string
+      saving: string
+      removeConfirm: string
+      removeDescription: string
+      unsupported: string
+      tooLarge: string
+      saveFailed: string
+      urlLabel: string
+      urlPlaceholder: string
+      urlImport: string
+      urlInvalid: string
+      dragHere: string
+      preview: string
+      cancel: string
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>

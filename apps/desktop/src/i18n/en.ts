@@ -321,7 +321,8 @@ export const en: Translations = {
       archivedChats: 'Archived Chats',
       about: 'About',
       notifications: 'Notifications',
-      plugins: 'Plugins'
+      plugins: 'Plugins',
+      avatar: 'Avatar'
     },
     plugins: {
       title: 'Desktop plugins',
@@ -379,6 +380,7 @@ export const en: Translations = {
       model: 'Model',
       chat: 'Chat',
       appearance: 'Appearance',
+      avatar: 'Avatar',
       workspace: 'Workspace',
       safety: 'Safety',
       memory: 'Memory & Context',
@@ -476,6 +478,26 @@ export const en: Translations = {
         turnOnFailed: 'Could not turn the pet on.',
         turnOffFailed: 'Could not turn the pet off.'
       }
+    },
+    avatar: {
+      heading: 'Avatar',
+      description: 'Set a profile picture for the AI agent that appears next to responses in the chat.',
+      upload: 'Choose Image',
+      change: 'Change Image',
+      remove: 'Remove Avatar',
+      saving: 'Saving…',
+      removeConfirm: 'Remove avatar picture?',
+      removeDescription: 'The avatar will be removed from chat displays. This can be undone by uploading a new image.',
+      unsupported: 'Unsupported image format. Please use PNG, JPEG, WebP, or GIF.',
+      tooLarge: 'Image is too large. Please choose one under 5 MB.',
+      saveFailed: 'Failed to save avatar.',
+      urlLabel: 'Import from URL',
+      urlPlaceholder: 'https://example.com/avatar.png',
+      urlImport: 'Import',
+      urlInvalid: 'Please enter a valid image URL.',
+      dragHere: 'Drop an image here',
+      preview: 'Preview',
+      cancel: 'Cancel'
     },
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,

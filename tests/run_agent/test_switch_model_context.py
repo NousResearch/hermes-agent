@@ -96,8 +96,9 @@ def _make_agent_with_compressor(
 
     # For switch_model
     agent._primary_runtime = {}
-
     return agent
+
+
 
 
 def _make_initialized_agent(

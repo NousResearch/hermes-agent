@@ -16,14 +16,19 @@ plugins/model-providers/
 
 ## How discovery works
 
-`providers/__init__.py._discover_providers()` scans this directory (and
-`$HERMES_HOME/plugins/model-providers/`) the first time anything calls
-`get_provider_profile()` or `list_providers()`. Each `__init__.py` is
-imported and expected to call `providers.register_provider(profile)`.
+`providers/__init__.py._discover_providers()` loads bundled profiles, enabled
+Python-package entry points from `hermes_agent.model_providers`, and then
+`$HERMES_HOME/plugins/model-providers/` the first time anything calls
+`get_provider_profile()` or `list_providers()`. Each directory `__init__.py`
+is imported and expected to call `providers.register_provider(profile)`.
 
-User plugins at `$HERMES_HOME/plugins/model-providers/<name>/` override
-bundled plugins of the same name — last-writer-wins in
-`register_provider()`. Drop a file there to replace a built-in.
+A user-directory leaf reserves its canonical `model-providers/<leaf>` key, so a
+same-named package entry point is skipped without invoking its registrar. User
+directories can still override bundled registrations through last-writer-wins
+registration. Legacy `<repo>/providers/<name>.py` modules load last and can
+replace earlier registrations by the same rule. Package providers must be
+explicitly enabled. Manually dropped directories remain active by default, but
+an explicit `plugins.disabled` entry always wins.
 
 ## Adding a new provider
 
@@ -60,6 +65,30 @@ bundled plugins of the same name — last-writer-wins in
 Nothing else needs to change. `auth.py`, `config.py`, `models.py`,
 `doctor.py`, `model_metadata.py`, `runtime_provider.py`, and the
 chat_completions transport all auto-wire from the registry.
+
+## Distribution and lifecycle
+
+Python packages publish a zero-argument registration callable in the dedicated
+entry-point group, then require explicit activation:
+
+```toml
+[project.entry-points."hermes_agent.model_providers"]
+your-provider = "your_provider_package:register"
+```
+
+```bash
+pip install <distribution>
+hermes plugins enable model-providers/your-provider
+```
+
+Git repositories with `kind: model-provider` install under
+`$HERMES_HOME/plugins/model-providers/<name>/`. See the
+[model-provider plugin guide](../../website/docs/developer-guide/model-provider-plugin.md)
+for package, Git, activation, ownership, and restart details.
+
+A repository supporting both pip and Git/manual installation also needs a root
+`__init__.py` shim that imports and calls the same registrar exposed by the
+package entry point.
 
 ## Non-trivial profiles
 

@@ -450,41 +450,28 @@ class TestCmdInstall:
 
 
 class TestCmdUpdate:
-    """Test the update command."""
+    """Test the update command adapter."""
 
-    @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
-    @patch("hermes_cli.plugins_cmd.subprocess.run")
-    def test_update_git_pull_success(self, mock_run, mock_plugins_dir, mock_sanitize):
+    @patch("hermes_cli.plugins_cmd.dashboard_update_user_plugin")
+    def test_update_git_pull_success(self, mock_update):
         from hermes_cli.plugins_cmd import cmd_update
 
-        mock_plugins_dir_val = MagicMock()
-        mock_plugins_dir.return_value = mock_plugins_dir_val
-        mock_target = MagicMock()
-        mock_target.exists.return_value = True
-        mock_target.__truediv__ = lambda self, x: MagicMock(
-            exists=MagicMock(return_value=True)
-        )
-        mock_sanitize.return_value = mock_target
-
-        mock_run.return_value = MagicMock(returncode=0, stdout="Updated", stderr="")
+        mock_update.return_value = {
+            "ok": True,
+            "name": "test-plugin",
+            "output": "Updated",
+            "unchanged": False,
+        }
 
         cmd_update("test-plugin")
 
-        mock_run.assert_called_once()
+        mock_update.assert_called_once_with("test-plugin")
 
-    @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
-    def test_update_plugin_not_found(self, mock_plugins_dir, mock_sanitize):
+    @patch("hermes_cli.plugins_cmd.dashboard_update_user_plugin")
+    def test_update_plugin_not_found(self, mock_update):
         from hermes_cli.plugins_cmd import cmd_update
 
-        mock_plugins_dir_val = MagicMock()
-        mock_plugins_dir_val.iterdir.return_value = []
-        mock_plugins_dir.return_value = mock_plugins_dir_val
-        mock_target = MagicMock()
-        mock_target.exists.return_value = False
-        mock_sanitize.return_value = mock_target
-
+        mock_update.return_value = {"ok": False, "error": "not found"}
         with pytest.raises(SystemExit) as exc_info:
             cmd_update("nonexistent-plugin")
 
@@ -495,35 +482,28 @@ class TestCmdUpdate:
 
 
 class TestCmdRemove:
-    """Test the remove command."""
+    """Test the remove command adapter."""
 
-    @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
+    @patch("hermes_cli.plugins_cmd._display_removed")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
-    @patch("hermes_cli.plugins_cmd.shutil.rmtree")
-    def test_remove_deletes_plugin(self, mock_rmtree, mock_plugins_dir, mock_sanitize):
+    @patch("hermes_cli.plugins_cmd.dashboard_remove_user_plugin")
+    def test_remove_deletes_plugin(self, mock_remove, mock_plugins_dir, mock_display):
         from hermes_cli.plugins_cmd import cmd_remove
 
-        mock_plugins_dir.return_value = MagicMock()
-        mock_target = MagicMock()
-        mock_target.exists.return_value = True
-        mock_sanitize.return_value = mock_target
+        mock_remove.return_value = {"ok": True, "name": "test-plugin"}
+        plugins_dir = MagicMock()
+        mock_plugins_dir.return_value = plugins_dir
 
         cmd_remove("test-plugin")
 
-        mock_rmtree.assert_called_once_with(mock_target)
+        mock_remove.assert_called_once_with("test-plugin")
+        mock_display.assert_called_once_with("test-plugin", plugins_dir)
 
-    @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
-    @patch("hermes_cli.plugins_cmd._plugins_dir")
-    def test_remove_plugin_not_found(self, mock_plugins_dir, mock_sanitize):
+    @patch("hermes_cli.plugins_cmd.dashboard_remove_user_plugin")
+    def test_remove_plugin_not_found(self, mock_remove):
         from hermes_cli.plugins_cmd import cmd_remove
 
-        mock_plugins_dir_val = MagicMock()
-        mock_plugins_dir_val.iterdir.return_value = []
-        mock_plugins_dir.return_value = mock_plugins_dir_val
-        mock_target = MagicMock()
-        mock_target.exists.return_value = False
-        mock_sanitize.return_value = mock_target
-
+        mock_remove.return_value = {"ok": False, "error": "not found"}
         with pytest.raises(SystemExit) as exc_info:
             cmd_remove("nonexistent-plugin")
 

@@ -27,6 +27,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple, Set
@@ -6911,6 +6912,44 @@ def read_raw_config() -> Dict[str, Any]:
             data = {}
         _RAW_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], copy.deepcopy(data))
         return data
+
+
+def read_raw_config_strict() -> Dict[str, Any]:
+    """Read the raw config without defaults or fail-open recovery.
+
+    An absent config is the one valid empty-config case. Existing files must
+    be readable, valid YAML mappings; I/O, parse, and shape errors propagate
+    to callers that need to fail closed before loading or publishing code.
+    """
+    config_path = get_config_path()
+    with _CONFIG_LOCK:
+        try:
+            config_path.lstat()
+        except FileNotFoundError:
+            return {}
+
+        with open(config_path, encoding="utf-8") as f:
+            data = fast_safe_load(f)
+
+    if not isinstance(data, Mapping):
+        raise ValueError(f"Config at {config_path} must contain a YAML mapping")
+    return dict(data)
+
+
+def read_plugin_activation_config_strict() -> tuple[Dict[str, Any], dict, set[str], set[str]]:
+    """Return validated raw plugin activation state without fail-open defaults."""
+    config = read_raw_config_strict()
+    plugins = config.setdefault("plugins", {})
+    if not isinstance(plugins, dict):
+        raise ValueError("config plugins section must be a mapping")
+
+    values: list[set[str]] = []
+    for field in ("enabled", "disabled"):
+        raw = plugins.get(field, [])
+        if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+            raise ValueError(f"config plugins.{field} must be a list of strings")
+        values.append(set(raw))
+    return config, plugins, values[0], values[1]
 
 
 def require_readable_config_before_write(config_path: Optional[Path] = None) -> None:

@@ -127,6 +127,7 @@ class TurnController {
   private activeReasoningText = ''
   private reasoningSegmentIndex: null | number = null
   private activityId = 0
+  private interimBoundaryIndex: null | number = null
   private reasoningStreamingTimer: Timer = null
   private reasoningTimer: Timer = null
   private streamTimer: Timer = null
@@ -275,6 +276,7 @@ class TurnController {
     this.bufRef = ''
     this.pendingSegmentTools = []
     this.segmentMessages = []
+    this.interimBoundaryIndex = null
 
     patchTurnState({
       streamPendingTools: [],
@@ -570,6 +572,7 @@ class TurnController {
     }
 
     this.flushStreamingSegment()
+    this.interimBoundaryIndex = this.segmentMessages.length
   }
 
   recordMessageComplete(payload: { rendered?: string; reasoning?: string; text?: string }) {
@@ -583,7 +586,8 @@ class TurnController {
     // only when the gateway elected not to send any (#16391).
     const rawText = (payload.text ?? payload.rendered ?? this.bufRef).trimStart()
     const split = splitReasoning(rawText)
-    const finalText = finalTail(split.text, this.segmentMessages)
+    const dedupeStart = this.interimBoundaryIndex ?? 0
+    const finalText = finalTail(split.text, this.segmentMessages.slice(dedupeStart))
     const existingReasoning = this.reasoningText.trim() || String(payload.reasoning ?? '').trim()
     const savedReasoning = [existingReasoning, existingReasoning ? '' : split.reasoning].filter(Boolean).join('\n\n')
     const savedToolTokens = this.toolTokenAcc
@@ -962,6 +966,7 @@ class TurnController {
     this.turnTools = []
     this.toolTokenAcc = 0
     this.interrupted = false
+    this.interimBoundaryIndex = null
     this.persistedToolLabels.clear()
     // "Flash and yield" notices clear when a new turn starts: a usage-band heads-up
     // (credits.usage, 50/75/90%) and the one-time "grant spent" transition

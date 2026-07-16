@@ -569,7 +569,8 @@ describe('createGatewayEventHandler', () => {
     flashPetMock.mockClear()
 
     onEvent({ type: 'message.start' })
-    onEvent({ payload: { text: 'full attempted reply' }, type: 'message.delta' })
+    onEvent({ payload: { text: 'full attempted ' }, type: 'message.delta' })
+    onEvent({ payload: { text: 'reply' }, type: 'message.delta' })
     expect(() => onEvent({ type: 'message.interim' } as any)).not.toThrow()
     onEvent({
       payload: { already_streamed: false, text: 'full attempted reply' },
@@ -587,7 +588,8 @@ describe('createGatewayEventHandler', () => {
     expect(bellWrite).not.toHaveBeenCalled()
     expect(flashPetMock).not.toHaveBeenCalled()
 
-    onEvent({ payload: { text: 'verified final reply' }, type: 'message.delta' })
+    onEvent({ payload: { text: 'verified ' }, type: 'message.delta' })
+    onEvent({ payload: { text: 'final reply' }, type: 'message.delta' })
     onEvent({ payload: { text: 'verified final reply' }, type: 'message.complete' })
 
     expect(appended.filter(message => message.role === 'assistant').map(message => message.text)).toEqual([
@@ -598,6 +600,54 @@ describe('createGatewayEventHandler', () => {
     expect(bellWrite).toHaveBeenCalledTimes(1)
     expect(bellWrite).toHaveBeenCalledWith('\x07')
     expect(flashPetMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps identical interim and terminal replies as separate assistant messages', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ type: 'message.start' })
+    onEvent({ payload: { text: 'same ' }, type: 'message.delta' })
+    onEvent({ payload: { text: 'reply' }, type: 'message.delta' })
+    onEvent({ payload: { already_streamed: true, text: 'same reply' }, type: 'message.interim' })
+    onEvent({ payload: { text: 'same reply' }, type: 'message.complete' })
+
+    expect(appended.filter(message => message.role === 'assistant').map(message => message.text)).toEqual([
+      'same reply',
+      'same reply'
+    ])
+  })
+
+  it('deduplicates a terminal reply against flushed segments without an interim boundary', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ type: 'message.start' })
+    onEvent({ payload: { text: 'same reply' }, type: 'message.delta' })
+    turnController.flushStreamingSegment()
+    onEvent({ payload: { text: 'same reply' }, type: 'message.complete' })
+
+    expect(appended.filter(message => message.role === 'assistant').map(message => message.text)).toEqual([
+      'same reply'
+    ])
+  })
+
+  it('deduplicates flushed chunks within the terminal message after an interim boundary', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ type: 'message.start' })
+    onEvent({ payload: { text: 'interim reply' }, type: 'message.delta' })
+    onEvent({ payload: { already_streamed: true, text: 'interim reply' }, type: 'message.interim' })
+    onEvent({ payload: { text: 'same ' }, type: 'message.delta' })
+    onEvent({ payload: { text: 'reply' }, type: 'message.delta' })
+    turnController.flushStreamingSegment()
+    onEvent({ payload: { text: 'same reply' }, type: 'message.complete' })
+
+    expect(appended.filter(message => message.role === 'assistant').map(message => message.text)).toEqual([
+      'interim reply',
+      'same reply'
+    ])
   })
 
   it('anchors inline_diff as its own segment where the edit happened', () => {

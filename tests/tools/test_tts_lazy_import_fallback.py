@@ -56,3 +56,54 @@ def test_mistral_raw_import_still_runs_when_lazy_deps_ensure_fails(monkeypatch):
     monkeypatch.setattr(lazy_deps, "ensure", _make_ensure_failure)
 
     assert _import_mistral_client() is FakeMistral
+
+
+def test_stt_mistral_raw_import_still_runs_when_lazy_deps_ensure_fails(monkeypatch):
+    """STT Mistral must fall through to the raw import when lazy install fails.
+
+    Regression for the sweeper finding on PR #53289: a non-ImportError from
+    lazy_deps.ensure("stt.mistral") escaped to _transcribe_mistral()'s outer
+    error handler before the raw import could see PYTHONPATH-supplied
+    packages.
+    """
+    import tools.lazy_deps as lazy_deps
+    import tools.transcription_tools as transcription_tools
+
+    class FakeTranscription:
+        text = "hello world"
+
+    class FakeTranscriptions:
+        @staticmethod
+        def complete(**_kwargs):
+            return FakeTranscription()
+
+    class FakeAudio:
+        transcriptions = FakeTranscriptions()
+
+    class FakeMistral:
+        def __init__(self, api_key=None, **_kwargs):
+            self.audio = FakeAudio()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    fake_mistralai = types.ModuleType("mistralai")
+    fake_client = types.ModuleType("mistralai.client")
+    fake_client.Mistral = FakeMistral
+    fake_mistralai.client = fake_client
+    monkeypatch.setitem(sys.modules, "mistralai", fake_mistralai)
+    monkeypatch.setitem(sys.modules, "mistralai.client", fake_client)
+    monkeypatch.setattr(lazy_deps, "ensure", _make_ensure_failure)
+    monkeypatch.setattr(
+        transcription_tools, "get_env_value", lambda _k: "test-key"
+    )
+
+    result = transcription_tools._transcribe_mistral(
+        __file__, "voxtral-mini-latest"
+    )
+
+    assert result["success"] is True
+    assert result["transcript"] == "hello world"

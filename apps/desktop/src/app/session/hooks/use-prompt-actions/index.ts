@@ -172,6 +172,8 @@ interface PromptActionsOptions {
   busyRef: MutableRefObject<boolean>
   branchCurrentSession: () => Promise<boolean>
   createBackendSessionForSend: (preview?: string | null) => Promise<string | null>
+  getRoutedStoredSessionId: () => null | string
+  getRuntimeIdForStoredSession: (storedSessionId: string) => null | string
   getRouteToken: () => string
   handleSkinCommand: (arg: string) => string
   openMemoryGraph: () => void
@@ -201,6 +203,8 @@ export function usePromptActions({
   busyRef,
   branchCurrentSession,
   createBackendSessionForSend,
+  getRoutedStoredSessionId,
+  getRuntimeIdForStoredSession,
   getRouteToken,
   handleSkinCommand,
   openMemoryGraph,
@@ -365,13 +369,15 @@ export function usePromptActions({
   }, [activeSessionId, composerAttachments, eagerlyUploadAttachment])
 
   const submitPromptText = useSubmitPrompt({
-    activeSessionId,
     activeSessionIdRef,
     busyRef,
     copy,
     createBackendSessionForSend,
+    getRoutedStoredSessionId,
+    getRuntimeIdForStoredSession,
     getRouteToken,
     requestGateway,
+    resumeStoredSession,
     selectedStoredSessionIdRef,
     syncAttachmentsForSubmit,
     updateSessionState

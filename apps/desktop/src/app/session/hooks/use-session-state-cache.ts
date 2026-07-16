@@ -295,6 +295,18 @@ export function useSessionStateCache({
     [ensureSessionState, syncSessionStateToView]
   )
 
+  const getRuntimeIdForStoredSession = useCallback((storedSessionId: string): string | null => {
+    const runtimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+
+    if (!runtimeId) {
+      return null
+    }
+
+    const runtimeState = sessionStateByRuntimeIdRef.current.get(runtimeId)
+
+    return runtimeState?.storedSessionId === storedSessionId ? runtimeId : null
+  }, [])
+
   // When the store watchdog force-clears a stuck session (8 min of stream
   // silence — a hung or looping turn that never delivered its terminal event),
   // also drop that session's busy/awaiting flags here. Clearing the sidebar dot
@@ -323,6 +335,7 @@ export function useSessionStateCache({
   return {
     activeSessionIdRef,
     ensureSessionState,
+    getRuntimeIdForStoredSession,
     resetViewSync,
     runtimeIdByStoredSessionIdRef,
     selectedStoredSessionIdRef,

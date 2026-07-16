@@ -684,6 +684,40 @@ def get_image_cache_dir() -> Path:
     return d
 
 
+# ISO BMFF brands used by HEIC/HEIF (iPhone photos, Apple Live Photos stills).
+# Major brand is at offset 8 after the ftyp box header; compatible brands follow.
+_HEIC_HEIF_FTYP_BRANDS = frozenset(
+    {
+        b"heic",
+        b"heix",
+        b"hevc",
+        b"hevx",
+        b"heim",
+        b"heis",
+        b"hevm",
+        b"hevs",
+        b"heif",
+        b"mif1",  # HEIF structural brand (common on iOS stills)
+        b"msf1",  # HEIF image sequence
+    }
+)
+
+
+def _looks_like_heic_heif(data: bytes) -> bool:
+    """Return True if *data* looks like a HEIC/HEIF ISO-BMFF container."""
+    if len(data) < 12 or data[4:8] != b"ftyp":
+        return False
+    # Major brand
+    if data[8:12] in _HEIC_HEIF_FTYP_BRANDS:
+        return True
+    # Compatible brands start at offset 16; scan a short window only.
+    end = min(len(data), 64)
+    for i in range(16, end - 3, 4):
+        if data[i : i + 4] in _HEIC_HEIF_FTYP_BRANDS:
+            return True
+    return False
+
+
 def _looks_like_image(data: bytes) -> bool:
     """Return True if *data* starts with a known image magic-byte sequence."""
     if len(data) < 4:
@@ -697,6 +731,10 @@ def _looks_like_image(data: bytes) -> bool:
     if data[:2] == b"BM":
         return True
     if data[:4] == b"RIFF" and len(data) >= 12 and data[8:12] == b"WEBP":
+        return True
+    # HEIC/HEIF (iOS Camera default). Without this, cache_image_from_bytes
+    # raises ValueError and Telegram image-document intake drops the photo.
+    if _looks_like_heic_heif(data):
         return True
     return False
 

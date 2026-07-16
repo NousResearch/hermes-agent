@@ -351,6 +351,25 @@ class TestPasswordLoginRoute:
         )
         assert resp.status_code == 200
 
+    def test_html_navigation_with_only_password_provider_renders_login_form(self, gated_app):
+        # Regression: auto-SSO is only valid for OAuth providers.  A single
+        # password-only provider must not redirect to /auth/login?provider=...
+        # because password providers intentionally have no OAuth start_login
+        # implementation; the browser needs the /login form instead.
+        resp = gated_app.get("/", follow_redirects=False)
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/login?next=%2F"
+
+    def test_direct_oauth_login_url_for_password_provider_redirects_to_form(self, gated_app):
+        # Defence-in-depth for stale clients/cached redirects: even if the
+        # password provider is requested through the OAuth entrypoint, do not
+        # call start_login() (which raises by design).
+        resp = gated_app.get(
+            "/auth/login?provider=testpw&next=%2F", follow_redirects=False
+        )
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/login?next=%2F"
+
 
 # ---------------------------------------------------------------------------
 # Transparent refresh — expired access token, live refresh token

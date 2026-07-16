@@ -15971,6 +15971,10 @@ def mount_spa(application: FastAPI):
 
         @application.get("/{full_path:path}")
         async def no_frontend(full_path: str):
+            if full_path == "apple-touch-icon.png":
+                icon_path = WEB_DIST / "apple-touch-icon.png"
+                if icon_path.is_file():
+                    return FileResponse(icon_path, media_type="image/png")
             return JSONResponse({"error": _msg}, status_code=404)
         return
 

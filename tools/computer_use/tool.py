@@ -911,8 +911,14 @@ def _maybe_follow_capture(
         target = getattr(backend, "_last_target", None) or {}
         pid = target.get("pid")
         window_id = target.get("window_id")
-        if pid is not None and window_id is not None:
-            cap = backend.capture(mode="som", pid=pid, window_id=window_id)
+        if window_id is not None:
+            # A null logical PID is valid for X11 windows. Target those by
+            # their unambiguous window ID alone rather than leaking cua-driver's
+            # internal PID-0 sentinel back through the public capture API.
+            target_args = {"window_id": window_id}
+            if pid is not None:
+                target_args["pid"] = pid
+            cap = backend.capture(mode="som", **target_args)
         else:
             cap = backend.capture(mode="som", app=getattr(backend, "_last_app", None))
     except Exception as e:

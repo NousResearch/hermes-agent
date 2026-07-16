@@ -1900,7 +1900,7 @@ class TestCaptureAppFilterNoMatch:
     @pytest.mark.parametrize(
         ("pid", "window_id", "diagnostic"),
         [
-            (None, 2, "both"),
+            (None, 0, "positive integer window_id"),
             ("bad", 2, "positive integer"),
             (True, 2, "positive integer"),
             (1, False, "positive integer"),

@@ -1563,10 +1563,13 @@ class CuaDriverBackend(ComputerUseBackend):
         # PR's effective minimum (trycua/cua#1961 + #1908) is well past
         # that, so the fallback is gone — the wrapper now treats the
         # structured shape as the only contract.
-        # An exact pid/window pair is both the stable capture_after target and
-        # the escape hatch when app/window discovery is unavailable on X11.
-        if pid is not None or window_id is not None:
-            if pid is None or window_id is None:
+        # An exact pid/window pair is the escape hatch when app/window
+        # discovery is unavailable on X11. A window_id by itself is also an
+        # unambiguous selector and is required for X11 windows whose logical
+        # PID is null; those must be enumerated rather than represented as
+        # public pid=0 targets.
+        if pid is not None:
+            if window_id is None:
                 return self._failed_capture(
                     mode, "<capture targeting requires both pid and window_id>",
                 )
@@ -1586,6 +1589,13 @@ class CuaDriverBackend(ComputerUseBackend):
                 "bounds": {},
             }]
         else:
+            if window_id is not None:
+                target_window_id = _positive_int(window_id)
+                if target_window_id is None:
+                    return self._failed_capture(
+                        mode, "<capture targeting requires positive integer window_id>",
+                    )
+                window_id = target_window_id
             try:
                 windows = self._load_windows()
             except Exception:
@@ -1675,7 +1685,10 @@ class CuaDriverBackend(ComputerUseBackend):
         if app or window_title or pid is not None or window_id is not None or not self._last_app:
             self._last_app = app_name
         self._last_target = {
-            "pid": self._active_pid,
+            # Keep the logical PID here. Null-PID X11 windows use 0 only at
+            # the cua-driver boundary; exposing that sentinel to capture_after
+            # would turn it into an invalid public pid=0 selector.
+            "pid": target.get("pid"),
             "window_id": self._active_window_id,
         }
 

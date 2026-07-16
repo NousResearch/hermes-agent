@@ -204,8 +204,9 @@ def _backend_with_windows(raw_windows):
     def _call_tool(name, args, *a, **k):
         if name == "list_windows":
             return {"structuredContent": {"windows": raw_windows}}
-        if name == "screenshot":
+        if name in {"screenshot", "get_window_state"}:
             return {
+                "data": "✅ Desktop — 0 elements\n",
                 "structuredContent": {
                     "screenshot_png_b64": _PNG_B64,
                     "screenshot_mime_type": "image/png",
@@ -252,6 +253,46 @@ def test_capture_uses_pid_zero_driver_fallback_for_null_pid_target():
     screenshot_call = backend._session.call_tool.call_args_list[-1]  # type: ignore[attr-defined]
     assert screenshot_call.args[0] == "screenshot"
     assert screenshot_call.args[1]["window_id"] == 77
+
+
+def test_capture_after_recaptures_null_pid_window_without_public_pid_zero(monkeypatch):
+    from tools.computer_use import tool
+    from tools.computer_use.backend import ActionResult
+
+    raw = [
+        {"app_name": "", "pid": None, "window_id": 77,
+         "is_on_screen": True, "title": "CUA Hard Case Test", "z_index": 1},
+    ]
+    backend = _backend_with_windows(raw)
+    initial = backend.capture(mode="vision", window_title="Hard Case")
+    assert initial.width == 8
+    assert initial.height == 8
+
+    monkeypatch.setattr(
+        backend,
+        "click",
+        lambda **kwargs: ActionResult(ok=True, action="click"),
+    )
+    monkeypatch.setattr(tool, "_get_backend", lambda: backend)
+
+    response = tool.handle_computer_use({
+        "action": "click",
+        "coordinate": [2, 3],
+        "capture_after": True,
+    })
+    payload = json.loads(response)
+
+    assert payload["ok"] is True
+    assert payload["width"] == 8, payload
+    assert payload["height"] == 8
+    assert "capture targeting requires positive integer" not in payload["window_title"]
+    assert backend._last_target == {"pid": None, "window_id": 77}
+    follow_capture = next(
+        call for call in reversed(backend._session.call_tool.call_args_list)
+        if call.args[0] == "get_window_state"
+    )
+    assert follow_capture.args[1]["pid"] == 0
+    assert follow_capture.args[1]["window_id"] == 77
 
 
 def test_action_preserves_structured_outcome_fields_in_meta():

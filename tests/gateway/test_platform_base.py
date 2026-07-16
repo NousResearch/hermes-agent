@@ -1395,7 +1395,7 @@ class TestShouldSendMediaAsAudio:
 
     def test_non_telegram_platforms_route_all_audio(self):
         from gateway.platforms.base import should_send_media_as_audio
-        for ext in (".mp3", ".m4a", ".wav", ".flac", ".ogg", ".opus"):
+        for ext in (".mp3", ".m4a", ".wav", ".caf", ".flac", ".ogg", ".opus"):
             assert should_send_media_as_audio("discord", ext) is True
             assert should_send_media_as_audio("slack", ext) is True
 

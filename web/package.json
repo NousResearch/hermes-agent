@@ -7,9 +7,12 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "fix": "npm run lint:fix",
     "preview": "vite preview",
     "typecheck": "tsc -p . --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "check": "npm run typecheck && npm run test"
   },
   "dependencies": {
     "@hermes/shared": "file:../apps/shared",

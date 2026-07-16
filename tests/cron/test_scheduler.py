@@ -1533,6 +1533,25 @@ class TestRunJobSessionPersistence:
         assert "final fallback report" in output
         assert "(FAILED)" not in output
 
+    def test_tick_skips_due_jobs_while_dispatch_is_paused(self, tmp_path):
+        """The drain gate runs before advancing a due job's schedule."""
+        from cron.scheduler import tick
+
+        job = {
+            "id": "paused-due-job",
+            "name": "paused due job",
+            "schedule": {"kind": "interval", "seconds": 60},
+            "next_run_at": "2020-01-01T00:00:00+00:00",
+            "enabled": True,
+        }
+        with patch("cron.scheduler.get_due_jobs", return_value=[job]), patch(
+            "cron.scheduler.advance_next_run"
+        ) as advance, patch("cron.scheduler.run_one_job") as run_one:
+            assert tick(verbose=False, sync=True, can_dispatch=lambda: False) == 0
+
+        advance.assert_not_called()
+        run_one.assert_not_called()
+
     def test_tick_marks_empty_response_as_error(self, tmp_path):
         """When run_job returns success=True but final_response is empty,
         tick() should mark the job as error so last_status != 'ok'.
@@ -1982,6 +2001,61 @@ class TestRunJobConfigEnvVarExpansion:
             f"Expected expanded fallback model in {expanded!r}. "
             "config.yaml ${VAR} in fallback_providers was not expanded."
         )
+
+    def test_auth_fallback_switches_provider_and_model_together(self, tmp_path):
+        """Codex auth failure must produce OpenRouter+GLM, never OpenRouter+GPT."""
+        from hermes_cli.auth import AuthError
+
+        (tmp_path / "config.yaml").write_text(
+            "model:\n"
+            "  default: gpt-5.6-sol\n"
+            "  provider: openai-codex\n"
+            "fallback_providers:\n"
+            "  - provider: anthropic\n"
+            "  - provider: openrouter\n"
+            "    model: z-ai/glm-5.2\n",
+            encoding="utf-8",
+        )
+        job = {
+            "id": "auth-fallback",
+            "name": "auth fallback",
+            "prompt": "hi",
+            "provider_snapshot": "openai-codex",
+            "model_snapshot": "gpt-5.6-sol",
+        }
+        fake_db = MagicMock()
+        requested = []
+
+        def resolve_runtime(**kwargs):
+            requested.append(kwargs.get("requested"))
+            if kwargs.get("requested") in (None, "openai-codex"):
+                # Cron must retain the configured primary provider for drift
+                # comparison even when older/custom AuthError sites omit it.
+                raise AuthError("No Codex credentials stored")
+            assert kwargs["requested"] == "openrouter"
+            assert kwargs["target_model"] == "z-ai/glm-5.2"
+            return {**self._RUNTIME, "provider": "openrouter"}
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   side_effect=resolve_runtime), \
+             patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert requested == [None, "openrouter"]
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["provider"] == "openrouter"
+        assert kwargs["model"] == "z-ai/glm-5.2"
 
     def test_fallback_chain_merges_providers_and_legacy_model(self, tmp_path, monkeypatch):
         """Cron uses get_fallback_chain so legacy fallback_model is not dropped."""

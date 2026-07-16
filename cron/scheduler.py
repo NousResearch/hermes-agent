@@ -1976,6 +1976,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 _DEFAULT_SCRIPT_TIMEOUT = 3600  # seconds (1 hour)
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
+_RUN_CLAIM_HEARTBEAT_SECONDS = 60.0
 
 
 def _get_script_timeout() -> int:
@@ -2133,6 +2134,71 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         return False, f"Script timed out after {script_timeout}s: {path}"
     except Exception as exc:
         return False, f"Script execution failed: {exc}"
+
+
+def _run_job_script_with_claim_heartbeat(
+    job: dict, script_path: str
+) -> tuple[bool, str]:
+    """Run a cron script while keeping its owned one-shot claim fresh.
+
+    Script execution is synchronous and may legitimately outlive the stale
+    claim TTL.  Without a concurrent heartbeat, another scheduler process can
+    mistake the live run for a dead owner and dispatch the same one-shot again.
+    Recurring jobs and unclaimed/manual runs have no durable one-shot claim and
+    therefore use the ordinary script path without starting a thread.
+
+    The claim owner is captured from the dispatched job and never re-read from
+    storage.  ``heartbeat_run_claim`` compares that stable owner before every
+    refresh, so a stale runner cannot extend a replacement owner's claim.
+    """
+    schedule = job.get("schedule")
+    claim = job.get("run_claim")
+    owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
+    if not (
+        isinstance(schedule, dict)
+        and schedule.get("kind") == "once"
+        and owner
+    ):
+        return _run_job_script(script_path)
+
+    job_id = str(job.get("id") or "")
+    stop = threading.Event()
+    heartbeat_context = contextvars.copy_context()
+
+    def _heartbeat_loop() -> None:
+        while not stop.wait(_RUN_CLAIM_HEARTBEAT_SECONDS):
+            try:
+                heartbeat_run_claim(job_id, expected_owner=owner)
+            except Exception:
+                logger.debug(
+                    "Job '%s': script run_claim heartbeat failed",
+                    job_id,
+                    exc_info=True,
+                )
+
+    heartbeat_thread = threading.Thread(
+        target=heartbeat_context.run,
+        args=(_heartbeat_loop,),
+        name="cron-script-claim-heartbeat",
+        daemon=True,
+    )
+    try:
+        heartbeat_thread.start()
+    except Exception:
+        logger.debug(
+            "Job '%s': could not start script run_claim heartbeat",
+            job_id,
+            exc_info=True,
+        )
+        return _run_job_script(script_path)
+
+    try:
+        return _run_job_script(script_path)
+    finally:
+        stop.set()
+        # Event.wait() wakes immediately.  Keep completion bounded if the
+        # heartbeat is already waiting on another process's jobs-file lock.
+        heartbeat_thread.join(timeout=1.0)
 
 
 def _parse_wake_gate(script_output: str) -> bool:
@@ -2542,7 +2608,7 @@ def run_job(
                 _prior_cwd = None
 
         try:
-            ok, output = _run_job_script(script_path)
+            ok, output = _run_job_script_with_claim_heartbeat(job, script_path)
         finally:
             if _prior_cwd is not None:
                 try:
@@ -2617,10 +2683,68 @@ def run_job(
 
     # Initialize SQLite session store so cron job messages are persisted
     # and discoverable via session_search (same pattern as gateway/run.py).
+    #
+    # Bounded with its own timeout (separate from HERMES_CRON_TIMEOUT, which
+    # only watches the agent's run_conversation below): SessionDB.__init__
+    # opens/migrates state.db synchronously and has no timeout of its own
+    # against a wedged sqlite3.connect (e.g. a stale flock left by a crashed
+    # sibling process). An unbounded hang here is invisible to every other
+    # cron safeguard, because it happens BEFORE _submit_with_guard's future
+    # exists — the finally block that releases the job from
+    # _running_job_ids never runs, so the job stays wedged "running" until
+    # the whole gateway process is restarted, silently skipping every
+    # scheduled fire in between with "already running — skipping".
     _session_db = None
     try:
         from hermes_state import SessionDB
-        _session_db = SessionDB()
+
+        # Resolve timeout: env override → config.yaml → default 10s.
+        # Mirrors the script_timeout_seconds resolution pattern.
+        _session_db_timeout: float | None = None
+        _raw_env_timeout = os.getenv("HERMES_CRON_SESSION_DB_TIMEOUT", "").strip()
+        if _raw_env_timeout:
+            try:
+                _session_db_timeout = float(_raw_env_timeout)
+            except (ValueError, TypeError):
+                logger.warning(
+                    "Invalid HERMES_CRON_SESSION_DB_TIMEOUT=%r; using config/default",
+                    _raw_env_timeout,
+                )
+        if _session_db_timeout is None:
+            try:
+                from hermes_cli.config import load_config
+                _cfg = load_config() or {}
+                _cron_cfg = _cfg.get("cron", {}) if isinstance(_cfg, dict) else {}
+                _configured = _cron_cfg.get("session_db_timeout_seconds")
+                if _configured is not None:
+                    _session_db_timeout = float(_configured)
+            except Exception as exc:
+                logger.debug(
+                    "Failed to load cron.session_db_timeout_seconds from config: %s",
+                    exc,
+                )
+        if _session_db_timeout is None:
+            _session_db_timeout = 10.0
+
+        if _session_db_timeout > 0:
+            _session_db_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            try:
+                _session_db = _session_db_pool.submit(SessionDB).result(timeout=_session_db_timeout)
+            finally:
+                # Don't wait for a wedged connect() to unwind — abandon the
+                # worker thread (same pattern as the agent inactivity timeout
+                # further down) rather than blocking shutdown on it too.
+                _session_db_pool.shutdown(wait=False)
+        else:
+            # 0 = unlimited (legacy behavior, opt-in for debugging)
+            _session_db = SessionDB()
+    except concurrent.futures.TimeoutError:
+        logger.error(
+            "Job '%s': SessionDB init did not return within %.0fs — proceeding "
+            "without a session store for this run instead of blocking it "
+            "forever",
+            job.get("id", "?"), _session_db_timeout,
+        )
     except Exception as e:
         logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
 
@@ -2631,7 +2755,7 @@ def run_job(
     prerun_script = None
     script_path = job.get("script")
     if script_path:
-        prerun_script = _run_job_script(script_path)
+        prerun_script = _run_job_script_with_claim_heartbeat(job, script_path)
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info(
@@ -2811,6 +2935,7 @@ def run_job(
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}
+        _model_cfg = {}
         try:
             import yaml
             _cfg_path = str(_get_hermes_home() / "config.yaml")
@@ -2864,12 +2989,9 @@ def run_job(
         except Exception:
             pass
 
-        # Reasoning config from config.yaml (raw value — a YAML boolean False
-        # means thinking disabled, see parse_reasoning_effort)
-        from hermes_constants import parse_reasoning_effort
-        reasoning_config = parse_reasoning_effort(
-            _cfg.get("agent", {}).get("reasoning_effort", "")
-        )
+        # Reasoning config is resolved after provider authentication so an auth
+        # fallback can first replace the primary model with its configured model.
+        from hermes_constants import resolve_reasoning_config
 
         # Prefill messages from env or config.yaml. The top-level
         # prefill_messages_file key is canonical; agent.prefill_messages_file is
@@ -2915,6 +3037,17 @@ def run_job(
         # off-host call is ever made with a stored key.
         _guard_job_credential_exfil(job)
 
+        primary_model_for_drift = model
+        configured_provider_for_drift = (
+            str(_model_cfg.get("provider") or "").strip().lower()
+            if isinstance(_model_cfg, dict)
+            else ""
+        )
+        primary_provider_for_drift = (
+            str(job.get("provider") or "").strip().lower()
+            or configured_provider_for_drift
+            or None
+        )
         try:
             # Do not inject HERMES_INFERENCE_PROVIDER here. resolve_runtime_provider()
             # already prefers persisted config over stale shell/env overrides when
@@ -2927,28 +3060,60 @@ def run_job(
             if job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")
             runtime = resolve_runtime_provider(**runtime_kwargs)
+            primary_provider_for_drift = (
+                str(runtime.get("provider") or "").strip().lower()
+                or primary_provider_for_drift
+            )
         except AuthError as auth_exc:
-            # Primary provider auth failed — try fallback chain before giving up.
+            # Primary provider auth failed — try each configured provider/model
+            # pair atomically. Keeping the primary model while changing only the
+            # provider can silently route a paid GPT model through OpenRouter.
+            primary_provider_for_drift = (
+                str(getattr(auth_exc, "provider", "") or "").strip().lower()
+                or primary_provider_for_drift
+            )
             logger.warning("Job '%s': primary auth failed (%s), trying fallback", job_id, auth_exc)
             fb_list = get_fallback_chain(_cfg)
             runtime = None
             for entry in fb_list:
+                if not isinstance(entry, dict):
+                    continue
+                fb_provider = str(entry.get("provider") or "").strip()
+                fb_model = str(entry.get("model") or "").strip()
+                if not fb_provider or not fb_model:
+                    continue
                 try:
-                    fb_kwargs = {"requested": entry.get("provider")}
+                    from hermes_cli.fallback_config import resolve_entry_api_key
+
+                    fb_kwargs = {
+                        "requested": fb_provider,
+                        "target_model": fb_model,
+                    }
                     if entry.get("base_url"):
                         fb_kwargs["explicit_base_url"] = entry["base_url"]
-                    if entry.get("api_key"):
-                        fb_kwargs["explicit_api_key"] = entry["api_key"]
+                    fb_api_key = resolve_entry_api_key(entry)
+                    if fb_api_key:
+                        fb_kwargs["explicit_api_key"] = fb_api_key
                     runtime = resolve_runtime_provider(**fb_kwargs)
-                    logger.info("Job '%s': fallback resolved to %s", job_id, runtime.get("provider"))
+                    model = fb_model
+                    logger.info(
+                        "Job '%s': fallback resolved to %s model %s",
+                        job_id,
+                        runtime.get("provider"),
+                        fb_model,
+                    )
                     break
                 except Exception as fb_exc:
-                    logger.debug("Job '%s': fallback %s failed: %s", job_id, entry.get("provider"), fb_exc)
+                    logger.debug("Job '%s': fallback %s failed: %s", job_id, fb_provider, fb_exc)
             if runtime is None:
                 raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
         except Exception as exc:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
+
+        reasoning_config = resolve_reasoning_config(
+            _cfg if isinstance(_cfg, dict) else {}, str(model)
+        )
 
         # Provider/model-drift fail-closed guard (#44585).
         #
@@ -2972,14 +3137,16 @@ def run_job(
         _drift: list[str] = []
         _provider_snapshot = (job.get("provider_snapshot") or "").strip().lower()
         if _provider_snapshot and not (job.get("provider") or "").strip():
-            _current_provider = str(runtime.get("provider") or "").strip().lower()
+            _current_provider = str(
+                primary_provider_for_drift or runtime.get("provider") or ""
+            ).strip().lower()
             if _current_provider and _current_provider != _provider_snapshot:
                 _drift.append(
                     f"provider '{_provider_snapshot}' -> '{_current_provider}'"
                 )
         _model_snapshot = (job.get("model_snapshot") or "").strip().lower()
         if _model_snapshot and not (job.get("model") or "").strip():
-            _current_model = str(model or "").strip().lower()
+            _current_model = str(primary_model_for_drift or "").strip().lower()
             if _current_model and _current_model != _model_snapshot:
                 _drift.append(
                     f"model '{_model_snapshot}' -> '{_current_model}'"
@@ -3113,7 +3280,6 @@ def run_job(
         _run_claim_owner = (
             str(_run_claim.get("by") or "") if isinstance(_run_claim, dict) else ""
         )
-        _CLAIM_HEARTBEAT_SECONDS = 60.0
         _last_claim_heartbeat = time.monotonic()
 
         def _heartbeat_run_claim_if_due():
@@ -3121,7 +3287,7 @@ def run_job(
             if not _is_oneshot or not _run_claim_owner:
                 return
             _mono = time.monotonic()
-            if _mono - _last_claim_heartbeat < _CLAIM_HEARTBEAT_SECONDS:
+            if _mono - _last_claim_heartbeat < _RUN_CLAIM_HEARTBEAT_SECONDS:
                 return
             _last_claim_heartbeat = _mono
             try:
@@ -3557,7 +3723,14 @@ def _notify_provider_jobs_changed() -> None:
         logger.debug("on_jobs_changed notify failed: %s", e)
 
 
-def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> int:
+def tick(
+    verbose: bool = True,
+    adapters=None,
+    loop=None,
+    sync: bool = True,
+    *,
+    can_dispatch=None,
+):
     """
     Check and run all due jobs.
     
@@ -3568,7 +3741,9 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         verbose: Whether to print status messages
         adapters: Optional dict mapping Platform → live adapter (from gateway)
         loop: Optional asyncio event loop (from gateway) for live adapter sends
-    
+        can_dispatch: Optional synchronous gate; false leaves due jobs untouched
+            for the next allowed tick
+
     Returns:
         Number of jobs executed (0 if another tick is already running)
     """
@@ -3590,6 +3765,10 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         return 0
 
     try:
+        if can_dispatch is not None and not can_dispatch():
+            logger.debug("Cron dispatch paused while gateway drains existing work")
+            return 0
+
         due_jobs = get_due_jobs()
 
         if verbose and not due_jobs:

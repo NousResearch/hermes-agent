@@ -45,6 +45,204 @@ import re
 import shlex
 import shutil
 import subprocess
+
+
+# =========================================================================
+# TTS text preprocessing — make text sound natural when read aloud
+# =========================================================================
+
+# Multilingual emoji-to-spoken-text mapping.
+# Keys are emojis; values are dicts of {lang_code: spoken_text}.
+# "" means "remove silently" (no spoken equivalent regardless of language).
+# The lang_code is derived from the TTS voice name (e.g. "ru-RU-SvetlanaNeural" → "ru").
+_EMOJI_SPEECH_MAP = {
+    "✅": {"en": "done", "ru": "готово", "de": "fertig", "es": "hecho", "fr": "fait", "pt": "feito", "ja": "完了", "zh": "完成", "ko": "완료", "it": "fatto", "pl": "gotowe", "uk": "готово", "tr": "tamam"},
+    "❌": {"en": "error", "ru": "ошибка", "de": "Fehler", "es": "error", "fr": "erreur", "pt": "erro", "ja": "エラー", "zh": "错误", "ko": "오류", "it": "errore", "pl": "błąd", "uk": "помилка", "tr": "hata"},
+    "⬆️": {"en": "update", "ru": "обновление", "de": "Update", "es": "actualización", "fr": "mise à jour", "pt": "atualização", "ja": "更新", "zh": "更新", "ko": "업데이트", "it": "aggiornamento", "pl": "aktualizacja", "uk": "оновлення", "tr": "güncelleme"},
+    "⚠️": {"en": "warning", "ru": "внимание", "de": "Warnung", "es": "atención", "fr": "attention", "pt": "atenção", "ja": "警告", "zh": "注意", "ko": "주의", "it": "attenzione", "pl": "uwaga", "uk": "увага", "tr": "dikkat"},
+    "🔍": {"": ""},
+    "📊": {"": ""},
+    "💬": {"": ""},
+    "🔧": {"": ""},
+    "📦": {"en": "package", "ru": "пакет", "de": "Paket", "es": "paquete", "fr": "paquet", "pt": "pacote", "ja": "パッケージ", "zh": "包", "ko": "패키지", "it": "pacchetto", "pl": "pakiet", "uk": "пакет", "tr": "paket"},
+    "🚀": {"en": "launch", "ru": "запуск", "de": "Start", "es": "lanzamiento", "fr": "lancement", "pt": "lançamento", "ja": "起動", "zh": "启动", "ko": "시작", "it": "avvio", "pl": "start", "uk": "запуск", "tr": "başlat"},
+    "🎉": {"en": "success", "ru": "успех", "de": "Erfolg", "es": "éxito", "fr": "succès", "pt": "sucesso", "ja": "成功", "zh": "成功", "ko": "성공", "it": "successo", "pl": "sukces", "uk": "успіх", "tr": "başarı"},
+    "💡": {"en": "tip", "ru": "подсказка", "de": "Tipp", "es": "consejo", "fr": "conseil", "pt": "dica", "ja": "ヒント", "zh": "提示", "ko": "팁", "it": "suggerimento", "pl": "wskazówka", "uk": "порада", "tr": "ipucu"},
+    "📝": {"en": "note", "ru": "заметка", "de": "Notiz", "es": "nota", "fr": "note", "pt": "nota", "ja": "メモ", "zh": "笔记", "ko": "메모", "it": "nota", "pl": "notatka", "uk": "нотатка", "tr": "not"},
+    "🔒": {"en": "locked", "ru": "заблокировано", "de": "gesperrt", "es": "bloqueado", "fr": "verrouillé", "pt": "trancado", "ja": "ロック", "zh": "锁定", "ko": "잠김", "it": "bloccato", "pl": "zablokowane", "uk": "заблоковано", "tr": "kilitli"},
+    "🔑": {"en": "key", "ru": "ключ", "de": "Schlüssel", "es": "clave", "fr": "clé", "pt": "chave", "ja": "キー", "zh": "密钥", "ko": "키", "it": "chiave", "pl": "klucz", "uk": "ключ", "tr": "anahtar"},
+    "🎯": {"en": "target", "ru": "цель", "de": "Ziel", "es": "objetivo", "fr": "objectif", "pt": "alvo", "ja": "ターゲット", "zh": "目标", "ko": "대상", "it": "obiettivo", "pl": "cel", "uk": "ціль", "tr": "hedef"},
+    "🔥": {"en": "hot", "ru": "огонь", "de": "heiß", "es": "fuego", "fr": "feu", "pt": "fogo", "ja": "炎", "zh": "火", "ko": "뜨거운", "it": "fuoco", "pl": "ogień", "uk": "вогонь", "tr": "ateş"},
+    "👍": {"en": "approved", "ru": "одобрено", "de": "genehmigt", "es": "aprobado", "fr": "approuvé", "pt": "aprovado", "ja": "承認", "zh": "好的", "ko": "승인", "it": "approvato", "pl": "zatwierdzone", "uk": "схвалено", "tr": "onaylı"},
+    "👎": {"en": "rejected", "ru": "отклонено", "de": "abgelehnt", "es": "rechazado", "fr": "rejeté", "pt": "rejeitado", "ja": "却下", "zh": "否决", "ko": "거부", "it": "respinto", "pl": "odrzucone", "uk": "відхилено", "tr": "reddedildi"},
+    "❤️": {"": ""},
+    "🐱": {"": ""},
+    "👾": {"": ""},
+    "🤖": {"": ""},
+    "💻": {"": ""},
+    "🛠": {"en": "tools", "ru": "инструменты", "de": "Werkzeuge", "es": "herramientas", "fr": "outils", "pt": "ferramentas", "ja": "ツール", "zh": "工具", "ko": "도구", "it": "strumenti", "pl": "narzędzia", "uk": "інструменти", "tr": "araçlar"},
+    "📈": {"en": "increase", "ru": "рост", "de": "Anstieg", "es": "aumento", "fr": "augmentation", "pt": "aumento", "ja": "増加", "zh": "增长", "ko": "증가", "it": "aumento", "pl": "wzrost", "uk": "зростання", "tr": "artış"},
+    "📉": {"en": "decrease", "ru": "снижение", "de": "Rückgang", "es": "disminución", "fr": "diminution", "pt": "diminuição", "ja": "減少", "zh": "下降", "ko": "감소", "it": "diminuzione", "pl": "spadek", "uk": "зниження", "tr": "azalış"},
+    "📌": {"": ""},
+    "🔊": {"": ""},
+    "👁️": {"": ""},
+    "🧠": {"": ""},
+    "📚": {"": ""},
+    "🎨": {"": ""},
+    "📨": {"": ""},
+    "⏰": {"en": "scheduled", "ru": "запланировано", "de": "geplant", "es": "programado", "fr": "planifié", "pt": "agendado", "ja": "予約", "zh": "定时", "ko": "예약", "it": "programmato", "pl": "zaplanowane", "uk": "заплановано", "tr": "planlandı"},
+    "🔗": {"en": "link", "ru": "ссылка", "de": "Link", "es": "enlace", "fr": "lien", "pt": "link", "ja": "リンク", "zh": "链接", "ko": "링크", "it": "collegamento", "pl": "link", "uk": "посилання", "tr": "bağlantı"},
+    "⚡": {"en": "fast", "ru": "быстро", "de": "schnell", "es": "rápido", "fr": "rapide", "pt": "rápido", "ja": "高速", "zh": "快速", "ko": "빠름", "it": "veloce", "pl": "szybko", "uk": "швидко", "tr": "hızlı"},
+    "🔀": {"en": "merged", "ru": "объединено", "de": "zusammengeführt", "es": "fusionado", "fr": "fusionné", "pt": "mesclado", "ja": "マージ", "zh": "合并", "ko": "병합", "it": "unito", "pl": "połączone", "uk": "обʼєднано", "tr": "birleştirildi"},
+    "🧪": {"en": "test", "ru": "тест", "de": "Test", "es": "prueba", "fr": "test", "pt": "teste", "ja": "テスト", "zh": "测试", "ko": "테스트", "it": "test", "pl": "test", "uk": "тест", "tr": "test"},
+}
+
+# Fallback language order: try exact match → 2-letter prefix → English → silent
+_FALLBACK_LANGS = ["en"]
+
+
+def _detect_lang_from_voice(voice: str) -> str:
+    """Extract ISO 639-1 language code from a TTS voice name.
+
+    Examples:
+        'ru-RU-SvetlanaNeural' → 'ru'
+        'en-US-AriaNeural' → 'en'
+        'de-DE-KatjaNeural' → 'de'
+        'alloy' → 'en' (OpenAI short names default to English)
+    """
+    if not voice:
+        return "en"
+    # Try match like 'ru-RU-...' or 'en-US-...'
+    m = re.match(r"^([a-z]{2})-", voice.lower())
+    if m:
+        return m.group(1)
+    # OpenAI short voices: alloy, echo, etc.
+    return "en"
+
+
+def _get_tts_language(tts_config: dict) -> str:
+    """Get the language code for TTS text preprocessing.
+
+    Resolution order:
+    1. tts.language in config (explicit override, e.g. 'ru', 'de')
+    2. stt.local.language in config (STT language — same user intent)
+    3. Extracted from TTS voice name (e.g. 'ru-RU-SvetlanaNeural' → 'ru')
+    4. 'en' as fallback
+    """
+    # 1. Explicit tts.language override
+    explicit = tts_config.get("language", "")
+    if explicit:
+        return explicit.lower().split("-")[0]
+
+    # 2. Reuse STT language setting (user's spoken language)
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        stt_lang = config.get("stt", {}).get("local", {}).get("language", "")
+        if stt_lang:
+            return stt_lang.lower().split("-")[0]
+    except Exception:
+        pass
+
+    # 3. Extract from configured TTS voice
+    provider = (tts_config.get("provider") or DEFAULT_PROVIDER).lower().strip()
+    if provider == "edge":
+        voice = tts_config.get("edge", {}).get("voice", DEFAULT_EDGE_VOICE)
+        return _detect_lang_from_voice(voice)
+    elif provider == "openai":
+        voice = tts_config.get("openai", {}).get("voice", DEFAULT_OPENAI_VOICE)
+        return _detect_lang_from_voice(voice)
+    elif provider == "elevenlabs":
+        # ElevenLabs voice_id is opaque — check stt.local.language
+        pass
+
+    # 4. Fallback
+    return "en"
+
+
+def _lookup_emoji_speech(emoji: str, lang: str) -> str:
+    """Look up spoken text for an emoji in the given language.
+
+    Falls back through: exact lang → language prefix → English → silent removal.
+    """
+    speech_map = _EMOJI_SPEECH_MAP.get(emoji)
+    if speech_map is None:
+        return " "  # Unknown emoji: remove silently
+
+    # Exact match
+    if lang in speech_map:
+        val = speech_map[lang]
+        return f" {val} " if val else " "
+
+    # Try 2-letter prefix (e.g. 'pt-BR' → 'pt')
+    prefix = lang.split("-")[0].lower() if "-" in lang else lang[:2].lower() if len(lang) > 2 else ""
+    if prefix and prefix != lang and prefix in speech_map:
+        val = speech_map[prefix]
+        return f" {val} " if val else " "
+
+    # Fallback to English
+    for fallback in _FALLBACK_LANGS:
+        if fallback in speech_map:
+            val = speech_map[fallback]
+            return f" {val} " if val else " "
+
+    # Last resort: silent
+    return " "
+
+
+def _preprocess_tts_text(text: str, lang: str = "en") -> str:
+    """Normalize text for TTS so it sounds natural when read aloud.
+
+    - Strips markdown formatting via _strip_markdown_for_tts (code blocks,
+      bold, italic, links, headings, HR, list markers)
+    - Replaces common emojis with spoken equivalents in the detected language
+    - Strips remaining emojis and special symbols
+    - Converts pseudo-graphics (box-drawing chars, table pipes) to pauses
+    - Removes MEDIA: tags
+    - Collapses whitespace
+
+    The ``lang`` parameter is an ISO 639-1 language code (e.g. 'ru', 'en', 'de')
+    used for localized emoji speech substitution.
+    Automatically detected from config (tts.language, stt.local.language,
+    or TTS voice name) when called via text_to_speech_tool().
+
+    Controlled by ``tts.preprocess`` in config.yaml (default: true).
+    Set ``tts.preprocess: false`` to disable.
+    """
+    lang = lang if lang else "en"  # default to English if empty
+
+    # 1. Strip markdown formatting using the shared function
+    text = _strip_markdown_for_tts(text)
+    # 2. Replace known emojis with localized spoken text
+    for emoji in _EMOJI_SPEECH_MAP:
+        text = text.replace(emoji, _lookup_emoji_speech(emoji, lang))
+    # 3. Remove remaining emojis (Unicode emoji ranges)
+    text = re.sub(
+        r"[\U0001F600-\U0001F64F"  # Emoticons
+        r"\U0001F300-\U0001F5FF"     # Symbols & Pictographs
+        r"\U0001F680-\U0001F6FF"     # Transport & Map
+        r"\U0001F1E0-\U0001F1FF"     # Flags
+        r"\U00002702-\U000027B0"     # Dingbats
+        r"\U0000FE00-\U0000FE0F"     # Variation Selectors
+        r"\U00002600-\U000026FF"     # Misc Symbols
+        r"\U0001F900-\U0001F9FF"     # Supplemental Symbols
+        r"\U0001FA00-\U0001FA6F"     # Chess, etc
+        r"\U0001FA70-\U0001FAFF"     # Symbols Extended-A
+        r"\U0000200D]"               # ZWJ
+        , " ", text)
+    # 4. Box-drawing chars and table pipes → comma/pause
+    text = re.sub(r"[┊┆│┃╎╏║┌┐└┘├┤┬┴┼─━┅┄]", ", ", text)
+    text = re.sub(r"^\|.*\|$", lambda m: m.group(0).replace("|", " "), text, flags=re.MULTILINE)
+    # 5. Replace media tags like MEDIA:/path → remove
+    text = re.sub(r"MEDIA:\S+", "", text)
+    # 6. Collapse multiple spaces/newlines
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r"\n\n+", ". ", text)
+    text = text.strip()
+    # 7. Remove leading/trailing punctuation noise
+    text = re.sub(r"^\s*[,;:]\s*", "", text)
+    return text
 import tempfile
 import threading
 import uuid
@@ -2305,7 +2503,22 @@ def text_to_speech_tool(
     if not text or not text.strip():
         return tool_error("Text is required", success=False)
 
+    # Load config early — needed for preprocess toggle
     tts_config = _load_tts_config()
+
+    # Preprocess text for natural TTS output (strip markdown, emojis, etc.)
+    # Can be disabled via tts.preprocess: false in config
+    tts_preprocess = tts_config.get("preprocess", True)
+    if tts_preprocess:
+        # Detect language: tts.language > stt.local.language > voice name > 'en'
+        lang = _get_tts_language(tts_config)
+        text = _preprocess_tts_text(text, lang=lang)
+
+    # Truncate very long text with a warning
+    if len(text) > MAX_TEXT_LENGTH:
+        logger.warning("TTS text too long (%d chars), truncating to %d", len(text), MAX_TEXT_LENGTH)
+        text = text[:MAX_TEXT_LENGTH]
+
     provider = _get_provider(tts_config)
 
     # User-declared command provider (type: command under tts.providers.<name>)

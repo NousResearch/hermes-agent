@@ -1062,6 +1062,56 @@ stt:
 #     model: ""
 
 # =============================================================================
+# Text-to-Speech (TTS)
+# =============================================================================
+# Convert text responses to voice messages on messaging platforms.
+# On Telegram, voice messages play as native voice bubbles.
+# Providers: edge (free, no API key) | elevenlabs | openai | minimax | mistral | neutts (local)
+tts:
+  # Provider selection (default: "edge" — free Microsoft Edge neural voices)
+  provider: "edge"
+
+  # ── Text Preprocessing ──────────────────────────────────────────────────
+  # Before sending text to the TTS engine, Hermes normalizes it so it sounds
+  # natural when read aloud. This strips markdown syntax, replaces emojis
+  # with spoken equivalents (e.g. ✅ → "done"), and removes pseudo-graphics.
+  #
+  # Preprocessing is language-aware: emojis are replaced with localized text
+  # matching the TTS language (see `language` below). Supported: en, ru, de,
+  # es, fr, pt, ja, zh, ko, it, pl, uk, tr (13 languages).
+  #
+  # Set to false to pass raw text to the TTS engine without modification.
+  preprocess: true
+
+  # Language for TTS preprocessing (ISO 639-1 code, e.g. "en", "ru", "de").
+  # Resolution order:
+  #   1. tts.language (this setting — explicit override)
+  #   2. stt.local.language (reuse STT language — same user intent)
+  #   3. Auto-detect from voice name (e.g. "ru-RU-SvetlanaNeural" → "ru")
+  #   4. "en" as fallback
+  # language: ""              # uncomment and set to force (e.g. "ru")
+
+  edge:
+    voice: "en-US-AriaNeural"  # See: edge-tts --list-voices
+  # elevenlabs:
+  #   voice_id: "pNInz6obpgDQGcFmaJgB"  # Adam
+  #   model_id: "eleven_multilingual_v2"
+  # openai:
+  #   model: "gpt-4o-mini-tts"
+  #   voice: "alloy"            # alloy | echo | fable | onyx | nova | shimmer
+  # minimax:
+  #   model: "speech-2.8-hd"
+  #   voice_id: "English_Graceful_Lady"
+  # mistral:
+  #   model: "voxtral-mini-tts-2603"
+  #   voice_id: "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral
+  # neutts:
+  #   model: "neuphonic/neutts-air-q4-gguf"
+  #   device: "cpu"
+  #   ref_audio: ""            # custom voice reference audio
+  #   ref_text: ""             # transcript of reference audio
+
+# =============================================================================
 # Response Pacing (Messaging Platforms)
 # =============================================================================
 # Add human-like delays between message chunks.

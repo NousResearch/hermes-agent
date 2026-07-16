@@ -1452,6 +1452,31 @@ tts:
 
 This controls both the `text_to_speech` tool and spoken replies in voice mode (`/voice tts` in the CLI or messaging gateway).
 
+### TTS Text Preprocessing
+
+Before text is sent to the TTS engine, Hermes normalizes it so voice messages sound natural when read aloud:
+
+- **Strips markdown**: code blocks, bold/italic, inline code, links, headings
+- **Localized emoji speech**: replaces emojis with spoken equivalents in the configured language (e.g. ✅ → "done" in English, "готово" in Russian)
+- **Removes pseudo-graphics**: box-drawing characters and table pipes are converted to pauses
+- **Collapses whitespace**: removes excessive spacing from formatted text
+
+```yaml
+tts:
+  preprocess: true    # Enable text preprocessing (default: true)
+  language: ""         # ISO 639-1 code for emoji speech (e.g. "ru", "de", "ja")
+```
+
+**Language resolution** (for localized emoji speech):
+1. `tts.language` — explicit override
+2. `stt.local.language` — reuse STT language (same user intent)
+3. Auto-detect from TTS voice name (e.g. `ru-RU-SvetlanaNeural` → `ru`)
+4. `"en"` as fallback
+
+Supported languages for emoji speech: en, ru, de, es, fr, pt, ja, zh, ko, it, pl, uk, tr.
+
+Set `preprocess: false` to pass raw text to the TTS engine without modification.
+
 **Speed fallback hierarchy:** provider-specific speed (e.g. `tts.edge.speed`) → global `tts.speed` → `1.0` default. Set the global `tts.speed` to apply a uniform speed across all providers, or override per-provider for fine-grained control.
 
 ## Display Settings

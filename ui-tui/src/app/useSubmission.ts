@@ -1,7 +1,7 @@
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { TYPING_IDLE_MS } from '../config/timing.js'
-import { looksLikeSlashCommand, valueToDispatchOnSubmit } from '../domain/slash.js'
+import { completionToApplyOnSubmit, looksLikeSlashCommand } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { SessionSteerResponse, ShellExecResponse } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
@@ -299,13 +299,20 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
   const submit = useCallback(
     (value: string) => {
-      const submitValue = composerState.completions.length
-        ? valueToDispatchOnSubmit(
-            value,
-            composerState.completions[composerState.compIdx]?.text,
-            composerState.compReplace
-          )
-        : value
+      let submitValue = value
+
+      if (composerState.completions.length) {
+        const row = composerState.completions[composerState.compIdx]
+        const next = completionToApplyOnSubmit(value, row?.text, composerState.compReplace)
+
+        if (next !== null) {
+          if (!looksLikeSlashCommand(value)) {
+            return composerActions.setInput(next)
+          }
+
+          submitValue = next
+        }
+      }
 
       if (!submitValue.trim() && !composerState.inputBuf.length) {
         const live = getUiState()

@@ -55,23 +55,3 @@ export const completionToApplyOnSubmit = (
 
   return next !== value && next.trimEnd() !== value.trimEnd() ? next : null
 }
-
-/**
- * Resolve the text Enter should dispatch from the TUI composer.
- *
- * Enter always submits immediately, but when a highlighted completion would
- * materially extend the current slash token, we inline that completion into
- * the submitted text instead of forcing a separate "accept completion" keypress.
- *
- * Gated on `looksLikeSlashCommand(value)` so that ordinary `complete.path`
- * completions (file/context suggestions) retain their accept-only behavior —
- * Enter accepts the path into the composer but does not submit it.
- */
-export const valueToDispatchOnSubmit = (
-  value: string,
-  rowText: string | undefined,
-  compReplace: number
-): string =>
-  looksLikeSlashCommand(value)
-    ? (completionToApplyOnSubmit(value, rowText, compReplace) ?? value)
-    : value

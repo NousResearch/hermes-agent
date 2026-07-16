@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { applyCompletion, completionToApplyOnSubmit, valueToDispatchOnSubmit } from '../domain/slash.js'
+import { applyCompletion, completionToApplyOnSubmit } from '../domain/slash.js'
 
 describe('applyCompletion', () => {
   it('replaces from compReplace and drops the leading slash from the row', () => {
@@ -47,33 +47,5 @@ describe('completionToApplyOnSubmit', () => {
   it('returns null when there is no row text', () => {
     expect(completionToApplyOnSubmit('/exit', undefined, 1)).toBeNull()
     expect(completionToApplyOnSubmit('/exit', '', 1)).toBeNull()
-  })
-})
-
-describe('valueToDispatchOnSubmit', () => {
-  it('dispatches the completed slash command on the same Enter press', () => {
-    // "/ex" with "exit" highlighted → Enter should submit "/exit" directly.
-    expect(valueToDispatchOnSubmit('/ex', 'exit', 1)).toBe('/exit')
-  })
-
-  it('dispatches the completed argument on the same Enter press', () => {
-    expect(valueToDispatchOnSubmit('/cron ad', 'add', 6)).toBe('/cron add')
-  })
-
-  it('keeps the current value when the completion only adds trailing space', () => {
-    // Trailing-space guard: "/exit" is already complete, "exit " must not
-    // swallow the Enter — submit "/exit" as-is.
-    expect(valueToDispatchOnSubmit('/exit', 'exit ', 1)).toBe('/exit')
-  })
-
-  it('does NOT inline a complete.path completion (accept-only for paths)', () => {
-    // Ordinary path/context completions must retain their accept-only behavior:
-    // Enter should submit the raw value, not the completed path. This is the
-    // regression guard for the complete.path leak flagged in PR #50642 review.
-    expect(valueToDispatchOnSubmit('cd ~/Proj', 'Projects/hermes-agent', 3)).toBe('cd ~/Proj')
-  })
-
-  it('returns the raw value when there is no completion row', () => {
-    expect(valueToDispatchOnSubmit('hello world', undefined, 0)).toBe('hello world')
   })
 })

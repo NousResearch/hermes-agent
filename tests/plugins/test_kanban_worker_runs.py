@@ -444,3 +444,69 @@ def test_terminate_run_accepts_empty_body(client):
     # 404 because run doesn't exist — what we're asserting here is that
     # the endpoint doesn't 422 on a missing 'reason' field.
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Module-isolation reproducer — deterministic proof of the rebinding fix
+# ---------------------------------------------------------------------------
+
+
+def test_plugin_kanban_db_rebinding_survives_module_reload(tmp_path, monkeypatch):
+    """Reproducer for the distinct ``kanban_db`` module object that the
+    ``plugin.kanban_db = kb`` rebinding in the ``client`` fixture is meant
+    to repair.
+
+    The plugin module is loaded once (cached in ``sys.modules``) and holds
+    a reference to whatever ``hermes_cli.kanban_db`` was at import time.
+    If something replaces that module in ``sys.modules`` with a genuinely
+    new module object (e.g. a test in another file does
+    ``del sys.modules['hermes_cli.kanban_db']`` followed by a fresh
+    ``import``), the cached plugin's ``kanban_db`` name still points to
+    the old object.
+
+    This test simulates that condition *within a single process* by:
+
+      1. Loading the plugin module (caching it).
+      2. Deleting ``hermes_cli.kanban_db`` from ``sys.modules`` and
+         re-importing it — producing a *new* module object.
+      3. Verifying that without the rebinding, the plugin's ``kanban_db``
+         reference diverges from the live module.
+      4. Applying the rebinding and confirming they match again.
+
+    The ``client`` fixture does step 4 automatically; this test proves
+    that step 4 is actually necessary.
+    """
+    import importlib
+
+    # Step 1: load the plugin module (caches it in sys.modules).
+    plugin_mod = _load_plugin_router()
+
+    # The plugin's kanban_db reference at load time is the same object
+    # as the one imported at the top of this test file.
+    original_kb = plugin_mod.kanban_db
+    assert original_kb is kb, "plugin should reference live kanban_db at load time"
+
+    # Step 2: simulate a module replacement by deleting and re-importing.
+    # This creates a genuinely *new* module object (distinct identity)
+    # that the plugin does NOT see.
+    mod_name = "hermes_cli.kanban_db"
+    assert mod_name in sys.modules
+    del sys.modules[mod_name]
+    fresh_kb = importlib.import_module(mod_name)
+
+    # Step 3: without rebinding, the plugin's kanban_db still points to
+    # the OLD module object — divergent from the live sys.modules entry.
+    assert plugin_mod.kanban_db is original_kb, (
+        "plugin should still hold the original reference"
+    )
+    assert plugin_mod.kanban_db is not fresh_kb, (
+        "plugin's cached kanban_db should diverge after replacement"
+    )
+
+    # Step 4: apply the rebinding (exactly what the client fixture does).
+    plugin_mod.kanban_db = fresh_kb
+
+    # Now they match again.
+    assert plugin_mod.kanban_db is fresh_kb, (
+        "rebinding should restore the plugin to the live kanban_db module"
+    )

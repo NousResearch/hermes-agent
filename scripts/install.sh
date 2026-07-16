@@ -1624,6 +1624,7 @@ setup_path() {
 
     local command_link_dir
     local command_link_display_dir
+    local exec_target
     command_link_dir="$(get_command_link_dir)"
     command_link_display_dir="$(get_command_link_display_dir)"
 
@@ -1631,6 +1632,23 @@ setup_path() {
     # We intentionally clear PYTHONPATH/PYTHONHOME here so inherited env vars
     # can't make this launcher import modules from another checkout.
     mkdir -p "$command_link_dir"
+    # Pick the shim's exec target. When $HERMES_BIN lives under the installing
+    # user's home, emit a $HOME-relative path that the shim expands at *launch*
+    # time instead of the absolute path resolved here at install time: a
+    # username change, profile restore, or move to a new machine relocates the
+    # install, and an install-time absolute path would leave `hermes` pointing
+    # at a home that no longer exists.
+    #
+    # Installs that do NOT live under $HOME keep the absolute resolved path,
+    # preserving every other supported layout: an explicit --dir /
+    # $HERMES_INSTALL_DIR, the root FHS layout under /usr/local/lib, and
+    # USE_VENV=false installs whose $HERMES_BIN came from PATH.
+    exec_target="$HERMES_BIN"
+    if [ -n "${HOME:-}" ]; then
+        case "$HERMES_BIN" in
+            "${HOME%/}"/*) exec_target="\$HOME/${HERMES_BIN#"${HOME%/}"/}" ;;
+        esac
+    fi
     # Older installs created this path as a symlink to $HERMES_BIN. Without
     # the rm, `cat >` follows the symlink and overwrites the venv pip entry
     # point with this shim — making `exec "$HERMES_BIN"` self-recurse. (#21454)
@@ -1639,7 +1657,7 @@ setup_path() {
 #!/usr/bin/env bash
 unset PYTHONPATH
 unset PYTHONHOME
-exec "$HERMES_BIN" "\$@"
+exec "$exec_target" "\$@"
 EOF
     chmod +x "$command_link_dir/hermes"
     log_success "Installed hermes launcher → $command_link_display_dir/hermes"

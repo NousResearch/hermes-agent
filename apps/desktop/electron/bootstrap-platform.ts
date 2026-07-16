@@ -18,18 +18,36 @@ function isWslEnvironment(env = process.env, platform = process.platform, kernel
   }
 }
 
-function isVirtualizedGpuEnvironment(platform = process.platform) {
-  if (platform !== 'linux') {
-    return false
-  }
-
+function readDmiFieldSafe(field) {
   try {
-    const vendor = fs.readFileSync('/sys/class/dmi/id/sys_vendor', 'utf8').trim()
-
-    return /qemu/i.test(vendor)
+    return fs.readFileSync(`/sys/class/dmi/id/${field}`, 'utf8').trim()
   } catch {
-    return false
+    return null
   }
+}
+
+function isVirtualizedGpuEnvironment(platform = process.platform, sysVendor = null, productName = null) {
+  if (platform !== 'linux') {
+    return null
+  }
+
+  const vendor = sysVendor ?? readDmiFieldSafe('sys_vendor') ?? ''
+
+  if (/qemu/i.test(vendor)) {
+    return `QEMU detected via DMI sys_vendor (${vendor})`
+  }
+
+  // UTM on Apple Silicon defaults to Apple's Virtualization.framework backend
+  // instead of QEMU emulation — sys_vendor there just reflects the host
+  // ("Apple Inc."), so it's indistinguishable from real Mac hardware. The
+  // guest's product_name is the reliable signal for this backend instead.
+  const product = productName ?? readDmiFieldSafe('product_name') ?? ''
+
+  if (/apple virtualization/i.test(product)) {
+    return `Apple Virtualization.framework detected via DMI product_name (${product})`
+  }
+
+  return null
 }
 
 function isWindowsBinaryPathInWsl(
@@ -74,7 +92,9 @@ const GPU_OVERRIDE_OFF = new Set(['0', 'false', 'no', 'off'])
  *
  * Pure + dependency-free so it can be unit-tested and called before app ready.
  */
-function detectRemoteDisplay(options: { env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {}) {
+function detectRemoteDisplay(
+  options: { env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform; sysVendor?: string; productName?: string } = {}
+) {
   const env = options.env ?? process.env
   const platform = options.platform ?? process.platform
 
@@ -102,13 +122,14 @@ function detectRemoteDisplay(options: { env?: NodeJS.ProcessEnv; platform?: Node
     // NB: WSLg deliberately isn't treated as remote — it reports
     // GPU-accelerated vGPU surfaces locally and doesn't show the flicker.
     const display = String(env.DISPLAY || '')
-
     if (display.includes(':') && display.split(':')[0]) {
       return `x11-forwarding (DISPLAY=${display})`
     }
 
-    if (isVirtualizedGpuEnvironment(platform)) {
-      return 'virtualized-gpu (QEMU/UTM detected via DMI sys_vendor)'
+    const virtualizedGpuReason = isVirtualizedGpuEnvironment(platform, options.sysVendor, options.productName)
+
+    if (virtualizedGpuReason) {
+      return `virtualized-gpu (${virtualizedGpuReason})`
     }
   }
 

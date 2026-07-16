@@ -49,7 +49,10 @@ import {
   normalizePtyMobileInput,
   shouldTreatInputAsMobileReplacement,
 } from "@/lib/pty-mobile-input";
-import { resolvePtyKeyboardShortcut } from "@/lib/pty-keyboard-shortcuts";
+import {
+  resolvePtyKeyboardShortcut,
+  sendPtyShortcutSequence,
+} from "@/lib/pty-keyboard-shortcuts";
 import {
   imageFilesFromTransfer,
   transferMayContainImage,
@@ -658,8 +661,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // for Ctrl+W muscle memory use the Electron desktop app.)
       if (shortcut === "delete-word-backward") {
         ev.preventDefault();
-        const ws = wsRef.current;
-        if (ws && ws.readyState === WebSocket.OPEN) ws.send("\x17");
+        sendPtyShortcutSequence(wsRef.current, ptyStateRef.current, "\x17");
         return false;
       }
 
@@ -667,8 +669,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // (ESC d), the readline / prompt_toolkit kill-word-forward binding.
       if (shortcut === "delete-word-forward") {
         ev.preventDefault();
-        const ws = wsRef.current;
-        if (ws && ws.readyState === WebSocket.OPEN) ws.send("\x1bd");
+        sendPtyShortcutSequence(wsRef.current, ptyStateRef.current, "\x1bd");
         return false;
       }
 

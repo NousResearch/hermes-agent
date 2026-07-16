@@ -491,6 +491,69 @@ def test_stranded_in_ready_fires_when_age_exceeds_threshold():
     assert stranded[0].data["assignee"] == "demo"
 
 
+def test_active_pr_respawn_guard_is_info_not_stranded_error():
+    """An active-PR guard is a deliberate lander inbox state, not a worker
+    failure, even when the task has been ready long enough to otherwise be
+    classified as an error.
+    """
+    now = 100_000
+    task = _task(status="ready", assignee="engineer", claim_lock=None)
+    events = [
+        _event("created", ts=now - 4 * 3600),
+        _event("respawn_guarded", ts=now - 60, reason="active_pr"),
+    ]
+
+    diags = kd.compute_task_diagnostics(task, events, [], now=now)
+
+    assert [d.kind for d in diags] == ["awaiting_lander_pr_processing"]
+    diag = diags[0]
+    assert diag.severity == "info"
+    assert diag.title == "Awaiting lander/PR processing"
+    assert diag.data["guard_reason"] == "active_pr"
+    assert "stranded_in_ready" not in {d.kind for d in diags}
+
+
+def test_active_pr_info_expires_with_dispatcher_guard_window():
+    """A historical guard event must not mask a genuinely stranded card once
+    the dispatcher's 24-hour active-PR window has elapsed.
+    """
+    now = 200_000
+    task = _task(status="ready", assignee="engineer", claim_lock=None)
+    events = [
+        _event("created", ts=now - 30 * 3600),
+        _event("respawn_guarded", ts=now - 25 * 3600, reason="active_pr"),
+    ]
+
+    diags = kd.compute_task_diagnostics(task, events, [], now=now)
+
+    assert [d.kind for d in diags] == ["stranded_in_ready"]
+    assert diags[0].severity == "critical"
+
+
+def test_active_pr_diagnostic_window_matches_dispatcher_guard():
+    assert (
+        kd.DEFAULT_CONFIG["active_pr_guard_window_seconds"]
+        == kb._RESPAWN_GUARD_PR_WINDOW
+    )
+
+
+def test_active_pr_info_clears_on_newer_ready_transition():
+    """A deliberate rerun after the guard event must not inherit stale PR
+    state; normal stranded timing starts from that newer transition.
+    """
+    now = 100_000
+    task = _task(status="ready", assignee="engineer", claim_lock=None)
+    events = [
+        _event("created", ts=now - 4 * 3600),
+        # Event timestamps have one-second resolution, so ordering must still
+        # clear the guard when both state changes land in the same second.
+        _event("respawn_guarded", ts=now - 10 * 60, reason="active_pr"),
+        _event("unblocked", ts=now - 10 * 60),
+    ]
+
+    assert kd.compute_task_diagnostics(task, events, [], now=now) == []
+
+
 def test_stranded_in_ready_silent_below_threshold():
     """A ready task only 10 min old should NOT fire."""
     now = 100_000
@@ -765,11 +828,14 @@ def test_config_from_runtime_config_handles_empty_input():
 
 
 def test_severity_at_or_above_uses_threshold_semantics():
+    assert kd.severity_at_or_above("info", "info") is True
+    assert kd.severity_at_or_above("warning", "info") is True
     assert kd.severity_at_or_above("warning", "warning") is True
     assert kd.severity_at_or_above("error", "warning") is True
     assert kd.severity_at_or_above("critical", "warning") is True
     assert kd.severity_at_or_above("critical", "error") is True
     assert kd.severity_at_or_above("warning", "error") is False
     assert kd.severity_at_or_above("error", "critical") is False
+    assert kd.severity_at_or_above("info", "warning") is False
     assert kd.severity_at_or_above("mystery", "warning") is False
     assert kd.severity_at_or_above("warning", None) is True

@@ -6512,6 +6512,54 @@ def _catalog_provider_env_metadata() -> dict:
                 "advanced": existing.get("advanced", True),
                 "category": "provider",
             }
+
+    # Plugin TTS providers are not part of the model provider catalog, but
+    # their setup schemas still describe credentials that the desktop Keys tab
+    # must be able to manage. Keep this generic: any registered TTS plugin can
+    # opt in by returning env_vars from get_setup_schema(), without adding a
+    # provider-specific branch to the core web server.
+    try:
+        from hermes_cli.plugins import discover_plugins
+        from agent.tts_registry import list_providers as list_tts_providers
+
+        discover_plugins()
+        for provider in list_tts_providers():
+            schema = provider.get_setup_schema() or {}
+            provider_name = str(getattr(provider, "name", "tts")).strip().lower()
+            provider_label = str(
+                schema.get("name") or getattr(provider, "display_name", provider_name)
+            )
+            for env_entry in schema.get("env_vars", []) or []:
+                if isinstance(env_entry, str):
+                    env_name = env_entry.strip()
+                    env_info = {}
+                elif isinstance(env_entry, dict):
+                    env_name = str(env_entry.get("key") or env_entry.get("name") or "").strip()
+                    env_info = env_entry
+                else:
+                    continue
+                if not env_name:
+                    continue
+                meta.setdefault(
+                    env_name,
+                    {
+                        "provider": f"tts:{provider_name}",
+                        "provider_label": provider_label,
+                        "description": str(
+                            env_info.get("description")
+                            or schema.get("tag")
+                            or f"{provider_label} credential"
+                        ),
+                        "url": env_info.get("url"),
+                        "is_password": True,
+                        "advanced": False,
+                        "category": "provider",
+                    },
+                )
+    except Exception:
+        # A broken optional plugin must not prevent the desktop Keys page from
+        # loading the core provider catalog.
+        _log.debug("TTS plugin env metadata unavailable", exc_info=True)
     return meta
 
 
@@ -17859,6 +17907,78 @@ mount_memory_graph(app)
 mount_spa(app)
 
 
+def _windows_serving_loop_factory():
+    """Return a factory that builds a SelectorEventLoop on Windows (#50641)."""
+
+    def _factory() -> asyncio.AbstractEventLoop:
+        return asyncio.SelectorEventLoop()
+
+    return _factory
+
+
+def _resolve_start_server_loop_factory(config: "uvicorn.Config"):
+    """Pick the event-loop factory for ``start_server``'s runner.
+
+    uvicorn>=0.36 ``Config.get_loop_factory()`` returns ProactorEventLoop on
+    win32. Hermes splits ``server.startup()`` from ``server.main_loop()`` and
+    announces the bind between them for Desktop port discovery; on that path a
+    proactor loop can leave ``/api/status`` timing out until long after the
+    ready sentinel is printed (#50641).
+    """
+    if sys.platform == "win32":
+        return _windows_serving_loop_factory()
+    try:
+        return config.get_loop_factory()
+    except Exception:
+        return None
+
+
+_LOCAL_STATUS_PROBE_TIMEOUT = 20.0
+_LOCAL_STATUS_PROBE_INTERVAL = 0.1
+
+
+async def _await_local_status_ready(
+    host: str,
+    port: int,
+    *,
+    timeout: float = _LOCAL_STATUS_PROBE_TIMEOUT,
+) -> None:
+    """Best-effort wait for loopback ``/api/status`` before announcing the bind."""
+    if host not in _LOOPBACK_HOST_VALUES:
+        return
+
+    import urllib.request
+
+    url = f"http://{host}:{port}/api/status"
+    deadline = time.monotonic() + timeout
+    loop = asyncio.get_running_loop()
+
+    def _probe() -> int:
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            return resp.status
+
+    while time.monotonic() < deadline:
+        try:
+            status = await asyncio.wait_for(
+                loop.run_in_executor(None, _probe),
+                timeout=3.0,
+            )
+            if status == 200:
+                return
+        except Exception:
+            pass
+        await asyncio.sleep(_LOCAL_STATUS_PROBE_INTERVAL)
+
+    _log.debug(
+        "Local /api/status probe on %s:%s did not succeed within %.1fs; "
+        "announcing bind anyway",
+        host,
+        port,
+        timeout,
+    )
+
+
 def _read_bound_port(server: "uvicorn.Server", fallback: int) -> int:
     """Read the OS-assigned port from a live uvicorn server socket.
 
@@ -18123,20 +18243,6 @@ def start_server(
             actual_port = _read_bound_port(server, fallback=port)
             app.state.bound_port = actual_port
 
-            _write_dashboard_ready_file(actual_port)
-            # Port-discovery sentinel parsed by the desktop spawn. `serve` is a
-            # plain backend, not a dashboard, so it announces a neutral token;
-            # `dashboard` keeps the legacy one. The desktop matches either.
-            ready_token = "HERMES_BACKEND_READY" if headless else "HERMES_DASHBOARD_READY"
-            print(f"{ready_token} port={actual_port}", flush=True)
-            if headless:
-                # No SPA, and the JSON-RPC/WS endpoints are auth-gated — don't
-                # advertise a paste-and-connect URL, just announce the bind.
-                print(f"  Hermes backend listening on {host}:{actual_port}")
-            else:
-                print(f"  Hermes Web UI → http://{host}:{actual_port}")
-            _maybe_open_browser(host, actual_port, open_browser, initial_profile)
-
             # Collapse the peer-hangup teardown flood (#50005). When the Desktop
             # forcibly closes its WebSocket mid-write, asyncio logs a full
             # traceback per pending connection-lost callback — 50+ identical
@@ -18179,9 +18285,36 @@ def start_server(
                 _hb_interval, _loop_heartbeat, _hb_loop.time() + _hb_interval
             )
 
-            await server.main_loop()
-            if server.started:
-                await server.shutdown()
+            serve_task = asyncio.create_task(server.main_loop())
+            # Yield so main_loop() can accept before we announce the bind.
+            await asyncio.sleep(0)
+            await _await_local_status_ready(host, actual_port)
+
+            _write_dashboard_ready_file(actual_port)
+            # Port-discovery sentinel parsed by the desktop spawn. `serve` is a
+            # plain backend, not a dashboard, so it announces a neutral token;
+            # `dashboard` keeps the legacy one. The desktop matches either.
+            # main_loop() is already running so loopback probes issued right
+            # after this line can succeed (#50641).
+            ready_token = (
+                "HERMES_BACKEND_READY" if headless else "HERMES_DASHBOARD_READY"
+            )
+            print(f"{ready_token} port={actual_port}", flush=True)
+            if headless:
+                # No SPA, and the JSON-RPC/WS endpoints are auth-gated — don't
+                # advertise a paste-and-connect URL, just announce the bind.
+                print(f"  Hermes backend listening on {host}:{actual_port}")
+            else:
+                print(f"  Hermes Web UI → http://{host}:{actual_port}")
+                _maybe_open_browser(
+                    host, actual_port, open_browser, initial_profile
+                )
+
+            try:
+                await serve_task
+            finally:
+                if server.started:
+                    await server.shutdown()
 
     # On POSIX, keep the long-standing ``asyncio.run(_serve())`` behavior
     # unchanged — Python's default loop there is already a SelectorEventLoop
@@ -18209,11 +18342,11 @@ def start_server(
     # propagate normally instead of being swallowed and double-run.
     try:
         from uvicorn._compat import asyncio_run as _runner
-
-        _loop_factory = config.get_loop_factory()
     except Exception:
         _runner = None
-        _loop_factory = None
+
+    _loop_factory = _resolve_start_server_loop_factory(config)
+    if _runner is None:
         try:
             asyncio.set_event_loop_policy(
                 asyncio.WindowsSelectorEventLoopPolicy()  # type: ignore[attr-defined]
@@ -18221,7 +18354,9 @@ def start_server(
         except Exception:
             pass
 
-    if _runner is not None:
+    if _runner is not None and _loop_factory is not None:
         _runner(_serve(), loop_factory=_loop_factory)
+    elif _runner is not None:
+        _runner(_serve())
     else:
         asyncio.run(_serve())

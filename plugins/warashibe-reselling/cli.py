@@ -53,6 +53,21 @@ def register_cli(parser) -> None:
     sp.add_argument("--min-rate", type=float, default=None)
     sp.add_argument("--dry-run", action="store_true")
 
+    # Japan -> eBay export premium scan
+    sp = sub.add_parser("j2e", help="日本安→eBay高: 輸出プレミアム狙い")
+    sp.add_argument("--keyword", "-k", required=True)
+    sp.add_argument(
+        "--platforms",
+        nargs="+",
+        default=["mercari", "yahoo_auction", "ebay"],
+    )
+    sp.add_argument("--limit", type=int, default=8)
+    sp.add_argument("--budget", "-b", type=int, default=None)
+    sp.add_argument("--min-profit", type=int, default=None)
+    sp.add_argument("--min-rate", type=float, default=None)
+    sp.add_argument("--min-premium", type=float, default=0.5, help="輸出プレミアム最小値(例: 0.5=50%%)")
+    sp.add_argument("--dry-run", action="store_true")
+
     # shipping
     sub.add_parser("shipping", help="発送API検証")
 
@@ -118,6 +133,19 @@ def main(argv=None):
             min_profit_yen=args.min_profit,
             min_profit_rate=args.min_rate,
             budget_yen=args.budget,
+        )
+        print(json.dumps(r, ensure_ascii=False, indent=2))
+    elif args.cmd == "j2e":
+        from .price_research import find_japan_to_ebay
+        r = find_japan_to_ebay(
+            args.keyword,
+            args.platforms,
+            args.limit,
+            dry_run=args.dry_run,
+            min_profit_yen=args.min_profit,
+            min_profit_rate=args.min_rate,
+            budget_yen=args.budget,
+            min_export_premium=args.min_premium,
         )
         print(json.dumps(r, ensure_ascii=False, indent=2))
     elif args.cmd == "shipping":

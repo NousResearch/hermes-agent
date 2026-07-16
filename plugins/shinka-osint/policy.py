@@ -29,6 +29,9 @@ CYBER_SCENARIO_IDS: frozenset[str] = frozenset(
         "cyber_defense_posture",
         "active_cyber_defense",
         "cyber_workforce",
+        "ai_sovereign_cyber_2026",
+        "jp_active_cyber_defense_2026",
+        "chinese_ai_agent_threat",
     }
 )
 
@@ -48,7 +51,7 @@ UKRAINE_QUERY_MARKERS: tuple[str, ...] = (
     "zaporizhzhia",
 )
 
-DEFAULT_SUPPLEMENTAL_EXAMPLES: tuple[str, ...] = ()
+DEFAULT_SUPPLEMENTAL_EXAMPLES: tuple[str, ...] = ("intl_situation_jp",)
 
 
 def _read_plugin_section() -> dict[str, Any]:
@@ -105,7 +108,9 @@ def is_scenario_permitted(scenario: dict[str, Any], policy: dict[str, Any] | Non
     if explicit:
         if sid in explicit:
             return True
-        if policy.get("ensure_cyber_scenarios") and sid in CYBER_SCENARIO_IDS:
+        if policy.get("ensure_cyber_scenarios") and (
+            sid in CYBER_SCENARIO_IDS or "cyber" in sid.lower()
+        ):
             return True
         if policy.get("ensure_ukraine_scenarios") and (sid in UKRAINE_SCENARIO_IDS or _scenario_matches_ukraine(scenario)):
             return True
@@ -114,7 +119,9 @@ def is_scenario_permitted(scenario: dict[str, Any], policy: dict[str, Any] | Non
     permitted_domains = policy.get("permitted_domains") or DEFAULT_PERMITTED_DOMAINS
     if domain in permitted_domains:
         return True
-    if policy.get("ensure_cyber_scenarios") and sid in CYBER_SCENARIO_IDS:
+    if policy.get("ensure_cyber_scenarios") and (
+        sid in CYBER_SCENARIO_IDS or "cyber" in sid.lower() or domain == "cyber_defense"
+    ):
         return True
     if policy.get("ensure_ukraine_scenarios") and sid in UKRAINE_SCENARIO_IDS:
         return True
@@ -179,6 +186,13 @@ def ensure_priority_in_selection(
             continue
         if any(matcher(s) for s in merged):
             continue
+        if flag == "ensure_cyber_scenarios":
+            if any(
+                "cyber" in str(s.get("scenario_id") or "").lower()
+                or str(s.get("domain") or "") == "cyber_defense"
+                for s in merged
+            ):
+                continue
         pick = _pick_priority_scenario(pool, domain=domain, id_set=id_set, matcher=matcher)
         if not pick:
             continue

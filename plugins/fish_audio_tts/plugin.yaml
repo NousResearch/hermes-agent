@@ -1,0 +1,17 @@
+name: fish-audio-tts
+version: 0.1.0
+description: Fish Audio cloud TTS provider using the official REST API.
+author: HermesAgent
+kind: backend
+platforms:
+  - windows
+  - linux
+  - darwin
+entrypoint: plugins.fish_audio_tts
+provides_tools:
+  - fish_audio_tts_status
+  - fish_audio_tts_synthesize
+provides_cli:
+  - fish-audio-tts
+provides_tts_providers:
+  - fishaudio

@@ -2500,8 +2500,22 @@ def cmd_chat(args):
             accept_hooks=getattr(args, "accept_hooks", False),
         )
 
-    # Import and run the CLI
-    from cli import main as cli_main
+    import importlib.util
+
+    cli_module_name = "_hermes_project_cli"
+    cli_module = sys.modules.get(cli_module_name)
+    if cli_module is None:
+        cli_path = PROJECT_ROOT / "cli.py"
+        cli_spec = importlib.util.spec_from_file_location(cli_module_name, cli_path)
+        if cli_spec is None or cli_spec.loader is None:
+            raise RuntimeError(f"Cannot load Hermes CLI module: {cli_path}")
+        cli_module = importlib.util.module_from_spec(cli_spec)
+        sys.modules[cli_module_name] = cli_module
+        sys.modules["cli"] = cli_module
+        cli_spec.loader.exec_module(cli_module)
+    else:
+        sys.modules["cli"] = cli_module
+    cli_main = cli_module.main
 
     # Build kwargs from args
     kwargs = {
@@ -12583,27 +12597,7 @@ def _build_provider_choices() -> list[str]:
 # below in ``main()``. Missing an entry here only costs a one-time
 # discovery; extra entries here would let a plugin command silently fail
 # to parse.
-_BUILTIN_SUBCOMMANDS = frozenset(
-    {
-        "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
-        "computer-use",
-        "config", "console", "cron", "curator", "dashboard", "serve", "debug", "doctor",
-        "dump", "fallback", "gateway", "hooks", "import", "insights",
-        "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
-        "journey", "memory-graph", "learning",
-        "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile",
-        "project", "proxy",
-        "prompt-size",
-        "send", "sessions", "setup",
-        "skills", "slack", "status", "tools", "uninstall", "update",
-        "version", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
-        "harness",
-        # Help-ish invocations — plugin commands not being listed in
-        # top-level --help is an acceptable trade-off for skipping an
-        # expensive eager import of every bundled plugin module.
-        "help",
-    }
-)
+from hermes_cli.cli_builtins import BUILTIN_SUBCOMMANDS as _BUILTIN_SUBCOMMANDS
 
 
 # Top-level flags that take a value. Needed by ``_first_positional_argv``
@@ -13505,6 +13499,12 @@ def main():
 
             seen_plugin_commands = set()
             for cmd_info in discover_plugin_cli_commands():
+                if cmd_info["name"] in _BUILTIN_SUBCOMMANDS:
+                    logging.getLogger(__name__).warning(
+                        "Skipping plugin CLI %r: conflicts with built-in subcommand",
+                        cmd_info["name"],
+                    )
+                    continue
                 try:
                     plugin_parser = subparsers.add_parser(
                         cmd_info["name"],
@@ -13528,6 +13528,12 @@ def main():
             discover_plugins()
             for cmd_info in get_plugin_manager()._cli_commands.values():
                 if cmd_info["name"] in seen_plugin_commands:
+                    continue
+                if cmd_info["name"] in _BUILTIN_SUBCOMMANDS:
+                    logging.getLogger(__name__).warning(
+                        "Skipping plugin CLI %r: conflicts with built-in subcommand",
+                        cmd_info["name"],
+                    )
                     continue
                 try:
                     plugin_parser = subparsers.add_parser(
@@ -15098,10 +15104,11 @@ def main():
 
     # Execute the command
     if hasattr(args, "func"):
-        args.func(args)
+        return args.func(args)
     else:
         parser.print_help()
+        return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

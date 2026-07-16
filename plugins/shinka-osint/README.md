@@ -89,5 +89,6 @@ Ensure `cron.script_timeout_seconds` is at least **900** in `config.yaml` for mu
 |---------|-----|
 | Tools not visible | `hermes plugins enable shinka-osint` + enable `shinka_osint` toolset |
 | `root_exists: false` | `hermes shinka-osint setup --root <path>` |
-| Import errors | `pip install -e .` inside the Shinka checkout |
+| Import errors / missing deps | `.\scripts\setup_hermes_shinka_env.ps1` (repo `.venv` + `SHINKA_OSINT_PYTHON`) |
+| Cyber scenarios missing | `py -3 scripts\configure_hermes_shinka_policy.py --write-config` then restart Hermes |
 | Low scores / empty evidence | Use `mock` first; verify with `hermes shinka-osint verify` |

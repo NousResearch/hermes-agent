@@ -531,6 +531,25 @@ class PluginContext:
         The *setup_fn* receives an argparse subparser and should add any
         arguments/sub-subparsers.  If *handler_fn* is provided it is set
         as the default dispatch function via ``set_defaults(func=...)``."""
+        clean = name.lower().strip()
+        if not clean:
+            logger.warning(
+                "Plugin '%s' tried to register a CLI command with an empty name.",
+                self.manifest.name,
+            )
+            return
+
+        from hermes_cli.cli_builtins import BUILTIN_SUBCOMMANDS
+
+        if clean in BUILTIN_SUBCOMMANDS:
+            logger.warning(
+                "Plugin '%s' tried to register CLI command %r which conflicts "
+                "with a built-in subcommand. Skipping.",
+                self.manifest.name,
+                clean,
+            )
+            return
+
         self._manager._cli_commands[name] = {
             "name": name,
             "help": help,

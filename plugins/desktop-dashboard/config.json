@@ -1,0 +1,7 @@
+{
+  "city": "日野市",
+  "latitude": 35.6693,
+  "longitude": 139.3956,
+  "weather_refresh_ms": 900000,
+  "trend_refresh_ms": 1800000
+}

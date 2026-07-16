@@ -2,10 +2,22 @@ import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { useRef, useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { composerPlainText, insertPlainTextAtCaret, RICH_INPUT_SLOT } from './rich-editor'
+
 // No global setupFiles registers auto-cleanup, so unmount between tests —
 // otherwise a second render() leaks the first editor and getByTestId('editor')
 // matches multiple nodes.
 afterEach(cleanup)
+
+const caretIn = (editor: HTMLElement) => {
+  const range = globalThis.document.createRange()
+  const selection = globalThis.window.getSelection()!
+
+  range.selectNodeContents(editor)
+  range.collapse(false)
+  selection.removeAllRanges()
+  selection.addRange(range)
+}
 
 // Faithful mirror of index.tsx's Enter wiring (handleEditorKeyDown's Enter
 // branch + submitDraft), driven through REAL DOM keydown events on a
@@ -46,8 +58,6 @@ function Harness({
   const [draft, setDraft] = useState('')
   const attachments: unknown[] = []
 
-  const composerPlainText = (el: HTMLElement) => el.textContent ?? ''
-
   const setText = (next: string) => {
     draftRef.current = next
     setDraft(next)
@@ -86,6 +96,14 @@ function Harness({
   }
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === 'Enter' && event.shiftKey && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      event.preventDefault()
+      insertPlainTextAtCaret(event.currentTarget, '\n')
+      setText(composerPlainText(event.currentTarget))
+
+      return
+    }
+
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
 
@@ -117,6 +135,7 @@ function Harness({
   return (
     <div
       contentEditable
+      data-slot={RICH_INPUT_SLOT}
       data-testid="editor"
       onInput={event => setText(composerPlainText(event.currentTarget))}
       onKeyDown={handleKeyDown}
@@ -127,6 +146,33 @@ function Harness({
 }
 
 describe('composer Enter submit — live DOM vs stale composer state (#39630)', () => {
+  it('inserts a Shift+Enter newline without submitting and preserves it on send', async () => {
+    const onSubmit = vi.fn()
+
+    const { getByTestId } = render(
+      <Harness onCancel={vi.fn()} onDrain={vi.fn()} onQueue={vi.fn()} onSubmit={onSubmit} />
+    )
+
+    const editor = getByTestId('editor')
+
+    await act(async () => {
+      editor.textContent = 'first line'
+      caretIn(editor)
+      fireEvent.keyDown(editor, { key: 'Enter', shiftKey: true })
+    })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(composerPlainText(editor)).toBe('first line\n')
+
+    await act(async () => {
+      editor.append('second line')
+      caretIn(editor)
+      fireEvent.keyDown(editor, { key: 'Enter' })
+    })
+
+    expect(onSubmit).toHaveBeenCalledWith('first line\nsecond line')
+  })
+
   it('sends the just-typed text on Enter even when composer state has not synced', async () => {
     const onSubmit = vi.fn()
 
